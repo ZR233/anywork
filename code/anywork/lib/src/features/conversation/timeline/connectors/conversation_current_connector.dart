@@ -287,7 +287,7 @@ class _CurrentItemState extends State<_CurrentItem> {
         child: _buildContent(context),
       );
     }
-    return _buildContent(context);
+    return SingleChildScrollView(primary: false, child: _buildContent(context));
   }
 
   Widget _buildContent(BuildContext context) {

@@ -1592,15 +1592,16 @@ final class _ConceptScene {
     await _record('same-member-window-terminal');
     expect(quiet.item.admissionClosed, isFalse);
     expect(quiet.live, isTrue);
+    final quietHeader = find.byKey(ValueKey('source-unit-header:$g1'));
+    expect(quietHeader, findsOneWidget);
+    final quietRow = tester.widget<TimelineActivityRow>(quietHeader);
     expect(
-      tester
-          .widget<TimelineActivityRow>(
-            find.byKey(ValueKey('source-unit-header:$g1')),
-          )
-          .label,
-      '思考中',
+      quietRow.label,
+      AppLocalizations.of(tester.element(quietHeader)).timelineReasoningActive,
       reason: '成员已终态但执行仍在继续时，标题沿用现有用户文案',
     );
+    expect(quietRow.active, isFalse);
+    expect(quietRow.expanded, isTrue);
     expect(main.where((unit) => unit.id == g1), isEmpty);
     expect(
       membersOf(quiet.id)
@@ -2063,6 +2064,13 @@ final class _ConceptScene {
       ),
       findsOneWidget,
       reason: '压缩沿用唯一的实时状态栏，不创建第二个面板',
+    );
+    expect(
+      find.descendant(
+        of: currentConnector,
+        matching: find.byType(ConversationActivityStatus),
+      ),
+      findsNothing,
     );
     final rowFinder = currentRows(unit);
     expect(rowFinder, findsOneWidget);
@@ -2950,16 +2958,43 @@ final class _ConceptScene {
       final item = presentation(itemValue);
       await showUnit(itemValue.id);
       final card = itemFinder(itemValue.id);
-      await _until(
-        tester,
-        () => item.attachments.every(
-          (attachment) => find
-              .byKey(StudioDriverKeys.viewImageThumbnail(attachment.id))
-              .evaluate()
-              .isNotEmpty,
-        ),
-        'three decoded real user input thumbnails',
-      );
+      try {
+        await _until(tester, () {
+          for (final view in tester.widgetList<TimelineImageView>(
+            find.descendant(of: card, matching: find.byType(TimelineImageView)),
+          )) {
+            if (view.error case final error?) throw error;
+          }
+          return item.attachments.every(
+            (attachment) => find
+                .byKey(StudioDriverKeys.viewImageThumbnail(attachment.id))
+                .evaluate()
+                .isNotEmpty,
+          );
+        }, 'three decoded real user input thumbnails');
+      } catch (error) {
+        report['inputThumbnailFailure'] = {
+          'itemId': itemValue.id,
+          'cardCount': card.evaluate().length,
+          'sameLease': identical(lease, originalLease),
+          'error': error.toString(),
+          'views': [
+            for (final view in tester.widgetList<TimelineImageView>(
+              find.byType(TimelineImageView, skipOffstage: false),
+            ))
+              if (view.itemId == itemValue.id)
+                {
+                  'attachmentId': view.attachment.id,
+                  'active': view.active,
+                  'bytes': view.bytes?.length,
+                  'width': view.width,
+                  'height': view.height,
+                  'error': view.error?.toString(),
+                },
+          ],
+        };
+        rethrow;
+      }
       report['imageInput'] = input.verifyHorizontalLayout(
         tester,
         item: itemValue,

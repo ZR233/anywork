@@ -70,37 +70,60 @@ void main() {
       final resources = TimelineImageResources(threadId: 'thread');
       addTearDown(resources.release);
       var reads = 0;
-      final items = [imageItem('first'), imageItem('second')];
-      await tester.pumpWidget(
-        imageApp(
-          Column(
-            children: [
-              for (final item in items)
-                ChatItemView(
-                  key: ValueKey(item.id),
-                  item: item,
-                  attachmentBuilder: (value) => TimelineAttachmentsConnector(
-                    item: value,
-                    resources: resources,
-                    readAttachment: (id) async {
-                      expect(id, 'shared-image');
-                      reads++;
-                      return _png;
-                    },
-                    isActive: () => true,
-                  ),
+      var mediaGeneration = 0;
+      final reply = Completer<Uint8List>();
+      final items = [imageItem('first')];
+      Widget build() => imageApp(
+        Column(
+          children: [
+            for (final item in items)
+              ChatItemView(
+                key: ValueKey(item.id),
+                item: item,
+                attachmentBuilder: (value) => TimelineAttachmentsConnector(
+                  key: ValueKey((mediaGeneration, value.id)),
+                  item: value,
+                  resources: resources,
+                  readAttachment: (id) {
+                    expect(id, 'shared-image');
+                    reads++;
+                    return reply.future;
+                  },
+                  isActive: () => true,
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       );
+      await tester.pumpWidget(build());
       expect(reads, 0);
-      for (final item in items) {
-        await tester.tap(
-          find.byKey(ValueKey('timeline-tool-details:${item.id}')),
-        );
-        await tester.pump(const Duration(milliseconds: 300));
-      }
+      await tester.tap(
+        find.byKey(const ValueKey('timeline-tool-details:first')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final originalResource = resources.borrow('shared-image');
+      final originalState = tester.state(find.byType(TimelineImageConnector));
+      items[0] = imageItem('first');
+      await tester.pumpWidget(build());
+      expect(
+        tester.state(find.byType(TimelineImageConnector)),
+        same(originalState),
+      );
+      expect(resources.borrow('shared-image'), same(originalResource));
+      expect(reads, 1);
+      // A replacement row mounts before Flutter disposes its old subtree.
+      // The retiring mount must not release the replacement's shared read.
+      mediaGeneration++;
+      await tester.pumpWidget(build());
+      expect(resources.borrow('shared-image'), same(originalResource));
+      expect(reads, 1);
+      items.add(imageItem('second'));
+      await tester.pumpWidget(build());
+      await tester.tap(
+        find.byKey(const ValueKey('timeline-tool-details:second')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      reply.complete(_png);
       await pumpClientUntil(
         tester,
         () => find.byType(Image).evaluate().length == 2,

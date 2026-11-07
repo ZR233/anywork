@@ -1,13 +1,13 @@
 import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart';
 
-/// Per-display image bytes. Mounted custom rows declare attachment identities;
+/// Per-display image bytes. Each mounted row owns its attachment references;
 /// this ledger retains no conversation items or derived Flyer media siblings.
 final class TimelineImageResources {
   TimelineImageResources({required this.threadId});
 
   final String threadId;
-  final Map<String, Set<String>> _itemAttachments = {};
+  final Map<Object, Set<String>> _itemAttachments = Map.identity();
   final Map<String, int> _attachmentRefs = {};
   final Map<String, TimelineImageResource> _resources = {};
   bool _retired = false;
@@ -15,17 +15,20 @@ final class TimelineImageResources {
 
   String _key(String attachmentId) => '$threadId\u0000$attachmentId';
 
-  void retainItem(String itemId, Iterable<ThreadAttachmentView> attachments) {
+  void retainItem(
+    Object itemOwner,
+    Iterable<ThreadAttachmentView> attachments,
+  ) {
     if (_released) return;
     final next = <String>{
       for (final attachment in attachments)
         if (attachment.modality == AttachmentModalityView.image) attachment.id,
     };
-    final previous = _itemAttachments[itemId] ?? const <String>{};
+    final previous = _itemAttachments[itemOwner] ?? const <String>{};
     if (next.isEmpty) {
-      _itemAttachments.remove(itemId);
+      _itemAttachments.remove(itemOwner);
     } else {
-      _itemAttachments[itemId] = next;
+      _itemAttachments[itemOwner] = next;
     }
     for (final id in previous.difference(next)) {
       final count = _attachmentRefs[id]! - 1;
@@ -41,7 +44,7 @@ final class TimelineImageResources {
     }
   }
 
-  void dropItem(String itemId) => retainItem(itemId, const []);
+  void dropItem(Object itemOwner) => retainItem(itemOwner, const []);
 
   TimelineImageResource borrow(String attachmentId) {
     if (!_attachmentRefs.containsKey(attachmentId)) {

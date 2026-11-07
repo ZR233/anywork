@@ -1000,19 +1000,17 @@ final class _RealtimeScene {
         expect(view.itemId, presentationId);
         expect(view.contentKey, role.name);
         expect(view.initiallyExpanded, isTrue);
+        expect(view.disclosed, isTrue);
         expect(view.active, isTrue);
         expect(view.canRead, isTrue);
         if (owner.error case final error?) throw error;
         if (view.error case final error?) throw error;
-        expect(read, findsOneWidget);
-        final disclosure = tester.widget<TimelineActivityDisclosure>(read);
-        expect(disclosure.initiallyExpanded, isTrue);
-        expect(disclosure.enabled, !view.loading);
+        expect(read, findsNothing);
         return view;
       }
 
-      // The enclosing tool disclosure already supplied the read intent. A null
-      // window can be its in-flight read, so do not click the inner disclosure.
+      // The enclosing tool disclosure supplies the read intent and renders the
+      // bounded body directly, without a second disclosure or another click.
       await until(() {
         final view = expectAutomaticRead();
         return owner.window != null && !view.loading;
@@ -1289,6 +1287,7 @@ final class _RealtimeScene {
                     null
               : null,
           'initiallyExpanded': view?.initiallyExpanded,
+          'disclosed': view?.disclosed,
           'loading': view?.loading,
           'active': view?.active,
           'canRead': view?.canRead,
