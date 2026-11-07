@@ -227,17 +227,29 @@ impl super::StudioThreadAssembler {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
+        let purpose = if self
+            .0
+            .state()
+            .agent_services
+            .as_ref()
+            .is_some_and(|services| services.operations.is_deleting(id))
+        {
+            super::ClosePurpose::Delete
+        } else {
+            super::ClosePurpose::Preserve
+        };
         let closing = self.0.state().entries.get_mut(id).map(|entry| {
             entry.ready = false;
             entry.thread.clone()
         });
         if let Some(thread) = closing {
-            drop(self.prepare_close(id, &thread));
+            drop(self.prepare_close_for_purpose(id, &thread, purpose));
         }
         // This retained disposal task owns only its cleanup gate, not the identity operation
         // permit. close_thread consumes that permit and may release it while joining producers.
         let operation = self.agent_operation(id).await;
-        self.close_thread(id, operation).await?;
+        self.close_thread_for_purpose(id, operation, purpose)
+            .await?;
         let services = { self.0.state().agent_services.clone() };
         if let Some(services) = &services
             && services
@@ -247,11 +259,15 @@ impl super::StudioThreadAssembler {
                 .map_err(retirement_error)?
                 .is_some()
         {
-            services
-                .store
-                .confirm_preparation_stop(id)
-                .await
-                .map_err(retirement_error)?;
+            if purpose == super::ClosePurpose::Delete {
+                services
+                    .store
+                    .confirm_preparation_stop_for_deletion(id)
+                    .await
+            } else {
+                services.store.confirm_preparation_stop(id).await
+            }
+            .map_err(retirement_error)?;
         }
         let disposition = {
             let _state = self.0.state();

@@ -221,10 +221,18 @@ impl StudioThreadAssembler {
             let mut persistence = services.store.thread_persistence().subscribe();
             let mut first_failure = None;
             loop {
+                if services.operations.is_deleting(&terminal.thread.id) {
+                    return Ok(());
+                }
                 let before = owner.terminal_resources(&services, &terminal, parent);
                 let mut source_changes = before.source.as_ref().map(|channel| channel.subscribe());
                 let mut parent_changes = before.parent.as_ref().map(|channel| channel.subscribe());
-                match Box::pin(owner.deliver_terminal_once(&services, &terminal)).await {
+                let result = tokio::select! {
+                    biased;
+                    () = services.operations.deletion_requested(&terminal.thread.id) => return Ok(()),
+                    result = Box::pin(owner.deliver_terminal_once(&services, &terminal)) => result,
+                };
+                match result {
                     Ok(()) => return Ok(()),
                     Err(error) => {
                         terminal.revocation.fetch_max(terminal.sequence, Ordering::AcqRel);
@@ -236,6 +244,9 @@ impl StudioThreadAssembler {
                             let changed = owner.0.changed.notified();
                             tokio::pin!(changed);
                             changed.as_mut().enable();
+                            if services.operations.is_deleting(&terminal.thread.id) {
+                                return Ok(());
+                            }
                             let current = owner.terminal_resources(&services, &terminal, parent);
                             let explicit_retry = !services.operations.terminal_blocked(&terminal.thread.id, &registered_key);
                             if permanent && explicit_retry {
@@ -248,6 +259,7 @@ impl StudioThreadAssembler {
                             // Watchers were installed before the attempt. Failed reservation rollback
                             // can wake this select, but cannot satisfy improved() against before.
                             let waiting = async { tokio::select! {
+                                () = services.operations.deletion_requested(&terminal.thread.id) => {},
                                 _ = capacity.changed() => {},
                                 _ = persistence.changed() => {},
                                 () = &mut changed => {},

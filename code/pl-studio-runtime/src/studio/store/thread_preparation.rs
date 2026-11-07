@@ -65,6 +65,9 @@ pub(crate) struct ThreadPreparationRecord {
     pub storage: Option<PreparationStorage>,
     pub disposition: PreparationDisposition,
     pub stopped: bool,
+    /// A real stop under the durable deletion scope, independent of any save receipt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deletion_stopped: bool,
     pub retired: bool,
     pub published: bool,
 }
@@ -102,8 +105,12 @@ impl PersistedStudioObject for ThreadPreparationRecord {
             "preparation retirement precedes producer ACK"
         );
         ensure!(
-            !self.stopped || self.save != PreparationSave::Required,
+            !self.stopped || self.save != PreparationSave::Required || self.deletion_stopped,
             "preparation stop precedes save ACK"
+        );
+        ensure!(
+            !self.deletion_stopped || self.stopped,
+            "deletion stop ACK is missing"
         );
         match (&self.storage, self.save) {
             (None, PreparationSave::Unattached) => {}
@@ -184,6 +191,7 @@ impl StudioStore {
                 storage: None,
                 disposition: PreparationDisposition::Pending,
                 stopped: false,
+                deletion_stopped: false,
                 retired: false,
                 published: published_root,
             };
@@ -385,6 +393,47 @@ impl StudioStore {
                 "private checkpoint is still unconfirmed"
             );
             value.stopped = true;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn require_preparation_deletion(
+        &self,
+        record: &ThreadPreparationRecord,
+    ) -> Result<()> {
+        let deletion = self
+            .thread_delete(&record.identity.root_id)
+            .await?
+            .context("private stop has no durable deletion scope")?;
+        ensure!(
+            deletion
+                .members
+                .iter()
+                .any(|member| member.identity == record.identity
+                    && (member.execution == record.binding
+                        // An admitted preparation may acquire its first immutable binding after
+                        // Sealed. The deletion owner freezes that original binding after its join.
+                        || (member.execution == PreparationBinding::Unbound
+                            && deletion.phase == super::thread_delete::DeletePhase::Sealed))),
+            "private deletion binding is outside its durable scope"
+        );
+        Ok(())
+    }
+
+    pub(crate) async fn confirm_preparation_stop_for_deletion(&self, id: &str) -> Result<()> {
+        let record = self
+            .thread_preparation(id)
+            .await?
+            .context("private deletion owner missing")?;
+        self.require_preparation_deletion(&record).await?;
+        self.change_preparation(id, |value| {
+            ensure!(
+                value.identity == record.identity && value.binding == record.binding,
+                "private deletion owner changed"
+            );
+            value.stopped = true;
+            value.deletion_stopped = true;
             Ok(())
         })
         .await

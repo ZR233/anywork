@@ -231,7 +231,6 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
           ),
           MenuItemButton(
             key: StudioDriverKeys.deleteThread(row.threadId),
-            leadingIcon: const Icon(Icons.delete_outline, size: 18),
             style: ButtonStyle(
               foregroundColor: WidgetStatePropertyAll(context.colors.error),
             ),

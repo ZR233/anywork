@@ -134,6 +134,9 @@ impl Owner {
         &self,
         result: &Result<TurnCompletion, ThreadError>,
     ) -> Option<ContinuationReason> {
+        if self.interrupt.is_deleting() {
+            return None;
+        }
         match result {
             Ok(completion) if completion.outcome == TurnOutcome::StepLimit => {
                 Some(ContinuationReason::StepLimit)
