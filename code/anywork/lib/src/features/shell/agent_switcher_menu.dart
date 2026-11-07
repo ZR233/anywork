@@ -427,13 +427,30 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
         context.l10n.agentStopWaitingScheduling,
       _ => null,
     };
-    final status = stopFailure != null
+    final statusDetail = stopFailure != null
         ? context.l10n.agentStopFailed(_stopFailureText(context, stopFailure))
         : unconfirmed
         ? context.l10n.composerBlockerUnknown
         : stopNote ??
               error ??
               context.threadStatusLabel(_agentThreadStatus(agent.state));
+    final status = stopFailure != null || error != null
+        ? context.l10n.agentListStatusFailed
+        : unconfirmed
+        ? context.l10n.agentListStatusUnknown
+        : switch (stop.action) {
+            AgentListStopAction.stopping => context.l10n.agentStopping,
+            AgentListStopAction.stoppedWaitingScheduling =>
+              context.l10n.agentListStatusWaiting,
+            _ => switch (agent.state) {
+              WaitingToolStudioAgent() => context.l10n.agentListStatusApproval,
+              WaitingInteractionStudioAgent() =>
+                context.l10n.agentListStatusInput,
+              CancellingStudioAgent() => context.l10n.agentStopping,
+              FaultedStudioAgent() => context.l10n.agentListStatusFailed,
+              _ => context.threadStatusLabel(_agentThreadStatus(agent.state)),
+            },
+          };
     final statusKey = stopFailure != null
         ? ValueKey('agent-stop-failure-${agent.threadId}')
         : unconfirmed
@@ -575,9 +592,10 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
                   ),
                   Expanded(
                     child: Tooltip(
-                      message: status,
+                      message: statusDetail,
                       child: Text(
                         status,
+                        semanticsLabel: statusDetail,
                         key: statusKey,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

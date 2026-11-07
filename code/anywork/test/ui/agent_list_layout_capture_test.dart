@@ -366,6 +366,14 @@ void main() {
       );
       expect(find.text('Executor · Model not recorded'), findsWidgets);
       expect(find.byIcon(Icons.stop_circle_outlined), findsNWidgets(2));
+      expect(find.text('Waiting'), findsOneWidget);
+      expect(find.text('Failed'), findsOneWidget);
+      expect(
+        find.byTooltip('Stopped, waiting for the main agent to schedule'),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('The synthetic member failed'), findsOneWidget);
+      expect(find.text('The synthetic member failed'), findsNothing);
       await _capturePng(tester);
 
       await _closeCaptureGraph(tester, graph);
@@ -449,48 +457,73 @@ void main() {
         findsOneWidget,
       );
 
-      final transitions = <({String name, List<StudioAgentView> agents})>[
-        (
-          name: 'cancelling',
-          agents: _agentsWithSelectedState(
-            state: const CancellingStudioAgent('selected-turn'),
-            execution: const AgentExecutionView(
-              id: 'selected-execution',
-              phase: AgentExecutionPhase.stopping,
-              turnId: 'selected-turn',
-            ),
-            canStop: true,
-          ),
-        ),
-        (
-          name: 'waiting scheduling',
-          agents: _agentsWithSelectedState(
-            state: const IdleStudioAgent(),
-            awaitingScheduling: true,
-          ),
-        ),
-        (
-          name: 'idle',
-          agents: _agentsWithSelectedState(state: const IdleStudioAgent()),
-        ),
-        (
-          name: 'faulted',
-          agents: _agentsWithSelectedState(
-            state: const FaultedStudioAgent(
-              failure: AgentStateError(
-                code: 'selected-failed',
-                message: 'The selected synthetic member failed',
-                retryable: false,
+      final transitions =
+          <({String name, String label, List<StudioAgentView> agents})>[
+            (
+              name: 'approval',
+              label: 'Approval',
+              agents: _agentsWithSelectedState(
+                state: const WaitingToolStudioAgent('selected-turn'),
               ),
-              diagnosticTurnId: 'selected-turn',
             ),
-          ),
-        ),
-        (
-          name: 'closed',
-          agents: _agentsWithSelectedState(state: const ClosedStudioAgent()),
-        ),
-      ];
+            (
+              name: 'input',
+              label: 'Input',
+              agents: _agentsWithSelectedState(
+                state: const WaitingInteractionStudioAgent(
+                  'selected-turn',
+                  'input',
+                ),
+              ),
+            ),
+            (
+              name: 'cancelling',
+              label: 'Stopping',
+              agents: _agentsWithSelectedState(
+                state: const CancellingStudioAgent('selected-turn'),
+                execution: const AgentExecutionView(
+                  id: 'selected-execution',
+                  phase: AgentExecutionPhase.stopping,
+                  turnId: 'selected-turn',
+                ),
+                canStop: true,
+              ),
+            ),
+            (
+              name: 'waiting scheduling',
+              label: 'Waiting',
+              agents: _agentsWithSelectedState(
+                state: const IdleStudioAgent(),
+                awaitingScheduling: true,
+              ),
+            ),
+            (
+              name: 'idle',
+              label: 'Idle',
+              agents: _agentsWithSelectedState(state: const IdleStudioAgent()),
+            ),
+            (
+              name: 'faulted',
+              label: 'Failed',
+              agents: _agentsWithSelectedState(
+                state: const FaultedStudioAgent(
+                  failure: AgentStateError(
+                    code: 'selected-failed',
+                    message: 'The selected synthetic member failed',
+                    retryable: false,
+                  ),
+                  diagnosticTurnId: 'selected-turn',
+                ),
+              ),
+            ),
+            (
+              name: 'closed',
+              label: 'Closed',
+              agents: _agentsWithSelectedState(
+                state: const ClosedStudioAgent(),
+              ),
+            ),
+          ];
 
       var revision = 2;
       for (final transition in transitions) {
@@ -500,6 +533,15 @@ void main() {
         await _pumpAgentMenu(tester, graph, transition.agents);
         await _ensureCaptureMenuOpen(tester);
 
+        final statusText = tester.widget<Text>(
+          find.descendant(
+            of: find.byKey(ValueKey('agent-status-slot-$_selectedId')),
+            matching: find.byType(Text),
+          ),
+        );
+        expect(statusText.data, transition.label);
+        expect(statusText.data!.split(RegExp(r'\s+')), hasLength(1));
+        expect(statusText.semanticsLabel, isNotEmpty);
         _expectAgentGeometryStable(
           baseline,
           _agentGeometry(tester, _selectedId),

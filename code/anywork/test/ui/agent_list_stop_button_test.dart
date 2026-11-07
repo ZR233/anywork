@@ -316,7 +316,7 @@ void main() {
     await _pump(tester, graph, _members(stoppedRunning: true));
     await _ensureMenuOpen(tester);
     expect(
-      find.text('Stopped, waiting for the main agent to schedule'),
+      find.text('Waiting'),
       findsNWidgets(2),
       reason: '刚停止的成员与已在等待调度的成员使用同一说明',
     );
@@ -356,7 +356,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(
-      find.textContaining(
+      find.byTooltip(
         'Stop was not accepted: The observed execution already ended or was replaced.',
       ),
       findsOneWidget,
@@ -612,7 +612,7 @@ void main() {
             find.byKey(StudioDriverKeys.agentStopNote(_scheduledIdle)),
           )
           .data,
-      'Stopped, waiting for the main agent to schedule',
+      'Waiting',
     );
     // 故障与正在关闭成员没有当前工作：遗留执行与停止资格都不产生任何运行控制。
     for (final threadId in [_faultedChild, _closingChild]) {
@@ -695,7 +695,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(
-      find.textContaining(
+      find.byTooltip(
         'Stop was not accepted: The observed execution already ended or was replaced.',
       ),
       findsOneWidget,
@@ -949,7 +949,7 @@ void main() {
             find.byKey(StudioDriverKeys.agentStopNote(_runningChild)),
           )
           .data,
-      'Stopped, waiting for the main agent to schedule',
+      'Waiting',
     );
     await _close(tester, graph);
   });
@@ -1050,7 +1050,7 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.text(
+      find.byTooltip(
         'The last action could not be confirmed. '
         'Check the session state before retrying.',
       ),
@@ -1129,8 +1129,8 @@ void main() {
       'row stop failure from the command board',
     );
     expect(
-      find.textContaining(
-        'The observed execution already ended or was replaced.',
+      find.byTooltip(
+        'Stop was not accepted: The observed execution already ended or was replaced.',
       ),
       findsOneWidget,
     );
