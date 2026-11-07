@@ -26,6 +26,7 @@ impl MigratorTraitSelf for Published12 {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| {
@@ -443,7 +444,7 @@ async fn current_cold_head_ignores_recovery_bodies_but_rejects_bad_head_without_
     seed(&db).await?;
     prepare(&db, THREAD, Preparation::Schema, None).await?;
     db.execute_unprepared(
-        "UPDATE session_checkpoint SET payload='invalid recovery body';
+        "UPDATE session_checkpoint SET payload=json_set(payload,'$.state.context','invalid recovery body');
          UPDATE current_context SET payload='invalid context body'",
     )
     .await?;

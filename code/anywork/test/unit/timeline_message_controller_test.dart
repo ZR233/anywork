@@ -166,6 +166,56 @@ void main() {
     expect(operations.single.type, ChatOperationType.set);
   });
 
+  test('current-only batches never enumerate loaded history and still retire live units', () async {
+    final counted = _CountingController();
+    final retired = <String>[];
+    final countedAdapter = TimelineMessageController(
+      counted,
+      generation: 8,
+      onUnitRetired: (unit) => retired.add(unit.id),
+    );
+    addTearDown(() {
+      countedAdapter.dispose();
+      counted.dispose();
+    });
+    await countedAdapter.applyBatch(
+      chatBatch([for (var i = 0; i < 2000; i++) chatMessage('item-$i')]),
+    );
+    final original = counted.messages[1999];
+    counted.resetAccessCounts();
+    for (var i = 0; i < 100; i++) {
+      await countedAdapter.applyBatch(
+        chatBatch(
+          [],
+          placement: ChatPlacement.append,
+          current: CurrentProjection(
+            sourceEffectSeq: i,
+            logicalStatus: ThreadStatusView.running,
+            executionPresent: true,
+            sources: const [],
+            atoms: const [],
+            items: [chatMessage('live-$i')],
+            previews: const [],
+            collections: const [],
+          ),
+        ),
+      );
+      expect(countedAdapter.live.value.single.id, 'live-$i');
+    }
+    await countedAdapter.applyBatch(
+      chatBatch([], placement: ChatPlacement.prepend, current: chatCurrent()),
+    );
+    expect(counted.iterations, 0);
+    expect(counted.elementReads, 0);
+    expect(countedAdapter.live.value, isEmpty);
+    expect(retired, [for (var i = 0; i < 100; i++) 'live-$i']);
+    expect(counted.messages, hasLength(2000));
+    expect(counted.messages[1999], same(original));
+    await countedAdapter.applyBatch(chatBatch([]));
+    expect(counted.messages, isEmpty);
+    expect(retired.skip(100), [for (var i = 0; i < 2000; i++) 'item-$i']);
+  });
+
   test('attachments do not manufacture extra messages and only real sealedAt creates a date', () async {
     await adapter.applyBatch(
       chatBatch([

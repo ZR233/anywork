@@ -305,6 +305,8 @@ Plan 当前态、确认决定、文档版本与历史快照遵循 [13](./13-plan
 
 文本、媒体和领域回执的展示身份与更新语义统一见 [26](./26-timeline-content.md)；本节不指定聊天组件库或消息类。助手流式正文留在实时区，不逐词元插入历史消息、裁剪换行、延迟终态或将正常停止改写为错误正文。
 
+Markdown 渲染器消费所在子树的既有主题，不在内部重置标题字号或分隔线策略。常规正文沿用基准主题与组件公开默认值；Plan 文档的紧凑标题和无 H1 分隔线仅由其局部文档主题特化，不能改变普通 Markdown，也不能被更内层通用渲染覆盖。
+
 列表复用已有 ChatController/Chat 的公开能力，一条 item 含正文和附件时仍是一消息，内部复用媒体，不扩展附件兄弟拓扑。Set/Prepend/Append 的唯一应用语义见 [26](./26-timeline-content.md)，不自写 controller、通用列表、像素修复或全历史 diff。不兼容/Deferred 是可读且非零高度的独立卡片，不消失、不伪造历史作者/时间。
 
 所有生产正文入口——消息、实时栏、问答、Plan、展开详情——由父布局提供有限宽度。优先用 Flutter Text/RichText softWrap、Expanded/Flexible、LayoutBuilder 及现有 Markdown 的公开配置/builder；段落、长中文、长英文/URL、行内代码、代码块与表格按可用宽度自然换行，不横向撑破阅读列、不用 clip/ellipsis 隐藏完整正文。只有明确的摘要行可省略，展开内容完整可读。

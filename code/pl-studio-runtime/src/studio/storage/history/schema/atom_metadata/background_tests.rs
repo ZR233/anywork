@@ -32,6 +32,7 @@ impl MigratorTraitSelf for Published {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()))

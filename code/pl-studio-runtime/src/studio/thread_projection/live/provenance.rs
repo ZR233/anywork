@@ -31,7 +31,7 @@ impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
         &mut self,
-        chat: &Session,
+        _chat: &Session,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
@@ -43,244 +43,46 @@ impl LiveProjection {
         self.ensure_timeline_position().await?;
         let history = self
             .execution_history
-            .clone()
+            .as_ref()
             .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-        let saved = history
-            .conversation_current_seed()
+        let sequence = history
+            .watermark()
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.provenance_restored = true;
-        let Some(saved) = saved else {
-            return Ok(());
-        };
-        if saved.projection.atoms.len() > LIVE_ITEM_WINDOW
-            || saved.projection.sources.len() > LIVE_ITEM_WINDOW
-        {
-            return Err(ProjectionError::History(
-                "saved current provenance exceeds retained window".into(),
-            ));
-        }
-        for source in saved.projection.sources.iter().cloned() {
-            self.source_states.insert(source.source.clone(), source);
-        }
-        for atom in saved.projection.atoms.iter().cloned() {
-            if !matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
-                || atom.payload.is_some()
-                || atom.completion_seq.is_some()
-                || atom.source_state.is_some()
+        let sources = self
+            .timeline
+            .as_ref()
+            .map(|timeline| {
+                timeline
+                    .current_items()
+                    .into_iter()
+                    .map(|item| item.source)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        if !sources.is_empty() {
+            for source in history
+                .conversation_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
+                .await
+                .map_err(|error| ProjectionError::History(error.to_string()))?
             {
-                return Err(ProjectionError::History(
-                    "saved current contains a completed atom".into(),
-                ));
+                self.source_states.insert(source.source.clone(), source);
             }
-            if self.items.get(&atom.id).is_some_and(completion_ready) {
-                continue;
-            }
-            // An operation start owns provenance only, not a provisional business item or body.
-            // Restore it from the same saved current without inventing canonical execution content.
-            if atom.kind == ChatAtomKind::Compaction {
-                if !matches!(&atom.source, ChatSourceId::Operation { operation_id }
-                    if atom.id == super::super::order::compaction_id(operation_id))
-                    || atom.delivery != ChatDeliveryKind::Independent
-                    || !atom.contents.is_empty()
-                {
-                    return Err(ProjectionError::History(
-                        "saved active compaction has invalid operation provenance".into(),
-                    ));
-                }
-                self.atom_starts.insert(atom.id.clone(), atom);
-                continue;
-            }
-            let shape = match atom.kind {
-                pl_protocol::ChatAtomKind::Text => ThreadItemState::Text(ThreadTextItem::new(
-                    atom.text_channel.ok_or_else(|| {
-                        ProjectionError::History("saved active text has no channel".into())
-                    })?,
-                    String::new(),
-                    Vec::new(),
-                    ThreadContentLifecycle::streaming(),
-                )),
-                pl_protocol::ChatAtomKind::Reasoning => {
-                    ThreadItemState::Thinking(ThreadThinkingItem::new(
-                        Vec::new(),
-                        Vec::new(),
-                        ThreadContentLifecycle::streaming(),
-                    ))
-                }
-                _ => self
-                    .items
-                    .get(&atom.id)
-                    .map(|item| static_state(item.state()))
-                    .ok_or_else(|| {
-                        ProjectionError::History(format!(
-                            "saved active {} has no canonical execution item",
-                            atom.id
-                        ))
-                    })?,
-            };
-            let mut fields = BTreeMap::new();
-            // Read only the exact unfinished content owners named by this small current, not a history
-            // scan. The restored prefix must remain available if recovery interrupts its attempt.
-            for content in &atom.contents {
-                let pl_protocol::ContentTarget::Body { owner, key } = &content.reference.target
-                else {
-                    return Err(ProjectionError::History(
-                        "saved active content is not a body".into(),
-                    ));
-                };
-                if self.current.database_id() != Some(content.reference.database_id.as_str()) {
-                    return Err(ProjectionError::History(
-                        "saved active content belongs to another database".into(),
-                    ));
-                }
-                let content_key = pl_core::chat::ChatContentKey {
-                    owner: crate::studio::conversation_identity::content_owner_key(owner)
-                        .map_err(|error| ProjectionError::History(error.to_string()))?,
-                    key: key.clone(),
-                };
-                let reference = pl_core::chat::ContentRef::Body(content_key.clone());
-                let mut bytes = Vec::new();
-                let mut generation = None;
-                let mut length = None;
-                loop {
-                    let window = pl_core::chat::ChatHistory::read_content(
-                        &history,
-                        &pl_core::chat::ContentReadRequest {
-                            epoch: chat.epoch(),
-                            reference: reference.clone(),
-                            offset: bytes.len() as u64,
-                            max_bytes: 64 * 1024,
-                            generation,
-                        },
-                    )
-                    .await
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-                    if generation.is_some_and(|generation| generation != window.generation)
-                        || window.offset != bytes.len() as u64
-                        || window.bytes.as_bytes().len() > 64 * 1024
-                        || window.offset > window.available_through
-                        || window.bytes.as_bytes().len() as u64
-                            > window.available_through - window.offset
-                    {
-                        return Err(ProjectionError::History(
-                            "saved active content changed generation".into(),
-                        ));
-                    }
-                    generation = Some(window.generation);
-                    let length = *length.get_or_insert(window.available_through);
-                    let remaining = usize::try_from(length.saturating_sub(bytes.len() as u64))
-                        .map_err(|_| {
-                            ProjectionError::History("saved active content length overflow".into())
-                        })?;
-                    let chunk = window.bytes.as_bytes();
-                    if remaining > 0 && chunk.is_empty() {
-                        return Err(ProjectionError::History(
-                            "saved active content made no progress".into(),
-                        ));
-                    }
-                    bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                    if bytes.len() as u64 == length {
-                        break;
-                    }
-                }
-                let text = String::from_utf8(bytes)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-                let saved_body = saved.contents.get(&content_key).ok_or_else(|| {
-                    ProjectionError::History("saved active body has no reliable descriptor".into())
-                })?;
-                if Some(saved_body.descriptor.generation) != generation
-                    || saved_body.descriptor.byte_length != text.len() as u64
-                {
-                    return Err(ProjectionError::History(
-                        "restored active body differs from its saved descriptor".into(),
-                    ));
-                }
-                self.current
-                    .restore_generation(
-                        content_key,
-                        generation.ok_or_else(|| {
-                            ProjectionError::History("saved body returned no generation".into())
-                        })?,
-                    )
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-                let part = |prefix: &str| {
-                    key.strip_prefix(prefix)
-                        .and_then(|index| index.parse::<u32>().ok())
-                };
-                let key = if key == "body" {
-                    BodyKey::Body
-                } else if let Some(index) = part("part.reasoningText.") {
-                    BodyKey::Part(PresentationPart::ReasoningText(index))
-                } else if let Some(index) = part("part.summaryText.") {
-                    BodyKey::Part(PresentationPart::SummaryText(index))
-                } else if let Some(index) = part("part.outputText.") {
-                    BodyKey::Part(PresentationPart::OutputText(index))
-                } else {
-                    BodyKey::host(key)
-                };
-                fields.insert(key, ContentBlock::from_text(&text));
-            }
-            let canonical = self.items.get(&atom.id);
-            let fact = self.facts.get(&atom.id);
-            let created_at = canonical
-                .map(|item| item.created_at)
-                .or_else(|| fact.map(|fact| fact.created_at))
-                .or(atom.started_at)
-                .unwrap_or(0);
-            let revision = canonical
-                .map(|item| item.revision)
-                .or_else(|| fact.map(|fact| fact.revision))
-                .unwrap_or(1);
-            let updated_at = canonical.map_or(created_at, |item| item.updated_at);
-            let mut item = ThreadItem::new(
-                atom.id.clone(),
-                history.thread_id().into(),
-                atom.turn_id.clone().unwrap_or_default(),
-                atom.source_order
-                    .or_else(|| fact.map(|fact| fact.ordinal))
-                    .unwrap_or(0),
-                revision,
-                created_at,
-                updated_at,
-                shape.clone(),
-            );
-            let index = self.order_index_of()?;
-            let orders = index
-                .materialize_execution_batch(
-                    std::iter::once(ExecutionMaterialization::from_item(&item)),
-                    saved.projection.source_effect_seq,
-                )
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            item.ordinal = orders[&item.id];
-            if let Some(attempt) = &atom.attempt_id {
-                index
-                    .reserve_observed(attempt, &atom.id)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-            }
-            self.fact(&item);
-            self.store_preview(
-                atom.id.clone(),
-                LivePreview {
-                    fields,
-                    observed: None,
-                    shape,
-                    observed_version: 0,
-                },
-            );
-            self.atom_starts.insert(atom.id.clone(), atom);
         }
+        // The restored fold contains reliable identities only. No preview, body,
+        // collection baseline or released execution item is resurrected here.
+        if let Some(timeline) = &self.timeline {
+            for atom in timeline.active_atoms() {
+                self.atom_starts.insert(atom.id.clone(), atom);
+            }
+        }
+        self.provenance_restored = true;
         self.sync_provenance()?;
-        // Reliable effects are folded before streaming on activation. Install the restored blocks
-        // in the original current owner now: completion freezing reads item_contents before the
-        // next effect freezes current, and must see these exact generations and content owners.
         let active = self.current_texts();
-        let snapshot = self
-            .current
-            .observe(thread, state, saved.projection.source_effect_seq, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.current
-            .restore_prepared(saved, &snapshot)
+            .observe(thread, state, sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        self.sync_current_items();
         Ok(())
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {

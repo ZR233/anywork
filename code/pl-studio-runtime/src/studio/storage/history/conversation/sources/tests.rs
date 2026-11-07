@@ -162,10 +162,9 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     current.atoms.push(active);
     let tx = writer.db.begin().await?;
     super::super::append_records(&tx, [&item, &skipped], true).await?;
-    super::super::current::apply(&tx, 2, &{
+    super::super::completed::apply(&tx, 2, &{
         let mut prepared = super::super::current::PreparedCurrent::new(
             crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
-            Arc::from([]),
             Arc::from([]),
         );
         prepared.source_changes = Arc::from([started.clone(), current_source.clone()]);
@@ -174,11 +173,29 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     .await?;
     tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
         .await?;
+    let checkpoint = pl_core::thread::ThreadCheckpoint::capture(
+        "source-snapshot".into(),
+        2,
+        pl_core::thread::ThreadSnapshot {
+            commit_sequence: 2,
+            turns: vec![pl_core::thread::TurnRecord {
+                turn_id: "turn".into(),
+                input_id: None,
+                state: pl_core::thread::TurnState::Running,
+                elapsed_ms: None,
+                model_steps: 0,
+            }]
+            .into(),
+            ..Default::default()
+        },
+    );
+    // The running turn is an independent checkpoint fact, not a saved product current.
+    super::super::super::checkpoint::write(&tx, &checkpoint, None, None).await?;
     tx.commit().await?;
 
     let reader = store.reader().await?.unwrap();
     let snapshot = reader.db.begin().await?;
-    let captured = super::super::current::read(&snapshot).await?;
+    let captured = current.clone();
     let request = pl_core::chat::ChatHistoryRequest {
         query: Some(ChatQuery::new("conversation", None)),
         after: 0,
@@ -197,10 +214,9 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     };
     current.source_effect_seq = 3;
     let tx = writer.db.begin().await?;
-    super::super::current::apply(&tx, 3, &{
+    super::super::completed::apply(&tx, 3, &{
         let mut prepared = super::super::current::PreparedCurrent::new(
             crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
-            Arc::from([]),
             Arc::from([]),
         );
         prepared.source_changes = Arc::from([ended.clone()]);
@@ -279,11 +295,11 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     );
     writer
         .db
-        .execute_unprepared("DELETE FROM conversation_view_state")
+        .execute_unprepared("DELETE FROM timeline_projection_state")
         .await?;
     assert!(
         store.conversation_current().await.is_err(),
-        "missing saved current is not None or checkpoint fallback"
+        "missing recovery cut is not None or checkpoint fallback"
     );
     Ok(())
 }

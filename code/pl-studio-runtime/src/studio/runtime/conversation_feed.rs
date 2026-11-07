@@ -8,6 +8,8 @@ use super::{
     thread_observation::{ConversationCut, ConversationSource, DeliveryReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
+mod read;
+use read::{CutMeasure, entry_json_bytes};
 #[cfg(test)]
 mod tests;
 use anyhow::{Result, ensure};
@@ -33,7 +35,7 @@ pub struct ConversationFeed {
     pending: VecDeque<ThreadSubscriptionUpdate>,
     cuts: Option<DeliveryReceiver<Arc<ConversationCut>>>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    state: Option<DeliveryReceiver<ThreadLiveEvent>>,
+    state: Option<super::thread_observation::StateReceiver>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
@@ -41,6 +43,7 @@ pub struct ConversationFeed {
     cut: Option<Arc<ConversationCut>>,
     cut_entry: usize,
     cut_entries: Option<Vec<ChatEntry>>,
+    cut_measure: Option<CutMeasure>,
     delivered: u64,
     seen_serial: u64,
     current: Option<CurrentProjection>,
@@ -447,6 +450,7 @@ impl StudioRuntime {
             cut: None,
             cut_entry: 0,
             cut_entries: None,
+            cut_measure: None,
             delivered: head,
             seen_serial: initial_serial,
             current,
@@ -498,7 +502,9 @@ impl ConversationFeed {
         self.storage = None;
         self.last_turn = None;
         self.cut = None;
+        self.cut_entry = 0;
         self.cut_entries = None;
+        self.cut_measure = None;
         self.initial = None;
         self.pending.clear();
         self.current = None;
@@ -712,6 +718,8 @@ impl ConversationFeed {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;
                     self.cut_entries = None;
+                    self.cut_measure = None;
+                    self.cut_entry = 0;
                     continue;
                 }
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
@@ -772,6 +780,7 @@ impl ConversationFeed {
                                     .map(ChatEntry::Source),
                             );
                         }
+                        self.cut_measure = Some(CutMeasure::new(&cut.handoff, &candidates, main)?);
                         self.cut_entries = Some(candidates);
                     }
                     let candidates = self
@@ -779,28 +788,50 @@ impl ConversationFeed {
                         .as_ref()
                         .expect("captured member/item frame");
                     let total = candidates.len();
+                    let mut measure = self.cut_measure.expect("captured cut measurement");
                     let mut product = ChatBatch {
                         placement: ChatPlacement::Append,
                         entries: Vec::new(),
                         before: None,
-                        current: main.then(|| cut.handoff.projection_after_items(self.cut_entry)),
+                        current: None,
                     };
                     let mut next = self.cut_entry;
+                    let mut entries_bytes = 0_usize;
                     for entry in candidates
                         .iter()
                         .skip(next)
                         .take(self.demand.max_items as usize)
                     {
-                        product.entries.push(entry.clone());
-                        product.current =
-                            main.then(|| cut.handoff.projection_after_items(next + 1));
-                        self.reader
-                            .inline_timeline_payloads(&mut product, self.demand)
+                        let original_bytes = entry_json_bytes(entry)?;
+                        let after = if main {
+                            measure.after_entry(entry, original_bytes)?
+                        } else {
+                            measure
+                        };
+                        let tentative_bytes = entries_bytes
+                            .checked_add(original_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting overflow"))?;
+                        let without = after
+                            .frame_bytes(tentative_bytes, product.entries.len() + 1)?
+                            .checked_sub(original_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting underflow"))?;
+                        let mut candidate = entry.clone();
+                        // A legal Inline can be smaller than its Deferred reference.
+                        // Try this candidate before deciding that the frame is full.
+                        let candidate_bytes = self
+                            .reader
+                            .inline_timeline_entry(
+                                &mut candidate,
+                                original_bytes,
+                                without,
+                                self.demand,
+                            )
                             .await?;
-                        if product.encoded_len()? > self.demand.max_bytes as usize {
-                            product.entries.pop();
-                            product.current =
-                                main.then(|| cut.handoff.projection_after_items(next));
+                        if without
+                            .checked_add(candidate_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat frame accounting overflow"))?
+                            > self.demand.max_bytes as usize
+                        {
                             ensure!(
                                 !product.entries.is_empty(),
                                 core::ChatError::InvalidDemand(
@@ -809,18 +840,33 @@ impl ConversationFeed {
                             );
                             break;
                         }
+                        entries_bytes = entries_bytes
+                            .checked_add(candidate_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting overflow"))?;
+                        product.entries.push(candidate);
+                        measure = after;
                         next += 1;
                     }
+                    product.current = main.then(|| cut.handoff.projection_after_items(next));
+                    let product = if !product.entries.is_empty() || product.current != self.current
+                    {
+                        Some(self.reader.finish_batch(product, self.demand)?)
+                    } else {
+                        None
+                    };
+                    // No delivery/cut state advances before final qualification and
+                    // real encoding of the annotated source facts succeed.
                     self.cut_entry = next;
+                    self.cut_measure = Some(measure);
                     if next == total {
                         self.delivered = cut.head;
                         self.seen_serial = cut.serial;
                         self.cut = None;
                         self.cut_entry = 0;
                         self.cut_entries = None;
+                        self.cut_measure = None;
                     }
-                    if !product.entries.is_empty() || product.current != self.current {
-                        let product = self.reader.finish_batch(product, self.demand)?;
+                    if let Some(product) = product {
                         self.reader.select_member_window(&product.entries);
                         self.current = product.current.clone();
                         self.state_turn = true;
@@ -870,6 +916,7 @@ impl ConversationFeed {
                 self.seen_serial = cut.serial;
                 self.cut = None;
                 self.cut_entry = 0;
+                self.cut_measure = None;
                 continue;
             }
             if let Some(cuts) = self.cuts.as_mut() {

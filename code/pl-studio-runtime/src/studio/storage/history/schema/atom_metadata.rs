@@ -617,7 +617,7 @@ async fn migrate(db: &impl ConnectionTrait) -> Result<()> {
     fields.insert("sources".into(), json!([]));
     fields.insert("atoms".into(), json!([]));
     let mut current: CurrentProjection = serde_json::from_value(old)?;
-    conversation::current::validate_database(&current, &database)?;
+    super::legacy_current::validate_database(&current, &database)?;
     let checkpoint = checkpoint::read(db, &thread).await?;
     let mut after = 0i64;
     loop {

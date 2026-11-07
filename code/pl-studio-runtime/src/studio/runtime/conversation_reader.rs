@@ -1,6 +1,7 @@
 //! Independent, revocable read qualification. Queries never take the feed's receive/credit lock.
 use super::thread_observation::{ObservationSlot, ThreadLiveFeed};
-use crate::studio::{storage::history::HistoryStore, thread_projection::CurrentState};
+use crate::studio::storage::history::HistoryStore;
+use crate::studio::thread_projection::current_page;
 use anyhow::{Result, ensure};
 use core::ChatBudget as _;
 use pl_core::chat as core;
@@ -544,90 +545,103 @@ impl ConversationReader {
         batch: &mut ChatBatch,
         demand: ReadDemand,
     ) -> Result<()> {
-        use crate::studio::storage::history::conversation::timeline;
         if matches!(self.inner.scope, ChatScope::Children { .. }) {
             return Ok(());
         }
         let mut used = batch.encoded_len()?;
-        let indices: Vec<_> =
-            if batch.placement == ChatPlacement::Prepend || batch.placement == ChatPlacement::Set {
-                (0..batch.entries.len()).rev().collect()
+        let reverse =
+            batch.placement == ChatPlacement::Prepend || batch.placement == ChatPlacement::Set;
+        for offset in 0..batch.entries.len() {
+            let index = if reverse {
+                batch.entries.len() - 1 - offset
             } else {
-                (0..batch.entries.len()).collect()
+                offset
             };
-        for index in indices {
-            if !matches!(
-                (&self.inner.scope, &batch.entries[index]),
-                (ChatScope::Main, ChatEntry::Item(_))
-                    | (ChatScope::GroupMembers { .. }, ChatEntry::Atom(_))
-            ) {
-                continue;
-            }
-            let Some(inline) = timeline::inline_entry_bytes(&batch.entries[index])? else {
-                continue;
-            };
-            let original_bytes = timeline::entry_bytes(&batch.entries[index])?;
-            if used.saturating_sub(original_bytes).saturating_add(inline)
-                > demand.max_bytes as usize
-            {
-                continue;
-            }
-            let (payload, content_item_id) = match &batch.entries[index] {
-                ChatEntry::Item(item) => (&item.payload, item.content_item_id.as_deref()),
-                ChatEntry::Atom(atom) => (&atom.payload, atom.completion_item_id.as_deref()),
-                ChatEntry::Source(_) => unreachable!(),
-            };
-            let Some(
-                original @ PayloadData::Deferred {
-                    reference,
-                    byte_length,
-                },
-            ) = payload
-            else {
-                unreachable!()
-            };
-            ensure!(
-                matches!(&reference.target,ContentTarget::ItemPayload {item_id}
-                if content_item_id==Some(item_id.as_str())),
-                core::ChatError::StaleContent
-            );
-            let original = original.clone();
-            let window = self
-                .read_content(
-                    reference,
-                    ContentRange {
-                        offset: 0,
-                        max_bytes: (*byte_length as u32).max(1),
-                    },
-                )
+            let entry = &mut batch.entries[index];
+            let original_bytes = serde_json::to_vec(&*entry)?.len();
+            let without = used
+                .checked_sub(original_bytes)
+                .ok_or_else(|| anyhow::anyhow!("chat inline accounting underflow"))?;
+            let encoded = self
+                .inline_timeline_entry(entry, original_bytes, without, demand)
                 .await?;
-            ensure!(
-                window.sealed
-                    && window.available_through == *byte_length
-                    && window.bytes.len() as u64 == *byte_length,
-                core::ChatError::Conflict("frozen timeline payload differs from its header".into())
-            );
-            let payload = match &mut batch.entries[index] {
-                ChatEntry::Item(item) => &mut item.payload,
-                ChatEntry::Atom(atom) => &mut atom.payload,
-                ChatEntry::Source(_) => unreachable!(),
-            };
-            *payload = Some(PayloadData::Inline {
-                bytes: window.bytes,
-            });
-            let encoded = batch.encoded_len()?;
-            if encoded > demand.max_bytes as usize {
-                let payload = match &mut batch.entries[index] {
-                    ChatEntry::Item(item) => &mut item.payload,
-                    ChatEntry::Atom(atom) => &mut atom.payload,
-                    ChatEntry::Source(_) => unreachable!(),
-                };
-                *payload = Some(original);
-            } else {
-                used = encoded;
-            }
+            used = without
+                .checked_add(encoded)
+                .ok_or_else(|| anyhow::anyhow!("chat inline accounting overflow"))?;
         }
-        self.ensure()
+        Ok(())
+    }
+
+    /// Try only this candidate, using the exact surrounding frame length.
+    /// The conservative pre-read bound prevents reading bodies that cannot fit.
+    pub(super) async fn inline_timeline_entry(
+        &self,
+        entry: &mut ChatEntry,
+        original_bytes: usize,
+        without: usize,
+        demand: ReadDemand,
+    ) -> Result<usize> {
+        use crate::studio::storage::history::conversation::timeline;
+        if !matches!(
+            (&self.inner.scope, &*entry),
+            (ChatScope::Main, ChatEntry::Item(_))
+                | (ChatScope::GroupMembers { .. }, ChatEntry::Atom(_))
+        ) {
+            return Ok(original_bytes);
+        }
+        let Some(inline_bound) = timeline::inline_entry_bytes(entry)? else {
+            return Ok(original_bytes);
+        };
+        if without
+            .checked_add(inline_bound)
+            .ok_or_else(|| anyhow::anyhow!("chat inline pre-read accounting overflow"))?
+            > demand.max_bytes as usize
+        {
+            return Ok(original_bytes);
+        }
+        let (payload, content_item_id) = match &*entry {
+            ChatEntry::Item(item) => (&item.payload, item.content_item_id.as_deref()),
+            ChatEntry::Atom(atom) => (&atom.payload, atom.completion_item_id.as_deref()),
+            ChatEntry::Source(_) => unreachable!(),
+        };
+        let Some(PayloadData::Deferred {
+            reference,
+            byte_length,
+        }) = payload
+        else {
+            unreachable!()
+        };
+        ensure!(
+            matches!(&reference.target,ContentTarget::ItemPayload {item_id}
+            if content_item_id==Some(item_id.as_str())),
+            core::ChatError::StaleContent
+        );
+        let window = self
+            .read_content(
+                reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: (*byte_length as u32).max(1),
+                },
+            )
+            .await?;
+        ensure!(
+            window.sealed
+                && window.available_through == *byte_length
+                && window.bytes.len() as u64 == *byte_length,
+            core::ChatError::Conflict("frozen timeline payload differs from its header".into())
+        );
+        let payload = match entry {
+            ChatEntry::Item(item) => &mut item.payload,
+            ChatEntry::Atom(atom) => &mut atom.payload,
+            ChatEntry::Source(_) => unreachable!(),
+        };
+        *payload = Some(PayloadData::Inline {
+            bytes: window.bytes,
+        });
+        // The pre-read upper bound already admitted this Inline. The caller
+        // uses its exact fragment length; finish_batch validates the full frame.
+        Ok(serde_json::to_vec(&*entry)?.len())
     }
 
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
@@ -852,13 +866,20 @@ impl ConversationReader {
             .as_ref()
             .and_then(|source| source.current_conversation());
         if let ContentTarget::Body { owner, key } = &reference.target {
+            let cold = if source.is_none() && matches!(owner, ContentOwner::Current { .. }) {
+                r.history.cold_current_state().await?
+            } else {
+                None
+            };
+            let current = source
+                .as_ref()
+                .map(|source| &source.current)
+                .or(cold.as_ref());
             let content_key = core::ChatContentKey {
                 owner: crate::studio::conversation_identity::content_owner_key(owner)?,
                 key: key.clone(),
             };
-            if let Some(content) = source
-                .as_ref()
-                .and_then(|source| source.current.contents().get(&content_key))
+            if let Some(content) = current.and_then(|current| current.contents().get(&content_key))
             {
                 let content = content.content();
                 let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
@@ -886,7 +907,7 @@ impl ConversationReader {
                 revision,
             } = owner
             {
-                let state = source.as_ref().map(|source| &source.current);
+                let state = current;
                 if let Some(collection) = domain.strip_prefix("collection:")
                     && let Some(state) = state
                 {
@@ -1378,96 +1399,4 @@ fn manifest_entry(
             },
         },
     })
-}
-fn current_page(
-    state: &CurrentState,
-    reference: &CurrentCollectionRef,
-    after: Option<&str>,
-    demand: ReadDemand,
-    encode: impl Fn(String) -> Result<String>,
-) -> Result<CurrentCollectionPage> {
-    ensure!(
-        state
-            .projection()
-            .collections
-            .iter()
-            .any(|current| current == reference),
-        core::ChatError::StaleContent
-    );
-    let boundary = after
-        .map(serde_json::from_str::<(i64, String)>)
-        .transpose()?;
-    use std::ops::Bound::{Excluded, Included};
-    let lower = match boundary {
-        Some((position, id)) => Excluded((reference.collection.clone(), position, id)),
-        None => Included((reference.collection.clone(), i64::MIN, String::new())),
-    };
-    let upper = Excluded((
-        format!("{}\0", reference.collection),
-        i64::MIN,
-        String::new(),
-    ));
-    let mut page = CurrentCollectionPage {
-        revision: reference.revision,
-        entries: Vec::new(),
-        continuation: None,
-    };
-    let mut selected_bytes = 0usize;
-    for (_, entry) in state.by_position().range((lower, upper)) {
-        if page.entries.len() == demand.max_items as usize {
-            return Ok(page);
-        }
-        let token = encode(serde_json::to_string(&(entry.position, &entry.entry_id))?)?;
-        let fixed = serde_json::to_vec(&CurrentCollectionPage {
-            revision: reference.revision,
-            entries: Vec::new(),
-            continuation: Some(token.clone()),
-        })?
-        .len();
-        let mut candidate = CurrentCollectionEntry {
-            id: entry.entry_id.clone(),
-            position: entry.position,
-            payload: PayloadData::Inline { bytes: Vec::new() },
-        };
-        let overhead = serde_json::to_vec(&candidate)?
-            .len()
-            .saturating_add(usize::from(!page.entries.is_empty()));
-        let inline = overhead.saturating_add(entry.payload.len().saturating_mul(4));
-        if fixed.saturating_add(selected_bytes).saturating_add(inline) <= demand.max_bytes as usize
-        {
-            candidate.payload = PayloadData::Inline {
-                bytes: entry.payload.to_vec(),
-            };
-        } else {
-            candidate.payload = PayloadData::Deferred {
-                reference: ContentRef {
-                    database_id: reference.database_id.clone(),
-                    target: ContentTarget::Body {
-                        owner: ContentOwner::Current {
-                            domain: format!("collection:{}", reference.collection),
-                            id: entry.entry_id.clone(),
-                            revision: reference.revision,
-                        },
-                        key: "entry".into(),
-                    },
-                },
-                byte_length: entry.payload.len() as u64,
-            };
-        }
-        let cost = serde_json::to_vec(&candidate)?
-            .len()
-            .saturating_add(usize::from(!page.entries.is_empty()));
-        if fixed.saturating_add(selected_bytes).saturating_add(cost) > demand.max_bytes as usize {
-            ensure!(
-                !page.entries.is_empty(),
-                core::ChatError::InvalidDemand("current envelope does not fit".into())
-            );
-            return Ok(page);
-        }
-        selected_bytes = selected_bytes.saturating_add(cost);
-        page.entries.push(candidate);
-        page.continuation = Some(token);
-    }
-    page.continuation = None;
-    Ok(page)
 }

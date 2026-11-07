@@ -144,7 +144,7 @@ async fn background_tool_group_members_remain_readable_and_rebuild_at_real_compl
         vec![atom.id.clone().into(), serde_json::to_vec(&atom)?.into(), b"original result".to_vec().into()],
     )).await?;
     projection.apply_input(
-        crate::studio::thread_projection::timeline::TimelineInput::Atom {
+        crate::studio::storage::history::schema::legacy_timeline_projection::TimelineInput::Atom {
             atom: Box::new(atom.clone()),
             payload: Some(PayloadData::Inline {
                 bytes: b"original result".to_vec(),
@@ -437,7 +437,10 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
                 }
                 let tx = db.begin().await?;
                 if effect == 2 {
-                    super::super::content::write_content(&tx, &content, false).await?;
+                    crate::studio::storage::history::schema::legacy_content::write_content(
+                        &tx, &content, false,
+                    )
+                    .await?;
                 }
                 save_update(&tx, "db", update, &[], effect, true).await?;
                 tx.commit().await?;
@@ -578,6 +581,14 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
             draft.metadata = serde_json::to_vec(&metadata)?.into();
             draft.contents = Arc::new(ChatContents::from([(key, content)]));
             let record = ChatItem::complete(draft, 1);
+            // This fixture exercises the frozen published active-member layout, not
+            // the new normal writer's forbidden takeover of an unfinished manifest.
+            for content in record.contents.values() {
+                crate::studio::storage::history::schema::legacy_content::write_content(
+                    &tx, content, true,
+                )
+                .await?;
+            }
             super::super::append_records(&tx, [&record], true).await?;
             Some(PayloadData::Deferred {
                 reference: ContentRef {
@@ -587,7 +598,10 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
                 byte_length: payload.len() as u64,
             })
         } else {
-            super::super::content::write_content(&tx, &content, false).await?;
+            crate::studio::storage::history::schema::legacy_content::write_content(
+                &tx, &content, false,
+            )
+            .await?;
             None
         };
         let mut saved_update = serde_json::to_value(&terminal_update)?;
@@ -973,7 +987,7 @@ async fn legacy_current_predecessor_blocks_already_completed_text_without_fabric
             .await?
             .is_empty()
     );
-    let restored = super::super::current::read(&tx).await?;
+    let restored = crate::studio::storage::history::schema::legacy_current::read(&tx).await?;
     assert_eq!(restored.items.len(), 2);
     assert!(restored.items[0].admission_closed);
     assert_eq!(restored.items[0].summary.as_ref().unwrap().active_count, 1);

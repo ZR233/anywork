@@ -220,7 +220,9 @@ void main() {
   });
 
   testWidgets('Plan 正文局部排版同时用于详情和回执，普通 Markdown 保留原主题', (tester) async {
-    const document = '# 阅读标题\n\n## 实施范围\n\n### 步骤\n\n正文内容。';
+    const headings = ['阅读标题', '实施范围', '步骤', '补充', '细节', '备注'];
+    const document =
+        '# 阅读标题\n\n## 实施范围\n\n### 步骤\n\n#### 补充\n\n##### 细节\n\n###### 备注\n\n正文内容。';
     Widget markdown(String id) => TimelineMarkdown(
       key: ValueKey(id),
       id: id,
@@ -267,8 +269,43 @@ void main() {
       of: find.byKey(ValueKey(id)),
       matching: find.byType(GptMarkdown),
     );
+    TextStyle renderedStyle(Finder root, String label) {
+      final styles = <TextStyle>[];
+      void visit(InlineSpan span, TextStyle inherited) {
+        final effective = inherited.merge(span.style);
+        if (span is TextSpan) {
+          if (span.text == label) styles.add(effective);
+          for (final child in span.children ?? const <InlineSpan>[]) {
+            visit(child, effective);
+          }
+        }
+      }
+
+      for (final rich in tester.widgetList<RichText>(
+        find.descendant(of: root, matching: find.byType(RichText)),
+      )) {
+        visit(rich.text, const TextStyle());
+      }
+      expect(styles, hasLength(1), reason: '检查真实渲染的 $label 文本跨度');
+      return styles.single;
+    }
+
     final outside = renderer('ordinary-body');
     final base = GptMarkdownTheme.of(tester.element(outside));
+    final official = GptMarkdownThemeData(brightness: Brightness.light);
+    final officialHeadings = [
+      official.h1,
+      official.h2,
+      official.h3,
+      official.h4,
+      official.h5,
+      official.h6,
+    ];
+    for (var level = 0; level < headings.length; level++) {
+      final actual = renderedStyle(outside, headings[level]);
+      expect(actual.fontSize, officialHeadings[level]!.fontSize);
+      expect(actual.fontWeight, officialHeadings[level]!.fontWeight);
+    }
     expect(
       find.descendant(of: outside, matching: find.byType(CustomDivider)),
       findsOneWidget,
@@ -291,6 +328,14 @@ void main() {
       expect(scoped.linkColor, base.linkColor);
       expect(scoped.inlineCode, same(base.inlineCode));
       expect(scoped.styleSheet, same(base.styleSheet));
+      for (var level = 0; level < headings.length; level++) {
+        final actual = renderedStyle(rendered, headings[level]);
+        expect(actual.fontWeight, FontWeight.w600);
+        expect(
+          actual.fontSize,
+          level < 3 ? [24.0, 18.0, 16.0][level] : lessThanOrEqualTo(16),
+        );
+      }
       expect(
         find.descendant(of: rendered, matching: find.byType(CustomDivider)),
         findsNothing,

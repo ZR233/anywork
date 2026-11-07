@@ -9,6 +9,81 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/chat_fixtures.dart';
 
 void main() {
+  test('empty and source-only increments never enumerate loaded members; Set still clears', () async {
+    final controller = _CountingController();
+    final adapter = TimelineMemberController(controller);
+    final operations = <ChatOperation>[];
+    final observed = controller.operationsStream.listen(operations.add);
+    addTearDown(() async {
+      adapter.dispose();
+      await observed.cancel();
+      controller.dispose();
+    });
+    await adapter.applyBatch(
+      ChatBatch(
+        placement: ChatPlacement.set,
+        entries: [
+          for (var i = 0; i < 2000; i++)
+            ChatAtomEntry(chatAtomMessage('member-$i')),
+        ],
+      ),
+    );
+    final original = controller.messages[1999];
+    await Future<void>.delayed(Duration.zero);
+    operations.clear();
+    controller.resetAccessCounts();
+    const source = ChatSourceEntry(
+      ChatSourceState(
+        source: ForegroundTurnChatSource(turnId: 'T'),
+        lifecycle: ActiveChatSource(),
+        started: null,
+        ended: null,
+      ),
+    );
+    for (var i = 0; i < 100; i++) {
+      for (final placement in [ChatPlacement.append, ChatPlacement.prepend]) {
+        await adapter.applyBatch(
+          ChatBatch(placement: placement, entries: const []),
+        );
+        await adapter.applyBatch(
+          ChatBatch(placement: placement, entries: const [source]),
+        );
+      }
+    }
+    for (final invalid in [
+      ChatBatch(
+        placement: ChatPlacement.append,
+        entries: const [source],
+        current: chatCurrent(),
+      ),
+      chatBatch([workItem('main')], placement: ChatPlacement.prepend),
+    ]) {
+      await expectLater(
+        adapter.applyBatch(invalid),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+    }
+    expect(controller.iterations, 0);
+    expect(controller.elementReads, 0);
+    await Future<void>.delayed(Duration.zero);
+    expect(operations, isEmpty);
+    expect(controller.messages, hasLength(2000));
+    expect(controller.messages[1999], same(original));
+    await adapter.applyBatch(
+      ChatBatch(placement: ChatPlacement.set, entries: const [source]),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.messages, isEmpty);
+    expect(operations.single.type, ChatOperationType.set);
+    adapter.dispose();
+    await expectLater(
+      adapter.applyBatch(
+        ChatBatch(placement: ChatPlacement.append, entries: const [source]),
+      ),
+      throwsA(isA<StaleConversationScope>()),
+    );
+  });
+
   test('large member page indexes loaded IDs once and updates repeated activity in place', () async {
     final controller = _CountingController();
     final adapter = TimelineMemberController(controller);

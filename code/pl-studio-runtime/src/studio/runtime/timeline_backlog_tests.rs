@@ -327,7 +327,7 @@ async fn facts(db: &DatabaseConnection, through: u64) -> Result<Vec<(String, Str
 }
 async fn saved_items(db: &DatabaseConnection) -> Result<Vec<TimelineItem>> {
     db.query_all_raw(sql(
-        "SELECT metadata FROM timeline_items WHERE location='history' ORDER BY position",
+        "SELECT metadata FROM timeline_items ORDER BY position",
         vec![],
     ))
     .await?
@@ -738,28 +738,16 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         assert_eq!(status.borrow().committed_sequence, cut);
         assert_eq!(status.borrow().queued_records, 0);
         assert!(!channel.is_stopping());
-        let (database, snapshot_generation, _, recovery) =
-            history.timeline_snapshot().await?.context("C recovery")?;
-        assert_eq!(snapshot_generation, generation);
-        let recovery: serde_json::Value = serde_json::from_slice(&recovery)?;
-        assert_eq!(
-            recovery["items"]
-                .as_array()
-                .context("recovery fragments")?
-                .len(),
-            3
-        );
-        assert_eq!(
-            recovery["active"]
-                .as_object()
-                .context("recovery active")?
-                .len(),
-            2
-        );
-        let recovery_bytes = serde_json::to_vec(&recovery)?;
+        let recovery = history.timeline_snapshot().await?.context("C recovery")?;
+        let database = recovery.database_id().to_owned();
+        assert_eq!(recovery.generation(), generation);
+        assert_eq!(recovery.current_items().len(), 3);
+        assert_eq!(recovery.active_atoms().len(), 2);
         assert!(
-            !String::from_utf8_lossy(&recovery_bytes).contains("prefix body"),
-            "recovery retained finished member bodies"
+            recovery
+                .active_atoms()
+                .iter()
+                .all(|atom| atom.contents.is_empty())
         );
         let path = env
             .runtime
@@ -771,6 +759,20 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         let db = database_connection
             .as_ref()
             .context("test read connection")?;
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT recovery FROM timeline_projection_state WHERE singleton_id=1".to_owned(),
+            ))
+            .await?
+            .context("persisted recovery cut")?;
+        let recovery: serde_json::Value =
+            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "recovery")?)?;
+        assert!(
+            recovery.is_array(),
+            "persisted recovery contains open accumulators"
+        );
+        assert!(!recovery.to_string().contains("prefix body"));
         let prefix = facts(db, cut).await?;
         assert!(prefix.len() > PREFIX_MEMBERS * 2);
 

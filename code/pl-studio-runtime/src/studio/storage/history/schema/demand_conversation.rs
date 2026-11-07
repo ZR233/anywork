@@ -1,9 +1,9 @@
 //! The single schema-11 → schema-12 content transition. The manager supplies the real transaction;
 //! no pool acquisition, live owner, tool decoder or execution activation occurs inside it.
 
-use super::super::conversation::{
-    self,
-    current::{CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, PreparedCurrent},
+use super::super::conversation;
+use super::legacy_current::{
+    CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent as PreparedCurrent,
 };
 use super::*;
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
@@ -209,7 +209,7 @@ pub(in super::super) async fn seed_current(
             Arc::from([]),
             Arc::from([]),
         );
-        return conversation::current::apply(db, watermark, &prepared).await;
+        return super::legacy_current::apply(db, watermark, &prepared).await;
     };
     ensure!(
         checkpoint.history_fence == watermark,
@@ -341,5 +341,5 @@ pub(in super::super) async fn seed_current(
         Arc::from(entries),
         Arc::from(contents),
     );
-    conversation::current::apply(db, watermark, &prepared).await
+    super::legacy_current::apply(db, watermark, &prepared).await
 }

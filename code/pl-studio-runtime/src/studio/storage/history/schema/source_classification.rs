@@ -1,5 +1,5 @@
 //! Named content upgrade; original payloads and reliable fact positions are immutable.
-use super::super::conversation::{self, timeline};
+use super::super::conversation::timeline;
 use super::*;
 use pl_protocol::{ChatAtom, ChatAtomKind};
 
@@ -235,7 +235,7 @@ async fn normalize(db: &impl ConnectionTrait) -> Result<()> {
             }
         }
     }
-    let mut current = conversation::current::read(db).await?;
+    let mut current = super::legacy_current::read(db).await?;
     let mut changed = false;
     for atom in &mut current.atoms {
         let completion = completion_owner(db, atom).await?;

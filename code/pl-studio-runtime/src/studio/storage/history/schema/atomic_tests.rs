@@ -22,6 +22,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {
@@ -57,6 +58,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {
@@ -97,6 +99,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {

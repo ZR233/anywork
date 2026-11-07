@@ -20,7 +20,7 @@ impl MigratorTraitSelf for Published16 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != SOURCE_CLASSIFICATION)
+        .filter(|step| !matches!(step.name(), SOURCE_CLASSIFICATION | COMPLETION_BOUNDARY))
         .collect()
     }
 }
@@ -56,12 +56,21 @@ async fn originals(db: &impl ConnectionTrait) -> Result<Vec<String>> {
 }
 
 async fn derived(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+    let completed = completion_boundary::applied(db).await?;
     let mut result = Vec::new();
     for sql in [
-        "SELECT json_array(item_id,kind,location,position,commit_seq,hex(metadata),projection_version) AS value FROM timeline_items ORDER BY item_id",
+        if completed {
+            "SELECT json_array(item_id,kind,'history',position,commit_seq,hex(metadata),projection_version) AS value FROM timeline_items ORDER BY item_id"
+        } else {
+            "SELECT json_array(item_id,kind,location,position,commit_seq,hex(metadata),projection_version) AS value FROM timeline_items ORDER BY item_id"
+        },
         "SELECT json_array(item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,hex(metadata)) AS value FROM timeline_item_members ORDER BY item_id,member_order",
         "SELECT json_array(projection_version,next_position,source_effect_seq,projection_generation,hex(recovery)) AS value FROM timeline_projection_state",
-        "SELECT hex(payload) AS value FROM conversation_view_state",
+        if completed {
+            "SELECT hex(payload) AS value FROM completion_boundary_archive_view_state"
+        } else {
+            "SELECT hex(payload) AS value FROM conversation_view_state"
+        },
         "SELECT hex(metadata) AS value FROM conversation_items ORDER BY seq",
         "SELECT hex(metadata) AS value FROM conversation_atom_facts ORDER BY atom_id,phase",
     ] {
@@ -197,10 +206,10 @@ async fn fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     let mut atom = crate::studio::runtime::chat_item::atom(&item);
     atom.kind = ChatAtomKind::Unknown;
     current.atoms.push(atom);
-    conversation::current::apply(
+    crate::studio::storage::history::schema::legacy_current::apply(
         &db,
         9,
-        &conversation::current::PreparedCurrent::new(
+        &crate::studio::storage::history::schema::legacy_current::LegacyCurrent::new(
             FrozenCurrentProjection::new(current),
             [].into(),
             [].into(),
@@ -224,7 +233,11 @@ async fn cold_shape(store: &HistoryStore) -> Result<(CurrentProjection, Vec<(u64
         .conversation_current()
         .await?
         .context("cold current")?;
-    let (_, _, next, _) = store.timeline_snapshot().await?.context("cold Timeline")?;
+    let next = store
+        .timeline_snapshot()
+        .await?
+        .context("cold Timeline")?
+        .next_position();
     let reader = store.reader().await?.context("cold reader")?;
     let page = timeline::page_rows(&reader.db, &ChatScope::Main, None, next, 9, 256, &[]).await?;
     assert!(!page.is_empty());
@@ -281,13 +294,26 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
     let db = &store.writer().await?.db;
     assert_eq!(originals(db).await?, original);
     let new_ledger = ledger(db).await?;
-    assert_eq!(new_ledger.len(), old_ledger.len() + 1);
+    assert_eq!(new_ledger.len(), old_ledger.len() + 2);
     assert!(old_ledger.iter().all(|record| new_ledger.contains(record)));
     assert_ne!(timeline::generation(db).await?, generation);
     assert_eq!(rows(db, "SELECT json_extract(metadata,'$.kind') AS value FROM conversation_items WHERE seq IN (2,4,6,7) ORDER BY seq").await?,
         ["raw", "inference", "agent", "unknown"]);
-    assert_eq!(rows(db, "SELECT kind AS value FROM timeline_items WHERE location='history' ORDER BY position LIMIT 6").await?,
-        ["workGroup", "status", "workGroup", "status", "status", "status"]);
+    assert_eq!(
+        rows(
+            db,
+            "SELECT kind AS value FROM timeline_items ORDER BY position LIMIT 6"
+        )
+        .await?,
+        [
+            "workGroup",
+            "status",
+            "workGroup",
+            "status",
+            "status",
+            "status"
+        ]
+    );
     assert_eq!(
         rows(
             db,
@@ -305,7 +331,10 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         .await?,
         ["摘要 1", "摘要 5"]
     );
-    let current = conversation::current::read(db).await?;
+    let current = store
+        .conversation_current()
+        .await?
+        .context("cold current")?;
     assert_eq!(current.atoms[0].kind, ChatAtomKind::Agent);
     assert_eq!(current.items[0].kind, TimelineItemKind::Status);
     assert_eq!(current.items[0].source, current.atoms[0].source);

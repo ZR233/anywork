@@ -6,6 +6,7 @@ use pl_protocol::{
     ChatEntry, ChatScope, ContentRef, ContentTarget, PayloadData, ReadDemand,
     TIMELINE_PROJECTION_VERSION,
 };
+use std::sync::Arc;
 
 pub(in crate::studio) struct TimelinePage {
     pub entries: Vec<ChatEntry>,
@@ -19,6 +20,16 @@ pub(in crate::studio) struct TimelineReadCut<'a> {
     pub active_heads: &'a [pl_protocol::ChatAtom],
 }
 impl HistoryStore {
+    pub(in crate::studio) fn timeline_owner(
+        &self,
+        owner: &Arc<crate::studio::thread_projection::TimelineProjection>,
+    ) {
+        self.state
+            .timeline_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live = Arc::downgrade(owner);
+    }
     pub(crate) fn timeline_publish(
         &self,
         current: std::sync::Arc<conversation::current::PreparedCurrent>,
@@ -113,6 +124,63 @@ impl HistoryStore {
         }
         let mut member_exists = false;
         let mut member_head = None;
+        if let ChatScope::GroupMembers { reference } = scope {
+            let owner = self
+                .state
+                .timeline_pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live
+                .upgrade();
+            if let Some(owner) = owner {
+                ensure!(owner.generation() == generation, ChatError::StaleContent);
+                if let Some((count, members)) = owner.member_page(
+                    &reference.item_id,
+                    before.unwrap_or(ceiling).min(ceiling),
+                    demand.max_items as usize,
+                ) {
+                    member_exists = true;
+                    member_head = Some(count);
+                    for member in members {
+                        let mut atom = member.atom;
+                        let at = match atom.lifecycle {
+                            pl_protocol::ChatAtomLifecycle::Active { started, .. } => started,
+                            pl_protocol::ChatAtomLifecycle::Terminal { ended, .. } => ended,
+                        };
+                        if at.is_some_and(|at| at.effect_seq > effect_cut) {
+                            atom = active_heads
+                                .iter()
+                                .find(|head| head.id == atom.id)
+                                .cloned()
+                                .ok_or(ChatError::StaleContent)?;
+                        } else if matches!(
+                            atom.lifecycle,
+                            pl_protocol::ChatAtomLifecycle::Active { .. }
+                        ) {
+                            if let Some(captured) =
+                                active_heads.iter().find(|head| head.id == atom.id)
+                            {
+                                ensure!(captured.source == atom.source, ChatError::StaleContent);
+                                atom = captured.clone();
+                            }
+                        } else if let (Some(id), Some(bytes)) =
+                            (&atom.completion_item_id, member.payload_bytes)
+                        {
+                            atom.payload = Some(PayloadData::Deferred {
+                                reference: ContentRef {
+                                    database_id: reference.database_id.clone(),
+                                    target: ContentTarget::ItemPayload {
+                                        item_id: id.clone(),
+                                    },
+                                },
+                                byte_length: bytes,
+                            });
+                        }
+                        rows.insert(member.member_order, ChatEntry::Atom(Box::new(atom)));
+                    }
+                }
+            }
+        }
         if let Some((is_current, index, current)) = member_capture {
             ensure!(
                 current.timeline_update.generation() == generation,
@@ -152,7 +220,7 @@ impl HistoryStore {
             );
             match scope {
                 ChatScope::GroupMembers { reference } => {
-                    let member = &current.timeline_update.members()[index];
+                    let member = current.timeline_update.member(index);
                     ensure!(member.item_id == reference.item_id, ChatError::StaleContent);
                     let mut atom = member.atom.clone();
                     if matches!(
@@ -236,13 +304,44 @@ impl HistoryStore {
                 ChatError::StaleContent
             );
             if !member_exists {
-                conversation::timeline::validate_members_ref(
-                    &tx,
-                    &connection.database_id,
-                    &head.generation,
-                    reference,
-                )
-                .await?;
+                let restored =
+                    conversation::timeline::complete::restore(&tx, &connection.database_id, &head)
+                        .await?;
+                if let Some((_, members)) = restored.member_page(
+                    &reference.item_id,
+                    before.unwrap_or(ceiling).min(ceiling),
+                    demand.max_items as usize,
+                ) {
+                    ensure!(
+                        head.source_effect_seq <= effect_cut,
+                        ChatError::StaleContent
+                    );
+                    for member in members {
+                        let mut atom = member.atom;
+                        if let (Some(id), Some(bytes)) =
+                            (&atom.completion_item_id, member.payload_bytes)
+                        {
+                            atom.payload = Some(PayloadData::Deferred {
+                                reference: ContentRef {
+                                    database_id: connection.database_id.clone(),
+                                    target: ContentTarget::ItemPayload {
+                                        item_id: id.clone(),
+                                    },
+                                },
+                                byte_length: bytes,
+                            });
+                        }
+                        rows.insert(member.member_order, ChatEntry::Atom(Box::new(atom)));
+                    }
+                } else {
+                    conversation::timeline::validate_members_ref(
+                        &tx,
+                        &connection.database_id,
+                        &head.generation,
+                        reference,
+                    )
+                    .await?;
+                }
             }
         }
         let mut boundary = before;

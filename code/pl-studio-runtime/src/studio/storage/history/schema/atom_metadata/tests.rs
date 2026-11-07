@@ -3,6 +3,24 @@ use sea_orm::DatabaseConnection;
 
 const THREAD: &str = "atom-migration";
 
+// Inspect preserved migration material, never use it as a normal current source.
+async fn archived_current(db: &impl ConnectionTrait) -> Result<CurrentProjection> {
+    if !completion_boundary::applied(db).await? {
+        return super::super::legacy_current::read(db).await;
+    }
+    let row = db
+        .query_one_raw(statement(
+            "SELECT payload FROM completion_boundary_archive_view_state WHERE singleton_id=1",
+            vec![],
+        ))
+        .await?
+        .context("archived current")?;
+    let mut current: CurrentProjection =
+        serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
+    current.execution_present = false;
+    Ok(current)
+}
+
 struct Published13;
 impl MigratorTraitSelf for Published13 {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
@@ -20,6 +38,7 @@ impl MigratorTraitSelf for Published13 {
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -91,8 +110,8 @@ fn turn_payload(state: TurnState) -> Result<Vec<u8>> {
 }
 
 async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<CurrentProjection> {
-    use conversation::current::{
-        CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, PreparedCurrent,
+    use crate::studio::storage::history::schema::legacy_current::{
+        CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent,
     };
     use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
     use std::sync::Arc;
@@ -167,10 +186,10 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
             payload: serde_json::to_vec(&bodies)?.into(),
         }));
     }
-    conversation::current::apply(
+    crate::studio::storage::history::schema::legacy_current::apply(
         db,
         0,
-        &PreparedCurrent::new(
+        &LegacyCurrent::new(
             crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
             changes.into(),
             contents.into(),
@@ -181,12 +200,34 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
 }
 
 async fn active_originals(db: &DatabaseConnection) -> Result<Vec<String>> {
+    let entries = if completion_boundary::applied(db).await? {
+        "completion_boundary_archive_view_entries"
+    } else {
+        "conversation_view_entries"
+    };
+    let manifests = if completion_boundary::applied(db).await? {
+        "(SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents)"
+    } else {
+        "conversation_contents"
+    };
+    let chunks = if completion_boundary::applied(db).await? {
+        "(SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks)"
+    } else {
+        "conversation_content_chunks"
+    };
     db.query_all_raw(statement(
-        "SELECT json_array(owner_key,content_key,hex(payload)) AS original FROM conversation_contents
-         UNION ALL SELECT json_array(owner_key,content_key,byte_offset,hex(data)) FROM conversation_content_chunks
-         UNION ALL SELECT json_array(collection,position,entry_id,hex(payload)) FROM conversation_view_entries
-         ORDER BY original", vec![],
-    )).await?.into_iter().map(|row| row.try_get("", "original").map_err(Into::into)).collect()
+        &format!(
+            "SELECT json_array(owner_key,content_key,hex(payload)) AS original FROM {manifests}
+         UNION ALL SELECT json_array(owner_key,content_key,byte_offset,hex(data)) FROM {chunks}
+         UNION ALL SELECT json_array(collection,position,entry_id,hex(payload)) FROM {entries}
+         ORDER BY original"
+        ),
+        vec![],
+    ))
+    .await?
+    .into_iter()
+    .map(|row| row.try_get("", "original").map_err(Into::into))
+    .collect()
 }
 
 #[tokio::test]
@@ -197,7 +238,7 @@ async fn complete_member_directory_survives_four_preview_limit_and_rolls_back_ov
     assert_eq!(old.previews.len(), 4);
     let originals = active_originals(&db).await?;
     prepare(&db, THREAD, Preparation::Schema, None).await?;
-    let migrated = conversation::current::read(&db).await?;
+    let migrated = archived_current(&db).await?;
     assert_eq!(migrated.atoms.len(), 5);
     for part in 1..=5 {
         let atom = migrated
@@ -246,7 +287,7 @@ async fn complete_member_directory_survives_four_preview_limit_and_rolls_back_ov
     assert_eq!(version(&db).await?, 13);
     validate_source(&db).await?;
     assert_eq!(active_originals(&db).await?, originals);
-    assert_eq!(conversation::current::read(&db).await?, old);
+    assert_eq!(archived_current(&db).await?, old);
 
     let (_dir, db) = source().await?;
     let old = seed_active_members(&db, &"t".repeat(CHAT_BATCH_MAX_BYTES as usize)).await?;
@@ -258,7 +299,7 @@ async fn complete_member_directory_survives_four_preview_limit_and_rolls_back_ov
     assert_eq!(version(&db).await?, 13);
     validate_source(&db).await?;
     assert_eq!(active_originals(&db).await?, originals);
-    assert_eq!(conversation::current::read(&db).await?, old);
+    assert_eq!(archived_current(&db).await?, old);
     Ok(())
 }
 

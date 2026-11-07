@@ -61,7 +61,7 @@ mod tests {
                 .filter(|step| {
                     !matches!(
                         step.name(),
-                        TIMELINE_THINKING_SUMMARY | SOURCE_CLASSIFICATION
+                        TIMELINE_THINKING_SUMMARY | SOURCE_CLASSIFICATION | COMPLETION_BOUNDARY
                     )
                 })
                 .collect()

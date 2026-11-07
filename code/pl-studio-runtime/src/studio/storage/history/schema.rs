@@ -2,8 +2,12 @@
 use super::*;
 mod atom_metadata;
 mod background_results;
+pub(super) mod completion_boundary;
 mod conversion;
 mod demand_conversation;
+pub(in crate::studio::storage::history) mod legacy_content;
+pub(in crate::studio::storage::history) mod legacy_current;
+pub(in crate::studio::storage::history) mod legacy_timeline_projection;
 mod member_read_metadata;
 mod model_route_head;
 mod source_classification;
@@ -120,6 +124,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(timeline_items::TimelineItems),
             Box::new(timeline_thinking_summary::TimelineThinkingSummary),
             Box::new(source_classification::SourceClassification),
+            Box::new(completion_boundary::CompletionBoundary),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -168,6 +173,7 @@ const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
 const TIMELINE_THINKING_SUMMARY: &str = "m20261108_000001_history_timeline_thinking_summary";
 const MEMBER_READ_METADATA: &str = "m20261107_000001_history_member_read_metadata";
 const SOURCE_CLASSIFICATION: &str = "m20261108_000001_history_source_classification";
+const COMPLETION_BOUNDARY: &str = "m20261109_000001_history_completion_boundary";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -415,7 +421,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 pending.iter().all(|step| {
                     matches!(
                         step.name(),
-                        BACKGROUND_RESULTS | MEMBER_READ_METADATA | SOURCE_CLASSIFICATION
+                        BACKGROUND_RESULTS
+                            | MEMBER_READ_METADATA
+                            | SOURCE_CLASSIFICATION
+                            | COMPLETION_BOUNDARY
                     ) || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
@@ -433,6 +442,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 step.name(),
                                 MODEL_ROUTE_HEAD
                                     | SOURCE_CLASSIFICATION
+                                    | COMPLETION_BOUNDARY
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
@@ -453,6 +463,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 step.name(),
                                 ATOM_METADATA
                                     | SOURCE_CLASSIFICATION
+                                    | COMPLETION_BOUNDARY
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
@@ -474,6 +485,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | TIMELINE_ITEMS
                                     | MEMBER_READ_METADATA
                                     | SOURCE_CLASSIFICATION
+                                    | COMPLETION_BOUNDARY
                                     | TIMELINE_THINKING_SUMMARY
                             ) || is_lifecycle_migration(step.name())
                         }),
@@ -487,7 +499,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     // The source format legitimately carries projection v1.
                     // Its derived head is replaced by the pending migration,
                     // never decoded by the normal current-version reader.
-                    super::conversation::current::read(db).await?;
+                    legacy_current::read(db).await?;
                     ensure!(
                         pending.iter().all(|step| {
                             matches!(
@@ -496,6 +508,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | MEMBER_READ_METADATA
                                     | TIMELINE_THINKING_SUMMARY
                                     | SOURCE_CLASSIFICATION
+                                    | COMPLETION_BOUNDARY
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
@@ -683,6 +696,9 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
 }
 
 async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
+    if completion_boundary::applied(db).await? {
+        return completion_boundary::validate(db).await;
+    }
     ensure!(
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
@@ -706,7 +722,7 @@ async fn validate_saved_heads(db: &impl ConnectionTrait) -> Result<()> {
         .await?
         .context("history identity is missing; existing data preserved")?
         .try_get::<String>("", "database_id")?;
-    let mut projection = crate::studio::thread_projection::TimelineProjection::new(
+    let mut projection = legacy_timeline_projection::TimelineProjection::new(
         database_id,
         head.generation,
         head.next_position,
@@ -1168,6 +1184,7 @@ impl MigrationTrait for CombinedContent {
                             | BACKGROUND_RESULTS
                             | TIMELINE_ITEMS
                             | SOURCE_CLASSIFICATION
+                            | COMPLETION_BOUNDARY
                             | TIMELINE_THINKING_SUMMARY
                     ) && !is_lifecycle_migration(step.name())
                 })

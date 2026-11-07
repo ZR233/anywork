@@ -19,6 +19,7 @@ use sea_orm::{
 };
 
 const HISTORY_SCHEMA_VERSION: i64 = 16;
+use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
 
@@ -367,21 +368,20 @@ impl HistoryStore {
     ///
     /// This is initialization state, not a runtime rebuild boundary. A completed content migration
     /// with missing or malformed derived state fails here and preserves the original database.
-    pub(crate) async fn timeline_snapshot(&self) -> Result<Option<(String, String, u64, Vec<u8>)>> {
+    pub(in crate::studio) async fn timeline_snapshot(
+        &self,
+    ) -> Result<Option<crate::studio::thread_projection::TimelineProjection>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
         let head = conversation::timeline::read_state(&tx)
             .await?
-            .context("initialized history is missing its timeline recovery head")?;
+            .context("initialized history is missing its timeline recovery cut")?;
+        let timeline =
+            conversation::timeline::complete::restore(&tx, &connection.database_id, &head).await?;
         tx.commit().await?;
-        Ok(Some((
-            connection.database_id.clone(),
-            head.generation,
-            head.next_position,
-            head.recovery,
-        )))
+        Ok(Some(timeline))
     }
 
     /// Generation qualification published by shared storage initialization.
@@ -834,16 +834,7 @@ impl HistoryStore {
                 &mut heads.completion,
             )
             .await?;
-            if write_seq == current {
-                conversation::current::verify(tx, current_view).await?;
-            } else {
-                conversation::sources::verify(
-                    tx,
-                    current_view.projection().source_effect_seq,
-                    &current_view.source_changes,
-                )
-                .await?;
-            }
+            conversation::completed::verify(tx, current_view).await?;
             conversation::timeline::verify(tx, &database_id, current_view).await?;
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
@@ -873,15 +864,25 @@ impl HistoryStore {
             &mut heads.completion,
         )
         .await?;
-        conversation::current::apply_changes(
+        conversation::completed::apply(tx, u64::try_from(write_seq)?, current_view).await?;
+        if let Some((attempt_id, at)) = &current_view.recovery_interruption {
+            ensure!(
+                at.effect_seq == u64::try_from(write_seq)?
+                    && attempt.is_some_and(|attempt| attempt.attempt_id == *attempt_id
+                        && matches!(
+                            attempt.outcome,
+                            pl_core::thread::AttemptOutcome::Interrupted
+                        )),
+                "model interruption is not bound to its real Core effect"
+            );
+        }
+        conversation::timeline::complete::apply(
             tx,
-            u64::try_from(write_seq)?,
+            &database_id,
             current_view,
-            completions,
+            &mut heads.timeline,
         )
         .await?;
-        conversation::timeline::apply_delta(tx, &database_id, current_view, &mut heads.timeline)
-            .await?;
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
@@ -991,10 +992,8 @@ impl HistoryStore {
             }
         }
         if last {
-            conversation::current::write_head(tx, current_view).await?;
-            conversation::timeline::save_snapshot(
+            conversation::timeline::complete::save_head(
                 tx,
-                &database_id,
                 &current_view.timeline_update,
                 u64::try_from(write_seq)?,
             )
@@ -1638,27 +1637,26 @@ impl HistoryStore {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let current = conversation::current::read(&tx).await?;
+        let current = conversation::completed::cold(&tx)
+            .await?
+            .projection()
+            .clone();
         tx.commit().await?;
         Ok(Some(current))
     }
 
-    /// Execution activation additionally captures exact saved body descriptors and ownership.
-    /// Normal current reads do not load this seed, and UI previews never establish it.
-    pub(crate) async fn conversation_current_seed(
+    pub(in crate::studio) async fn cold_current_state(
         &self,
-    ) -> Result<Option<conversation::current::SavedCurrent>> {
+    ) -> Result<Option<Arc<crate::studio::thread_projection::CurrentState>>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let seed = conversation::current::read_seed(&tx).await?;
-        conversation::current::validate_database(&seed.projection, &connection.database_id)?;
+        let current = conversation::completed::cold(&tx).await?;
         tx.commit().await?;
-        Ok(Some(seed))
+        Ok(Some(current))
     }
 
-    /// Actual source lifecycle at the caller's captured effect cut. No checkpoint or flush.
     pub(crate) async fn conversation_sources(
         &self,
         sources: &[pl_protocol::ChatSourceId],
@@ -1724,8 +1722,9 @@ impl HistoryStore {
         };
         let tx = connection.db.begin().await?;
         let head = conversation::latest_append_seq(&tx).await?;
-        let current = conversation::current::read(&tx).await?;
-        let interactions = conversation::current::pending_interactions(&tx, &current).await?;
+        let cold = conversation::completed::cold(&tx).await?;
+        let current = cold.projection().clone();
+        let interactions = cold.interactions().to_vec();
         let model_route = checkpoint::read_model_route_head(&tx).await?;
         let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
@@ -1765,25 +1764,46 @@ impl HistoryStore {
         };
         let projection_generation = conversation::timeline::generation(&tx).await?;
         let (page, timeline) = if let Some(scope) = scope {
-            if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
-                conversation::timeline::validate_members_ref(
+            let memory_rows = if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
+                ensure!(
+                    reference.database_id == connection.database_id,
+                    ChatError::StaleContent
+                );
+                conversation::timeline::complete::open_member_rows(
                     &tx,
-                    &connection.database_id,
-                    &projection_generation,
                     reference,
+                    None,
+                    i64::MAX as u64,
+                    current.source_effect_seq,
+                    demand.max_items,
                 )
-                .await?;
-            }
-            let rows = conversation::timeline::page_rows(
-                &tx,
-                scope,
-                None,
-                i64::MAX as u64,
-                current.source_effect_seq,
-                demand.max_items + 1,
-                &current.atoms,
-            )
-            .await?;
+                .await?
+            } else {
+                None
+            };
+            let rows = if let Some(rows) = memory_rows {
+                rows
+            } else {
+                if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
+                    conversation::timeline::validate_members_ref(
+                        &tx,
+                        &connection.database_id,
+                        &projection_generation,
+                        reference,
+                    )
+                    .await?;
+                }
+                conversation::timeline::page_rows(
+                    &tx,
+                    scope,
+                    None,
+                    i64::MAX as u64,
+                    current.source_effect_seq,
+                    demand.max_items + 1,
+                    &current.atoms,
+                )
+                .await?
+            };
             let mut entries = Vec::new();
             let mut size = fixed;
             let mut before = None;
@@ -1879,8 +1899,13 @@ impl HistoryStore {
             ChatError::StaleContent
         );
         let tx = connection.db.begin().await?;
-        let page =
-            conversation::current::page(&tx, reference, after, demand, encode_continuation).await?;
+        let page = crate::studio::thread_projection::current_page(
+            conversation::completed::cold(&tx).await?.as_ref(),
+            reference,
+            after,
+            demand,
+            encode_continuation,
+        )?;
         tx.commit().await?;
         Ok(page)
     }
@@ -3152,13 +3177,25 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> Result<()> {
     // Synthetic pre-demand fixtures start with current DDL, but no completed/public content.
     // Refuse to erase real facts when removing those later outputs to recreate the old shape.
-    for table in [
+    let completed = schema::completion_boundary::applied(db).await?;
+    let mut tables = vec![
         "conversation_items",
         "conversation_contents",
-        "conversation_view_entries",
         "conversation_sources",
         "conversation_atom_facts",
-    ] {
+    ];
+    if completed {
+        tables.extend([
+            "completion_boundary_archive_view_entries",
+            "completion_boundary_archive_timeline_items",
+            "completion_boundary_archive_timeline_members",
+            "completion_boundary_archive_contents",
+            "completion_boundary_archive_content_chunks",
+        ]);
+    } else {
+        tables.push("conversation_view_entries");
+    }
+    for table in tables {
         let count: i64 = db
             .query_one_raw(statement(
                 &format!("SELECT COUNT(*) AS count FROM {table}"),
@@ -3169,14 +3206,28 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
             .try_get("", "count")?;
         ensure!(count == 0, "legacy fixture must not discard {table} facts");
     }
+    if completed {
+        db.execute_unprepared(
+            "
+            DROP TABLE completion_boundary_archive_view_state;
+            DROP TABLE completion_boundary_archive_view_entries;
+            DROP TABLE completion_boundary_archive_timeline_items;
+            DROP TABLE completion_boundary_archive_timeline_members;
+            DROP TABLE completion_boundary_archive_projection_state;
+            DROP TABLE completion_boundary_archive_contents;
+            DROP TABLE completion_boundary_archive_content_chunks;
+        ",
+        )
+        .await?;
+    }
     db.execute_unprepared(
         "DROP TABLE timeline_item_members;
          DROP TABLE timeline_items;
          DROP TABLE timeline_projection_state;
          DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_sources;
-         DROP TABLE conversation_view_entries;
-         DROP TABLE conversation_view_state;
+         DROP TABLE IF EXISTS conversation_view_entries;
+         DROP TABLE IF EXISTS conversation_view_state;
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
@@ -3188,6 +3239,7 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
                            'm20261102_000001_history_atom_metadata',
                            'm20261103_000001_history_timeline_items',
                            'm20261108_000001_history_source_classification',
+                           'm20261109_000001_history_completion_boundary',
                            'm20261108_000001_history_timeline_thinking_summary')",
     )
     .await?;
@@ -3200,7 +3252,6 @@ pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurr
         crate::studio::thread_projection::FrozenCurrentProjection::new(
             pl_protocol::CurrentProjection::empty(sequence, pl_protocol::ThreadStatus::Idle),
         ),
-        std::sync::Arc::from([]),
         std::sync::Arc::from([]),
     )
 }
@@ -5821,8 +5872,8 @@ mod storage_fault_tests {
             .try_get("", "changes")?;
         assert_eq!(
             after - before,
-            137 * 5,
-            "each append only changes one context row, checkpoint, current, route head, and watermark"
+            137 * 4,
+            "each append only changes one context row, checkpoint, route head, and watermark; current is not persisted"
         );
         let database_bytes = tokio::fs::metadata(directory.path().join("history.sqlite"))
             .await?

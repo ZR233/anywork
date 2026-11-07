@@ -14,6 +14,7 @@ pub(super) struct MemberPageCapture {
 
 #[derive(Default)]
 pub(super) struct TimelinePending {
+    pub(super) live: std::sync::Weak<crate::studio::thread_projection::TimelineProjection>,
     pub(super) effects: BTreeMap<u64, Arc<PreparedCurrent>>,
     main: BTreeMap<u64, (u64, usize, Arc<PreparedCurrent>)>,
     main_through: BTreeMap<u64, u64>,
@@ -49,7 +50,13 @@ impl TimelinePending {
             }
         }
         let mut changed = std::collections::BTreeSet::new();
-        for (index, member) in current.timeline_update.members().iter().enumerate() {
+        for (index, member) in current
+            .timeline_update
+            .members()
+            .iter()
+            .chain(current.timeline_update.completed_members())
+            .enumerate()
+        {
             self.members
                 .entry(member.item_id.clone())
                 .or_default()
@@ -112,7 +119,12 @@ impl TimelinePending {
     }
 
     fn remove_members(&mut self, effect: u64, current: &PreparedCurrent) {
-        for member in current.timeline_update.members() {
+        for member in current
+            .timeline_update
+            .members()
+            .iter()
+            .chain(current.timeline_update.completed_members())
+        {
             if let Some(orders) = self.members.get_mut(&member.item_id) {
                 if let Some(versions) = orders.get_mut(&member.member_order) {
                     versions.remove(&effect);

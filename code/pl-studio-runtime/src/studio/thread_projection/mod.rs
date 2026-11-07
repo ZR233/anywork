@@ -11,6 +11,8 @@ mod completions;
 pub(crate) use completions::committed_finish;
 mod content;
 mod current;
+mod current_page;
+pub(in crate::studio) use current_page::current_page;
 mod current_handoff;
 mod current_projection;
 pub(in crate::studio) use content::{

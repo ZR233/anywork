@@ -48,85 +48,68 @@ class TimelineMarkdown extends StatelessWidget {
     if (maxLines == null && !timelineNeedsSafeMarkdown(text)) {
       return TimelinePlainText(id: id, text: text, style: textStyle);
     }
-    TextStyle heading(double size) => textStyle!.copyWith(
-      color: context.colors.onSurface,
-      fontSize: size,
-      fontWeight: FontWeight.w600,
-      height: 1.48,
-    );
-    return GptMarkdownTheme(
-      gptThemeData: GptMarkdownTheme.of(context).copyWith(
-        h1: heading(20),
-        h2: heading(17),
-        h3: heading(14),
-        h4: heading(13),
-        h5: heading(12.5),
-        h6: heading(12.5),
-        autoAddDividerLineAfterH1: false,
-      ),
-      child: DefaultTextStyle.merge(
-        softWrap: true,
-        child: GptMarkdown(
-          text,
-          key: ValueKey('gpt-markdown-$id'),
-          style: textStyle,
-          maxLines: maxLines,
-          overflow: overflow,
-          // No global onLinkTap: unsafe targets must keep their text without any
-          // gesture instead of relying on a final callback to refuse the launch.
-          inlineLinkBuilder: (link) {
-            if (!isSafeLink(link.url)) {
-              return TextSpan(children: link.labelSpans, style: link.style);
-            }
-            return LinkTextSpan.wrapping(
-              children: link.labelSpans,
-              url: link.url,
-              linkStyle: link.linkStyle,
-              style: link.style,
-              hoverStyle: link.hoverStyle,
-              onTap: () => onLink(link.url),
-            );
-          },
-          inlineSourceTagBuilder: (tag) {
-            final url = tag.url;
-            return SourceTagBuildDetails(
-              context: tag.context,
-              config: tag.config,
-              style: tag.style,
-              id: tag.id,
-              url: url,
-              sourceTagStyle: tag.sourceTagStyle,
-              onTap: url != null && isSafeLink(url) ? () => onLink(url) : null,
-            ).defaultSpan();
-          },
-          imageBuilder: (context, url, _, _) => imageBuilder(context, url),
-          styleSheet: GptMarkdownStyleSheet(
-            table: TableStyle(
-              overflow: TableOverflow.wrap,
-              borderColor: context.colors.outlineVariant,
-              headerBackground: context.colors.surfaceContainerLow,
-              headerTextStyle: const TextStyle(fontWeight: FontWeight.w600),
-              cellPadding: const EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 8,
-              ),
+    return DefaultTextStyle.merge(
+      softWrap: true,
+      child: GptMarkdown(
+        text,
+        key: ValueKey('gpt-markdown-$id'),
+        style: textStyle,
+        maxLines: maxLines,
+        overflow: overflow,
+        // No global onLinkTap: unsafe targets must keep their text without any
+        // gesture instead of relying on a final callback to refuse the launch.
+        inlineLinkBuilder: (link) {
+          if (!isSafeLink(link.url)) {
+            return TextSpan(children: link.labelSpans, style: link.style);
+          }
+          return LinkTextSpan.wrapping(
+            children: link.labelSpans,
+            url: link.url,
+            linkStyle: link.linkStyle,
+            style: link.style,
+            hoverStyle: link.hoverStyle,
+            onTap: () => onLink(link.url),
+          );
+        },
+        inlineSourceTagBuilder: (tag) {
+          final url = tag.url;
+          return SourceTagBuildDetails(
+            context: tag.context,
+            config: tag.config,
+            style: tag.style,
+            id: tag.id,
+            url: url,
+            sourceTagStyle: tag.sourceTagStyle,
+            onTap: url != null && isSafeLink(url) ? () => onLink(url) : null,
+          ).defaultSpan();
+        },
+        imageBuilder: (context, url, _, _) => imageBuilder(context, url),
+        styleSheet: GptMarkdownStyleSheet(
+          table: TableStyle(
+            overflow: TableOverflow.wrap,
+            borderColor: context.colors.outlineVariant,
+            headerBackground: context.colors.surfaceContainerLow,
+            headerTextStyle: const TextStyle(fontWeight: FontWeight.w600),
+            cellPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 8,
             ),
           ),
-          inlineCodeStyle: InlineCodeStyle(
-            fontFamily: studioCodeFontFamily,
-            borderWidth: 0,
-            backgroundColor: context.colors.surfaceContainerLow,
-          ),
-          codeBuilder: (context, name, code, closed) => StudioCodeBlock(
-            text: code,
-            horizontalScroll: false,
-            margin: EdgeInsets.zero,
-            padding: const EdgeInsets.all(16),
-            backgroundColor: context.colors.surfaceContainerLow,
-            borderColor: context.colors.outlineVariant,
-            borderRadius: const Radius.circular(StudioRadii.sm),
-            textStyle: style?.copyWith(fontFamily: studioCodeFontFamily),
-          ),
+        ),
+        inlineCodeStyle: InlineCodeStyle(
+          fontFamily: studioCodeFontFamily,
+          borderWidth: 0,
+          backgroundColor: context.colors.surfaceContainerLow,
+        ),
+        codeBuilder: (context, name, code, closed) => StudioCodeBlock(
+          text: code,
+          horizontalScroll: false,
+          margin: EdgeInsets.zero,
+          padding: const EdgeInsets.all(16),
+          backgroundColor: context.colors.surfaceContainerLow,
+          borderColor: context.colors.outlineVariant,
+          borderRadius: const Radius.circular(StudioRadii.sm),
+          textStyle: style?.copyWith(fontFamily: studioCodeFontFamily),
         ),
       ),
     );
