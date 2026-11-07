@@ -34,7 +34,6 @@ final class TimelineOutputConsumption {
   int _runningBytes = 0;
   int _memberScopes = 0;
   int _memberPages = 0;
-  int _memberAdmissionFrames = 0;
   int _sealedEnds = 0;
   int _peakWindowBytes = 0;
   bool _watchEnded = false;
@@ -126,11 +125,7 @@ final class TimelineOutputConsumption {
     _sealedEnds += 1;
   }
 
-  Future<void> _readGroup(
-    TimelineItem item,
-    Future<void> Function() pump,
-    Future<void> Function() foldMemberViews,
-  ) async {
+  Future<void> _readGroup(TimelineItem item) async {
     const demand = ReadDemand(maxItems: 1, maxBytes: 64 * 1024);
     final content = await _within(
       conversations.openGroupMembers(
@@ -146,25 +141,6 @@ final class TimelineOutputConsumption {
     StackTrace? failureStack;
     try {
       observation = content.attachConsumer(first, demand: demand);
-      // The current GUI and this reader share the original handle budget.
-      // While the SDK waits for capacity, layout must retire old GUI scopes.
-      // Keep the same consumer: its existing availability observation resumes
-      // admission, without reopening or increasing the resource limit.
-      while (true) {
-        final state = content.state.value;
-        if (state is! ChatFailed<bool>) break;
-        final error = state.error;
-        if (error is! ResourceBudgetExceeded ||
-            error.kind != ResourceKind.chatHandle) {
-          throw error;
-        }
-        if (_clock.elapsed >= const Duration(minutes: 6)) {
-          throw TimeoutException('Original timeline consumption deadline');
-        }
-        await foldMemberViews();
-        _memberAdmissionFrames += 1;
-        await pump();
-      }
       await _within(content.ready);
       final initial = await _within(first.batch.future);
       final attempt = content.currentAttemptId;
@@ -239,7 +215,6 @@ final class TimelineOutputConsumption {
   Future<void> readMany({
     required Future<void> Function() pump,
     required Future<void> Function() loadOlder,
-    required Future<void> Function() foldMemberViews,
     required int expectedItems,
     required int expectedBytes,
   }) async {
@@ -258,7 +233,7 @@ final class TimelineOutputConsumption {
       if (item.source == source) {
         expectSync(item.turnId, turnId);
         if (item.kind == TimelineItemKind.workGroup) {
-          await _readGroup(item, pump, foldMemberViews);
+          await _readGroup(item);
         } else if (item.atomKind == ChatAtomKind.text) {
           expectSync(item.outcome, ChatTerminalOutcome.completed);
           await _readFrozen(_scope, item.contentItemId!, item.contents);
@@ -425,7 +400,6 @@ final class TimelineOutputConsumption {
       'runningWitness': 'sdk-current-execution-before-and-after-read',
       'memberScopes': _memberScopes,
       'memberPages': _memberPages,
-      'memberAdmissionFrames': _memberAdmissionFrames,
       'sealedEnds': _sealedEnds,
       'bodyWatchEnded': _watchEnded,
       'peakWindowBytes': _peakWindowBytes,

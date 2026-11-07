@@ -190,7 +190,6 @@ Future<void> _runLive(
   try {
     await seedConsumption.readMany(
       loadOlder: () => scene.loadOlder(seedConsumption.lease),
-      foldMemberViews: () => scene.foldMemberViews(seedConsumption.lease),
       pump: () async {
         await scene.tester.pump(const Duration(milliseconds: 16));
         expect(scene.tester.takeException(), isNull);
@@ -471,19 +470,6 @@ final class _TimelineScene {
     tester,
     () => display,
   ).main.map((unit) => unit.item.id).toList();
-
-  Future<void> foldMemberViews(TimelineDisplayLease display) async {
-    expect(lease, same(display));
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.takeException(), isNull);
-    final observed = TimelineObservation(tester, () => display);
-    for (final group in display.groupDisplays.toList()) {
-      if (group.isCurrent && group.expanded) {
-        await observed.closeGroup(group);
-      }
-    }
-    expect(lease, same(display));
-  }
 
   Future<void> until(
     bool Function() ready,
