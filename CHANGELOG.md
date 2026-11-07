@@ -5,6 +5,72 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.37.0](https://github.com/ZR233/anywork/compare/v6.36.0...v6.37.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 删除 ResourceBudget、ResourcePermit、ResourceKind、ResourcePhase、ResourceBudgetExceeded 及相关 budget 构造参数；关闭报告类型迁至 lifecycle/close_report.dart，调用方须移除预算注入。
+* **studio:** ChatBatch 改为 Atom/Source entries，移除旧 messages 及后端展示分组/范围证明入口；FRB、HTTP、SDK 和消费者同步迁移。 必要的 schema 13→14 迁移保留原 ID、完成顺序、内容引用和用户原件， 未知来源时刻保持未知，失败原子回滚，不清库。
+* **studio:** 目录 wire（ThreadDirectoryFrame.threads→rows、 ThreadMetadataFrame.thread→row、StudioAgentDirectoryEntry 身份四元组）与 catalog.toml schema（5→6，正式迁移自动升级）为不兼容变更；Native 历史、 检查点与物理目录不迁移不重写。
+* **studio:** 当前 Runtime、HTTP、FRB 和 Client 的 zhipuCodingPlan 用量载荷与对应类型统一为 subscription；调用方需更新生成绑定。历史存档仍在原迁移边界解码。
+* **studio:** 删除 ACP start.authenticate；调用方先 start.check，再绑定 Required.operationId、连接修订和服务端方法调用 acpAuth.continue。HTTP、FRB 与 Client 同步迁移。
+* **agent-runtime:** Rust ModelStepOutput 新增 turn_action 字段；构造方需设置 ModelTurnAction::Finish 或 Continue。已有持久化输出缺省保留原先隐式 finish 语义。
+* **studio:** 使用 ChatBatch/CurrentProjection 及按需读取端口替代旧 Timeline 内容 API，旧结构仅在正式迁移边界解码。
+* **studio:** 历史页和详情改为独立 reader；唯一呈现消费者显式接纳完成批次，删除旧 patch、revision、历史归约与活动详情查询。
+* **studio:** 会话所属归属字段改为 workspaceId/workspace_id，ProjectRecord 改为 WorkspaceRecord。旧字段仅由明确的 v2 迁移边界读取。
+
+### Features
+
+* **assets:** 更新设计资源，新增与删除多个图像文件 ([7e51716](https://github.com/ZR233/anywork/commit/7e51716b72b4ca8da118c2b27064515a52ce7bca))
+* **release:** 增加项目级 Linux 构建环境与 DEB 发布 ([#241](https://github.com/ZR233/anywork/issues/241)) ([e57c755](https://github.com/ZR233/anywork/commit/e57c755202c853fa90c9f4e3927058dda41fe5d4))
+* **studio:** add macOS desktop support and release CI ([#253](https://github.com/ZR233/anywork/issues/253)) ([ab0cb80](https://github.com/ZR233/anywork/commit/ab0cb808b8152bdba94f430e291039ad50e6e32f))
+* **studio:** 增加会话永久删除并在归档时清理工作树 ([#291](https://github.com/ZR233/anywork/issues/291)) ([c7e260e](https://github.com/ZR233/anywork/commit/c7e260e62284390c236475f90e6b786eb12f5561))
+* **studio:** 展示 Antigravity 账户剩余额度 ([#248](https://github.com/ZR233/anywork/issues/248)) ([0615329](https://github.com/ZR233/anywork/commit/0615329a5e2e00e9e10922bdb3e3479ea5a9de05))
+* **studio:** 接入 Codex 登录和订阅额度 ([#270](https://github.com/ZR233/anywork/issues/270)) ([bfbacd6](https://github.com/ZR233/anywork/commit/bfbacd67ffbaf3d08ed35ea731b1b2f1190f29b3))
+* **studio:** 支持 OpenAI ChatGPT 订阅登录 ([#239](https://github.com/ZR233/anywork/issues/239)) ([ca00f2e](https://github.com/ZR233/anywork/commit/ca00f2e5be7f023af81d109b6bfb684ca49b82ae))
+* **studio:** 重构反重力账号创建与详情界面并优化登录准备流程 ([#274](https://github.com/ZR233/anywork/issues/274)) ([b97db65](https://github.com/ZR233/anywork/commit/b97db65192427dab443ff69fa6c2ef719541af38))
+
+
+### Bug Fixes
+
+* **agent-runtime:** 修复规划进展响应导致轮次提前结束 ([#258](https://github.com/ZR233/anywork/issues/258)) ([e711d4a](https://github.com/ZR233/anywork/commit/e711d4a2a3fb0c89940f82bd5d6f8fa41d82dea9))
+* **model:** 修复流内错误状态解析与上游失败恢复 ([#250](https://github.com/ZR233/anywork/issues/250)) ([5e83ef5](https://github.com/ZR233/anywork/commit/5e83ef587c55cc83eedffd5edb2779ae98f5fdd0))
+* **studio:** 修复 Antigravity 持续连接登录流程 ([#267](https://github.com/ZR233/anywork/issues/267)) ([0ccf2cf](https://github.com/ZR233/anywork/commit/0ccf2cf0e6c78b8392618ea30b4e1eb104135376))
+* **studio:** 修复 Windows 反重力 ACP 冷启动阻断登录 ([#256](https://github.com/ZR233/anywork/issues/256)) ([6a44c81](https://github.com/ZR233/anywork/commit/6a44c81e7e9153b13dd786b630517f25ecf11feb))
+* **studio:** 修复 Windows 飞书会话路径迁移失败 ([#259](https://github.com/ZR233/anywork/issues/259)) ([044ded3](https://github.com/ZR233/anywork/commit/044ded39cb508b1ad1db8377a24c50e7642e6549))
+* **studio:** 修复工作组摘要标题与后台工具分组 ([#302](https://github.com/ZR233/anywork/issues/302)) ([d0d23c6](https://github.com/ZR233/anywork/commit/d0d23c697d1e87f1455ee4a17826b60aff1049cc))
+* **studio:** 修复已迁移会话无法打开 ([#297](https://github.com/ZR233/anywork/issues/297)) ([dd00ac7](https://github.com/ZR233/anywork/commit/dd00ac796b44d5ced457fbe6f54ecc24097a4daa))
+* **studio:** 修复布局迁移后机器人工作区恢复失败 ([#255](https://github.com/ZR233/anywork/issues/255)) ([1caa1a9](https://github.com/ZR233/anywork/commit/1caa1a9f1222330bad6d896424499dca3435cc1f))
+* **studio:** 修复旧会话树无法归档 ([#271](https://github.com/ZR233/anywork/issues/271)) ([1a47cc7](https://github.com/ZR233/anywork/commit/1a47cc76c58fce94df56234aca24c5db4e9b5573))
+* **studio:** 修复旧会话检查点升级顺序 ([#257](https://github.com/ZR233/anywork/issues/257)) ([5c6db1e](https://github.com/ZR233/anywork/commit/5c6db1eb96509ccc3256c689a84c5e2338198cc4))
+* **studio:** 修复时间线可靠增量与消费接纳 ([#300](https://github.com/ZR233/anywork/issues/300)) ([8a4821d](https://github.com/ZR233/anywork/commit/8a4821d95203170e40601039307726c2ef5f9419))
+* **studio:** 区分正常工作目录保留与恢复故障 ([#254](https://github.com/ZR233/anywork/issues/254)) ([e8263af](https://github.com/ZR233/anywork/commit/e8263af308fc0b79488ea1c9f62dcf0a22516064))
+* **studio:** 对齐侧栏项目与会话前导状态图标及文字层级 ([#277](https://github.com/ZR233/anywork/issues/277)) ([f1ed3d1](https://github.com/ZR233/anywork/commit/f1ed3d1311203e040376a67157a2295efb8ddc18))
+* **studio:** 对齐实时状态栏设计并统一组件实现 ([#298](https://github.com/ZR233/anywork/issues/298)) ([b8c436e](https://github.com/ZR233/anywork/commit/b8c436e7b77bb0ee17b9aae04a9bc2fd379a3c61))
+* **studio:** 对齐工作组与实时状态栏呈现 ([#269](https://github.com/ZR233/anywork/issues/269)) ([7eb22c3](https://github.com/ZR233/anywork/commit/7eb22c3125937a03add65cfac4481fce3d89cbcc))
+* **studio:** 恢复会话首帧中的待决计划交互 ([#260](https://github.com/ZR233/anywork/issues/260)) ([2ed07b0](https://github.com/ZR233/anywork/commit/2ed07b06df0823ed1e1d1ea6dedcb0c91d8a8c93))
+* **studio:** 按概念稿优化侧栏并收敛目录观察 ([#273](https://github.com/ZR233/anywork/issues/273)) ([deced66](https://github.com/ZR233/anywork/commit/deced6695ab2301c8c94474c797bbe4f0de0a9da))
+* **studio:** 移除固定数量资源预算并默认折叠实时状态栏 ([#303](https://github.com/ZR233/anywork/issues/303)) ([8b1eb3c](https://github.com/ZR233/anywork/commit/8b1eb3c6da86777826c2bab98f196a6f1deb53a9))
+* **studio:** 精简上下文详情诊断展示 ([#245](https://github.com/ZR233/anywork/issues/245)) ([56dd582](https://github.com/ZR233/anywork/commit/56dd582d5d54d41cb9a3eb17500e783bf51171ea))
+* **studio:** 统一时间线展示项与迁移持久化 ([#275](https://github.com/ZR233/anywork/issues/275)) ([5563b58](https://github.com/ZR233/anywork/commit/5563b58d8f91d3ed572b4087540f548c34a87f67))
+* **studio:** 统一时间线间距并简化成员布局 ([#304](https://github.com/ZR233/anywork/issues/304)) ([cb79183](https://github.com/ZR233/anywork/commit/cb791836d1af356c197369b8d43b0939c3472f1f))
+* **studio:** 重构时间线与实时状态呈现 ([#268](https://github.com/ZR233/anywork/issues/268)) ([834c899](https://github.com/ZR233/anywork/commit/834c89921cb2e06bdbcb9769ecfd767467e6e8f2))
+* **studio:** 重构计划展示与自适应阅读布局 ([#299](https://github.com/ZR233/anywork/issues/299)) ([89c7613](https://github.com/ZR233/anywork/commit/89c761303838c27ba0f39d4391b9a0c4e160cd34))
+* **studio:** 隐藏待用户交互时的冗余实时内容 ([#301](https://github.com/ZR233/anywork/issues/301)) ([b2f3ef7](https://github.com/ZR233/anywork/commit/b2f3ef7d1248beb777dc25494a9a92e2b5df8b95))
+
+
+### Refactoring
+
+* **mcp:** Thread 独占生命周期、helper 远程转发与按环境独立配置 ([#290](https://github.com/ZR233/anywork/issues/290)) ([7dfe9f6](https://github.com/ZR233/anywork/commit/7dfe9f62561fd461ec733ddebeef564a4876062b)), closes [#286](https://github.com/ZR233/anywork/issues/286)
+* **studio:** 优化会话设计稿实时状态栏与工作组整组交接工况 ([#246](https://github.com/ZR233/anywork/issues/246)) ([ded3dcb](https://github.com/ZR233/anywork/commit/ded3dcb99f9f036233c56eeb853c8c7a847e0768))
+* **studio:** 优化验证任务调度提示与协作技能 ([#251](https://github.com/ZR233/anywork/issues/251)) ([172e522](https://github.com/ZR233/anywork/commit/172e522730def5caf86dbb35f50f49736d71aed3))
+* **studio:** 实现原子完成 Timeline 与事件驱动会话 ([#222](https://github.com/ZR233/anywork/issues/222)) ([c8e6351](https://github.com/ZR233/anywork/commit/c8e6351ce0ea336fd66be2c3a93f77dff20cbb7e))
+* **studio:** 拆分会话与智能体身份及后端绑定 (S1) ([#289](https://github.com/ZR233/anywork/issues/289)) ([b8c7b9c](https://github.com/ZR233/anywork/commit/b8c7b9ca07412ba1703fd58b6e01fea5a5fdc760))
+* **studio:** 按需加载会话并统一有序聊天交付 ([#244](https://github.com/ZR233/anywork/issues/244)) ([101b267](https://github.com/ZR233/anywork/commit/101b267d1f187eb1d70948e4e664db9db6ae649b))
+* **studio:** 统一会话存储布局与归档生命周期 ([#236](https://github.com/ZR233/anywork/issues/236)) ([c5c4ebb](https://github.com/ZR233/anywork/commit/c5c4ebbebaffef054ea388e34c33ebae19a84cfc))
+* **test:** 重构测试与 CI 分层 ([#263](https://github.com/ZR233/anywork/issues/263)) ([a1c78ed](https://github.com/ZR233/anywork/commit/a1c78ed03d938c3f2450b178b446b3c67cfefd74))
+
 ## [6.36.0](https://github.com/ZR233/anywork/compare/v6.35.0...v6.36.0) (2026-10-30)
 
 
