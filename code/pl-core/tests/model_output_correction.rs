@@ -514,12 +514,12 @@ async fn solo_unknown_and_argument_rejections_share_two_corrections() {
     thread
         .register_tools(vec![
             tool_support::tool("record", &log),
-            pl_core::tool::opaque::Registration::new(
+            pl_core::tool::opaque::Registration::prepare(
                 "solo".into(),
                 OpaquePayload::text("solo"),
-                Solo,
             )
             .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(Solo))
             .foreground(),
         ])
         .await
@@ -572,7 +572,21 @@ async fn absent_rejection_facts_do_not_infer_recoverable_unknown_calls() {
 
 #[derive(Debug)]
 struct Solo;
-impl pl_core::tool::opaque::Tool for Solo {
+impl pl_agent_tool::Tool for Solo {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("Solo", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: OpaquePayload,

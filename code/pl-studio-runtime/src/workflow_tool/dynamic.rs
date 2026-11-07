@@ -3,16 +3,19 @@ use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
 use crate::thread_assembler::ThreadAssemblyError;
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     model::ToolPresentationContract,
     thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
+use pl_model::completion::ToolCallPolicy;
 use pl_protocol::WorkflowSessionState;
+use pl_tool::binding::prepare_registration;
 use std::sync::Arc;
 
 /// Product-owned extension namespace; it is not a core schema or a database table.
@@ -69,40 +72,40 @@ enum WorkflowOperationKind {
     Restart,
 }
 impl WorkflowOperationKind {
-    fn declaration(self) -> pl_protocol::ToolSpec {
+    fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
         let (name, description, schema) = match self {
             Self::Current => (
                 "workflow_current",
                 "Read the current workflow run, state and CAS revision.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Next => (
                 "workflow_next",
                 "Read direct next workflow transitions and their guards.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Graph => (
                 "workflow_graph",
                 "Read the frozen workflow graph used by this Thread's tools.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::History => (
                 "workflow_history",
                 "Read saved workflow transitions and archive receipts.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Transition => (
                 "workflow_transition",
                 "Complete the current workflow state and cross one direct edge using run, revision and state CAS. Call this tool alone.",
-                schemars::schema_for!(TransitionInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<TransitionInput>(),
             ),
             Self::Restart => (
                 "workflow_restart",
                 "Archive the current run and begin a new lineage using run, revision and state CAS. Call this tool alone.",
-                schemars::schema_for!(RestartInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<RestartInput>(),
             ),
         };
-        pl_protocol::ToolSpec::function(name, description, schema)
+        ToolDefinition::json(name, description, schema)
     }
     fn id(self) -> &'static str {
         match self {
@@ -118,9 +121,19 @@ impl WorkflowOperationKind {
 
 #[derive(Debug)]
 struct ThreadWorkflowTool {
+    definition: ToolDefinition,
     kind: WorkflowOperationKind,
 }
 impl Tool for ThreadWorkflowTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -168,7 +181,7 @@ impl Tool for ThreadWorkflowTool {
             | WorkflowOperationKind::Graph
             | WorkflowOperationKind::History => {
                 let _: EmptyInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 match self.kind {
                     WorkflowOperationKind::Current => machine.current_snapshot(&previous),
                     WorkflowOperationKind::Next => machine.next_snapshot(&previous),
@@ -182,7 +195,8 @@ impl Tool for ThreadWorkflowTool {
             WorkflowOperationKind::Transition => serde_json::to_value(
                 machine
                     .apply_transition(
-                        serde_json::from_str(input.content()).map_err(ToolError::new)?,
+                        pl_agent_tool::typed::decode_json(input.content())
+                            .map_err(ToolError::new)?,
                         &identity,
                         hash,
                     )
@@ -192,7 +206,8 @@ impl Tool for ThreadWorkflowTool {
             WorkflowOperationKind::Restart => serde_json::to_value(
                 machine
                     .apply_restart(
-                        serde_json::from_str(input.content()).map_err(ToolError::new)?,
+                        pl_agent_tool::typed::decode_json(input.content())
+                            .map_err(ToolError::new)?,
                         &identity,
                         hash,
                     )
@@ -235,7 +250,8 @@ pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError
     ]
     .into_iter()
     .map(|kind| {
-        let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+        let definition = kind.definition()?;
+        let prepared = prepare_registration(kind.id(), &definition, ToolCallPolicy::DirectOnly)?;
         let contract = match kind {
             WorkflowOperationKind::Current => "builtin.workflow_current@1",
             WorkflowOperationKind::Next => "builtin.workflow_next@1",
@@ -244,9 +260,9 @@ pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError
             WorkflowOperationKind::Transition => "builtin.workflow_transition@1",
             WorkflowOperationKind::Restart => "builtin.workflow_restart@1",
         };
-        let registration =
-            Registration::new(kind.id().into(), declaration, ThreadWorkflowTool { kind })?
-                .with_presentation_contract(ToolPresentationContract::new(contract));
+        let registration = prepared
+            .attach(ToolHandle::new(ThreadWorkflowTool { definition, kind }))
+            .with_presentation_contract(ToolPresentationContract::new(contract));
         Ok(match kind {
             WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {
                 registration.with_extension_updates()

@@ -820,8 +820,13 @@ impl StudioThreadAssembler {
                     source: Box::new(source),
                 })?;
             if let Some(spec) = spec {
-                let declaration = pl_model::runtime::thread_tool_declaration(&spec)?;
-                tools.push(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?);
+                let prepared = pl_tool::binding::prepare_registration(
+                    spec.name(),
+                    &spec,
+                    pl_model::completion::ToolCallPolicy::DirectOnly,
+                )?;
+                tools
+                    .push(ThreadAgentControl::new(host.clone(), kind, spec).registration(prepared));
             }
         }
         tools.extend(self.agent_query_tools(catalog, selection)?);

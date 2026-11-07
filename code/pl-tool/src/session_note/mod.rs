@@ -7,7 +7,6 @@ mod search;
 use pl_protocol::Result;
 use serde_json::{Value, json};
 
-use crate::deserialize_tool_input;
 use pl_output::text::{line_end_byte_offset, line_start_byte_offset, logical_line_count};
 
 use crate::tool_error;
@@ -22,8 +21,7 @@ const DEFAULT_SEARCH_MATCH_LIMIT: usize = 100;
 const MAX_SEARCH_MATCH_LIMIT: usize = 200;
 const MAX_CONTEXT_LINES: usize = 20;
 
-fn read_note(arguments: Value, note: &pl_protocol::SessionNote) -> Result<Value> {
-    let input: ReadInput = deserialize_tool_input(TOOL_READ_SESSION_NOTE, arguments)?;
+fn read_note(input: ReadInput, note: &pl_protocol::SessionNote) -> Result<Value> {
     let start_line = input.start_line.unwrap_or(1);
     if start_line == 0 {
         return Err(tool_error(TOOL_READ_SESSION_NOTE, "startLine is 1-based"));
@@ -69,8 +67,7 @@ fn read_note(arguments: Value, note: &pl_protocol::SessionNote) -> Result<Value>
     }))
 }
 
-fn search_note(arguments: Value, note: &pl_protocol::SessionNote) -> Result<Value> {
-    let input: SearchInput = deserialize_tool_input(TOOL_SEARCH_SESSION_NOTE, arguments)?;
+fn search_note(input: SearchInput, note: &pl_protocol::SessionNote) -> Result<Value> {
     let context_lines = input.context_lines.unwrap_or(0);
     if context_lines > MAX_CONTEXT_LINES {
         return Err(tool_error(

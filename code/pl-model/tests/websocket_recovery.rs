@@ -1,10 +1,11 @@
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     model::{ModelFactory, ModelRecoveryPhase},
     thread::{ModelStepLimit, ThreadHandle, TurnInput},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use pl_model::{
@@ -988,15 +989,27 @@ async fn thread_http_fallback_survives_physical_reset_after_failed_turn() {
 }
 
 #[derive(Debug)]
-struct RecordingLookup(Arc<Mutex<Vec<(String, String)>>>);
+struct RecordingLookup {
+    calls: Arc<Mutex<Vec<(String, String)>>>,
+    definition: ToolDefinition,
+}
 
 impl Tool for RecordingLookup {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        self.0
+        self.calls
             .lock()
             .unwrap()
             .push((context.call_id, input.content().to_owned()));
@@ -1070,21 +1083,26 @@ async fn retry_never_executes_discarded_tool_call_or_reexecutes_preceding_result
     .unwrap();
     let thread = thread(&fixture).await;
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let definition = ToolDefinition::json(
+        "lookup",
+        "Lookup",
+        json!({"type":"object","properties":{"term":{"type":"string"}}}),
+    )
+    .unwrap();
+    let declaration =
+        pl_model::runtime::thread_tool_declaration(&pl_model::completion::tool_definition_to_spec(
+            &definition,
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        ))
+        .unwrap();
     thread
         .register_tools(vec![
-            Registration::new(
-                "lookup".into(),
-                pl_model::runtime::thread_tool_declaration(
-                    &pl_model::completion::ToolSpec::function(
-                        "lookup",
-                        "Lookup",
-                        json!({"type":"object","properties":{"term":{"type":"string"}}}),
-                    ),
-                )
-                .unwrap(),
-                RecordingLookup(calls.clone()),
-            )
-            .unwrap(),
+            Registration::prepare("lookup".into(), declaration)
+                .unwrap()
+                .attach(ToolHandle::new(RecordingLookup {
+                    calls: calls.clone(),
+                    definition,
+                })),
         ])
         .await
         .unwrap();

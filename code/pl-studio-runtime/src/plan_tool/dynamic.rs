@@ -9,16 +9,19 @@ use crate::plan_tool::state::{
     AgentSessionPlanSubmitCommand,
 };
 use crate::thread_assembler::ThreadAssemblyError;
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     model::ToolPresentationContract,
     thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
+use pl_model::completion::ToolCallPolicy;
 use pl_protocol::AgentSessionPlanState;
+use pl_tool::binding::prepare_registration;
 use std::sync::Arc;
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
@@ -95,39 +98,49 @@ impl PlanOperation {
             Self::Restart => "plan_restart",
         }
     }
-    fn declaration(self) -> pl_protocol::ToolSpec {
+    fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
         let (description, schema) = match self {
             Self::Current => (
                 "Read the current Plan, state and CAS revision.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Next => (
                 "Read permitted operations in the current fixed Plan state.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::History => (
                 "Read saved Plan transitions and archive receipts.",
-                schemars::schema_for!(EmptyInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Submit => (
                 "Submit a complete Markdown Plan for user approval or revision. This is the only tool for asking the user to approve implementation of a complete Plan; do not first ask whether to implement through request_user_input or final text. Requires revision CAS; call this tool alone.",
-                schemars::schema_for!(PlanSubmitInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<PlanSubmitInput>(),
             ),
             Self::Restart => (
                 "Restart an approved or revision-requested Plan using revision CAS and a reason. Call this tool alone.",
-                schemars::schema_for!(PlanRestartInput).to_value(),
+                pl_agent_tool::typed::input_schema_for::<PlanRestartInput>(),
             ),
         };
-        pl_protocol::ToolSpec::function(self.name(), description, schema)
+        ToolDefinition::json(self.name(), description, schema)
     }
 }
 
 #[derive(Debug)]
 struct ThreadPlanTool {
+    definition: ToolDefinition,
     kind: PlanOperation,
     options: AgentSessionPlanOptions,
 }
 impl Tool for ThreadPlanTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -158,22 +171,22 @@ impl Tool for ThreadPlanTool {
         let result = match self.kind {
             PlanOperation::Current => {
                 let _: EmptyInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 serde_json::to_value(machine.snapshot()).map_err(ToolError::new)?
             }
             PlanOperation::Next => {
                 let _: EmptyInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 serde_json::json!({"revision": machine.state().revision, "state": machine.state().state, "transitions": machine.available_transitions()})
             }
             PlanOperation::History => {
                 let _: EmptyInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 serde_json::json!({"revision":previous.revision,"state":previous.state,"history":previous.history_tail,"archivedTransitionCount":previous.archived_transition_count,"archivedTransitionDigest":previous.archived_transition_digest})
             }
             PlanOperation::Submit => {
                 let args: PlanSubmitInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 crate::plan_tool::state::validate_plan(&args.plan)
                     .map_err(|error| ToolError::new(PlanPayloadError::InvalidPlan(error)))?;
                 let question = confirmation_question(args.plan.clone());
@@ -208,7 +221,7 @@ impl Tool for ThreadPlanTool {
             }
             PlanOperation::Restart => {
                 let args: PlanRestartInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 serde_json::to_value(machine.restart(AgentSessionPlanRestartCommand {
                     expected_revision: args.expected_revision,
                     reason: args.reason,
@@ -256,7 +269,8 @@ pub fn plan_registrations(
     ]
     .into_iter()
     .map(|kind| {
-        let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+        let definition = kind.definition()?;
+        let prepared = prepare_registration(kind.name(), &definition, ToolCallPolicy::DirectOnly)?;
         let contract = match kind {
             PlanOperation::Current => "builtin.plan_current@1",
             PlanOperation::Next => "builtin.plan_next@1",
@@ -264,12 +278,13 @@ pub fn plan_registrations(
             PlanOperation::Submit => "builtin.plan_submit@1",
             PlanOperation::Restart => "builtin.plan_restart@1",
         };
-        let registration = Registration::new(
-            kind.name().into(),
-            declaration,
-            ThreadPlanTool { kind, options },
-        )?
-        .with_presentation_contract(ToolPresentationContract::new(contract));
+        let registration = prepared
+            .attach(ToolHandle::new(ThreadPlanTool {
+                definition,
+                kind,
+                options,
+            }))
+            .with_presentation_contract(ToolPresentationContract::new(contract));
         Ok(match kind {
             PlanOperation::Submit => registration.with_extension_updates().with_interactions(),
             PlanOperation::Restart => registration.with_extension_updates(),
@@ -277,4 +292,79 @@ pub fn plan_registrations(
         })
     })
     .collect()
+}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::*;
+    use pl_agent_tool::typed::{ArgumentError, JsonError};
+    use pl_core::thread::extensions::ExtensionRecord;
+
+    #[tokio::test]
+    async fn plan_adapter_retains_argument_paths_and_trailing_source() {
+        let tool = ThreadPlanTool {
+            definition: PlanOperation::Submit.definition().unwrap(),
+            kind: PlanOperation::Submit,
+            options: Default::default(),
+        };
+        let extensions = Arc::new(std::collections::BTreeMap::from([(
+            PLAN_EXTENSION.into(),
+            ExtensionRecord {
+                revision: 0,
+                payload: encode_plan_state(&Default::default()).unwrap(),
+            },
+        )]));
+        let context = CallContext {
+            thread_id: "argument-thread".into(),
+            turn_id: "argument-turn".into(),
+            call_id: "argument-call".into(),
+            cancellation: Default::default(),
+            extensions: extensions.clone(),
+            catalog: Arc::from([]),
+            extension_sequence: 0,
+            grant: Default::default(),
+            context: Default::default(),
+            history_fence: 0,
+            model_projection: None,
+            tasks: None,
+        };
+        for (raw, expected_path) in [
+            (
+                r##"{"expectedRevision":null,"plan":"# Plan"}"##,
+                Some("expectedRevision"),
+            ),
+            (r#"{"expectedRevision":0,"plan":7}"#, Some("plan")),
+            (r##"{"expectedRevision":0,"plan":"# Plan"} true"##, None),
+        ] {
+            let error = tool
+                .execute(
+                    OpaquePayload::new("application/json", 1, raw).unwrap(),
+                    context.clone(),
+                )
+                .await
+                .unwrap_err();
+            let argument = error
+                .source
+                .downcast_ref::<ArgumentError>()
+                .expect("product adapter must retain ArgumentError identity");
+            match (argument, expected_path) {
+                (ArgumentError::Decode { path, source }, Some(expected)) => {
+                    assert_eq!(path, expected);
+                    assert!(source.is_data());
+                }
+                (ArgumentError::Trailing { source }, None) => assert!(source.is_syntax()),
+                _ => panic!("unexpected argument error classification: {argument:?}"),
+            }
+            assert!(
+                std::error::Error::source(argument)
+                    .unwrap()
+                    .is::<JsonError>()
+            );
+            assert_eq!(
+                decode_plan_state(&extensions[PLAN_EXTENSION].payload).unwrap(),
+                Default::default()
+            );
+        }
+        tool.close().await.unwrap();
+    }
 }

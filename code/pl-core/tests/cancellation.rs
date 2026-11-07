@@ -9,7 +9,7 @@ use pl_core::model::{
 use pl_core::thread::{ThreadError, ThreadHandle, ToolOutcome, TurnOutcome, TurnState};
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use tokio::sync::oneshot;
 
@@ -20,7 +20,24 @@ struct CancellationAwareTool {
     entered: Mutex<Option<oneshot::Sender<()>>>,
 }
 
-impl Tool for CancellationAwareTool {
+impl pl_agent_tool::Tool for CancellationAwareTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "CancellationAwareTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _input: OpaquePayload,
@@ -108,15 +125,14 @@ async fn cancelling_a_running_tool_retains_its_result_as_a_cancelled_delivery() 
     let (entered, waiting) = oneshot::channel();
     thread
         .register_tools(vec![
-            Registration::new(
-                "slow".into(),
-                OpaquePayload::text("Slow tool"),
-                CancellationAwareTool {
-                    entered: Mutex::new(Some(entered)),
-                },
-            )
-            .unwrap()
-            .foreground_coexisting(),
+            Registration::prepare("slow".into(), OpaquePayload::text("Slow tool"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    CancellationAwareTool {
+                        entered: Mutex::new(Some(entered)),
+                    },
+                ))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();

@@ -41,7 +41,8 @@ pub use snapshot::{
     CompletionResponseSnapshot, completion_response_message_text, completion_response_snapshot,
 };
 
-pub use tool_schema::programmatic_tool_declaration;
+pub use pl_agent_tool::ToolDefinition;
+pub use tool_schema::{ToolCallPolicy, tool_definition_to_spec};
 
 mod stable_schema;
 pub(crate) use stable_schema::canonicalize_json;

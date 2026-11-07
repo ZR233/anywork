@@ -2,6 +2,10 @@
 //! forwarding over `pl-remote-helper` (T10, T11, T12, T13).
 #![cfg(target_os = "linux")]
 
+#[path = "support/binding_host.rs"]
+mod binding_host;
+#[path = "support/mcp_binding.rs"]
+mod binding_tests;
 #[path = "support/helper.rs"]
 mod helper;
 #[path = "support/mcp_stdio.rs"]

@@ -9,7 +9,7 @@ use pl_core::{
     context::{ContextContent, ContextSnapshot, ContextSource, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use pl_model::protocol::deepseek::tools::{
@@ -44,42 +44,24 @@ impl ThreadWebSearchTool {
     }
 
     /// Stable declaration, independent of conversation, current time and search results.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            TOOL_WEB_SEARCH,
-            WEB_SEARCH_DESCRIPTION,
-            schemars::schema_for!(SearchCommands).to_value(),
-        )
-    }
-
-    /// Transfers an executor without granting any framework control permissions.
-    ///
-    /// # Errors
-    /// Returns an invalid tool identity error.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(
-            Registration::new(TOOL_WEB_SEARCH.into(), declaration, self)?
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.web_search@1",
-                )),
-        )
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        thread_web_search_tool_definition()
     }
 }
 
-impl Tool for ThreadWebSearchTool {
+impl pl_agent_tool::typed::TypedTool for ThreadWebSearchTool {
+    const NAME: &'static str = THREAD_WEB_SEARCH_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_WEB_SEARCH_TOOL_DESCRIPTION;
+    type Args = SearchCommands;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        commands: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(crate::tool_error(
-                TOOL_WEB_SEARCH,
-                "unsupported argument encoding",
-            )));
-        }
-        let commands: SearchCommands =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
@@ -162,7 +144,7 @@ fn recent_context(context: &ContextSnapshot) -> Option<Vec<Value>> {
 /// Arguments accepted by the DeepSeek standalone search tool.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct DeepSeekWebSearchArgs {
+pub struct DeepSeekWebSearchArgs {
     /// One to four search queries; their results are merged.
     queries: Vec<String>,
 }
@@ -170,7 +152,7 @@ struct DeepSeekWebSearchArgs {
 /// Arguments accepted by the DeepSeek standalone fetch tool.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct DeepSeekWebFetchArgs {
+pub struct DeepSeekWebFetchArgs {
     /// HTTP(S) URL to fetch.
     url: String,
 }
@@ -190,42 +172,24 @@ impl ThreadDeepSeekWebSearchTool {
     }
 
     /// Stable declaration, independent of conversation, current time and search results.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            TOOL_DEEPSEEK_WEB_SEARCH,
-            DEEPSEEK_WEB_SEARCH_DESCRIPTION,
-            schemars::schema_for!(DeepSeekWebSearchArgs).to_value(),
-        )
-    }
-
-    /// Transfers an executor without granting any framework control permissions.
-    ///
-    /// # Errors
-    /// Returns an invalid tool identity error.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(
-            Registration::new(TOOL_DEEPSEEK_WEB_SEARCH.into(), declaration, self)?
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.deepseek_web_search@1",
-                )),
-        )
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        thread_deep_seek_web_search_tool_definition()
     }
 }
 
-impl Tool for ThreadDeepSeekWebSearchTool {
+impl pl_agent_tool::typed::TypedTool for ThreadDeepSeekWebSearchTool {
+    const NAME: &'static str = THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_DESCRIPTION;
+    type Args = DeepSeekWebSearchArgs;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        args: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(crate::tool_error(
-                TOOL_DEEPSEEK_WEB_SEARCH,
-                "unsupported argument encoding",
-            )));
-        }
-        let args: DeepSeekWebSearchArgs =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
@@ -265,42 +229,24 @@ impl ThreadDeepSeekWebFetchTool {
     }
 
     /// Stable declaration, independent of conversation, current time and fetch results.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            TOOL_DEEPSEEK_WEB_FETCH,
-            DEEPSEEK_WEB_FETCH_DESCRIPTION,
-            schemars::schema_for!(DeepSeekWebFetchArgs).to_value(),
-        )
-    }
-
-    /// Transfers an executor without granting any framework control permissions.
-    ///
-    /// # Errors
-    /// Returns an invalid tool identity error.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Ok(
-            Registration::new(TOOL_DEEPSEEK_WEB_FETCH.into(), declaration, self)?
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.deepseek_web_fetch@1",
-                )),
-        )
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        thread_deep_seek_web_fetch_tool_definition()
     }
 }
 
-impl Tool for ThreadDeepSeekWebFetchTool {
+impl pl_agent_tool::typed::TypedTool for ThreadDeepSeekWebFetchTool {
+    const NAME: &'static str = THREAD_DEEP_SEEK_WEB_FETCH_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_DEEP_SEEK_WEB_FETCH_TOOL_DESCRIPTION;
+    type Args = DeepSeekWebFetchArgs;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        args: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(crate::tool_error(
-                TOOL_DEEPSEEK_WEB_FETCH,
-                "unsupported argument encoding",
-            )));
-        }
-        let args: DeepSeekWebFetchArgs =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
@@ -656,3 +602,39 @@ fn text_output(payload: OpaquePayload, text: String) -> ToolOutput {
         }],
     )
 }
+
+pub fn thread_web_search_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_WEB_SEARCH_TOOL_NAME,
+        THREAD_WEB_SEARCH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<SearchCommands>(),
+    )
+    .expect("static tool definition")
+}
+
+pub fn thread_deep_seek_web_search_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_NAME,
+        THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<DeepSeekWebSearchArgs>(),
+    )
+    .expect("static tool definition")
+}
+
+pub fn thread_deep_seek_web_fetch_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_DEEP_SEEK_WEB_FETCH_TOOL_NAME,
+        THREAD_DEEP_SEEK_WEB_FETCH_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<DeepSeekWebFetchArgs>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_DEEP_SEEK_WEB_FETCH_TOOL_NAME: &str = TOOL_DEEPSEEK_WEB_FETCH;
+const THREAD_DEEP_SEEK_WEB_FETCH_TOOL_DESCRIPTION: &str = DEEPSEEK_WEB_FETCH_DESCRIPTION;
+
+const THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_NAME: &str = TOOL_DEEPSEEK_WEB_SEARCH;
+const THREAD_DEEP_SEEK_WEB_SEARCH_TOOL_DESCRIPTION: &str = DEEPSEEK_WEB_SEARCH_DESCRIPTION;
+
+const THREAD_WEB_SEARCH_TOOL_NAME: &str = TOOL_WEB_SEARCH;
+const THREAD_WEB_SEARCH_TOOL_DESCRIPTION: &str = WEB_SEARCH_DESCRIPTION;

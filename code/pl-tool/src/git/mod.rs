@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pl_protocol::PureError;
 use serde_json::Value;
 
-use crate::deserialize_tool_input;
+use pl_agent_tool::typed::decode_json;
+use pl_core::tool::{ToolOutput, opaque::ToolError};
 
 mod commands;
 mod credential;
@@ -60,6 +60,7 @@ impl GitWorkspaceConfig {
 /// 单个 git tool 适配器。
 #[derive(Debug)]
 pub struct GitTool<B, P> {
+    definition: pl_agent_tool::ToolDefinition,
     kind: GitToolKind,
     config: GitWorkspaceConfig,
     backend: Arc<B>,
@@ -72,8 +73,10 @@ impl<B, P> GitTool<B, P> {
         config: GitWorkspaceConfig,
         backend: Arc<B>,
         credential_provider: Arc<P>,
+        definition: pl_agent_tool::ToolDefinition,
     ) -> Self {
         Self {
+            definition,
             kind,
             config,
             backend,
@@ -87,44 +90,82 @@ impl<B, P> GitTool<B, P> {
 }
 
 impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> GitTool<B, P> {
-    async fn invoke(&self, input: Value) -> Result<runner::GitToolOutcome, PureError> {
-        match self.kind {
+    async fn invoke(&self, input: &str) -> Result<ToolOutput, ToolError> {
+        let outcome = match self.kind {
             GitToolKind::Status => {
-                deserialize_tool_input::<GitEmptyInput>(self.name(), input)?;
+                decode_json::<GitEmptyInput>(input).map_err(ToolError::new)?;
                 self.run_plain(vec!["status", "--short", "--branch"]).await
             }
-            GitToolKind::Diff => self.run_diff(input).await,
-            GitToolKind::Branch => self.run_branch(input).await,
-            GitToolKind::Fetch => self.run_fetch(input).await,
-            GitToolKind::Commit => self.run_commit(input).await,
-            GitToolKind::Push => self.run_push(input).await,
+            GitToolKind::Diff => {
+                self.run_diff(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
+            GitToolKind::Branch => {
+                self.run_branch(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
+            GitToolKind::Fetch => {
+                self.run_fetch(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
+            GitToolKind::Commit => {
+                self.run_commit(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
+            GitToolKind::Push => {
+                self.run_push(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
             GitToolKind::WorkspaceInfo => {
-                deserialize_tool_input::<GitEmptyInput>(self.name(), input)?;
+                decode_json::<GitEmptyInput>(input).map_err(ToolError::new)?;
                 self.workspace_info()
             }
-            GitToolKind::SyncDefaultBranch => self.run_sync_default_branch(input).await,
+            GitToolKind::SyncDefaultBranch => {
+                self.run_sync_default_branch(decode_json(input).map_err(ToolError::new)?)
+                    .await
+            }
+        };
+        match outcome {
+            Ok(outcome) => dynamic_output(&outcome),
+            Err(source) => {
+                let observed = runner::observed_failure(&source)
+                    .map(dynamic_output)
+                    .transpose()?;
+                let error = ToolError::new(source);
+                Err(match observed {
+                    Some(output) => error.with_output(output),
+                    None => error,
+                })
+            }
         }
     }
 
     /// Transfers a Git executor under the host's explicit repository/credential policy identity.
     ///
-    /// # Errors
-    /// Returns invalid tool registration errors.
+    /// All fallible declaration and identity checks belong to the supplied preparation.
     pub fn registration(
         self,
-        declaration: pl_core::context::OpaquePayload,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
         authorization: pl_core::tool::opaque::ToolAuthorization,
-    ) -> Result<pl_core::tool::opaque::Registration, pl_core::tool::opaque::RegistryError> {
-        Ok(
-            pl_core::tool::opaque::Registration::new(self.kind.name().into(), declaration, self)?
-                .with_authorization(authorization),
-        )
+    ) -> pl_core::tool::opaque::Registration {
+        prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
+            .with_authorization(authorization)
     }
 }
 
-impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> pl_core::tool::opaque::Tool
+impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> pl_agent_tool::Tool
     for GitTool<B, P>
 {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: pl_core::context::OpaquePayload,
@@ -140,20 +181,7 @@ impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> pl_core:
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let input = serde_json::from_str(input.content()).map_err(ToolError::new)?;
-        match self.invoke(input).await {
-            Ok(outcome) => dynamic_output(&outcome),
-            Err(source) => {
-                let observed = runner::observed_failure(&source)
-                    .map(dynamic_output)
-                    .transpose()?;
-                let error = ToolError::new(source);
-                Err(match observed {
-                    Some(output) => error.with_output(output),
-                    None => error,
-                })
-            }
-        }
+        self.invoke(input.content()).await
     }
 }
 

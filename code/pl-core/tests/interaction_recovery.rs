@@ -269,7 +269,24 @@ async fn an_explicitly_cancelled_interaction_is_not_resurrected_by_recovery() {
 #[derive(Debug)]
 struct AwaitingPermission;
 
-impl pl_core::tool::opaque::Tool for AwaitingPermission {
+impl pl_agent_tool::Tool for AwaitingPermission {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "AwaitingPermission",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: OpaquePayload,
@@ -296,12 +313,12 @@ async fn close_stops_runtime_resources_while_preserving_the_pending_interaction(
     let thread = ThreadHandle::start("plan-resources".into(), DynModelSession::new(model)).unwrap();
     thread
         .register_tools(vec![
-            pl_core::tool::opaque::Registration::new(
+            pl_core::tool::opaque::Registration::prepare(
                 "await".into(),
                 OpaquePayload::text("await approval"),
-                AwaitingPermission,
             )
-            .unwrap(),
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(AwaitingPermission)),
         ])
         .await
         .unwrap();

@@ -1,0 +1,28 @@
+[package]
+name = "pl-agent-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Independent executable tool contracts and optional typed author adapters"
+
+[features]
+default = []
+typed = ["dep:schemars", "dep:serde_path_to_error"]
+macros = ["typed", "dep:pl-agent-tool-macros"]
+
+[dependencies]
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde_path_to_error = { workspace = true, optional = true }
+pl-agent-tool-macros = { workspace = true, optional = true }
+
+[[example]]
+name = "add"
+required-features = ["typed"]
+
+[[example]]
+name = "dynamic_schema"
+required-features = ["typed"]

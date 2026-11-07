@@ -1,5 +1,5 @@
 //! Executor ownership is separate from the explicit leases used by frozen calls.
-use super::{Executor, ToolError};
+use super::{RuntimeTool, ToolError};
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::sync::{
     Arc,
@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 
 #[derive(Debug)]
 pub(super) struct ExecutorOwner {
-    executor: Arc<dyn Executor>,
+    executor: RuntimeTool,
     users: AtomicUsize,
     released: Notify,
 }
@@ -18,9 +18,9 @@ pub(super) struct ExecutorOwner {
 pub(super) struct ExecutorLease(Arc<ExecutorOwner>);
 
 impl ExecutorLease {
-    pub(super) fn new(executor: impl Executor + 'static) -> Self {
+    pub(super) fn new(executor: RuntimeTool) -> Self {
         Self(Arc::new(ExecutorOwner {
-            executor: Arc::new(executor),
+            executor,
             users: AtomicUsize::new(1),
             released: Notify::new(),
         }))
@@ -43,9 +43,9 @@ impl Drop for ExecutorLease {
 }
 
 impl std::ops::Deref for ExecutorLease {
-    type Target = dyn Executor;
+    type Target = RuntimeTool;
     fn deref(&self) -> &Self::Target {
-        self.0.executor.as_ref()
+        &self.0.executor
     }
 }
 

@@ -19,7 +19,7 @@ use pl_core::thread::{
 };
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use tokio::sync::watch;
 
@@ -29,7 +29,24 @@ use tool_support::tool;
 #[derive(Debug)]
 struct RetiringTool(tokio::sync::mpsc::UnboundedSender<&'static str>);
 
-impl Tool for RetiringTool {
+impl pl_agent_tool::Tool for RetiringTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "RetiringTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::new(input, vec![]))
     }
@@ -46,6 +63,36 @@ impl Drop for RetiringTool {
 }
 
 #[tokio::test]
+async fn empty_identity_preparation_keeps_resources_available_for_valid_registration() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let tool = RetiringTool(events);
+    assert!(matches!(
+        Registration::prepare(String::new(), OpaquePayload::text("retiring")),
+        Err(pl_core::tool::opaque::RegistryError::EmptyIdentity)
+    ));
+    assert!(
+        received.try_recv().is_err(),
+        "preparation consumed resources"
+    );
+
+    let prepared =
+        Registration::prepare("retiring".into(), OpaquePayload::text("retiring")).unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("prepare-resource".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .register_tools(vec![
+            prepared.attach(pl_core::tool::opaque::RuntimeTool::new(tool)),
+        ])
+        .await
+        .unwrap();
+    thread.close().await.unwrap();
+    assert_eq!(received.recv().await, Some("closed"));
+    assert_eq!(received.recv().await, Some("dropped"));
+    assert_eq!(received.recv().await, None);
+}
+
+#[tokio::test]
 async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
     let (model, _) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("retirement".into(), DynModelSession::new(model)).unwrap();
@@ -53,12 +100,11 @@ async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
         thread
             .register_tools(vec![
-                Registration::new(
-                    "retiring".into(),
-                    OpaquePayload::text("retiring"),
-                    RetiringTool(events),
-                )
-                .unwrap(),
+                Registration::prepare("retiring".into(), OpaquePayload::text("retiring"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                        events,
+                    ))),
             ])
             .await
             .unwrap();
@@ -70,16 +116,38 @@ async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
         assert_eq!(received.recv().await, Some("dropped"));
         assert_eq!(received.recv().await, None);
     }
+    let mut rejected_events = Vec::new();
+    let candidates = (0..2)
+        .map(|_| {
+            let (events, received) = tokio::sync::mpsc::unbounded_channel();
+            rejected_events.push(received);
+            Registration::prepare("duplicate".into(), OpaquePayload::text("duplicate"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                    events,
+                )))
+        })
+        .collect();
+    assert!(thread.register_tools(candidates).await.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        for mut received in rejected_events {
+            assert_eq!(received.recv().await, Some("closed"));
+            assert_eq!(received.recv().await, Some("dropped"));
+            assert_eq!(received.recv().await, None);
+        }
+    })
+    .await
+    .expect("duplicate batch lost rejected candidates");
+
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mut rejected = Box::pin(thread.register_tools_if_extensions(
         thread.snapshot().extension_sequence + 1,
         vec![
-                Registration::new(
-                    "rejected".into(),
-                    OpaquePayload::text("rejected"),
-                    RetiringTool(events),
-                )
-                .unwrap(),
+                Registration::prepare("rejected".into(), OpaquePayload::text("rejected"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                        events,
+                    ))),
             ],
     ));
     assert!(futures::poll!(&mut rejected).is_pending());
@@ -102,7 +170,24 @@ struct FailingClose {
     panic_on_first: bool,
     events: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
-impl Tool for FailingClose {
+impl pl_agent_tool::Tool for FailingClose {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "FailingClose",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::new(input, vec![]))
     }
@@ -137,22 +222,18 @@ async fn tool_cleanup_retains_original_failure_and_retries_only_unfinished_insta
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
         thread
             .register_tools(vec![
-                Registration::new(
-                    "failed".into(),
-                    OpaquePayload::text("failed"),
-                    FailingClose {
+                Registration::prepare("failed".into(), OpaquePayload::text("failed"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FailingClose {
                         first: AtomicBool::new(true),
                         panic_on_first,
                         events: events.clone(),
-                    },
-                )
-                .unwrap(),
-                Registration::new(
-                    "successful".into(),
-                    OpaquePayload::text("successful"),
-                    RetiringTool(events),
-                )
-                .unwrap(),
+                    })),
+                Registration::prepare("successful".into(), OpaquePayload::text("successful"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                        events,
+                    ))),
             ])
             .await
             .unwrap();
@@ -181,7 +262,24 @@ struct InFlightTool {
     events: tokio::sync::mpsc::UnboundedSender<&'static str>,
     release: Arc<tokio::sync::Notify>,
 }
-impl Tool for InFlightTool {
+impl pl_agent_tool::Tool for InFlightTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "InFlightTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         self.events.send("executing").unwrap();
         self.release.notified().await;
@@ -206,16 +304,13 @@ async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
     let release = Arc::new(tokio::sync::Notify::new());
     thread
         .register_tools(vec![
-            Registration::new(
-                "leased".into(),
-                OpaquePayload::text("leased"),
-                InFlightTool {
+            Registration::prepare("leased".into(), OpaquePayload::text("leased"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
                     events,
                     release: release.clone(),
-                },
-            )
-            .unwrap()
-            .foreground_coexisting(),
+                }))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();
@@ -240,7 +335,21 @@ async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
     thread.close().await.unwrap();
 }
 
-impl Tool for FenceTool {
+impl pl_agent_tool::Tool for FenceTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("FenceTool", "Text tool for core runtime tests")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -258,13 +367,12 @@ async fn tool_receives_the_committed_start_fact_as_its_history_fence() {
     let fences = Arc::new(Mutex::new(Vec::new()));
     thread
         .register_tools(vec![
-            Registration::new(
-                "fenced".into(),
-                OpaquePayload::text("fenced tool"),
-                FenceTool(fences.clone()),
-            )
-            .unwrap()
-            .foreground_coexisting(),
+            Registration::prepare("fenced".into(), OpaquePayload::text("fenced tool"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(FenceTool(
+                    fences.clone(),
+                )))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();
@@ -339,7 +447,24 @@ async fn close_cancels_background_task_before_a_blocked_save_finishes() {
         closed: Arc<AtomicBool>,
     }
 
-    impl Tool for HeldUntilCancelled {
+    impl pl_agent_tool::Tool for HeldUntilCancelled {
+        type Input = pl_core::context::OpaquePayload;
+        type Context = pl_core::tool::opaque::CallContext;
+        type Output = pl_core::tool::ToolOutput;
+        type Error = pl_core::tool::opaque::ToolError;
+
+        fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+            static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+                std::sync::LazyLock::new(|| {
+                    pl_agent_tool::ToolDefinition::text(
+                        "HeldUntilCancelled",
+                        "Text tool for core runtime tests",
+                    )
+                    .expect("valid definition")
+                });
+            &DEFINITION
+        }
+
         async fn execute(
             &self,
             _: OpaquePayload,
@@ -383,15 +508,14 @@ async fn close_cancels_background_task_before_a_blocked_save_finishes() {
             .map_err(|error| error.to_string())?;
         thread
             .register_tools(vec![
-                Registration::new(
-                    "held".into(),
-                    OpaquePayload::text("held until cancelled"),
-                    HeldUntilCancelled {
-                        started,
-                        closed: tool_closed.clone(),
-                    },
-                )
-                .map_err(|error| error.to_string())?,
+                Registration::prepare("held".into(), OpaquePayload::text("held until cancelled"))
+                    .map_err(|error| error.to_string())?
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(
+                        HeldUntilCancelled {
+                            started,
+                            closed: tool_closed.clone(),
+                        },
+                    )),
             ])
             .await
             .map_err(|error| error.to_string())?;
@@ -546,7 +670,24 @@ async fn close_cancels_background_task_before_a_blocked_save_finishes() {
 #[derive(Debug)]
 struct SideEffectTool(Arc<AtomicBool>);
 
-impl Tool for SideEffectTool {
+impl pl_agent_tool::Tool for SideEffectTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "SideEffectTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -577,13 +718,12 @@ async fn attached_store_must_flush_the_start_fact_before_a_tool_runs() {
         .unwrap();
     thread
         .register_tools(vec![
-            Registration::new(
-                "fenced".into(),
-                OpaquePayload::text("fenced tool"),
-                SideEffectTool(executed.clone()),
-            )
-            .unwrap()
-            .foreground_coexisting(),
+            Registration::prepare("fenced".into(), OpaquePayload::text("fenced tool"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(SideEffectTool(
+                    executed.clone(),
+                )))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();
@@ -631,13 +771,12 @@ async fn failed_tool_fence_blocks_the_executor_and_latches_storage_fault() {
         .unwrap();
     thread
         .register_tools(vec![
-            Registration::new(
-                "fenced".into(),
-                OpaquePayload::text("fenced tool"),
-                SideEffectTool(executed.clone()),
-            )
-            .unwrap()
-            .foreground_coexisting(),
+            Registration::prepare("fenced".into(), OpaquePayload::text("fenced tool"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(SideEffectTool(
+                    executed.clone(),
+                )))
+                .foreground_coexisting(),
         ])
         .await
         .unwrap();

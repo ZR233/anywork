@@ -14,6 +14,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
@@ -28,6 +29,7 @@ import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
@@ -213,6 +215,7 @@ final class _Harness {
       expandable: true,
     ),
     Widget? dock,
+    double? currentHeight,
   }) {
     for (final unit in presentation.live.value) {
       unit.expansion.expanded ??= false;
@@ -231,13 +234,13 @@ final class _Harness {
         return () => display = null;
       },
     );
+    final body = dock == null
+        ? currentView
+        : Column(mainAxisSize: MainAxisSize.min, children: [currentView, dock]);
     return _host(
-      dock == null
-          ? currentView
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [currentView, dock],
-            ),
+      currentHeight == null
+          ? body
+          : SizedBox(height: currentHeight, child: body),
     );
   }
 
@@ -735,6 +738,106 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'non-text current windows remain scrollable below a short activity viewport',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final longBody = '${List.filled(40, '较长的读取窗口正文').join('\n')}\n窗口末尾可达';
+      final references = [
+        for (var index = 0; index < 3; index++) _ref(revision: index + 1),
+      ];
+      final item = TimelineItem(
+        id: 'status-window-set',
+        kind: TimelineItemKind.status,
+        source: const OperationChatSource(operationId: 'window-operation'),
+        atomKind: ChatAtomKind.receipt,
+        delivery: ChatDeliveryKind.independent,
+        contents: [
+          for (final reference in references)
+            ChatAtomContent(role: ChatContentRole.body, reference: reference),
+        ],
+        admissionClosed: false,
+      );
+      await h.accept([item]);
+      await tester.binding.setSurfaceSize(const Size(760, 400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      // The activity shell reserves 24 px for its outer and inner padding.
+      await tester.pumpWidget(h.host(currentHeight: 59.1));
+      expect(h.content.scopes, hasLength(1));
+      final scope = h.content.scopes.single;
+      expect(scope.watches, hasLength(3));
+      final longBytes = utf8.encode(longBody);
+      for (var index = 0; index < scope.watches.length; index++) {
+        scope.watches[index].add(
+          index == 2
+              ? ContentWindow(
+                  bytes: Uint8List.fromList(longBytes),
+                  offset: 0,
+                  generation: 'g',
+                  availableThrough: longBytes.length,
+                  sealed: true,
+                )
+              : _window('短窗口 $index'),
+        );
+      }
+      await _flush(tester);
+
+      expect(tester.takeException(), isNull);
+      final windows = h.display!.windows.toList();
+      expect(windows, hasLength(3));
+      expect(windows.map((window) => window.id).toSet(), {'status-window-set'});
+      expect(
+        windows.map((window) => window.reference).toSet(),
+        references.toSet(),
+      );
+      expect(
+        scope.requests.map((request) => request.$1).toSet(),
+        references.toSet(),
+      );
+      final body = find.byWidgetPredicate(
+        (widget) =>
+            widget is ConversationCurrentWindowView && widget.text == longBody,
+      );
+      expect(body, findsOneWidget);
+      final scrollable = Scrollable.of(
+        tester.element(body),
+        axis: Axis.vertical,
+      );
+      final scroll = find.byWidget(scrollable.widget);
+      final position = scrollable.position;
+      expect(position.viewportDimension, closeTo(35.1, 0.1));
+      expect(position.maxScrollExtent, greaterThan(0));
+      expect(find.textContaining('窗口末尾可达'), findsOneWidget);
+      await tester.drag(scroll, const Offset(0, -5000));
+      await tester.pump();
+      expect(position.pixels, closeTo(position.maxScrollExtent, 0.001));
+      position.jumpTo(position.maxScrollExtent - 15);
+      await tester.pump();
+      final paragraph = tester.renderObject<RenderParagraph>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is RichText && widget.text.toPlainText() == longBody,
+        ),
+      );
+      final markerStart = longBody.indexOf('窗口末尾可达');
+      final boxes = paragraph.getBoxesForSelection(
+        TextSelection(baseOffset: markerStart, extentOffset: longBody.length),
+      );
+      expect(boxes, hasLength(1));
+      final marker = boxes.single.toRect().shift(
+        paragraph.localToGlobal(Offset.zero),
+      );
+      final viewport = tester.getRect(scroll).inflate(1);
+      expect(viewport.contains(marker.topLeft), isTrue);
+      expect(viewport.contains(marker.bottomRight), isTrue);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+    },
+  );
 
   testWidgets(
     'real group members share the outer reading viewport and remain reachable when height shrinks',
