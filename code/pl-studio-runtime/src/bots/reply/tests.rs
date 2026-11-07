@@ -6,9 +6,10 @@ use super::super::content::{
 use super::*;
 use crate::bots::commands::archive_tests::Fixture;
 use pl_protocol::{
-    ChatMessage, ContentOwner, ContentRef, ContentTarget, CurrentContentPreview,
-    CurrentContentRole, CurrentProjection, CurrentTurnHead, PayloadData, ThreadStatus,
-    ThreadTextChannel, TurnPhase,
+    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry,
+    ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome, ContentOwner,
+    ContentRef, ContentTarget, CurrentContentPreview, CurrentContentRole, CurrentProjection,
+    CurrentTurnHead, PayloadData, ThreadStatus, ThreadTextChannel, TurnPhase,
 };
 use std::time::Duration;
 
@@ -18,13 +19,63 @@ fn message(
     kind: &str,
     data: serde_json::Value,
     bodies: serde_json::Value,
-) -> ChatMessage {
-    ChatMessage { id: id.into(), payload: PayloadData::Inline { bytes: serde_json::to_vec(&serde_json::json!({
+) -> ChatEntry {
+    let domain = match kind {
+        "text" => ChatAtomKind::Text,
+        "turn" => ChatAtomKind::TurnReceipt,
+        "tool" => ChatAtomKind::Interaction,
+        "plan" => ChatAtomKind::Plan,
+        _ => ChatAtomKind::Unknown,
+    };
+    let channel = data
+        .get("channel")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let mut entry = atom(id, turn, domain, PayloadData::Inline { bytes: serde_json::to_vec(&serde_json::json!({
         "contract":"anywork.chat/1", "type":kind, "turnId":turn, "data":data, "bodies":bodies,
-    })).unwrap() } }
+    })).unwrap() });
+    if let ChatEntry::Atom(atom) = &mut entry {
+        atom.text_channel = channel;
+    }
+    entry
 }
 
-fn text(id: &str, turn: Option<&str>, channel: &str, value: &str) -> ChatMessage {
+fn atom(id: &str, turn: Option<&str>, kind: ChatAtomKind, payload: PayloadData) -> ChatEntry {
+    ChatEntry::Atom(Box::new(ChatAtom {
+        id: id.into(),
+        completion_item_id: Some(id.into()),
+        content_present: None,
+        completion_seq: Some(1),
+        source: turn.map_or_else(
+            || ChatSourceId::Receipt {
+                receipt_id: id.into(),
+            },
+            |turn| ChatSourceId::ForegroundTurn {
+                turn_id: turn.into(),
+            },
+        ),
+        source_state: None,
+        source_order: None,
+        kind,
+        delivery: ChatDeliveryKind::Foreground,
+        lifecycle: ChatAtomLifecycle::Terminal {
+            started: None,
+            ended: None,
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        turn_id: turn.map(str::to_owned),
+        attempt_id: None,
+        tool: None,
+        wait: None,
+        text_channel: None,
+        started_at: None,
+        finished_at: None,
+        contents: Vec::new(),
+        payload: Some(payload),
+    }))
+}
+
+fn text(id: &str, turn: Option<&str>, channel: &str, value: &str) -> ChatEntry {
     message(
         id,
         turn,
@@ -32,6 +83,19 @@ fn text(id: &str, turn: Option<&str>, channel: &str, value: &str) -> ChatMessage
         serde_json::json!({"channel":channel}),
         serde_json::json!([{"key":"body", "byteLength":value.len(), "inline":value.as_bytes()}]),
     )
+}
+
+fn ended_source() -> ChatEntry {
+    ChatEntry::Source(ChatSourceState {
+        source: ChatSourceId::ForegroundTurn {
+            turn_id: "target".into(),
+        },
+        lifecycle: ChatSourceLifecycle::Ended {
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        started: None,
+        ended: None,
+    })
 }
 
 fn current(
@@ -46,7 +110,6 @@ fn current(
     current.active_turn = Some(CurrentTurnHead {
         id: turn.into(),
         phase: TurnPhase::Responding,
-        children_parent_id: None,
     });
     current.previews.push(CurrentContentPreview {
         id: item.into(),
@@ -114,6 +177,62 @@ fn only_canonical_final_response_current_can_authorize_outbound_preview() -> any
     Ok(())
 }
 
+#[test]
+fn typed_turn_terminal_waits_for_the_delivered_item_cut_not_just_state() -> anyhow::Result<()> {
+    let mut projection = ReplyProjection::new("target");
+    projection.mark_covered();
+    let terminal = TurnState::Completed(pl_protocol::CompletedTurnState::new(
+        Some(1),
+        3,
+        pl_protocol::TurnCompletion::Normal,
+    ));
+    projection.observe_terminal(&terminal);
+    assert!(
+        projection.terminal().is_none(),
+        "State alone authorized final delivery"
+    );
+    let mut cut = CurrentProjection::empty(3, ThreadStatus::Idle);
+    let ChatEntry::Source(source) = ended_source() else {
+        unreachable!()
+    };
+    cut.sources = vec![source];
+    cut.items = vec![pl_protocol::TimelineItem {
+        id: "text:part".into(),
+        kind: pl_protocol::TimelineItemKind::Text,
+        source: ChatSourceId::ForegroundTurn {
+            turn_id: "target".into(),
+        },
+        atom_kind: Some(ChatAtomKind::Text),
+        delivery: ChatDeliveryKind::Foreground,
+        text_channel: Some(ThreadTextChannel::Final),
+        turn_id: Some("target".into()),
+        started_at: None,
+        finished_at: None,
+        outcome: Some(ChatTerminalOutcome::Completed),
+        summary: None,
+        members: None,
+        contents: Vec::new(),
+        payload: None,
+        content_item_id: Some("original-part".into()),
+        position: None,
+        admission_closed: true,
+    }];
+    projection.set_current(cut.clone())?;
+    assert!(
+        projection.terminal().is_none(),
+        "undelivered Final suffix was ignored"
+    );
+    assert!(projection.terminal_cut_to_qualify().is_none());
+    cut.items.clear();
+    projection.set_current(cut)?;
+    assert_eq!(projection.terminal(), Some(terminal));
+    assert!(
+        projection.completed()?.is_empty(),
+        "a synthetic success receipt was inserted into Main"
+    );
+    Ok(())
+}
+
 /// Observe the real provider/Model -> current snapshot before passing its exact
 /// ChatBatch through ReplyWatch's production reducer. The taken batch is staged
 /// before any await, preserving the normal pending-owner cancellation boundary.
@@ -160,18 +279,238 @@ async fn receive_production_current(
 #[test]
 fn opaque_cursor_and_coverage_budgets_do_not_infer_eof_from_short_pages() {
     let mut coverage = Coverage::default();
-    assert!(coverage.page(1).is_ok());
+    let fact = text("counted", Some("target"), "final", "x");
+    assert!(coverage.page(std::slice::from_ref(&fact)).is_ok());
     assert!(coverage.cursor("opaque, not Core seq").is_ok());
-    assert!(coverage.page(0).is_ok());
+    assert!(coverage.page(&[]).is_ok());
     assert!(coverage.cursor("another opaque cursor").is_ok());
     assert!(coverage.cursor("another opaque cursor").is_err());
     assert!(coverage.cursor("").is_err());
-    assert!(coverage.page(MAX_TURN_CONTENT_ITEMS).is_err());
+    assert!(coverage.page(&vec![fact; MAX_TURN_CONTENT_ITEMS]).is_err());
     let mut empty = Coverage::default();
     for _ in 0..MAX_TURN_CONTENT_ITEMS {
-        assert!(empty.page(0).is_ok());
+        assert!(empty.page(&[]).is_ok());
     }
-    assert!(empty.page(0).is_err());
+    assert!(empty.page(&[]).is_err());
+    let mut sources = Coverage::default();
+    assert!(
+        sources
+            .admit(&vec![ended_source(); MAX_TURN_CONTENT_ITEMS])
+            .is_ok()
+    );
+    assert!(
+        sources.admit(&[ended_source()]).is_err(),
+        "source facts cannot bypass admission"
+    );
+    let mut live = Coverage::default();
+    for _ in 0..=MAX_TURN_CONTENT_ITEMS {
+        assert!(
+            live.admit(&[]).is_ok(),
+            "preview-only updates are not recovery pages"
+        );
+    }
+}
+
+#[tokio::test]
+async fn typed_atoms_preserve_payload_owner_final_qualification_and_unrelated_work_budget()
+-> anyhow::Result<()> {
+    use anyhow::Context;
+    let fixture = Fixture::new().await?;
+    let inbound = fixture.inbound("reply-typed-atoms", true).await?;
+    let runtime = &fixture.host.runtime;
+    let mut watch = ReplyWatch::open(runtime, &inbound.creation_id).await?;
+    watch
+        .select_target(runtime, "input", Some("target"))
+        .await?;
+    let reader = watch.reader();
+    let mut active = text("unfinished", Some("target"), "final", "not completed");
+    if let ChatEntry::Atom(atom) = &mut active {
+        atom.lifecycle = ChatAtomLifecycle::Active {
+            started: None,
+            status: ChatActiveStatus::Running,
+        };
+        atom.completion_item_id = None;
+        atom.completion_seq = None;
+        atom.payload = None;
+    }
+    assert!(decode_entry(&reader, &active, "target").await?.is_none());
+    assert!(
+        decode_entry(&reader, &ended_source(), "target")
+            .await?
+            .is_none()
+    );
+    for kind in [
+        ChatAtomKind::Reasoning,
+        ChatAtomKind::ToolCall,
+        ChatAtomKind::FileChange,
+        ChatAtomKind::Skill,
+        ChatAtomKind::Compaction,
+    ] {
+        let mut work = atom(
+            "receipt",
+            Some("target"),
+            kind,
+            PayloadData::Deferred {
+                reference: ContentRef {
+                    database_id: "must-not-be-read".into(),
+                    target: ContentTarget::ItemPayload {
+                        item_id: "receipt".into(),
+                    },
+                },
+                byte_length: MAX_TURN_BODY_BYTES as u64 + 1,
+            },
+        );
+        if let ChatEntry::Atom(atom) = &mut work {
+            atom.id = "stable-work-member".into();
+        }
+        assert!(decode_entry(&reader, &work, "target").await?.is_none());
+    }
+    for conflict in [
+        "turn",
+        "source",
+        "channel",
+        "unknown-channel",
+        "domain",
+        "payload-id",
+        "completion-position",
+        "body-owner",
+    ] {
+        let mut entry = text("answer", Some("target"), "final", "must not export");
+        if let ChatEntry::Atom(atom) = &mut entry {
+            match conflict {
+                "turn" => {
+                    atom.turn_id = Some("other".into());
+                    atom.source = ChatSourceId::ForegroundTurn {
+                        turn_id: "other".into(),
+                    };
+                }
+                "source" => {
+                    atom.source = ChatSourceId::ForegroundTurn {
+                        turn_id: "other".into(),
+                    }
+                }
+                "channel" => atom.text_channel = Some(ThreadTextChannel::Commentary),
+                "unknown-channel" => atom.text_channel = None,
+                "domain" => atom.kind = ChatAtomKind::Plan,
+                "completion-position" => atom.completion_seq = None,
+                "body-owner" => atom.contents.push(pl_protocol::ChatAtomContent {
+                    role: pl_protocol::ChatContentRole::Body,
+                    reference: ContentRef {
+                        database_id: "fixture".into(),
+                        target: ContentTarget::Body {
+                            owner: ContentOwner::Item {
+                                item_id: "other".into(),
+                            },
+                            key: "body".into(),
+                        },
+                    },
+                }),
+                _ => {
+                    atom.payload = Some(PayloadData::Deferred {
+                        reference: ContentRef {
+                            database_id: "must-not-be-read".into(),
+                            target: ContentTarget::ItemPayload {
+                                item_id: "other".into(),
+                            },
+                        },
+                        byte_length: 1,
+                    })
+                }
+            }
+        }
+        assert!(
+            decode_entry(&reader, &entry, "target").await.is_err(),
+            "{conflict}"
+        );
+    }
+    let mut completed = text("frozen-owner", Some("target"), "final", "answer");
+    if let ChatEntry::Atom(atom) = &mut completed {
+        atom.id = "stable-member".into();
+    }
+    let item = decode_entry(&reader, &completed, "target").await?.unwrap();
+    assert_eq!(item.id, "frozen-owner");
+    assert_eq!(item.member_id, "stable-member");
+    let ChatEntry::Atom(atom) = completed.clone() else {
+        unreachable!()
+    };
+    let display = ChatEntry::Item(Box::new(pl_protocol::TimelineItem {
+        id: "display-identity-is-not-the-content-owner".into(),
+        kind: pl_protocol::TimelineItemKind::Text,
+        source: atom.source,
+        atom_kind: Some(atom.kind),
+        delivery: atom.delivery,
+        text_channel: atom.text_channel,
+        turn_id: atom.turn_id,
+        started_at: None,
+        finished_at: None,
+        outcome: Some(ChatTerminalOutcome::Completed),
+        summary: None,
+        members: None,
+        contents: atom.contents,
+        payload: atom.payload,
+        content_item_id: atom.completion_item_id,
+        position: Some(7),
+        admission_closed: true,
+    }));
+    let display_reply = decode_entry(&reader, &display, "target")
+        .await?
+        .context("Main Item final")?;
+    assert_eq!(display_reply.id, "frozen-owner");
+    assert_eq!(display_reply.member_id, "frozen-owner");
+    watch.stage(ChatBatch {
+        placement: ChatPlacement::Append,
+        entries: vec![active, ended_source(), completed],
+        before: None,
+        current: Some(current(
+            "target",
+            "stable-member",
+            CurrentContentRole::Response,
+            Some(ThreadTextChannel::Final),
+            "must not duplicate",
+        )),
+    })?;
+    watch.finish_pending().await?;
+    assert_eq!(watch.preview().as_deref(), Some("answer"));
+    assert!(
+        watch.terminal("target").is_none(),
+        "source end is not a Turn receipt"
+    );
+    for entry in [
+        message(
+            "question",
+            Some("target"),
+            "tool",
+            serde_json::json!({"userInput":{"interactionId":"question-interaction"}}),
+            serde_json::json!([]),
+        ),
+        message(
+            "plan",
+            Some("target"),
+            "plan",
+            serde_json::json!({"interactionId":"plan-interaction"}),
+            serde_json::json!([]),
+        ),
+    ] {
+        assert!(matches!(
+            decode_entry(&reader, &entry, "target").await?,
+            Some(super::super::content::ReplyItem {
+                kind: super::super::content::ReplyItemKind::Interaction(_),
+                ..
+            })
+        ));
+    }
+    assert!(
+        watch
+            .stage(ChatBatch {
+                placement: ChatPlacement::Append,
+                entries: vec![ended_source(); demand().max_items as usize + 1],
+                before: None,
+                current: None,
+            })
+            .is_err()
+    );
+    watch.close().await?;
+    fixture.shutdown().await
 }
 
 #[tokio::test]
@@ -190,11 +529,11 @@ async fn exact_target_envelope_and_current_retirement_never_mix_other_turns_or_t
         text("unbound", None, "final", "unknown"),
         text("commentary", Some("target"), "commentary", "commentary"),
     ] {
-        assert!(decode_message(&reader, &other, "target").await?.is_none());
+        assert!(decode_entry(&reader, &other, "target").await?.is_none());
     }
     watch.stage(ChatBatch {
         placement: ChatPlacement::Append,
-        messages: vec![text("done", Some("target"), "final", "completed")],
+        entries: vec![text("done", Some("target"), "final", "completed")],
         before: None,
         current: Some(current(
             "target",
@@ -208,7 +547,7 @@ async fn exact_target_envelope_and_current_retirement_never_mix_other_turns_or_t
     assert_eq!(watch.preview().as_deref(), Some("completed"));
     watch.stage(ChatBatch {
         placement: ChatPlacement::Append,
-        messages: vec![],
+        entries: vec![],
         before: None,
         current: Some(current(
             "target",
@@ -223,7 +562,7 @@ async fn exact_target_envelope_and_current_retirement_never_mix_other_turns_or_t
     // None keeps current; a concrete empty snapshot retires it without losing completion.
     watch.stage(ChatBatch {
         placement: ChatPlacement::Append,
-        messages: vec![],
+        entries: vec![],
         before: None,
         current: None,
     })?;
@@ -248,7 +587,7 @@ async fn exact_target_envelope_and_current_retirement_never_mix_other_turns_or_t
     ] {
         watch.stage(ChatBatch {
             placement: ChatPlacement::Append,
-            messages: vec![],
+            entries: vec![],
             before: None,
             current: Some(snapshot),
         })?;
@@ -287,6 +626,13 @@ async fn malformed_or_unknown_final_and_oversized_deferred_payload_are_errors() 
             serde_json::json!([]),
         ),
         message(
+            "unknown-raw",
+            Some("target"),
+            "raw",
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ),
+        message(
             "length",
             Some("target"),
             "text",
@@ -300,18 +646,22 @@ async fn malformed_or_unknown_final_and_oversized_deferred_payload_are_errors() 
             serde_json::json!({"channel":"final"}),
             serde_json::json!([{"key":"body","byteLength":1,"reference":{"databaseId":"fixture","target":{"kind":"body","owner":{"kind":"item","itemId":"different"},"key":"body"}}}]),
         ),
-        ChatMessage {
-            id: "bad-json".into(),
-            payload: PayloadData::Inline {
+        atom(
+            "bad-json",
+            Some("target"),
+            ChatAtomKind::Unknown,
+            PayloadData::Inline {
                 bytes: b"{".to_vec(),
             },
-        },
+        ),
     ] {
-        assert!(decode_message(&reader, &invalid, "target").await.is_err());
+        assert!(decode_entry(&reader, &invalid, "target").await.is_err());
     }
-    let oversized = ChatMessage {
-        id: "large".into(),
-        payload: PayloadData::Deferred {
+    let mut oversized = atom(
+        "large",
+        Some("target"),
+        ChatAtomKind::Unknown,
+        PayloadData::Deferred {
             byte_length: MAX_TURN_BODY_BYTES as u64 + 1,
             reference: ContentRef {
                 database_id: "does-not-exist".into(),
@@ -320,10 +670,13 @@ async fn malformed_or_unknown_final_and_oversized_deferred_payload_are_errors() 
                 },
             },
         },
-    };
+    );
+    if let ChatEntry::Atom(atom) = &mut oversized {
+        atom.id = "stable-member".into();
+    }
     // The nonexistent IO target must not be read before enforcing the bot budget.
     assert!(
-        matches!(decode_message(&reader, &oversized, "target").await, Err(FinalError::Attention(message)) if message.contains("800000"))
+        matches!(decode_entry(&reader, &oversized, "target").await, Err(FinalError::Attention(message)) if message.contains("800000"))
     );
     let cancelled = TurnState::Cancelled(pl_protocol::CancelledTurnState::new(
         Some(1),
@@ -339,7 +692,7 @@ async fn malformed_or_unknown_final_and_oversized_deferred_payload_are_errors() 
         serde_json::json!([]),
     );
     assert!(matches!(
-        decode_message(&reader, &receipt, "target").await?,
+        decode_entry(&reader, &receipt, "target").await?,
         Some(super::super::content::ReplyItem {
             kind: super::super::content::ReplyItemKind::Terminal(state), ..
         }) if state == cancelled
@@ -430,7 +783,7 @@ async fn prepend_empty_pages_preserve_coverage_and_append_does_not_replace_befor
         .await?;
     watch.stage(ChatBatch {
         placement: ChatPlacement::Set,
-        messages: vec![text("newer", Some("target"), "final", "B")],
+        entries: vec![text("newer", Some("target"), "final", "B")],
         before: Some("opaque-one".into()),
         current: Some(CurrentProjection::empty(1, ThreadStatus::Idle)),
     })?;
@@ -443,7 +796,7 @@ async fn prepend_empty_pages_preserve_coverage_and_append_does_not_replace_befor
     ));
     watch.stage(ChatBatch {
         placement: ChatPlacement::Append,
-        messages: vec![message(
+        entries: vec![message(
             "terminal",
             Some("target"),
             "turn",
@@ -463,7 +816,7 @@ async fn prepend_empty_pages_preserve_coverage_and_append_does_not_replace_befor
     assert!(watch.projection().unwrap().completed().is_err());
     watch.stage(ChatBatch {
         placement: ChatPlacement::Prepend,
-        messages: vec![],
+        entries: vec![],
         before: Some("opaque-two".into()),
         current: None,
     })?;
@@ -472,7 +825,7 @@ async fn prepend_empty_pages_preserve_coverage_and_append_does_not_replace_befor
     assert!(watch.projection().unwrap().completed().is_err());
     watch.stage(ChatBatch {
         placement: ChatPlacement::Prepend,
-        messages: vec![text("older", Some("target"), "final", "A")],
+        entries: vec![text("older", Some("target"), "final", "A")],
         before: None,
         current: None,
     })?;
@@ -670,6 +1023,15 @@ async fn real_model_completion_reads_long_final_ranges_and_rebuilds_on_a_new_lea
             anyhow::ensure!(collect_complete_turn_text(&runtime, &reader, &projection).await.is_err(), "closed read qualification authorized final collection");
             watch.reconnect(&runtime).await?;
             watch.ensure_coverage().await?;
+            // Coverage recovers only Main's prefix. The new lease must still
+            // consume its queued typed State terminal and qualify the delivered
+            // current/source cut; success has no synthetic Main receipt.
+            tokio::time::timeout(Duration::from_secs(20), async {
+                while watch.terminal(&target).is_none() { watch.receive().await?; }
+                Ok::<_,FinalError>(())
+            }).await??;
+            anyhow::ensure!(matches!(watch.terminal(&target),Some(TurnState::Completed(_))),
+                "new lease did not observe the real successful target terminal");
             let rebuilt = watch.projection().ok_or_else(|| anyhow::anyhow!("missing rebuilt target projection"))?;
             anyhow::ensure!(matches!(collect_complete_turn_text(&runtime, &watch.reader(), &rebuilt).await?, FinalText::CompleteText(text) if text == expected), "rebuilt final text differs from the full answer");
             Ok::<_, anyhow::Error>(())

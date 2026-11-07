@@ -10,11 +10,14 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
+import '../state/timeline_display_unit.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
+import 'timeline_display_unit_view.dart';
+import 'timeline_content_range_view.dart';
 
 typedef ChatContentRangeBuilder = Widget Function(
   String itemId,
@@ -24,29 +27,33 @@ typedef ChatContentRangeBuilder = Widget Function(
   Widget Function(String text, Widget child) witness,
 );
 
-/// One immutable producer item, one custom Message. Disclosures and decoded
-/// presentation stay on this row; no cross-item grouping or historical cache.
+/// Renders one admitted item or display unit. Grouping belongs to the sole
+/// presentation owner; this view owns only disclosure and decoded presentation.
 class ChatItemView extends StatefulWidget {
   const ChatItemView({
     super.key,
     required this.item,
     this.bodyBuilder,
     this.contentRangeBuilder,
-    this.childrenBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
+    this.groupMembersBuilder,
+    this.onToolExpansionChanged,
+    this.toolInitiallyExpanded = false,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
   final ChatContentRangeBuilder? contentRangeBuilder;
-  final Widget Function(String parentId)? childrenBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
+  final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
+  final ValueChanged<bool>? onToolExpansionChanged;
+  final bool toolInitiallyExpanded;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -108,6 +115,37 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    if (item.isKnownEmptyText) return const SizedBox.shrink();
+    final unit = item.displayUnit;
+    if (unit != null && item.type == 'displayUnit') {
+      if (unit.item.kind != TimelineItemKind.workGroup) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (unit.item.contents.isEmpty) const Text('内容状态未知'),
+            for (var index = 0; index < unit.item.contents.length; index++)
+              widget.contentRangeBuilder?.call(
+                    unit.id,
+                    'content-$index',
+                    '查看内容',
+                    unit.item.contents[index].reference,
+                    _contentWitness,
+                  ) ??
+                  const Text('内容读取尚未就绪'),
+          ],
+        );
+      }
+      return KeyedSubtree(
+        key: ValueKey('chat-item:${unit.id}'),
+        child: TimelineDisplayUnitView(
+          key: ValueKey(unit.id),
+          unit: unit,
+          executionPresent: false,
+          childBuilder: (_) =>
+              widget.groupMembersBuilder?.call(unit) ?? const Text('成员读取尚未就绪'),
+        ),
+      );
+    }
     developer.Timeline.instantSync(
       'conversation.row.build',
       arguments: {'itemId': item.id},
@@ -164,10 +202,10 @@ class _ChatItemViewState extends State<ChatItemView> {
     ),
     'agent' => _agent(context),
     'inference' => _inference(context),
-    'contextCompaction' => _record(
-      Icons.compress_outlined,
-      '上下文压缩 · ${item.data['beforeTokens'] ?? '?'} → ${item.data['afterTokens'] ?? '?'} tokens',
-      item.data,
+    'contextCompaction' => TimelineActivityRow(
+      icon: Icons.compress_outlined,
+      label: context.l10n.timelineContextCompacted,
+      expandable: false,
     ),
     'raw' => _raw(context),
     _ => _unavailable('未知内容类别：${item.type}', null),
@@ -210,13 +248,15 @@ class _ChatItemViewState extends State<ChatItemView> {
           padding: const EdgeInsetsDirectional.only(
             start: TimelineActivityRow.contentIndent,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final body in item.bodies) _body(body),
-              _outcomeNotice(item.data['outcome']),
-            ],
+          child: TimelineBodyReadIntent(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final body in item.bodies) _body(body),
+                _outcomeNotice(item.data['outcome']),
+              ],
+            ),
           ),
         ),
       ],
@@ -238,16 +278,67 @@ class _ChatItemViewState extends State<ChatItemView> {
     final Widget card;
     if (reading is DecodedToolCard) {
       final tool = reading.value;
+      final identity = item.atom?.tool;
+      if (identity != null && identity.callId != tool.toolCallId) {
+        return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
+      }
+      // Main Status owns its declarations on the Item, not a fabricated Atom.
+      final declaredContents = item.displayUnit == null
+          ? item.atom?.contents
+          : item.displayUnit!.item.contents;
+      final contents = declaredContents
+          ?.where(
+            (content) =>
+                content.role == ChatContentRole.toolArguments ||
+                content.role == ChatContentRole.toolOutput,
+          )
+          .toList();
+      final wait = item.atom?.wait ?? tool.wait;
+      final details = TimelineToolDetails(
+        item: tool,
+        inline: wait != null,
+        initiallyExpanded: widget.toolInitiallyExpanded,
+        onExpansionChanged: widget.onToolExpansionChanged,
+        additionalContentBuilder: item.attachments.isEmpty
+            ? null
+            : (_) => _media(),
+        declaredContents: contents == null || contents.isEmpty
+            ? null
+            : [
+                for (final content in contents)
+                  TimelineBodyReadIntent(
+                    child:
+                        widget.contentRangeBuilder?.call(
+                          item.id,
+                          content.role.name,
+                          content.role == ChatContentRole.toolArguments
+                              ? '工具参数'
+                              : '工具输出',
+                          content.reference,
+                          _contentWitness,
+                        ) ??
+                        const Text('内容读取尚未就绪'),
+                  ),
+              ],
+      );
       card = TimelineActivityTileTheme(
-        child: tool.wait != null
+        child: wait != null
             ? TimelineWaitPanel(
                 identity: item.id,
-                presentation: tool.wait!,
-                diagnostics: TimelineToolDetails(item: tool),
+                presentation: wait,
+                initiallyExpanded: widget.toolInitiallyExpanded,
+                diagnostics: details,
+                onExpansionChanged: widget.onToolExpansionChanged,
               )
-            : timelineIsWebSearch(tool)
-            ? TimelineWebSearchToolCard(item: tool)
-            : TimelineToolDetails(item: tool),
+            : timelineIsWebSearch(tool) &&
+                  item.attachments.isEmpty &&
+                  (contents == null || contents.isEmpty)
+            ? TimelineWebSearchToolCard(
+                item: tool,
+                initiallyExpanded: widget.toolInitiallyExpanded,
+                onExpansionChanged: widget.onToolExpansionChanged,
+              )
+            : details,
       );
     } else {
       final unavailable = reading as UnavailableToolCard;
@@ -263,20 +354,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       };
       card = _unavailable(label, unavailable.reason);
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        card,
-        _media(),
-        // References are explicit producer entries; no private receipt or arbitrary
-        // JSON-field search is used to discover a body.
-        if (reading is DecodedToolCard) ...[
-          for (final body in _publicBodies)
-            if (body.reference != null) _body(body),
-          _rawRecord(),
-        ],
-      ],
-    );
+    return card;
   }
 
   Widget _turn(BuildContext context) {
@@ -294,15 +372,7 @@ class _ChatItemViewState extends State<ChatItemView> {
           ? Icons.stop_circle_outlined
           : Icons.account_tree_outlined,
       title,
-      [
-        _outcomeNotice(outcome),
-        if (item.childrenParentId case final parent?)
-          if (widget.childrenBuilder case final builder?)
-            builder(parent)
-          else
-            const Text('子内容读取尚未就绪'),
-        _rawRecord(),
-      ],
+      [_outcomeNotice(outcome), _rawRecord()],
       issue: state == 'failed' || state == 'budgetLimited',
     );
   }
@@ -541,6 +611,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (diagnostic != null) Text(diagnostic),
       for (final body in _publicBodies) _body(body, code: item.type == 'tool'),
       _publicEnvelope(),
+      if (item.type == 'tool') Builder(builder: (_) => _media()),
     ],
   );
   Widget _disclosure(
@@ -551,6 +622,10 @@ class _ChatItemViewState extends State<ChatItemView> {
   }) => TimelineActivityTileTheme(
     child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
+      initiallyExpanded: item.type == 'tool' && widget.toolInitiallyExpanded,
+      onExpansionChanged: item.type == 'tool'
+          ? widget.onToolExpansionChanged
+          : null,
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: icon,
         label: title,

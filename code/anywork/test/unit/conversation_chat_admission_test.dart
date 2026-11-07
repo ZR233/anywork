@@ -6,24 +6,40 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/conversation/data/conversation_content_impl.dart';
 import 'package:anywork_client/src/lifecycle/resource_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+
+import '../support/chat_fixtures.dart' show workItem;
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
-CurrentProjection _current(int source) => CurrentProjection(
-  sourceEffectSeq: source,
-  logicalStatus: ThreadStatusView.idle,
-  executionPresent: false,
-  previews: const [],
-  collections: const [],
-);
+CurrentProjection _current(int source, {List<TimelineItem> items = const []}) =>
+    CurrentProjection(
+      sourceEffectSeq: source,
+      logicalStatus: ThreadStatusView.idle,
+      executionPresent: false,
+      sources: const [],
+      atoms: const [],
+      items: items,
+      previews: const [],
+      collections: const [],
+    );
 
 ChatBatch _batch(ChatPlacement placement, {int? current, String? before}) =>
     ChatBatch(
       placement: placement,
-      messages: [
-        ChatMessage(
-          id: '${placement.name}:${current ?? before}',
-          payload: InlinePayload(bytes: const [123, 125]),
+      entries: [
+        ItemChatEntry(
+          TimelineItem(
+            id: '${placement.name}:${current ?? before}',
+            source: const ForegroundTurnChatSource(turnId: 'turn'),
+            kind: TimelineItemKind.status,
+            atomKind: ChatAtomKind.receipt,
+            delivery: ChatDeliveryKind.independent,
+            admissionClosed: true,
+            contents: const [],
+            payload: InlinePayload(bytes: const [123, 125]),
+          ),
         ),
       ],
       current: current == null ? null : _current(current),
@@ -31,6 +47,149 @@ ChatBatch _batch(ChatPlacement placement, {int? current, String? before}) =>
     );
 
 void main() {
+  test('manifest and body queries never ACK a frame or automatically admit history', () async {
+    final h = _Harness()..attach();
+    final feed = await h.opened();
+    feed.send(
+      1,
+      ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+    );
+    await feed.ack(1);
+    final scope = h.owner.openScope(generation: 1);
+    final listing = scope.listContents(
+      itemId: 'original-payload',
+      continuation: 'opaque-manifest',
+      demand: _demand,
+    );
+    final manifest = ContentManifestPage(
+      entries: const [],
+      continuation: 'next-manifest',
+    );
+    feed.reader.manifest.complete(manifest);
+    expect(await listing, same(manifest));
+    expect(feed.reader.manifestRequests.single, (
+      'original-payload',
+      'opaque-manifest',
+      _demand,
+    ));
+    const reference = ContentRef(
+      databaseId: 'database',
+      target: ItemPayloadTarget(itemId: 'original-payload'),
+    );
+    const range = ContentRange(offset: 7, maxBytes: 32);
+    final reading = scope.readContent(reference: reference, range: range);
+    final body = ContentWindow(
+      bytes: const [0, 34, 255],
+      offset: 7,
+      generation: 'body-generation',
+      availableThrough: 10,
+      sealed: true,
+    );
+    feed.reader.body.complete(body);
+    expect(await reading, same(body));
+    expect(feed.reader.bodyRequests.single, (reference, range));
+    expect(h.consumer.batches, hasLength(1));
+    expect(feed.reader.loads, 0);
+    expect(feed.acks, [
+      1,
+    ], reason: 'Queries do not own feed credit or history admission');
+    expect((await h.owner.close()).complete, isTrue);
+  });
+
+  for (final lateFailure in [false, true]) {
+    test(
+      'body query retirement revokes synchronously and joins original late ${lateFailure ? 'failure' : 'success'}',
+      () async {
+        final h = _Harness()..attach();
+        final feed = await h.opened();
+        feed.send(
+          1,
+          ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+        );
+        await feed.ack(1);
+        final scope = h.owner.openScope(generation: 1);
+        const reference = ContentRef(
+          databaseId: 'database',
+          target: ItemPayloadTarget(itemId: 'retired-body'),
+        );
+        final query = scope.readContent(
+          reference: reference,
+          range: const ContentRange(offset: 0, maxBytes: 16),
+        );
+        final rejected = expectLater(
+          query,
+          throwsA(isA<StaleConversationScope>()),
+        );
+        scope.retire();
+        expect(scope.isActive, isFalse);
+        var joined = false;
+        final close = scope.close().then((report) {
+          joined = true;
+          return report;
+        });
+        await Future<void>.delayed(Duration.zero);
+        expect(joined, isFalse);
+        if (lateFailure) {
+          feed.reader.body.completeError(StateError('original body failed'));
+        } else {
+          feed.reader.body.complete(
+            ContentWindow(
+              bytes: const [65],
+              offset: 0,
+              generation: 'retired-generation',
+              availableThrough: 1,
+              sealed: true,
+            ),
+          );
+        }
+        await rejected;
+        expect((await close).complete, isTrue);
+        expect(h.consumer.batches, hasLength(1));
+        expect(feed.acks, [1]);
+        expect(h.budget.used(ResourceKind.pendingOperation), 0);
+        expect((await h.owner.close()).complete, isTrue);
+      },
+    );
+  }
+  test('real serial ACK does not wait for a work group endpoint, body, expansion or layout', () async {
+    final h = _Harness();
+    final controller = InMemoryChatController();
+    final presentation = TimelineMessageController(controller, generation: 1);
+    h.attach(presentation);
+    final feed = await h.opened();
+    feed.send(
+      1,
+      ConversationChatEvent(
+        batch: ChatBatch(
+          placement: ChatPlacement.set,
+          entries: const [],
+          current: _current(
+            1,
+            items: [workItem('group', closed: false, active: 1, count: 1)],
+          ),
+        ),
+      ),
+    );
+    await feed.ack(1).timeout(const Duration(seconds: 2));
+    expect(presentation.live.value.single.item.summary!.memberCount, 1);
+    expect(controller.messages, isEmpty);
+    feed.send(
+      2,
+      ConversationChatEvent(
+        batch: ChatBatch(
+          placement: ChatPlacement.append,
+          entries: [ItemChatEntry(workItem('group', count: 1))],
+          current: _current(2),
+        ),
+      ),
+    );
+    await feed.ack(2).timeout(const Duration(seconds: 2));
+    expect(presentation.live.value, isEmpty);
+    expect(controller.messages, hasLength(1));
+    expect((await h.owner.close()).complete, isTrue);
+    presentation.dispose();
+    controller.dispose();
+  });
   test('scope retirement rejects a page already queued behind component acceptance', () async {
     final h = _Harness();
     final accepting = Completer<void>();
@@ -247,12 +406,12 @@ void main() {
       feed.send(
         1,
         ConversationChatEvent(
-          batch: ChatBatch(placement: ChatPlacement.set, messages: const []),
+          batch: ChatBatch(placement: ChatPlacement.set, entries: const []),
         ),
       );
       await h.owner.ready;
       expect(h.owner.current.value, isNull);
-      expect(h.consumer.batches.single.messages, isEmpty);
+      expect(h.consumer.batches.single.entries, isEmpty);
       expect((await h.owner.close()).complete, isTrue);
     },
   );
@@ -471,8 +630,8 @@ final class _Harness {
   }
 
   late final ConversationContentImpl owner;
-  Observation attach() {
-    final lease = owner.attachConsumer(consumer, demand: _demand);
+  Observation attach([ConversationBatchConsumer? target]) {
+    final lease = owner.attachConsumer(target ?? consumer, demand: _demand);
     owner.setDemand(true);
     return lease;
   }
@@ -561,6 +720,10 @@ final class _Reader implements ConversationReader {
   @override
   String get threadId => 'thread';
   final page = Completer<ChatBatch>();
+  final manifest = Completer<ContentManifestPage>();
+  final body = Completer<ContentWindow>();
+  final manifestRequests = <(String, String?, ReadDemand)>[];
+  final bodyRequests = <(ContentRef, ContentRange)>[];
   int loads = 0;
   ConversationContentWatch Function()? watchFactory;
   @override
@@ -577,12 +740,20 @@ final class _Reader implements ConversationReader {
     required String itemId,
     String? continuation,
     required ReadDemand demand,
-  }) async => ContentManifestPage(entries: const []);
+  }) {
+    manifestRequests.add((itemId, continuation, demand));
+    return manifest.future;
+  }
+
   @override
   Future<ContentWindow> readContent({
     required ContentRef reference,
     required ContentRange range,
-  }) => throw UnimplementedError();
+  }) {
+    bodyRequests.add((reference, range));
+    return body.future;
+  }
+
   @override
   ConversationContentWatch watchContent({
     required ContentRef reference,

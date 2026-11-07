@@ -166,7 +166,8 @@ impl ThreadHandle {
             pending_model_update: None,
             pending_runtime_facts: Default::default(),
             context_preparation: None,
-            compacting_progress: None,
+            compaction_call: None,
+            pending_context_compactions: Vec::new(),
             model_progress: None,
             effect_window: effect_window.clone(),
             permission_leases: Default::default(),
@@ -218,6 +219,7 @@ impl ThreadHandle {
             pending_output_claim: None,
             model_members: None,
             pending_model_members: Vec::new(),
+            pending_model_member_starts: Vec::new(),
             resources: None,
             retry_plan: None,
             published,
@@ -343,6 +345,16 @@ impl ThreadHandle {
     /// Returns false when there is no active model/tool/Turn command.
     pub fn interrupt(&self) -> bool {
         self.interrupt.interrupt()
+    }
+
+    /// Signals global shutdown without waiting for commands, storage or resource joins.
+    ///
+    /// Cancels the active generation and independent background tools. Unlike [`Self::close`], this
+    /// does not close the owner or publish a terminal fact: hosts must still call `close` and await
+    /// its result. New execution generations inherit the shutdown signal; existing results and
+    /// terminal producers remain owned until the normal close path drains them.
+    pub fn request_shutdown(&self) {
+        self.interrupt.request_shutdown();
     }
 
     /// Replaces the model session at a serial execution boundary while preserving historical context.

@@ -19,6 +19,7 @@ abstract interface class ConversationReader {
     required String before,
     required ReadDemand demand,
   });
+
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,

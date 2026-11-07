@@ -114,7 +114,7 @@ async fn new_execution_writer_prepares_identity_before_the_first_projection() ->
     let mut prepared = projection
         .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
         .await?;
-    assert_eq!(prepared.current.projection.source_effect_seq, 1);
+    assert_eq!(prepared.current.projection().source_effect_seq, 1);
     projection
         .publish_prepared(&sink.0.chat, &mut prepared)
         .await?;
@@ -418,12 +418,15 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
     assert_eq!(frozen.len(), 2);
     drop(gate);
     let mut status = channel.subscribe();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while status.borrow_and_update().fault.is_none() {
-            status.changed().await?;
-        }
-        Ok::<_, tokio::sync::watch::error::RecvError>(())
-    })
+    tokio::time::timeout(
+        crate::runtime_test_support::integration_test_deadline()?,
+        async {
+            while status.borrow_and_update().fault.is_none() {
+                status.changed().await?;
+            }
+            Ok::<_, tokio::sync::watch::error::RecvError>(())
+        },
+    )
     .await??;
     assert_eq!(
         history.watermark().await?,
@@ -471,8 +474,20 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
     db.execute_unprepared("DROP TRIGGER reject_second_effect")
         .await?;
     // Lose the local queue acknowledgement after the physical commit, then replay that exact batch.
+    let confirmations = channel
+        .order_index
+        .confirm_saved_calls
+        .load(Ordering::Relaxed);
     batch::persist(&fixture.sink.0, &retried).await?;
     batch::persist(&fixture.sink.0, &retried).await?;
+    assert_eq!(
+        channel
+            .order_index
+            .confirm_saved_calls
+            .load(Ordering::Relaxed),
+        confirmations + 2,
+        "each successful physical batch confirms and prunes the order index once"
+    );
     assert_eq!(channel.subscribe().borrow().queued_records, 3);
     assert_eq!(fixture.sink.0.chat.durable_seq(), 2);
     assert_eq!(
@@ -517,8 +532,8 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
         .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(
         applied,
-        [2, 3],
-        "apply each frozen current once, not just the last one"
+        [3],
+        "ordered mutations remain complete, while the batch writes only its final current header"
     );
     let generation = status.borrow().fault_generation;
     drop(gate);

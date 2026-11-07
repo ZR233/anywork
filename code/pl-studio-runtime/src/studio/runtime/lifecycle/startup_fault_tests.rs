@@ -17,6 +17,37 @@ fn options(home: &Path) -> StudioRuntimeOptions {
     }
 }
 
+async fn recover_defaults(
+    home: &Path,
+    broken: &Path,
+    original: &[u8],
+) -> Result<std::path::PathBuf> {
+    let runtime = StudioRuntime::initialize(options(home)).await?;
+    let report = runtime
+        .startup_recovery
+        .as_ref()
+        .expect("recovery reported");
+    let archived = std::path::PathBuf::from(&report.backup_path).join("original");
+    assert_eq!(
+        std::fs::read(archived.join(broken.strip_prefix(home)?))?,
+        original
+    );
+    assert!(runtime.store.catalog().sessions().is_empty());
+    let config = crate::config::ConfigStore::new(crate::config::ConfigPaths::from_config_dir(home))
+        .load()?;
+    assert_eq!(
+        config.schema_version,
+        crate::config::STUDIO_CONFIG_SCHEMA_VERSION
+    );
+    runtime.shutdown_runtime().await?;
+    let reopened = StudioRuntime::initialize(options(home)).await?;
+    assert!(reopened.startup_recovery.is_none());
+    reopened.shutdown_runtime().await?;
+    assert_eq!(std::fs::read_dir(home.join("startup-backups"))?.count(), 1);
+    assert!(!home.join("startup-recovery.toml").exists());
+    Ok(archived)
+}
+
 // Startup assertions need a durable fence while the runtime remains writable.
 // The production shutdown stage also stops the writer and cannot serve this role.
 async fn flush_current_writes(runtime: &StudioRuntime) -> Result<()> {
@@ -386,6 +417,57 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
     Ok(paths)
 }
 
+#[tokio::test]
+async fn catalog_after_636_stale_child_modes_start_without_reset() -> Result<()> {
+    let fixture = include_str!("../../../../tests/fixtures/migration-636/catalog-v4.toml");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let paths = seed(&home).await?;
+    let mut legacy: toml::Table = toml::from_str(fixture)?;
+    legacy["schemaVersion"] = 5_i64.into();
+    for entry in legacy["entries"].as_array_mut().expect("synthetic entries") {
+        let table = entry.as_table_mut().expect("synthetic entry");
+        let workspace = table
+            .remove("projectId")
+            .expect("published project identity");
+        table.insert("workspaceId".into(), workspace);
+    }
+    tokio::fs::write(paths.catalog_file(), toml::to_string(&legacy)?).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(
+        runtime.startup_recovery.is_none(),
+        "valid old mode copies must not reset the product"
+    );
+    let catalog = runtime.store.catalog();
+    assert_eq!(catalog.sessions().len(), 1);
+    assert_eq!(catalog.agents().len(), 2);
+    let session = catalog.get_session("cold").expect("original root");
+    assert_eq!(session.root_agent_id, "cold");
+    assert_eq!(session.mode, pl_protocol::ThreadModeId::simple());
+    let child = catalog
+        .get_agent("synthetic-child")
+        .expect("original child");
+    assert_eq!(child.parent_agent_id.as_deref(), Some("cold"));
+    assert_eq!(child.session_id, "cold");
+    assert_eq!(
+        child.frozen_model().expect("frozen model").model_id,
+        "synthetic-model"
+    );
+    assert!(
+        runtime.threads.observed_threads().is_empty(),
+        "directory migration stays cold"
+    );
+    runtime.shutdown_runtime().await?;
+    let upgraded = tokio::fs::read(paths.catalog_file()).await?;
+    let reopened = StudioRuntime::initialize(options(&home)).await?;
+    assert!(reopened.startup_recovery.is_none());
+    assert_eq!(reopened.store.catalog().agents().len(), 2);
+    reopened.shutdown_runtime().await?;
+    assert_eq!(tokio::fs::read(paths.catalog_file()).await?, upgraded);
+    assert!(!home.join("startup-backups").exists());
+    Ok(())
+}
+
 /// The v2 key had no verifiable credential/query binding. Preserve its exact bytes through a
 /// durable load migration and restart rather than claiming those balances belong to today's query.
 #[tokio::test]
@@ -435,8 +517,7 @@ async fn account_usage_v2_load_migration_preserves_unbound_money_and_survives_re
 }
 
 #[tokio::test]
-async fn account_usage_future_cache_version_fails_migration_without_resetting_user_data()
--> Result<()> {
+async fn account_usage_future_cache_is_backed_up_before_default_startup() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
     let paths = seed(&home).await?;
@@ -444,26 +525,17 @@ async fn account_usage_future_cache_version_fails_migration_without_resetting_us
     let catalog = std::fs::read(paths.catalog_file())?;
     write_account_usage_settings_fixture(&paths, future)?;
     let original_settings = std::fs::read(paths.settings_file())?;
-    let error = match StudioRuntime::initialize(options(&home)).await {
-        Ok(runtime) => {
-            runtime.shutdown_runtime().await?;
-            anyhow::bail!("future usage cache must refuse startup");
-        }
-        Err(error) => error,
-    };
-    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-    assert_eq!(std::fs::read(paths.settings_file())?, original_settings);
-    assert!(!home.join("startup-backups").exists());
-    assert_eq!(std::fs::read(paths.catalog_file())?, catalog);
+    let archived = recover_defaults(&home, &paths.settings_file(), &original_settings).await?;
+    assert_eq!(std::fs::read(archived.join("data/catalog.toml"))?, catalog);
     assert_eq!(
-        std::fs::read(home.join("agents/preserved.bin"))?,
+        std::fs::read(archived.join("agents/preserved.bin"))?,
         b"agent bytes"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn canonical_toml_document_faults_fail_migration_without_backup_or_rewrite() -> Result<()> {
+async fn canonical_toml_document_faults_are_backed_up_before_default_startup() -> Result<()> {
     for name in ["catalog", "settings", "workspaces"] {
         for (case, bytes) in [
             ("future-version", b"schemaVersion = 99\n".as_slice()),
@@ -480,20 +552,9 @@ async fn canonical_toml_document_faults_fail_migration_without_backup_or_rewrite
             };
             std::fs::write(&path, bytes)?;
             let original = std::fs::read(&path)?;
-            let error = StudioRuntime::initialize(options(&home))
+            recover_defaults(&home, &path, &original)
                 .await
-                .err()
-                .unwrap_or_else(|| panic!("{name} {case} must refuse startup"));
-            assert_eq!(
-                error.kind,
-                StudioStartupErrorKind::Migration,
-                "{name} {case}"
-            );
-            assert_eq!(std::fs::read(&path)?, original, "{name} {case}");
-            assert!(
-                !home.join("startup-backups").exists(),
-                "{name} {case} must not trigger a global backup"
-            );
+                .unwrap_or_else(|error| panic!("{name} {case}: {error:#}"));
         }
     }
     Ok(())
@@ -519,22 +580,42 @@ async fn configuration_agent_and_cache_migration_faults_preserve_originals() -> 
             std::fs::write(&broken, b"invalid persistent data\n")?;
         }
         let original = std::fs::read(&broken)?;
-        let error = StudioRuntime::initialize(options(&home))
+        recover_defaults(&home, &broken, &original)
             .await
-            .err()
-            .unwrap_or_else(|| panic!("{fault} migration fault must refuse startup"));
-        assert_eq!(error.kind, StudioStartupErrorKind::Migration, "{fault}");
-        assert_eq!(std::fs::read(&broken)?, original, "{fault}");
-        assert!(
-            !home.join("startup-backups").exists(),
-            "{fault} must not trigger a global backup"
-        );
+            .unwrap_or_else(|error| panic!("{fault}: {error:#}"));
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn corrupted_current_storage_refuses_reset_and_preserves_external_data() -> Result<()> {
+async fn unsupported_layout_archives_sources_staging_and_configuration_before_defaults()
+-> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path();
+    seed(home).await?;
+    let journal = home.join("storage-migration.toml");
+    let unknown = b"schemaVersion = 99\noperationId = 'future-layout'\n";
+    std::fs::write(&journal, unknown)?;
+    let materials = [
+        "migration-backups/future-layout/v2/history.sqlite-wal",
+        "migration-backups/future-layout/current-home/data/staged.bin",
+        "modes/custom.toml",
+        "mcp/host/unknown.toml",
+    ];
+    for name in materials {
+        let path = home.join(name);
+        std::fs::create_dir_all(path.parent().expect("fixture parent"))?;
+        std::fs::write(path, name.as_bytes())?;
+    }
+    let archived = recover_defaults(home, &journal, unknown).await?;
+    for name in materials {
+        assert_eq!(std::fs::read(archived.join(name))?, name.as_bytes());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn corrupted_current_storage_is_archived_and_preserves_external_data() -> Result<()> {
     for fault in ["product", "calls", "log"] {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
@@ -551,22 +632,17 @@ async fn corrupted_current_storage_refuses_reset_and_preserves_external_data() -
         std::fs::create_dir_all(broken.parent().expect("fault parent"))?;
         std::fs::write(&broken, b"invalid persistent data\n")?;
         let original = std::fs::read(&broken)?;
-        for _ in 0..2 {
-            let error = StudioRuntime::initialize(options(&home))
-                .await
-                .err()
-                .expect("damaged current storage must stop startup");
-            assert_eq!(error.kind, StudioStartupErrorKind::Migration, "{fault}");
-            assert_eq!(std::fs::read(&broken)?, original, "{fault}");
-            assert!(!home.join("startup-backups").exists());
-            assert!(!home.join("startup-recovery.toml").exists());
-        }
+        let archived = recover_defaults(&home, &broken, &original).await?;
         assert_eq!(
-            std::fs::read(cold_session(&paths)?.resources_dir().join("attachment"))?,
+            std::fs::read(
+                archived
+                    .join(cold_session(&paths)?.resources_dir().strip_prefix(&home)?)
+                    .join("attachment")
+            )?,
             b"attachment bytes"
         );
         assert_eq!(
-            std::fs::read(home.join("agents/preserved.bin"))?,
+            std::fs::read(archived.join("agents/preserved.bin"))?,
             b"agent bytes"
         );
         assert_eq!(
@@ -587,6 +663,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     use crate::studio::storage::calls::{
         CallsStore, PurposeUsageProjection, SessionUsageProjection,
     };
+    use anyhow::Context as _;
     let temp = tempfile::tempdir()?;
     let home = temp.path();
     let paths = seed(home).await?;
@@ -617,6 +694,48 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     );
     calls.close().await?;
     let store = crate::config::ConfigStore::new(paths.config_paths());
+    // seed() used today's startup to establish the cold directory. Schema 18
+    // predates the separate MCP documents that this fresh startup created.
+    // Remove only this TempDir's byte-verified defaults, never unknown documents.
+    let host_mcp = paths.config_paths().mcp_host_dir();
+    let seeded_mcp = crate::config::McpFileV1::default_host_builtins()
+        .into_iter()
+        .map(|document| {
+            let path = host_mcp.join(crate::config::canonical_mcp_filename(&document.id)?);
+            Ok((path, document))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let expected_paths = seeded_mcp
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_paths = std::fs::read_dir(&host_mcp)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+    assert_eq!(actual_paths, expected_paths, "unexpected seeded MCP files");
+    for (path, document) in &seeded_mcp {
+        assert!(std::fs::symlink_metadata(path)?.file_type().is_file());
+        assert_eq!(std::fs::read(path)?, document.encode()?.as_bytes());
+    }
+    for (path, _) in &seeded_mcp {
+        std::fs::remove_file(path)?;
+    }
+    std::fs::remove_dir(&host_mcp)?;
+    assert!(!host_mcp.exists());
+    let migration_cwd = std::env::current_dir()?
+        .to_str()
+        .context("MCP migration fixture needs a UTF-8 cwd")?
+        .to_owned();
+    let migrated_mcp = seeded_mcp
+        .into_iter()
+        .map(|(path, document)| {
+            let cwd = (document.id == crate::config::mcp::ZHIPU_VISION_MCP_ID)
+                .then(|| migration_cwd.clone());
+            let expected =
+                crate::config::McpFileV1::new_builtin(document.id, true, cwd).encode()?;
+            Ok((path, expected))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut config = crate::config::StudioConfig::default_config().expect("bundled defaults");
     config.instructions.user = "preserved user instructions".into();
     store.save(&config)?;
@@ -656,6 +775,9 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
     assert_eq!(std::fs::read(cold)?, b"intentionally invalid cold history");
     assert!(!home.join("startup-backups").exists());
     runtime.shutdown_runtime().await?;
+    for (path, expected) in &migrated_mcp {
+        assert_eq!(std::fs::read(path)?, expected.as_bytes());
+    }
     for _ in 0..2 {
         let calls = CallsStore::open(&paths.calls_database()).await?;
         let rollups = calls.session_cost_rollups().await?;
@@ -669,6 +791,9 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
         let reopened = StudioRuntime::initialize(options(home)).await?;
         assert!(reopened.startup_recovery.is_none());
         reopened.shutdown_runtime().await?;
+        for (path, expected) in &migrated_mcp {
+            assert_eq!(std::fs::read(path)?, expected.as_bytes());
+        }
     }
     Ok(())
 }
@@ -700,25 +825,11 @@ async fn conflicting_model_id_migration_preserves_original_through_startup() -> 
         .insert("slug".into(), "conflicting-id".into());
     std::fs::write(&path, toml::to_string(&value)?)?;
     let original = std::fs::read(&path)?;
-    for _ in 0..2 {
-        let error = match StudioRuntime::initialize(options(home)).await {
-            Ok(runtime) => {
-                runtime.shutdown_runtime().await?;
-                anyhow::bail!("migration conflict unexpectedly started Studio")
-            }
-            Err(error) => error,
-        };
-        assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-        let public = crate::studio_error_from_anyhow(error.into());
-        assert!(public.message.contains("原文件已保留"));
-        assert_eq!(std::fs::read(&path)?, original);
-        assert!(!home.join("startup-backups").exists());
-        assert!(!home.join("startup-recovery.toml").exists());
-        assert_eq!(
-            std::fs::read(home.join("sessions/old/checkpoint"))?,
-            b"old session"
-        );
-    }
+    recover_defaults(home, &path, &original).await?;
+    assert_eq!(
+        std::fs::read(home.join("sessions/old/checkpoint"))?,
+        b"old session"
+    );
     Ok(())
 }
 
@@ -858,8 +969,7 @@ async fn cancelled_parallel_preparation_closes_storage_before_releasing_lock() -
 }
 
 #[tokio::test]
-async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sessions() -> Result<()>
-{
+async fn invalid_mode_files_are_archived_before_default_startup() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
     let paths = seed(&home).await?;
@@ -872,19 +982,17 @@ async fn invalid_mode_files_stop_startup_without_resetting_configuration_or_sess
         toml::to_string_pretty(&crate::config::StudioConfig::default_config()?)?,
     )?;
     let config = std::fs::read(home.join("config.toml"))?;
-    let result = StudioRuntime::initialize(options(&home)).await;
-    let error = match result {
-        Ok(runtime) => {
-            runtime.shutdown_runtime().await?;
-            anyhow::bail!("invalid Mode file unexpectedly initialized");
-        }
-        Err(error) => error,
-    };
-    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
-    assert_eq!(std::fs::read(&mode_path)?, original);
-    assert_eq!(std::fs::read(home.join("config.toml"))?, config);
+    let archived = recover_defaults(&home, &mode_path, &original).await?;
+    assert_eq!(std::fs::read(archived.join("config.toml"))?, config);
     assert_eq!(
-        std::fs::read(cold_session(&paths)?.resources_dir().join("attachment"))?,
+        std::fs::read(
+            archived.join(
+                cold_session(&paths)?
+                    .resources_dir()
+                    .join("attachment")
+                    .strip_prefix(&home)?
+            )
+        )?,
         b"attachment bytes"
     );
     assert_eq!(
@@ -919,12 +1027,29 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
     history.commit(1, std::slice::from_ref(&item), &[]).await?;
     drop(history);
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    let facts = db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT COUNT(*) AS count FROM conversation_atom_facts",
+        ))
+        .await?
+        .expect("fixture fact count");
+    assert_eq!(
+        facts.try_get::<i64>("", "count")?,
+        0,
+        "downgrade fixture must not discard real canonical inputs"
+    );
     db.execute_unprepared(
         "DROP TABLE seaql_migrations;
+         DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
          DROP TABLE IF EXISTS timeline_records;
          DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
+         DROP TABLE conversation_sources;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          ALTER TABLE history_input_identities DROP COLUMN request_digest;

@@ -9,8 +9,11 @@ use support::*;
 async fn pending_full_page_does_no_history_io_and_reuses_payload_arcs() {
     let stored = Stored::with([record(1, "durable")]);
     let session = Session::new(stored.clone(), epoch("run-1"));
+    let metadata: Arc<[u8]> = Arc::from([0xff, 0, 3]);
+    let mut first = draft("a", "a");
+    first.metadata = metadata.clone();
     let records = session
-        .publish_batch(vec![draft("a", "a"), draft("b", "b")])
+        .publish_batch(vec![first, draft("b", "b")])
         .await
         .unwrap();
     let page = session.page(latest(2), &Budget::default()).await.unwrap();
@@ -18,6 +21,12 @@ async fn pending_full_page_does_no_history_io_and_reuses_payload_arcs() {
     assert!(page.before.is_some());
     assert!(stored.reads.pages.lock().unwrap().is_empty());
     assert!(stored.reads.afters.lock().unwrap().is_empty());
+    assert!(Arc::ptr_eq(&records[0].header.metadata, &metadata));
+    assert!(Arc::ptr_eq(&page.items[0].header.metadata, &metadata));
+    assert!(
+        page.items[1].header.metadata.is_empty(),
+        "generic empty metadata remains valid"
+    );
     if let PayloadData::Inline(bytes) = &page.items[0].payload {
         assert!(Arc::ptr_eq(bytes, &records[0].payload));
     } else {
@@ -155,6 +164,7 @@ async fn deferred_uses_encoded_envelope_budget_does_not_read_full_payload_and_co
         query_class: "conversation".into(),
         parent_id: None,
         byte_length: 100_000,
+        metadata: Arc::from([]),
     };
     let bytes = budget.fixed_bytes() + budget.item_bytes(&header, PayloadMode::Deferred);
     let page = session
@@ -208,6 +218,99 @@ async fn history_deferred_selects_headers_without_fetching_the_oversized_blob() 
     ));
     assert_eq!(stored.reads.payload_bytes.load(Ordering::SeqCst), 0);
     assert_eq!(stored.reads.item.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn opaque_metadata_is_header_only_and_counted_for_inline_deferred_and_byte_cuts() {
+    for durable in [false, true] {
+        let stored = Stored::with([record(1, "old")]);
+        let metadata: Arc<[u8]> = Arc::from([0xff, 0, 1, 2, 3, 4, 5, 6]);
+        let mut newest = draft("new", "01234567890123456789");
+        newest.metadata = metadata.clone();
+        let frozen = ChatItem::complete(newest.clone(), 2);
+        if durable {
+            stored.insert(frozen.clone());
+        }
+        let session = Session::new(stored.clone(), epoch("metadata-page"));
+        if !durable {
+            session.publish_batch(vec![newest]).await.unwrap();
+        }
+        let budget = Budget::default();
+        let inline = budget.item_bytes(&frozen.header, PayloadMode::Inline);
+        let mut no_metadata = frozen.header.clone();
+        no_metadata.metadata = Arc::from([]);
+        let without_metadata = budget.item_bytes(&no_metadata, PayloadMode::Inline);
+        assert_eq!(inline - without_metadata, metadata.len() * 6);
+        let item_reads = stored.reads.item.load(Ordering::SeqCst);
+
+        // This demand could Inline the payload if metadata were omitted, but must now defer it.
+        let deferred = session
+            .page(
+                ChatPageRequest::latest(
+                    query(),
+                    ReadDemand::new(1, budget.fixed_bytes() + without_metadata),
+                ),
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequences(&deferred.items), [2]);
+        assert!(matches!(
+            deferred.items[0].payload,
+            PayloadData::Deferred {
+                byte_length: 20,
+                ..
+            }
+        ));
+        assert!(Arc::ptr_eq(&deferred.items[0].header.metadata, &metadata));
+        assert_eq!(
+            stored.reads.payload_bytes.load(Ordering::SeqCst),
+            0,
+            "metadata in a durable header must not require fetching the payload"
+        );
+        assert_eq!(stored.reads.item.load(Ordering::SeqCst), item_reads);
+
+        let inline_page = session
+            .page(
+                ChatPageRequest::latest(query(), ReadDemand::new(1, budget.fixed_bytes() + inline)),
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            inline_page.items[0].payload,
+            PayloadData::Inline(_)
+        ));
+        assert!(Arc::ptr_eq(
+            &inline_page.items[0].header.metadata,
+            &metadata
+        ));
+
+        // Metadata is also part of the exact byte cut, not just the Inline/Deferred choice.
+        let cut = session
+            .page(
+                ChatPageRequest::latest(query(), ReadDemand::new(2, budget.fixed_bytes() + inline)),
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequences(&cut.items), [2]);
+        if !durable {
+            assert!(
+                stored.reads.pages.lock().unwrap().is_empty(),
+                "a byte-full pending page still performs zero SQL page queries"
+            );
+        }
+        let older = session
+            .page(
+                ChatPageRequest::before(cut.before.unwrap(), demand(10)),
+                &budget,
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequences(&older.items), [1]);
+        assert!(older.before.is_none());
+    }
 }
 
 #[tokio::test]
@@ -268,10 +371,11 @@ async fn capture_before_commit_clear_retains_arcs_and_fixed_h0_while_new_publica
     let mut history = GatedHistory::new(stored.clone());
     history.page_gate = Some(gate.clone());
     let session = Session::new(history, epoch("run-1"));
-    let records = session
-        .publish_batch(vec![draft("two", "two")])
-        .await
-        .unwrap();
+    let metadata: Arc<[u8]> = Arc::from([0xff, 0, 2]);
+    let weak_metadata = Arc::downgrade(&metadata);
+    let mut completion = draft("two", "two");
+    completion.metadata = metadata.clone();
+    let records = session.publish_batch(vec![completion]).await.unwrap();
     let read = {
         let session = session.clone();
         tokio::spawn(async move { session.page(latest(10), &Budget::default()).await })
@@ -287,6 +391,7 @@ async fn capture_before_commit_clear_retains_arcs_and_fixed_h0_while_new_publica
     let page = read.await.unwrap().unwrap();
     assert_eq!(page.ceiling, 2);
     assert_eq!(sequences(&page.items), [1, 2]);
+    assert!(Arc::ptr_eq(&page.items[1].header.metadata, &metadata));
     assert_eq!(stored.reads.pages.lock().unwrap()[0].ceiling, 1);
     if let PayloadData::Inline(bytes) = &page.items[1].payload {
         assert!(Arc::ptr_eq(bytes, &records[0].payload));
@@ -297,9 +402,32 @@ async fn capture_before_commit_clear_retains_arcs_and_fixed_h0_while_new_publica
     gate.release();
     let mut fixed = latest(10);
     fixed.ceiling = Some(2);
-    let page = session.page(fixed, &Budget::default()).await.unwrap();
-    assert_eq!(sequences(&page.items), [1, 2]);
+    let durable_page = session.page(fixed, &Budget::default()).await.unwrap();
+    assert_eq!(sequences(&durable_page.items), [1, 2]);
+    assert!(Arc::ptr_eq(
+        &durable_page.items[1].header.metadata,
+        &metadata
+    ));
     assert_eq!(stored.reads.pages.lock().unwrap()[1].ceiling, 2);
+    let weak_record = Arc::downgrade(&records[0]);
+    drop(records);
+    assert!(
+        weak_record.upgrade().is_none(),
+        "confirmed pending records are reclaimed"
+    );
+    stored.remove(2);
+    drop(metadata);
+    assert!(
+        weak_metadata.upgrade().is_some(),
+        "read headers still retain frozen metadata"
+    );
+    drop(page);
+    assert!(weak_metadata.upgrade().is_some());
+    drop(durable_page);
+    assert!(
+        weak_metadata.upgrade().is_none(),
+        "no Session-side metadata mirror survives the read"
+    );
 }
 
 #[tokio::test]

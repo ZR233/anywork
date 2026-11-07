@@ -125,7 +125,7 @@ pub(super) fn close_error(frame: Option<CloseFrame>) -> PureError {
     }
 }
 
-pub(super) fn protocol_error(detail: impl AsRef<str>) -> PureError {
+pub(in crate::runtime) fn protocol_error(detail: impl AsRef<str>) -> PureError {
     PureError::provider_failure(pl_protocol::ProviderFailure {
         context: pl_protocol::ProviderFailureContext {
             stage: pl_protocol::ProviderFailureStage::Stream,

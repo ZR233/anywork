@@ -24,7 +24,7 @@
 //!   is no window in which a Ctrl-C would terminate the launcher first and
 //!   let the Job Object cut the tool's cleanup short.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -98,7 +98,7 @@ fn parse_acceptance_executable(stdout: &[u8]) -> Result<PathBuf> {
 pub(crate) fn wait_acceptance_tool(
     executable: &Path,
     args: &[OsString],
-    environment: Option<(&str, &std::ffi::OsStr)>,
+    environment: &[(&str, &OsStr)],
 ) -> Result<()> {
     use std::process::Stdio;
 
@@ -109,10 +109,7 @@ pub(crate) fn wait_acceptance_tool(
     let program = executable.to_string_lossy();
     let display = process::display_command(&program, args);
     let mut command = Command::new(executable);
-    command.args(args);
-    if let Some((name, value)) = environment {
-        command.env(name, value);
-    }
+    command.args(args).envs(environment.iter().copied());
     command.stdin(Stdio::inherit());
     process::run_checked(&mut command, &display)
 }

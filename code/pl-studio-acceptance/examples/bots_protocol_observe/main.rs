@@ -20,6 +20,8 @@ mod server;
 #[cfg(target_os = "linux")]
 mod sqlite;
 #[cfg(target_os = "linux")]
+mod support;
+#[cfg(target_os = "linux")]
 mod thread_watch;
 #[cfg(target_os = "linux")]
 mod topic;

@@ -43,17 +43,9 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
             );
         }
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(workspace)?;
         command
-            .current_dir(workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "wait_events",
-            ])
+            .args(["--suite", "desktop", "--case", "wait_events"])
             .env("ANYWORK_HOME", home)
             .env("ANYWORK_WAIT_PROJECTS", &projects)
             .stdout(Stdio::from(log.try_clone()?))

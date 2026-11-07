@@ -114,7 +114,7 @@ void main() {
     expect(scope.pendingQueries, 1);
     final page = ChatBatch(
       placement: ChatPlacement.prepend,
-      messages: [],
+      entries: [],
       before: 'next',
     );
     reply.complete(page);
@@ -136,7 +136,7 @@ void main() {
       scope.loadOlder(before: 'before', demand: _demand),
       throwsA(same(failure)),
     );
-    final page = ChatBatch(placement: ChatPlacement.prepend, messages: []);
+    final page = ChatBatch(placement: ChatPlacement.prepend, entries: []);
     feed.reader.onOlder = (_, __) async => page;
     expect(
       await scope.loadOlder(before: 'before', demand: _demand),
@@ -213,7 +213,7 @@ void main() {
           reply.complete(
             ChatBatch(
               placement: ChatPlacement.prepend,
-              messages: [chatMessage(id: 'stale')],
+              entries: [ItemChatEntry(chatMessage(id: 'stale'))],
             ),
           );
         }

@@ -5,8 +5,10 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::studio::{AccountModelUpdate, AccountModelsPatch, AccountSecretUpdate};
-use pl_protocol::{AgentWorkspaceMode, ThreadModeId};
+use pl_protocol::studio::{
+    AccountModelUpdate, AccountModelsPatch, AccountSecretUpdate, NewThreadModelRoute,
+};
+use pl_protocol::{AgentBinding, AgentWorkspaceMode, NativeAgentConfig, ThreadModeId};
 use pl_provider_fixture::agent_definitions::{
     CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
     UNAVAILABLE_PROFILE, USER_MODEL_NEW, USER_MODEL_OLD, USER_PROFILE,
@@ -227,10 +229,14 @@ fn user(enabled: bool, role: &str, model: &str) -> Result<UserAgentProfile> {
         display_name: "Observation user Agent".into(),
         description: "Synthetic Agent assembly observation".into(),
         when_to_use: "Explicit opt-in Agent observation only".into(),
-        system_instructions: role.into(),
-        account_id: AccountId::new(CHILD_ACCOUNT)?,
-        model_id: model.into(),
-        effort: None,
+        binding: AgentBinding::Native(NativeAgentConfig {
+            route: Some(NewThreadModelRoute {
+                account_id: AccountId::new(CHILD_ACCOUNT)?.as_str().into(),
+                model_id: model.into(),
+                effort: None,
+            }),
+            system_instructions: Some(role.into()),
+        }),
         workspace_mode: AgentWorkspaceMode::Directory,
     })
 }

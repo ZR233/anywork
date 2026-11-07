@@ -279,12 +279,21 @@ ConversationActivityView? projectConversationActivity({
     }
     return null;
   }
+  final hasActiveText = current.atoms.any(
+    (atom) =>
+        atom.kind == ChatAtomKind.text && atom.lifecycle is ActiveChatAtom,
+  );
   final kind = switch (activity.kind) {
     ThreadActivityKind.preparing => ConversationActivityKind.preparing,
     ThreadActivityKind.compacting => ConversationActivityKind.compacting,
     ThreadActivityKind.waitingApi => ConversationActivityKind.thinking,
     ThreadActivityKind.thinking => ConversationActivityKind.thinking,
-    ThreadActivityKind.responding => ConversationActivityKind.responding,
+    // The attempt can retain its coarse responding phase after a text part has
+    // ended. Only a real unfinished text atom still owns a live response.
+    ThreadActivityKind.responding =>
+      hasActiveText
+          ? ConversationActivityKind.responding
+          : ConversationActivityKind.thinking,
     ThreadActivityKind.planning => ConversationActivityKind.planning,
     ThreadActivityKind.runningTool => ConversationActivityKind.runningTool,
     ThreadActivityKind.awaitingApproval =>
@@ -292,7 +301,12 @@ ConversationActivityView? projectConversationActivity({
     ThreadActivityKind.awaitingInput => ConversationActivityKind.awaitingInput,
     ThreadActivityKind.stopping => ConversationActivityKind.stopping,
   };
-  final summary = _singleLine(activity.summary);
+  // A coarse responding summary belongs to that response, not to the next
+  // thinking interval. Keep a separately typed thinking summary unchanged.
+  final summary =
+      activity.kind == ThreadActivityKind.responding && !hasActiveText
+      ? ''
+      : _singleLine(activity.summary);
   return ConversationActivityView(
     identity: activity.id,
     kind: kind,

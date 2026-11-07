@@ -7,7 +7,7 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         bash ca-certificates curl openssh-client libnss-wrapper python3 xz-utils unzip zstd \
         clang cmake ninja-build pkg-config build-essential libgtk-3-dev \
-        binutils dpkg-dev desktop-file-utils xvfb xauth dbus-x11 \
+        binutils dpkg-dev desktop-file-utils xvfb xauth dbus-x11 gnome-keyring libglib2.0-bin fuse3 util-linux \
         libgl1-mesa-dri libglx-mesa0 libegl1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/anywork-toolchain

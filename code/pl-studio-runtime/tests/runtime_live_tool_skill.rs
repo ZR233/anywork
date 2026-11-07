@@ -6,8 +6,8 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentRange, ContentRef, PayloadData,
-    ReadDemand, SkillActivationCause, ThreadSkillItem, ThreadWorkspaceMode, TurnState,
+    ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentRange, ContentRef,
+    PayloadData, ReadDemand, SkillActivationCause, ThreadSkillItem, ThreadWorkspaceMode, TurnState,
     studio::StopThreadRequest,
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -41,8 +41,18 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     .context("public Chat did not arrive")?
 }
 
-async fn frozen_payload(reader: &ConversationReader, message: &ChatMessage) -> Result<Value> {
-    let bytes = match &message.payload {
+fn atoms(entries: Vec<ChatEntry>) -> Vec<ChatAtom> {
+    entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(*atom),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn frozen_payload(reader: &ConversationReader, message: &ChatAtom) -> Result<Value> {
+    let bytes = match message.payload.as_ref().context("completed payload")? {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
             reference,
@@ -95,7 +105,7 @@ async fn read_sealed(
 async fn original_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String, Value>> {
     let first = chat(feed).await?;
     ensure!(first.placement == ChatPlacement::Set && first.current.is_none());
-    let mut messages = first.messages;
+    let mut messages = atoms(first.entries);
     let mut before = first.before;
     for _ in 0..8 {
         let Some(cursor) = before else {
@@ -116,7 +126,7 @@ async fn original_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String
             "cursor did not advance"
         );
         before = page.before;
-        messages.splice(0..0, page.messages);
+        messages.splice(0..0, atoms(page.entries));
     }
     anyhow::bail!("fixture exceeded its explicit Children paging bound")
 }
@@ -132,7 +142,7 @@ async fn live_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String, Va
         {
             let append = chat(feed).await?;
             ensure!(append.placement == ChatPlacement::Append && append.current.is_none());
-            for message in append.messages {
+            for message in atoms(append.entries) {
                 let payload = frozen_payload(feed.reader(), &message).await?;
                 ensure!(
                     members.insert(message.id, payload).is_none(),
@@ -209,7 +219,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
                 if let Some(head) = batch.current.and_then(|current| current.active_turn)
                     && head.id == turn_id
                 {
-                    let parent = head.children_parent_id.context("current head has no real Children parent")?;
+                    let parent = pl_core::chat::ChatKey::new("turn", &head.id)?.as_str().to_owned();
                     ensure!(parent == pl_core::chat::ChatKey::new("turn", &turn_id)?.as_str());
                     return Ok::<_, anyhow::Error>(parent);
                 }

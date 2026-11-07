@@ -60,6 +60,7 @@ import 'api/studio/types/thread_activity.dart';
 import 'api/studio/types/thread_preparation.dart';
 import 'api/studio/types/thread_stream.dart';
 import 'api/studio/types/thread_stream/item.dart';
+import 'api/studio/types/timeline.dart';
 import 'api/studio/types/updater.dart';
 
 import 'dart:async';
@@ -503,6 +504,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtomKind dco_decode_box_autoadd_bridge_chat_atom_kind(dynamic raw);
+
+  @protected
+  BridgeChatFactPosition dco_decode_box_autoadd_bridge_chat_fact_position(
+    dynamic raw,
+  );
+
+  @protected
   BridgeChatGptAccountInfo dco_decode_box_autoadd_bridge_chat_gpt_account_info(
     dynamic raw,
   );
@@ -517,6 +526,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatScope dco_decode_box_autoadd_bridge_chat_scope(dynamic raw);
+
+  @protected
+  BridgeChatSourceState dco_decode_box_autoadd_bridge_chat_source_state(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatTerminalOutcome dco_decode_box_autoadd_bridge_chat_terminal_outcome(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatToolIdentity dco_decode_box_autoadd_bridge_chat_tool_identity(
+    dynamic raw,
+  );
 
   @protected
   BridgeCheckFailedUpdaterState
@@ -764,6 +788,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgePatchAccountInput dco_decode_box_autoadd_bridge_patch_account_input(
     dynamic raw,
   );
+
+  @protected
+  BridgePayloadData dco_decode_box_autoadd_bridge_payload_data(dynamic raw);
 
   @protected
   BridgePersistenceStateSnapshot
@@ -1019,6 +1046,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_thread_wait_target_status(dynamic raw);
 
   @protected
+  BridgeTimelineGroupSummary
+  dco_decode_box_autoadd_bridge_timeline_group_summary(dynamic raw);
+
+  @protected
+  BridgeTimelineMembersRef dco_decode_box_autoadd_bridge_timeline_members_ref(
+    dynamic raw,
+  );
+
+  @protected
   BridgeTodoListSnapshot dco_decode_box_autoadd_bridge_todo_list_snapshot(
     dynamic raw,
   );
@@ -1179,6 +1215,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtom dco_decode_box_bridge_chat_atom(dynamic raw);
+
+  @protected
   BridgeChatBatch dco_decode_box_bridge_chat_batch(dynamic raw);
 
   @protected
@@ -1239,6 +1278,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadSubscriptionUpdate
   dco_decode_box_bridge_thread_subscription_update(dynamic raw);
+
+  @protected
+  BridgeTimelineItem dco_decode_box_bridge_timeline_item(dynamic raw);
 
   @protected
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
@@ -1676,7 +1718,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCancellingAgent dco_decode_bridge_cancelling_agent(dynamic raw);
 
   @protected
+  BridgeChatActiveStatus dco_decode_bridge_chat_active_status(dynamic raw);
+
+  @protected
+  BridgeChatAtom dco_decode_bridge_chat_atom(dynamic raw);
+
+  @protected
+  BridgeChatAtomContent dco_decode_bridge_chat_atom_content(dynamic raw);
+
+  @protected
+  BridgeChatAtomKind dco_decode_bridge_chat_atom_kind(dynamic raw);
+
+  @protected
+  BridgeChatAtomLifecycle dco_decode_bridge_chat_atom_lifecycle(dynamic raw);
+
+  @protected
   BridgeChatBatch dco_decode_bridge_chat_batch(dynamic raw);
+
+  @protected
+  BridgeChatContentRole dco_decode_bridge_chat_content_role(dynamic raw);
+
+  @protected
+  BridgeChatDeliveryKind dco_decode_bridge_chat_delivery_kind(dynamic raw);
+
+  @protected
+  BridgeChatEntry dco_decode_bridge_chat_entry(dynamic raw);
+
+  @protected
+  BridgeChatFactPosition dco_decode_bridge_chat_fact_position(dynamic raw);
 
   @protected
   BridgeChatGptAccountInfo dco_decode_bridge_chat_gpt_account_info(dynamic raw);
@@ -1705,13 +1774,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatMessage dco_decode_bridge_chat_message(dynamic raw);
-
-  @protected
   BridgeChatPlacement dco_decode_bridge_chat_placement(dynamic raw);
 
   @protected
   BridgeChatScope dco_decode_bridge_chat_scope(dynamic raw);
+
+  @protected
+  BridgeChatSourceId dco_decode_bridge_chat_source_id(dynamic raw);
+
+  @protected
+  BridgeChatSourceLifecycle dco_decode_bridge_chat_source_lifecycle(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatSourceState dco_decode_bridge_chat_source_state(dynamic raw);
+
+  @protected
+  BridgeChatTerminalOutcome dco_decode_bridge_chat_terminal_outcome(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatToolIdentity dco_decode_bridge_chat_tool_identity(dynamic raw);
 
   @protected
   BridgeCheckFailedUpdaterState dco_decode_bridge_check_failed_updater_state(
@@ -2808,6 +2893,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineCategory dco_decode_bridge_timeline_category(dynamic raw);
+
+  @protected
+  BridgeTimelineCategoryCount dco_decode_bridge_timeline_category_count(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeTimelineGroupSummary dco_decode_bridge_timeline_group_summary(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeTimelineItem dco_decode_bridge_timeline_item(dynamic raw);
+
+  @protected
+  BridgeTimelineItemKind dco_decode_bridge_timeline_item_kind(dynamic raw);
+
+  @protected
+  BridgeTimelineMembersRef dco_decode_bridge_timeline_members_ref(dynamic raw);
+
+  @protected
   BridgeTodoItem dco_decode_bridge_todo_item(dynamic raw);
 
   @protected
@@ -3175,7 +3282,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeBotSnapshot> dco_decode_list_bridge_bot_snapshot(dynamic raw);
 
   @protected
-  List<BridgeChatMessage> dco_decode_list_bridge_chat_message(dynamic raw);
+  List<BridgeChatAtom> dco_decode_list_bridge_chat_atom(dynamic raw);
+
+  @protected
+  List<BridgeChatAtomContent> dco_decode_list_bridge_chat_atom_content(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeChatEntry> dco_decode_list_bridge_chat_entry(dynamic raw);
+
+  @protected
+  List<BridgeChatSourceState> dco_decode_list_bridge_chat_source_state(
+    dynamic raw,
+  );
 
   @protected
   List<BridgeChildInteractionSummary>
@@ -3375,6 +3495,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeTimelineCategoryCount>
+  dco_decode_list_bridge_timeline_category_count(dynamic raw);
+
+  @protected
+  List<BridgeTimelineItem> dco_decode_list_bridge_timeline_item(dynamic raw);
+
+  @protected
   List<BridgeTodoItem> dco_decode_list_bridge_todo_item(dynamic raw);
 
   @protected
@@ -3535,12 +3662,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
   @protected
+  BridgeChatAtomKind? dco_decode_opt_box_autoadd_bridge_chat_atom_kind(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatFactPosition? dco_decode_opt_box_autoadd_bridge_chat_fact_position(
+    dynamic raw,
+  );
+
+  @protected
   BridgeChatGptAccountInfo?
   dco_decode_opt_box_autoadd_bridge_chat_gpt_account_info(dynamic raw);
 
   @protected
   BridgeChatGptLoginFailure?
   dco_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(dynamic raw);
+
+  @protected
+  BridgeChatSourceState? dco_decode_opt_box_autoadd_bridge_chat_source_state(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeChatTerminalOutcome?
+  dco_decode_opt_box_autoadd_bridge_chat_terminal_outcome(dynamic raw);
+
+  @protected
+  BridgeChatToolIdentity? dco_decode_opt_box_autoadd_bridge_chat_tool_identity(
+    dynamic raw,
+  );
 
   @protected
   BridgeCodexAccountInfo? dco_decode_opt_box_autoadd_bridge_codex_account_info(
@@ -3656,6 +3807,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_new_thread_model_route(dynamic raw);
 
   @protected
+  BridgePayloadData? dco_decode_opt_box_autoadd_bridge_payload_data(
+    dynamic raw,
+  );
+
+  @protected
   BridgePlanDocument? dco_decode_opt_box_autoadd_bridge_plan_document(
     dynamic raw,
   );
@@ -3750,6 +3906,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadWaitTargetStatus?
   dco_decode_opt_box_autoadd_bridge_thread_wait_target_status(dynamic raw);
+
+  @protected
+  BridgeTimelineGroupSummary?
+  dco_decode_opt_box_autoadd_bridge_timeline_group_summary(dynamic raw);
+
+  @protected
+  BridgeTimelineMembersRef?
+  dco_decode_opt_box_autoadd_bridge_timeline_members_ref(dynamic raw);
 
   @protected
   BridgeTodoListSnapshot? dco_decode_opt_box_autoadd_bridge_todo_list_snapshot(
@@ -4347,6 +4511,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtomKind sse_decode_box_autoadd_bridge_chat_atom_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatFactPosition sse_decode_box_autoadd_bridge_chat_fact_position(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatGptAccountInfo sse_decode_box_autoadd_bridge_chat_gpt_account_info(
     SseDeserializer deserializer,
   );
@@ -4365,6 +4539,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatScope sse_decode_box_autoadd_bridge_chat_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatSourceState sse_decode_box_autoadd_bridge_chat_source_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatTerminalOutcome sse_decode_box_autoadd_bridge_chat_terminal_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatToolIdentity sse_decode_box_autoadd_bridge_chat_tool_identity(
     SseDeserializer deserializer,
   );
 
@@ -4690,6 +4879,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgePatchAccountInput sse_decode_box_autoadd_bridge_patch_account_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgePayloadData sse_decode_box_autoadd_bridge_payload_data(
     SseDeserializer deserializer,
   );
 
@@ -5031,6 +5225,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineGroupSummary
+  sse_decode_box_autoadd_bridge_timeline_group_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineMembersRef sse_decode_box_autoadd_bridge_timeline_members_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTodoListSnapshot sse_decode_box_autoadd_bridge_todo_list_snapshot(
     SseDeserializer deserializer,
   );
@@ -5231,6 +5436,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtom sse_decode_box_bridge_chat_atom(SseDeserializer deserializer);
+
+  @protected
   BridgeChatBatch sse_decode_box_bridge_chat_batch(
     SseDeserializer deserializer,
   );
@@ -5307,6 +5515,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadSubscriptionUpdate
   sse_decode_box_bridge_thread_subscription_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineItem sse_decode_box_bridge_timeline_item(
     SseDeserializer deserializer,
   );
 
@@ -5898,7 +6111,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatActiveStatus sse_decode_bridge_chat_active_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatAtom sse_decode_bridge_chat_atom(SseDeserializer deserializer);
+
+  @protected
+  BridgeChatAtomContent sse_decode_bridge_chat_atom_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatAtomKind sse_decode_bridge_chat_atom_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatAtomLifecycle sse_decode_bridge_chat_atom_lifecycle(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatBatch sse_decode_bridge_chat_batch(SseDeserializer deserializer);
+
+  @protected
+  BridgeChatContentRole sse_decode_bridge_chat_content_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatDeliveryKind sse_decode_bridge_chat_delivery_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatEntry sse_decode_bridge_chat_entry(SseDeserializer deserializer);
+
+  @protected
+  BridgeChatFactPosition sse_decode_bridge_chat_fact_position(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeChatGptAccountInfo sse_decode_bridge_chat_gpt_account_info(
@@ -5931,17 +6185,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatMessage sse_decode_bridge_chat_message(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeChatPlacement sse_decode_bridge_chat_placement(
     SseDeserializer deserializer,
   );
 
   @protected
   BridgeChatScope sse_decode_bridge_chat_scope(SseDeserializer deserializer);
+
+  @protected
+  BridgeChatSourceId sse_decode_bridge_chat_source_id(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatSourceLifecycle sse_decode_bridge_chat_source_lifecycle(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatSourceState sse_decode_bridge_chat_source_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatTerminalOutcome sse_decode_bridge_chat_terminal_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatToolIdentity sse_decode_bridge_chat_tool_identity(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeCheckFailedUpdaterState sse_decode_bridge_check_failed_updater_state(
@@ -7280,6 +7554,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineCategory sse_decode_bridge_timeline_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineCategoryCount sse_decode_bridge_timeline_category_count(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineGroupSummary sse_decode_bridge_timeline_group_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineItem sse_decode_bridge_timeline_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineItemKind sse_decode_bridge_timeline_item_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineMembersRef sse_decode_bridge_timeline_members_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTodoItem sse_decode_bridge_todo_item(SseDeserializer deserializer);
 
   @protected
@@ -7733,7 +8037,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeChatMessage> sse_decode_list_bridge_chat_message(
+  List<BridgeChatAtom> sse_decode_list_bridge_chat_atom(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeChatAtomContent> sse_decode_list_bridge_chat_atom_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeChatEntry> sse_decode_list_bridge_chat_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeChatSourceState> sse_decode_list_bridge_chat_source_state(
     SseDeserializer deserializer,
   );
 
@@ -7971,6 +8290,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeTimelineCategoryCount>
+  sse_decode_list_bridge_timeline_category_count(SseDeserializer deserializer);
+
+  @protected
+  List<BridgeTimelineItem> sse_decode_list_bridge_timeline_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeTodoItem> sse_decode_list_bridge_todo_item(
     SseDeserializer deserializer,
   );
@@ -8165,6 +8493,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtomKind? sse_decode_opt_box_autoadd_bridge_chat_atom_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatFactPosition? sse_decode_opt_box_autoadd_bridge_chat_fact_position(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatGptAccountInfo?
   sse_decode_opt_box_autoadd_bridge_chat_gpt_account_info(
     SseDeserializer deserializer,
@@ -8173,6 +8511,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeChatGptLoginFailure?
   sse_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatSourceState? sse_decode_opt_box_autoadd_bridge_chat_source_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatTerminalOutcome?
+  sse_decode_opt_box_autoadd_bridge_chat_terminal_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatToolIdentity? sse_decode_opt_box_autoadd_bridge_chat_tool_identity(
     SseDeserializer deserializer,
   );
 
@@ -8322,6 +8676,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgePayloadData? sse_decode_opt_box_autoadd_bridge_payload_data(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgePlanDocument? sse_decode_opt_box_autoadd_bridge_plan_document(
     SseDeserializer deserializer,
   );
@@ -8450,6 +8809,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadWaitTargetStatus?
   sse_decode_opt_box_autoadd_bridge_thread_wait_target_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineGroupSummary?
+  sse_decode_opt_box_autoadd_bridge_timeline_group_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineMembersRef?
+  sse_decode_opt_box_autoadd_bridge_timeline_members_ref(
     SseDeserializer deserializer,
   );
 
@@ -9152,6 +9523,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_chat_atom_kind(
+    BridgeChatAtomKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_fact_position(
+    BridgeChatFactPosition self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_chat_gpt_account_info(
     BridgeChatGptAccountInfo self,
     SseSerializer serializer,
@@ -9172,6 +9555,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_chat_scope(
     BridgeChatScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_source_state(
+    BridgeChatSourceState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_terminal_outcome(
+    BridgeChatTerminalOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_tool_identity(
+    BridgeChatToolIdentity self,
     SseSerializer serializer,
   );
 
@@ -9532,6 +9933,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_patch_account_input(
     BridgePatchAccountInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_payload_data(
+    BridgePayloadData self,
     SseSerializer serializer,
   );
 
@@ -9902,6 +10309,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_timeline_group_summary(
+    BridgeTimelineGroupSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_timeline_members_ref(
+    BridgeTimelineMembersRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_todo_list_snapshot(
     BridgeTodoListSnapshot self,
     SseSerializer serializer,
@@ -10130,6 +10549,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_chat_atom(
+    BridgeChatAtom self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_chat_batch(
     BridgeChatBatch self,
     SseSerializer serializer,
@@ -10216,6 +10641,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_bridge_thread_subscription_update(
     BridgeThreadSubscriptionUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_timeline_item(
+    BridgeTimelineItem self,
     SseSerializer serializer,
   );
 
@@ -10937,8 +11368,62 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_chat_active_status(
+    BridgeChatActiveStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_atom(
+    BridgeChatAtom self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_atom_content(
+    BridgeChatAtomContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_atom_kind(
+    BridgeChatAtomKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_atom_lifecycle(
+    BridgeChatAtomLifecycle self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_chat_batch(
     BridgeChatBatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_content_role(
+    BridgeChatContentRole self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_delivery_kind(
+    BridgeChatDeliveryKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_entry(
+    BridgeChatEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_fact_position(
+    BridgeChatFactPosition self,
     SseSerializer serializer,
   );
 
@@ -10979,12 +11464,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_chat_message(
-    BridgeChatMessage self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_bridge_chat_placement(
     BridgeChatPlacement self,
     SseSerializer serializer,
@@ -10993,6 +11472,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_chat_scope(
     BridgeChatScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_source_id(
+    BridgeChatSourceId self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_source_lifecycle(
+    BridgeChatSourceLifecycle self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_source_state(
+    BridgeChatSourceState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_terminal_outcome(
+    BridgeChatTerminalOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_chat_tool_identity(
+    BridgeChatToolIdentity self,
     SseSerializer serializer,
   );
 
@@ -12623,6 +13132,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_timeline_category(
+    BridgeTimelineCategory self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_category_count(
+    BridgeTimelineCategoryCount self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_group_summary(
+    BridgeTimelineGroupSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_item(
+    BridgeTimelineItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_item_kind(
+    BridgeTimelineItemKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_timeline_members_ref(
+    BridgeTimelineMembersRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_todo_item(
     BridgeTodoItem self,
     SseSerializer serializer,
@@ -13175,8 +13720,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_chat_message(
-    List<BridgeChatMessage> self,
+  void sse_encode_list_bridge_chat_atom(
+    List<BridgeChatAtom> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_chat_atom_content(
+    List<BridgeChatAtomContent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_chat_entry(
+    List<BridgeChatEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_chat_source_state(
+    List<BridgeChatSourceState> self,
     SseSerializer serializer,
   );
 
@@ -13457,6 +14020,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_timeline_category_count(
+    List<BridgeTimelineCategoryCount> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_timeline_item(
+    List<BridgeTimelineItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_todo_item(
     List<BridgeTodoItem> self,
     SseSerializer serializer,
@@ -13682,6 +14257,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_atom_kind(
+    BridgeChatAtomKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_fact_position(
+    BridgeChatFactPosition? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_chat_gpt_account_info(
     BridgeChatGptAccountInfo? self,
     SseSerializer serializer,
@@ -13690,6 +14277,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_chat_gpt_login_failure(
     BridgeChatGptLoginFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_source_state(
+    BridgeChatSourceState? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_terminal_outcome(
+    BridgeChatTerminalOutcome? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_tool_identity(
+    BridgeChatToolIdentity? self,
     SseSerializer serializer,
   );
 
@@ -13850,6 +14455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_payload_data(
+    BridgePayloadData? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_plan_document(
     BridgePlanDocument? self,
     SseSerializer serializer,
@@ -13984,6 +14595,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_thread_wait_target_status(
     BridgeThreadWaitTargetStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_timeline_group_summary(
+    BridgeTimelineGroupSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_timeline_members_ref(
+    BridgeTimelineMembersRef? self,
     SseSerializer serializer,
   );
 

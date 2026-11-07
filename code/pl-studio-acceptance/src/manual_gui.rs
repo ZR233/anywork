@@ -10,6 +10,7 @@ mod realtime_presentation;
 mod shutdown;
 mod sidebar_query;
 mod skill_activity;
+mod timeline_concept;
 mod timeline_history_20k;
 mod wait_events;
 mod web_search;
@@ -36,6 +37,7 @@ use sea_orm::sqlx::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -62,6 +64,9 @@ pub(crate) struct ManualGuiOptions {
     /// Enable official Flutter MCP/Driver interaction for the manual gui preset.
     #[arg(long)]
     pub(crate) inspect: bool,
+    /// Measure native Profile first-content layout with the conversation-read-work preset.
+    #[arg(long)]
+    pub(crate) profile_read_samples: bool,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -701,7 +706,43 @@ fn configure_presentation_capture(command: &mut Command, output: &Path, requeste
     }
 }
 
+fn desktop_test_command(workspace: &Path) -> Result<Command> {
+    let preparation = env::var_os("ANYWORK_DESKTOP_TEST_PREPARATION");
+    let xtask = env::var_os("ANYWORK_DESKTOP_TEST_XTASK");
+    desktop_test_command_with_handoff(workspace, preparation.as_deref(), xtask.as_deref())
+}
+
+fn desktop_test_command_with_handoff(
+    workspace: &Path,
+    preparation: Option<&OsStr>,
+    xtask: Option<&OsStr>,
+) -> Result<Command> {
+    let mut command = match (preparation, xtask) {
+        (None, None) => {
+            let mut command = Command::new("cargo");
+            command.arg("xtask");
+            command
+        }
+        (Some(preparation), Some(xtask)) if !preparation.is_empty() && !xtask.is_empty() => {
+            let mut command = Command::new(xtask);
+            command
+                .env("ANYWORK_DESKTOP_TEST_PREPARATION", preparation)
+                .env("ANYWORK_DESKTOP_TEST_XTASK", xtask);
+            command
+        }
+        _ => bail!(
+            "ANYWORK_DESKTOP_TEST_PREPARATION and ANYWORK_DESKTOP_TEST_XTASK must be set together and non-empty"
+        ),
+    };
+    command.current_dir(workspace).arg("test-project");
+    Ok(command)
+}
+
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
+    ensure!(
+        !options.profile_read_samples || options.preset == "conversation-read-work",
+        "--profile-read-samples requires --preset conversation-read-work"
+    );
     ensure!(
         !options.inspect || (options.preset == "gui" && !options.bots_fixture),
         "--inspect requires the manual gui preset without --bots-fixture"
@@ -722,6 +763,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history-20k"
                     | "question-history"
                     | "realtime-presentation"
+                    | "timeline-concept"
                     | "stress-body-large"
                     | "wait-events"
                     | "conversation-read-work"
@@ -730,7 +772,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
-         stress-body-large, wait-events, conversation-read-work, sidebar-query and the delegation scenes"
+         timeline-concept, stress-body-large, wait-events, conversation-read-work, \
+         sidebar-query and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.preset == "timeline-history",
@@ -806,6 +849,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "statistics"
             | "realtime"
             | "realtime-presentation"
+            | "timeline-concept"
             | "stress-body"
             | "stress-body-large"
             | "history-lock"
@@ -903,6 +947,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 working: working.path(),
                 output: &output,
                 interrupt: &interrupt_rx,
+                profile_read_samples: options.profile_read_samples,
             });
         if options.retain_environment || result.is_err() {
             let retained = keep_isolated_environment(working, &home, &output, None);
@@ -991,11 +1036,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     } else {
         catalog_hits_path.clone()
     };
-    let fixture_scenario = if options.preset == "realtime-presentation" {
-        "realtime"
-    } else {
-        options.preset.as_str()
-    };
+    let fixture_scenario = options.preset.as_str();
     let mut fixture_command = Command::new(&fixture_executable);
     fixture_command
         .current_dir(&workspace)
@@ -1270,6 +1311,36 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
+    if options.preset == "timeline-concept" {
+        let project = working.path().join("timeline-concept-project");
+        let result = timeline_concept::run(
+            &timeline_concept::TimelineConceptScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+                capture_presentation,
+                provider_url: &ready.base_url,
+            },
+            fixture,
+        );
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed timeline-concept environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
     if options.preset == "realtime-presentation" {
         let project = working.path().join("realtime-presentation-project");
         let result = realtime_presentation::run(
@@ -1283,6 +1354,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 requests_file: &requests_file,
                 interrupt: &interrupt_rx,
                 capture_presentation,
+                provider_url: &ready.base_url,
             },
             fixture,
         );
@@ -2004,17 +2076,9 @@ fn run_timeline_history_scenario(
             phases.push((phase, None));
             let integration_log = working.join(format!("timeline-history-{phase}-integration.log"));
             let integration_output = File::create(&integration_log)?;
-            let mut command = Command::new("cargo");
+            let mut command = desktop_test_command(workspace)?;
             command
-                .current_dir(workspace)
-                .args([
-                    "xtask",
-                    "test-project",
-                    "--suite",
-                    "desktop",
-                    "--case",
-                    "timeline_presentation",
-                ])
+                .args(["--suite", "desktop", "--case", "timeline_presentation"])
                 .env("ANYWORK_HOME", home)
                 .env("ANYWORK_TIMELINE_PHASE", phase)
                 .env("ANYWORK_TIMELINE_PROJECT", &project)
@@ -2069,11 +2133,12 @@ fn run_timeline_history_scenario(
                 .with_context(|| format!("timeline-history {phase} report has no latest page"))?;
             ensure!(
                 report.get("latestPageOk") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && latest_page.get("firstContentLaidOut")
+                        == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("atLiveEdge") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true))
                     && latest_page.get("hasOlder") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} latest display did not fill its viewport: \
+                "timeline-history {phase} latest display has no first content layout: \
                  {latest_page:?}"
             );
             let cold_start = report
@@ -2088,9 +2153,10 @@ fn run_timeline_history_scenario(
                         .get("loadedItems")
                         .and_then(serde_json::Value::as_u64)
                         .is_some_and(|items| items > 0)
-                    && cold_start.get("viewportFilled") == Some(&serde_json::Value::Bool(true))
+                    && cold_start.get("firstContentLaidOut")
+                        == Some(&serde_json::Value::Bool(true))
                     && cold_start.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} cold start did not fill the latest viewport: \
+                "timeline-history {phase} cold start has no first content layout: \
                  {cold_start:?}"
             );
             let paging = report
@@ -2260,7 +2326,8 @@ fn run_timeline_history_scenario(
         if *run_displacement {
             let gui_log = working.join("timeline-history-displacement-gui.log");
             let native_exit = output.join("timeline-history-displacement-native-exit.json");
-            let mut gui = start_timeline_history_gui(workspace, home, &gui_log, &native_exit)?;
+            let mut gui =
+                start_timeline_history_gui(workspace, home, &gui_log, &native_exit, false)?;
             let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
             observe_capture_exit(
                 app_dir,
@@ -2292,6 +2359,30 @@ fn run_timeline_history_scenario(
         (app_dir.to_string_lossy().into_owned(), "<app>"),
         (workspace.to_string_lossy().into_owned(), "<workspace>"),
     ];
+    let continuity_result = (|| -> Result<()> {
+        let continuity_source = home.join("studio/logs/studio.log");
+        let mut continuity_evidence = File::create(output.join("timeline-history-continuity.log"))?;
+        writeln!(
+            continuity_evidence,
+            "source_scope=current studio.log only; rolling archives not included"
+        )?;
+        if continuity_source.is_file() {
+            for line in fs::read_to_string(&continuity_source)?.lines() {
+                if line.split_once(": ").is_some_and(|(header, _)| {
+                    header.split_whitespace().last() == Some("conversation_continuity")
+                }) {
+                    writeln!(
+                        continuity_evidence,
+                        "{}",
+                        sanitize_driver_line(line, &redactions)
+                    )?;
+                }
+            }
+        } else {
+            writeln!(continuity_evidence, "source_status=missing")?;
+        }
+        Ok(())
+    })();
     for (phase, gui_exit) in &phases {
         let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
         if gui_log.is_file() {
@@ -2362,6 +2453,7 @@ fn run_timeline_history_scenario(
         }))?,
     )?;
     require_timeline_history_completion(journey, fixture_result)?;
+    continuity_result?;
     ensure!(
         rejected == 0,
         "timeline-history fixture rejected {rejected} account request(s)"
@@ -2396,12 +2488,13 @@ fn start_timeline_history_gui(
     home: &Path,
     log_path: &Path,
     native_exit: &Path,
+    inspect: bool,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
-        // Profile（不是 debug）与其它长历史场景一致；仍不是 AOT/release 性能证据。
+        // Profile 与发布构建分开取证；只有显式采样调用方装配官方 Driver。
         .args([
             "xtask",
             "run-gui",
@@ -2414,6 +2507,9 @@ fn start_timeline_history_gui(
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    if inspect {
+        command.arg("--inspect");
+    }
     OwnedProcess::start(&mut command, false)
 }
 
@@ -2947,7 +3043,7 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     model.binding.set_transport(profile);
     model.binding.request.api_model = None;
-    if ready.scenario == "tool-scroll" {
+    if matches!(ready.scenario.as_str(), "tool-scroll" | "timeline-concept") {
         model.capabilities.input.push(ModelInputCapability::media(
             ModelModality::Image,
             vec![ModelInputSource::Local],
@@ -2961,7 +3057,10 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
     let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
-    endpoint.service_capabilities.remote_compaction = ready.scenario == "call-lifecycle-recovery";
+    endpoint.service_capabilities.remote_compaction = matches!(
+        ready.scenario.as_str(),
+        "call-lifecycle-recovery" | "timeline-concept"
+    );
     let mut models = vec![model];
     if ready.scenario == "gui" {
         // Distinct metadata in the same isolated account exercises the real
@@ -4147,7 +4246,17 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
             "failed to initialize isolated realtime project"
         );
         {
-            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true)?;
+            let native_exit = output.join("native-exit.json");
+            let mut gui = start_realtime_gui(workspace, home, &gui_log_path, true, &native_exit)?;
+            let launcher_pid = gui.child.id();
+            fs::write(
+                output.join("realtime-process-identity.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "launcherPid": launcher_pid,
+                    "actualGuiPid": null,
+                    "nativeExitReport": "native-exit.json",
+                }))?,
+            )?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
             observe_capture_exit(
                 app_dir,
@@ -5443,6 +5552,7 @@ fn start_realtime_gui(
     home: &Path,
     log_path: &Path,
     credit_wait_diagnostics: bool,
+    native_exit_report: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
@@ -5455,7 +5565,9 @@ fn start_realtime_gui(
             "--capture",
             "--profile",
             "--native-launch",
+            "--native-exit-report",
         ])
+        .arg(native_exit_report)
         .env("ANYWORK_HOME", home);
     // §24.3: only the realtime journey raises the real conversation-credit
     // producer to debug for the Pending diagnostic; the warn floor for
@@ -5787,6 +5899,83 @@ fn failure_reason(line: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+mod desktop_test_command_tests {
+    use super::desktop_test_command_with_handoff;
+    use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    #[test]
+    fn paired_handoff_runs_the_parent_xtask_directly() -> anyhow::Result<()> {
+        let workspace = Path::new("workspace with spaces");
+        let preparation = OsStr::new("prepared inputs");
+        let xtask = OsStr::new("parent executable");
+        let mut command =
+            desktop_test_command_with_handoff(workspace, Some(preparation), Some(xtask))?;
+        command.args(["--suite", "desktop", "--case", "wait_events"]);
+
+        assert_eq!(command.get_program(), xtask);
+        assert_eq!(command.get_current_dir(), Some(workspace));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "test-project",
+                "--suite",
+                "desktop",
+                "--case",
+                "wait_events"
+            ]
+            .map(OsStr::new)
+        );
+        let environment = command.get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get(OsStr::new("ANYWORK_DESKTOP_TEST_PREPARATION")),
+            Some(&Some(preparation))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("ANYWORK_DESKTOP_TEST_XTASK")),
+            Some(&Some(xtask))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_desktop_test_uses_the_normal_cargo_entrypoint() -> anyhow::Result<()> {
+        let workspace = Path::new("workspace");
+        let command = desktop_test_command_with_handoff(workspace, None, None)?;
+        assert_eq!(command.get_program(), OsStr::new("cargo"));
+        assert_eq!(command.get_current_dir(), Some(workspace));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("xtask"), OsStr::new("test-project")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_or_empty_handoff_is_rejected_without_falling_back() {
+        let preparation = Some(OsStr::new("prepared inputs"));
+        let xtask = Some(OsStr::new("parent executable"));
+        let empty = Some(OsStr::new(""));
+        for (preparation, xtask) in [
+            (preparation, None),
+            (None, xtask),
+            (empty, None),
+            (None, empty),
+            (preparation, empty),
+            (empty, xtask),
+            (empty, empty),
+        ] {
+            assert!(
+                desktop_test_command_with_handoff(Path::new("workspace"), preparation, xtask)
+                    .is_err(),
+                "invalid desktop handoff: preparation={preparation:?}, xtask={xtask:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod scenario_cli_tests {
     use super::ManualGuiOptions;
     use clap::Parser;
@@ -5798,6 +5987,7 @@ mod scenario_cli_tests {
             "timeline-history",
             "question-history",
             "realtime-presentation",
+            "timeline-concept",
             "sidebar-query",
         ] {
             let options = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])

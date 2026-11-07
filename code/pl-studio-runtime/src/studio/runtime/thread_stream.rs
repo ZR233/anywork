@@ -73,7 +73,7 @@ struct LiveSubscription {
     thread: pl_protocol::Thread,
     /// Typed frames of the Thread's single realtime projection owner, registered before the baseline
     /// below so nothing the owner publishes after this point can be lost.
-    feed: Option<broadcast::Receiver<ThreadLiveEvent>>,
+    feed: Option<super::thread_observation::DeliveryReceiver<ThreadLiveEvent>>,
     /// Owner state captured right after receiver registration and before the persistence barrier;
     /// the first frame reports it so effects committed past it are still delivered as notifications.
     baseline: Option<ThreadSnapshot>,
@@ -1082,7 +1082,13 @@ mod storage_fault_tests {
         let (events, receiver) = broadcast::channel(16);
         let (original_feed, baseline_revision, baseline) = match &mut subscription.source {
             SubscriptionSource::Live(live) => (
-                live.feed.replace(receiver),
+                live.feed.replace(
+                    crate::studio::runtime::thread_observation::DeliveryReceiver::new(
+                        receiver,
+                        Arc::new(tokio::sync::Notify::new()),
+                        Default::default(),
+                    ),
+                ),
                 live.baseline
                     .as_ref()
                     .context("cold baseline")?

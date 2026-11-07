@@ -412,15 +412,17 @@ impl AcpWorker {
                 command.env(key, value);
             }
         }
-        let mut child = pl_remote_helper::process::wrap_background_command(command)
-            .spawn()
-            .map_err(|error| AcpSpawnError::Startup {
-                step: AcpSpawnStep::Process,
-                source: error.to_string(),
+        let mut command = pl_remote_helper::process::wrap_background_command(command);
+        let child =
+            pl_remote_helper::process::spawn_background_command(&mut command).map_err(|error| {
+                AcpSpawnError::Startup {
+                    step: AcpSpawnStep::Process,
+                    source: error.to_string(),
+                }
             })?;
-        let stdin = child.stdin().take();
-        let stdout = child.stdout().take();
-        let stderr = child.stderr().take();
+        let stdin = child.stdin;
+        let stdout = child.stdout;
+        let stderr = child.stderr;
         // 进程一旦创建就由本 owner 持有：缺管道也不在这里收尾，交给统一的 reclaim 循环。
         Ok(Self {
             stdin: stdin.map(|stdin| Box::pin(stdin) as ChildWriter),
@@ -429,7 +431,7 @@ impl AcpWorker {
             settled: None,
             stderr_failure: None,
             cancel_requested: false,
-            child: Some(child),
+            child: Some(child.process),
         })
     }
 }

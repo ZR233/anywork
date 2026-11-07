@@ -124,8 +124,12 @@ void main() {
         reason: 'Settings navigation does not create a Thread',
       );
 
-      transport.seedChatMessages('thread-main', [
-        for (var i = 0; i < 40; i++) chatMessage('route-item-$i'),
+      // Demo's _rootWorkspace installs turn-demo user/reasoning/tool/final
+      // at positions 1..4. seedTimelineItems appends after that explicit fixture.
+      const firstPosition = 5;
+      transport.seedTimelineItems('thread-main', [
+        for (var i = 0; i < 40; i++)
+          chatMessage('route-item-$i', completionSeq: firstPosition + i),
       ]);
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(

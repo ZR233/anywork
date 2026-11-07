@@ -23,17 +23,18 @@ pub(in super::super) async fn read_content(
         ),
         "content ranges require the SQLx SQLite connection"
     );
-    let mut connection = db.get_sqlite_connection_pool().acquire().await?;
-    let request = request.clone();
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || runtime.block_on(async move {
-        use sqlx::Acquire;
-        let mut tx = connection.begin().await?;
-        let result = match &request.reference {
-            ContentRef::ItemPayload(id) => {
+    match &request.reference {
+        ContentRef::ItemPayload(id) => {
+            let mut connection = db.get_sqlite_connection_pool().acquire().await?;
+            let request = request.clone();
+            let id = id.clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || runtime.block_on(async move {
+                use sqlx::Acquire;
+                let mut tx = connection.begin().await?;
                 let row = sqlx::query(
                     "SELECT seq,length(payload) AS byte_length FROM conversation_items WHERE item_id=?")
-                    .bind(id).fetch_optional(&mut *tx).await?
+                    .bind(&id).fetch_optional(&mut *tx).await?
                     .ok_or_else(|| ChatError::NotFound(id.clone()))?;
                 let rowid: i64 = row.try_get("seq")?;
                 let len = u64::try_from(row.try_get::<i64, _>("byte_length")?)?;
@@ -43,67 +44,99 @@ pub(in super::super) async fn read_content(
                 let raw = handle.as_raw_handle().as_ptr();
                 let bytes = read_blob(raw, rowid, request.offset, size)?;
                 drop(handle);
-                ContentWindow { offset: request.offset, bytes: ContentBytes::from(Arc::from(bytes)),
-                    generation: 0, available_through: len, sealed: true }
-            }
-            ContentRef::Body(key) => {
-                let is_current = super::content::current_owner(&key.owner)?.is_some();
-                let payload: Option<Vec<u8>> = sqlx::query_scalar(
-                    "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?")
-                    .bind(key.owner.as_str()).bind(&key.key).fetch_optional(&mut *tx).await?;
-                let payload = payload.ok_or_else(|| {
-                    if is_current {
-                        ChatError::StaleContent
-                    } else { ChatError::NotFound(key.key.clone()) }
-                })?;
-                let manifest: super::content::Manifest = serde_json::from_slice(&payload)?;
-                let descriptor = super::content::descriptor(key.owner.as_str(), key.key.clone(), &payload)?;
-                validate_range(&request, descriptor.byte_length, descriptor.generation)?;
-                let end = request.offset + (descriptor.byte_length - request.offset)
-                    .min(request.max_bytes as u64);
-                let mut offset = request.offset;
-                let mut bytes = Vec::with_capacity((end - offset) as usize);
-                let mut first = true;
-                while offset < end {
-                    // Locate the one boundary chunk using the offset index, then only exact
-                    // successors. SQLite substr() returns the requested region, not whole chunks.
-                    let sql = if first {
-                        "SELECT byte_offset,length(data) AS chunk_length,
+                let result = ContentWindow { offset: request.offset, bytes: ContentBytes::from(Arc::from(bytes)),
+                    generation: 0, available_through: len, sealed: true };
+                tx.commit().await?;
+                Ok(result)
+            })).await.context("content range blocking owner failed")?
+        }
+        ContentRef::Body(key) => {
+            // SQLx already owns the SQLite worker. Only native BLOB access
+            // needs the independent blocking owner above.
+            let mut tx = db.get_sqlite_connection_pool().begin().await?;
+            let is_current = super::content::current_owner(&key.owner)?.is_some();
+            ChatKey::from_encoded(key.owner.as_str().to_owned())?;
+            let payload: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+            )
+            .bind(key.owner.as_str())
+            .bind(&key.key)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let payload = payload.ok_or_else(|| {
+                if is_current {
+                    ChatError::StaleContent
+                } else {
+                    ChatError::NotFound(key.key.clone())
+                }
+            })?;
+            let manifest = super::content::manifest(&payload)?;
+            validate_range(request, manifest.byte_length, manifest.generation)?;
+            let end = request.offset
+                + (manifest.byte_length - request.offset).min(request.max_bytes as u64);
+            let mut offset = request.offset;
+            let mut bytes = Vec::with_capacity((end - offset) as usize);
+            let mut first = true;
+            while offset < end {
+                // Locate the one boundary chunk using the offset index, then only exact
+                // successors. SQLite substr() returns the requested region, not whole chunks.
+                let sql = if first {
+                    "SELECT byte_offset,length(data) AS chunk_length,
                                 substr(data,?-byte_offset+1,?) AS bytes
                          FROM conversation_content_chunks
                          WHERE owner_key=? AND content_key=? AND byte_offset<=?
                          ORDER BY byte_offset DESC LIMIT 1"
-                    } else {
-                        "SELECT byte_offset,length(data) AS chunk_length,
+                } else {
+                    "SELECT byte_offset,length(data) AS chunk_length,
                                 substr(data,?-byte_offset+1,?) AS bytes
                          FROM conversation_content_chunks
                          WHERE owner_key=? AND content_key=? AND byte_offset=?"
-                    };
-                    let row = sqlx::query(sql).bind(integer(offset)?).bind(integer(end - offset)?)
-                        .bind(key.owner.as_str()).bind(&key.key).bind(integer(offset)?)
-                        .fetch_optional(&mut *tx).await?.context("content has a missing chunk")?;
-                    let start = u64::try_from(row.try_get::<i64, _>("byte_offset")?)?;
-                    let length = u64::try_from(row.try_get::<i64, _>("chunk_length")?)?;
-                    ensure!(length > 0 && length <= super::content::CHUNK_BYTES as u64
-                        && start <= offset && start.checked_add(length).is_some_and(|end| end > offset),
-                        "content chunk gap, overlap or invalid size");
-                    let chunk_end = start.checked_add(length).context("content chunk overflow")?;
-                    ensure!(chunk_end <= descriptor.byte_length, "content chunk exceeds manifest");
-                    let part: Vec<u8> = row.try_get("bytes")?;
-                    ensure!(part.len() as u64 == (chunk_end.min(end) - offset),
-                        "content range is incomplete");
-                    offset += part.len() as u64;
-                    bytes.extend_from_slice(&part);
-                    first = false;
-                }
-                ContentWindow { offset: request.offset, bytes: ContentBytes::from(Arc::from(bytes)),
-                    generation: descriptor.generation, available_through: descriptor.byte_length,
-                    sealed: manifest.sealed }
+                };
+                let row = sqlx::query(sql)
+                    .bind(integer(offset)?)
+                    .bind(integer(end - offset)?)
+                    .bind(key.owner.as_str())
+                    .bind(&key.key)
+                    .bind(integer(offset)?)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .context("content has a missing chunk")?;
+                let start = u64::try_from(row.try_get::<i64, _>("byte_offset")?)?;
+                let length = u64::try_from(row.try_get::<i64, _>("chunk_length")?)?;
+                ensure!(
+                    length > 0
+                        && length <= super::content::CHUNK_BYTES as u64
+                        && start <= offset
+                        && start.checked_add(length).is_some_and(|end| end > offset),
+                    "content chunk gap, overlap or invalid size"
+                );
+                let chunk_end = start
+                    .checked_add(length)
+                    .context("content chunk overflow")?;
+                ensure!(
+                    chunk_end <= manifest.byte_length,
+                    "content chunk exceeds manifest"
+                );
+                let part: Vec<u8> = row.try_get("bytes")?;
+                ensure!(
+                    part.len() as u64 == (chunk_end.min(end) - offset),
+                    "content range is incomplete"
+                );
+                offset += part.len() as u64;
+                bytes.extend_from_slice(&part);
+                first = false;
             }
-        };
-        tx.commit().await?;
-        Ok(result)
-    })).await.context("content range blocking owner failed")?
+            let result = ContentWindow {
+                offset: request.offset,
+                bytes: ContentBytes::from(Arc::from(bytes)),
+                generation: manifest.generation,
+                available_through: manifest.byte_length,
+                sealed: manifest.sealed,
+            };
+            tx.commit().await?;
+            Ok(result)
+        }
+    }
 }
 
 fn validate_range(request: &ContentReadRequest, len: u64, generation: u64) -> Result<()> {

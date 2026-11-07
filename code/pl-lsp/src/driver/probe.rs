@@ -43,20 +43,20 @@ pub(crate) async fn run_command_capture(
             }
         }
     })?;
-    let stdout = child.stdout().take();
-    let stderr = child.stderr().take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     let execution = async {
-        match tokio::time::timeout(timeout, child.wait()).await {
+        match tokio::time::timeout(timeout, child.process.wait()).await {
             Ok(Ok(status)) => Ok(status),
             Ok(Err(error)) => {
-                let cleanup = std::pin::Pin::from(child.kill()).await;
+                let cleanup = std::pin::Pin::from(child.process.kill()).await;
                 Err(CommandProbeError::Failed {
                     message: cleanup_message(&error.to_string(), cleanup),
                     stderr: String::new(),
                 })
             }
             Err(_) => {
-                let cleanup = std::pin::Pin::from(child.kill()).await;
+                let cleanup = std::pin::Pin::from(child.process.kill()).await;
                 Err(CommandProbeError::Failed {
                     message: cleanup_message(timeout_message, cleanup),
                     stderr: String::new(),

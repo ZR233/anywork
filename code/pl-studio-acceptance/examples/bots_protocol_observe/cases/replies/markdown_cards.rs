@@ -30,9 +30,11 @@ use super::{
 };
 use crate::http;
 use crate::report::{self, CaseResult};
+use crate::support::{CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatScope, ContentRange, ContentRef, PayloadData, ReadDemand,
+    ChatBatch, ChatEntry, ChatScope, ContentRange, ContentRef, ReadDemand, TimelineItem,
+    TimelineItemKind,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -681,8 +683,8 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
             .is_empty(),
         "an over-limit card must leave a local diagnostic on the inbound fact"
     );
-    let target = inbound_target_timeline(session, &bot_id, MESSAGE_OVER_LIMIT).await?;
-    let huge_canonical = final_total_bytes(&target)?;
+    let mut target = inbound_target_timeline(session, &bot_id, MESSAGE_OVER_LIMIT).await?;
+    let huge_canonical = final_total_bytes(&mut target).await?;
     ensure!(
         huge_canonical == huge.len() as u64,
         "the over-limit Final must stay complete in local history ({} != {} bytes)",
@@ -1642,6 +1644,8 @@ struct TargetChat {
     read: http::ChatRead,
     batch: ChatBatch,
     turn_id: String,
+    remaining: usize,
+    deadline: Instant,
 }
 
 const CHAT_DEMAND: ReadDemand = ReadDemand {
@@ -1671,10 +1675,15 @@ async fn target_timeline(session: &Session, bot_id: &str, message_id: &str) -> R
         .http()?
         .open_chat(&thread_id, ChatScope::Main, CHAT_DEMAND)
         .await?;
+    let mut remaining = CHAT_OBSERVATION_BYTES;
+    charge_chat_batch(&batch, &mut remaining)?;
+    let deadline = Instant::now() + CASE_BUDGET;
     Ok(TargetChat {
         read,
         batch,
         turn_id,
+        remaining,
+        deadline,
     })
 }
 
@@ -1694,12 +1703,18 @@ async fn inbound_target_timeline(
         batch.before.is_none(),
         "cannot uniquely resolve inbound {message_id} on a truncated timeline page"
     );
+    let mut remaining = CHAT_OBSERVATION_BYTES;
+    charge_chat_batch(&batch, &mut remaining)?;
+    let deadline = Instant::now() + CASE_BUDGET;
     let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
-    let envelopes = batch
-        .messages
-        .iter()
-        .map(envelope)
-        .collect::<Result<Vec<_>>>()?;
+    let mut envelopes = Vec::new();
+    for item in terminal_items(&batch) {
+        if let Some(payload) =
+            completed_timeline_payload(&read, item, &mut remaining, deadline).await?
+        {
+            envelopes.push(payload);
+        }
+    }
     let mut turns = envelopes
         .iter()
         .filter(|payload| payload["type"] == "turn" && payload["data"]["inputId"] == input_id);
@@ -1722,25 +1737,9 @@ async fn inbound_target_timeline(
         read,
         batch,
         turn_id,
+        remaining,
+        deadline,
     })
-}
-
-/// Inspect only bounded metadata. A deferred envelope cannot prove uniqueness
-/// in this fixture and is reported as an uncovered shape, not silently omitted.
-fn envelope(item: &ChatMessage) -> Result<serde_json::Value> {
-    let PayloadData::Inline { bytes } = &item.payload else {
-        bail!(
-            "fixture item {} has deferred metadata; target selection is not provable",
-            item.id
-        );
-    };
-    let payload: serde_json::Value = serde_json::from_slice(bytes)?;
-    ensure!(
-        payload["contract"] == "anywork.chat/1",
-        "unknown chat contract for {}",
-        item.id
-    );
-    Ok(payload)
 }
 
 fn text_field(payload: &serde_json::Value) -> Result<&serde_json::Value> {
@@ -1810,8 +1809,8 @@ async fn body_text(read: &http::ChatRead, field: &serde_json::Value) -> Result<S
 
 /// Reads the newest canonical Final for the inbound Turn (complete preview required).
 async fn canonical_final(session: &Session, bot_id: &str, message_id: &str) -> Result<String> {
-    let target = target_timeline(session, bot_id, message_id).await?;
-    let payload = unique_channel_item(&target, "final")?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
+    let payload = unique_channel_item(&mut target, "final").await?;
     body_text(&target.read, text_field(&payload)?).await
 }
 
@@ -1826,15 +1825,41 @@ async fn assert_canonical_final_blank(
     bot_id: &str,
     message_id: &str,
 ) -> Result<()> {
-    let target = target_timeline(session, bot_id, message_id).await?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
     let turn_id = &target.turn_id;
     ensure!(
         target.batch.before.is_none(),
         "cannot prove blank Final on a truncated timeline page for Turn {turn_id}"
     );
-    for item in &target.batch.messages {
-        let payload = envelope(item)?;
-        if !is_channel(&payload, turn_id, "final") {
+    for item in terminal_items(&target.batch) {
+        let Some(payload) =
+            completed_timeline_payload(&target.read, item, &mut target.remaining, target.deadline)
+                .await?
+        else {
+            ensure!(
+                item.turn_id.as_deref() != Some(turn_id.as_str())
+                    || item.text_channel != Some(pl_protocol::ThreadTextChannel::Final),
+                "target Turn Final item was not terminal"
+            );
+            continue;
+        };
+        if payload["type"] != "text" || payload["turnId"].as_str() != Some(turn_id.as_str()) {
+            continue;
+        }
+        ensure!(
+            item.kind == TimelineItemKind::Text
+                && item.atom_kind == Some(pl_protocol::ChatAtomKind::Text)
+                && item.turn_id.as_deref() == Some(turn_id.as_str()),
+            "target Turn text item omitted its Timeline kind or turn_id identity"
+        );
+        let text_channel = item
+            .text_channel
+            .context("target Turn text item omitted its explicit text_channel")?;
+        ensure!(
+            payload["data"]["channel"] == serde_json::to_value(text_channel)?,
+            "Timeline text_channel and original text payload disagree"
+        );
+        if text_channel != pl_protocol::ThreadTextChannel::Final {
             continue;
         }
         let text = body_text(&target.read, text_field(&payload)?).await?;
@@ -1853,8 +1878,8 @@ async fn assert_commentary_channel_local(
     bot_id: &str,
     message_id: &str,
 ) -> Result<()> {
-    let target = target_timeline(session, bot_id, message_id).await?;
-    let payload = unique_channel_item(&target, "commentary")?;
+    let mut target = target_timeline(session, bot_id, message_id).await?;
+    let payload = unique_channel_item(&mut target, "commentary").await?;
     let text = body_text(&target.read, text_field(&payload)?).await?;
     ensure!(
         text == COMMENTARY_TEXT,
@@ -1866,12 +1891,12 @@ async fn assert_commentary_channel_local(
 
 /// Reads the exact UTF-8 size of the newest Final content field.
 async fn canonical_total_bytes(session: &Session, bot_id: &str, message_id: &str) -> Result<u64> {
-    let target = target_timeline(session, bot_id, message_id).await?;
-    final_total_bytes(&target)
+    let mut target = target_timeline(session, bot_id, message_id).await?;
+    final_total_bytes(&mut target).await
 }
 
-fn final_total_bytes(target: &TargetChat) -> Result<u64> {
-    let payload = unique_channel_item(target, "final")?;
+async fn final_total_bytes(target: &mut TargetChat) -> Result<u64> {
+    let payload = unique_channel_item(target, "final").await?;
     text_field(&payload)?["byteLength"]
         .as_u64()
         .context("Final body byteLength missing")
@@ -1883,18 +1908,43 @@ fn is_channel(payload: &serde_json::Value, turn_id: &str, channel: &str) -> bool
         && payload["data"]["channel"] == channel
 }
 
-fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<serde_json::Value> {
+async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<serde_json::Value> {
     let turn_id = &target.turn_id;
+    let expected_channel = match channel {
+        "commentary" => pl_protocol::ThreadTextChannel::Commentary,
+        "final" => pl_protocol::ThreadTextChannel::Final,
+        _ => anyhow::bail!("unsupported Timeline text channel {channel:?}"),
+    };
     ensure!(
         target.batch.before.is_none(),
         "cannot prove unique {channel:?} for Turn {turn_id} on a truncated timeline page"
     );
-    let payloads = target
-        .batch
-        .messages
-        .iter()
-        .map(envelope)
-        .collect::<Result<Vec<_>>>()?;
+    let mut payloads = Vec::new();
+    for timeline_item in terminal_items(&target.batch) {
+        if timeline_item.kind != TimelineItemKind::Text
+            || timeline_item.atom_kind != Some(pl_protocol::ChatAtomKind::Text)
+            || timeline_item.text_channel != Some(expected_channel)
+            || timeline_item.turn_id.as_deref() != Some(turn_id.as_str())
+        {
+            continue;
+        }
+        if let Some(payload) = completed_timeline_payload(
+            &target.read,
+            timeline_item,
+            &mut target.remaining,
+            target.deadline,
+        )
+        .await?
+        {
+            ensure!(
+                is_channel(&payload, turn_id, channel),
+                "Timeline text item metadata and original payload disagree about {channel:?}"
+            );
+            payloads.push(payload);
+        } else {
+            anyhow::bail!("target Turn {turn_id} {channel:?} Timeline item is not terminal");
+        }
+    }
     let mut items = payloads
         .into_iter()
         .filter(|payload| is_channel(payload, turn_id, channel));
@@ -1906,4 +1956,24 @@ fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<serde_json:
         "target Turn {turn_id} has multiple {channel:?} text items"
     );
     Ok(item)
+}
+
+/// Main includes work too; only terminal reply domains need envelope inspection.
+fn terminal_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
+    batch.entries.iter().filter_map(|entry| match entry {
+        ChatEntry::Item(item)
+            if matches!(item.kind, TimelineItemKind::Text | TimelineItemKind::Status)
+                && matches!(
+                    item.atom_kind,
+                    Some(
+                        pl_protocol::ChatAtomKind::Text
+                            | pl_protocol::ChatAtomKind::TurnReceipt
+                            | pl_protocol::ChatAtomKind::Unknown
+                    )
+                ) =>
+        {
+            Some(item.as_ref())
+        }
+        _ => None,
+    })
 }

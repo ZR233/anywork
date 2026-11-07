@@ -20,7 +20,7 @@ use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     StudioThreadSubscription,
-    config::{ConfigPaths, ConfigStore, StudioConfig},
+    config::{ConfigPaths, ConfigStore},
 };
 use serde::Serialize;
 use std::fs;
@@ -33,12 +33,15 @@ const ACCOUNT: &str = "read-fixture";
 const TURN_COUNT: usize = 24;
 const THREAD_COUNT: usize = 2;
 
+mod profile;
+
 pub(super) struct ConversationReadWorkScenario<'a> {
     pub workspace: &'a Path,
     pub home: &'a Path,
     pub working: &'a Path,
     pub output: &'a Path,
     pub interrupt: &'a mpsc::Receiver<()>,
+    pub profile_read_samples: bool,
 }
 
 #[derive(Serialize)]
@@ -52,12 +55,16 @@ struct ReadCase {
 }
 
 pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
+    if context.profile_read_samples {
+        return profile::run(context);
+    }
     let ConversationReadWorkScenario {
         workspace,
         home,
         working,
         output,
         interrupt,
+        ..
     } = context;
     let cases_path = output.join("read-cases.json");
     let report_path = output.join("read-report.json");
@@ -67,17 +74,9 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
         let seeded = seed_closed_home(home, working)?;
         fs::write(&cases_path, serde_json::to_vec_pretty(&seeded)?)?;
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let mut command = desktop_test_command(workspace)?;
         command
-            .current_dir(workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "conversation_read_work",
-            ])
+            .args(["--suite", "desktop", "--case", "conversation_read_work"])
             .env("ANYWORK_HOME", home)
             .env("ANYWORK_READ_CASES", &cases_path)
             .env("ANYWORK_READ_REPORT", &report_path)
@@ -328,7 +327,8 @@ fn seed_script() -> Vec<Step> {
 }
 
 fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
-    let mut config = StudioConfig::default_config()?;
+    let store = ConfigStore::new(ConfigPaths::from_config_dir(home));
+    let mut config = store.load_or_default()?;
     let mut model = ModelInfo::compatible(MODEL);
     model
         .binding
@@ -352,7 +352,7 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
         route.model_id = MODEL.into();
         route.effort = None;
     }
-    ConfigStore::new(ConfigPaths::from_config_dir(home)).save(&config)?;
+    store.save(&config)?;
     Ok(())
 }
 
@@ -400,10 +400,18 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         }
     };
     let reader = feed.reader().clone();
-    let mut total = batch.messages.len();
+    let count_items = |batch: &pl_protocol::ChatBatch| -> Result<usize> {
+        batch.validate_for(&ChatScope::Main)?;
+        Ok(batch.entries.len())
+    };
+    let mut total = count_items(&batch)?;
     while let Some(before) = batch.before {
         batch = reader.load_older(&before, demand).await?;
-        total += batch.messages.len();
+        ensure!(
+            batch.before.as_deref() != Some(before.as_str()),
+            "Main item continuation did not advance"
+        );
+        total += count_items(&batch)?;
     }
     feed.close().await?;
     ensure!(

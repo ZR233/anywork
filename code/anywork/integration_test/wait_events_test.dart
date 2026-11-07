@@ -6,12 +6,9 @@ import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -22,6 +19,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+
+import 'support/timeline_observation.dart';
 
 // Real AppGraph/FRB/SQLite and production routes. Only the native exit shell is
 // omitted: the official test runner, not StudioExitCoordinator, owns this process.
@@ -114,8 +113,8 @@ void main() {
     ) async {
       final scene = await open(tester, name);
       await scene.submit('[[wait_${name.replaceAll('-', '_')}]]');
-      final children = await scene.completedTurn();
-      final wait = scene.tool(children, prefix);
+      final turn = await scene.completedTurn();
+      final wait = await scene.tool(turn, prefix);
       final result = scene.result(wait);
       expect(result['timedOut'], isFalse);
       final tasks = (result['tasks'] as List).cast<Map<String, dynamic>>();
@@ -133,11 +132,13 @@ void main() {
 
       if (name == 'sleep-first') {
         final previous = scene.latestTurnId;
-        await scene.closeTurn(children);
+        await scene.closeTurn(turn);
         await scene.submit('[[wait_already_ready]]');
         final ready = await scene.completedTurn(after: previous);
         expect(
-          scene.result(scene.tool(ready, 'already-ready-wait-t'))['timedOut'],
+          scene.result(
+            await scene.tool(ready, 'already-ready-wait-t'),
+          )['timedOut'],
           isFalse,
         );
       }
@@ -149,8 +150,8 @@ void main() {
   ) async {
     final scene = await open(tester, 'timeout');
     await scene.submit('[[wait_timeout]]');
-    final children = await scene.completedTurn();
-    final wait = scene.tool(children, 'timeout-wait-t');
+    final turn = await scene.completedTurn();
+    final wait = await scene.tool(turn, 'timeout-wait-t');
     final result = scene.result(wait);
     expect(result['timedOut'], isTrue);
     final target = (result['tasks'] as List).single as Map;
@@ -164,11 +165,11 @@ void main() {
   ) async {
     final scene = await open(tester, 'child');
     await scene.submit('[[wait_child]]');
-    final children = await scene.completedTurn();
-    final result = scene.result(scene.tool(children, 'child-wait-t'));
+    final turn = await scene.completedTurn();
+    final result = scene.result(await scene.tool(turn, 'child-wait-t'));
     expect(result['messagesReady'], isTrue);
     final previous = scene.latestTurnId;
-    await scene.closeTurn(children);
+    await scene.closeTurn(turn);
     await scene.submit('[[wait_child_confirm]]');
     await scene.waitForTurn(after: previous);
     // The fixture validates the real parent provider context and report identity;
@@ -181,7 +182,7 @@ void main() {
     final scene = await open(tester, 'cancel');
     await scene.submit('[[wait_cancel_prepare]]');
     final prepared = await scene.completedTurn();
-    final started = scene.tool(
+    final started = await scene.tool(
       prepared,
       'cancel-sleep-t',
       status: 'backgroundStarted',
@@ -198,41 +199,28 @@ void main() {
           true,
       'original wait call in the canonical current head',
     );
-    if (scene.lease.currentDisplay?.expanded != true) {
-      await scene.tap(find.byKey(StudioDriverKeys.conversationActivity));
-    }
-    await scene.tap(find.byKey(StudioDriverKeys.currentCollection('tools')));
-    await scene.until(() {
-      final tools = scene.lease.currentDisplay?.collections
-          .where((c) => c.reference.collection == 'tools')
-          .firstOrNull;
-      if (tools?.error case final error?) throw StateError('$error');
-      return tools?.page?.entries.any((entry) {
-            final payload = entry.payload;
-            if (payload is! InlinePayload) return false;
-            final tool = jsonDecode(utf8.decode(payload.bytes)) as Map;
-            return tool['name'] == 'wait' &&
-                (tool['wait'] as Map?)?['state'] == 'waiting';
-          }) ??
-          false;
-    }, 'real current Waiting');
+    await scene.currentWaiting('cancel-wait-t');
     await scene.tap(find.byKey(const ValueKey('composer-stop')));
     final stopped = await scene.completedTurn(
       after: prepareTurn,
-      outcome: 'cancelled',
+      outcome: StudioTurnStatus.cancelled,
     );
-    expect(stopped.isCurrent, isTrue);
+    final stoppedReceipt = await scene.turnReceipt(
+      stopped,
+      ChatTerminalOutcome.cancelled,
+    );
+    expect(stoppedReceipt.atomKind, ChatAtomKind.turnReceipt);
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
     final queried = await scene.completedTurn(after: stoppedTurn);
-    final result = scene.result(scene.tool(queried, 'cancel-query-t'));
+    final result = scene.result(await scene.tool(queried, 'cancel-query-t'));
     final task = result['task'] as Map;
     expect(task['taskId'], taskId);
     expect(task['status'], 'running');
     expect(task['cancelRequested'], isFalse);
     expect(
-      scene.tool(queried, 'cancel-query-cancel-t').toolCard,
+      (await scene.tool(queried, 'cancel-query-cancel-t')).toolCard,
       isA<DecodedToolCard>(),
     );
   }, timeout: const Timeout(Duration(minutes: 3)));
@@ -243,9 +231,13 @@ final class _Scene {
   final WidgetTester tester;
   final AppGraph graph;
   String? latestTurnId;
+  String? _submittedThreadId;
+  String? _priorTurnId;
+  String? _submittedTurnId;
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
+  late final observed = TimelineObservation(tester, () => lease);
 
   Future<void> until(
     bool Function() ready,
@@ -285,6 +277,15 @@ final class _Scene {
       await tester.enterText(input, prompt);
       await tester.pump();
       expect(tester.widget<TextField>(input).controller!.text, prompt);
+      _submittedThreadId = graph.client.selection.state.selectedThreadId;
+      _priorTurnId = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .session(_submittedThreadId!)
+                .state
+                .lastTurn
+                ?.turnId;
+      _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
     } catch (_) {
       final composer = tester.widget<PromptComposerView>(
@@ -304,129 +305,262 @@ final class _Scene {
     }
   }
 
-  Future<ChatItemPresentation> waitForTurn({
+  Future<StudioTurnView> waitForTurn({
     String? after,
-    String outcome = 'completed',
+    StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
-    ChatItemPresentation? turn;
+    StudioTurnView? turn;
     await until(() {
       final id = graph.client.selection.state.selectedThreadId;
       if (id == null) return false;
-      final display = graph.timeline.lease(id);
-      if (display == null) return false;
-      turn = display.controller.messages
-          .map(chatItemPresentationOf)
-          .whereType<ChatItemPresentation>()
-          .where((item) => item.type == 'turn')
-          .lastOrNull;
-      return turn != null && turn!.id != after;
-    }, 'completed Turn');
+      _submittedThreadId ??= id;
+      if (id != _submittedThreadId) return false;
+      final candidate = graph.client.conversations.session(id).state.lastTurn;
+      if (candidate == null ||
+          candidate.threadId != id ||
+          candidate.turnId == _priorTurnId ||
+          candidate.turnId == after) {
+        return false;
+      }
+      _submittedTurnId ??= candidate.turnId;
+      if (candidate.turnId != _submittedTurnId) return false;
+      turn = candidate;
+      final originalLease = graph.timeline.lease(id);
+      if (!candidate.state.isTerminal ||
+          candidate.state.status != outcome ||
+          originalLease == null) {
+        return false;
+      }
+      final source = ForegroundTurnChatSource(turnId: candidate.turnId);
+      // State proves completion; Main must separately accept this source and
+      // mount its original viewport within this same wait budget before reveal.
+      if (!observed.items.any((item) => item.source == source) ||
+          observed.live.any((unit) => unit.item.source == source)) {
+        return false;
+      }
+      final mainScrollable = find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable &&
+            identical(widget.controller, originalLease.scrollController),
+      );
+      if (mainScrollable.evaluate().length != 1) return false;
+      if (outcome == StudioTurnStatus.cancelled) {
+        final receipts = observed.items
+            .where(
+              (item) =>
+                  item.source == source &&
+                  item.kind == TimelineItemKind.status &&
+                  item.atomKind == ChatAtomKind.turnReceipt,
+            )
+            .toList();
+        expect(receipts.length, lessThanOrEqualTo(1));
+        return receipts.singleOrNull?.outcome == ChatTerminalOutcome.cancelled;
+      }
+      return true;
+    }, '${outcome.name} Turn');
     final original = turn!;
-    latestTurnId = original.id;
-    expect((original.data['outcome'] as Map)['kind'], outcome);
+    latestTurnId = original.turnId;
+    expect(original.state.status, outcome);
     return original;
   }
 
-  Future<TimelineChildrenDisplay> completedTurn({
+  Future<StudioTurnView> completedTurn({
     String? after,
-    String outcome = 'completed',
+    StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
     final original = await waitForTurn(after: after, outcome: outcome);
-    expect(original.childrenParentId, isNotNull);
-    final row = find.byWidgetPredicate(
-      (widget) => widget is ChatItemView && widget.item.id == original.id,
-    );
-    if (row.evaluate().isEmpty) {
-      // The reversed production list may retain the reader's old position.
-      // Materialize the already-loaded target using Flutter's real scroll API.
-      await tester.scrollUntilVisible(
-        row,
-        -200,
-        scrollable: find.byWidgetPredicate(
-          (widget) =>
-              widget is Scrollable &&
-              identical(widget.controller, lease.scrollController),
-        ),
-      );
-    }
-    final headers = find.descendant(of: row, matching: find.byType(ListTile));
-    await until(() => headers.evaluate().isNotEmpty, 'mounted original Turn');
-    final header = headers.first;
-    final title = find.descendant(
-      of: header,
-      matching: find.byType(TimelineActivityRow),
-    );
-    await until(
-      () => title.evaluate().isNotEmpty,
-      'mounted original Turn title',
-    );
-    if (!tester.widget<TimelineActivityRow>(title).expanded) {
-      await tap(header);
-    }
-    TimelineChildrenDisplay? children;
-    final childWidget = find.descendant(
-      of: row,
-      matching: find.byType(TimelineChildrenConnector),
-    );
-    try {
-      await until(() {
-        if (childWidget.evaluate().isEmpty) return false;
-        expect(childWidget, findsOneWidget);
-        expect(
-          tester.widget<TimelineChildrenConnector>(childWidget).parentId,
-          original.childrenParentId,
-        );
-        children = tester.state(childWidget) as TimelineChildrenDisplay;
-        if (children?.error case final error?) throw StateError('$error');
-        return children?.ready == true && children?.isCurrent == true;
-      }, 'original Children Set');
-    } catch (_) {
-      debugPrint(
-        'Children failure: item=${original.id}, parent=${original.childrenParentId}, '
-        'mounted=${row.evaluate().length}, '
-        'builder=${tester.widget<ChatItemView>(row).childrenBuilder != null}, '
-        'childWidgets=${childWidget.evaluate().length}, '
-        'child=${children == null ? null : (children!.parentId, children!.ready, children!.isCurrent, children!.error)}, '
-        'titles=${tester.widgetList<TimelineActivityRow>(title).map((w) => (w.label, w.expanded)).toList()}, '
-        'displays=${lease.childrenDisplays.map((d) => (d.parentId, d.ready, d.isCurrent, d.error)).toList()}',
-      );
-      rethrow;
-    }
-    expect(children!.appliedSets, 1);
-    return children!;
+    final source = ForegroundTurnChatSource(turnId: original.turnId);
+    expect(observed.workFor(source), isNotEmpty);
+    // The typed Turn identifies the real source. Tool lookup still opens and
+    // verifies its original ordinary work segment, independently of completion.
+    return original;
   }
 
-  ChatItemPresentation tool(
-    TimelineChildrenDisplay children,
+  Future<TimelineItem> turnReceipt(
+    StudioTurnView turn,
+    ChatTerminalOutcome outcome,
+  ) async {
+    final source = ForegroundTurnChatSource(turnId: turn.turnId);
+    expect(graph.client.selection.state.selectedThreadId, turn.threadId);
+    final receipt = observed.items.singleWhere(
+      (item) =>
+          item.source == source &&
+          item.kind == TimelineItemKind.status &&
+          item.atomKind == ChatAtomKind.turnReceipt,
+    );
+    expect(receipt.outcome, outcome);
+    final payload = receipt.payload;
+    final byteLength = payload is InlinePayload
+        ? payload.bytes.length
+        : payload is DeferredPayload
+        ? payload.byteLength
+        : null;
+    final reason =
+        'Known small wait fixture requires Inline/current business '
+        'presentation within the original frame budget: id=${receipt.id}, '
+        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
+        'Over-budget payloads may remain Deferred in the product.';
+    expect(payload is InlinePayload, isTrue, reason: reason);
+    expect(
+      ChatItemPresentation.forUnit(observed.unit(receipt.id)).compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    await observed.revealItem(receipt);
+    final rendered = tester
+        .widget<ChatItemView>(observed.itemRow(receipt.id))
+        .item;
+    expect(
+      rendered.compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    expect(rendered.type, 'turn');
+    expect((rendered.data['outcome'] as Map)['kind'], outcome.name);
+    return receipt;
+  }
+
+  Future<ChatItemPresentation> tool(
+    StudioTurnView turn,
     String prefix, {
     String status = 'succeeded',
-  }) {
-    expect(children.isCurrent, isTrue);
-    final matches = children.messages
-        .map(chatItemPresentationOf)
-        .whereType<ChatItemPresentation>()
-        .where((item) {
-          final reading = item.toolCard;
-          return reading is DecodedToolCard &&
-              reading.value.toolCallId.startsWith(prefix) &&
-              reading.value.statusString == status;
-        })
+  }) async {
+    final source = ForegroundTurnChatSource(turnId: turn.turnId);
+    expect(graph.client.selection.state.selectedThreadId, turn.threadId);
+    final groups = observed.workFor(source).toList();
+    expect(groups, isNotEmpty);
+    await observed.openSourceGroups(source);
+    final matches = observed.mountedMembers
+        .where(
+          (atom) =>
+              atom.source == source &&
+              atom.tool?.callId.startsWith(prefix) == true,
+        )
         .toList();
-    expect(matches, hasLength(1), reason: '$prefix / $status');
-    return matches.single;
+    expect(
+      matches,
+      hasLength(1),
+      reason: 'one original tool atom: ${turn.threadId}/${turn.turnId}/$prefix',
+    );
+    final atom = matches.single;
+    expect(atom.kind, ChatAtomKind.toolCall);
+    final payload = atom.payload;
+    final byteLength = payload is InlinePayload
+        ? payload.bytes.length
+        : payload is DeferredPayload
+        ? payload.byteLength
+        : null;
+    // Select by reliable metadata first. A missing/Deferred/malformed envelope
+    // must fail as delivery/presentation, not be filtered into "no member".
+    final reason =
+        'Known small wait fixture requires Inline/current business '
+        'presentation within the original frame budget: id=${atom.id}, '
+        'completion=${atom.completionItemId}/${atom.completionSeq}, '
+        'call=${atom.tool!.callId}, payloadType=${payload?.runtimeType}, '
+        'byteLength=$byteLength. '
+        'Over-budget payloads may remain Deferred in the product.';
+    expect(payload, isA<InlinePayload>(), reason: reason);
+    final reference = observed.unitForMember(atom.id).item.members!;
+    final display = await observed.revealMember(atom, reference: reference);
+    expect(display.expanded, isTrue);
+    expect(
+      display.atoms.where(
+        (member) =>
+            member.id == atom.id &&
+            member.source == source &&
+            member.tool?.callId == atom.tool!.callId,
+      ),
+      hasLength(1),
+    );
+    final rendered = tester
+        .widget<ChatItemView>(observed.memberRow(atom.id))
+        .item;
+    expect(
+      rendered.compatibility,
+      ChatItemCompatibility.current,
+      reason: reason,
+    );
+    expect(rendered.type, 'tool', reason: reason);
+    expect(rendered.atom!.completionItemId, atom.completionItemId);
+    expect(rendered.atom!.completionSeq, atom.completionSeq);
+    expect(rendered.toolCard, isA<DecodedToolCard>(), reason: reason);
+    final card = (rendered.toolCard as DecodedToolCard).value;
+    expect(card.toolCallId, atom.tool!.callId, reason: reason);
+    expect(card.name, atom.tool!.name, reason: reason);
+    expect(card.statusString, status, reason: reason);
+    return rendered;
   }
 
-  Future<void> closeTurn(TimelineChildrenDisplay children) async {
-    final row = find.byWidgetPredicate(
-      (widget) => widget is ChatItemView && widget.item.id == latestTurnId,
+  Future<void> closeTurn(StudioTurnView turn) async {
+    await observed.closeSource(ForegroundTurnChatSource(turnId: turn.turnId));
+    await until(
+      () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
+      'ordinary group scopes released; only original Main handle remains',
     );
-    await tap(find.descendant(of: row, matching: find.byType(ListTile)).first);
+  }
+
+  Future<void> currentWaiting(String prefix) async {
+    await until(() {
+      final threadId = graph.client.selection.state.selectedThreadId;
+      if (threadId == null || threadId != _submittedThreadId) return false;
+      final turn = graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn;
+      if (turn == null ||
+          turn.threadId != threadId ||
+          turn.turnId == _priorTurnId ||
+          !turn.state.isBusy) {
+        return false;
+      }
+      _submittedTurnId ??= turn.turnId;
+      return turn.turnId == _submittedTurnId &&
+          observed.live.any(
+            (unit) =>
+                unit.item.kind == TimelineItemKind.workGroup &&
+                unit.item.source ==
+                    ForegroundTurnChatSource(turnId: turn.turnId),
+          );
+    }, 'live work item with explicit member reference');
+    final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
+    await observed.openSourceGroups(source);
     await until(
       () =>
-          !children.isCurrent &&
-          graph.client.budget.used(ResourceKind.chatHandle) == 1,
-      'previous Children retired and its real handle released',
+          observed.mountedMembers
+              .where(
+                (atom) =>
+                    atom.source == source &&
+                    atom.tool?.callId.startsWith(prefix) == true,
+              )
+              .length ==
+          1,
+      'exact live wait atom',
     );
+    final atom = observed.mountedMembers.singleWhere(
+      (atom) =>
+          atom.source == source && atom.tool?.callId.startsWith(prefix) == true,
+    );
+    final unit = observed.unitForMember(atom.id);
+    expect(atom.lifecycle, isA<ActiveChatAtom>());
+    expect(atom.wait?.state, ThreadWaitStateView.waiting);
+    await observed.openGroup(unit.id);
+    final panel = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineWaitPanel &&
+          widget.identity == atom.id &&
+          widget.presentation.state == ThreadWaitStateView.waiting,
+    );
+    await until(
+      () => panel.evaluate().length == 1,
+      'typed production Waiting panel',
+    );
+    expect(
+      observed.mountedMembers
+          .singleWhere((member) => member.id == atom.id)
+          .lifecycle,
+      isA<ActiveChatAtom>(),
+    );
+    expect(tester.getSize(panel).isEmpty, isFalse);
   }
 
   Map<String, dynamic> result(ChatItemPresentation item) =>

@@ -7,13 +7,17 @@ import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart' as sdk;
@@ -24,7 +28,26 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-sdk.ChatMessage _text(String id, String text) => sdk.ChatMessage(
+sdk.ChatAtom _fixtureAtom({
+  required String id,
+  required sdk.PayloadData payload,
+}) => sdk.ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: sdk.ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: sdk.ChatAtomKind.receipt,
+  delivery: sdk.ChatDeliveryKind.independent,
+  lifecycle: const sdk.TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: sdk.ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: payload,
+);
+
+sdk.ChatAtom _text(String id, String text) => _fixtureAtom(
   id: id,
   payload: sdk.InlinePayload(
     bytes: utf8.encode(
@@ -44,7 +67,7 @@ sdk.ChatMessage _text(String id, String text) => sdk.ChatMessage(
   ),
 );
 
-sdk.ChatMessage _unknown(String id, {String? marker}) => sdk.ChatMessage(
+sdk.ChatAtom _unknown(String id, {String? marker}) => _fixtureAtom(
   id: id,
   payload: sdk.InlinePayload(
     bytes: utf8.encode(
@@ -72,7 +95,7 @@ void main() {
     (tester) async {
       ChatItemView skill(String id, Map<String, Object?> data) => ChatItemView(
         item: ChatItemPresentation.decode(
-          sdk.ChatMessage(
+          _fixtureAtom(
             id: id,
             payload: sdk.InlinePayload(
               bytes: utf8.encode(
@@ -317,12 +340,12 @@ void main() {
         await controls.adapter.applyBatch(
           sdk.ChatBatch(
             placement: sdk.ChatPlacement.set,
-            messages: [
+            entries: ([
               _text(
                 'image-only',
                 '![](https://example.invalid/only-image.png)',
               ),
-            ],
+            ]).map(_mainEntry).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -389,12 +412,12 @@ void main() {
         await controls.adapter.applyBatch(
           sdk.ChatBatch(
             placement: sdk.ChatPlacement.set,
-            messages: [
+            entries: ([
               _text(
                 'text-and-image',
                 '**实际正文** ![](https://example.invalid/lazy.png)',
               ),
-            ],
+            ]).map(_mainEntry).toList(),
           ),
         );
         await tester.pumpWidget(
@@ -484,7 +507,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('placeholder')],
+          entries: ([_unknown('placeholder')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpWidget(
@@ -505,7 +528,10 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [_text('actual-body', '正文布局见证'), _text('empty-body', '')],
+          entries: ([
+            _text('actual-body', '正文布局见证'),
+            _text('empty-body', ''),
+          ]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpAndSettle();
@@ -599,7 +625,7 @@ void main() {
     'bounded range witness exposes explicit next and copies only the displayed decoded window',
     (tester) async {
       final controls = _Controls();
-      sdk.ChatMessage message(String database) => sdk.ChatMessage(
+      sdk.ChatAtom message(String database) => _fixtureAtom(
         id: 'window',
         payload: sdk.DeferredPayload(
           reference: sdk.ContentRef(
@@ -627,7 +653,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [message('old')],
+          entries: ([message('old')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpWidget(
@@ -699,7 +725,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [message('new')],
+          entries: ([message('new')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pump();
@@ -747,6 +773,284 @@ void main() {
   );
 
   testWidgets(
+    'Main tool disclosure owns one automatic bounded read per declared reference',
+    (tester) async {
+      final controls = _Controls();
+      const presentationId = 'status:main-range';
+      const contentItemId = 'original-main-result';
+      const lastLine = 'bounded-output-line-080';
+      final outputText = [
+        for (var line = 1; line < 80; line++) 'bounded output line $line',
+        lastLine,
+      ].join('\n');
+      final argumentsText = jsonEncode({'command': 'printf bounded output'});
+      const argumentsRef = sdk.ContentRef(
+        databaseId: 'main-range-db',
+        target: sdk.BodyContentTarget(
+          owner: sdk.ItemContentOwner(itemId: contentItemId),
+          key: 'tool.arguments',
+        ),
+      );
+      const outputRef = sdk.ContentRef(
+        databaseId: 'main-range-db',
+        target: sdk.BodyContentTarget(
+          owner: sdk.ItemContentOwner(itemId: contentItemId),
+          key: 'tool.result',
+        ),
+      );
+      final item = sdk.TimelineItem(
+        id: presentationId,
+        kind: sdk.TimelineItemKind.status,
+        source: const sdk.BackgroundResultChatSource(messageId: 'result'),
+        atomKind: sdk.ChatAtomKind.toolCall,
+        delivery: sdk.ChatDeliveryKind.independent,
+        outcome: sdk.ChatTerminalOutcome.completed,
+        turnId: 'original-turn',
+        contentItemId: contentItemId,
+        admissionClosed: true,
+        contents: const [
+          sdk.ChatAtomContent(
+            role: sdk.ChatContentRole.toolArguments,
+            reference: argumentsRef,
+          ),
+          sdk.ChatAtomContent(
+            role: sdk.ChatContentRole.toolOutput,
+            reference: outputRef,
+          ),
+        ],
+        payload: sdk.InlinePayload(
+          bytes: utf8.encode(
+            jsonEncode({
+              'contract': 'anywork.chat/1',
+              'type': 'tool',
+              'data': {
+                'invocation': {
+                  'toolCallId': 'main-call',
+                  'name': 'exec',
+                  'presentationContract': 'builtin.exec@2',
+                },
+                'state': {
+                  'kind': 'succeeded',
+                  'completedAt': 12,
+                  'output': {'exitCode': 0, 'attachments': []},
+                },
+              },
+              'bodies': [
+                for (final (key, text) in [
+                  ('tool.arguments', argumentsText),
+                  ('tool.result', outputText),
+                ])
+                  {
+                    'key': key,
+                    'byteLength': utf8.encode(text).length,
+                    'inline': utf8.encode(text),
+                  },
+              ],
+            }),
+          ),
+        ),
+      );
+      final output = Completer<sdk.ContentWindow>();
+      final reads = <(sdk.ContentRef, int, int)>[];
+      final accepted = sdk.ContentWindow(
+        bytes: utf8.encode(outputText),
+        offset: 0,
+        generation: 'original-output',
+        availableThrough: utf8.encode(outputText).length,
+        sealed: true,
+      );
+      await tester.binding.setSurfaceSize(const Size(1280, 420));
+      try {
+        await controls.adapter.applyBatch(
+          sdk.ChatBatch(
+            placement: sdk.ChatPlacement.set,
+            entries: [sdk.ItemChatEntry(item)],
+          ),
+        );
+        await tester.pumpWidget(
+          _host(
+            controls,
+            isActive: () => !controls.isRetired,
+            read: (reference, range) {
+              reads.add((reference, range.offset, range.maxBytes));
+              if (identical(reference, outputRef)) return output.future;
+              expect(reference, same(argumentsRef));
+              final bytes = utf8.encode(argumentsText);
+              return Future.value(
+                sdk.ContentWindow(
+                  bytes: bytes,
+                  offset: 0,
+                  generation: 'original-arguments',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              );
+            },
+          ),
+        );
+        await tester.pumpAndSettle();
+        final mainController = controls.controller;
+        final mainPosition = controls.scrollController.position;
+        final generation = controls.adapter.generation;
+        expect(mainPosition.axisDirection, AxisDirection.up);
+        final details = find.byType(TimelineToolDetails);
+        expect(details, findsOneWidget);
+        final outer = find.byKey(
+          ValueKey(
+            'timeline-tool-details:${tester.widget<TimelineToolDetails>(details).item.id}',
+          ),
+        );
+        expect(outer, findsOneWidget);
+        final outerTile = tester.element(
+          find.descendant(of: outer, matching: find.byType(ExpansionTile)),
+        );
+        final outerTitle = find.descendant(
+          of: outer,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is ListTile &&
+                identical(
+                  widget.title,
+                  (outerTile.widget as ExpansionTile).title,
+                ),
+          ),
+        );
+        expect(outerTitle, findsOneWidget);
+        expect(outerTitle.hitTestable(), findsOneWidget);
+        expect(reads, isEmpty);
+        await tester.tap(outerTitle);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final connector = find.byWidgetPredicate(
+          (widget) =>
+              widget is TimelineContentRangeConnector &&
+              widget.itemId == presentationId &&
+              widget.contentKey == sdk.ChatContentRole.toolOutput.name,
+        );
+        expect(connector, findsOneWidget);
+        final originalState = tester.state(connector);
+        final owner = originalState as TimelineCurrentWindowDisplay;
+        expect(owner.reference, same(outputRef));
+        expect(
+          tester
+              .element(connector)
+              .getInheritedWidgetOfExactType<TimelineBodyReadIntent>(),
+          isNotNull,
+        );
+        final rangeView = find.descendant(
+          of: connector,
+          matching: find.byType(TimelineContentRangeView),
+        );
+        final disclosure = find.descendant(
+          of: connector,
+          matching: find.byKey(
+            StudioDriverKeys.timelineContentOpen(
+              presentationId,
+              sdk.ChatContentRole.toolOutput.name,
+            ),
+          ),
+        );
+        final pending = tester.widget<TimelineContentRangeView>(rangeView);
+        expect(pending.initiallyExpanded, isTrue);
+        expect(
+          (pending.loading, pending.active, pending.canRead),
+          (true, true, true),
+        );
+        expect(
+          tester.widget<TimelineActivityDisclosure>(disclosure).enabled,
+          isFalse,
+        );
+        expect(owner.window, isNull);
+        expect(owner.error, isNull);
+        expect(reads, [
+          (argumentsRef, 0, 64 * 1024),
+          (outputRef, 0, 64 * 1024),
+        ]);
+        await Scrollable.ensureVisible(
+          tester.element(disclosure),
+          alignment: 0.5,
+        );
+        await tester.pump();
+        expect(owner.window, isNull);
+        expect(tester.state(connector), same(originalState));
+        output.complete(accepted);
+        await tester.pumpAndSettle();
+        expect(owner.window, same(accepted));
+        expect(owner.error, isNull);
+        final ready = tester.widget<TimelineContentRangeView>(rangeView);
+        expect(ready.initiallyExpanded, isTrue);
+        expect(
+          (ready.loading, ready.active, ready.canRead),
+          (false, true, true),
+        );
+        expect(ready.window, same(accepted));
+        expect(
+          tester.widget<TimelineActivityDisclosure>(disclosure).enabled,
+          isTrue,
+        );
+        expect(tester.state(connector), same(originalState));
+        expect(owner.reference, same(outputRef));
+        expect(controls.controller, same(mainController));
+        expect(controls.scrollController.position, same(mainPosition));
+        expect(controls.adapter.generation, generation);
+        final text = find.byKey(
+          StudioDriverKeys.timelineContentWindow(
+            presentationId,
+            sdk.ChatContentRole.toolOutput.name,
+          ),
+        );
+        expect(tester.widget<Text>(text).data, outputText);
+        final rich = find.descendant(of: text, matching: find.byType(RichText));
+        expect(rich, findsOneWidget);
+        final paragraph = tester.renderObject<RenderParagraph>(rich);
+        final boxes = paragraph.getBoxesForSelection(
+          TextSelection(
+            baseOffset: outputText.indexOf(lastLine),
+            extentOffset: outputText.length,
+          ),
+        );
+        expect(boxes, hasLength(1));
+        paragraph.showOnScreen(rect: boxes.single.toRect());
+        await tester.pump();
+        final main = find.byWidgetPredicate(
+          (widget) =>
+              widget is Scrollable &&
+              identical(widget.controller, controls.scrollController),
+        );
+        expect(main, findsOneWidget);
+        final glyph = boxes.single.toRect().shift(
+          paragraph.localToGlobal(Offset.zero),
+        );
+        final viewport = tester.getRect(main).inflate(1);
+        expect(viewport.contains(glyph.topLeft), isTrue);
+        expect(viewport.contains(glyph.bottomRight), isTrue);
+        await Scrollable.ensureVisible(
+          tester.element(outerTitle),
+          alignment: 0.5,
+        );
+        await tester.pump();
+        expect(outerTitle.hitTestable(), findsOneWidget);
+        await tester.tap(outerTitle);
+        await tester.pumpAndSettle();
+        expect(owner.window, isNull);
+        expect(originalState.mounted, isFalse);
+        expect(connector, findsNothing);
+        expect(text, findsNothing);
+        expect(reads, [
+          (argumentsRef, 0, 64 * 1024),
+          (outputRef, 0, 64 * 1024),
+        ]);
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!output.isCompleted) output.complete(accepted);
+        await tester.pumpWidget(const SizedBox());
+        await tester.runAsync(controls.dispose);
+        await tester.binding.setSurfaceSize(null);
+      }
+    },
+  );
+
+  testWidgets(
     'production Flyer assembly keeps one custom message per item and appends incrementally',
     (tester) async {
       final controls = _Controls();
@@ -758,7 +1062,10 @@ void main() {
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_text('text', '正文'), _unknown('unknown')],
+          entries: ([
+            _text('text', '正文'),
+            _unknown('unknown'),
+          ]).map(_mainEntry).toList(),
           before: 'opaque',
         ),
       );
@@ -788,13 +1095,13 @@ void main() {
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.prepend,
-          messages: [_text('older', '旧页')],
+          entries: ([_text('older', '旧页')]).map(_mainEntry).toList(),
         ),
       );
       await adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [_text('new', '新内容')],
+          entries: ([_text('new', '新内容')]).map(_mainEntry).toList(),
         ),
       );
       await tester.pumpAndSettle(
@@ -837,16 +1144,16 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [
+          entries: ([
             _unknown('unknown', marker: 'builtin.exec@1'),
-            const sdk.ChatMessage(
+            _fixtureAtom(
               id: 'deferred',
               payload: sdk.DeferredPayload(
                 reference: reference,
                 byteLength: 900000,
               ),
             ),
-          ],
+          ]).map(_mainEntry).toList(),
         ),
       );
       final requests = <sdk.ContentRange>[];
@@ -884,7 +1191,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 3),
       );
-      expect(find.text('未知展示格式：builtin.exec@1'), findsOneWidget);
+      expect(
+        find.text('不支持的 presentationContract：builtin.exec@1'),
+        findsOneWidget,
+      );
       expect(requests, isEmpty);
       await tester.tap(find.text('按需查看原文 · 900000 字节'));
       await tester.pumpAndSettle(
@@ -902,17 +1212,22 @@ void main() {
   );
 
   testWidgets(
-    'real viewport fill waits for published cursor and stops at its startup budget',
+    'real viewport fills past eight unchanged layouts without operations until explicit EOF',
     (tester) async {
       final controls = _Controls();
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('initial')],
+          entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
       var loads = 0;
-      var cursor = 'page:0';
+      String? cursor = 'page:0';
+      var operations = 0;
+      final subscription = controls.controller.operationsStream.listen(
+        (_) => operations++,
+      );
+      addTearDown(subscription.cancel);
       late StateSetter update;
       await tester.pumpWidget(
         StatefulBuilder(
@@ -925,35 +1240,36 @@ void main() {
                 generation: 1,
                 mode: TimelineDisplayMode.live,
                 connection: TimelineConnectionPhase.ready,
-                hasOlder: true,
+                hasOlder: cursor != null,
                 olderCursor: cursor,
               ),
               onLoadOlder: () async {
                 loads++;
-                // SDK completion follows actual batch application and before publication,
-                // but the component consumes that publication in the next real frame.
-                await controls.adapter.applyBatch(
-                  sdk.ChatBatch(
-                    placement: sdk.ChatPlacement.prepend,
-                    messages: const [],
-                  ),
-                );
-                update(() => cursor = 'page:$loads');
+                // A page may only contribute to an existing collapsed item:
+                // no operation, no added height, but a new atomic boundary.
+                update(() => cursor = loads == 12 ? null : 'page:$loads');
               },
             );
           },
         ),
       );
       await tester.pumpAndSettle();
-      expect(loads, 8);
+      expect(loads, 12);
+      expect(operations, 0);
+      expect(controls.controller.messages, hasLength(1));
+      final position = controls.scrollController.position;
+      expect(position.maxScrollExtent, position.minScrollExtent);
+      expect(position.viewportDimension, greaterThan(0));
       await tester.pump(const Duration(seconds: 1));
       expect(
         loads,
-        8,
-        reason: 'No frame polling after startup budget exhaustion',
+        12,
+        reason: 'Explicit EOF may leave whitespace; no frame polling follows',
       );
       await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(controls.dispose);
+      final disposing = controls.dispose();
+      await tester.pump();
+      await disposing;
     },
   );
 
@@ -964,7 +1280,7 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.set,
-          messages: [_unknown('initial')],
+          entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
       var loads = 0;
@@ -991,7 +1307,9 @@ void main() {
       await controls.adapter.applyBatch(
         sdk.ChatBatch(
           placement: sdk.ChatPlacement.append,
-          messages: [for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')],
+          entries: ([for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')])
+              .map(_mainEntry)
+              .toList(),
         ),
       );
       await tester.pumpAndSettle();
@@ -1092,11 +1410,7 @@ final class _Controls implements TimelineUiControllers {
   @override
   final scrollController = ScrollController();
   final images = TimelineImageResources(threadId: 'thread');
-  late final adapter = TimelineMessageController(
-    controller,
-    generation: 1,
-    imageResources: images,
-  );
+  late final adapter = TimelineMessageController(controller, generation: 1);
   @override
   Key get chatKey => const ValueKey('chat');
   @override
@@ -1115,3 +1429,18 @@ final class _Controls implements TimelineUiControllers {
     await ended.future;
   }
 }
+
+// Every envelope in these component stories is an explicitly independent Main
+// status/text item. This helper does not classify, join or reorder atoms.
+sdk.ItemChatEntry _mainEntry(sdk.ChatAtom atom) => sdk.ItemChatEntry(
+  sdk.TimelineItem(
+    id: atom.id,
+    kind: sdk.TimelineItemKind.status,
+    source: atom.source,
+    atomKind: atom.kind,
+    delivery: sdk.ChatDeliveryKind.independent,
+    contents: atom.contents,
+    payload: atom.payload,
+    admissionClosed: true,
+  ),
+);

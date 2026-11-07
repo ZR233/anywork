@@ -657,6 +657,7 @@
   "timelineJumpToLatest": "跳到最新",
   "timelineNew": "新内容",
   "timelineLoadEarlier": "加载更早消息",
+  "timelineActivityNotLoaded": "尚有活动未载入",
   "timelineBackToLive": "回到实时",
   "timelineDetailUnavailable": "此内容已不可用",
   "timelineReconnecting": "正在重新连接消息，当前内容已保留。",
@@ -1450,7 +1451,7 @@
   "recoveryCheckFailed": "历史会话和工作区检查未完成",
   "agentRoleRetired": "该子代理角色已停用，仅可查看历史记录。",
   "conversationActivityPreparing": "准备中",
-  "conversationActivityCompacting": "正在压缩",
+  "conversationActivityCompacting": "正在压缩上下文",
   "conversationActivityRunningTool": "执行中",
   "conversationActivitySaveFailed": "保存故障",
   "conversationActivitySavePaused": "保存已暂停",
@@ -1473,7 +1474,7 @@
   "settingsModelCatalogEmpty": "该账号没有模型。",
   "settingsModelCatalogRestartHint": "重启应用可重新同步。",
   "timelineActivityTitle": "思考与工具",
-  "timelineContextCompacted": "上下文已压缩",
+  "timelineContextCompacted": "已完成压缩",
   "timelineCompactionDetail": "压缩前 {before}，压缩后 {after} 词元",
   "@timelineCompactionDetail": {
     "placeholders": {

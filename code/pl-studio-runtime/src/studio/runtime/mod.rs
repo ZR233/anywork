@@ -53,6 +53,8 @@ mod thread_mode;
 mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
+#[cfg(test)]
+mod timeline_backlog_tests;
 mod tool_refresh;
 pub use conversation_feed::{ConversationEvent, ConversationFeed};
 pub use conversation_reader::{ContentWatch, ConversationReader};

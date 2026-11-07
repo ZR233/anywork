@@ -277,12 +277,16 @@ class TimelineToolDetails extends StatelessWidget {
     this.inline = false,
     this.initiallyExpanded = false,
     this.onExpansionChanged,
+    this.declaredContents,
+    this.additionalContentBuilder,
     super.key,
   });
 
   final TimelineToolPresentation item;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
+  final List<Widget>? declaredContents;
+  final WidgetBuilder? additionalContentBuilder;
 
   /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
   /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
@@ -319,20 +323,23 @@ class TimelineToolDetails extends StatelessWidget {
             ),
           ),
         ),
-      if (arguments != null && arguments.trim().isNotEmpty)
-        StudioCodeBlock(
-          text: _prettyToolPayload(arguments),
-          language: context.l10n.timelineToolArguments,
-          maxHeight: 200,
-          margin: const EdgeInsets.only(top: 8),
-        ),
-      if (output != null && output.trim().isNotEmpty)
-        StudioCodeBlock(
-          text: _prettyToolPayload(output),
-          language: context.l10n.timelineToolOutput,
-          maxHeight: 280,
-          margin: const EdgeInsets.only(top: 8),
-        ),
+      if (!hidePayload && declaredContents != null) ...declaredContents!,
+      if (declaredContents == null) ...[
+        if (arguments != null && arguments.trim().isNotEmpty)
+          StudioCodeBlock(
+            text: _prettyToolPayload(arguments),
+            language: context.l10n.timelineToolArguments,
+            maxHeight: 200,
+            margin: const EdgeInsets.only(top: 8),
+          ),
+        if (output != null && output.trim().isNotEmpty)
+          StudioCodeBlock(
+            text: _prettyToolPayload(output),
+            language: context.l10n.timelineToolOutput,
+            maxHeight: 280,
+            margin: const EdgeInsets.only(top: 8),
+          ),
+      ],
       if (showError)
         Padding(
           padding: const EdgeInsets.only(top: 6),
@@ -343,6 +350,8 @@ class TimelineToolDetails extends StatelessWidget {
             ),
           ),
         ),
+      if (additionalContentBuilder != null)
+        Builder(builder: additionalContentBuilder!),
     ];
     if (inline) {
       return Column(

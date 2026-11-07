@@ -136,6 +136,7 @@ struct Candidate {
 
 pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
     ensure!(!effects.is_empty(), "cannot persist an empty history batch");
+    let started = Instant::now();
     let mut summary = {
         let progress = lock_progress(inner);
         progress
@@ -151,7 +152,7 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             projected.sequence == sequence
                 && projected.accounting.sequence == sequence
                 && projected.accounting.thread_id == inner.thread.id
-                && projected.current.projection.source_effect_seq == sequence,
+                && projected.current.projection().source_effect_seq == sequence,
             "prepared history batch {sequence} has inconsistent handoff identities"
         );
         let before = summary.pricing.clone();
@@ -221,20 +222,38 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             },
         })
         .collect();
+    let database_started = Instant::now();
+    let prepared_elapsed_us = database_started.duration_since(started).as_micros() as u64;
     let committed = history.commit_checkpoint_effects(&commits).await;
+    let database_elapsed_us = database_started.elapsed().as_micros() as u64;
     lock_progress(inner).saving_revision = 0;
+    if committed.is_err() {
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = inner.thread.id,
+            batch_effects = effects.len(),
+            prepared_elapsed_us,
+            database_elapsed_us,
+            success = false,
+            "history batch transaction"
+        );
+    }
     let accounting = committed?;
+    let confirmation_started = Instant::now();
     ensure!(
         accounting.len() == effects.len(),
         "history batch accounting result length differs"
     );
     // There are no await points in local settlement. On a rejected transaction none of these
     // actions run; on an interrupted acknowledgement the frozen prefix/baseline is retried.
+    if let Some(last) = effects
+        .iter()
+        .rev()
+        .find_map(|effect| effect.prepared.completions.last())
+    {
+        inner.chat.confirm_durable(last.header.append_seq)?;
+    }
     for ((effect, candidate), accounting) in effects.iter().zip(candidates).zip(accounting) {
-        if let Some(last) = effect.prepared.completions.last() {
-            inner.chat.confirm_durable(last.header.append_seq)?;
-        }
-        inner.channel.order_index.confirm_saved(effect.sequence);
         super::super::state::clear_checkpoint_recovery(&inner.thread.id);
         if let Some(accounting) = accounting {
             submit_accounting(inner, accounting);
@@ -258,9 +277,25 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             .published_revision
             .max(candidate.checkpoint.state_revision);
     }
+    inner
+        .channel
+        .order_index
+        .confirm_saved(effects.last().expect("nonempty batch").sequence);
     let mut progress = lock_progress(inner);
     progress.in_flight_bytes = 0;
     report(inner, &progress);
+    tracing::debug!(
+        target: "conversation_work",
+        thread_id = inner.thread.id,
+        batch_effects = effects.len(),
+        first_effect = effects.first().expect("nonempty batch").sequence,
+        last_effect = effects.last().expect("nonempty batch").sequence,
+        prepared_elapsed_us,
+        database_elapsed_us,
+        confirmation_elapsed_us = confirmation_started.elapsed().as_micros() as u64,
+        success = true,
+        "history batch transaction"
+    );
     Ok(())
 }
 

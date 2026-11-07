@@ -1,761 +1,378 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
-import '../../../../shared/studio_driver_keys.dart';
+import '../../../../l10n/studio_l10n.dart';
 import '../state/chat_item_presentation.dart';
-import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
+import '../state/timeline_display_unit.dart';
+import '../state/timeline_image_resources.dart';
 import '../view_models/conversation_current_owner.dart';
 import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
+import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_display_unit_view.dart';
 import 'timeline_content_connector.dart';
+import 'timeline_group_members_connector.dart';
+import 'timeline_media_connector.dart';
 
-/// The current display borrows the same content owner's read qualification.
-/// Its expanded windows never become messages in the history controller.
+/// Renders every admitted current item in producer order, including a later
+/// response while an earlier group still has active members. No atomic reducer.
 class ConversationCurrentConnector extends StatefulWidget {
   const ConversationCurrentConnector({
-    super.key,
     required this.current,
     required this.content,
     required this.view,
-    this.onExpandedChanged,
+    required this.units,
+    required this.images,
+    required this.readAttachment,
+    required this.isDisplayActive,
     this.registerDisplay,
-    this.isDisplayActive,
-    this.completedItemsBuilder,
+    this.onExpandedChanged,
+    super.key,
   });
   final CurrentProjection current;
   final ConversationContent content;
   final ConversationActivityView view;
+  final ValueListenable<List<TimelineDisplayUnit>> units;
+  final TimelineImageResources images;
+  final Future<Uint8List> Function(String) readAttachment;
+  final bool Function() isDisplayActive;
+  final VoidCallback Function(TimelineCurrentDisplay)? registerDisplay;
   final ValueChanged<bool>? onExpandedChanged;
-
-  /// Borrows existing resources for diagnostics; never creates read demand.
-  final VoidCallback Function(TimelineCurrentDisplay display)? registerDisplay;
-  final bool Function()? isDisplayActive;
-  final Widget Function(String parentId, ValueListenable<bool> retirement)?
-  completedItemsBuilder;
-
   @override
-  State<ConversationCurrentConnector> createState() =>
-      _ConversationCurrentConnectorState();
+  State<ConversationCurrentConnector> createState() => _CurrentState();
 }
 
-class _ConversationCurrentConnectorState
-    extends State<ConversationCurrentConnector>
+class _CurrentState extends State<ConversationCurrentConnector>
     implements TimelineCurrentDisplay {
-  late ConversationCurrentOwner _owner;
-  final Set<_CurrentCollectionState> _collections = {};
-  late VoidCallback Function(TimelineCurrentDisplay)? _registerDisplay;
-  late bool Function()? _isDisplayActive;
-  Object? _attempt;
-  late int _queryGeneration;
-  VoidCallback? _unregisterDisplay;
-  bool _expanded = false;
+  final Set<_CurrentItemState> _items = {};
+  VoidCallback? _unregister;
   bool _disposed = false;
-  ValueNotifier<bool>? _completedRetirement;
-
-  void _retireCompletedItems() {
-    final retirement = _completedRetirement;
-    _completedRetirement = null;
-    if (retirement == null) return;
-    retirement.value = true;
-    retirement.dispose();
-  }
-
-  bool get _parentActive =>
-      (_isDisplayActive?.call() ?? true) &&
-      (widget.isDisplayActive?.call() ?? true);
   @override
-  bool get isCurrent =>
-      mounted &&
-      !_disposed &&
-      _parentActive &&
-      _attempt == widget.content.currentAttemptId &&
-      identical(_owner.content, widget.content) &&
-      _owner.isCurrent;
+  bool get isCurrent => mounted && !_disposed && widget.isDisplayActive();
   @override
   String? get turnId => isCurrent ? widget.current.activeTurn?.id : null;
   @override
-  String? get childrenParentId =>
-      isCurrent ? widget.current.activeTurn?.childrenParentId : null;
-  @override
   String? get activityId => isCurrent ? widget.current.active?.id : null;
   @override
-  bool get expanded => isCurrent && _expanded;
+  bool get expanded =>
+      isCurrent &&
+      widget.units.value.any((unit) => unit.expansion.expanded ?? false);
   @override
-  Iterable<TimelineCurrentCollectionDisplay> get collections sync* {
-    if (!expanded) return;
-    for (final collection in _collections) {
-      if (collection.isCurrent) yield collection;
-    }
-  }
-
+  Iterable<TimelineCurrentCollectionDisplay> get collections => const [];
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows sync* {
     if (!isCurrent) return;
-    yield* _owner.windows;
-    if (!expanded) return;
-    for (final collection in _collections) {
-      if (collection.isCurrent) yield* collection.windows;
-    }
-  }
-
-  void _unregister() {
-    final unregister = _unregisterDisplay;
-    _unregisterDisplay = null;
-    unregister?.call();
-  }
-
-  void _registerCurrent() {
-    if (isCurrent && _unregisterDisplay == null) {
-      _unregisterDisplay = _registerDisplay?.call(this);
-    }
-  }
-
-  void _bind() {
-    _registerDisplay = widget.registerDisplay;
-    _isDisplayActive = widget.isDisplayActive;
-    _attempt = widget.content.currentAttemptId;
-    _owner = ConversationCurrentOwner(widget.content)
-      ..addListener(_ownerChanged);
-    _queryGeneration = _owner.queryGeneration;
-    _synchronize();
-    _registerCurrent();
-  }
-
-  void _ownerChanged() {
-    final queryChanged = _queryGeneration != _owner.queryGeneration;
-    _queryGeneration = _owner.queryGeneration;
-    if (!isCurrent || (queryChanged && _expanded)) {
-      _retireCollections(stale: true);
-    }
-    if (!isCurrent) {
-      _retireCompletedItems();
-      _unregister();
-    } else {
-      _registerCurrent();
+    for (final item in _items) {
+      if (!item.active) continue;
+      yield* item.owner?.windows ?? const [];
+      yield* item.ranges;
     }
   }
 
   @override
   void initState() {
     super.initState();
-    _bind();
+    widget.units.addListener(_changed);
+    _unregister = widget.registerDisplay?.call(this);
+  }
+
+  void _changed() {
+    final ids = widget.units.value.map((unit) => unit.id).toSet();
+    for (final item in List.of(_items)) {
+      if (!ids.contains(item.widget.unit.id)) item.retire();
+    }
+    if (mounted && !_disposed) setState(() {});
   }
 
   @override
   void didUpdateWidget(covariant ConversationCurrentConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.content, widget.content) ||
-        oldWidget.registerDisplay != widget.registerDisplay) {
-      _unregister();
-      _release(_owner);
-      _expanded = false;
-      _bind();
+    if (!identical(oldWidget.units, widget.units) ||
+        !identical(oldWidget.content, widget.content)) {
+      throw StateError('Current display cannot change its original lease');
     }
-    if (_attempt != widget.content.currentAttemptId) {
-      _retireCompletedItems();
-      _unregister();
-      _retireCollections(stale: true);
-      _attempt = widget.content.currentAttemptId;
-    }
-    if (oldWidget.current.activeTurn?.id != widget.current.activeTurn?.id ||
-        oldWidget.current.activeTurn?.childrenParentId !=
-            widget.current.activeTurn?.childrenParentId ||
-        oldWidget.current.active?.id != widget.current.active?.id) {
-      _retireCompletedItems();
-      _retireCollections();
-      _expanded = false;
-    }
-    if (!_parentActive) {
-      _retireCompletedItems();
-      _unregister();
-      _retireCollections();
-      _expanded = false;
-    }
-    _synchronize();
-    _registerCurrent();
-  }
-
-  void _synchronize() => _owner.synchronize(
-    widget.current,
-    responding:
-        _parentActive &&
-        widget.view.kind == ConversationActivityKind.responding,
-    expanded: _parentActive && _expanded,
-  );
-  void _expandedChanged(bool expanded) {
-    if (_disposed || (expanded && !isCurrent)) return;
-    _expanded = expanded;
-    if (!expanded) {
-      _retireCompletedItems();
-      _retireCollections();
-    }
-    _synchronize(); // Cancellation seals old scope synchronously, before joins.
-    widget.onExpandedChanged?.call(expanded);
   }
 
   @override
   void dispose() {
     _disposed = true;
-    _unregister();
-    _release(_owner);
-    super.dispose();
-  }
-
-  void _release(ConversationCurrentOwner owner) {
-    _retireCompletedItems();
-    _retireCollections();
-    owner.removeListener(_ownerChanged);
-    unawaited(owner.close());
-    owner.dispose();
-  }
-
-  void _retireCollections({bool stale = false}) {
-    for (final collection in List.of(_collections)) {
-      collection.retire(stale: stale);
+    widget.units.removeListener(_changed);
+    for (final item in List.of(_items)) {
+      item.retire();
     }
+    _unregister?.call();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final owner = _owner;
-    return ListenableBuilder(
-      listenable: owner,
-      builder: (context, _) {
-        final includeDisclosures =
-            widget.view.kind != ConversationActivityKind.responding;
-        final hasCurrentDetails = _hasCurrentDetails(
-          owner,
-          includeDisclosures: includeDisclosures,
-        );
-        return ConversationActivityBar(
-          key: ValueKey((
-            owner,
-            widget.current.activeTurn?.id,
-            widget.current.active?.id,
-          )),
-          view: widget.view,
-          content: hasCurrentDetails
-              ? _currentDetails(owner, includeDisclosures: includeDisclosures)
-              : null,
-          onExpandedChanged: (expanded) {
-            if (identical(_owner, owner)) _expandedChanged(expanded);
-          },
-        );
-      },
-    );
-  }
-
-  bool _hasCurrentDetails(
-    ConversationCurrentOwner owner, {
-    required bool includeDisclosures,
-  }) {
-    if (owner.invalidationNotice != null ||
-        owner.cleanupError != null ||
-        owner.windows.isNotEmpty) {
-      return true;
+    if (!isCurrent || widget.units.value.isEmpty) {
+      return ConversationActivityBar(
+        view: widget.view,
+        onExpandedChanged: widget.onExpandedChanged,
+      );
     }
-    if (!includeDisclosures) return false;
-    final parentId = widget.current.activeTurn?.childrenParentId;
-    return widget.current.previews.isNotEmpty ||
-        widget.current.plan?.document != null ||
-        widget.current.collections.isNotEmpty ||
-        (parentId != null && widget.completedItemsBuilder != null);
-  }
-
-  ConversationCurrentDetailsView _currentDetails(
-    ConversationCurrentOwner owner, {
-    bool includeDisclosures = false,
-  }) {
-    final parentId = widget.current.activeTurn?.childrenParentId;
-    final completedBuilder = widget.completedItemsBuilder;
-    return ConversationCurrentDetailsView(
-      invalidationNotice: owner.invalidationNotice,
-      cleanupError: owner.cleanupError,
-      onRetryCleanup: () => unawaited(owner.retryCleanup()),
-      windows: [
-        for (final observation in owner.windows)
-          _windowView(owner, observation),
-      ],
-      completedItems:
-          includeDisclosures && parentId != null && completedBuilder != null
-          ? ConversationCurrentEntryView(
-              key: StudioDriverKeys.currentCompletedItems(parentId),
-              title: '已完成成员',
-              onExpansionChanged: (expanded) {
-                if (!isCurrent) return;
-                setState(() {
-                  _retireCompletedItems();
-                  if (expanded) {
-                    _completedRetirement = ValueNotifier(false);
-                  }
-                });
-              },
-              child: _completedRetirement == null
-                  ? const SizedBox.shrink()
-                  : completedBuilder(parentId, _completedRetirement!),
-            )
-          : null,
-      collections: includeDisclosures
-          ? [
-              for (final collection in widget.current.collections)
-                _CurrentCollection(
-                  key: ValueKey((collection.databaseId, collection.collection)),
-                  reference: collection,
-                  owner: owner,
-                  displays: _collections,
-                  isDisplayActive: () =>
-                      identical(_owner, owner) &&
-                      expanded &&
-                      widget.current.collections.any(
-                        (current) =>
-                            currentCollectionIdentity(current) ==
-                            currentCollectionIdentity(collection),
-                      ),
-                ),
-            ]
-          : const [],
+    return LayoutBuilder(
+      builder: (context, constraints) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: math.min(
+            220,
+            constraints.hasBoundedHeight
+                ? constraints.maxHeight
+                : MediaQuery.sizeOf(context).height * .45,
+          ),
+        ),
+        child: SingleChildScrollView(
+          primary: false,
+          child: SelectionArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final unit in widget.units.value)
+                    KeyedSubtree(
+                      key: ValueKey(unit.id),
+                      child: unit.item.kind == TimelineItemKind.workGroup
+                          ? TimelineDisplayUnitView(
+                              key: ObjectKey(unit.expansion),
+                              unit: unit,
+                              executionPresent: widget.current.executionPresent,
+                              onExpandedChanged: widget.onExpandedChanged,
+                              childBuilder: (_) =>
+                                  TimelineGroupMembersConnector(
+                                    unit: unit,
+                                    threadId: widget.images.threadId,
+                                    readAttachment: widget.readAttachment,
+                                  ),
+                            )
+                          : _CurrentItem(
+                              key: ObjectKey(unit.expansion),
+                              unit: unit,
+                              content: widget.content,
+                              executionPresent: widget.current.executionPresent,
+                              isActive: widget.isDisplayActive,
+                              images: widget.images,
+                              readAttachment: widget.readAttachment,
+                              mountedItems: _items,
+                            ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
-  }
-
-  Widget _windowView(
-    ConversationCurrentOwner owner,
-    CurrentWindowObservation observation,
-  ) {
-    final window = observation.window;
-    final text = window == null
-        ? observation.source.text
-        : utf8.decode(window.bytes, allowMalformed: true);
-    final end = window == null ? null : window.offset + window.bytes.length;
-    final content = ConversationCurrentWindowView(
-      key: ValueKey(contentReferenceIdentity(observation.source.reference)),
-      id: observation.source.id,
-      label: observation.source.id.startsWith('plan:') ? '当前计划文档' : null,
-      text: text,
-      error: observation.error,
-      offset: window?.offset,
-      end: end,
-      availableThrough: window?.availableThrough,
-      onNext: window == null || window.bytes.isEmpty
-          ? null
-          : () => owner.nextWindow(observation),
-      onFirst: window == null ? null : () => owner.firstWindow(observation),
-    );
-    final role = widget.current.previews
-        .where(
-          (preview) =>
-              '${preview.id}:${preview.role.name}' == observation.source.id,
-        )
-        .firstOrNull
-        ?.role;
-    final title = switch (role) {
-      CurrentContentRole.toolArguments => '当前工具参数',
-      CurrentContentRole.toolOutput => '当前工具输出',
-      _ => null,
-    };
-    return title == null
-        ? content
-        : ConversationCurrentEntryView(
-            key: ValueKey(('current-tool-preview', observation.source.id)),
-            title: title,
-            child: content,
-          );
   }
 }
 
-/// One revision-bound collection page, fetched only on explicit expansion/page
-/// selection. Revisions never concatenate and pages never become chat messages.
-class _CurrentCollection extends StatefulWidget {
-  const _CurrentCollection({
+class _CurrentItem extends StatefulWidget {
+  const _CurrentItem({
     super.key,
-    required this.reference,
-    required this.owner,
-    required this.displays,
-    required this.isDisplayActive,
+    required this.unit,
+    required this.content,
+    required this.executionPresent,
+    required this.isActive,
+    required this.images,
+    required this.readAttachment,
+    required this.mountedItems,
   });
-  final CurrentCollectionRef reference;
-  final ConversationCurrentOwner owner;
-  final Set<_CurrentCollectionState> displays;
-  final bool Function() isDisplayActive;
+  final TimelineDisplayUnit unit;
+  final bool executionPresent;
+  final ConversationContent content;
+  final bool Function() isActive;
+  final TimelineImageResources images;
+  final Future<Uint8List> Function(String) readAttachment;
+  final Set<_CurrentItemState> mountedItems;
   @override
-  State<_CurrentCollection> createState() => _CurrentCollectionState();
+  State<_CurrentItem> createState() => _CurrentItemState();
 }
 
-class _CurrentCollectionState extends State<_CurrentCollection>
-    implements TimelineCurrentCollectionDisplay {
-  CurrentCollectionPage? _page;
-  ConversationQueryScope? _pageScope;
-  Object? _error;
-  bool _loading = false;
-  bool _expanded = false;
-  bool _stale = false;
-  int _generation = 0;
-  final Set<VoidCallback> _memberRetirements = {};
-  final Set<ConversationCurrentOwner> _memberOwners = {};
-  final Set<TimelineCurrentWindowDisplay> _payloadWindows = {};
-
-  @override
-  bool get isCurrent =>
+class _CurrentItemState extends State<_CurrentItem> {
+  ConversationCurrentOwner? owner;
+  ConversationQueryScope? _scope;
+  late Object _bodyGeneration;
+  final Set<TimelineCurrentWindowDisplay> ranges = {};
+  bool _retired = false;
+  bool get active =>
       mounted &&
-      _expanded &&
-      widget.isDisplayActive() &&
-      widget.owner.isCurrent;
-  @override
-  CurrentCollectionRef get reference => widget.reference;
-  @override
-  int get generation => _generation;
-  @override
-  bool get expanded => isCurrent;
-  @override
-  bool get loading => isCurrent && _loading;
-  @override
-  Object? get error => isCurrent ? _error : null;
-  @override
-  CurrentCollectionPage? get page =>
-      isCurrent && (_pageScope?.isActive ?? false) ? _page : null;
-  Iterable<TimelineCurrentWindowDisplay> get windows sync* {
-    if (!isCurrent || page == null) return;
-    for (final owner in _memberOwners) {
-      yield* owner.windows;
-    }
-    yield* _payloadWindows;
-  }
-
-  void retire({bool stale = false}) {
-    _generation++;
-    _retireMembers();
-    _page = null;
-    _pageScope = null;
-    _loading = false;
-    _error = null;
-    _stale = stale;
-    if (!stale) _expanded = false;
-  }
-
+      !_retired &&
+      widget.isActive() &&
+      !widget.unit.expansion.isRetired;
   @override
   void initState() {
     super.initState();
-    widget.displays.add(this);
+    widget.mountedItems.add(this);
+    _bodyGeneration = widget.unit.expansion.bodyGeneration;
+    widget.unit.expansion.addListener(_intentChanged);
+    _observe();
   }
 
-  void _retireMembers() {
-    _payloadWindows.clear();
-    for (final retire in List.of(_memberRetirements)) {
+  void _intentChanged() {
+    final intent = widget.unit.expansion;
+    if (intent.isRetired) {
       retire();
+      return;
     }
+    if (!identical(_bodyGeneration, intent.bodyGeneration)) {
+      _bodyGeneration = intent.bodyGeneration;
+      _closeRanges();
+    }
+    _observe();
+  }
+
+  void _observe() {
+    if (!active) return;
+    // Admission updates the intent before notifying, while widget.unit still
+    // belongs to the previous layout. Revoke old sources in that same call.
+    final unit = widget.unit.expansion.current ?? widget.unit;
+    if (unit.item.payload != null) {
+      _closeBody();
+      return;
+    }
+    owner ??= ConversationCurrentOwner(widget.content);
+    owner!.synchronizeSources([
+      for (final content in unit.item.contents)
+        CurrentWindowSource(
+          id: unit.id,
+          reference: content.reference,
+          text: '',
+        ),
+    ]);
   }
 
   @override
-  void didUpdateWidget(covariant _CurrentCollection oldWidget) {
+  void didUpdateWidget(covariant _CurrentItem oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.displays, widget.displays)) {
-      oldWidget.displays.remove(this);
-      widget.displays.add(this);
+    if (!identical(oldWidget.unit.expansion, widget.unit.expansion)) {
+      throw StateError('A mounted current item cannot change its intent');
     }
-    if (currentCollectionIdentity(oldWidget.reference) !=
-            currentCollectionIdentity(widget.reference) ||
-        !identical(oldWidget.owner, widget.owner)) {
-      retire(stale: true);
+    _observe();
+  }
+
+  void _closeBody() {
+    final old = owner;
+    owner = null;
+    if (old != null) {
+      unawaited(old.close());
+      old.dispose();
     }
   }
 
-  Future<void> _load({String? continuation}) async {
-    if (_loading || !isCurrent) return;
-    final generation = ++_generation;
-    final owner = widget.owner;
-    final reference = widget.reference;
-    ConversationQueryScope? scope;
-    bool eligible() =>
-        mounted &&
-        generation == _generation &&
-        identical(owner, widget.owner) &&
-        currentCollectionIdentity(reference) ==
-            currentCollectionIdentity(widget.reference) &&
-        isCurrent &&
-        (scope?.isActive ?? true);
-    setState(() {
-      _payloadWindows.clear();
-      _loading = true;
-      _error = null;
-      _stale = false;
-    });
-    try {
-      scope = owner.queryScope;
-      final page = await scope.pageCurrent(
-        reference: reference,
-        continuation: continuation,
-        demand: ReadDemand(
-          maxItems: (MediaQuery.sizeOf(context).height / 64).ceil().clamp(
-            1,
-            100,
-          ),
-          maxBytes: 64 * 1024,
-        ),
-      );
-      if (!eligible()) return;
-      _retireMembers();
-      setState(() {
-        _page = page;
-        _pageScope = scope;
-      });
-    } catch (error) {
-      if (eligible()) {
-        setState(() => _error = error);
-      }
-    } finally {
-      if (eligible()) {
-        setState(() => _loading = false);
-      }
-    }
+  void retire() {
+    if (_retired) return;
+    _retired = true;
+    _closeBody();
+    _bodyGeneration = Object();
+    _closeRanges();
+  }
+
+  void _closeRanges() {
+    _scope?.retire();
+    if (_scope != null) unawaited(_scope!.close());
+    _scope = null;
+    ranges.clear();
   }
 
   @override
   void dispose() {
-    widget.displays.remove(this);
+    widget.mountedItems.remove(this);
+    widget.unit.expansion.removeListener(_intentChanged);
     retire();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => ConversationCurrentCollectionView(
-    title: switch (widget.reference.collection) {
-      'tools' => '当前工具',
-      'members' => '当前内容',
-      'interactions' => '当前交互',
-      _ => widget.reference.collection,
-    },
-    titleKey: StudioDriverKeys.currentCollection(widget.reference.collection),
-    loading: _loading,
-    stale: _stale,
-    error: _error,
-    onExpansionChanged: (expanded) {
-      _expanded = expanded;
-      if (expanded && _page == null && !_stale) unawaited(_load());
-      if (!expanded) {
-        retire();
-      }
-    },
-    onReload: _stale || _error != null ? () => unawaited(_load()) : null,
-    reloadKey: StudioDriverKeys.currentCollectionReload(
-      widget.reference.collection,
-    ),
-    entries: [
-      for (final entry in _page?.entries ?? const <CurrentCollectionEntry>[])
-        _entry(entry),
-    ],
-    onNextPage: _page?.continuation == null
-        ? null
-        : () => unawaited(_load(continuation: _page!.continuation!)),
-    nextPageKey: StudioDriverKeys.currentCollectionNext(
-      widget.reference.collection,
-    ),
-  );
-
-  Widget _entry(CurrentCollectionEntry entry) {
-    final generation = _generation;
-    final acceptedPage = _page;
-    return _CurrentCollectionEntry(
-      key: ValueKey((
-        widget.reference.revision,
-        generation,
-        acceptedPage,
-        entry.id,
-      )),
-      entry: entry,
-      collection: widget.reference.collection,
-      owner: widget.owner,
-      retirements: _memberRetirements,
-      bodyOwners: _memberOwners,
-      isDisplayActive: () =>
-          isCurrent &&
-          generation == _generation &&
-          identical(acceptedPage, page),
-      registerWindowDisplay: _registerWindowDisplay,
-    );
-  }
-
-  VoidCallback _registerWindowDisplay(TimelineCurrentWindowDisplay display) {
-    _payloadWindows.add(display);
-    return () => _payloadWindows.remove(display);
-  }
-}
-
-class _CurrentCollectionEntry extends StatefulWidget {
-  const _CurrentCollectionEntry({
-    super.key,
-    required this.entry,
-    required this.collection,
-    required this.owner,
-    required this.retirements,
-    required this.bodyOwners,
-    required this.isDisplayActive,
-    required this.registerWindowDisplay,
-  });
-  final CurrentCollectionEntry entry;
-  final String collection;
-  final ConversationCurrentOwner owner;
-  final Set<VoidCallback> retirements;
-  final Set<ConversationCurrentOwner> bodyOwners;
-  final bool Function() isDisplayActive;
-  final VoidCallback Function(TimelineCurrentWindowDisplay display)
-  registerWindowDisplay;
-  @override
-  State<_CurrentCollectionEntry> createState() =>
-      _CurrentCollectionEntryState();
-}
-
-class _CurrentCollectionEntryState extends State<_CurrentCollectionEntry> {
-  ConversationCurrentOwner? _bodiesOwner;
-  @override
-  void initState() {
-    super.initState();
-    widget.retirements.add(_retireBodies);
-  }
-
-  void _retireBodies() {
-    final owner = _bodiesOwner;
-    _bodiesOwner = null;
-    if (owner == null) return;
-    widget.bodyOwners.remove(owner);
-    // Called by the real expansion callback, before reverse animation/unmount.
-    unawaited(owner.close());
-    owner.dispose();
-  }
-
-  @override
-  void dispose() {
-    widget.retirements.remove(_retireBodies);
-    _retireBodies();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final entry = widget.entry;
-    final owner = widget.owner;
-    final collection = widget.collection;
-    final payload = entry.payload;
-    if (payload is DeferredPayload) {
+    final generation = _bodyGeneration;
+    bool bodyActive() => active && identical(generation, _bodyGeneration);
+    if (widget.unit.item.payload != null) {
       return ChatItemView(
-        key: StudioDriverKeys.currentCollectionEntry(collection, entry.id),
-        item: ChatItemPresentation.decode(
-          ChatMessage(id: entry.id, payload: payload),
+        item: ChatItemPresentation.forUnit(widget.unit),
+        isDisplayActive: bodyActive,
+        attachmentBuilder: (item) => TimelineAttachmentsConnector(
+          item: item,
+          resources: widget.images,
+          readAttachment: widget.readAttachment,
+          isActive: bodyActive,
         ),
-        contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
+        contentRangeBuilder: (id, key, label, reference, witness) =>
             TimelineContentRangeConnector(
-              itemId: itemId,
-              contentKey: contentKey,
+              key: ValueKey((id, key, generation)),
+              itemId: id,
+              contentKey: key,
               label: label,
               reference: reference,
               witness: witness,
-              readContent: (reference, range) => owner.queryScope.readContent(
-                reference: reference,
-                range: range,
-              ),
-              isDisplayActive: widget.isDisplayActive,
-              registerDisplay: widget.registerWindowDisplay,
+              isDisplayActive: bodyActive,
+              registerDisplay: (display) {
+                if (!bodyActive()) return () {};
+                ranges.add(display);
+                return () => ranges.remove(display);
+              },
+              readContent: (reference, range) {
+                if (!bodyActive()) {
+                  return Future.error(const StaleConversationScope());
+                }
+                return (_scope ??= widget.content.openScope(
+                  generation: 1,
+                )).readContent(reference: reference, range: range);
+              },
             ),
       );
     }
-    final bytes = (payload as InlinePayload).bytes;
-    String text;
-    try {
-      text = utf8.decode(bytes);
-      final decoded = jsonDecode(text);
-      if (collection == 'members') {
-        if (decoded is! List) {
-          throw const FormatException('当前内容 manifest 必须是数组');
-        }
-        final sources = <CurrentWindowSource>[
-          for (final body in decoded)
-            CurrentWindowSource(
-              id: entry.id,
-              reference: ChatItemPresentation.contentReference(
-                (body as Map<String, dynamic>)['reference'],
-              ),
-              text: '',
-            ),
-        ];
-        return ConversationCurrentEntryView(
-          title: entry.id,
-          titleKey: StudioDriverKeys.currentCollectionEntry(
-            collection,
-            entry.id,
-          ),
-          onExpansionChanged: (expanded) {
-            if (expanded && !widget.isDisplayActive()) return;
-            setState(() {
-              if (expanded) {
-                _retireBodies();
-                _bodiesOwner = ConversationCurrentOwner(owner.content)
-                  ..synchronizeSources(sources);
-                widget.bodyOwners.add(_bodiesOwner!);
-              } else {
-                _retireBodies();
-              }
-            });
-          },
-          child: _bodiesOwner == null
-              ? const SizedBox.shrink()
-              : _ExpandedCurrentBodies(owner: _bodiesOwner!),
-        );
-      }
-      text = const JsonEncoder.withIndent('  ').convert(decoded);
-    } on FormatException catch (error) {
-      text = '当前集合内容格式错误：$error\n${utf8.decode(bytes, allowMalformed: true)}';
-    } on TypeError catch (error) {
-      text = '当前集合内容格式错误：$error\n${utf8.decode(bytes, allowMalformed: true)}';
+    final item = widget.unit.item;
+    if (widget.unit.live &&
+        widget.executionPresent &&
+        item.kind == TimelineItemKind.status &&
+        item.atomKind == ChatAtomKind.compaction &&
+        item.outcome == null) {
+      return TimelineActivityRow(
+        label: context.l10n.conversationActivityCompacting,
+        icon: Icons.compress_outlined,
+        active: true,
+        expandable: false,
+      );
     }
-    return ConversationCurrentEntryView(
-      title: entry.id,
-      titleKey: StudioDriverKeys.currentCollectionEntry(collection, entry.id),
-      child: SelectableText(text),
+    final body = owner;
+    if (body == null || widget.unit.item.contents.isEmpty) {
+      return const Text('内容状态未知');
+    }
+    return ListenableBuilder(
+      listenable: body,
+      builder: (_, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (body.cleanupError != null) Text(body.cleanupError.toString()),
+          for (final window in body.windows)
+            ConversationCurrentWindowView(
+              id: window.id,
+              text: window.window == null
+                  ? window.source.text
+                  : utf8.decode(window.window!.bytes, allowMalformed: true),
+              error: window.error,
+              offset: window.window?.offset,
+              end: window.window == null
+                  ? null
+                  : window.window!.offset + window.window!.bytes.length,
+              availableThrough: window.window?.availableThrough,
+              onFirst: () => body.firstWindow(window),
+              onNext: () => body.nextWindow(window),
+            ),
+        ],
+      ),
     );
   }
-}
-
-/// Mounted only by a member disclosure. Reuses the same cancel/join owner rather
-/// than reducing deltas or reading all collection bodies into another snapshot.
-class _ExpandedCurrentBodies extends StatelessWidget {
-  const _ExpandedCurrentBodies({required this.owner});
-  final ConversationCurrentOwner owner;
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: owner,
-    builder: (context, _) => ConversationCurrentDetailsView(
-      cleanupError: owner.cleanupError,
-      onRetryCleanup: () => unawaited(owner.retryCleanup()),
-      windows: [
-        for (final observation in owner.windows)
-          ConversationCurrentWindowView(
-            key: ValueKey(
-              contentReferenceIdentity(observation.source.reference),
-            ),
-            id: observation.source.id,
-            text: observation.window == null
-                ? observation.source.text
-                : utf8.decode(observation.window!.bytes, allowMalformed: true),
-            error: observation.error,
-            offset: observation.window?.offset,
-            end: observation.window == null
-                ? null
-                : observation.window!.offset + observation.window!.bytes.length,
-            availableThrough: observation.window?.availableThrough,
-            onNext:
-                observation.window == null || observation.window!.bytes.isEmpty
-                ? null
-                : () => owner.nextWindow(observation),
-            onFirst: observation.window == null
-                ? null
-                : () => owner.firstWindow(observation),
-          ),
-      ],
-    ),
-  );
 }

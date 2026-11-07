@@ -828,10 +828,23 @@ fn bot_entry(account: &str) -> std::result::Result<Entry, BotCredentialIoError> 
     Entry::new(CREDENTIAL_SERVICE, account).map_err(classify_bot_keyring)
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to {action} system credential for {scope} {id}")]
+struct CredentialIoFailure {
+    action: String,
+    scope: String,
+    id: String,
+    #[source]
+    source: KeyringError,
+}
+
 fn credential_error(action: &str, scope: &str, id: &str, error: KeyringError) -> PureError {
-    PureError::Io(std::io::Error::other(format!(
-        "failed to {action} system credential for {scope} {id}: {error}"
-    )))
+    PureError::Io(std::io::Error::other(CredentialIoFailure {
+        action: action.to_owned(),
+        scope: scope.to_owned(),
+        id: id.to_owned(),
+        source: error,
+    }))
 }
 
 #[cfg(test)]
@@ -880,5 +893,98 @@ pub(crate) mod memory_faults {
                 true
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod startup_diagnostics {
+    use super::*;
+    use crate::studio::startup::{StudioStartupError, StudioStartupErrorKind};
+    use pl_protocol::studio::StudioErrorCode;
+
+    #[test]
+    fn credential_source_survives_while_startup_diagnostics_redact_secret_material() {
+        const SECRET: &str = "private-backend-secret-material";
+        const ACCOUNT: &str = "private-credential-association";
+        let failures = [
+            (
+                KeyringError::PlatformFailure(std::io::Error::other(SECRET).into()),
+                "platformFailure",
+                "Other",
+            ),
+            (
+                KeyringError::NoStorageAccess(
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, SECRET).into(),
+                ),
+                "noStorageAccess",
+                "PermissionDenied",
+            ),
+            (
+                KeyringError::BadEncoding(SECRET.as_bytes().to_vec()),
+                "badEncoding",
+                "Other",
+            ),
+            (
+                KeyringError::BadDataFormat(
+                    SECRET.as_bytes().to_vec(),
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, SECRET).into(),
+                ),
+                "badDataFormat",
+                "InvalidData",
+            ),
+            (KeyringError::NoDefaultStore, "noDefaultStore", "Other"),
+        ];
+        for (backend, expected_kind, expected_io) in failures {
+            let original_kind = std::mem::discriminant(&backend);
+            let source = anyhow::Error::from(credential_error("open", "account", ACCOUNT, backend));
+            let retained = source
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<KeyringError>())
+                .expect("the original backend error must remain typed");
+            assert_eq!(std::mem::discriminant(retained), original_kind);
+            if let KeyringError::BadEncoding(bytes) | KeyringError::BadDataFormat(bytes, _) =
+                retained
+            {
+                assert_eq!(bytes, SECRET.as_bytes());
+            }
+            let startup = StudioStartupError::input("prepare_configuration", source);
+            assert_eq!(startup.kind, StudioStartupErrorKind::Environment);
+            let mapped = crate::error_mapping::studio_error_from_anyhow(startup.into());
+            assert_eq!(mapped.code, StudioErrorCode::Storage);
+            assert!(mapped.retryable);
+            assert!(mapped.message.contains(expected_kind));
+            let public = serde_json::to_value(mapped).expect("Studio errors are serializable");
+            assert_eq!(
+                public["details"]["startupCredentialErrorKind"],
+                expected_kind
+            );
+            assert_eq!(public["details"]["startupIoKind"], expected_io);
+            assert!(public["details"]["startupOsCode"].is_null());
+            let encoded = public.to_string();
+            assert!(!encoded.contains(SECRET));
+            assert!(!encoded.contains(ACCOUNT));
+        }
+    }
+
+    #[test]
+    fn startup_io_diagnostics_keep_the_system_code_without_error_text() {
+        let io = std::io::Error::from_raw_os_error(13);
+        let expected_kind = format!("{:?}", io.kind());
+        let startup = StudioStartupError::new(
+            "prepare_configuration",
+            StudioStartupErrorKind::Environment,
+            io,
+        );
+        let mapped = crate::error_mapping::studio_error_from_anyhow(startup.into());
+        assert_eq!(mapped.code, StudioErrorCode::Storage);
+        assert!(mapped.retryable);
+        let public = serde_json::to_value(mapped).expect("Studio errors are serializable");
+        assert_eq!(public["details"]["startupIoKind"], expected_kind);
+        assert_eq!(public["details"]["startupOsCode"], 13);
+        assert!(
+            public["details"]
+                .get("startupCredentialErrorKind")
+                .is_none()
+        );
     }
 }

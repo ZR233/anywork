@@ -23,7 +23,7 @@ async fn stopping_interrupts_first_open_and_first_set_and_failed_join_keeps_orig
         let session = &thread.id;
         let slot = env.runtime.thread_observations.observation_slot(session);
         let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-        let feed = Arc::new(ThreadLiveFeed::new(None, progress));
+        let feed = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
         slot.install(feed.clone());
         let waiting = feed.arm_first_open_wait();
         let owners = ReadOwners::default();
@@ -129,7 +129,7 @@ async fn search_new_scope_failures_and_cancellation_release_capacity_and_retain_
             .source
             .context("fixture has no live owner")?;
         let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-        let replacement = Arc::new(ThreadLiveFeed::new(None, progress));
+        let replacement = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
         let input = || {
             serde_json::from_value::<SearchInput>(
                 serde_json::json!({"sessionId":session,"query":"absent search needle"}),
@@ -300,7 +300,7 @@ async fn search_borrows_input_until_cross_session_result_commit_and_retries_orig
                         if fail_read {
                             let slot = env.runtime.thread_observations.observation_slot(&older.id);
                             let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-                            let replacement = Arc::new(ThreadLiveFeed::new(None, progress));
+                            let replacement = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
                             slot.install(replacement.clone());
                             slot.retire(&replacement);
                         } else {
@@ -406,14 +406,15 @@ async fn tool_read_eof_keeps_qualification_until_explicit_or_tool_close_and_neve
         );
         let batch: ChatBatch = serde_json::from_value(page["chat"].clone())?;
         let item = batch
-            .messages
+            .entries
             .iter()
-            .find_map(|message| {
-                let pl_protocol::PayloadData::Inline { bytes } = &message.payload else {
+            .find_map(|entry| {
+                let pl_protocol::ChatEntry::Item(message) = entry else {
                     return None;
                 };
-                let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-                (value["type"] == "text").then_some(message.id.clone())
+                (message.atom_kind == Some(pl_protocol::ChatAtomKind::Text))
+                    .then(|| message.content_item_id.clone())
+                    .flatten()
             })
             .context("public text item")?;
         let reference = text_reference(&reader, &item)

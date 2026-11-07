@@ -5,9 +5,10 @@
 //! a percentage or a target the parameters did not name.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Human-readable wait/sleep presentation attached to the original tool call.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadWaitPresentation {
     intent: ThreadWaitIntent,
@@ -47,7 +48,7 @@ impl ThreadWaitPresentation {
 }
 
 /// Why this call is waiting: selected tasks plus a timeout, or a timer duration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -65,7 +66,7 @@ pub enum ThreadWaitIntent {
 }
 
 /// One selected wait target. Unknown names, summaries and statuses stay absent.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadWaitTarget {
     task_id: String,
@@ -122,7 +123,7 @@ impl ThreadWaitTarget {
 }
 
 /// Real scheduler status of a selected task; absence means the fact was not available.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadWaitTargetStatus {
     Running,
@@ -133,7 +134,7 @@ pub enum ThreadWaitTargetStatus {
 }
 
 /// Result of this wait/sleep call. `timedOut` is not a tool failure.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ThreadWaitState {
     Waiting,

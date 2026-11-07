@@ -32,9 +32,11 @@ final class TimelineDisplayFacts {
     this.appliedAppends,
     this.firstContentLayout,
     this.current,
+    List<Map<String, Object?>> groups = const [],
     List<TimelineChildrenFacts> children = const [],
     List<TimelineItemFacts> items = const [],
-  }) : items = List.unmodifiable(items),
+  }) : groups = List.unmodifiable(groups),
+       items = List.unmodifiable(items),
        children = List.unmodifiable(children);
 
   final String threadId;
@@ -57,6 +59,7 @@ final class TimelineDisplayFacts {
 
   /// Request-local JSON projected from existing mounted current resources, never a resource owner.
   final Map<String, Object?>? current;
+  final List<Map<String, Object?>> groups;
   final List<TimelineChildrenFacts> children;
   final List<TimelineItemFacts> items;
 }
@@ -118,10 +121,11 @@ final class TimelineItemFacts {
     this.tool,
     this.userInput,
     this.plan,
-    this.childrenParentId,
     this.presentationContract,
     this.diagnostic,
     this.payloadByteLength,
+    this.atomic,
+    this.timeline,
   }) : details = List.unmodifiable(details),
        attachments = List.unmodifiable(attachments);
 
@@ -142,10 +146,11 @@ final class TimelineItemFacts {
   final TimelineToolFacts? tool;
   final TimelineUserInputFacts? userInput;
   final TimelinePlanFacts? plan;
-  final String? childrenParentId;
   final String? presentationContract;
   final String? diagnostic;
   final int? payloadByteLength;
+  final Map<String, Object?>? atomic;
+  final Map<String, Object?>? timeline;
 }
 
 /// 已完成 Plan 自己的身份和有界字段预览，不读取或回填当前 Plan。
@@ -1278,6 +1283,7 @@ abstract final class StudioDriverState {
       'appliedPrepends': timeline.appliedPrepends,
       'appliedAppends': timeline.appliedAppends,
       'current': timeline.current,
+      'groups': timeline.groups,
       'firstContentLayout': switch (timeline.firstContentLayout) {
         final layout? => {
           'selectionId': layout.selectionId,
@@ -1304,22 +1310,23 @@ abstract final class StudioDriverState {
             'appliedPrepends': display.appliedPrepends,
             'appliedAppends': display.appliedAppends,
             'itemIds': [for (final item in display.items) item.id],
-            'items': _timelineItemsJson(display.items),
+            'items': timelineItemsJson(display.items),
           },
       ],
-      'items': _timelineItemsJson(timeline.items),
+      'items': timelineItemsJson(timeline.items),
     };
   }
 
-  static List<Map<String, Object?>> _timelineItemsJson(
+  static List<Map<String, Object?>> timelineItemsJson(
     Iterable<TimelineItemFacts> items,
   ) => [
     for (final item in items)
       {
         'id': item.id,
+        'atomic': item.atomic,
+        'timeline': item.timeline,
         'sealedAt': item.sealedAt,
         'compatibility': item.compatibility,
-        'childrenParentId': item.childrenParentId,
         'presentationContract': item.presentationContract,
         'diagnostic': item.diagnostic,
         'payloadByteLength': item.payloadByteLength,

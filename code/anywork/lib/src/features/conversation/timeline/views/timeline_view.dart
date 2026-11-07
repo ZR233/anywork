@@ -10,6 +10,7 @@ import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
+import '../state/timeline_display_unit.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../widgets/chat_item_view.dart';
@@ -35,11 +36,11 @@ class TimelineView extends StatefulWidget {
     this.planSummary,
     this.pendingPlanInteractionId,
     this.contentRangeBuilder,
-    this.childrenBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
     this.isDisplayActive,
+    this.groupMembersBuilder,
   });
   final String threadId;
   final TimelineSessionViewState view;
@@ -55,12 +56,12 @@ class TimelineView extends StatefulWidget {
   final Widget? planSummary;
   final String? pendingPlanInteractionId;
   final ChatContentRangeBuilder? contentRangeBuilder;
-  final Widget Function(String parentId)? childrenBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
   final bool Function()? isDisplayActive;
+  final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -72,9 +73,10 @@ class _TimelineViewState extends State<TimelineView> {
   bool _userIntent = false;
   bool _actionIntent = false;
   bool _scheduled = false;
-  bool _paging = false;
-  int _fillBudget = 8;
-  bool _fillStopped = false;
+  // Only a layout barrier, not a request gate. Every entry still delegates
+  // single-flight and errors to the existing session owner.
+  int _pendingPageLayouts = 0;
+  bool _tickersEnabled = true;
   @override
   void initState() {
     super.initState();
@@ -82,6 +84,13 @@ class _TimelineViewState extends State<TimelineView> {
     _operations = widget.controls.controller.operationsStream.listen(
       (_) => _scheduleFill(),
     );
+    _scheduleFill();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _tickersEnabled = TickerMode.valuesOf(context).enabled;
     _scheduleFill();
   }
 
@@ -102,8 +111,28 @@ class _TimelineViewState extends State<TimelineView> {
     super.dispose();
   }
 
+  bool get _displayActive {
+    if (!mounted ||
+        !_tickersEnabled ||
+        widget.controls.isRetired ||
+        !(widget.isDisplayActive?.call() ?? true)) {
+      return false;
+    }
+    var visible = true;
+    context.visitAncestorElements((element) {
+      final ancestor = element.widget;
+      if ((ancestor is Offstage && ancestor.offstage) ||
+          (ancestor is Opacity && ancestor.opacity == 0)) {
+        visible = false;
+        return false;
+      }
+      return true;
+    });
+    return visible;
+  }
+
   bool get _canPage =>
-      !widget.controls.isRetired &&
+      _displayActive &&
       widget.view.hasOlder &&
       !widget.view.isLoadingOlder &&
       widget.view.olderError == null;
@@ -112,60 +141,56 @@ class _TimelineViewState extends State<TimelineView> {
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
-      if (!mounted ||
-          !_canPage ||
-          _paging ||
-          _fillStopped ||
-          _fillBudget == 0) {
-        return;
-      }
+      if (!mounted || !_canPage || _pendingPageLayouts != 0) return;
       final scroll = widget.controls.scrollController;
       if (!scroll.hasClients) return;
       final position = scroll.position;
       if (position.hasContentDimensions &&
           position.viewportDimension > 0 &&
           position.maxScrollExtent <= position.minScrollExtent + .5) {
-        _paging = true;
-        _fillBudget--;
-        unawaited(_fill());
+        unawaited(_loadOlder());
       }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Future<void> _fill() async {
+  Future<void> _loadOlder({bool retry = false}) async {
+    if (!_displayActive || (!retry && !_canPage)) return;
     final controls = widget.controls;
+    final scroll = controls.scrollController;
+    if (!scroll.hasClients ||
+        !scroll.position.hasContentDimensions ||
+        scroll.position.viewportDimension <= 0) {
+      return;
+    }
     final before = widget.view.olderCursor;
+    _pendingPageLayouts++;
     try {
-      await widget.onLoadOlder();
-      // The SDK has published metadata when its Future completes, but this
-      // widget receives that publication on the next actual build/layout frame.
-      // Join that frame once; do not mistake the previous widget for no progress.
-      await WidgetsBinding.instance.endOfFrame;
-      if (mounted &&
-          identical(widget.controls, controls) &&
-          !controls.isRetired &&
-          widget.view.olderCursor == before) {
-        _fillStopped = true;
-      }
-    } catch (_) {
-      _fillStopped = true;
-      rethrow;
+      await (retry ? widget.onRetryOlder() : widget.onLoadOlder());
     } finally {
-      _paging = false;
-      // A successful page/state publication supplies the next real layout
-      // event. This is not a frame-by-frame prefetch loop.
-      if (mounted &&
-          identical(widget.controls, controls) &&
-          !controls.isRetired &&
-          widget.view.olderCursor != before) {
-        _scheduleFill();
-      }
+      // Page completion (including the SDK/ACK path) never waits for layout.
+      unawaited(_afterPageLayout(controls, before));
+    }
+  }
+
+  Future<void> _afterPageLayout(
+    TimelineUiControllers controls,
+    String? before,
+  ) async {
+    // Metadata may be published without a ChatOperation or a geometry change.
+    // Inspect that publication only after its next actual build/layout frame.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || !identical(widget.controls, controls)) return;
+    _pendingPageLayouts--;
+    // Owner reports errors, including same-cursor protocol failures. A swallowed
+    // error's successful Future is not progress, and never starts a polling loop.
+    if (_displayActive && widget.view.olderCursor != before) {
+      _scheduleFill();
     }
   }
 
   bool _scroll(ScrollNotification notification) {
-    if (notification.depth != 0 || widget.controls.isRetired) return false;
+    if (notification.depth != 0 || !_displayActive) return false;
     if (notification is UserScrollNotification) {
       _userIntent = notification.direction != ScrollDirection.idle;
     }
@@ -182,7 +207,7 @@ class _TimelineViewState extends State<TimelineView> {
       if (_canPage &&
           (notification.scrollDelta ?? 0) > 0 &&
           metrics.extentAfter <= metrics.viewportDimension) {
-        unawaited(widget.onLoadOlder());
+        unawaited(_loadOlder());
       }
     }
     return false;
@@ -217,7 +242,12 @@ class _TimelineViewState extends State<TimelineView> {
   );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => _TimelineVisibleFrame(
+    onFrame: _scheduleFill,
+    child: _buildTimeline(context),
+  );
+
+  Widget _buildTimeline(BuildContext context) {
     final controls = widget.controls;
     final returnLiveLabel = context.l10n.timelineBackToLive;
     final newOutputReturnLiveLabel = '有新输出 · $returnLiveLabel';
@@ -254,7 +284,7 @@ class _TimelineViewState extends State<TimelineView> {
           TextButton.icon(
             key: StudioDriverKeys.timelineRetryOlder,
             onPressed: widget.view.connection == TimelineConnectionPhase.ready
-                ? () => unawaited(widget.onRetryOlder())
+                ? () => unawaited(_loadOlder(retry: true))
                 : null,
             icon: const Icon(Icons.refresh),
             label: Text(
@@ -380,8 +410,8 @@ class _TimelineViewState extends State<TimelineView> {
                                         keyboardDismissBehavior:
                                             ScrollViewKeyboardDismissBehavior
                                                 .manual,
-                                        onEndReached: widget.view.hasOlder
-                                            ? widget.onLoadOlder
+                                        onEndReached: _canPage
+                                            ? _loadOlder
                                             : null,
                                         paginationThreshold: 0,
                                         bottomSliver: widget.planSummary == null
@@ -402,6 +432,11 @@ class _TimelineViewState extends State<TimelineView> {
                                         MessageGroupStatus? groupStatus,
                                       }) {
                                         if (isRemoved == true) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        if (chatItemPresentationOf(message)
+                                                ?.isKnownEmptyText ==
+                                            true) {
                                           return const SizedBox.shrink();
                                         }
                                         final promptLike =
@@ -481,12 +516,13 @@ class _TimelineViewState extends State<TimelineView> {
                                         bodyBuilder: _body,
                                         contentRangeBuilder:
                                             widget.contentRangeBuilder,
-                                        childrenBuilder: widget.childrenBuilder,
                                         attachmentBuilder:
                                             widget.attachmentBuilder,
                                         monotonicMicros: widget.monotonicMicros,
                                         onContentLayout: widget.onContentLayout,
                                         isDisplayActive: widget.isDisplayActive,
+                                        groupMembersBuilder:
+                                            widget.groupMembersBuilder,
                                       ),
                                 ),
                               ),
@@ -536,5 +572,51 @@ class _TimelineViewState extends State<TimelineView> {
         ),
       ],
     );
+  }
+}
+
+/// Observes actual rendering, including a retained layer becoming visible again
+/// without rebuilding this widget or changing its scroll metrics.
+class _TimelineVisibleFrame extends SingleChildRenderObjectWidget {
+  const _TimelineVisibleFrame({required this.onFrame, required super.child});
+
+  final VoidCallback onFrame;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderTimelineVisibleFrame(onFrame);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderTimelineVisibleFrame renderObject,
+  ) {
+    renderObject.onFrame = onFrame;
+  }
+}
+
+class _RenderTimelineVisibleFrame extends RenderProxyBox {
+  _RenderTimelineVisibleFrame(this.onFrame);
+
+  VoidCallback onFrame;
+  VoidCallback? _removeCompositionCallback;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    super.paint(context, offset);
+    _removeCompositionCallback?.call();
+    // Flutter also invokes this callback when an ancestor layer is retained.
+    // Only queue the existing post-frame demand check; do not mutate the layer
+    // tree, schedule repeated frames or introduce another pagination owner.
+    _removeCompositionCallback = context.addCompositionCallback((layer) {
+      if (attached && layer.attached) onFrame();
+    });
+  }
+
+  @override
+  void detach() {
+    _removeCompositionCallback?.call();
+    _removeCompositionCallback = null;
+    super.detach();
   }
 }

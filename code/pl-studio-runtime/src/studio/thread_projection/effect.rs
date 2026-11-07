@@ -369,27 +369,16 @@ pub(in crate::studio) fn project_effect_items(
         items.push(item);
     }
 
-    if effect.replacements.iter().any(|replacement| {
-        replacement.reason == pl_core::thread::ContextReplacementReason::Compaction
-    }) {
-        for change in effect.extensions.iter() {
-            let pl_core::thread::extensions::ExtensionChange::Put { record, .. } = change else {
-                continue;
-            };
-            let Some(receipt) = super::compactions::receipt(&record.payload)? else {
-                continue;
-            };
-            if receipt.implementation.is_none() {
-                continue;
-            }
-            let item_id = order::compaction_id(&receipt.inference_id);
+    for event in effect.context_compactions.iter() {
+        if let pl_core::thread::ContextCompactionEvent::Finished { operation_id, .. } = event {
+            let item_id = order::compaction_id(operation_id);
             let (ordinal, created_at) = stamp(existing, reserved, &item_id, effect.committed_at);
             items.push(ThreadItem::new(
                 item_id,
                 thread.id.clone(),
-                receipt.turn_id,
+                String::new(),
                 ordinal,
-                record.revision,
+                effect.sequence,
                 created_at,
                 effect.committed_at,
                 ThreadItemState::ContextCompaction(pl_protocol::ThreadContextCompactionItem::new(
@@ -407,13 +396,22 @@ pub(in crate::studio) fn project_effect_items(
         };
         let id = order::turn_id(turn_id);
         let (ordinal, created_at) = stamp(existing, reserved, &id, effect.committed_at);
+        // A background result can reference an already-terminal Turn in the
+        // checkpoint. Re-observing that Turn is not a new terminal transition:
+        // compare its business state with the frozen terminal's original clock.
+        // Actual state/input/usage changes still produce a changed candidate.
+        let terminal_stamp = existing.get(&id).filter(|item| {
+            matches!(item.state(), ThreadItemState::Turn(_))
+                && item.is_terminal()
+                && record.state != pl_core::thread::TurnState::Running
+        });
         let turn = super::turns::project_turn(
             &thread.id,
             state,
             record,
             created_at,
-            effect.committed_at,
-            effect.sequence,
+            terminal_stamp.map_or(effect.committed_at, |item| item.updated_at),
+            terminal_stamp.map_or(effect.sequence, |item| item.revision),
         )?;
         items.push(ThreadItem::new(
             id,

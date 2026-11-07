@@ -354,14 +354,21 @@ fn a_held_part_container_is_not_mutated_by_later_edits_to_filled_chunks_or_the_t
     }
     // A consumer that kept this frame must keep exactly it, whatever the producer does next.
     let held = parts.clone();
+    let (prefix, through) = parts.stable_prefix();
+    assert_eq!(through, 128);
+    assert_eq!(held.stable_prefix().0, prefix);
 
     // Grow the tail, then edit a part that has already rolled into a filled chunk and the new tail.
     let tail_index = parts.len();
     parts.push(provider_part_at(150));
+    assert_eq!(parts.stable_prefix().0, prefix);
     let edited = parts[3].appended("!");
     parts[3] = edited;
+    assert_ne!(parts.stable_prefix().0, prefix);
+    let (edited_prefix, _) = parts.stable_prefix();
     let edited_tail = parts[tail_index].appended("?");
     parts[tail_index] = edited_tail;
+    assert_eq!(parts.stable_prefix().0, edited_prefix);
 
     assert_eq!(held.len(), 150);
     assert_eq!(held[3].text(), "body-3");
@@ -377,4 +384,15 @@ fn a_held_part_container_is_not_mutated_by_later_edits_to_filled_chunks_or_the_t
     assert_eq!(parts.len(), 151);
     assert_eq!(parts[3].text(), "body-3!");
     assert_eq!(parts[tail_index].text(), "body-150?");
+    // No snapshot shares this newer filled index: its weak cursor alone must
+    // still invalidate when an earlier slot is replaced.
+    parts[4] = parts[4].appended("late");
+    assert_ne!(parts.stable_prefix().0, edited_prefix);
+    let (edited_prefix, _) = parts.stable_prefix();
+    let replacement: ModelParts =
+        serde_json::from_slice(&serde_json::to_vec(&parts).unwrap()).unwrap();
+    assert_ne!(replacement.stable_prefix().0, edited_prefix);
+    let first = parts[0].identity().clone();
+    parts.retain(|part| part.identity() != &first);
+    assert_ne!(parts.stable_prefix().0, edited_prefix);
 }

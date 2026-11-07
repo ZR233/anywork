@@ -1,7 +1,7 @@
 //! OpenAI 流解码器：把 Responses/Chat 的 wire 事件流归一为 canonical 事件块序列。
 //!
 //! Responses 的 output text delta 不携带 assistant message phase，解码器记录
-//! `response.output_item.added` 元数据，为后续 delta 补出块开/块关生命周期。
+//! `response.output_item.added` 元数据，在正文 part added 或首个 delta 建立块生命周期。
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -168,6 +168,62 @@ impl OpenAiStreamDecoder {
                     return with_response_model_observation(event, events);
                 }
             }
+            "response.content_part.added" => {
+                let Some(part_type) = event
+                    .part
+                    .as_ref()
+                    .and_then(|part| part.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    return self.protocol_failure(
+                        "provider stream protocol error: content part added carries no valid part type",
+                    );
+                };
+                if part_type != "output_text" {
+                    return with_response_model_observation(event, Vec::new());
+                }
+                if event
+                    .part
+                    .as_ref()
+                    .and_then(|part| part.get("text"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_none()
+                {
+                    return self.protocol_failure(
+                        "provider stream protocol error: output text part added carries no valid text",
+                    );
+                }
+                let Some(item_id) = self.event_item_id(event).filter(|id| !id.is_empty()) else {
+                    return self.protocol_failure(
+                        "provider stream protocol error: output text part added carries no item id and no announced output index",
+                    );
+                };
+                if event.output_index.is_none() {
+                    return self.protocol_failure(
+                        "provider stream protocol error: output text part added carries no output index",
+                    );
+                }
+                let Some(content_index) = event
+                    .content_index
+                    .and_then(|index| u32::try_from(index).ok())
+                else {
+                    return self.protocol_failure(
+                        "provider stream protocol error: output text part added carries no valid content index",
+                    );
+                };
+                let channel = self
+                    .text_channels
+                    .get(&item_id)
+                    .copied()
+                    .unwrap_or(TraceTextChannel::Final);
+                let identity = ProviderBlockIdentity {
+                    item_id: item_id.clone(),
+                    content_index,
+                };
+                let (_, events) =
+                    self.ensure_text_block_open(&item_id, content_index, channel, Some(identity));
+                return with_response_model_observation(event, events);
+            }
             "response.output_text.delta" => {
                 let Some(delta) = event.delta.clone() else {
                     return with_response_model_observation(event, Vec::new());
@@ -216,7 +272,15 @@ impl OpenAiStreamDecoder {
                 // so multiple summaries of one item stay distinct parts instead of collapsing into
                 // index zero and overwriting each other.
                 let content_index = if is_summary {
-                    event.summary_index.unwrap_or(0).max(0) as u32
+                    let Some(index) = event
+                        .summary_index
+                        .and_then(|index| u32::try_from(index).ok())
+                    else {
+                        return self.protocol_failure(
+                            "provider stream protocol error: reasoning summary delta carries no valid summary index",
+                        );
+                    };
+                    index
                 } else {
                     event.content_index.unwrap_or(0).max(0) as u32
                 };
@@ -705,8 +769,137 @@ fn with_presentation_item(
 #[cfg(test)]
 mod member_tests {
     use super::*;
+    use crate::completion::stream::event::ModelBlockContent;
     use crate::runtime::ModelMemberState;
     use serde_json::json;
+
+    #[test]
+    fn native_content_part_added_opens_once_before_delta_and_done() {
+        for (phase, channel) in [
+            ("commentary", TraceTextChannel::Commentary),
+            ("final_answer", TraceTextChannel::Final),
+        ] {
+            for initial_text in ["", "answer"] {
+                for item_id in [Some("message"), None, Some("")] {
+                    let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+                    let message = serde_json::from_value(json!({
+                        "type":"response.output_item.added", "output_index":4,
+                        "item":{"id":"message","type":"message","role":"assistant",
+                            "phase":phase,"content":[]}
+                    }))
+                    .unwrap();
+                    assert!(
+                        !decoder
+                            .decode(&message)
+                            .iter()
+                            .any(|event| matches!(event, ModelStreamEvent::BlockOpened { .. })),
+                        "message metadata does not prove a content part exists"
+                    );
+                    let added = serde_json::from_value(json!({
+                        "type":"response.content_part.added", "output_index":4,
+                        "item_id":item_id, "content_index":1,
+                        "part":{"type":"output_text","text":initial_text}
+                    }))
+                    .unwrap();
+                    let opened = decoder.decode(&added);
+                    let [
+                        ModelStreamEvent::BlockOpened {
+                            id,
+                            kind: ModelBlockKind::Text { channel: actual },
+                            provider: Some(provider),
+                            ..
+                        },
+                    ] = opened.as_slice()
+                    else {
+                        panic!("part added must immediately produce only the structural start");
+                    };
+                    assert_eq!(*actual, channel);
+                    assert_eq!(
+                        *provider,
+                        ProviderBlockIdentity {
+                            item_id: "message".into(),
+                            content_index: 1,
+                        }
+                    );
+                    assert!(
+                        decoder.decode(&added).is_empty(),
+                        "duplicate added is inert"
+                    );
+                    let delta = serde_json::from_value(json!({
+                        "type":"response.output_text.delta","item_id":"message",
+                        "content_index":1,"delta":"answer"
+                    }))
+                    .unwrap();
+                    let decoded = decoder.decode(&delta);
+                    let [
+                        ModelStreamEvent::BlockDelta {
+                            id: delta_id,
+                            delta,
+                            ..
+                        },
+                    ] = decoded.as_slice()
+                    else {
+                        panic!("the real delta must reuse the already open block");
+                    };
+                    assert_eq!(delta_id, id);
+                    assert_eq!(delta, "answer");
+                    let done = serde_json::from_value(json!({
+                        "type":"response.output_item.done", "output_index":4,
+                        "item":{"id":"message","type":"message","role":"assistant","phase":phase,
+                            "content":[{"type":"refusal","refusal":""},
+                                {"type":"output_text","text":"answer"}]}
+                    }))
+                    .unwrap();
+                    let completed = decoder.decode(&done);
+                    assert!(!completed.iter().any(|event| matches!(
+                        event,
+                        ModelStreamEvent::BlockOpened { .. } | ModelStreamEvent::BlockDelta { .. }
+                    )));
+                    let closed = completed
+                        .iter()
+                        .filter_map(|event| match event {
+                            ModelStreamEvent::BlockClosed {
+                                id,
+                                authoritative_content: Some(ModelBlockContent::Text(text)),
+                                ..
+                            } => Some((id, text.as_str())),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(closed, vec![(id, "answer")]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn content_part_added_does_not_open_non_text_or_tagged_blocks() {
+        for part in [
+            json!({"type":"refusal","refusal":"declined"}),
+            json!({"type":"reasoning_text","text":"reasoning"}),
+            json!({"type":"summary_text","text":"summary"}),
+        ] {
+            let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+            let event = serde_json::from_value(json!({
+                "type":"response.content_part.added", "output_index":0,
+                "item_id":"non-text","content_index":0,"part":part
+            }))
+            .unwrap();
+            assert!(decoder.decode(&event).is_empty());
+        }
+        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::TaggedText);
+        for part in [
+            json!({"type":"output_text","text":""}),
+            json!({"type":"output_text","text":42}),
+        ] {
+            let event = serde_json::from_value(json!({
+                "type":"response.content_part.added", "output_index":0,
+                "item_id":"tagged","content_index":0,"part":part
+            }))
+            .unwrap();
+            assert!(decoder.decode(&event).is_empty());
+        }
+    }
 
     #[test]
     fn done_status_is_member_authority_not_attempt_success() {

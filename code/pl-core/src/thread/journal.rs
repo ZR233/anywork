@@ -43,6 +43,40 @@ pub enum PrivateContextChange {
     Clear,
 }
 
+/// One real context-compaction operation, independent of an auxiliary model call's Turn label.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum ContextCompactionEvent {
+    Started {
+        operation_id: String,
+        /// Only a genuinely active Turn is associated; idle compaction has no Turn.
+        turn_id: Option<String>,
+        attempt_id: Option<String>,
+    },
+    Finished {
+        operation_id: String,
+        outcome: ContextCompactionOutcome,
+    },
+}
+
+/// Reliable operation outcome, not an inference diagnostic or a presentation group.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum ContextCompactionOutcome {
+    Changed { context_revision: u64 },
+    Unchanged,
+    Failed { message: String },
+    Cancelled,
+}
+
 /// One atomic output batch containing context, output, continuation and lifecycle changes.
 ///
 /// Runtime owners publish these batches to persistence and live observers. They never replay them
@@ -69,6 +103,12 @@ pub struct ThreadEffectBatch {
     /// Independently ended members; absent in older effects and unrelated to context advancement.
     #[serde(default)]
     pub model_members: Arc<[crate::model::ModelCompletedMember]>,
+    /// Validated part beginnings; older effects do not imply any historical start facts.
+    #[serde(default)]
+    pub model_member_starts: Arc<[crate::model::ModelStartedMember]>,
+    /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
+    #[serde(default)]
+    pub context_compactions: Arc<[ContextCompactionEvent]>,
     pub turn: Option<TurnRecord>,
     pub discovered_tools: Option<Arc<[ModelToolDeclaration]>>,
     pub deliveries: Arc<[ToolDelivery]>,
@@ -135,6 +175,8 @@ impl ThreadEffectBatch {
         current: &ThreadSnapshot,
         sequence: u64,
         model_members: Arc<[crate::model::ModelCompletedMember]>,
+        model_member_starts: Arc<[crate::model::ModelStartedMember]>,
+        context_compactions: Arc<[ContextCompactionEvent]>,
     ) -> Option<Self> {
         let context = if previous.context == current.context {
             None
@@ -259,6 +301,8 @@ impl ThreadEffectBatch {
             && private_context.is_none()
             && attempt.is_none()
             && model_members.is_empty()
+            && model_member_starts.is_empty()
+            && context_compactions.is_empty()
             && turn.is_none()
             && discovered_tools.is_none()
             && tasks.is_empty()
@@ -288,6 +332,8 @@ impl ThreadEffectBatch {
             private_context,
             attempt,
             model_members,
+            model_member_starts,
+            context_compactions,
             turn,
             discovered_tools,
             deliveries,

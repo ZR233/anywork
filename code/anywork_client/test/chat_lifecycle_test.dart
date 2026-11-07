@@ -9,7 +9,7 @@ const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
 ChatBatch _appendMessage(String id) => ChatBatch(
   placement: ChatPlacement.append,
-  messages: [chatMessage(id: id)],
+  entries: [ItemChatEntry(chatMessage(id: id))],
 );
 
 void main() {
@@ -535,7 +535,7 @@ void main() {
         reason: 'The retired query still owns its future',
       );
       pageReply.complete(
-        ChatBatch(placement: ChatPlacement.prepend, messages: []),
+        ChatBatch(placement: ChatPlacement.prepend, entries: []),
       );
       await reading;
       expect((await closing).complete, isTrue);
@@ -858,7 +858,7 @@ void main() {
       expect(
         consumer.batches.last,
         isA<ChatBatch>().having(
-          (batch) => batch.messages.single.id,
+          (batch) => (batch.entries.single as ItemChatEntry).item.id,
           'message identity',
           'item-9',
         ),

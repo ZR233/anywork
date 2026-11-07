@@ -13,8 +13,11 @@ mod runtime_stop;
 mod send_outcomes;
 
 use super::Session;
+use crate::support::{
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload,
+};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatBatch, ChatScope, ContentRange, ContentRef, PayloadData, ReadDemand};
+use pl_protocol::{ChatAtomKind, ChatEntry, ChatScope, ChatSourceId};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
 
@@ -130,8 +133,31 @@ pub(super) async fn wait_cancelled_turn(
                 .open_chat(thread_id, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
-            for item in page.messages.iter().rev() {
-                let payload = chat_payload(&read, &item.payload, &mut remaining, deadline).await?;
+            for entry in page.entries.iter().rev() {
+                let ChatEntry::Item(item) = entry else {
+                    anyhow::bail!("Main returned a member atom/source instead of a Timeline item");
+                };
+                if !matches!(
+                    item.atom_kind,
+                    Some(ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown)
+                ) {
+                    continue;
+                }
+                let Some(payload) =
+                    completed_timeline_payload(&read, item, &mut remaining, deadline).await?
+                else {
+                    continue;
+                };
+                if let ChatSourceId::ForegroundTurn { turn_id } = &item.source {
+                    ensure!(
+                        item.turn_id.as_deref() == Some(turn_id.as_str()),
+                        "Timeline source and Turn identity conflict"
+                    );
+                }
+                ensure!(
+                    item.atom_kind != Some(ChatAtomKind::TurnReceipt) || payload["type"] == "turn",
+                    "Timeline metadata and original payload domain conflict"
+                );
                 if payload["type"] != "turn" || payload["turnId"].as_str() != Some(turn_id) {
                     continue;
                 }
@@ -155,129 +181,6 @@ pub(super) async fn wait_cancelled_turn(
     })
     .await
     .context("cancelled Turn observation exceeded its deadline")?
-}
-
-// These observe consumers share only bounded transport decoding, not a history
-// mirror or a second product model. Each caller owns its assertion and read lease.
-pub(super) const CHAT_DEMAND: ReadDemand = ReadDemand {
-    max_items: 100,
-    max_bytes: 256 * 1024,
-};
-pub(super) const CHAT_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
-
-pub(super) fn charge_chat_batch(batch: &ChatBatch, remaining: &mut usize) -> Result<()> {
-    ensure!(
-        batch.messages.len() <= CHAT_DEMAND.max_items as usize,
-        "Chat exceeded item demand"
-    );
-    let bytes = batch.encoded_len()?;
-    ensure!(
-        bytes <= CHAT_DEMAND.max_bytes as usize,
-        "Chat exceeded byte demand"
-    );
-    charge_chat_bytes(bytes, remaining)
-}
-
-pub(super) fn charge_chat_bytes(bytes: usize, remaining: &mut usize) -> Result<()> {
-    *remaining = remaining
-        .checked_sub(bytes)
-        .context("Chat observation exceeded its cumulative 4MiB budget")?;
-    Ok(())
-}
-
-pub(super) async fn payload_bytes(
-    read: &crate::http::ChatRead,
-    payload: &PayloadData,
-    remaining: &mut usize,
-    deadline: std::time::Instant,
-) -> Result<Vec<u8>> {
-    match payload {
-        PayloadData::Inline { bytes } => Ok(bytes.clone()),
-        PayloadData::Deferred {
-            reference,
-            byte_length,
-        } => content_bytes(read, reference, *byte_length, remaining, deadline).await,
-    }
-}
-
-pub(super) async fn content_bytes(
-    read: &crate::http::ChatRead,
-    reference: &ContentRef,
-    length: u64,
-    remaining: &mut usize,
-    deadline: std::time::Instant,
-) -> Result<Vec<u8>> {
-    ensure!(
-        length <= *remaining as u64,
-        "Deferred content exceeds remaining observation budget"
-    );
-    let mut bytes = Vec::new();
-    let mut generation = None;
-    while (bytes.len() as u64) < length {
-        let offset = bytes.len() as u64;
-        let max_bytes = (length - offset).min(64 * 1024) as u32;
-        let window = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            read.read_content(reference, ContentRange { offset, max_bytes }),
-        )
-        .await
-        .context("Chat content read exceeded observation deadline")??;
-        ensure!(
-            window.offset == offset
-                && !window.bytes.is_empty()
-                && window.bytes.len() <= max_bytes as usize
-                && window.available_through == length,
-            "Chat content range did not advance within its declared length"
-        );
-        charge_chat_bytes(serde_json::to_vec(&window)?.len(), remaining)?;
-        if let Some(expected) = &generation {
-            ensure!(
-                &window.generation == expected,
-                "Chat content generation changed mid-read"
-            );
-        } else {
-            generation = Some(window.generation);
-        }
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
-
-pub(super) async fn chat_payload(
-    read: &crate::http::ChatRead,
-    payload: &PayloadData,
-    remaining: &mut usize,
-    deadline: std::time::Instant,
-) -> Result<serde_json::Value> {
-    let bytes = payload_bytes(read, payload, remaining, deadline).await?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).context("invalid Chat payload JSON")?;
-    ensure!(
-        value["contract"] == "anywork.chat/1"
-            && matches!(
-                value["type"].as_str(),
-                Some(
-                    "text"
-                        | "thinking"
-                        | "tool"
-                        | "raw"
-                        | "agent"
-                        | "turn"
-                        | "inference"
-                        | "skill"
-                        | "file"
-                        | "contextCompaction"
-                        | "plan"
-                )
-            )
-            && value["data"].is_object()
-            && value["bodies"].is_array(),
-        "Chat payload omitted its current contract, type, metadata or bodies"
-    );
-    if value["type"] == "turn" {
-        chat_turn_outcome(&value)?;
-    }
-    Ok(value)
 }
 
 pub(super) fn chat_turn_outcome(payload: &serde_json::Value) -> Result<pl_protocol::TurnState> {

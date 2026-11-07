@@ -80,6 +80,16 @@ GUI 交互通过 `cargo xtask manual-gui --preset` 的隔离模拟服务人工�
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
 
+## 官方无头界面对齐与组件预览
+
+界面设计对齐优先使用官方无头工具：
+
+- 布局、溢出、展开和滚动行为通过 `cargo flutter test <相关测试路径>` 的生产组件 Widget 测试验证，无需桌面显示服务。
+- 人工对照概念稿时，使用 `cargo xtask preview-gui --headless --no-devtools`，由项目入口准备应用依赖覆盖，再由官方工具启动无头 Chrome，配合成熟浏览器工具检查实际组件、截图和交互。
+- 先核对当前 `cargo xtask preview-gui --help -v`。浏览器、分析服务和 DTD 随本次预览收束，不占用 `1420`。
+
+时间线已有 `features/conversation/timeline/previews/` 下的生产组件预览，覆盖内容、实时状态与回执，可与账号预览复用同一官方入口。工作组预览直接使用共享生产组头和成员组件，输入明确给定的展示 item、投影摘要及薄合成详情，提供实时等待、工作与正文交替和窄窗大字体等场景；不在预览实现分组、封口或业务完成。组详情与媒体的真实按需读取仍由原生链路证明。按实际目标选择约束、主题、语言和状态，不把合成数据或局部回调当作真实业务结果；原生集成、产品截图和性能的边界见[测试与人工验收](../../design/24-testing.md#2414-官方无头工具与界面设计对齐)。
+
 ## 官方技能与原生 MCP 观察
 
 Flutter / Dart 官方技能安装在用户主目录 `.agents/skills/`，不放入本项目。

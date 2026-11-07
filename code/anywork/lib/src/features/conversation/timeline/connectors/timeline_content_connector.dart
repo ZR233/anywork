@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../state/content_reference_identity.dart';
+import '../state/timeline_display_unit.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../widgets/timeline_content_range_view.dart';
 
@@ -50,11 +51,30 @@ class _TimelineContentRangeConnectorState
   Object? _error;
   bool _loading = false;
   bool _expanded = false;
+  bool _immediate = false;
+  bool _scheduled = false;
   int _request = 0;
   VoidCallback? _unregisterDisplay;
+  TimelineExpansionIntent? _group;
+  Object? _groupGeneration;
+  bool get _groupActive =>
+      _group == null ||
+      _group!.bodyActive && identical(_groupGeneration, _group!.bodyGeneration);
 
   bool get _displayActive =>
-      mounted && _expanded && (widget.isDisplayActive?.call() ?? true);
+      mounted &&
+      _expanded &&
+      _groupActive &&
+      (widget.isDisplayActive?.call() ?? true);
+
+  void _groupChanged() {
+    if (_groupActive) return;
+    _request++;
+    _unregister();
+    _window = null;
+    _error = null;
+    _loading = false;
+  }
 
   @override
   String get id => widget.itemId;
@@ -78,6 +98,32 @@ class _TimelineContentRangeConnectorState
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final group = TimelineGroupBodyIntent.of(context);
+    if (!identical(group, _group)) {
+      _group?.removeListener(_groupChanged);
+      _group = group;
+      _groupGeneration = group?.bodyGeneration;
+      group?.addListener(_groupChanged);
+    }
+    if (!_immediate && TimelineBodyReadIntent.of(context)) {
+      _immediate = true;
+      _readOnMount();
+    }
+  }
+
+  void _readOnMount() {
+    _expanded = true;
+    if (_scheduled) return;
+    _scheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduled = false;
+      if (mounted && _displayActive) unawaited(_load(0));
+    });
+  }
+
+  @override
   void didUpdateWidget(covariant TimelineContentRangeConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (contentReferenceIdentity(oldWidget.reference) !=
@@ -88,6 +134,7 @@ class _TimelineContentRangeConnectorState
       _error = null;
       _loading = false;
       _expanded = false;
+      if (_immediate) _readOnMount();
     } else if (oldWidget.registerDisplay != widget.registerDisplay) {
       _unregister();
       if (_displayActive) {
@@ -98,13 +145,22 @@ class _TimelineContentRangeConnectorState
 
   @override
   void dispose() {
+    _group?.removeListener(_groupChanged);
     _unregister();
     super.dispose();
   }
 
   Future<void> _load(int offset) async {
-    final read = widget.readContent;
-    if (read == null || _loading || !(widget.isDisplayActive?.call() ?? true)) {
+    final groupRead = _group?.readBody;
+    final generation = _groupGeneration;
+    final read = groupRead == null
+        ? widget.readContent
+        : (ContentRef reference, ContentRange range) =>
+              groupRead(generation!, reference, range);
+    if (read == null ||
+        _loading ||
+        !_groupActive ||
+        !(widget.isDisplayActive?.call() ?? true)) {
       return;
     }
     final request = ++_request;
@@ -112,6 +168,7 @@ class _TimelineContentRangeConnectorState
     final isActive = widget.isDisplayActive;
     bool eligible() =>
         mounted &&
+        _groupActive &&
         _expanded &&
         request == _request &&
         (isActive?.call() ?? true) &&
@@ -177,6 +234,7 @@ class _TimelineContentRangeConnectorState
     itemId: widget.itemId,
     contentKey: widget.contentKey,
     label: widget.label,
+    initiallyExpanded: _immediate,
     loading: _loading,
     active: widget.isDisplayActive?.call() ?? true,
     canRead: widget.readContent != null,

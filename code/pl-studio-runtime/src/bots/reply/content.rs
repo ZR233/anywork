@@ -3,8 +3,8 @@
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ChatMessage, ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
-    ThreadTextChannel, TurnState,
+    ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatEntry, ChatSourceId, ContentOwner,
+    ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand, ThreadTextChannel, TurnState,
 };
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -35,6 +35,8 @@ pub(super) enum FinalText {
 
 #[derive(Clone)]
 pub(super) struct ReplyItem {
+    pub(super) member_id: String,
+    /// Frozen payload/content owner, which may differ from the stable member.
     pub(super) id: String,
     pub(super) kind: ReplyItemKind,
 }
@@ -77,15 +79,113 @@ struct Envelope {
 
 /// Decode only the frozen public envelope. Unknown/bad payload is a gap, never
 /// permission to silently omit a possible Final. No private checkpoint fallback.
-pub(super) async fn decode_message(
+pub(super) async fn decode_entry(
     reader: &ConversationReader,
-    message: &ChatMessage,
+    entry: &ChatEntry,
     turn_id: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    if message.id.is_empty() {
-        return Err(gap("reply message has no identity"));
+    let (atom, id, payload) = match entry {
+        ChatEntry::Item(item) => {
+            if item.is_work_group() {
+                return Ok(None);
+            }
+            if item.position.is_none() {
+                return Ok(None);
+            }
+            let kind = item
+                .atom_kind
+                .ok_or_else(|| gap("reply item has no domain kind"))?;
+            let id = item
+                .content_item_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| gap("reply item has no frozen content owner"))?;
+            let payload = item
+                .payload
+                .as_ref()
+                .ok_or_else(|| gap("reply item has no payload"))?;
+            // Display identity is not the original text/content identity. Final
+            // preview retirement follows the frozen text owner, never an ID prefix.
+            (
+                ReplyMetadata {
+                    id: id.to_owned(),
+                    source: item.source.clone(),
+                    turn_id: item.turn_id.clone(),
+                    kind,
+                    tool: None,
+                    text_channel: item.text_channel,
+                    contents: item.contents.clone(),
+                },
+                id,
+                payload,
+            )
+        }
+        ChatEntry::Atom(atom) => {
+            if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
+                return Ok(None);
+            }
+            let id = atom
+                .completion_item_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| gap("terminal reply atom has no frozen completion identity"))?;
+            if atom.completion_seq.is_none_or(|seq| seq == 0) {
+                return Err(gap(
+                    "terminal reply atom has no completion publication position",
+                ));
+            }
+            let payload = atom
+                .payload
+                .as_ref()
+                .ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
+            (
+                ReplyMetadata {
+                    id: atom.id.clone(),
+                    source: atom.source.clone(),
+                    turn_id: atom.turn_id.clone(),
+                    kind: atom.kind,
+                    tool: atom.tool.clone(),
+                    text_channel: atom.text_channel,
+                    contents: atom.contents.clone(),
+                },
+                id,
+                payload,
+            )
+        }
+        ChatEntry::Source(source) => {
+            if source_identity(&source.source).is_empty() {
+                return Err(gap("reply source fact has no identity"));
+            }
+            return Ok(None);
+        }
+    };
+    if atom.id.is_empty() || source_identity(&atom.source).is_empty() {
+        return Err(gap("reply item has no identity"));
     }
-    let bytes = match &message.payload {
+    if let ChatSourceId::ForegroundTurn { turn_id } = &atom.source
+        && atom.turn_id.as_deref() != Some(turn_id)
+    {
+        return Err(gap("reply source and Turn identity conflict"));
+    }
+    if let PayloadData::Deferred { reference, .. } = payload
+        && (reference.database_id.is_empty()
+            || !matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == id))
+    {
+        return Err(gap("deferred reply payload identity conflict"));
+    }
+    // Main also includes work now. Its known domain is sufficient to skip
+    // unrelated payloads; Unknown never grants permission to omit a possible Final.
+    if !matches!(
+        atom.kind,
+        ChatAtomKind::Text
+            | ChatAtomKind::Interaction
+            | ChatAtomKind::Plan
+            | ChatAtomKind::TurnReceipt
+            | ChatAtomKind::Unknown
+    ) {
+        return Ok(None);
+    }
+    let bytes = match payload {
         PayloadData::Inline { bytes } => {
             check_length(bytes.len() as u64)?;
             bytes.clone()
@@ -93,20 +193,35 @@ pub(super) async fn decode_message(
         PayloadData::Deferred {
             reference,
             byte_length,
-        } => {
-            if !matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == &message.id)
-            {
-                return Err(gap("deferred reply payload identity conflict"));
-            }
-            read_bytes(reader, reference, *byte_length, true).await?
-        }
+        } => read_bytes(reader, reference, *byte_length, true).await?,
     };
-    decode_envelope(reader, message.id.clone(), &bytes, turn_id).await
+    decode_envelope(reader, &atom, id, &bytes, turn_id).await
+}
+
+fn source_identity(source: &ChatSourceId) -> &str {
+    match source {
+        ChatSourceId::ForegroundTurn { turn_id } => turn_id,
+        ChatSourceId::Input { input_id } => input_id,
+        ChatSourceId::BackgroundResult { message_id } => message_id,
+        ChatSourceId::Operation { operation_id } => operation_id,
+        ChatSourceId::Receipt { receipt_id } => receipt_id,
+    }
+}
+
+struct ReplyMetadata {
+    id: String,
+    source: ChatSourceId,
+    turn_id: Option<String>,
+    kind: ChatAtomKind,
+    tool: Option<pl_protocol::ChatToolIdentity>,
+    text_channel: Option<ThreadTextChannel>,
+    contents: Vec<pl_protocol::ChatAtomContent>,
 }
 
 async fn decode_envelope(
     reader: &ConversationReader,
-    id: String,
+    atom: &ReplyMetadata,
+    id: &str,
     bytes: &[u8],
     target: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
@@ -114,6 +229,35 @@ async fn decode_envelope(
         .map_err(|error| gap(&format!("malformed reply envelope: {error}")))?;
     if envelope.contract != "anywork.chat/1" {
         return Err(gap("unsupported reply envelope contract"));
+    }
+    if envelope.turn_id != atom.turn_id {
+        return Err(gap("reply metadata and frozen payload Turn conflict"));
+    }
+    let expected = match atom.kind {
+        ChatAtomKind::Text => Some("text"),
+        ChatAtomKind::Interaction => Some("tool"),
+        ChatAtomKind::Plan => Some("plan"),
+        ChatAtomKind::TurnReceipt => Some("turn"),
+        ChatAtomKind::Unknown => None,
+        _ => unreachable!("unrelated domain payloads are not decoded"),
+    };
+    if expected.is_some_and(|kind| kind != envelope.kind) {
+        return Err(gap("reply metadata and frozen payload domain conflict"));
+    }
+    if atom.kind == ChatAtomKind::Unknown
+        && !matches!(envelope.kind.as_str(), "text" | "turn" | "tool" | "plan")
+    {
+        return Err(gap(
+            "unknown reply domain cannot prove an unrelated payload",
+        ));
+    }
+    if let Some(tool) = &atom.tool
+        && (envelope.data["invocation"]["toolCallId"].as_str() != Some(tool.call_id.as_str())
+            || envelope.data["invocation"]["name"].as_str() != Some(tool.name.as_str()))
+    {
+        return Err(gap(
+            "reply metadata and frozen payload tool identity conflict",
+        ));
     }
     if envelope.turn_id.as_deref() != Some(target) {
         return Ok(None);
@@ -128,6 +272,9 @@ async fn decode_envelope(
                     .ok_or_else(|| gap("reply text lacks channel"))?,
             )
             .map_err(|error| gap(&format!("invalid reply text channel: {error}")))?;
+            if atom.text_channel != Some(channel) {
+                return Err(gap("reply metadata and frozen payload channel conflict"));
+            }
             if channel != ThreadTextChannel::Final {
                 return Ok(None);
             }
@@ -141,7 +288,21 @@ async fn decode_envelope(
             if bodies.next().is_some() {
                 return Err(gap("canonical Final has duplicate body manifests"));
             }
-            body.validate(&id)?;
+            body.validate(id)?;
+            for content in &atom.contents {
+                if content.role == ChatContentRole::Body
+                    && (content.reference.database_id.is_empty()
+                        || !matches!(&content.reference.target,
+                            ContentTarget::Body { owner: ContentOwner::Item { item_id }, key }
+                                if item_id == id && key == &body.key)
+                        || body
+                            .reference
+                            .as_ref()
+                            .is_some_and(|reference| reference != &content.reference))
+                {
+                    return Err(gap("reply metadata and frozen body ownership conflict"));
+                }
+            }
             let preview = body.read(reader, false).await?;
             ReplyItemKind::Final { body, preview }
         }
@@ -167,6 +328,9 @@ async fn decode_envelope(
                 .get("userInput")
                 .filter(|value| !value.is_null())
             else {
+                if atom.kind == ChatAtomKind::Interaction {
+                    return Err(gap("reply Interaction metadata lacks frozen user input"));
+                }
                 return Ok(None);
             };
             let interaction = input
@@ -183,12 +347,13 @@ async fn decode_envelope(
                 .ok_or_else(|| gap("reply plan interaction lacks identity"))?;
             ReplyItemKind::Interaction(interaction.into())
         }
-        "raw" | "contextCompaction" | "thinking" | "agent" | "inference" | "skill" | "file" => {
-            return Ok(None);
-        }
         _ => return Err(gap("unsupported target reply payload type")),
     };
-    Ok(Some(ReplyItem { id, kind }))
+    Ok(Some(ReplyItem {
+        member_id: atom.id.clone(),
+        id: id.into(),
+        kind,
+    }))
 }
 
 impl Body {
@@ -302,16 +467,10 @@ pub(super) async fn collect_complete_turn_text(
         .synchronize_thread_observation(reader.thread_id())
         .await
         .map_err(|error| read_failure("thread observation barrier failed", error))?;
-    let terminal = items
-        .iter()
-        .rev()
-        .find(|item| matches!(item.kind, ReplyItemKind::Terminal(_)))
-        .ok_or_else(|| gap("canonical target terminal is missing"))?;
     // Even all-inline/empty replies must recheck the original read qualification
     // after the barrier; closing/replacing a lease must not authorize a final send.
     reader
-        .list_contents(&terminal.id, None, demand())
-        .await
+        .ensure()
         .map_err(|error| read_failure("canonical terminal read qualification failed", error))?;
     let mut text = String::new();
     for item in items {
@@ -338,16 +497,29 @@ pub(super) async fn collect_complete_turn_text(
 #[derive(Default)]
 pub(super) struct Coverage {
     inspected: usize,
+    atoms: usize,
     pages: usize,
     cursors: BTreeSet<String>,
 }
 impl Coverage {
-    pub(super) fn page(&mut self, count: usize) -> Result<(), FinalError> {
-        self.inspected = self.inspected.saturating_add(count);
+    pub(super) fn page(&mut self, entries: &[ChatEntry]) -> Result<(), FinalError> {
         self.pages = self.pages.saturating_add(1);
-        if self.inspected > MAX_TURN_CONTENT_ITEMS || self.pages > MAX_TURN_CONTENT_ITEMS {
+        self.admit(entries)
+    }
+    pub(super) fn admit(&mut self, entries: &[ChatEntry]) -> Result<(), FinalError> {
+        self.inspected = self.inspected.saturating_add(entries.len());
+        self.atoms = self.atoms.saturating_add(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, ChatEntry::Item(_)))
+                .count(),
+        );
+        if self.inspected > MAX_TURN_CONTENT_ITEMS
+            || self.atoms > MAX_TURN_CONTENT_ITEMS
+            || self.pages > MAX_TURN_CONTENT_ITEMS
+        {
             return Err(FinalError::Attention(
-                "canonical turn coverage exceeded 16384 content items or pages".into(),
+                "canonical turn coverage exceeded 16384 facts, atoms or pages".into(),
             ));
         }
         Ok(())

@@ -63,8 +63,16 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
     };
     let mut page = chat::batch(*initial);
     loop {
-        for message in page.messages {
-            let manifest = facade.list_contents(message.id, None, demand).await?;
+        for entry in page.entries {
+            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
+                continue;
+            };
+            let Some(item_id) = item.content_item_id.as_deref() else {
+                continue;
+            };
+            let manifest = facade
+                .list_contents(item_id.to_owned(), None, demand)
+                .await?;
             if let Some(entry) = manifest.entries.into_iter().next() {
                 let window = facade
                     .read_content(entry.reference.clone(), range())

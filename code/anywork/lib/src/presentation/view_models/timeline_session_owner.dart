@@ -1,13 +1,15 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
+import 'package:flutter/foundation.dart'
+    show Key, ValueKey, ValueNotifier, ValueListenable;
 import 'package:flutter/widgets.dart' show ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import '../../features/conversation/timeline/state/timeline_display_unit.dart';
 import '../../features/conversation/timeline/state/timeline_view_state.dart';
 import '../../features/conversation/timeline/state/timeline_ui_controllers.dart';
 import '../../features/conversation/timeline/view_models/timeline_message_controller.dart';
@@ -25,12 +27,14 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.content,
     this.selectionId,
     this.selectionStartedMicros,
+    required this.openMembers,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
       _controller!,
       generation: generation,
-      imageResources: imageResources,
+      onUnitCreated: _bindUnit,
+      onUnitRetired: _retireUnit,
     );
   }
 
@@ -40,12 +44,17 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ConversationContent content;
   final int? selectionId;
   final int? selectionStartedMicros;
+  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)
+  openMembers;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
     keepScrollOffset: false,
   );
   TimelineMessageController? _presentation;
+  ValueListenable<List<TimelineDisplayUnit>> get liveUnits =>
+      _presentation!.live;
+  final Set<TimelineGroupDisplay> _groupDisplays = {};
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   final Set<ConversationQueryScope> _ownedQueries = {};
@@ -70,6 +79,70 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int get appliedSets => _appliedSets;
   int get appliedPrepends => _appliedPrepends;
   int get appliedAppends => _appliedAppends;
+
+  Iterable<TimelineGroupDisplay> get groupDisplays => _retired
+      ? const []
+      : _groupDisplays.where((display) => display.isCurrent);
+
+  void _bindUnit(TimelineDisplayUnit unit) {
+    final intent = unit.expansion;
+    ConversationQueryScope? bodyScope;
+    Object? bodyGeneration;
+    intent.retireBody = () {
+      final original = bodyScope;
+      bodyScope = null;
+      bodyGeneration = null;
+      if (original == null) return;
+      original.retire();
+      unawaited(_settleQueries(original));
+    };
+    intent.readBody = (generation, reference, range) async {
+      if (_retired ||
+          intent.current == null ||
+          !intent.bodyActive ||
+          !identical(generation, intent.bodyGeneration)) {
+        throw const StaleConversationScope();
+      }
+      if (!identical(bodyGeneration, generation)) {
+        intent.retireBody!();
+        bodyScope = openDetailQueries();
+        bodyGeneration = generation;
+      }
+      final original = bodyScope;
+      if (original == null || !original.isActive) {
+        throw const StaleConversationScope();
+      }
+      final value = await original.readContent(
+        reference: reference,
+        range: range,
+      );
+      if (_retired ||
+          intent.current == null ||
+          !intent.bodyActive ||
+          !identical(generation, intent.bodyGeneration) ||
+          !identical(bodyScope, original) ||
+          !original.isActive) {
+        throw const StaleConversationScope();
+      }
+      return value;
+    };
+    intent.isDisplayActive = () => !_retired && intent.current != null;
+    intent.registerDisplay = (display) {
+      if (_retired) return () {};
+      _groupDisplays.add(display);
+      return () => _groupDisplays.remove(display);
+    };
+    intent.openMembers = (reference, demand) {
+      if (_retired || intent.isRetired || !intent.bodyActive) {
+        throw const StaleConversationScope();
+      }
+      return openMembers(reference, demand);
+    };
+  }
+
+  void _retireUnit(TimelineDisplayUnit unit) {
+    _groupDisplays.removeWhere((display) => display.unitId == unit.id);
+  }
 
   Iterable<TimelineChildrenDisplay> get childrenDisplays sync* {
     if (_retired) return;
@@ -181,7 +254,9 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   Future<void> retire() {
     if (!_retired) {
       _retired = true;
+      _presentation?.retireDisplays();
       _childrenDisplays.clear();
+      _groupDisplays.clear();
       _currentDisplay = null;
       imageResources.retire();
       retirement.value = true;
@@ -264,6 +339,7 @@ final class TimelineSessionOwner {
   final Set<TimelineDisplayLease> _preparingDisplays = {};
   Future<void> _commits = Future.value();
   Future<void>? _olderInFlight;
+  Object? _olderRequestKey;
   int _selection = 0;
   int _generation = 0;
   bool _bindingConsumer = false;
@@ -325,6 +401,34 @@ final class TimelineSessionOwner {
     if (session != null && _consumerObservation == null) {
       _attachConsumer(_selection, session);
     }
+  }
+
+  /// A synchronous borrow of the original visible selection's layout witness.
+  /// This does not open a read, advance a page, mount content or retain a lease.
+  ({
+    String threadId,
+    int selectionId,
+    int generation,
+    TimelineContentLayout? firstContentLayout,
+  })?
+  get visibleLayoutSnapshot {
+    final current = _current;
+    final selectionId = current?.selectionId;
+    if (_closed ||
+        current == null ||
+        current.isRetired ||
+        !current.isMounted ||
+        _selectionTarget != current.threadId ||
+        selectionId == null ||
+        selectionId != _visibleSelectionId) {
+      return null;
+    }
+    return (
+      threadId: current.threadId,
+      selectionId: selectionId,
+      generation: current.generation,
+      firstContentLayout: current.firstContentLayout,
+    );
   }
 
   TimelineDisplayLease? lease(String threadId) {
@@ -499,7 +603,7 @@ final class TimelineSessionOwner {
       current._before = batch.before;
       current._hasOlder = batch.before != null;
       _publishState(isLoadingOlder: false, olderError: null);
-    } else if (batch.messages.isNotEmpty) {
+    } else if (batch.entries.isNotEmpty) {
       _publishState(hasNewOutput: current.mode == TimelineDisplayMode.history);
     }
   });
@@ -514,6 +618,11 @@ final class TimelineSessionOwner {
       generation: ++_generation,
       demand: _readDemand!,
       content: session.content,
+      openMembers: (reference, demand) => client.conversations.openGroupMembers(
+        threadId: session.threadId,
+        reference: reference,
+        demand: demand,
+      ),
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
@@ -616,7 +725,6 @@ final class TimelineSessionOwner {
       _requestOlder(threadId, generation: generation, retry: false);
   Future<void> retryOlder(String threadId, {required int generation}) =>
       _requestOlder(threadId, generation: generation, retry: true);
-
   Future<void> _requestOlder(
     String threadId, {
     required int generation,
@@ -626,18 +734,40 @@ final class TimelineSessionOwner {
     if (current == null || current.generation != generation) {
       return Future.value();
     }
+    return _readSlot((
+      current,
+      'history',
+    ), () => _loadOlder(current, retry: retry));
+  }
+
+  /// Main paging is single-flight and revalidates the captured display lease.
+  Future<void> _readSlot(Object key, Future<void> Function() operation) {
     final existing = _olderInFlight;
-    if (existing != null) return existing;
-    final task = _loadOlder(current, retry: retry);
+    if (existing != null) {
+      if (_olderRequestKey == key) return existing;
+      return existing.then(
+        (_) => _readSlot(key, operation),
+        onError: (Object _, StackTrace _) => _readSlot(key, operation),
+      );
+    }
+    final completion = Completer<void>();
+    final task = completion.future;
     _olderInFlight = task;
-    task.then(
-      (_) {
-        if (identical(_olderInFlight, task)) _olderInFlight = null;
-      },
-      onError: (Object _, StackTrace _) {
-        if (identical(_olderInFlight, task)) _olderInFlight = null;
-      },
+    _olderRequestKey = key;
+    void release() {
+      if (identical(_olderInFlight, task)) {
+        _olderInFlight = null;
+        _olderRequestKey = null;
+      }
+    }
+
+    unawaited(
+      task.then<void>(
+        (_) => release(),
+        onError: (Object _, StackTrace _) => release(),
+      ),
     );
+    completion.complete(Future<void>.sync(operation));
     return task;
   }
 
@@ -645,6 +775,9 @@ final class TimelineSessionOwner {
     TimelineDisplayLease current, {
     required bool retry,
   }) async {
+    // A different read intent may have queued this operation before selection
+    // retired its lease. Revalidate before publishing loading on the new page.
+    if (!identical(_current, current) || current.isRetired) return;
     if (!current.hasOlder ||
         current._before == null ||
         (!retry && source.value?.olderError != null)) {

@@ -6,10 +6,10 @@ use anyhow::{Context, Result, bail, ensure};
 use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 use pl_protocol::{
-    ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentManifestPage, ContentOwner,
-    ContentTarget, ContentWindow, CurrentCollectionPage, CurrentContentRole, CurrentProjection,
-    PayloadData, ReadDemand, ThreadNotification, ThreadSubscriptionRequest,
-    ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ChatAtom, ChatAtomKind, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentManifestPage,
+    ContentOwner, ContentTarget, ContentWindow, CurrentContentRole, CurrentProjection, PayloadData,
+    ReadDemand, ThreadItemKind, ThreadNotification, ThreadSubscriptionRequest,
+    ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
     studio::{
         CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
         SubmitPromptRequest,
@@ -31,12 +31,21 @@ use super::{ACCOUNT, AppState, DEADLINE, MODEL, configure};
 const FIRST: &str = "http-first";
 const NEXT: &str = "http-next";
 const SHUTDOWN: &str = "http-shutdown";
+const EXECUTION_HISTORY_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
+const EXECUTION_HISTORY_PAGE_LIMIT: usize = 64;
+const EXECUTION_HISTORY_MAX_PAGES: usize = 32;
+const EXECUTION_HISTORY_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 fn demand(items: u32) -> ReadDemand {
     ReadDemand {
         max_items: items,
         max_bytes: 256 * 1024,
     }
+}
+
+/// `ChatScope::Children.parent_id` carries Core's encoded `ChatKey("turn", id)`.
+fn turn_parent_key(turn_id: &str) -> String {
+    format!("{}:turn{turn_id}", "turn".len())
 }
 
 struct Environment {
@@ -185,13 +194,59 @@ impl Environment {
         parent: Option<&str>,
         items: u32,
     ) -> Result<(String, SseBody)> {
+        let scope = match parent {
+            Some(parent_id) => ChatScope::Children {
+                parent_id: parent_id.to_owned(),
+            },
+            None => ChatScope::Main,
+        };
+        self.open_scope(thread, scope, items).await
+    }
+
+    async fn open_group(
+        &self,
+        thread: &str,
+        reference: &pl_protocol::TimelineMembersRef,
+        items: u32,
+    ) -> Result<(String, SseBody)> {
+        self.open_scope(
+            thread,
+            ChatScope::GroupMembers {
+                reference: reference.clone(),
+            },
+            items,
+        )
+        .await
+    }
+
+    async fn open_scope(
+        &self,
+        thread: &str,
+        scope: ChatScope,
+        items: u32,
+    ) -> Result<(String, SseBody)> {
         let mut url = url::Url::parse(&format!("{}/api/v1/threads/{thread}/events", self.base))?;
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("maxItems", &items.to_string());
             query.append_pair("maxBytes", &demand(items).max_bytes.to_string());
-            if let Some(parent) = parent {
-                query.append_pair("parentId", parent);
+            match scope {
+                ChatScope::Main => {}
+                ChatScope::Children { parent_id } => {
+                    query.append_pair("parentId", &parent_id);
+                }
+                ChatScope::GroupMembers { reference } => {
+                    query.append_pair("membersDatabaseId", &reference.database_id);
+                    query.append_pair(
+                        "membersProjectionVersion",
+                        &reference.projection_version.to_string(),
+                    );
+                    query.append_pair(
+                        "membersProjectionGeneration",
+                        &reference.projection_generation,
+                    );
+                    query.append_pair("membersItemId", &reference.item_id);
+                }
             }
         }
         let request = self
@@ -360,7 +415,9 @@ async fn complete(
     thread: &str,
     stage: &ReplyStage,
     prompt: &str,
-) -> Result<()> {
+) -> Result<Turn> {
+    // Subscribe before releasing the provider barrier: a fast completion must
+    // not be recovered by guessing from Main items or a later snapshot.
     let mut events = runtime
         .subscribe_thread(ThreadSubscriptionRequest {
             thread_id: thread.into(),
@@ -373,7 +430,20 @@ async fn complete(
                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
                 && turn.input_id.as_deref() == Some(&format!("input-{prompt}"))
             {
-                return Ok(());
+                ensure!(
+                    turn.thread_id == thread,
+                    "completion belongs to another Thread"
+                );
+                ensure!(
+                    !turn.id.is_empty(),
+                    "completion omitted the actual Turn identity"
+                );
+                ensure!(
+                    matches!(&turn.state, TurnState::Completed(_)),
+                    "fixture input did not complete successfully: {:?}",
+                    turn.state
+                );
+                return Ok(turn);
             }
         }
         bail!("Thread ended before completed fixture input")
@@ -385,9 +455,39 @@ async fn payload(
     env: &Environment,
     thread: &str,
     capability: &str,
-    message: &ChatMessage,
+    atom: &ChatAtom,
 ) -> Result<Value> {
-    let bytes = match &message.payload {
+    let payload = atom
+        .payload
+        .as_ref()
+        .context("completed atom omitted its frozen payload")?;
+    decode_payload(env, thread, capability, payload).await
+}
+
+async fn item_payload(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    item: &pl_protocol::TimelineItem,
+) -> Result<Value> {
+    decode_payload(
+        env,
+        thread,
+        capability,
+        item.payload
+            .as_ref()
+            .context("text/status item omitted its original payload")?,
+    )
+    .await
+}
+
+async fn decode_payload(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    payload: &PayloadData,
+) -> Result<Value> {
+    let bytes = match payload {
         PayloadData::Inline { bytes } => bytes.clone(),
         PayloadData::Deferred {
             reference,
@@ -414,22 +514,17 @@ async fn payload(
     Ok(value)
 }
 
-async fn all_history(
+async fn all_entries(
     env: &Environment,
     thread: &str,
     capability: &str,
     first: ChatBatch,
-) -> Result<Vec<ChatMessage>> {
-    let mut messages = first.messages;
+) -> Result<Vec<ChatEntry>> {
+    let mut entries = first.entries;
     let mut before = first.before;
     for _ in 0..32 {
         let Some(cursor) = before else {
-            let ids = messages
-                .iter()
-                .map(|message| &message.id)
-                .collect::<HashSet<_>>();
-            ensure!(ids.len() == messages.len(), "duplicate completed item");
-            return Ok(messages);
+            return Ok(entries);
         };
         let batch: ChatBatch = env
             .query(
@@ -444,10 +539,149 @@ async fn all_history(
             batch.before.as_ref() != Some(&cursor),
             "nonadvancing cursor"
         );
-        messages.splice(0..0, batch.messages);
+        entries.splice(0..0, batch.entries);
         before = batch.before;
     }
     bail!("fixture history did not reach EOF within its finite budget")
+}
+
+async fn all_history(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    first: ChatBatch,
+) -> Result<Vec<ChatAtom>> {
+    let entries = all_entries(env, thread, capability, first).await?;
+    let mut atoms = Vec::new();
+    for entry in entries {
+        match entry {
+            ChatEntry::Atom(atom) => atoms.push(*atom),
+            ChatEntry::Source(_) => {}
+            ChatEntry::Item(_) => bail!("member/Children scope returned a display item"),
+        }
+    }
+    let ids = atoms.iter().map(|atom| &atom.id).collect::<HashSet<_>>();
+    ensure!(ids.len() == atoms.len(), "duplicate member identity");
+    Ok(atoms)
+}
+
+async fn all_items(
+    env: &Environment,
+    thread: &str,
+    capability: &str,
+    first: ChatBatch,
+) -> Result<Vec<pl_protocol::TimelineItem>> {
+    let entries = all_entries(env, thread, capability, first).await?;
+    let mut items = Vec::new();
+    for entry in entries {
+        let ChatEntry::Item(item) = entry else {
+            bail!("Main returned an atom/source");
+        };
+        items.push(*item);
+    }
+    let ids = items.iter().map(|item| &item.id).collect::<HashSet<_>>();
+    ensure!(ids.len() == items.len(), "duplicate display item identity");
+    ensure!(
+        items
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position)
+    );
+    Ok(items)
+}
+
+async fn assert_execution_history_members(
+    runtime: &StudioRuntime,
+    thread: &str,
+    turn_id: &str,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let mut remaining_bytes = EXECUTION_HISTORY_OBSERVATION_BYTES;
+    let mut latest = (0usize, 0usize, 0usize);
+    loop {
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "execution-history save deadline elapsed for Turn {turn_id}: \
+             matching_turns={}, thinking={}, inference={}, remaining_bytes={remaining_bytes}",
+            latest.0,
+            latest.1,
+            latest.2
+        );
+        let mut cursor = None;
+        let mut matched_turns = 0;
+        let mut thinking = 0;
+        let mut inference = 0;
+        let mut reached_eof = false;
+        for _ in 0..EXECUTION_HISTORY_MAX_PAGES {
+            let page = match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                runtime.list_thread_turns(thread, cursor.as_deref(), EXECUTION_HISTORY_PAGE_LIMIT),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    bail!(
+                        "execution-history query deadline elapsed for Turn {turn_id}: \
+                         matching_turns={}, thinking={}, inference={}, remaining_bytes={remaining_bytes}",
+                        latest.0,
+                        latest.1,
+                        latest.2
+                    )
+                }
+            };
+            let encoded_bytes = serde_json::to_vec(&page)?.len();
+            remaining_bytes = remaining_bytes
+                .checked_sub(encoded_bytes)
+                .with_context(|| {
+                    format!(
+                        "execution-history observation byte budget exhausted for Turn {turn_id}: \
+                     matching_turns={matched_turns}, thinking={thinking}, inference={inference}"
+                    )
+                })?;
+            for history in page
+                .turns
+                .iter()
+                .filter(|history| history.turn.id == turn_id)
+            {
+                matched_turns += 1;
+                for item in &history.items {
+                    match item.kind() {
+                        ThreadItemKind::Thinking => thinking += 1,
+                        ThreadItemKind::Inference => inference += 1,
+                        _ => {}
+                    }
+                }
+            }
+            latest = (matched_turns, thinking, inference);
+            let next = page.next_cursor;
+            ensure!(
+                next.is_none() || next != cursor,
+                "execution-history cursor did not advance for Turn {turn_id}"
+            );
+            cursor = next;
+            if cursor.is_none() {
+                reached_eof = true;
+                break;
+            }
+        }
+        ensure!(
+            reached_eof,
+            "execution-history page budget exceeded for Turn {turn_id}: \
+             matching_turns={matched_turns}, thinking={thinking}, inference={inference}"
+        );
+        latest = (matched_turns, thinking, inference);
+        if matched_turns == 1 && thinking == 1 && inference == 1 {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        ensure!(
+            !remaining.is_zero() && remaining_bytes > 0,
+            "execution-history save deadline/resource budget exhausted for Turn {turn_id}: \
+             matching_turns={matched_turns}, thinking={thinking}, inference={inference}, \
+             remaining_bytes={remaining_bytes}"
+        );
+        tokio::time::sleep(EXECUTION_HISTORY_POLL.min(remaining)).await;
+    }
 }
 
 async fn current_with_response(body: &mut SseBody, first: ChatBatch) -> Result<CurrentProjection> {
@@ -473,7 +707,7 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
     let growing = ReplyStage::new();
     let sealing = ReplyStage::new();
     let stopping = ReplyStage::new();
-    let old_text = "已完成的历史正文📖 ".repeat(600);
+    let old_text = "# 历史正文📖\n\n- **已完成** `代码`\n\n> 原始 Markdown\n\n".repeat(600);
     let frames = responses_reasoning_text(
         &["private activity member"],
         &[&old_text],
@@ -528,45 +762,81 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
     let result = async {
         let thread = env.create().await?;
         tokio::time::timeout(DEADLINE, first_stage.wait_reached()).await?;
-        complete(&env.runtime, &thread, &first_stage, FIRST).await?;
+        let first_turn = complete(&env.runtime, &thread, &first_stage, FIRST).await?;
+        let turn_id = first_turn.id.clone();
+        let parent = turn_parent_key(&turn_id);
         let (capability, mut main) = env.open(&thread, None, 1).await?;
         let first = main.chat().await?;
-        ensure!(first.placement == ChatPlacement::Set && !first.messages.is_empty());
+        let first_items = first
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, ChatEntry::Item(_)))
+            .count();
+        ensure!(first.placement == ChatPlacement::Set && first_items > 0);
         first.validate_for(&ChatScope::Main)?;
         let original = env.lease(&thread, &capability)?;
         ensure!(original.owner.reader.subscription_id() == capability);
         drop(original);
-        let history = all_history(&env, &thread, &capability, first.clone()).await?;
+        let history = all_items(&env, &thread, &capability, first.clone()).await?;
         ensure!(
-            history.len() > first.messages.len(),
+            history.len() > first_items,
             "older never returned real completed history"
         );
-        let mut parent = None;
         let mut completed_body = None;
+        let mut group_member_ids = HashSet::new();
+        let mut group_completion_ids = HashSet::new();
+        let mut main_thinking = 0;
+        let mut main_inference = 0;
         for message in &history {
-            let value = payload(&env, &thread, &capability, message).await?;
             ensure!(
-                !matches!(value["type"].as_str(), Some("thinking" | "inference")),
-                "activity item leaked to Main"
+                message.atom_kind != Some(ChatAtomKind::TurnReceipt),
+                "successful Turn completion fabricated a Main receipt item"
             );
-            if value["type"] == "turn" {
-                parent = Some((
-                    value["data"]["childrenParentId"]
-                        .as_str()
-                        .context("frozen Turn children parent")?
-                        .to_owned(),
-                    value["turnId"]
-                        .as_str()
-                        .context("frozen Turn identity")?
-                        .to_owned(),
-                ));
+            if message.kind == pl_protocol::TimelineItemKind::WorkGroup {
+                ensure!(message.payload.is_none() && message.contents.is_empty());
+                let reference = message.members.as_ref().context("group reference")?;
+                ensure!(reference.item_id == message.id);
+                let (group_cap, mut group) = env.open_group(&thread, reference, 1).await?;
+                let set = group.chat().await?;
+                set.validate_for(&ChatScope::GroupMembers { reference: reference.clone() })?;
+                let members = all_history(&env, &thread, &group_cap, set).await?;
+                ensure!(members.len() == message.summary.as_ref().context("summary")?.member_count as usize);
+                for member in &members {
+                    group_member_ids.insert(member.id.clone());
+                    if let Some(id) = &member.completion_item_id { group_completion_ids.insert(id.clone()); }
+                    if member.kind == ChatAtomKind::Reasoning { main_thinking += 1; }
+                    ensure!(member.kind != ChatAtomKind::Unknown);
+                }
+                continue;
             }
+            let value = item_payload(&env, &thread, &capability, message).await?;
+            match value["type"].as_str() {
+                Some("thinking") => main_thinking += 1,
+                Some("inference") => main_inference += 1,
+                _ => {}
+            }
+            if message.atom_kind == Some(ChatAtomKind::Text) {
+                ensure!(
+                    value["type"] == "text"
+                        && message.turn_id.as_deref() == Some(turn_id.as_str())
+                        && value["turnId"].as_str() == Some(turn_id.as_str()),
+                    "Main text metadata/payload disagrees with the completed business Turn"
+                );
+            }
+            let completion_item_id = message
+                .content_item_id
+                .as_deref()
+                .context("display item omitted original content identity")?;
             let manifest: ContentManifestPage = env
                 .query(
                     &thread,
                     &capability,
                     "contents/manifest",
-                    &json!({"itemId": message.id, "continuation": null, "demand": demand(8)}),
+                    &json!({
+                        "itemId": completion_item_id,
+                        "continuation": null,
+                        "demand": demand(8)
+                    }),
                 )
                 .await?;
             if value["type"] == "text"
@@ -575,6 +845,11 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
                 completed_body = Some(entry.reference.clone());
             }
         }
+        ensure!(
+            main_thinking == 1 && main_inference == 0,
+            "Main and explicit member scopes must expose exactly one real thinking member and no copied inference: \
+             thinking={main_thinking}, inference={main_inference}"
+        );
         let reference = completed_body.context("real completed response manifest")?;
         let window: ContentWindow = env
             .query(
@@ -588,47 +863,82 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .await?;
         ensure!(window.sealed && window.offset == 3 && window.bytes == old_text.as_bytes()[3..34]);
         ensure!(window.available_through == old_text.len() as u64);
-        let (parent, turn_id) = parent.context("completed Turn parent and identity")?;
+        assert_execution_history_members(&env.runtime, &thread, &turn_id).await?;
         let (child_cap, mut children) = env.open(&thread, Some(&parent), 1).await?;
         let child_set = children.chat().await?;
         ensure!(child_set.placement == ChatPlacement::Set && child_set.current.is_none());
         let child_messages = all_history(&env, &thread, &child_cap, child_set).await?;
         ensure!(
             !child_messages.is_empty(),
-            "Children did not return the real reasoning member"
+            "Children omitted this Turn's real Main-member subset"
         );
-        let main_ids = history
+        let main_member_ids = history
             .iter()
-            .map(|message| &message.id)
+            .filter_map(|item| item.content_item_id.clone())
+            .chain(group_member_ids)
             .collect::<HashSet<_>>();
-        ensure!(
-            child_messages
-                .iter()
-                .all(|message| !main_ids.contains(&message.id)),
-            "Main and Children mixed"
-        );
+        let main_ids = history.iter().map(|item| item.id.clone()).collect::<HashSet<_>>();
+        let main_completion_ids = history
+            .iter()
+            .filter_map(|item| item.content_item_id.clone())
+            .chain(group_completion_ids)
+            .collect::<HashSet<_>>();
         let mut thinking = 0;
         let mut inferences = 0;
+        let mut turn_receipts = 0;
         for message in &child_messages {
             let value = payload(&env, &thread, &child_cap, message).await?;
             ensure!(
+                message.turn_id.as_deref() == Some(turn_id.as_str()),
+                "Children returned an atom whose metadata belongs to another Turn"
+            );
+            if message.kind != ChatAtomKind::TurnReceipt {
+                ensure!(
+                    main_member_ids.contains(&message.id)
+                    || message
+                        .completion_item_id
+                        .as_ref()
+                        .is_some_and(|id| main_completion_ids.contains(id)),
+                    "Children content was not owned by a Main item or its explicit member scope"
+                );
+            }
+            ensure!(
                 value["turnId"].as_str() == Some(turn_id.as_str()),
-                "another Turn's item leaked to Children: {}",
+                "Children payload belongs to another Turn: {}",
                 value["turnId"]
             );
-            ensure!(
-                value["data"]["outcome"]["kind"] == "completed",
-                "Children returned a member without its completed frozen outcome"
-            );
             match value["type"].as_str() {
-                Some("thinking") => thinking += 1,
+                Some("thinking") => {
+                    thinking += 1;
+                    ensure!(
+                        value["data"]["outcome"]["kind"] == "completed",
+                        "Children Thinking member is not complete"
+                    );
+                }
                 Some("inference") => inferences += 1,
-                kind => bail!("unexpected member from this finite reasoning response: {kind:?}"),
+                Some("turn") => {
+                    turn_receipts += 1;
+                    ensure!(
+                        message.kind == ChatAtomKind::TurnReceipt
+                            && matches!(message.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
+                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            })
+                            && value["data"]["inputId"].as_str() == first_turn.input_id.as_deref()
+                            && value["data"]["outcome"]["kind"] == "completed",
+                        "Children TurnReceipt disagrees with the successful typed completion"
+                    );
+                }
+                Some(
+                    "tool" | "text" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
+                    | "plan",
+                ) => {}
+                kind => bail!("unexpected member from this Turn's Children: {kind:?}"),
             }
         }
         ensure!(
-            thinking == 1 && inferences == 1,
-            "missing or repeated completed response member"
+            thinking == 1 && inferences == 0 && turn_receipts == 1,
+            "Children must retain the real thinking member and business TurnReceipt, not an inference copy: \
+             thinking={thinking}, inference={inferences}, receipts={turn_receipts}"
         );
         env.submit(&thread, NEXT).await?;
         tokio::time::timeout(DEADLINE, growing.wait_reached()).await?;
@@ -651,22 +961,17 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         let paused_first = paused.chat().await?;
         ensure!(paused_first.placement == ChatPlacement::Set && paused_first.before.is_some());
         let paused_current = paused_first.current.as_ref().context("paused current")?;
-        let collection = paused_current
-            .collections
-            .iter()
-            .find(|reference| reference.collection == "members")
-            .context("real current members collection")?;
-        let page: CurrentCollectionPage = env
-            .query(
-                &thread,
-                &paused_cap,
-                "current/page",
-                &json!({
-                    "reference": collection, "continuation": null, "demand": demand(8),
-                }),
-            )
-            .await?;
-        ensure!(page.revision == collection.revision && !page.entries.is_empty());
+        let paused_text = paused_current.items.iter().find(|item|
+            item.kind == pl_protocol::TimelineItemKind::Text &&
+            item.contents.iter().any(|content| content.reference == response_ref))
+            .context("live text item with its original content reference")?;
+        ensure!(paused_text.position.is_none() && paused_text.outcome.is_none());
+        let live_item_id = paused_text.id.clone();
+        let live_turn_id = paused_text
+            .turn_id
+            .as_deref()
+            .context("live text omitted its business Turn")?
+            .to_owned();
         let older: ChatBatch = env
             .query(
                 &thread,
@@ -679,7 +984,10 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .await?;
         ensure!(
             older.placement == ChatPlacement::Prepend
-                && !older.messages.is_empty()
+                && older
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry, ChatEntry::Item(_)))
                 && older.current.is_none()
         );
         let active_id = match &response_ref.target {
@@ -742,7 +1050,11 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             .query(&thread, &paused_cap, "contents/read", &request)
             .await?;
         ensure!(still_independent == updated);
-        complete(&env.runtime, &thread, &sealing, NEXT).await?;
+        let next_completed_turn = complete(&env.runtime, &thread, &sealing, NEXT).await?;
+        ensure!(
+            live_turn_id == next_completed_turn.id,
+            "live text and typed completion belong to different Turns"
+        );
         let mut sealed = watch.window().await?;
         for _ in 0..8 {
             if sealed.sealed {
@@ -758,15 +1070,27 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
         watch.end().await?;
         // Completion appends the same owned response, then retires current.
         let mut appended = HashSet::new();
+        let mut appended_completion_ids = HashSet::new();
         let mut response_seen = false;
         let mut retired = false;
         for _ in 0..64 {
             let batch = main.chat().await?;
             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
-            for message in &batch.messages {
-                ensure!(!main_ids.contains(&message.id) && appended.insert(message.id.clone()));
-                if message.id == active_id {
-                    response_seen = true;
+            for entry in &batch.entries {
+                if let ChatEntry::Item(atom) = entry {
+                    ensure!(!main_ids.contains(&atom.id) && appended.insert(atom.id.clone()));
+                    if let Some(completion_item_id) = &atom.content_item_id {
+                        ensure!(appended_completion_ids.insert(completion_item_id.clone()));
+                    }
+                    if atom.content_item_id.as_deref() == Some(active_id.as_str()) {
+                        ensure!(
+                            atom.id == live_item_id
+                                && atom.turn_id.as_deref() == Some(next_completed_turn.id.as_str())
+                                && atom.outcome == Some(pl_protocol::ChatTerminalOutcome::Completed),
+                            "completed text changed its live display/content/Turn ownership"
+                        );
+                        response_seen = true;
+                    }
                 }
             }
             if batch
@@ -780,71 +1104,163 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
             }
         }
         ensure!(retired && response_seen);
-        // Compare two real producer-encoded Turn parents after both completed.
-        // A made-up string is an invalid ChatKey, not an empty Children scope.
+        // Reopening Main preserves the actual display item and original body;
+        // successful Turn identity comes from the typed business completion,
+        // never from a fabricated Main TurnReceipt.
         let (latest_cap, mut latest) = env.open(&thread, None, 1).await?;
         let latest_set = latest.chat().await?;
         ensure!(latest_set.placement == ChatPlacement::Set);
-        let terminal = latest_set
-            .messages
-            .last()
-            .context("latest completed Turn")?;
-        let terminal = payload(&env, &thread, &latest_cap, terminal).await?;
+        let latest_items = all_items(&env, &thread, &latest_cap, latest_set).await?;
+        ensure!(latest_items
+            .iter()
+            .all(|item| item.atom_kind != Some(ChatAtomKind::TurnReceipt)),
+            "reopening fabricated a successful Main TurnReceipt");
+        let next_turn_identity = next_completed_turn.id.clone();
+        let next_turn = next_turn_identity.as_str();
+        let next_parent = turn_parent_key(&next_turn_identity);
+        let restored_text = latest_items
+            .iter()
+            .find(|item| item.id == live_item_id)
+            .context("reopened completed response display item")?;
         ensure!(
-            terminal["type"] == "turn" && terminal["data"]["inputId"] == format!("input-{NEXT}")
+            restored_text.kind == pl_protocol::TimelineItemKind::Text
+                && restored_text.atom_kind == Some(ChatAtomKind::Text)
+                && restored_text.content_item_id.as_deref() == Some(active_id.as_str())
+                && restored_text.turn_id.as_deref() == Some(next_turn)
+                && restored_text.position.is_some()
+                && restored_text.outcome == Some(pl_protocol::ChatTerminalOutcome::Completed)
+                && restored_text.contents.iter().any(|content| content.reference == response_ref),
+            "reopened response changed its display/content/Turn identity or completion"
         );
-        let next_parent = terminal["data"]["childrenParentId"]
-            .as_str()
-            .context("second frozen children parent")?;
-        let next_turn = terminal["turnId"]
-            .as_str()
-            .context("second frozen Turn identity")?;
-        ensure!(next_parent != parent && next_turn != turn_id);
-        let (next_cap, mut next_children) = env.open(&thread, Some(next_parent), 1).await?;
+        let terminal = item_payload(&env, &thread, &latest_cap, restored_text).await?;
+        ensure!(terminal["type"] == "text" && terminal["turnId"] == next_turn);
+        let reopened: ContentWindow = env
+            .query(&thread, &latest_cap, "contents/read", &request)
+            .await?;
+        ensure!(reopened == sealed, "reopening changed the sealed original response");
+        let mut restored_markdown = Vec::new();
+        while restored_markdown.len() < old_text.len() {
+            let chunk: ContentWindow = env
+                .query(&thread, &latest_cap, "contents/read", &json!({
+                    "reference": reference,
+                    "range": {"offset": restored_markdown.len(), "maxBytes": 4096},
+                }))
+                .await?;
+            ensure!(
+                chunk.sealed
+                    && chunk.offset == restored_markdown.len() as u64
+                    && chunk.available_through == old_text.len() as u64
+                    && chunk.generation == window.generation
+                    && !chunk.bytes.is_empty()
+                    && chunk.bytes.len() <= 4096,
+                "reopened large Markdown range changed its sealed owner or failed to progress"
+            );
+            restored_markdown.extend(chunk.bytes);
+        }
+        ensure!(
+            restored_markdown == old_text.as_bytes(),
+            "reopened original body did not preserve the complete Markdown UTF-8 bytes"
+        );
+        ensure!(next_parent != parent && next_turn_identity != turn_id);
+        let (next_cap, mut next_children) = env.open(&thread, Some(&next_parent), 1).await?;
         let next_set = next_children.chat().await?;
         ensure!(next_set.placement == ChatPlacement::Set && next_set.current.is_none());
         let next_members = all_history(&env, &thread, &next_cap, next_set).await?;
         ensure!(
-            next_members.len() == 1,
-            "the second response must own exactly one inference"
+            !next_members.is_empty(),
+            "second Turn's Children omitted its real business members"
         );
-        let first_members = child_messages
+        let latest_completion_ids = latest_items
             .iter()
-            .map(|message| &message.id)
+            .filter_map(|item| item.content_item_id.as_deref())
             .collect::<HashSet<_>>();
+        let mut next_turn_receipts = 0;
+        let mut next_inferences = 0;
+        let mut next_responses = 0;
         for message in &next_members {
             ensure!(
-                !first_members.contains(&message.id)
-                    && !main_ids.contains(&message.id)
-                    && !appended.contains(&message.id),
-                "another parent or Main item leaked to the second Children scope"
+                message.turn_id.as_deref() == Some(next_turn),
+                "second Children scope returned another Turn's atom metadata"
             );
             let value = payload(&env, &thread, &next_cap, message).await?;
             ensure!(
-                value["type"] == "inference"
-                    && value["turnId"] == next_turn
-                    && value["data"]["outcome"]["kind"] == "completed",
-                "second Children scope lost its frozen membership or terminal outcome"
+                value["turnId"] == next_turn,
+                "second Children payload belongs to another Turn"
             );
+            if message.kind != ChatAtomKind::TurnReceipt {
+                ensure!(
+                    message.completion_item_id.as_deref().is_some_and(|id|
+                        latest_completion_ids.contains(id) || appended_completion_ids.contains(id)),
+                    "second Children content lost its actual Main content ownership"
+                );
+            }
+            match value["type"].as_str() {
+                Some("inference") => next_inferences += 1,
+                Some("turn") => {
+                    next_turn_receipts += 1;
+                    ensure!(
+                        message.kind == ChatAtomKind::TurnReceipt
+                            && matches!(message.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
+                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            })
+                            && value["data"]["inputId"].as_str() == next_completed_turn.input_id.as_deref()
+                            && value["data"]["outcome"]["kind"] == "completed",
+                        "second Children TurnReceipt disagrees with the successful typed completion"
+                    );
+                }
+                Some("thinking") => ensure!(
+                    value["data"]["outcome"]["kind"] == "completed",
+                    "second Thinking member is not terminally completed"
+                ),
+                Some("text") => {
+                    next_responses += 1;
+                    ensure!(
+                        message.kind == ChatAtomKind::Text
+                            && message.completion_item_id.as_deref() == Some(active_id.as_str())
+                            && message.contents.iter().any(|content| content.reference == response_ref)
+                            && value == terminal,
+                        "second Children response lost its original content owner or frozen payload"
+                    );
+                }
+                Some(
+                    "tool" | "raw" | "agent" | "skill" | "file" | "contextCompaction"
+                    | "plan",
+                ) => {}
+                kind => bail!("unexpected member from the second Turn's Children: {kind:?}"),
+            }
         }
+        ensure!(
+            next_turn_receipts == 1 && next_inferences == 0 && next_responses == 1,
+            "second Children must retain its business TurnReceipt and original response without copying inference: \
+             receipts={next_turn_receipts}, inference={next_inferences}, responses={next_responses}"
+        );
         let next_lease = env.lease(&thread, &next_cap)?;
         drop(next_children);
         tokio::time::timeout(DEADLINE, next_lease.owner.cancel.cancelled()).await?;
         drop(next_lease);
         drop(latest);
         // Typed stale content, rather than a fabricated empty window.
-        let mut stale = collection.clone();
-        stale.revision = stale.revision.saturating_add(1_000_000);
-        let error = env
-            .post(
-                &thread,
-                &capability,
-                "current/page",
-                &json!({
-                    "reference": stale, "continuation": null, "demand": demand(4),
-                }),
-            )
-            .await?;
+        let mut stale = history
+            .iter()
+            .find_map(|item| item.members.as_ref())
+            .context("original work-group members reference")?
+            .clone();
+        stale.projection_generation.push_str(":stale");
+        let mut stale_url =
+            url::Url::parse(&format!("{}/api/v1/threads/{thread}/events", env.base))?;
+        stale_url.query_pairs_mut().extend_pairs([
+            ("maxItems", "4".to_owned()),
+            ("maxBytes", demand(4).max_bytes.to_string()),
+            ("membersDatabaseId", stale.database_id),
+            ("membersProjectionVersion", stale.projection_version.to_string()),
+            ("membersProjectionGeneration", stale.projection_generation),
+            ("membersItemId", stale.item_id),
+        ]);
+        let error = tokio::time::timeout(
+            DEADLINE,
+            env.client.get(stale_url).send(),
+        )
+        .await??;
         ensure!(error.status() == reqwest::StatusCode::CONFLICT);
         ensure!(error.json::<StudioError>().await?.reason() == Some("staleContent"));
         let cross = env

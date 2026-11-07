@@ -2,6 +2,9 @@
 
 ## 入口与范围
 
+- 纯布局及界面设计对齐优先用官方无头 Widget 测试和 Widget Previewer，见
+  [组件预览指南](widget-preview.md)。本指南用于原生/跨层行为或明确要求的产品原生证据，
+  不是纯样式迭代的默认入口；预览也不替代真实窗口、持久化或进程退出。
 - 从仓库根目录运行 `cargo xtask manual-gui --preset gui --inspect`，由 harness 创建隔离的 `ANYWORK_HOME`、
   本地模拟供应商和真实 bridge GUI，不修改用户配置或凭据。不要用 demo 证明持久化行为。
   xtask 仅按需编译并调用独立 `pl-studio-acceptance`，不链接该工具的重依赖。
@@ -130,9 +133,12 @@ bots-env conversations prepare-pages
    `get_diagnostics_tree` / `get_offset`、`tap`、`enter_text`、`scroll` 和 `screenshot`
    检查布局、交互与画面。多应用时显式指定 `appUri`，不猜定位器。自动化断言使用
    `test-project` 或 `cargo flutter test --no-pub test/ui`；系统交互才使用真实键盘/指针。
-2. 控件身份优先读取本次 widget tree，源码中的 `StudioDriverKeys` / `StudioDriverKeyValues` 用于补充定位。动态 key 可包含
-   account/profile ID，不能猜测为空或照抄上次 ID。折叠面板只点真实标题行；存在性、可见
-   几何与标准组件的真实展开态分别核对。
+2. 控件身份优先读取本次 widget tree，源码中的 `StudioDriverKeys` / `StudioDriverKeyValues`
+   用于补充定位。动态 key 可包含 account/profile ID，不能猜测为空或照抄上次 ID。
+   折叠面板在精确业务身份作用域内定位真实标题文本或可命中子节点；整行中心可能落在
+   `Spacer` 空白。复用官方 scoped Finder、滚动入视口与实际 tap，不以全局同名文本
+   或直接 callback 代替。存在性、可见几何与标准组件的真实展开态分别核对，
+   不在已展开时再次点击把它收起。
 3. 关键状态分别保存内容捕获 PNG、必要的最小快照和日志，并实际打开截图核对。检查布局
    溢出、菜单边界、禁用态与键盘可访问性；按需求覆盖长名称、窄窗口、空数据及无效选择。
    保存行为必须观察 bridge canonical 状态，必要时重新打开验证；仅点击当前值不能证明

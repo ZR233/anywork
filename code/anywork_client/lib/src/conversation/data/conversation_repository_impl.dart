@@ -55,6 +55,27 @@ final class ConversationRepositoryImpl
     required String threadId,
     required String parentId,
     required ReadDemand demand,
+  }) => _openMemberContent(
+    threadId: threadId,
+    scope: ChildrenChatScope(parentId: parentId),
+    demand: demand,
+  );
+
+  @override
+  Future<ConversationContent> openGroupMembers({
+    required String threadId,
+    required TimelineMembersRef reference,
+    required ReadDemand demand,
+  }) => _openMemberContent(
+    threadId: threadId,
+    scope: GroupMembersChatScope(reference: reference),
+    demand: demand,
+  );
+
+  Future<ConversationContent> _openMemberContent({
+    required String threadId,
+    required ChatScope scope,
+    required ReadDemand demand,
   }) async {
     if (_closed) throw StateError('Conversation repository is closed');
     _children.removeWhere(
@@ -62,11 +83,11 @@ final class ConversationRepositoryImpl
     );
     final owner = ConversationContentImpl(
       threadId: threadId,
-      scope: ChildrenChatScope(parentId: parentId),
+      scope: scope,
       initialDemand: demand,
       transport: transport,
       budget: budget,
-      // Children have independent qualification and never publish Main state.
+      // Member windows have independent qualification and never publish Main state.
       onState: (_, _) {},
       onAttempt: (_) {},
       onFailure: (_, _, _) {},

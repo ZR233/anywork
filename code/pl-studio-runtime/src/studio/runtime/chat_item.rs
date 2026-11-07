@@ -16,8 +16,10 @@ use pl_protocol::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod atom;
 mod descriptor;
 mod payload;
+pub(crate) use atom::atom;
 use descriptor::{
     PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,
 };
@@ -54,6 +56,25 @@ pub(crate) const TOOL_OUTPUT_ARTIFACTS_FIELD: &str = "tool.output-artifacts";
 pub(crate) const TOOL_USER_INPUT_FIELD: &str = "tool.user-input.";
 pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
 const INLINE_BODY_BYTES: usize = 4096;
+
+/// Only canonical member body roles belong to the small provenance header. Structured details
+/// (questions, raw payload fields, attachments) keep their existing manifest/collection owners.
+pub(crate) fn atom_content_role(key: &BodyKey) -> Option<pl_protocol::ChatContentRole> {
+    use pl_protocol::ChatContentRole as Role;
+    match key {
+        BodyKey::Body
+        | BodyKey::Part(PresentationPart::OutputText(_) | PresentationPart::ReasoningText(_)) => {
+            Some(Role::Body)
+        }
+        BodyKey::Part(PresentationPart::SummaryText(_)) => Some(Role::ReasoningSummary),
+        BodyKey::Host(key) if key == TOOL_ARGUMENTS_FIELD => Some(Role::ToolArguments),
+        BodyKey::Host(key) if key == TOOL_RESULT_FIELD => Some(Role::ToolOutput),
+        BodyKey::Host(key) if key == PLAN_DOCUMENT_FIELD || key == PLAN_FEEDBACK_FIELD => {
+            Some(Role::Body)
+        }
+        BodyKey::Host(_) => None,
+    }
+}
 
 /// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
 #[cfg(test)]
@@ -182,9 +203,6 @@ fn freeze(
         .get("data")
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("descriptor has no data"))?;
-    let conversation = matches!(kind, "text" | "raw" | "contextCompaction" | "plan" | "turn")
-        || matches!(item.state(), ThreadItemState::Tool(tool) if tool.user_input().is_some_and(
-            |input| !matches!(input.state(), ThreadToolUserInputState::Pending)));
     if let ThreadItemState::Tool(tool) = item.state()
         && let Some(invocation) = data
             .get_mut("invocation")
@@ -198,14 +216,6 @@ fn freeze(
     let parent_id = (!item.turn_id.is_empty())
         .then(|| ChatKey::new("turn", &item.turn_id))
         .transpose()?;
-    if kind == "turn" {
-        let parent = parent_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("terminal turn has no real Turn identity"))?;
-        data.as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("turn descriptor data is not an object"))?
-            .insert("childrenParentId".into(), parent.as_str().into());
-    }
     let owner = ContentOwner::Item {
         item_id: id.to_owned(),
     };
@@ -284,15 +294,46 @@ fn freeze(
     if !item.turn_id.is_empty() {
         envelope["turnId"] = item.turn_id.clone().into();
     }
+    let mut atom = atom(item);
+    if let ThreadItemState::Text(text) = item.state() {
+        atom.content_present =
+            Some(bodies.values().any(|block| !block.is_empty()) || !text.attachments().is_empty());
+    }
+    // Frozen completions (including background handoff receipts) carry the original
+    // typed tool payload, never a duplicate of the active wait presentation.
+    atom.wait = None;
+    if kind == "plan" {
+        atom.kind = pl_protocol::ChatAtomKind::Plan;
+    }
+    atom.completion_item_id = Some(id.into());
+    if id != item.id {
+        atom.delivery = pl_protocol::ChatDeliveryKind::BackgroundHandoff;
+        atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
+            started: None,
+            ended: None,
+            outcome: pl_protocol::ChatTerminalOutcome::Transferred,
+        };
+    }
+    atom.contents = bodies
+        .keys()
+        .filter_map(|key| {
+            Some(pl_protocol::ChatAtomContent {
+                role: atom_content_role(key)?,
+                reference: ContentRef {
+                    database_id: database_id.into(),
+                    target: ContentTarget::Body {
+                        owner: owner.clone(),
+                        key: key.as_key(),
+                    },
+                },
+            })
+        })
+        .collect();
     Ok(ChatDraft {
         item_id: id.into(),
-        query_class: if conversation {
-            "conversation"
-        } else {
-            "activity"
-        }
-        .into(),
+        query_class: "conversation".into(),
         parent_id,
+        metadata: serde_json::to_vec(&atom)?.into(),
         payload: Arc::from(serde_json::to_vec(&envelope)?),
         contents: Arc::new(contents),
     })

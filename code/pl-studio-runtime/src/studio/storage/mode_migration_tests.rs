@@ -2752,7 +2752,9 @@ async fn restore_pre_timeline_history_fixture(
             DatabaseBackend::Sqlite,
             "SELECT (SELECT COUNT(*) FROM timeline_records)
                   + (SELECT COUNT(*) FROM conversation_items)
-                  + (SELECT COUNT(*) FROM conversation_contents) AS count",
+                  + (SELECT COUNT(*) FROM conversation_contents)
+                  + (SELECT COUNT(*) FROM conversation_sources)
+                  + (SELECT COUNT(*) FROM conversation_atom_facts) AS count",
         ))
         .await?
         .context("fixture timeline output")?;
@@ -2762,11 +2764,16 @@ async fn restore_pre_timeline_history_fixture(
         "legacy fixture must not discard completed history"
     );
     db.execute_unprepared(
-        "DROP TABLE conversation_content_chunks;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
+         DROP TABLE conversation_content_chunks;
          DROP TABLE conversation_view_entries;
          DROP TABLE conversation_view_state;
          DROP TABLE conversation_contents;
          DROP TABLE conversation_items;
+         DROP TABLE conversation_sources;
          DROP TABLE timeline_records;
          ALTER TABLE history_meta DROP COLUMN model_route_json;
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
@@ -2784,7 +2791,7 @@ async fn restore_pre_timeline_history_fixture(
 
 /// Recreate the published schema12 boundary without asking the current writer to accept v1.
 /// Only the ordinary checkpoint/context facts are seeded through that writer; the frozen old
-/// extension payloads are installed after removing the schema13 outputs and completion record.
+/// extension payloads are installed after removing the schema13/14/15 outputs and completion records.
 async fn persist_schema12_fixture(
     path: &std::path::Path,
     thread_id: &str,
@@ -2805,11 +2812,32 @@ async fn persist_schema12_fixture(
 
     let db = raw_database(path).await?;
     let tx = db.begin().await?;
+    let facts = tx
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT (SELECT COUNT(*) FROM conversation_atom_facts)
+                  + (SELECT COUNT(*) FROM conversation_sources) AS count",
+        ))
+        .await?
+        .context("fixture canonical metadata output")?;
+    assert_eq!(
+        facts.try_get::<i64>("", "count")?,
+        0,
+        "schema12 fixture must not discard canonical lifecycle facts"
+    );
     tx.execute_unprepared(
-        "ALTER TABLE history_meta DROP COLUMN model_route_json;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
+         DROP TABLE conversation_atom_facts;
+         DROP TABLE conversation_sources;
+         ALTER TABLE conversation_items DROP COLUMN metadata;
+         ALTER TABLE history_meta DROP COLUMN model_route_json;
          ALTER TABLE history_meta DROP COLUMN model_route_hash;
          DELETE FROM seaql_migrations
-             WHERE version='m20261101_000010_history_model_route_head';
+             WHERE version IN ('m20261101_000010_history_model_route_head',
+                               'm20261102_000001_history_atom_metadata',
+                               'm20261103_000001_history_timeline_items');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
     .await?;
@@ -2830,7 +2858,18 @@ async fn persist_schema12_fixture(
                 (SELECT COUNT(*) FROM pragma_table_info('history_meta')
                  WHERE name IN ('model_route_json','model_route_hash')) AS head_columns,
                 (SELECT COUNT(*) FROM seaql_migrations
-                 WHERE version='m20261101_000010_history_model_route_head') AS head_completed
+                 WHERE version='m20261101_000010_history_model_route_head') AS head_completed,
+                (SELECT COUNT(*) FROM pragma_table_info('conversation_items')
+                 WHERE name='metadata') AS metadata_columns,
+                (SELECT COUNT(*) FROM sqlite_schema
+                 WHERE name='conversation_sources') AS source_tables,
+                (SELECT COUNT(*) FROM seaql_migrations
+                 WHERE version='m20261102_000001_history_atom_metadata') AS metadata_completed,
+                (SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type='table' AND name IN ('timeline_items','timeline_item_members',
+                       'timeline_projection_state','conversation_atom_facts')) AS timeline_tables,
+                (SELECT COUNT(*) FROM seaql_migrations
+                 WHERE version='m20261103_000001_history_timeline_items') AS timeline_completed
              FROM history_meta WHERE id=1",
         ))
         .await?
@@ -2838,6 +2877,11 @@ async fn persist_schema12_fixture(
     assert_eq!(boundary.try_get::<i64>("", "schema_version")?, 12);
     assert_eq!(boundary.try_get::<i64>("", "head_columns")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "head_completed")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "metadata_columns")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "source_tables")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "metadata_completed")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "timeline_tables")?, 0);
+    assert_eq!(boundary.try_get::<i64>("", "timeline_completed")?, 0);
     assert_eq!(saved_checkpoint_payload(&db).await?, payload);
     db.close().await?;
     Ok(checkpoint)
@@ -2960,9 +3004,11 @@ async fn checkpoint_envelope_upgrade_is_atomic_and_preserves_v2_history() -> Res
         .expect_err("the explicit upgrade must reach the checkpoint transaction");
     assert!(format!("{failure:#}").contains("m20261026_000006_history_checkpoint_v5"));
     assert!(format!("{failure:#}").contains("injected envelope migration failure"));
+    let failure_chain: Vec<_> = failure.chain().map(|cause| format!("{cause:?}")).collect();
     assert_eq!(
         crate::studio::startup::StudioStartupError::input("history", failure).kind,
-        crate::studio::startup::StudioStartupErrorKind::Migration
+        crate::studio::startup::StudioStartupErrorKind::Migration,
+        "original migration failure chain: {failure_chain:#?}"
     );
     drop(cold);
     let db = raw_database(&path).await?;
@@ -3105,7 +3151,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
                 let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
                     anyhow::bail!("cold conversation did not publish its initial Chat");
                 };
-                assert!(batch.messages.is_empty());
+                assert!(batch.entries.is_empty());
                 feed.close().await?;
             } else {
                 assert!(runtime.list_thread_turns(&child.id, None, 10).await?.turns.is_empty());

@@ -24,7 +24,7 @@ Widget rowApp(Widget child) => MaterialApp(
   home: Scaffold(body: SingleChildScrollView(child: child)),
 );
 ChatItemPresentation deferred(String database) => ChatItemPresentation.decode(
-  ChatMessage(
+  fixtureAtom(
     id: 'same-row',
     payload: DeferredPayload(
       reference: ContentRef(
@@ -115,64 +115,83 @@ void main() {
     },
   );
 
-  testWidgets(
-    'unrelated Append keeps the mounted row expansion and immutable card identity',
-    (tester) async {
-      final controller = InMemoryChatController();
-      final resources = TimelineImageResources(threadId: 'thread');
-      final adapter = TimelineMessageController(
-        controller,
-        generation: 1,
-        imageResources: resources,
-      );
-      addTearDown(() {
-        adapter.dispose();
-        resources.release();
-        controller.dispose();
-      });
-      await adapter.applyBatch(
-        chatBatch([
-          chatEnvelope(
-            'plan',
-            type: 'plan',
-            data: const {'decision': 'approved'},
-            bodies: [inlineBody('plan.body', 'approved plan')],
-          ),
-        ]),
-      );
-      Widget build() => rowApp(
-        Column(
-          children: [
-            for (final message in controller.messages)
-              ChatItemView(
-                key: ValueKey(message.id),
-                item:
-                    message.metadata![chatItemPresentationKey]
-                        as ChatItemPresentation,
+  for (final type in ['thinking', 'plan']) {
+    final reasoning = type == 'thinking';
+    final body = reasoning ? 'completed reasoning' : 'approved plan';
+    testWidgets(
+      'unrelated Append keeps ${reasoning ? 'directly readable reasoning' : 'plan expansion'} and immutable card identity',
+      (tester) async {
+        final controller = InMemoryChatController();
+        final resources = TimelineImageResources(threadId: 'thread');
+        final adapter = TimelineMessageController(controller, generation: 1);
+        addTearDown(() {
+          adapter.dispose();
+          resources.release();
+          controller.dispose();
+        });
+        await adapter.applyBatch(
+          chatBatch([
+            statusItem(
+              chatEnvelope(
+                type,
+                type: type,
+                data: reasoning ? const {} : const {'decision': 'approved'},
+                bodies: [
+                  inlineBody(
+                    reasoning ? 'part.reasoningText.0' : 'plan.body',
+                    body,
+                  ),
+                ],
               ),
-          ],
-        ),
-      );
-      await tester.pumpWidget(build());
-      expect(find.text('approved plan'), findsNothing);
-      await tester.tap(find.byType(ExpansionTile).first);
-      await tester.pumpAndSettle();
-      expect(find.text('approved plan'), findsOneWidget);
-      final old = controller.messages.single;
-      final card = old.metadata![chatItemPresentationKey];
-      await adapter.applyBatch(
-        chatBatch([chatMessage('next')], placement: ChatPlacement.append),
-      );
-      await tester.pumpWidget(build());
-      expect(controller.messages.first, same(old));
-      expect(
-        controller.messages.first.metadata![chatItemPresentationKey],
-        same(card),
-      );
-      expect(find.text('approved plan'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+            ),
+          ]),
+        );
+        Widget build() => rowApp(
+          Column(
+            children: [
+              for (final message in controller.messages)
+                ChatItemView(
+                  key: ValueKey(message.id),
+                  item:
+                      message.metadata![chatItemPresentationKey]
+                          as ChatItemPresentation,
+                ),
+            ],
+          ),
+        );
+        await tester.pumpWidget(build());
+        if (reasoning) {
+          expect(find.text(body), findsOneWidget);
+          expect(
+            find.byType(ExpansionTile),
+            findsNothing,
+            reason: 'Thinking is directly readable, not a second expansion',
+          );
+        } else {
+          expect(find.text(body), findsNothing);
+          await tester.tap(find.byType(ExpansionTile).first);
+          await tester.pumpAndSettle();
+          expect(find.text(body), findsOneWidget);
+        }
+        final old = controller.messages.single;
+        final card = old.metadata![chatItemPresentationKey];
+        await adapter.applyBatch(
+          chatBatch([chatMessage('next')], placement: ChatPlacement.append),
+        );
+        await tester.pumpWidget(build());
+        expect(controller.messages.first, same(old));
+        expect(
+          controller.messages.first.metadata![chatItemPresentationKey],
+          same(card),
+        );
+        expect(find.text(body), findsOneWidget);
+        if (reasoning) {
+          expect(find.byType(ExpansionTile), findsNothing);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets(
     'Deferred is lazy, requests bounded original-reference windows, and Next advances byte offset',

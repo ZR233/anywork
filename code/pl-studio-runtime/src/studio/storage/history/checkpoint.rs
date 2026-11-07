@@ -286,6 +286,18 @@ pub(super) async fn verify_committed(
             && watermark >= integer(checkpoint.state_revision)?,
         "durable checkpoint does not cover retried history"
     );
+    if watermark == integer(checkpoint.state_revision)? {
+        // Only the durable head still represents this exact checkpoint. Earlier members of a
+        // retained frozen batch are covered by its immutable facts; later context replacements
+        // must not be compared with those earlier checkpoints.
+        let durable = read(tx, &checkpoint.thread_id)
+            .await?
+            .context("durable history has no checkpoint")?;
+        ensure!(
+            serde_json::to_value(durable.pruned())? == serde_json::to_value(checkpoint.pruned())?,
+            "retried checkpoint differs from the durable head"
+        );
+    }
     Ok(())
 }
 
@@ -468,6 +480,17 @@ pub(super) async fn write(
     change: Option<&ContextChange>,
     prior: Option<&ContextHead>,
 ) -> Result<()> {
+    write_context(tx, checkpoint, change, prior).await?;
+    write_head(tx, checkpoint).await
+}
+
+/// Apply the ordered context operation even when the enclosing batch defers its singleton.
+pub(super) async fn write_context(
+    tx: &impl ConnectionTrait,
+    checkpoint: &ThreadCheckpoint,
+    change: Option<&ContextChange>,
+    prior: Option<&ContextHead>,
+) -> Result<ContextHead> {
     ensure!(
         checkpoint.is_materialized(),
         "checkpoint still references external legacy bodies"
@@ -529,6 +552,18 @@ pub(super) async fn write(
         ))
         .await?;
     }
+    Ok(ContextHead {
+        revision: integer(checkpoint.state.context.revision)?,
+        count: integer(records.len())?,
+    })
+}
+
+/// A complete checkpoint header is only visible after the owning transaction commits.
+pub(super) async fn write_head(
+    tx: &impl ConnectionTrait,
+    checkpoint: &ThreadCheckpoint,
+) -> Result<()> {
+    let records = &checkpoint.state.context.records;
     let mut metadata = checkpoint.pruned();
     metadata.state.context.records = Default::default();
     let payload = serde_json::to_string(&metadata)?;

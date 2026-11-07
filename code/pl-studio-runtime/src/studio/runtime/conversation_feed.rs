@@ -1,8 +1,11 @@
 //! Passive, scoped Chat delivery. A handle has exactly one Set and never resets in place.
 use super::{
     ConversationReader, StudioRuntime,
-    conversation_reader::{JsonBudget, ReadResources, core_demand, messages, query, resync},
-    thread_observation::{ConversationCut, ConversationSource, ThreadLiveEvent},
+    conversation_reader::{
+        JsonBudget, ReadResources, annotate_atoms, annotate_sources, core_demand, entries, query,
+        resync,
+    },
+    thread_observation::{ConversationCut, ConversationSource, DeliveryReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
 #[cfg(test)]
@@ -28,13 +31,16 @@ pub struct ConversationFeed {
     reader: ConversationReader,
     initial: Option<ChatBatch>,
     pending: VecDeque<ThreadSubscriptionUpdate>,
-    cuts: Option<broadcast::Receiver<Arc<ConversationCut>>>,
+    cuts: Option<DeliveryReceiver<Arc<ConversationCut>>>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    state: Option<broadcast::Receiver<ThreadLiveEvent>>,
+    state: Option<DeliveryReceiver<ThreadLiveEvent>>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
+    generation_changed: watch::Receiver<String>,
     cut: Option<Arc<ConversationCut>>,
+    cut_entry: usize,
+    cut_entries: Option<Vec<ChatEntry>>,
     delivered: u64,
     seen_serial: u64,
     current: Option<CurrentProjection>,
@@ -88,6 +94,9 @@ impl StudioRuntime {
         self.check_thread_read_access(&thread)?;
         let history = self.store.history(thread_id).await?;
         let main = matches!(scope, ChatScope::Main);
+        let derived = !matches!(scope, ChatScope::Children { .. });
+        let mut display_page = None;
+        let mut captured_generation = None;
         let mut cuts = None;
         let mut progress = None;
         let mut state = None;
@@ -99,6 +108,9 @@ impl StudioRuntime {
         let mut state_effect_floor = 0;
         let mut initial_turn = None;
         let mut initial_interactions = Vec::new();
+        let mut source_states = Vec::new();
+        let mut cold_sources = None;
+        let mut active_heads = Vec::new();
         let (session, database_id, head, current, items, boundary) = if let Some((
             registration,
             state_rx,
@@ -144,32 +156,74 @@ impl StudioRuntime {
                 }
             }
             let source = source.ok_or_else(resync)?;
+            if matches!(scope, ChatScope::GroupMembers { .. }) {
+                active_heads = source
+                    .current
+                    .projection()
+                    .atoms
+                    .iter()
+                    .filter(|atom| matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }))
+                    .cloned()
+                    .collect();
+                for atom in &mut active_heads {
+                    atom.payload = None;
+                    atom.source_state = None;
+                }
+            }
             initial_serial = source.serial;
-            state_effect_floor = source.current.projection.source_effect_seq;
-            initial_turn = source.current.active_turn.clone();
-            initial_interactions = source.current.interactions.to_vec();
+            if !source.projection_generation.is_empty() {
+                captured_generation = Some(source.projection_generation.clone());
+            }
+            state_effect_floor = source.current.projection().source_effect_seq;
+            initial_turn = source.current.active_turn().cloned();
+            initial_interactions = source.current.interactions().to_vec();
+            source_states = source.current.source_states().to_vec();
             let database_id = history
                 .conversation_database_id()
                 .await?
                 .ok_or_else(resync)?;
-            let current = main.then(|| source.current.projection.clone());
+            let current = main.then(|| source.current.projection().clone());
             let budget = JsonBudget::new(
                 database_id.clone(),
                 current.clone(),
                 continuation_reserve(&id, &scope, &database_id, source.session.epoch().as_str()),
             );
-            let page = source
-                .session
-                .page(
-                    core::ChatPageRequest {
-                        query: scope_query,
-                        demand: core_demand(demand)?,
-                        before: None,
-                        ceiling: Some(source.head),
-                    },
-                    &budget,
-                )
-                .await?;
+            let page = if derived {
+                display_page = Some(
+                    history
+                        .timeline_page(
+                            &scope,
+                            None,
+                            crate::studio::storage::history::TimelineReadCut {
+                                ceiling: i64::MAX as u64,
+                                effect: state_effect_floor,
+                                active_heads: &active_heads,
+                            },
+                            demand,
+                            core::ChatBudget::fixed_bytes(&budget),
+                        )
+                        .await?,
+                );
+                core::ChatPage {
+                    epoch: source.session.epoch(),
+                    ceiling: source.head,
+                    items: Vec::new(),
+                    before: None,
+                }
+            } else {
+                source
+                    .session
+                    .page(
+                        core::ChatPageRequest {
+                            query: scope_query,
+                            demand: core_demand(demand)?,
+                            before: None,
+                            ceiling: Some(source.head),
+                        },
+                        &budget,
+                    )
+                    .await?
+            };
             cuts = Some(cut_rx);
             progress = Some(progress_rx);
             state = Some(state_rx);
@@ -205,11 +259,19 @@ impl StudioRuntime {
                     session.epoch().as_str(),
                 ),
             );
-            match history
-                .cold_conversation(scope_query, core_demand(demand)?, &budget)
-                .await?
-            {
+            let cold = if derived {
+                history
+                    .cold_timeline(&scope, core_demand(demand)?, &budget)
+                    .await?
+            } else {
+                history
+                    .cold_conversation(scope_query, core_demand(demand)?, &budget)
+                    .await?
+            };
+            match cold {
                 Some(cold) => {
+                    captured_generation = Some(cold.projection_generation);
+                    display_page = cold.timeline;
                     ensure!(
                         database_id.as_deref() == Some(cold.database_id.as_str()),
                         resync()
@@ -218,6 +280,21 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    if matches!(scope, ChatScope::GroupMembers { .. }) {
+                        active_heads = current
+                            .atoms
+                            .iter()
+                            .filter(|atom| {
+                                matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+                            })
+                            .cloned()
+                            .collect();
+                        for atom in &mut active_heads {
+                            atom.payload = None;
+                            atom.source_state = None;
+                        }
+                    }
+                    cold_sources = Some(cold.sources);
                     initial_interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
                     cold_terminal = cold.terminal_turn;
@@ -248,13 +325,52 @@ impl StudioRuntime {
         if !slot.is_current(position.epoch) {
             return Err(resync());
         }
+        let (mut initial_entries, boundary, read_ceiling, projection_generation) =
+            if let Some(page) = display_page {
+                (page.entries, page.before, page.ceiling, page.generation)
+            } else {
+                (
+                    entries(items, database_id.as_deref().unwrap_or_default())?,
+                    boundary,
+                    head,
+                    history.timeline_generation().await?,
+                )
+            };
+        ensure!(
+            captured_generation
+                .as_ref()
+                .is_none_or(|generation| generation == &projection_generation),
+            resync()
+        );
+        // A read-only cold snapshot can be the first access after restart.
+        // Seed the original owner's watch before leasing, and reject a genuine
+        // concurrent replacement instead of comparing this cut to an empty cache.
+        ensure!(
+            history.timeline_generation().await? == projection_generation,
+            resync()
+        );
+        let generation_changed = history.timeline_generation_changes();
+        if let Some(sources) = cold_sources {
+            annotate_atoms(&mut initial_entries, &sources)?;
+        } else {
+            annotate_sources(
+                &mut initial_entries,
+                &history,
+                &source_states,
+                state_effect_floor,
+            )
+            .await?;
+        }
         let reader = ConversationReader::new(
             id,
             scope,
-            head,
+            read_ceiling,
+            state_effect_floor,
             slot,
             position.epoch,
             ReadResources {
+                active_heads,
+                projection_generation,
                 history,
                 session,
                 database_id: database_id.clone(),
@@ -265,14 +381,19 @@ impl StudioRuntime {
         );
         let initial = ChatBatch {
             placement: ChatPlacement::Set,
-            messages: messages(items, database_id.as_deref().unwrap_or_default()),
+            entries: initial_entries,
             before: reader.before(boundary).await?,
             current: current.clone(),
         };
+        let mut initial = initial;
+        reader
+            .inline_timeline_payloads(&mut initial, demand)
+            .await?;
         let initial = reader.finish_batch(initial, demand)?;
+        reader.select_member_window(&initial.entries);
         tracing::debug!(
             target: "conversation_work",
-            returned = initial.messages.len(),
+            returned = initial.entries.len(),
             elapsed_us = started.elapsed().as_micros() as u64,
             "read completed"
         );
@@ -322,7 +443,10 @@ impl StudioRuntime {
             storage,
             last_turn,
             slot_changed,
+            generation_changed,
             cut: None,
+            cut_entry: 0,
+            cut_entries: None,
             delivered: head,
             seen_serial: initial_serial,
             current,
@@ -344,7 +468,7 @@ impl StudioRuntime {
     }
 }
 fn continuation_reserve(lease: &str, scope: &ChatScope, database: &str, epoch: &str) -> String {
-    serde_json::json!({"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
+    serde_json::json!({"projection_generation":"00000000-0000-0000-0000-000000000000","projection_version":TIMELINE_PROJECTION_VERSION,"lease":lease,"database":database,"scope":scope,"epoch":epoch,"ceiling":u64::MAX,"kind":{"kind":"Before","boundary":u64::MAX}}).to_string()
 }
 impl ConversationFeed {
     pub fn thread_id(&self) -> &str {
@@ -374,6 +498,7 @@ impl ConversationFeed {
         self.storage = None;
         self.last_turn = None;
         self.cut = None;
+        self.cut_entries = None;
         self.initial = None;
         self.pending.clear();
         self.current = None;
@@ -499,7 +624,13 @@ impl ConversationFeed {
             }
             ThreadLiveEvent::Activity { .. } => {}
             ThreadLiveEvent::UnframedCommit { sequence } => {
-                ensure!(sequence <= self.state_effect_floor, resync());
+                ensure!(
+                    sequence <= self.state_effect_floor,
+                    resync().context(format!(
+                        "conversation UnframedCommit above State floor: sequence={sequence}, state_effect_floor={}",
+                        self.state_effect_floor
+                    ))
+                );
             }
             ThreadLiveEvent::Rebase { .. } => return Err(resync()),
         }
@@ -518,6 +649,22 @@ impl ConversationFeed {
             self.finish_production();
         }
         result
+    }
+    fn take_progress(&mut self) -> Result<bool> {
+        let Some(progress) = self.progress.as_mut() else {
+            return Ok(false);
+        };
+        // Capture and mark the same watch value in one read. Reconsider retained
+        // progress after each reliable cut even if its notification was already seen.
+        let newest = progress.borrow_and_update().clone();
+        if let Some(newest) = newest
+            && newest.reliable_serial <= self.seen_serial
+            && newest.serial > self.seen_serial
+        {
+            self.cut = Some(newest.cut());
+            return Ok(true);
+        }
+        Ok(false)
     }
     async fn receive(&mut self) -> Result<Option<ConversationEvent>> {
         loop {
@@ -551,41 +698,140 @@ impl ConversationFeed {
                             }
                         }
                         Err(broadcast::error::TryRecvError::Empty) => {}
-                        Err(_) => return Err(resync()),
+                        Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                            return Err(resync().context(format!(
+                                "conversation state try_recv lagged: skipped={skipped}, state_effect_floor={}",
+                                self.state_effect_floor
+                            )));
+                        }
+                        Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
                     }
                 }
             }
             if let Some(cut) = self.cut.clone() {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;
+                    self.cut_entries = None;
                     continue;
                 }
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
-                if main && self.delivered >= cut.handoff.main_through {
-                    // The owner proves this suffix contains no further Main completion.
-                    self.delivered = self.delivered.max(cut.head);
+                if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
+                    if self.cut_entries.is_none() {
+                        let mut candidates = if main {
+                            cut.handoff.entries().to_vec()
+                        } else {
+                            let ChatScope::GroupMembers { reference } = &self.reader.inner.scope
+                            else {
+                                unreachable!()
+                            };
+                            cut.handoff
+                                .members()
+                                .iter()
+                                .filter(|member| {
+                                    member.item_id == reference.item_id
+                                        && self
+                                            .reader
+                                            .observes_member(&member.atom.id, member.member_order)
+                                })
+                                .map(|member| {
+                                    let mut atom = member.atom.clone();
+                                    if let (Some(id), Some(bytes)) =
+                                        (&atom.completion_item_id, member.payload_bytes)
+                                    {
+                                        atom.payload = Some(PayloadData::Deferred {
+                                            reference: ContentRef {
+                                                database_id: reference.database_id.clone(),
+                                                target: ContentTarget::ItemPayload {
+                                                    item_id: id.clone(),
+                                                },
+                                            },
+                                            byte_length: bytes,
+                                        });
+                                    }
+                                    ChatEntry::Atom(Box::new(atom))
+                                })
+                                .collect()
+                        };
+                        // Annotate atoms at this reliable cut before budgeting.
+                        // Source events are already frozen handoff facts, not
+                        // ordinary-page atoms, and must retain their own path.
+                        self.reader
+                            .annotate_source_states(
+                                &mut candidates,
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
+                            )
+                            .await?;
+                        if !main {
+                            candidates.extend(
+                                cut.handoff
+                                    .sources()
+                                    .iter()
+                                    .filter(|state| self.reader.observes_source(&state.source))
+                                    .cloned()
+                                    .map(ChatEntry::Source),
+                            );
+                        }
+                        self.cut_entries = Some(candidates);
+                    }
+                    let candidates = self
+                        .cut_entries
+                        .as_ref()
+                        .expect("captured member/item frame");
+                    let total = candidates.len();
+                    let mut product = ChatBatch {
+                        placement: ChatPlacement::Append,
+                        entries: Vec::new(),
+                        before: None,
+                        current: main.then(|| cut.handoff.projection_after_items(self.cut_entry)),
+                    };
+                    let mut next = self.cut_entry;
+                    for entry in candidates
+                        .iter()
+                        .skip(next)
+                        .take(self.demand.max_items as usize)
+                    {
+                        product.entries.push(entry.clone());
+                        product.current =
+                            main.then(|| cut.handoff.projection_after_items(next + 1));
+                        self.reader
+                            .inline_timeline_payloads(&mut product, self.demand)
+                            .await?;
+                        if product.encoded_len()? > self.demand.max_bytes as usize {
+                            product.entries.pop();
+                            product.current =
+                                main.then(|| cut.handoff.projection_after_items(next));
+                            ensure!(
+                                !product.entries.is_empty(),
+                                core::ChatError::InvalidDemand(
+                                    "display handoff cannot fit demand".into()
+                                )
+                            );
+                            break;
+                        }
+                        next += 1;
+                    }
+                    self.cut_entry = next;
+                    if next == total {
+                        self.delivered = cut.head;
+                        self.seen_serial = cut.serial;
+                        self.cut = None;
+                        self.cut_entry = 0;
+                        self.cut_entries = None;
+                    }
+                    if !product.entries.is_empty() || product.current != self.current {
+                        let product = self.reader.finish_batch(product, self.demand)?;
+                        self.reader.select_member_window(&product.entries);
+                        self.current = product.current.clone();
+                        self.state_turn = true;
+                        return Ok(Some(ConversationEvent::Chat {
+                            batch: Box::new(product),
+                        }));
+                    }
+                    continue;
                 }
                 if cut.head > self.delivered {
-                    let budget = if main {
-                        // A prefix only removes previews from `before`. Its source stamp is the
-                        // reliable effect's stamp, so reserve that envelope and the final one.
-                        let mut before = cut.handoff.before.as_ref().clone();
-                        before.source_effect_seq = cut.handoff.after.source_effect_seq;
-                        let before = self.reader.budget(Some(before)).await?;
-                        let after = self
-                            .reader
-                            .budget(Some(cut.handoff.after.as_ref().clone()))
-                            .await?;
-                        if core::ChatBudget::fixed_bytes(&before)
-                            >= core::ChatBudget::fixed_bytes(&after)
-                        {
-                            before
-                        } else {
-                            after
-                        }
-                    } else {
-                        self.reader.budget(None).await?
-                    };
+                    let budget = self.reader.budget(None).await?;
                     let batch = cut
                         .session
                         .completed_after(
@@ -599,48 +845,31 @@ impl ConversationFeed {
                     self.reader.ensure()?;
                     ensure!(batch.through_seq > self.delivered, resync());
                     self.delivered = batch.through_seq;
-                    let current = main.then(|| cut.handoff.projection_at(self.delivered));
-                    if main && self.delivered >= cut.handoff.main_through {
-                        self.delivered = cut.head;
-                    }
-                    if !batch.items.is_empty() || current.is_some() {
-                        let product = ChatBatch {
+                    if !batch.items.is_empty() {
+                        let mut product = ChatBatch {
                             placement: ChatPlacement::Append,
-                            messages: messages(batch.items, &budget.database_id),
+                            entries: entries(batch.items, &budget.database_id)?,
                             before: None,
-                            current: current.clone(),
+                            current: None,
                         };
+                        self.reader
+                            .annotate_source_states(
+                                &mut product.entries,
+                                &cut.handoff.after().projection().sources,
+                                cut.handoff.after().projection().source_effect_seq,
+                            )
+                            .await?;
                         let product = self.reader.finish_batch(product, self.demand)?;
-                        if let Some(current) = current {
-                            self.current = Some(current);
-                        }
-                        if self.delivered == cut.head {
-                            self.seen_serial = cut.serial;
-                            self.cut = None;
-                        }
                         self.state_turn = true;
                         return Ok(Some(ConversationEvent::Chat {
                             batch: Box::new(product),
                         }));
                     }
-                } else if main && self.current.as_ref() != Some(cut.handoff.after.as_ref()) {
-                    let product = ChatBatch {
-                        placement: ChatPlacement::Append,
-                        messages: Vec::new(),
-                        before: None,
-                        current: Some(cut.handoff.after.as_ref().clone()),
-                    };
-                    let product = self.reader.finish_batch(product, self.demand)?;
-                    self.current = product.current.clone();
-                    self.seen_serial = cut.serial;
-                    self.cut = None;
-                    self.state_turn = true;
-                    return Ok(Some(ConversationEvent::Chat {
-                        batch: Box::new(product),
-                    }));
+                    continue;
                 }
                 self.seen_serial = cut.serial;
                 self.cut = None;
+                self.cut_entry = 0;
                 continue;
             }
             if let Some(cuts) = self.cuts.as_mut() {
@@ -651,23 +880,18 @@ impl ConversationFeed {
                         }
                         continue;
                     }
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => return Err(resync()),
+                    Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                        return Err(resync().context(format!(
+                            "conversation cut try_recv lagged: skipped={skipped}, delivered={}, seen_serial={}",
+                            self.delivered, self.seen_serial
+                        )));
+                    }
                     Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
                     Err(broadcast::error::TryRecvError::Empty) => {}
                 }
             }
-            if let Some(progress) = self.progress.as_mut() {
-                let changed = progress.has_changed().map_err(|_| resync())?;
-                if changed {
-                    let newest = progress.borrow_and_update().clone();
-                    if let Some(newest) = newest {
-                        // Never let coalesced current cross an undelivered reliable completion cut.
-                        if newest.head == self.delivered && newest.serial > self.seen_serial {
-                            self.cut = Some(newest.cut());
-                            continue;
-                        }
-                    }
-                }
+            if self.take_progress()? {
+                continue;
             }
             enum Wake {
                 Cut(Result<Arc<ConversationCut>, broadcast::error::RecvError>),
@@ -681,6 +905,7 @@ impl ConversationFeed {
                 biased;
                 _=self.cancel.cancelled()=>return Err(core::ChatError::Cancelled.into()),
                 _=self.slot_changed.changed()=>Wake::Slot,
+                _=self.generation_changed.changed()=>Wake::Slot,
                 cut=async { match self.cuts.as_mut() { Some(cuts)=>cuts.recv().await,None=>std::future::pending().await } }=>Wake::Cut(cut),
                 _=async { match self.progress.as_mut() { Some(progress)=>{ let _=progress.changed().await; },None=>std::future::pending().await } }=>Wake::Progress,
                 event=async { match self.state.as_mut() { Some(state)=>state.recv().await,None=>std::future::pending().await } }=>Wake::State(event),
@@ -688,21 +913,28 @@ impl ConversationFeed {
                 open=async { match self.last_turn.as_mut() { Some(turn)=>turn.changed().await.is_ok(),None=>std::future::pending().await } }=>Wake::Terminal(open),
             };
             match wake {
-                Wake::Slot => return Err(resync()),
+                Wake::Slot => {
+                    self.reader.invalidate();
+                    return Err(resync());
+                }
                 Wake::Cut(Ok(cut)) => self.cut = Some(cut),
-                Wake::Cut(Err(_)) => return Err(resync()),
+                Wake::Cut(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    return Err(resync().context(format!(
+                        "conversation cut recv lagged: skipped={skipped}, delivered={}, seen_serial={}",
+                        self.delivered, self.seen_serial
+                    )));
+                }
+                Wake::Cut(Err(broadcast::error::RecvError::Closed)) => return Err(resync()),
                 Wake::State(Ok(event)) => self.state_event(event)?,
-                Wake::State(Err(_)) => return Err(resync()),
+                Wake::State(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    return Err(resync().context(format!(
+                        "conversation state recv lagged: skipped={skipped}, state_effect_floor={}",
+                        self.state_effect_floor
+                    )));
+                }
+                Wake::State(Err(broadcast::error::RecvError::Closed)) => return Err(resync()),
                 Wake::Progress => {
-                    if let Some(progress) = self.progress.as_mut() {
-                        let newest = progress.borrow_and_update().clone();
-                        if let Some(newest) = newest
-                            && newest.head == self.delivered
-                            && newest.serial > self.seen_serial
-                        {
-                            self.cut = Some(newest.cut());
-                        }
-                    }
+                    self.take_progress()?;
                 }
                 Wake::Storage(storage) => {
                     self.notification(ThreadNotification::StorageChanged {

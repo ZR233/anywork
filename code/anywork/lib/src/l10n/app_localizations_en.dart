@@ -1837,6 +1837,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineLoadEarlier => 'Load earlier messages';
 
   @override
+  String get timelineActivityNotLoaded => 'More activity to load';
+
+  @override
   String get timelineBackToLive => 'Back to live';
 
   @override
@@ -3942,7 +3945,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get conversationActivityPreparing => 'Preparing';
 
   @override
-  String get conversationActivityCompacting => 'Compacting';
+  String get conversationActivityCompacting => 'Compacting context';
 
   @override
   String get conversationActivityRunningTool => 'Running';
@@ -4015,7 +4018,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineActivityTitle => 'Thinking and tools';
 
   @override
-  String get timelineContextCompacted => 'Context compacted';
+  String get timelineContextCompacted => 'Compaction completed';
 
   @override
   String timelineCompactionDetail(int before, int after) {

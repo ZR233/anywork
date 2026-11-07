@@ -1,41 +1,126 @@
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/conversation.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
-import '../state/timeline_image_resources.dart';
+import '../state/content_reference_identity.dart';
+import '../state/timeline_display_unit.dart';
 
-/// A stateless adapter to Flyer's sole loaded-message collection. The SDK
-/// serializes admission; this adapter does not retain items or grouping indexes.
+/// Main's mechanical admission adapter. Loaded history belongs exclusively to
+/// InMemoryChatController; only the bounded current item fragment lives here.
 final class TimelineMessageController implements ConversationBatchConsumer {
   TimelineMessageController(
     this.controller, {
     required this.generation,
-    required this.imageResources,
+    this.onUnitCreated,
+    this.onUnitRetired,
   });
-
   final InMemoryChatController controller;
   final int generation;
-  final TimelineImageResources imageResources;
+  final void Function(TimelineDisplayUnit)? onUnitCreated;
+  final void Function(TimelineDisplayUnit)? onUnitRetired;
+  final ValueNotifier<List<TimelineDisplayUnit>> live = ValueNotifier(const []);
   bool _disposed = false;
-
+  bool _retired = false;
   int get length => controller.messages.length;
+
+  Iterable<TimelineDisplayUnit> get _history sync* {
+    for (final message in controller.messages) {
+      final unit = message.metadata?[timelineDisplayUnitKey];
+      if (unit is TimelineDisplayUnit) yield unit;
+    }
+  }
+
+  TimelineDisplayUnit _unit(
+    TimelineItem item, {
+    required bool current,
+    bool borrowCurrentIntent = true,
+  }) {
+    // Borrow intent only from the bounded current fragment at handoff. There
+    // is deliberately no permanent history-ID or member-ID map.
+    final previous = borrowCurrentIntent
+        ? live.value
+              .where((unit) => unit.id == item.id && !unit.expansion.isRetired)
+              .firstOrNull
+        : null;
+    final unit = TimelineDisplayUnit(
+      item: item,
+      live: current,
+      expansion: previous?.expansion,
+    );
+    unit.expansion.current = unit;
+    if (previous != null &&
+        (previous.item.members != item.members ||
+            !listEquals(
+              _bodyCapabilities(previous.item),
+              _bodyCapabilities(item),
+            ))) {
+      unit.expansion.replaceBody();
+    }
+    if (previous == null) onUnitCreated?.call(unit);
+    return unit;
+  }
+
+  List<Object> _bodyCapabilities(TimelineItem item) => [
+    item.payload != null,
+    for (final content in item.contents)
+      (content.role, contentReferenceIdentity(content.reference)),
+    if (item.payload case DeferredPayload(:final reference))
+      contentReferenceIdentity(reference),
+  ];
+
+  Message _message(TimelineDisplayUnit unit) {
+    final presentation = ChatItemPresentation.forUnit(unit);
+    return Message.custom(
+      id: unit.id,
+      authorId: presentation.authorId,
+      createdAt: presentation.createdAt,
+      metadata: {
+        chatItemPresentationKey: presentation,
+        timelineDisplayUnitKey: unit,
+      },
+    );
+  }
 
   @override
   Future<void> applyBatch(ChatBatch batch) async {
-    if (_disposed) throw StateError('Timeline display is retired');
-    final messages = batch.messages
-        .map((item) {
-          final value = ChatItemPresentation.decode(item);
-          return Message.custom(
-            id: item.id,
-            authorId: value.authorId,
-            createdAt: value.createdAt,
-            metadata: {chatItemPresentationKey: value},
-          );
-        })
-        .toList(growable: false);
+    _checkActive();
+    if (batch.entries.any((entry) => entry is! ItemChatEntry)) {
+      throw const ConversationContinuityError(
+        'Main accepts only TimelineItem entries',
+      );
+    }
+    final items = batch.items.toList();
+    final ids = items.map((item) => item.id).toSet();
+    if (ids.length != items.length) {
+      throw const ConversationContinuityError('Duplicate Main item identity');
+    }
+    if (batch.placement == ChatPlacement.set) {
+      for (final unit in [
+        ..._history,
+        if (batch.current != null) ...live.value,
+      ]) {
+        _retire(unit);
+      }
+    } else if (items.any(
+      (item) => controller.messages.any((message) => message.id == item.id),
+    )) {
+      throw const ConversationContinuityError(
+        'Main item was already committed',
+      );
+    }
+    final messages = [
+      for (final item in items)
+        _message(
+          _unit(
+            item,
+            current: false,
+            borrowCurrentIntent: batch.current != null,
+          ),
+        ),
+    ];
     switch (batch.placement) {
       case ChatPlacement.set:
         await controller.setMessages(messages, animated: false);
@@ -48,18 +133,64 @@ final class TimelineMessageController implements ConversationBatchConsumer {
           );
         }
       case ChatPlacement.append:
-        if (messages.isNotEmpty) await controller.insertAllMessages(messages);
+        if (messages.isNotEmpty) {
+          await controller.insertAllMessages(
+            messages,
+            index: controller.messages.length,
+          );
+        }
+    }
+    // The public component operation may synchronously trigger selection
+    // retirement. Its successful completion must join the old admission, not
+    // reactivate that display or publish current after losing qualification.
+    if (_retired) return;
+    if (batch.current case final current?) {
+      final next = [
+        for (final item in current.items) _unit(item, current: true),
+      ];
+      final retained = {...ids, ...next.map((unit) => unit.id)};
+      for (final unit in live.value) {
+        if (!retained.contains(unit.id)) _retire(unit);
+      }
+      live.value = List.unmodifiable(next);
     }
     developer.Timeline.instantSync(
       'conversation.applied',
       arguments: {
         'generation': generation,
         'placement': batch.placement.name,
-        'decodedItems': messages.length,
-        'controllerMessages': controller.messages.length,
+        'acceptedEntries': items.length,
+        'controllerMessages': length,
+        'liveUnits': live.value.length,
       },
     );
   }
 
-  void dispose() => _disposed = true;
+  void _retire(TimelineDisplayUnit unit) {
+    unit.expansion.retire();
+    onUnitRetired?.call(unit);
+  }
+
+  void _checkActive() {
+    if (_disposed || _retired) {
+      throw StateError('Timeline message controller is retired');
+    }
+  }
+
+  /// Revoke group/body/media qualification before the old widget tree detaches.
+  /// Controller disposal still waits for the owner's in-flight mutations.
+  void retireDisplays() {
+    if (_retired) return;
+    _retired = true;
+    for (final unit in [..._history, ...live.value]) {
+      _retire(unit);
+    }
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    retireDisplays();
+    _disposed = true;
+    live.dispose();
+  }
 }

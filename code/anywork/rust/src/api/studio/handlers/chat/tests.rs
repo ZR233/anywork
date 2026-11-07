@@ -35,6 +35,20 @@ impl Environment {
     }
 
     pub(super) async fn with_followup(reply: Option<Reply>) -> Result<Self> {
+        Self::with_model_followup(reply, Self::model_info()).await
+    }
+
+    /// Same real Runtime chain as [`Environment::with_followup`], with fixture-only model metadata
+    /// sized for the 128k-reference-token streaming output test. No production budget changes.
+    pub(super) async fn with_output_limit_followup(reply: Option<Reply>) -> Result<Self> {
+        let mut model = Self::model_info();
+        model.context_window = Some(1_050_000);
+        model.max_context_window = Some(1_050_000);
+        model.max_output_tokens = Some(128_000);
+        Self::with_model_followup(reply, model).await
+    }
+
+    async fn with_model_followup(reply: Option<Reply>, model: ModelInfo) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let project = temp.path().join("project");
@@ -57,12 +71,6 @@ impl Environment {
         let initialized: Result<StudioRuntime> = async {
             let mut config = StudioConfig::default_config()?;
             config.models.accounts.clear();
-            let mut model = ModelInfo::compatible(MODEL);
-            model
-                .binding
-                .set_transport(ModelTransportProfile::responses_http());
-            model.capabilities.instruction_snapshot_overrides = true;
-            model.base_instructions = "Follow the finite conversation fixture.".into();
             config.models.accounts.insert(
                 AccountId::new(ACCOUNT)?,
                 AccountConfig::from_explicit_models(
@@ -172,6 +180,16 @@ impl Environment {
                 )))
             }
         }
+    }
+
+    fn model_info() -> ModelInfo {
+        let mut model = ModelInfo::compatible(MODEL);
+        model
+            .binding
+            .set_transport(ModelTransportProfile::responses_http());
+        model.capabilities.instruction_snapshot_overrides = true;
+        model.base_instructions = "Follow the finite conversation fixture.".into();
+        model
     }
 
     pub(super) async fn feed(&self) -> Result<ConversationFeed> {

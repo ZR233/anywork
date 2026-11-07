@@ -1218,6 +1218,7 @@ impl StudioRuntime {
     /// 背景 watcher 用 abort 即刻停摆；title 任务用一次性取消信号。此步不做任何可能无界阻塞的
     /// 服务 join，保证所有独立资源先收到取消。
     async fn broadcast_cancel(&self) {
+        self.thread_observations.close_deliveries();
         self.account_usage.request_close();
         self.model_performance.request_close();
         use super::super::background_task;
@@ -1234,12 +1235,12 @@ impl StudioRuntime {
         // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
         // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
         self.acp_install.signal_cancel();
-        // 活动 Turn / 模型 / 工具：通过既有的纯取消入口取消每个驻留 Thread 当前执行代次。
+        // 全局关停还必须取消独立后台工具，不能只中断当前 Turn，或等保存/观察者 join 后才发信号。
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
         // 执行的退出，满足「先封闭准入并广播取消（含 Turn）再 join」。
         for (_, handle) in self.threads.observed_threads() {
-            handle.interrupt();
+            handle.request_shutdown();
         }
     }
 

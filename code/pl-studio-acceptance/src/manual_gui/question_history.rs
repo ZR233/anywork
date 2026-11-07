@@ -31,20 +31,15 @@ pub(super) fn run(context: &QuestionHistoryScenario<'_>, mut fixture: OwnedProce
             "failed to initialize isolated question-history project"
         );
         let log = File::create(&log_path)?;
-        let mut command = Command::new("cargo");
+        let ready: pl_provider_fixture::ReadyFile =
+            serde_json::from_slice(&fs::read(context.working.join("fixture-ready.json"))?)?;
+        let mut command = desktop_test_command(context.workspace)?;
         command
-            .current_dir(context.workspace)
-            .args([
-                "xtask",
-                "test-project",
-                "--suite",
-                "desktop",
-                "--case",
-                "question_history",
-            ])
+            .args(["--suite", "desktop", "--case", "question_history"])
             .env("ANYWORK_HOME", context.home)
             .env("ANYWORK_QUESTION_HISTORY_PROJECT", &project)
             .env("ANYWORK_QUESTION_HISTORY_OUTPUT", context.output)
+            .env("ANYWORK_QUESTION_HISTORY_PROVIDER", ready.base_url)
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         configure_presentation_capture(&mut command, context.output, context.capture_presentation);

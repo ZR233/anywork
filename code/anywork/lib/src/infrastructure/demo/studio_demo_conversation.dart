@@ -77,6 +77,9 @@ enum _DemoPlanDecisionKind { approved, revisionRequested }
 
 typedef _DemoContent = ({
   _DemoContentKind kind,
+  TimelineItemKind itemKind,
+  TimelineCategory? category,
+  bool? contentPresent,
   ThreadTextChannel? textChannel,
   Map<String, Object?>? descriptor,
   Map<String, String> fields,
@@ -130,6 +133,9 @@ _DemoContent _demoText({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.text,
+    itemKind: TimelineItemKind.text,
+    category: null,
+    contentPresent: text.isNotEmpty || attachments.isNotEmpty,
     textChannel: channel,
     descriptor: outcome == null
         ? null
@@ -165,6 +171,9 @@ _DemoContent _demoThinking({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.thinking,
+    itemKind: TimelineItemKind.workGroup,
+    category: TimelineCategory.thinking,
+    contentPresent: null,
     textChannel: null,
     descriptor: outcome == null
         ? null
@@ -195,6 +204,9 @@ _DemoContent _demoTool({
   String? result,
 }) => (
   kind: _DemoContentKind.tool,
+  itemKind: TimelineItemKind.workGroup,
+  category: TimelineCategory.other,
+  contentPresent: null,
   textChannel: null,
   descriptor: outcome == null
       ? null
@@ -282,6 +294,9 @@ _DemoContent _demoTurn(StudioTurnState state, {String? inputId}) {
   }
   return (
     kind: _DemoContentKind.completed,
+    itemKind: TimelineItemKind.status,
+    category: null,
+    contentPresent: null,
     textChannel: null,
     descriptor: {
       'type': 'turn',
@@ -306,6 +321,9 @@ _DemoItem _demoPlanCompletion(
   updatedAt: completedAt,
   content: (
     kind: _DemoContentKind.completed,
+    itemKind: TimelineItemKind.status,
+    category: null,
+    contentPresent: null,
     textChannel: null,
     descriptor: {
       'type': 'plan',
@@ -399,43 +417,37 @@ void _demoDemand(ReadDemand d) {
 
 String _demoScopeKey(ChatScope scope) => switch (scope) {
   MainChatScope() => 'main',
+  GroupMembersChatScope(:final reference) =>
+    'group:${reference.databaseId}:${reference.projectionVersion}:${reference.projectionGeneration}:${reference.itemId}',
   ChildrenChatScope(:final parentId) => 'children:$parentId',
 };
-String _demoParent(String turnId) => '4:turn$turnId';
-Map<String, Object?> _demoRefJson(ContentRef ref) => {
-  'databaseId': ref.databaseId,
-  'target': switch (ref.target) {
-    ItemPayloadTarget(:final itemId) => {
-      'kind': 'itemPayload',
-      'itemId': itemId,
-    },
-    BodyContentTarget(:final owner, :final key) => {
-      'kind': 'body',
-      'key': key,
-      'owner': switch (owner) {
-        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
-        CurrentContentOwner(:final domain, :final id, :final revision) => {
-          'kind': 'current',
-          'domain': domain,
-          'id': id,
-          'revision': revision,
-        },
-      },
-    },
-  },
-};
-Map<String, Object?> _demoPayloadJson(PayloadData payload) => switch (payload) {
-  InlinePayload(:final bytes) => {'kind': 'inline', 'bytes': bytes},
-  DeferredPayload(:final reference, :final byteLength) => {
-    'kind': 'deferred',
-    'reference': _demoRefJson(reference),
-    'byteLength': byteLength,
-  },
-};
-Map<String, Object?> _demoMessageJson(ChatMessage m) => {
-  'id': m.id,
-  'payload': _demoPayloadJson(m.payload),
-};
+ChatAtom _demoCopy(
+  ChatAtom atom, {
+  PayloadData? payload,
+  int? completionSeq,
+  ChatSourceState? sourceState,
+  bool frozen = false,
+}) => ChatAtom(
+  id: atom.id,
+  completionItemId: atom.completionItemId,
+  completionSeq: completionSeq ?? atom.completionSeq,
+  source: atom.source,
+  sourceOrder: atom.sourceOrder,
+  kind: atom.kind,
+  sourceState: frozen ? null : sourceState ?? atom.sourceState,
+  delivery: atom.delivery,
+  lifecycle: atom.lifecycle,
+  turnId: atom.turnId,
+  attemptId: atom.attemptId,
+  tool: atom.tool,
+  wait: atom.wait,
+  textChannel: atom.textChannel,
+  contentPresent: atom.contentPresent,
+  startedAt: atom.startedAt,
+  finishedAt: atom.finishedAt,
+  contents: atom.contents,
+  payload: payload ?? atom.payload,
+);
 int _demoEncoded(Object? value) => utf8.encode(jsonEncode(value)).length;
 
 // Chunked authoritative bytes: range reads visit only intersecting chunks, never
@@ -518,13 +530,37 @@ final class _DemoBody {
 
 final class _DemoFrozen {
   const _DemoFrozen(this.message, this.order, this.scope);
-  final ChatMessage message;
+  final ChatAtom message;
   final int order;
   final String scope;
 }
 
 final class _DemoHistory {
+  // Demo scripts explicitly assign one display slot per scripted event. Thinking
+  // and tool fixtures each have exactly one member; this is not the production
+  // grouping algorithm and never merges adjacent atoms or scans a Turn.
+  final List<TimelineItem> displayItems = [];
+  final Map<String, TimelineItem> liveDisplay = {};
+  final Map<String, String> fixtureMembers = {};
+  final Map<String, ChatAtom> activeAtoms = {};
+  final Map<ChatSourceId, ChatSourceState> sourceStates = {};
+  final Map<ChatSourceId, int> _sourceOrders = {};
+  int _facts = 0;
+  ChatFactPosition _fact() =>
+      ChatFactPosition(effectSeq: ++_facts, suborder: 0);
+  List<ChatEntry> entries(
+    Iterable<ChatAtom> atoms, {
+    Map<ChatSourceId, ChatSourceState>? states,
+  }) {
+    final cut = states ?? sourceStates;
+    return [
+      for (final atom in atoms)
+        ChatAtomEntry(_demoCopy(atom, sourceState: cut[atom.source])),
+    ];
+  }
+
   final String epoch = 'demo-chat:${newStudioCorrelationId()}';
+  final String projectionGeneration = 'demo-timeline-fixture-generation:1';
   final List<_DemoFrozen> items = [];
   final Map<String, _DemoFrozen> byId = {};
   final Map<String, List<_DemoFrozen>> _indices = {};
@@ -565,14 +601,89 @@ final class _DemoHistory {
 
   List<_DemoFrozen> index(ChatScope scope) =>
       _indices[_demoScopeKey(scope)] ?? const [];
-  bool accept(ChatMessage message, ChatScope scope) {
+  TimelineMembersRef membersRef(String itemId) => TimelineMembersRef(
+    databaseId: epoch,
+    projectionVersion: 1,
+    projectionGeneration: projectionGeneration,
+    itemId: itemId,
+  );
+
+  void validateScope(ChatScope scope) {
+    if (scope case GroupMembersChatScope(:final reference)) {
+      if (reference.databaseId != epoch ||
+          reference.projectionVersion != 1 ||
+          reference.projectionGeneration != projectionGeneration) {
+        throw _demoStale();
+      }
+      if (!fixtureMembers.containsKey(reference.itemId)) throw _demoMissing();
+    }
+  }
+
+  TimelineItem displayFixture(
+    _DemoItem fixture,
+    ChatAtom atom, {
+    int? position,
+  }) {
+    final group = fixture.content.itemKind == TimelineItemKind.workGroup;
+    final itemId = 'demo-item:${fixture.id}';
+    if (group) fixtureMembers[itemId] = atom.id;
+    final terminal = atom.lifecycle is TerminalChatAtom;
+    final outcome = terminal
+        ? (atom.lifecycle as TerminalChatAtom).outcome
+        : null;
+    return TimelineItem(
+      id: itemId,
+      kind: fixture.content.itemKind,
+      source: atom.source,
+      atomKind: group ? null : atom.kind,
+      delivery: atom.delivery,
+      outcome: group ? null : outcome,
+      textChannel: atom.textChannel,
+      turnId: atom.turnId,
+      startedAt: atom.startedAt,
+      finishedAt: atom.finishedAt,
+      summary: !group
+          ? null
+          : TimelineGroupSummary(
+              memberCount: 1,
+              activeCount: terminal ? 0 : 1,
+              failedCount: outcome == ChatTerminalOutcome.failed ? 1 : 0,
+              cancelledCount: outcome == ChatTerminalOutcome.cancelled ? 1 : 0,
+              categories: [
+                TimelineCategoryCount(
+                  category: fixture.content.category!,
+                  count: 1,
+                ),
+              ],
+              startedAt: atom.startedAt,
+              finishedAt: atom.finishedAt,
+            ),
+      members: group ? membersRef(itemId) : null,
+      contents: group ? const [] : atom.contents,
+      payload: group ? null : atom.payload,
+      contentItemId: group ? null : atom.completionItemId,
+      position: position,
+      admissionClosed: terminal,
+    );
+  }
+
+  bool accept(ChatAtom message, ChatScope scope) {
+    if (scope is MainChatScope) {
+      throw _demoQueryFailure('Main accepts TimelineItem fixtures, not atoms');
+    }
+    validateScope(scope);
     if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
     final key = _demoScopeKey(scope);
     final old = byId[message.id];
+    message = _demoCopy(
+      message,
+      completionSeq: old?.order ?? head + 1,
+      frozen: true,
+    );
     if (old != null) {
       if (old.scope != key ||
-          jsonEncode(_demoMessageJson(old.message)) !=
-              jsonEncode(_demoMessageJson(message))) {
+          jsonEncode(chatAtomToJson(old.message)) !=
+              jsonEncode(chatAtomToJson(message))) {
         throw const StudioFailure(
           code: StudioFailureCode.conflict,
           message: 'A completed Demo message cannot be changed',
@@ -584,7 +695,7 @@ final class _DemoHistory {
     }
     final record = _DemoFrozen(message, head + 1, key);
     if (message.payload case InlinePayload(:final bytes)) {
-      payloads[message.id] = _DemoBody()
+      payloads[message.completionItemId ?? message.id] = _DemoBody()
         ..append(bytes)
         ..sealed = true;
     }
@@ -594,7 +705,128 @@ final class _DemoHistory {
     return true;
   }
 
+  bool acceptDisplay(TimelineItem item) {
+    if (displayItems.any((existing) => existing.id == item.id)) {
+      throw _demoQueryFailure('Duplicate display fixture identity');
+    }
+    if (item.position == null ||
+        (displayItems.lastOrNull?.position ?? 0) >= item.position!) {
+      throw _demoQueryFailure('Display fixtures require increasing positions');
+    }
+    if (item.kind == TimelineItemKind.workGroup) {
+      final reference = item.members;
+      if (reference == null ||
+          reference.itemId != item.id ||
+          reference.databaseId != epoch ||
+          reference.projectionVersion != 1 ||
+          reference.projectionGeneration != projectionGeneration ||
+          item.summary == null ||
+          item.outcome != null ||
+          item.payload != null ||
+          item.contents.isNotEmpty) {
+        throw _demoQueryFailure('Invalid folded group fixture');
+      }
+      fixtureMembers.putIfAbsent(item.id, () => '');
+    } else if (item.payload case InlinePayload(:final bytes)) {
+      final id = item.contentItemId;
+      if (id == null) throw _demoQueryFailure('Missing fixture content owner');
+      payloads[id] = _DemoBody()
+        ..append(bytes)
+        ..sealed = true;
+    }
+    displayItems.add(item);
+    return true;
+  }
+
   void sync(_DemoItem item) {
+    if (item.content.descriptor?['type'] == 'inference') return;
+    if (!byId.containsKey(item.id)) {
+      final previous = activeAtoms[item.id];
+      final source =
+          previous?.source ??
+          (item.content.textChannel == ThreadTextChannel.user
+              ? InputChatSource(inputId: item.id)
+              : item.turnId == null ||
+                    item.content.descriptor?['type'] == 'turn'
+              ? ReceiptChatSource(receiptId: item.id)
+              : ForegroundTurnChatSource(turnId: item.turnId!));
+      sourceStates.putIfAbsent(
+        source,
+        () => ChatSourceState(
+          source: source,
+          lifecycle: const ActiveChatSource(),
+          started: _fact(),
+          ended: null,
+        ),
+      );
+      final kind = switch (item.content.kind) {
+        _DemoContentKind.text =>
+          item.content.textChannel == ThreadTextChannel.user
+              ? ChatAtomKind.input
+              : ChatAtomKind.text,
+        _DemoContentKind.thinking => ChatAtomKind.reasoning,
+        _DemoContentKind.tool => ChatAtomKind.toolCall,
+        _DemoContentKind.completed =>
+          switch (item.content.descriptor?['type']) {
+            'turn' => ChatAtomKind.turnReceipt,
+            'plan' => ChatAtomKind.plan,
+            'contextCompaction' => ChatAtomKind.compaction,
+            _ => ChatAtomKind.receipt,
+          },
+      };
+      activeAtoms[item.id] = ChatAtom(
+        id: item.id,
+        source: source,
+        sourceOrder:
+            previous?.sourceOrder ??
+            (_sourceOrders.update(
+              source,
+              (value) => value + 1,
+              ifAbsent: () => 1,
+            )),
+        kind: kind,
+        delivery: source is ForegroundTurnChatSource
+            ? ChatDeliveryKind.foreground
+            : ChatDeliveryKind.independent,
+        lifecycle:
+            previous?.lifecycle ??
+            ActiveChatAtom(started: _fact(), status: ChatActiveStatus.running),
+        turnId: item.turnId,
+        startedAt: previous?.startedAt ?? _demoSeconds(item.updatedAt),
+        textChannel: item.content.textChannel,
+        contentPresent: item.content.contentPresent,
+        tool: item.content.invocation == null
+            ? null
+            : ChatToolIdentity(
+                callId: item.content.invocation!.toolCallId,
+                name: item.content.invocation!.name,
+              ),
+        contents: [
+          for (final field in item.content.fields.keys)
+            ChatAtomContent(
+              role: kind == ChatAtomKind.toolCall
+                  ? field == 'tool.arguments'
+                        ? ChatContentRole.toolArguments
+                        : ChatContentRole.toolOutput
+                  : kind == ChatAtomKind.reasoning
+                  ? ChatContentRole.reasoningSummary
+                  : ChatContentRole.body,
+              reference: ContentRef(
+                databaseId: epoch,
+                target: BodyContentTarget(
+                  owner: ItemContentOwner(itemId: item.id),
+                  key: field,
+                ),
+              ),
+            ),
+        ],
+      );
+      if (activeAtoms[item.id]!.contentPresent != false) {
+        liveDisplay[item.id] = displayFixture(item, activeAtoms[item.id]!);
+      } else {
+        liveDisplay.remove(item.id);
+      }
+    }
     positions.putIfAbsent(('member', item.id), () => _nextPosition++);
     final contents = bodies.putIfAbsent(item.id, () => {});
     for (final entry in item.content.fields.entries) {
@@ -608,23 +840,42 @@ final class _DemoHistory {
     final data = Map<String, Object?>.of(
       descriptor['data'] as Map<String, Object?>,
     );
-    final parent = item.turnId == null ? null : _demoParent(item.turnId!);
-    if (type == 'turn') data['childrenParentId'] = parent;
-    final main =
-        type == 'text' ||
-        type == 'plan' ||
-        type == 'turn' ||
-        (type == 'tool' && data['userInput'] != null);
-    final scope = main
-        ? const MainChatScope()
-        : ChildrenChatScope(parentId: parent ?? '');
-    if (!main && parent == null) {
-      throw StateError('Activity has no real parent');
+    if (type == 'inference') {
+      return; // Execution diagnostics are not Chat steps.
     }
     sync(item);
     final contents = bodies[item.id]!;
-    final message = ChatMessage(
+    final frozen = byId[item.id]?.message;
+    final active = activeAtoms.remove(item.id) ?? frozen!;
+    final rawOutcome = data['outcome'] ?? data['state'];
+    final result = rawOutcome is Map ? rawOutcome['kind'] : null;
+    final outcome = switch (result) {
+      'failed' => ChatTerminalOutcome.failed,
+      'cancelled' || 'interrupted' => ChatTerminalOutcome.cancelled,
+      _ => ChatTerminalOutcome.completed,
+    };
+    final message = ChatAtom(
       id: item.id,
+      completionItemId: item.id,
+      completionSeq: frozen?.completionSeq ?? head + 1,
+      source: active.source,
+      sourceOrder: active.sourceOrder,
+      kind: active.kind,
+      delivery: active.delivery,
+      lifecycle:
+          frozen?.lifecycle ??
+          TerminalChatAtom(
+            started: (active.lifecycle as ActiveChatAtom).started,
+            ended: _fact(),
+            outcome: outcome,
+          ),
+      turnId: active.turnId,
+      tool: active.tool,
+      textChannel: active.textChannel,
+      contentPresent: active.contentPresent,
+      startedAt: active.startedAt,
+      finishedAt: _demoSeconds(item.updatedAt),
+      contents: active.contents,
       payload: InlinePayload(
         bytes: utf8.encode(
           jsonEncode({
@@ -641,7 +892,7 @@ final class _DemoHistory {
                   if (entry.value.length <= _demoInlineBodyBytes)
                     'inline': entry.value.range(0, _demoInlineBodyBytes)
                   else
-                    'reference': _demoRefJson(
+                    'reference': contentRefToJson(
                       ContentRef(
                         databaseId: epoch,
                         target: BodyContentTarget(
@@ -656,7 +907,38 @@ final class _DemoHistory {
         ),
       ),
     );
-    accept(message, scope);
+    final display = displayFixture(
+      item,
+      message,
+      position: (displayItems.lastOrNull?.position ?? 0) + 1,
+    );
+    final memberScope = item.content.itemKind == TimelineItemKind.workGroup
+        ? GroupMembersChatScope(reference: display.members!)
+        : ChildrenChatScope(parentId: item.turnId ?? item.id);
+    if (!accept(message, memberScope)) return;
+    if (memberScope is GroupMembersChatScope && item.turnId != null) {
+      (_indices[_demoScopeKey(ChildrenChatScope(parentId: item.turnId!))] ??=
+              [])
+          .add(byId[item.id]!);
+    }
+    liveDisplay.remove(item.id);
+    if (message.contentPresent != false) displayItems.add(display);
+    final ended = <ChatSourceId>[
+      if (active.source is! ForegroundTurnChatSource) active.source,
+      if (type == 'turn' && item.turnId != null)
+        ForegroundTurnChatSource(turnId: item.turnId!),
+    ];
+    for (final source in ended) {
+      final previous = sourceStates[source];
+      if (previous != null) {
+        sourceStates[source] = ChatSourceState(
+          source: source,
+          lifecycle: EndedChatSource(outcome: outcome),
+          started: previous.started,
+          ended: _fact(),
+        );
+      }
+    }
     for (final body in contents.values) {
       body.sealed = true;
     }
@@ -667,11 +949,15 @@ final class _DemoHistory {
 // Tokens are opaque to callers; retaining only issued boundaries is not history caching.
 final class _DemoReader implements ConversationReader {
   _DemoReader(this._api, this.threadId, this._history, this.scope)
-    : h0 = _history.head;
+    : h0 = _history.head,
+      itemH0 = _history.displayItems.lastOrNull?.position ?? 0,
+      _sourceCut = Map.of(_history.sourceStates);
   final DemoStudioTransport _api;
   final _DemoHistory _history;
   final ChatScope scope;
   final int h0;
+  final int itemH0;
+  final Map<ChatSourceId, ChatSourceState> _sourceCut;
   @override
   final String threadId;
   final Map<String, (String, int, int)> _cursors = {};
@@ -707,19 +993,22 @@ final class _DemoReader implements ConversationReader {
     return result;
   }
 
-  ChatMessage fit(ChatMessage message, int budget) {
+  ChatAtom fit(ChatAtom message, int budget) {
+    if (message.payload == null) return message;
     if (message.payload is DeferredPayload) return message;
-    if (_demoEncoded(_demoMessageJson(message)) <= budget) return message;
-    final length = switch (message.payload) {
+    if (_demoEncoded(chatAtomToJson(message)) <= budget) return message;
+    final length = switch (message.payload!) {
       InlinePayload(:final bytes) => bytes.length,
       DeferredPayload(:final byteLength) => byteLength,
     };
-    return ChatMessage(
-      id: message.id,
+    return _demoCopy(
+      message,
       payload: DeferredPayload(
         reference: ContentRef(
           databaseId: _history.epoch,
-          target: ItemPayloadTarget(itemId: message.id),
+          target: ItemPayloadTarget(
+            itemId: message.completionItemId ?? message.id,
+          ),
         ),
         byteLength: length,
       ),
@@ -731,27 +1020,53 @@ final class _DemoReader implements ConversationReader {
     String? before,
     CurrentProjection? current,
   }) {
+    _history.validateScope(scope);
+    if (scope is MainChatScope) {
+      return itemPage(demand, before: before, current: current);
+    }
+    if (scope case GroupMembersChatScope(:final reference)
+        when before == null) {
+      final active =
+          _history.activeAtoms[_history.fixtureMembers[reference.itemId]];
+      if (active != null) {
+        final batch = ChatBatch(
+          placement: ChatPlacement.set,
+          entries: _history.entries([active]),
+        );
+        _demoDemand(demand);
+        if (_demoBatchBytes(batch) > demand.maxBytes) {
+          throw _demoQueryFailure(
+            'InvalidDemand: active member envelope does not fit',
+          );
+        }
+        return batch;
+      }
+    }
     _demoDemand(demand);
-    final end = before == null ? h0 + 1 : boundary(before, 'history', h0);
+    final cut = h0;
+    final states = _sourceCut;
+    const kind = 'history';
+    final end = before == null ? h0 : boundary(before, kind, cut);
     final source = _history.index(scope);
     var low = 0, high = source.length;
     while (low < high) {
       final mid = (low + high) ~/ 2;
-      if (source[mid].order < end) {
+      if (source[mid].order < end ||
+          before == null && source[mid].order == end) {
         low = mid + 1;
       } else {
         high = mid;
       }
     }
-    final selected = <ChatMessage>[];
+    final selected = <ChatAtom>[];
     String? next;
     for (var i = low - 1; i >= 0 && selected.length < demand.maxItems; i--) {
       final candidate = fit(source[i].message, demand.maxBytes);
       final staged = [candidate, ...selected];
-      final token = cursor('history', h0, source[i].order);
+      final token = cursor(kind, cut, source[i].order);
       final trial = ChatBatch(
         placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-        messages: staged,
+        entries: _history.entries(staged, states: states),
         before: token,
         current: current,
       );
@@ -760,7 +1075,7 @@ final class _DemoReader implements ConversationReader {
         final compact = fit(source[i].message, 0);
         final smaller = ChatBatch(
           placement: trial.placement,
-          messages: [compact, ...selected],
+          entries: _history.entries([compact, ...selected], states: states),
           before: token,
           current: current,
         );
@@ -779,12 +1094,103 @@ final class _DemoReader implements ConversationReader {
     }
     final batch = ChatBatch(
       placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-      messages: selected,
+      entries: _history.entries(selected, states: states),
       before: next,
       current: current,
     );
     if (_demoBatchBytes(batch) > demand.maxBytes) {
       throw _demoQueryFailure('InvalidDemand: current envelope does not fit');
+    }
+    return batch;
+  }
+
+  TimelineItem fitItem(TimelineItem item, int budget) {
+    final payload = item.payload;
+    if (payload is! InlinePayload ||
+        _demoEncoded(timelineItemToJson(item)) <= budget) {
+      return item;
+    }
+    final owner = item.contentItemId;
+    if (owner == null) throw _demoQueryFailure('Missing display content owner');
+    return TimelineItem(
+      id: item.id,
+      kind: item.kind,
+      source: item.source,
+      atomKind: item.atomKind,
+      delivery: item.delivery,
+      outcome: item.outcome,
+      textChannel: item.textChannel,
+      turnId: item.turnId,
+      startedAt: item.startedAt,
+      finishedAt: item.finishedAt,
+      summary: item.summary,
+      members: item.members,
+      contents: item.contents,
+      payload: DeferredPayload(
+        reference: ContentRef(
+          databaseId: _history.epoch,
+          target: ItemPayloadTarget(itemId: owner),
+        ),
+        byteLength: payload.bytes.length,
+      ),
+      contentItemId: owner,
+      position: item.position,
+      admissionClosed: item.admissionClosed,
+    );
+  }
+
+  ChatBatch itemPage(
+    ReadDemand demand, {
+    String? before,
+    CurrentProjection? current,
+  }) {
+    _demoDemand(demand);
+    final end = before == null ? itemH0 + 1 : boundary(before, 'items', itemH0);
+    final source = _history.displayItems;
+    var low = 0, high = source.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (source[mid].position! < end) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    final entries = <ChatEntry>[];
+    String? next;
+    for (var i = low - 1; i >= 0 && entries.length < demand.maxItems; i--) {
+      final token = i == 0
+          ? null
+          : cursor('items', itemH0, source[i].position!);
+      var candidate = fitItem(source[i], demand.maxBytes);
+      ChatBatch trial() => ChatBatch(
+        placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
+        entries: [ItemChatEntry(candidate), ...entries],
+        before: token,
+        current: current,
+      );
+      if (_demoBatchBytes(trial()) > demand.maxBytes) {
+        candidate = fitItem(source[i], 0);
+      }
+      if (_demoBatchBytes(trial()) > demand.maxBytes) {
+        if (entries.isEmpty) {
+          throw _demoQueryFailure('InvalidDemand: item envelope does not fit');
+        }
+        break;
+      }
+      entries.insert(0, ItemChatEntry(candidate));
+      next = token;
+    }
+    final batch = ChatBatch(
+      placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
+      entries: entries,
+      before: next,
+      current: current,
+    );
+    if (_demoBatchBytes(batch) > demand.maxBytes) {
+      throw _demoQueryFailure(
+        'InvalidDemand: item/current envelope does not fit',
+      );
     }
     return batch;
   }
@@ -798,6 +1204,7 @@ final class _DemoReader implements ConversationReader {
   // A Main current tool ref remains readable after sealing into Children.
   bool _ownsItem(String id) =>
       _history.byId.containsKey(id) ||
+      _history.payloads.containsKey(id) ||
       _api._pendingItems[threadId]?.containsKey(id) == true;
 
   Map<String, _DemoBody> _itemBodies(String id) {
@@ -852,7 +1259,7 @@ final class _DemoReader implements ConversationReader {
             {
               'key': e.key,
               'payload': e.payload,
-              'reference': _demoRefJson(e.reference),
+              'reference': contentRefToJson(e.reference),
             },
         ],
         'continuation': token,
@@ -983,7 +1390,7 @@ final class _DemoReader implements ConversationReader {
             {
               'id': e.id,
               'position': e.position,
-              'payload': _demoPayloadJson(e.payload),
+              'payload': chatPayloadToJson(e.payload),
             },
         ],
         'continuation': token,
@@ -1054,7 +1461,7 @@ final class _DemoReader implements ConversationReader {
                 {
                   'key': e.key,
                   'byteLength': e.value.length,
-                  'reference': _demoRefJson(
+                  'reference': contentRefToJson(
                     ContentRef(
                       databaseId: _history.epoch,
                       target: BodyContentTarget(
@@ -1186,6 +1593,9 @@ final class _DemoContentWatch implements ConversationContentWatch {
 }
 
 Map<String, Object?> _demoCurrentJson(CurrentProjection c) => {
+  'sources': c.sources.map(chatSourceStateToJson).toList(),
+  'items': c.items.map(timelineItemToJson).toList(),
+  'atoms': c.atoms.map(chatAtomToJson).toList(),
   'sourceEffectSeq': c.sourceEffectSeq,
   'logicalStatus': c.logicalStatus.name,
   'executionPresent': c.executionPresent,
@@ -1209,11 +1619,7 @@ Map<String, Object?> _demoCurrentJson(CurrentProjection c) => {
         },
   'activeTurn': c.activeTurn == null
       ? null
-      : {
-          'id': c.activeTurn!.id,
-          'phase': c.activeTurn!.phase.name,
-          'childrenParentId': c.activeTurn!.childrenParentId,
-        },
+      : {'id': c.activeTurn!.id, 'phase': c.activeTurn!.phase.name},
   'plan': c.plan == null
       ? null
       : {
@@ -1221,21 +1627,12 @@ Map<String, Object?> _demoCurrentJson(CurrentProjection c) => {
           'phase': c.plan!.phase.name,
           'document': c.plan!.document == null
               ? null
-              : _demoRefJson(c.plan!.document!),
+              : contentRefToJson(c.plan!.document!),
         },
   'interactions': c.interactions == null
       ? null
       : _demoCollectionJson(c.interactions!),
-  'previews': [
-    for (final p in c.previews)
-      {
-        'id': p.id,
-        'role': p.role.name,
-        'textChannel': p.textChannel?.name,
-        'text': p.text,
-        'reference': _demoRefJson(p.reference),
-      },
-  ],
+  'previews': c.previews.map(currentContentPreviewToJson).toList(),
   'collections': [for (final r in c.collections) _demoCollectionJson(r)],
 };
 Map<String, Object?> _demoCollectionJson(CurrentCollectionRef r) => {
@@ -1245,7 +1642,7 @@ Map<String, Object?> _demoCollectionJson(CurrentCollectionRef r) => {
 };
 int _demoBatchBytes(ChatBatch batch) => _demoEncoded({
   'placement': batch.placement.name,
-  'messages': [for (final m in batch.messages) _demoMessageJson(m)],
+  'entries': batch.entries.map(chatEntryToJson).toList(),
   'before': batch.before,
   'current': batch.current == null ? null : _demoCurrentJson(batch.current!),
 });
@@ -1295,7 +1692,7 @@ CurrentProjection _demoCurrent(_DemoReader reader, int budget) {
   final pending = api._pendingItemsOf(reader.threadId);
   // Only a bounded tail preview is pushed; complete member/tool lists are paged.
   final last = pending.lastOrNull;
-  if (last != null) {
+  if (last != null && last.content.itemKind != TimelineItemKind.workGroup) {
     final entry = history.bodies[last.id]?.entries.lastOrNull;
     if (entry != null) {
       final bytes = entry.value.range(0, (budget ~/ 16).clamp(1, 256));
@@ -1338,6 +1735,18 @@ CurrentProjection _demoCurrent(_DemoReader reader, int budget) {
     sourceEffectSeq: history.revision,
     logicalStatus: workspace.thread.status,
     executionPresent: workspace.runtime.execution != null,
+    sources: [
+      for (final source
+          in history.activeAtoms.values.map((atom) => atom.source).toSet())
+        history.sourceStates[source]!,
+    ],
+    items: history.liveDisplay.values.toList(),
+    atoms: [
+      for (final atom in history.activeAtoms.values)
+        if (history.liveDisplay.containsKey(atom.id) &&
+            history.liveDisplay[atom.id]!.kind != TimelineItemKind.workGroup)
+          atom,
+    ],
     active: activity == null
         ? null
         : CurrentActivityHead(
@@ -1363,7 +1772,6 @@ CurrentProjection _demoCurrent(_DemoReader reader, int budget) {
         : CurrentTurnHead(
             id: turn.turnId,
             phase: turn.state.activity ?? StudioTurnActivity.preparing,
-            childrenParentId: _demoParent(turn.turnId),
           ),
     plan: plan == null
         ? null
@@ -1409,6 +1817,7 @@ final class _DemoConversationFeed implements ConversationFeed {
           : null,
     );
     _completed = reader.h0;
+    _completedDisplay = reader.itemH0;
     _currentRevision = _history.revision;
     _initialState = ConversationStateEvent(
       frame: ThreadSnapshotFrame(
@@ -1432,6 +1841,7 @@ final class _DemoConversationFeed implements ConversationFeed {
   ChatBatch? _initial;
   ConversationStateEvent? _initialState;
   late int _completed, _currentRevision;
+  late int _completedDisplay;
   int _sent = 0, _acked = 0, _phase = 0;
   bool _started = false,
       _claimed = false,
@@ -1480,6 +1890,73 @@ final class _DemoConversationFeed implements ConversationFeed {
     }
   }
 
+  void _flushItems() {
+    final source = _history.displayItems;
+    var low = 0, high = source.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (source[mid].position! <= _completedDisplay) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    final selected = <TimelineItem>[];
+    for (
+      var i = low;
+      i < source.length && selected.length < _demand.maxItems;
+      i++
+    ) {
+      final candidate = reader.fitItem(source[i], 0);
+      final trial = ChatBatch(
+        placement: ChatPlacement.append,
+        entries: [...selected.map(ItemChatEntry.new), ItemChatEntry(candidate)],
+      );
+      if (_demoBatchBytes(trial) > _demand.maxBytes) {
+        if (selected.isEmpty) {
+          throw _demoQueryFailure('InvalidDemand: display item does not fit');
+        }
+        break;
+      }
+      selected.add(candidate);
+    }
+    CurrentProjection? current;
+    if (low + selected.length == source.length &&
+        (_pendingCurrent || _currentRevision != _history.revision)) {
+      current = _demoCurrent(reader, _demand.maxBytes);
+      final trial = ChatBatch(
+        placement: ChatPlacement.append,
+        entries: selected.map(ItemChatEntry.new).toList(),
+        current: current,
+      );
+      if (_demoBatchBytes(trial) > _demand.maxBytes) {
+        if (selected.isEmpty) {
+          throw _demoQueryFailure(
+            'InvalidDemand: current item snapshot does not fit',
+          );
+        }
+        // Deliver the committed prefix first. The next credit carries the full
+        // current replacement; None never retires any live display object.
+        current = null;
+      }
+    }
+    if (selected.isEmpty && current == null) return;
+    if (selected.isNotEmpty) _completedDisplay = selected.last.position!;
+    if (current != null) {
+      _pendingCurrent = false;
+      _currentRevision = _history.revision;
+    }
+    _send(
+      ConversationChatEvent(
+        batch: ChatBatch(
+          placement: ChatPlacement.append,
+          entries: selected.map(ItemChatEntry.new).toList(),
+          current: current,
+        ),
+      ),
+    );
+  }
+
   void _flush() {
     if (_closed || _ended || !_started || _sent != _acked) return;
     try {
@@ -1506,6 +1983,30 @@ final class _DemoConversationFeed implements ConversationFeed {
         );
         return;
       }
+      if (reader.scope is MainChatScope) {
+        _flushItems();
+        return;
+      }
+      if (reader.scope case GroupMembersChatScope(:final reference)
+          when _pendingCurrent || _currentRevision != _history.revision) {
+        final active =
+            _history.activeAtoms[_history.fixtureMembers[reference.itemId]];
+        if (active != null) {
+          final batch = ChatBatch(
+            placement: ChatPlacement.append,
+            entries: _history.entries([active]),
+          );
+          if (_demoBatchBytes(batch) > _demand.maxBytes) {
+            throw _demoQueryFailure(
+              'InvalidDemand: active group member does not fit',
+            );
+          }
+          _pendingCurrent = false;
+          _currentRevision = _history.revision;
+          _send(ConversationChatEvent(batch: batch));
+          return;
+        }
+      }
       final source = _history.index(reader.scope);
       var low = 0, high = source.length;
       while (low < high) {
@@ -1516,9 +2017,8 @@ final class _DemoConversationFeed implements ConversationFeed {
           high = mid;
         }
       }
-      final messages = <ChatMessage>[];
+      final messages = <ChatAtom>[];
       var through = _completed;
-      CurrentProjection? current;
       final head = _history.head;
       // Do not let current retire a member before its completion is delivered.
       for (
@@ -1529,14 +2029,14 @@ final class _DemoConversationFeed implements ConversationFeed {
         var message = reader.fit(source[i].message, _demand.maxBytes);
         final trial = ChatBatch(
           placement: ChatPlacement.append,
-          messages: [...messages, message],
+          entries: _history.entries([...messages, message]),
         );
         if (_demoBatchBytes(trial) > _demand.maxBytes) {
           message = reader.fit(source[i].message, 0);
           if (_demoBatchBytes(
                 ChatBatch(
                   placement: ChatPlacement.append,
-                  messages: [...messages, message],
+                  entries: _history.entries([...messages, message]),
                 ),
               ) >
               _demand.maxBytes) {
@@ -1551,59 +2051,17 @@ final class _DemoConversationFeed implements ConversationFeed {
         messages.add(message);
         through = source[i].order;
       }
-      var caughtUp = low + messages.length == source.length;
-      if (caughtUp &&
-          reader.scope is MainChatScope &&
-          (_pendingCurrent || _currentRevision != _history.revision)) {
-        current = _demoCurrent(reader, _demand.maxBytes);
-        if (_demoBatchBytes(
-              ChatBatch(
-                placement: ChatPlacement.append,
-                messages: messages,
-                current: current,
-              ),
-            ) >
-            _demand.maxBytes) {
-          // Compact the final handoff, never detach current from the completion
-          // that retires its members. Earlier prefixes may omit current.
-          for (var i = 0; i < messages.length; i++) {
-            messages[i] = reader.fit(messages[i], 0);
-          }
-          if (_demoBatchBytes(
-                ChatBatch(
-                  placement: ChatPlacement.append,
-                  messages: messages,
-                  current: current,
-                ),
-              ) >
-              _demand.maxBytes) {
-            if (messages.length < 2) {
-              throw _demoQueryFailure(
-                'InvalidDemand: completion/current handoff does not fit',
-              );
-            }
-            messages.removeLast();
-            through = source[low + messages.length - 1].order;
-            caughtUp = false;
-            current = null;
-          }
-        }
-      }
-      if (messages.isEmpty && current == null) {
+      final caughtUp = low + messages.length == source.length;
+      if (messages.isEmpty) {
         if (caughtUp) _completed = head;
         return;
-      }
-      if (current != null) {
-        _pendingCurrent = false;
-        _currentRevision = _history.revision;
       }
       _completed = caughtUp ? head : through;
       _send(
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            messages: messages,
-            current: current,
+            entries: _history.entries(messages),
           ),
         ),
       );

@@ -15,7 +15,12 @@ impl MigratorTraitSelf for PublishedV11 {
         }
         .migrations()
         .into_iter()
-        .filter(|migration| !matches!(migration.name(), DEMAND_CONVERSATION | MODEL_ROUTE_HEAD))
+        .filter(|migration| {
+            !matches!(
+                migration.name(),
+                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }
@@ -44,6 +49,8 @@ impl MigratorTraitSelf for PublishedV9 {
                     | COMBINED_CONTENT
                     | DEMAND_CONVERSATION
                     | MODEL_ROUTE_HEAD
+                    | ATOM_METADATA
+                    | TIMELINE_ITEMS
             )
         })
         .collect()
@@ -69,6 +76,7 @@ impl MigratorTraitSelf for PublishedV10 {
             migration.name() != COMBINED_CONTENT
                 && migration.name() != DEMAND_CONVERSATION
                 && migration.name() != MODEL_ROUTE_HEAD
+                && !matches!(migration.name(), ATOM_METADATA | TIMELINE_ITEMS)
                 && migration.name()
                     != if self.atomic {
                         METERING_FACTS
@@ -967,6 +975,7 @@ async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_
         let mut legacy: serde_json::Value =
             serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
         super::super::legacy_usage::flatten(&mut legacy);
+        legacy["state"]["usageSummary"]["turnDecodeMillis"] = 99.into();
         legacy["schemaVersion"] = 5.into();
         let payload = serde_json::to_string(&legacy)?;
         db.execute_raw(statement(

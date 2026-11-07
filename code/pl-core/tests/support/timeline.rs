@@ -384,7 +384,7 @@ impl ChatBudget for Budget {
                 .saturating_mul(6),
             PayloadMode::Deferred => 64,
         };
-        64 + header.item_id.len() * 6 + payload
+        64 + header.item_id.len() * 6 + header.metadata.len() * 6 + payload
     }
     fn manifest_bytes(&self, descriptor: &ContentDescriptor) -> usize {
         128 + 6

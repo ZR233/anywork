@@ -219,12 +219,13 @@ pub(super) async fn run_bounded_ssh(
         })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
+    let child = pl_remote_helper::process::spawn_background_command(command).map_err(|error| {
         RemoteClientError::Protocol(format!("SSH {stage} spawn failed: {error}"))
     })?;
-    let stdout = child.stdout().take();
-    let stderr = child.stderr().take();
-    let stdin = child.stdin().take();
+    let mut process = child.process;
+    let stdout = child.stdout;
+    let stderr = child.stderr;
+    let stdin = child.stdin;
     let operation = async {
         let write = async {
             if let (Some(mut stdin), Some(bytes)) = (stdin, input) {
@@ -234,7 +235,7 @@ pub(super) async fn run_bounded_ssh(
             Ok::<_, std::io::Error>(())
         };
         let (status, stdout, stderr, ()) = tokio::try_join!(
-            child.wait(),
+            process.wait(),
             capture_bounded(stdout, 65536),
             capture_bounded(stderr, 4096),
             write
@@ -253,7 +254,7 @@ pub(super) async fn run_bounded_ssh(
                 Err(_) => "timed out".into(),
                 Ok(Ok(_)) => unreachable!(),
             };
-            terminate_ssh_child(&mut child, stage)
+            terminate_ssh_child(&mut process, stage)
                 .await
                 .map_err(|error| {
                     RemoteClientError::Protocol(format!(
@@ -304,7 +305,7 @@ async fn capture_bounded<R: tokio::io::AsyncRead + Unpin>(
 }
 
 pub(super) async fn initialization_diagnostic(
-    stderr: Option<tokio::process::ChildStderr>,
+    stderr: Option<pl_remote_helper::process::BackgroundStderr>,
 ) -> Result<String, RemoteClientError> {
     use tokio::io::AsyncReadExt;
     let Some(stderr) = stderr else {

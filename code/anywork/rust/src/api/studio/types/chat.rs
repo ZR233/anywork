@@ -1,6 +1,8 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::{BridgeError, BridgeThreadSubscriptionUpdate};
+use super::{
+    BridgeError, BridgeThreadSubscriptionUpdate, BridgeTimelineItem, BridgeTimelineMembersRef,
+};
 
 #[derive(Debug, Clone)]
 pub struct BridgeConversationFrame {
@@ -33,6 +35,7 @@ pub struct BridgeReadDemand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatScope {
     Main,
+    GroupMembers { reference: BridgeTimelineMembersRef },
     Children { parent_id: String },
 }
 
@@ -54,19 +57,143 @@ pub enum BridgePayloadData {
     },
 }
 
-#[derive(Debug, Clone)]
-pub struct BridgeChatMessage {
-    pub id: String,
-    pub payload: BridgePayloadData,
-}
-
 /// A mechanical FRB boundary for the canonical pl-protocol ChatBatch.
 #[derive(Debug, Clone)]
 pub struct BridgeChatBatch {
     pub placement: BridgeChatPlacement,
-    pub messages: Vec<BridgeChatMessage>,
+    pub entries: Vec<BridgeChatEntry>,
     pub before: Option<String>,
     pub current: Option<BridgeCurrentProjection>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeChatEntry {
+    Item(Box<BridgeTimelineItem>),
+    Atom(Box<BridgeChatAtom>),
+    Source(BridgeChatSourceState),
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeChatAtom {
+    pub id: String,
+    pub completion_item_id: Option<String>,
+    pub completion_seq: Option<u64>,
+    pub source: BridgeChatSourceId,
+    pub source_state: Option<BridgeChatSourceState>,
+    pub source_order: Option<u64>,
+    pub kind: BridgeChatAtomKind,
+    pub delivery: BridgeChatDeliveryKind,
+    pub lifecycle: BridgeChatAtomLifecycle,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub tool: Option<BridgeChatToolIdentity>,
+    pub wait: Option<super::BridgeThreadWaitPresentation>,
+    pub text_channel: Option<BridgeThreadTextChannel>,
+    pub content_present: Option<bool>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub contents: Vec<BridgeChatAtomContent>,
+    pub payload: Option<BridgePayloadData>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeChatSourceId {
+    ForegroundTurn { turn_id: String },
+    Input { input_id: String },
+    BackgroundResult { message_id: String },
+    Operation { operation_id: String },
+    Receipt { receipt_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeChatFactPosition {
+    pub effect_seq: u64,
+    pub suborder: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChatAtomKind {
+    Input,
+    Text,
+    Reasoning,
+    ToolCall,
+    FileChange,
+    Skill,
+    Interaction,
+    Plan,
+    Compaction,
+    TurnReceipt,
+    Receipt,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChatDeliveryKind {
+    Foreground,
+    BackgroundHandoff,
+    Independent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChatActiveStatus {
+    Running,
+    Waiting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChatTerminalOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    Transferred,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeChatAtomLifecycle {
+    Active {
+        started: Option<BridgeChatFactPosition>,
+        status: BridgeChatActiveStatus,
+    },
+    Terminal {
+        started: Option<BridgeChatFactPosition>,
+        ended: Option<BridgeChatFactPosition>,
+        outcome: BridgeChatTerminalOutcome,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeChatToolIdentity {
+    pub call_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChatContentRole {
+    Body,
+    ReasoningSummary,
+    ToolArguments,
+    ToolOutput,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeChatAtomContent {
+    pub role: BridgeChatContentRole,
+    pub reference: BridgeContentRef,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeChatSourceLifecycle {
+    Unknown,
+    Active,
+    Ended { outcome: BridgeChatTerminalOutcome },
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeChatSourceState {
+    pub source: BridgeChatSourceId,
+    pub lifecycle: BridgeChatSourceLifecycle,
+    pub started: Option<BridgeChatFactPosition>,
+    pub ended: Option<BridgeChatFactPosition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +232,9 @@ pub struct BridgeCurrentProjection {
     pub execution_present: bool,
     pub active: Option<BridgeCurrentActivityHead>,
     pub active_turn: Option<BridgeCurrentTurnHead>,
+    pub sources: Vec<BridgeChatSourceState>,
+    pub items: Vec<BridgeTimelineItem>,
+    pub atoms: Vec<BridgeChatAtom>,
     pub plan: Option<BridgeCurrentPlanHead>,
     pub interactions: Option<BridgeCurrentCollectionRef>,
     pub previews: Vec<BridgeCurrentContentPreview>,
@@ -134,7 +264,6 @@ pub struct BridgeCurrentToolHead {
 pub struct BridgeCurrentTurnHead {
     pub id: String,
     pub phase: super::BridgeTurnPhase,
-    pub children_parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

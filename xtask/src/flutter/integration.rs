@@ -18,10 +18,12 @@ use super::{
 };
 
 pub(crate) const PREPARATION_ENV: &str = "ANYWORK_DESKTOP_TEST_PREPARATION";
+const XTASK_ENV: &str = "ANYWORK_DESKTOP_TEST_XTASK";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Inputs {
     workspace: PathBuf,
+    xtask: PathBuf,
     host: String,
     source: String,
     configuration: String,
@@ -41,9 +43,20 @@ pub(crate) struct DesktopTestPreparation {
 impl DesktopTestPreparation {
     pub(crate) fn prepare(workspace: &Path) -> Result<Self> {
         let workspace = workspace.canonicalize()?;
-        if let Some(directory) = std::env::var_os(PREPARATION_ENV) {
-            return Self::borrow(&workspace, Path::new(&directory));
+        match (
+            std::env::var_os(PREPARATION_ENV),
+            std::env::var_os(XTASK_ENV),
+        ) {
+            (None, None) => {}
+            (Some(directory), Some(xtask)) if !directory.is_empty() && !xtask.is_empty() => {
+                return Self::borrow(&workspace, Path::new(&directory), Path::new(&xtask));
+            }
+            _ => bail!("{PREPARATION_ENV} and {XTASK_ENV} must be set together and non-empty"),
         }
+        let xtask = std::env::current_exe()
+            .context("locate desktop test xtask entrypoint")?
+            .canonicalize()
+            .context("resolve desktop test xtask entrypoint")?;
         ensure_desktop_build_environment(DesktopTarget::current()?)?;
         let app = paths::studio_app_dir(&workspace);
         ensure_flutter_dependencies_for_build(&workspace, &app)?;
@@ -59,6 +72,7 @@ impl DesktopTestPreparation {
             configuration: configuration_identity(),
             host: format!("{}-{}-debug", std::env::consts::OS, std::env::consts::ARCH),
             workspace,
+            xtask,
             bridge,
             helpers,
             artifacts,
@@ -82,13 +96,16 @@ impl DesktopTestPreparation {
         })
     }
 
-    fn borrow(workspace: &Path, directory: &Path) -> Result<Self> {
-        require_live_owner(directory)?;
+    fn borrow(workspace: &Path, directory: &Path, xtask: &Path) -> Result<Self> {
         let inputs: Inputs = serde_json::from_slice(&fs::read(directory.join("inputs.json"))?)
             .context("read desktop preparation handoff")?;
         ensure!(
             inputs.workspace == workspace,
             "desktop preparation belongs to a different workspace"
+        );
+        ensure!(
+            inputs.xtask == xtask,
+            "desktop preparation xtask handoff entrypoint does not match its owner"
         );
         Ok(Self {
             inputs,
@@ -99,6 +116,10 @@ impl DesktopTestPreparation {
 
     pub(crate) fn validate(&self) -> Result<()> {
         require_live_owner(&self.directory)?;
+        ensure!(
+            self.inputs.xtask == std::env::current_exe()?.canonicalize()?,
+            "desktop preparation xtask entrypoint changed"
+        );
         ensure!(
             self.inputs.host
                 == format!("{}-{}-debug", std::env::consts::OS, std::env::consts::ARCH),
@@ -131,8 +152,11 @@ impl DesktopTestPreparation {
         &self.inputs.helpers
     }
 
-    pub(crate) fn environment(&self) -> (&'static str, &OsStr) {
-        (PREPARATION_ENV, self.directory.as_os_str())
+    pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 2] {
+        [
+            (PREPARATION_ENV, self.directory.as_os_str()),
+            (XTASK_ENV, self.inputs.xtask.as_os_str()),
+        ]
     }
 }
 
@@ -300,6 +324,7 @@ mod tests {
             host: format!("{}-{}-debug", std::env::consts::OS, std::env::consts::ARCH),
             source: source_identity(&workspace)?,
             configuration: configuration_identity(),
+            xtask: std::env::current_exe()?.canonicalize()?,
             bridge,
             helpers,
             artifacts: vec![(library.clone(), file_digest(&library)?)],
@@ -313,12 +338,13 @@ mod tests {
         let (_temp, owner) = fixture()?;
         let workspace = owner.workspace();
         for _ in 0..2 {
-            DesktopTestPreparation::borrow(workspace, &owner.directory)?.validate()?;
+            DesktopTestPreparation::borrow(workspace, &owner.directory, &owner.inputs.xtask)?
+                .validate()?;
         }
 
         fs::write(owner.bridge().dynamic_library(), b"replaced bridge")?;
         assert!(
-            DesktopTestPreparation::borrow(workspace, &owner.directory)?
+            DesktopTestPreparation::borrow(workspace, &owner.directory, &owner.inputs.xtask)?
                 .validate()
                 .unwrap_err()
                 .to_string()
@@ -338,7 +364,7 @@ mod tests {
         let source = workspace.join("new_source.rs");
         fs::write(&source, "changed source")?;
         assert!(
-            DesktopTestPreparation::borrow(workspace, &owner.directory)?
+            DesktopTestPreparation::borrow(workspace, &owner.directory, &owner.inputs.xtask)?
                 .validate()
                 .unwrap_err()
                 .to_string()
@@ -350,9 +376,9 @@ mod tests {
         // Even a leftover receipt cannot be reused after cancellation releases the lease.
         owner._owner.as_ref().unwrap().0.unlock()?;
         assert!(
-            DesktopTestPreparation::borrow(workspace, &owner.directory)
-                .err()
-                .unwrap()
+            DesktopTestPreparation::borrow(workspace, &owner.directory, &owner.inputs.xtask)?
+                .validate()
+                .unwrap_err()
                 .to_string()
                 .contains("owner has exited")
         );
@@ -363,15 +389,40 @@ mod tests {
     }
 
     #[test]
-    fn handoff_rejects_foreign_workspace_and_changed_configuration() -> Result<()> {
+    fn handoff_rejects_foreign_workspace_entrypoint_and_changed_configuration() -> Result<()> {
         let (_temp, mut owner) = fixture()?;
         let foreign = tempfile::tempdir()?;
         assert!(
-            DesktopTestPreparation::borrow(&foreign.path().canonicalize()?, &owner.directory)
+            DesktopTestPreparation::borrow(
+                &foreign.path().canonicalize()?,
+                &owner.directory,
+                &owner.inputs.xtask,
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("different workspace")
+        );
+        let foreign_xtask = owner.helpers().join("another-xtask");
+        assert!(
+            DesktopTestPreparation::borrow(owner.workspace(), &owner.directory, &foreign_xtask)
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("different workspace")
+                .contains("handoff entrypoint does not match")
+        );
+        let mut borrowed = DesktopTestPreparation::borrow(
+            owner.workspace(),
+            &owner.directory,
+            &owner.inputs.xtask,
+        )?;
+        borrowed.inputs.xtask = foreign_xtask;
+        assert!(
+            borrowed
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("xtask entrypoint changed")
         );
         owner.inputs.configuration = "different configuration".into();
         assert!(

@@ -101,19 +101,24 @@ async fn a_zero_item_batch_publishes_an_empty_frozen_result() {
 #[tokio::test]
 async fn republishing_the_same_payload_is_idempotent_without_a_new_sequence() {
     let session = Session::new(Stored::default(), epoch("run-1"));
+    let mut sealed = draft("x", "sealed body");
+    let metadata: Arc<[u8]> = Arc::from([0xff, 0, 7]);
+    sealed.metadata = metadata.clone();
     let first = session
-        .publish_batch(vec![draft("x", "sealed body")])
+        .publish_batch(vec![sealed.clone()])
         .await
         .expect("the first publication is admitted");
     // A duplicate inside one batch collapses to one completion.
     let batch = session
-        .publish_batch(vec![draft("x", "sealed body"), draft("x", "sealed body")])
+        .publish_batch(vec![sealed.clone(), sealed.clone()])
         .await
         .expect("an identical republish is idempotent");
     assert_eq!(batch.len(), 1, "intra-batch duplicates collapse");
     // And a later republish returns the very same frozen record, without a second sequence.
+    // Equality is by frozen bytes, not Arc allocation identity.
+    sealed.metadata = Arc::from(metadata.as_ref());
     let second = session
-        .publish_batch(vec![draft("x", "sealed body")])
+        .publish_batch(vec![sealed])
         .await
         .expect("an identical republish is idempotent");
     assert_eq!(
@@ -127,6 +132,54 @@ async fn republishing_the_same_payload_is_idempotent_without_a_new_sequence() {
     assert_eq!(session.head_seq(), 1, "idempotency consumes no sequence");
     let page = visible(&session, 10).await;
     assert_eq!(page.len(), 1, "the identity appears exactly once");
+    assert!(Arc::ptr_eq(&first[0].header.metadata, &metadata));
+    assert!(Arc::ptr_eq(&page[0].header.metadata, &metadata));
+}
+
+#[tokio::test]
+async fn metadata_conflicts_reject_whole_batches_in_pending_and_durable_storage() {
+    for durable in [false, true] {
+        let stored = Stored::default();
+        let session = Session::new(stored.clone(), epoch("metadata-run"));
+        let mut sealed = draft("sealed", "same payload");
+        sealed.metadata = Arc::from([0xff, 0, 1]);
+        let records = session.publish_batch(vec![sealed.clone()]).await.unwrap();
+        if durable {
+            stored.insert((*records[0]).clone());
+            session.confirm_durable(1).unwrap();
+        }
+        let mut conflicting = sealed.clone();
+        conflicting.metadata = Arc::from([0xff, 0, 2]);
+        let error = session
+            .publish_batch(vec![draft("not-published", "body"), conflicting])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ChatError::Conflict(id) if id == "sealed"));
+        assert_eq!(session.head_seq(), 1);
+        assert_eq!(session.durable_seq(), u64::from(durable));
+        let page = visible(&session, 10).await;
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].header.item_id, "sealed");
+        assert_eq!(page[0].header.metadata, sealed.metadata);
+
+        sealed.metadata = Arc::from([0xff, 0, 1]);
+        let repeated = session.publish_batch(vec![sealed.clone()]).await.unwrap();
+        assert_eq!(
+            repeated, records,
+            "durability must not weaken frozen identity equality"
+        );
+        assert_eq!(session.head_seq(), 1);
+
+        // Derived draft equality must also reject metadata-only divergence within a new batch.
+        sealed.item_id = "duplicate".into();
+        let mut different = sealed.clone();
+        different.metadata = Arc::from([0xfe, 0, 1]);
+        assert!(
+            matches!(session.publish_batch(vec![sealed, different]).await,
+            Err(ChatError::Conflict(id)) if id == "duplicate")
+        );
+        assert_eq!(session.head_seq(), 1);
+    }
 }
 
 #[tokio::test]

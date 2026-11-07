@@ -21,6 +21,7 @@ pub mod ssh;
 pub mod thread_activity;
 pub mod thread_preparation;
 pub mod thread_stream;
+pub mod timeline;
 pub mod updater;
 
 pub use acp::*;
@@ -46,4 +47,5 @@ pub use ssh::*;
 pub use thread_activity::*;
 pub use thread_preparation::*;
 pub use thread_stream::*;
+pub use timeline::*;
 pub use updater::*;

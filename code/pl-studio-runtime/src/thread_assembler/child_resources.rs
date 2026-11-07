@@ -227,6 +227,13 @@ impl super::StudioThreadAssembler {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
+        let closing = self.0.state().entries.get_mut(id).map(|entry| {
+            entry.ready = false;
+            entry.thread.clone()
+        });
+        if let Some(thread) = closing {
+            drop(self.prepare_close(id, &thread));
+        }
         // This retained disposal task owns only its cleanup gate, not the identity operation
         // permit. close_thread consumes that permit and may release it while joining producers.
         let operation = self.agent_operation(id).await;

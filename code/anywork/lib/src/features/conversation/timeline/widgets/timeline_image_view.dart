@@ -76,29 +76,34 @@ class _TimelineImageViewState extends State<TimelineImageView> {
         key: StudioDriverKeys.timelineImageRetry(widget._displayId),
         onPressed: widget.active ? widget.onRetry : null,
         icon: const Icon(Icons.refresh),
-        label: Text('图片读取失败：$error，重试'),
+        label: Text('图片读取失败：$error，重试', softWrap: true),
       );
     }
     final provider = _imageProvider;
     final width = widget.width;
     final height = widget.height;
     if (provider == null || width == null || height == null) {
-      return const SizedBox(
-        height: 120,
+      return const SizedBox.square(
+        dimension: 120,
         child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
       );
     }
-    return GestureDetector(
-      key: StudioDriverKeys.viewImageThumbnail(widget._displayId),
-      onTap: widget.active ? () => _showOriginal(context, provider) : null,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 360),
-        child: Image(
-          key: ValueKey(widget.imageIdentity),
-          image: ResizeImage.resizeIfNeeded(720, null, provider),
-          fit: BoxFit.contain,
-          width: width.toDouble(),
-          height: height.toDouble(),
+    // Thumbnail states own the bounded image cell. Errors above are text, not
+    // thumbnails, and must grow within the attachment Wrap's available width.
+    return SizedBox.square(
+      dimension: 120,
+      child: GestureDetector(
+        key: StudioDriverKeys.viewImageThumbnail(widget._displayId),
+        onTap: widget.active ? () => _showOriginal(context, provider) : null,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: Image(
+            key: ValueKey(widget.imageIdentity),
+            image: ResizeImage.resizeIfNeeded(720, null, provider),
+            fit: BoxFit.contain,
+            width: width.toDouble(),
+            height: height.toDouble(),
+          ),
         ),
       ),
     );

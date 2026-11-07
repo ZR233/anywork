@@ -23,7 +23,7 @@ Future<TestConversationFeed> _open(
 
 ChatBatch _append(String id, {CurrentProjection? current}) => ChatBatch(
   placement: ChatPlacement.append,
-  messages: [chatMessage(id: id)],
+  entries: [ItemChatEntry(chatMessage(id: id))],
   current: current,
 );
 
@@ -98,7 +98,7 @@ void main() {
       final ioStarted = Completer<void>();
       final older = ChatBatch(
         placement: ChatPlacement.prepend,
-        messages: [chatMessage(id: 'older')],
+        entries: [ItemChatEntry(chatMessage(id: 'older'))],
       );
       feed.reader.onOlder = (before, demand) async {
         expect(before, 'opaque');
@@ -160,7 +160,7 @@ void main() {
     );
     final older = ChatBatch(
       placement: ChatPlacement.prepend,
-      messages: [chatMessage(id: 'retired-page')],
+      entries: [ItemChatEntry(chatMessage(id: 'retired-page'))],
     );
     reply.complete(older);
     // The SDK reader's await was registered first on this very Future. Its
@@ -199,7 +199,7 @@ void main() {
     final feed = await _open(fixture, consumer);
     await feed.deliver(ConversationChatEvent(batch: chatSet()));
     final scope = fixture.session().content.openScope(generation: 1);
-    final older = ChatBatch(placement: ChatPlacement.prepend, messages: []);
+    final older = ChatBatch(placement: ChatPlacement.prepend, entries: []);
     feed.reader.onOlder = (_, __) async => older;
     final gate = Completer<void>();
     consumer.onApply = (_) => gate.future;
@@ -359,7 +359,10 @@ void main() {
     feed.send(ConversationChatEvent(batch: _append('accepted')));
     await feed.requestCloseStarted.future;
     expect(
-      fixture.consumers['thread']!.batches.last.messages.single.id,
+      (fixture.consumers['thread']!.batches.last.entries.single
+              as ItemChatEntry)
+          .item
+          .id,
       'accepted',
     );
     expect(feed.acknowledgements, [1]);

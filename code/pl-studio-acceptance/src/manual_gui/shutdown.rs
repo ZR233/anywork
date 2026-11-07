@@ -348,10 +348,33 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         // ----------------------------------------------------------- reopen --
         {
             let log = working.join("shutdown-reopen-gui.log");
-            let mut gui = start_gui(workspace, home, &log, working, "reopen")?;
+            let project = working.join("shutdown-normal-project");
+            let mut gui = start_gui_with(
+                workspace,
+                home,
+                &log,
+                working,
+                "reopen",
+                NativeLaunch {
+                    phase: Some("reopen"),
+                    project: Some(&project),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
+            )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let (native_pid, start_ticks, children, arm) =
-                arm_native(app_dir, &vm_url, &log, working, "reopen", interrupt)?;
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
+                "reopen",
+                "reopen_exit_requested",
+                &mut gui,
+                &mut fixture,
+                interrupt,
+                true,
+            )?;
             let native = wait_native_exit(
                 "reopen",
                 working,
@@ -368,7 +391,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "reopened the same home and requested the real app exit: {}",
+                    "reopened the same home, matched the saved completed turn and exact content inventory, and requested the real app exit: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -506,10 +529,33 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         // ------------------------------------------------------ busy-reopen --
         {
             let log = working.join("shutdown-busy-reopen-gui.log");
-            let mut gui = start_gui(workspace, home, &log, working, "busy-reopen")?;
+            let project = working.join("shutdown-normal-project");
+            let mut gui = start_gui_with(
+                workspace,
+                home,
+                &log,
+                working,
+                "busy-reopen",
+                NativeLaunch {
+                    phase: Some("busy-reopen"),
+                    project: Some(&project),
+                    output: Some(output),
+                    ..NativeLaunch::default()
+                },
+            )?;
             let vm_url = wait_for_vm(&log, &mut gui, &mut fixture, interrupt)?;
-            let (native_pid, start_ticks, children, arm) =
-                arm_native(app_dir, &vm_url, &log, working, "busy-reopen", interrupt)?;
+            let (native_pid, start_ticks, children, arm) = arm_after_stage(
+                app_dir,
+                &vm_url,
+                &log,
+                working,
+                "busy-reopen",
+                "busy-reopen_exit_requested",
+                &mut gui,
+                &mut fixture,
+                interrupt,
+                true,
+            )?;
             let native = wait_native_exit(
                 "busy-reopen",
                 working,
@@ -526,7 +572,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "reopened the same home after duplicate redirection: {}",
+                    "reopened the same home after duplicate redirection and matched the continued completed turn and exact content inventory: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1910,6 +1956,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         let _ = resume_fixture(&fixture);
     }
 
+    // Preserve the launch identity, assembly state and original launcher reports
+    // even when a phase fails before arming exit. The outer TempDir is removed.
+    // Keep the journey's original error primary if retention itself fails.
+    let retained_evidence = retain_native_evidence(working, output);
+    if let Err(error) = &retained_evidence {
+        eprintln!("shutdown evidence retention failed: {error:#}");
+    }
+
     // Canonical diagnostics live under `ANYWORK_HOME/studio/logs`; copy them so
     // the PID/stage/elapsed/error-code/correlation/persistence facts survive the
     // run's temporary coordination directory, and never rely on stdout alone.
@@ -2043,6 +2097,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         if !source.is_file() {
             continue;
         }
+        write_sanitized_log(&source, &output.join(name))?;
         let count = count_gui_errors(&source)?;
         if strict {
             strict_errors += count;
@@ -2086,6 +2141,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
     println!("Evidence: {} (human verdict pending)", output.display());
 
     journey?;
+    retained_evidence?;
 
     let fixture_status = fixture_result.as_ref().map(|status| status.to_string());
     ensure!(
@@ -2156,8 +2212,9 @@ fn start_gui_with(
     label: &str,
     launch: NativeLaunch<'_>,
 ) -> Result<OwnedProcess> {
-    let log = File::create(log_path)?;
     let report = native_report_path(working, label);
+    let (log_filename, native_report_filename) = launch_identity_filenames(log_path, &report)?;
+    let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
@@ -2211,7 +2268,117 @@ fn start_gui_with(
     if let Some(tmpdir) = launch.tmpdir {
         command.env("TMPDIR", tmpdir);
     }
-    OwnedProcess::start(&mut command, false)
+    let gui = OwnedProcess::start(&mut command, false)?;
+    write_launch_identity(
+        working,
+        label,
+        gui.child.id(),
+        proc_start_ticks(gui.child.id()),
+        log_filename,
+        native_report_filename,
+    )?;
+    Ok(gui)
+}
+
+fn launch_identity_filenames<'a>(
+    log_path: &'a Path,
+    report_path: &'a Path,
+) -> Result<(&'a str, &'a str)> {
+    let log_filename = log_path
+        .file_name()
+        .context("shutdown launcher log path has no filename")?
+        .to_str()
+        .context("shutdown launcher log filename is not valid UTF-8")?;
+    let native_report_filename = report_path
+        .file_name()
+        .context("shutdown launcher native report path has no filename")?
+        .to_str()
+        .context("shutdown launcher native report filename is not valid UTF-8")?;
+    Ok((log_filename, native_report_filename))
+}
+
+fn write_launch_identity(
+    working: &Path,
+    label: &str,
+    launcher_pid: u32,
+    launcher_start_ticks: Option<u64>,
+    log_filename: &str,
+    native_report_filename: &str,
+) -> Result<()> {
+    fs::write(
+        launch_identity_path(working, launcher_pid),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "label": label,
+            "launcherPid": launcher_pid,
+            "launcherStartTicks": launcher_start_ticks,
+            "logFile": log_filename,
+            "nativeReportFile": native_report_filename,
+        }))?,
+    )?;
+    Ok(())
+}
+
+fn launch_identity_path(working: &Path, launcher_pid: u32) -> PathBuf {
+    working.join(format!("shutdown-launch-{launcher_pid}.json"))
+}
+
+/// Snapshot only the process tree owned by this launcher, before any close.
+/// Start ticks are identity guards, not proof of natural exit.
+fn snapshot_launch(
+    working: &Path,
+    gui: &OwnedProcess,
+    known_native: Option<(u32, Option<u64>)>,
+) -> Result<()> {
+    let path = launch_identity_path(working, gui.child.id());
+    let mut identity = read_phase_json(&path)?;
+    if identity["nativePid"].is_u64() {
+        return Ok(());
+    }
+    let (pid, ticks) = match known_native {
+        Some(known) => known,
+        None => {
+            let log = identity["logFile"]
+                .as_str()
+                .context("shutdown launcher identity lost its log filename")?;
+            let pid = parse_native_pid(&working.join(log))?;
+            (pid, proc_start_ticks(pid))
+        }
+    };
+    identity["nativePid"] = serde_json::json!(pid);
+    identity["nativeStartTicks"] = serde_json::json!(ticks);
+    identity["descendantsBeforeExit"] = serde_json::json!(
+        owned_children(pid)
+            .into_iter()
+            .map(|pid| serde_json::json!({
+                "pid": pid,
+                "startTicks": proc_start_ticks(pid),
+            }))
+            .collect::<Vec<_>>()
+    );
+    fs::write(path, serde_json::to_vec_pretty(&identity)?)?;
+    Ok(())
+}
+
+/// Retain existing private evidence, not homes/configs or a second control API.
+fn retain_native_evidence(working: &Path, output: &Path) -> Result<()> {
+    for entry in fs::read_dir(working)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with("shutdown-native-exit-")
+            || name.starts_with("shutdown-launch-")
+            || name.starts_with("shutdown-assembly-")
+            || name.starts_with("shutdown-stage")
+        {
+            fs::copy(entry.path(), output.join(name))?;
+        }
+    }
+    Ok(())
 }
 
 /// Creates an isolated git project the operator can open as the session project.
@@ -2238,6 +2405,7 @@ fn wait_stage(
     interrupt: &mpsc::Receiver<()>,
     timeout: Duration,
 ) -> Result<()> {
+    snapshot_launch(working, gui, None)?;
     let marker = working.join(format!("shutdown-stage-{expected}"));
     let deadline = Instant::now() + timeout;
     loop {
@@ -2510,6 +2678,7 @@ fn wait_native_exit(
     timeout: Duration,
     arm: Instant,
 ) -> Result<NativeExit> {
+    snapshot_launch(working, gui, Some((pid, start_ticks)))?;
     let deadline = Instant::now() + timeout;
     loop {
         if !proc_alive(pid, start_ticks) {
@@ -2537,6 +2706,13 @@ fn wait_native_exit(
         thread::sleep(Duration::from_millis(50));
     }
     let report = read_native_report(&native_report_path(working, label), Duration::from_secs(20))?;
+    ensure!(
+        report["schema"] == "anywork-native-exit/1"
+            && report["cancelled"].as_bool() == Some(false)
+            && report["descendantsAtRootExit"].is_array()
+            && report["reclaimedDescendants"].is_array(),
+        "native exit report is missing lifecycle evidence or was cancelled: {report}"
+    );
     ensure!(
         report["pid"].as_u64() == Some(u64::from(pid)),
         "native exit report pid does not match the Driver-reported native pid {pid}: {report}"
@@ -2961,4 +3137,74 @@ fn signal_group(pid: u32, signal: &str) -> Result<()> {
         "failed to send {signal} to process group {pid}: {status}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        launch_identity_filenames, launch_identity_path, read_phase_json, write_launch_identity,
+    };
+    use anyhow::Result;
+    use std::fs;
+
+    #[test]
+    fn launch_identity_filenames_round_trip_as_utf8_json_strings() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let log_path = directory.path().join("shutdown normal 测试.log");
+        let report_path = directory.path().join("shutdown native 已退出.json");
+        fs::write(&log_path, b"synthetic launcher log\n")?;
+        fs::write(&report_path, b"{}\n")?;
+        let (log_filename, native_report_filename) =
+            launch_identity_filenames(&log_path, &report_path)?;
+        write_launch_identity(
+            directory.path(),
+            "normal",
+            42,
+            Some(123),
+            log_filename,
+            native_report_filename,
+        )?;
+
+        let identity = read_phase_json(&launch_identity_path(directory.path(), 42))?;
+        assert!(identity["logFile"].is_string());
+        assert!(identity["nativeReportFile"].is_string());
+        assert_eq!(
+            identity["logFile"].as_str(),
+            log_path.file_name().and_then(|name| name.to_str()),
+        );
+        assert_eq!(
+            identity["nativeReportFile"].as_str(),
+            report_path.file_name().and_then(|name| name.to_str()),
+        );
+        assert_eq!(
+            identity["logFile"].as_str(),
+            Some("shutdown normal 测试.log")
+        );
+        assert_eq!(
+            identity["nativeReportFile"].as_str(),
+            Some("shutdown native 已退出.json"),
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_identity_filenames_reject_non_utf8_before_launch() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        let invalid_path = Path::new(OsStr::from_bytes(b"shutdown-\xff.log"));
+        let valid_path = Path::new("shutdown valid.json");
+        let log_error = launch_identity_filenames(invalid_path, valid_path).unwrap_err();
+        assert_eq!(
+            log_error.to_string(),
+            "shutdown launcher log filename is not valid UTF-8",
+        );
+        let report_error = launch_identity_filenames(valid_path, invalid_path).unwrap_err();
+        assert_eq!(
+            report_error.to_string(),
+            "shutdown launcher native report filename is not valid UTF-8",
+        );
+    }
 }

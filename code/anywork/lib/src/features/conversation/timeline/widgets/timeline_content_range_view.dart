@@ -7,6 +7,17 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import 'timeline_activity_row.dart';
 
+/// The enclosing semantic disclosure is already the user's read intent.
+/// Mounted reasoning bodies therefore do not require a second click.
+class TimelineBodyReadIntent extends InheritedWidget {
+  const TimelineBodyReadIntent({required super.child, super.key});
+  static bool of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>() !=
+      null;
+  @override
+  bool updateShouldNotify(TimelineBodyReadIntent oldWidget) => false;
+}
+
 /// Pure presentation for one already-admitted bounded content window.
 ///
 /// The connector owns reads, eligibility, request generations, diagnostics and

@@ -72,11 +72,11 @@ pub(crate) struct RunGuiOptions {
     /// Run with ANYWORK_DEMO=true.
     #[arg(long)]
     pub(crate) demo: bool,
-    /// Register the debug-only Flutter content capture extension.
+    /// Register the non-release Flutter content capture extensions.
     #[arg(long, conflicts_with = "release")]
     pub(crate) capture: bool,
-    /// Enable official Flutter Driver/MCP inspection in a dedicated debug entrypoint.
-    #[arg(long, conflicts_with_all = ["release", "profile", "native_launch_target"])]
+    /// Enable official Driver observation; MCP widget inspection requires debug.
+    #[arg(long, conflicts_with_all = ["release", "native_launch_target"])]
     pub(crate) inspect: bool,
     /// Build the debug/profile bundle in profile/AOT mode.
     #[arg(long, requires = "native_launch")]
@@ -271,5 +271,45 @@ fn parse_forwarded_command(args: &[OsString]) -> Option<Command> {
             args: forwarded_args(),
         })),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    #[test]
+    fn profile_inspection_keeps_native_and_non_release_guards() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "run-gui",
+            "--native-launch",
+            "--profile",
+            "--inspect",
+            "--capture",
+        ])
+        .expect("the official Driver supports explicit native profile observation");
+        assert!(matches!(
+            cli.command,
+            Command::RunGui(options)
+                if options.native_launch && options.profile && options.inspect && options.capture
+        ));
+        for arguments in [
+            vec!["xtask", "run-gui", "--profile", "--inspect"],
+            vec!["xtask", "run-gui", "--release", "--inspect"],
+            vec![
+                "xtask",
+                "run-gui",
+                "--native-launch",
+                "--inspect",
+                "--native-launch-target",
+                "lib/main.dart",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(arguments).is_err(),
+                "inspection cannot bypass native profile or release/entrypoint protection"
+            );
+        }
     }
 }

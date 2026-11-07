@@ -106,24 +106,32 @@ fn question_history_arguments() -> String {
 
 /// 一次真实的三题问答，再用用户答案的隐藏 continuation 收束这一轮。
 pub fn gui_question_history_script() -> Vec<Step> {
+    script(None)
+}
+
+pub(super) fn script(gate: Option<&ReplyStage>) -> Vec<Step> {
     let mut script = RealtimeScript::new();
     let title = session_title_prompt(GUI_QUESTION_HISTORY_PROMPT);
     script.optional_title(&title);
     script.add(|step| {
+        let events = responses_tool_calls(
+            "question-history",
+            "fixture-model",
+            &[RealtimeToolCall {
+                item_id: "question-history-call",
+                call_id: "question-history-call",
+                name: "request_user_input",
+                arguments: question_history_arguments(),
+            }],
+        );
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_QUESTION_HISTORY_PROMPT,
             step,
-            Reply::Sse(responses_tool_calls(
-                "question-history",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "question-history-call",
-                    call_id: "question-history-call",
-                    name: "request_user_input",
-                    arguments: question_history_arguments(),
-                }],
-            )),
+            match gate {
+                Some(stage) => stage.gated(events[..1].to_vec(), events[1..].to_vec()),
+                None => Reply::Sse(events),
+            },
         )
     });
     script.optional_title(&title);

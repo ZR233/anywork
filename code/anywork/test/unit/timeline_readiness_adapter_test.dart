@@ -165,7 +165,17 @@ final class _AckObservedFeed extends RecordingConversationFeed {
       'event': frame.event.runtimeType.toString(),
       if (frame.event case ConversationChatEvent(:final batch)) ...{
         'placement': batch.placement.name,
-        'messageIds': batch.messages.map((message) => message.id).toList(),
+        'entries': [
+          for (final entry in batch.entries)
+            switch (entry) {
+              ItemChatEntry(:final item) => {'itemId': item.id},
+              ChatAtomEntry(:final atom) => {'atomId': atom.id},
+              ChatSourceEntry(:final state) => {
+                'source': state.source.toString(),
+                'lifecycle': state.lifecycle.runtimeType.toString(),
+              },
+            },
+        ],
       },
     });
     return frame;

@@ -5,15 +5,52 @@ import 'package:anywork_client/studio_client.dart';
 
 import 'directory_feed.dart';
 
-ChatMessage chatMessage({
+ChatAtom fixtureMember(String id) => ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: ChatAtomKind.receipt,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+);
+
+TimelineItem fixtureItem({required String id, required PayloadData payload}) =>
+    TimelineItem(
+      id: id,
+      contentItemId: id,
+      source: ReceiptChatSource(receiptId: id),
+      kind: TimelineItemKind.status,
+      atomKind: ChatAtomKind.receipt,
+      delivery: ChatDeliveryKind.independent,
+      outcome: ChatTerminalOutcome.completed,
+      admissionClosed: true,
+      contents: const [],
+      payload: payload,
+    );
+
+TimelineItem chatMessage({
   String id = 'item',
   String body = 'body',
   String? turnId = 'turn',
   String channel = 'final',
 }) {
   final inline = utf8.encode(body);
-  return ChatMessage(
+  return TimelineItem(
     id: id,
+    contentItemId: id,
+    source: ReceiptChatSource(receiptId: id),
+    kind: TimelineItemKind.text,
+    atomKind: ChatAtomKind.text,
+    delivery: ChatDeliveryKind.independent,
+    outcome: ChatTerminalOutcome.completed,
+    admissionClosed: true,
+    contents: const [],
     payload: InlinePayload(
       bytes: utf8.encode(
         jsonEncode({
@@ -41,17 +78,20 @@ CurrentProjection emptyCurrent() => CurrentProjection(
   sourceEffectSeq: 0,
   logicalStatus: ThreadStatusView.idle,
   executionPresent: false,
+  sources: const [],
+  items: const [],
+  atoms: const [],
   previews: const [],
   collections: const [],
 );
 
 ChatBatch chatSet({
-  List<ChatMessage>? messages,
+  List<TimelineItem>? messages,
   String? before,
   CurrentProjection? current,
 }) => ChatBatch(
   placement: ChatPlacement.set,
-  messages: messages ?? [chatMessage()],
+  entries: (messages ?? [chatMessage()]).map(ItemChatEntry.new).toList(),
   before: before,
   current: current ?? emptyCurrent(),
 );

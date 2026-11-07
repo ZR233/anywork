@@ -7545,6 +7545,15 @@ impl SseDecode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer),
+        );
+    }
+}
+
 impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7700,6 +7709,15 @@ impl SseDecode for Box<crate::api::studio::types::thread_stream::BridgeThreadSub
             <crate::api::studio::types::thread_stream::BridgeThreadSubscriptionUpdate>::sse_decode(
                 deserializer,
             ),
+        );
+    }
+}
+
+impl SseDecode for Box<crate::api::studio::types::timeline::BridgeTimelineItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::timeline::BridgeTimelineItem>::sse_decode(deserializer),
         );
     }
 }
@@ -10862,13 +10880,167 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeCancellingAgent {
     }
 }
 
+impl SseDecode for crate::api::studio::types::chat::BridgeChatActiveStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chat::BridgeChatActiveStatus::Running,
+            1 => crate::api::studio::types::chat::BridgeChatActiveStatus::Waiting,
+            _ => unreachable!("Invalid variant for BridgeChatActiveStatus: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatAtom {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_completionItemId = <Option<String>>::sse_decode(deserializer);
+        let mut var_completionSeq = <Option<u64>>::sse_decode(deserializer);
+        let mut var_source =
+            <crate::api::studio::types::chat::BridgeChatSourceId>::sse_decode(deserializer);
+        let mut var_sourceState =
+            <Option<crate::api::studio::types::chat::BridgeChatSourceState>>::sse_decode(
+                deserializer,
+            );
+        let mut var_sourceOrder = <Option<u64>>::sse_decode(deserializer);
+        let mut var_kind =
+            <crate::api::studio::types::chat::BridgeChatAtomKind>::sse_decode(deserializer);
+        let mut var_delivery =
+            <crate::api::studio::types::chat::BridgeChatDeliveryKind>::sse_decode(deserializer);
+        let mut var_lifecycle =
+            <crate::api::studio::types::chat::BridgeChatAtomLifecycle>::sse_decode(deserializer);
+        let mut var_turnId = <Option<String>>::sse_decode(deserializer);
+        let mut var_attemptId = <Option<String>>::sse_decode(deserializer);
+        let mut var_tool =
+            <Option<crate::api::studio::types::chat::BridgeChatToolIdentity>>::sse_decode(
+                deserializer,
+            );
+        let mut var_wait = <Option<
+            crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation,
+        >>::sse_decode(deserializer);
+        let mut var_textChannel =
+            <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_decode(
+                deserializer,
+            );
+        let mut var_contentPresent = <Option<bool>>::sse_decode(deserializer);
+        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_contents =
+            <Vec<crate::api::studio::types::chat::BridgeChatAtomContent>>::sse_decode(deserializer);
+        let mut var_payload =
+            <Option<crate::api::studio::types::chat::BridgePayloadData>>::sse_decode(deserializer);
+        return crate::api::studio::types::chat::BridgeChatAtom {
+            id: var_id,
+            completion_item_id: var_completionItemId,
+            completion_seq: var_completionSeq,
+            source: var_source,
+            source_state: var_sourceState,
+            source_order: var_sourceOrder,
+            kind: var_kind,
+            delivery: var_delivery,
+            lifecycle: var_lifecycle,
+            turn_id: var_turnId,
+            attempt_id: var_attemptId,
+            tool: var_tool,
+            wait: var_wait,
+            text_channel: var_textChannel,
+            content_present: var_contentPresent,
+            started_at: var_startedAt,
+            finished_at: var_finishedAt,
+            contents: var_contents,
+            payload: var_payload,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatAtomContent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_role =
+            <crate::api::studio::types::chat::BridgeChatContentRole>::sse_decode(deserializer);
+        let mut var_reference =
+            <crate::api::studio::types::chat::BridgeContentRef>::sse_decode(deserializer);
+        return crate::api::studio::types::chat::BridgeChatAtomContent {
+            role: var_role,
+            reference: var_reference,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatAtomKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chat::BridgeChatAtomKind::Input,
+            1 => crate::api::studio::types::chat::BridgeChatAtomKind::Text,
+            2 => crate::api::studio::types::chat::BridgeChatAtomKind::Reasoning,
+            3 => crate::api::studio::types::chat::BridgeChatAtomKind::ToolCall,
+            4 => crate::api::studio::types::chat::BridgeChatAtomKind::FileChange,
+            5 => crate::api::studio::types::chat::BridgeChatAtomKind::Skill,
+            6 => crate::api::studio::types::chat::BridgeChatAtomKind::Interaction,
+            7 => crate::api::studio::types::chat::BridgeChatAtomKind::Plan,
+            8 => crate::api::studio::types::chat::BridgeChatAtomKind::Compaction,
+            9 => crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt,
+            10 => crate::api::studio::types::chat::BridgeChatAtomKind::Receipt,
+            11 => crate::api::studio::types::chat::BridgeChatAtomKind::Unknown,
+            _ => unreachable!("Invalid variant for BridgeChatAtomKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatAtomLifecycle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_started = <Option<
+                    crate::api::studio::types::chat::BridgeChatFactPosition,
+                >>::sse_decode(deserializer);
+                let mut var_status =
+                    <crate::api::studio::types::chat::BridgeChatActiveStatus>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatAtomLifecycle::Active {
+                    started: var_started,
+                    status: var_status,
+                };
+            }
+            1 => {
+                let mut var_started = <Option<
+                    crate::api::studio::types::chat::BridgeChatFactPosition,
+                >>::sse_decode(deserializer);
+                let mut var_ended =
+                    <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_decode(
+                        deserializer,
+                    );
+                let mut var_outcome =
+                    <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatAtomLifecycle::Terminal {
+                    started: var_started,
+                    ended: var_ended,
+                    outcome: var_outcome,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::chat::BridgeChatBatch {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_placement =
             <crate::api::studio::types::chat::BridgeChatPlacement>::sse_decode(deserializer);
-        let mut var_messages =
-            <Vec<crate::api::studio::types::chat::BridgeChatMessage>>::sse_decode(deserializer);
+        let mut var_entries =
+            <Vec<crate::api::studio::types::chat::BridgeChatEntry>>::sse_decode(deserializer);
         let mut var_before = <Option<String>>::sse_decode(deserializer);
         let mut var_current =
             <Option<crate::api::studio::types::chat::BridgeCurrentProjection>>::sse_decode(
@@ -10876,9 +11048,81 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatBatch {
             );
         return crate::api::studio::types::chat::BridgeChatBatch {
             placement: var_placement,
-            messages: var_messages,
+            entries: var_entries,
             before: var_before,
             current: var_current,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatContentRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chat::BridgeChatContentRole::Body,
+            1 => crate::api::studio::types::chat::BridgeChatContentRole::ReasoningSummary,
+            2 => crate::api::studio::types::chat::BridgeChatContentRole::ToolArguments,
+            3 => crate::api::studio::types::chat::BridgeChatContentRole::ToolOutput,
+            _ => unreachable!("Invalid variant for BridgeChatContentRole: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatDeliveryKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chat::BridgeChatDeliveryKind::Foreground,
+            1 => crate::api::studio::types::chat::BridgeChatDeliveryKind::BackgroundHandoff,
+            2 => crate::api::studio::types::chat::BridgeChatDeliveryKind::Independent,
+            _ => unreachable!("Invalid variant for BridgeChatDeliveryKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_field0 =
+                    <Box<crate::api::studio::types::timeline::BridgeTimelineItem>>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatEntry::Item(var_field0);
+            }
+            1 => {
+                let mut var_field0 =
+                    <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatEntry::Atom(var_field0);
+            }
+            2 => {
+                let mut var_field0 =
+                    <crate::api::studio::types::chat::BridgeChatSourceState>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatEntry::Source(var_field0);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatFactPosition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_effectSeq = <u64>::sse_decode(deserializer);
+        let mut var_suborder = <u32>::sse_decode(deserializer);
+        return crate::api::studio::types::chat::BridgeChatFactPosition {
+            effect_seq: var_effectSeq,
+            suborder: var_suborder,
         };
     }
 }
@@ -11004,19 +11248,6 @@ impl SseDecode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSn
     }
 }
 
-impl SseDecode for crate::api::studio::types::chat::BridgeChatMessage {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_payload =
-            <crate::api::studio::types::chat::BridgePayloadData>::sse_decode(deserializer);
-        return crate::api::studio::types::chat::BridgeChatMessage {
-            id: var_id,
-            payload: var_payload,
-        };
-    }
-}
-
 impl SseDecode for crate::api::studio::types::chat::BridgeChatPlacement {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11039,6 +11270,15 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatScope {
                 return crate::api::studio::types::chat::BridgeChatScope::Main;
             }
             1 => {
+                let mut var_reference =
+                    <crate::api::studio::types::timeline::BridgeTimelineMembersRef>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatScope::GroupMembers {
+                    reference: var_reference,
+                };
+            }
+            2 => {
                 let mut var_parentId = <String>::sse_decode(deserializer);
                 return crate::api::studio::types::chat::BridgeChatScope::Children {
                     parent_id: var_parentId,
@@ -11048,6 +11288,125 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatScope {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatSourceId {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_turnId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeChatSourceId::ForegroundTurn {
+                    turn_id: var_turnId,
+                };
+            }
+            1 => {
+                let mut var_inputId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeChatSourceId::Input {
+                    input_id: var_inputId,
+                };
+            }
+            2 => {
+                let mut var_messageId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeChatSourceId::BackgroundResult {
+                    message_id: var_messageId,
+                };
+            }
+            3 => {
+                let mut var_operationId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeChatSourceId::Operation {
+                    operation_id: var_operationId,
+                };
+            }
+            4 => {
+                let mut var_receiptId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeChatSourceId::Receipt {
+                    receipt_id: var_receiptId,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatSourceLifecycle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::studio::types::chat::BridgeChatSourceLifecycle::Unknown;
+            }
+            1 => {
+                return crate::api::studio::types::chat::BridgeChatSourceLifecycle::Active;
+            }
+            2 => {
+                let mut var_outcome =
+                    <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::chat::BridgeChatSourceLifecycle::Ended {
+                    outcome: var_outcome,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatSourceState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_source =
+            <crate::api::studio::types::chat::BridgeChatSourceId>::sse_decode(deserializer);
+        let mut var_lifecycle =
+            <crate::api::studio::types::chat::BridgeChatSourceLifecycle>::sse_decode(deserializer);
+        let mut var_started =
+            <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_decode(
+                deserializer,
+            );
+        let mut var_ended =
+            <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::chat::BridgeChatSourceState {
+            source: var_source,
+            lifecycle: var_lifecycle,
+            started: var_started,
+            ended: var_ended,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatTerminalOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::chat::BridgeChatTerminalOutcome::Completed,
+            1 => crate::api::studio::types::chat::BridgeChatTerminalOutcome::Failed,
+            2 => crate::api::studio::types::chat::BridgeChatTerminalOutcome::Cancelled,
+            3 => crate::api::studio::types::chat::BridgeChatTerminalOutcome::Transferred,
+            _ => unreachable!("Invalid variant for BridgeChatTerminalOutcome: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::chat::BridgeChatToolIdentity {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_callId = <String>::sse_decode(deserializer);
+        let mut var_name = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::chat::BridgeChatToolIdentity {
+            call_id: var_callId,
+            name: var_name,
+        };
     }
 }
 
@@ -11742,6 +12101,14 @@ impl SseDecode for crate::api::studio::types::chat::BridgeCurrentProjection {
             <Option<crate::api::studio::types::chat::BridgeCurrentTurnHead>>::sse_decode(
                 deserializer,
             );
+        let mut var_sources =
+            <Vec<crate::api::studio::types::chat::BridgeChatSourceState>>::sse_decode(deserializer);
+        let mut var_items =
+            <Vec<crate::api::studio::types::timeline::BridgeTimelineItem>>::sse_decode(
+                deserializer,
+            );
+        let mut var_atoms =
+            <Vec<crate::api::studio::types::chat::BridgeChatAtom>>::sse_decode(deserializer);
         let mut var_plan =
             <Option<crate::api::studio::types::chat::BridgeCurrentPlanHead>>::sse_decode(
                 deserializer,
@@ -11763,6 +12130,9 @@ impl SseDecode for crate::api::studio::types::chat::BridgeCurrentProjection {
             execution_present: var_executionPresent,
             active: var_active,
             active_turn: var_activeTurn,
+            sources: var_sources,
+            items: var_items,
+            atoms: var_atoms,
             plan: var_plan,
             interactions: var_interactions,
             previews: var_previews,
@@ -11794,11 +12164,9 @@ impl SseDecode for crate::api::studio::types::chat::BridgeCurrentTurnHead {
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_phase =
             <crate::api::studio::types::thread_stream::BridgeTurnPhase>::sse_decode(deserializer);
-        let mut var_childrenParentId = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::chat::BridgeCurrentTurnHead {
             id: var_id,
             phase: var_phase,
-            children_parent_id: var_childrenParentId,
         };
     }
 }
@@ -17737,6 +18105,149 @@ impl SseDecode for crate::api::studio::types::thread_stream::item::BridgeThreadW
     }
 }
 
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineCategory {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::timeline::BridgeTimelineCategory::Thinking,
+            1 => crate::api::studio::types::timeline::BridgeTimelineCategory::Read,
+            2 => crate::api::studio::types::timeline::BridgeTimelineCategory::Image,
+            3 => crate::api::studio::types::timeline::BridgeTimelineCategory::Command,
+            4 => crate::api::studio::types::timeline::BridgeTimelineCategory::Search,
+            5 => crate::api::studio::types::timeline::BridgeTimelineCategory::Edit,
+            6 => crate::api::studio::types::timeline::BridgeTimelineCategory::Wait,
+            7 => crate::api::studio::types::timeline::BridgeTimelineCategory::Other,
+            _ => unreachable!("Invalid variant for BridgeTimelineCategory: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineCategoryCount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_category =
+            <crate::api::studio::types::timeline::BridgeTimelineCategory>::sse_decode(deserializer);
+        let mut var_count = <u32>::sse_decode(deserializer);
+        return crate::api::studio::types::timeline::BridgeTimelineCategoryCount {
+            category: var_category,
+            count: var_count,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_memberCount = <u32>::sse_decode(deserializer);
+        let mut var_activeCount = <u32>::sse_decode(deserializer);
+        let mut var_failedCount = <u32>::sse_decode(deserializer);
+        let mut var_cancelledCount = <u32>::sse_decode(deserializer);
+        let mut var_categories = <Vec<
+            crate::api::studio::types::timeline::BridgeTimelineCategoryCount,
+        >>::sse_decode(deserializer);
+        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
+        return crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+            member_count: var_memberCount,
+            active_count: var_activeCount,
+            failed_count: var_failedCount,
+            cancelled_count: var_cancelledCount,
+            categories: var_categories,
+            started_at: var_startedAt,
+            finished_at: var_finishedAt,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineItem {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_kind =
+            <crate::api::studio::types::timeline::BridgeTimelineItemKind>::sse_decode(deserializer);
+        let mut var_source =
+            <crate::api::studio::types::chat::BridgeChatSourceId>::sse_decode(deserializer);
+        let mut var_atomKind =
+            <Option<crate::api::studio::types::chat::BridgeChatAtomKind>>::sse_decode(deserializer);
+        let mut var_delivery =
+            <crate::api::studio::types::chat::BridgeChatDeliveryKind>::sse_decode(deserializer);
+        let mut var_outcome =
+            <Option<crate::api::studio::types::chat::BridgeChatTerminalOutcome>>::sse_decode(
+                deserializer,
+            );
+        let mut var_textChannel =
+            <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_decode(
+                deserializer,
+            );
+        let mut var_turnId = <Option<String>>::sse_decode(deserializer);
+        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_summary = <Option<
+            crate::api::studio::types::timeline::BridgeTimelineGroupSummary,
+        >>::sse_decode(deserializer);
+        let mut var_members =
+            <Option<crate::api::studio::types::timeline::BridgeTimelineMembersRef>>::sse_decode(
+                deserializer,
+            );
+        let mut var_contents =
+            <Vec<crate::api::studio::types::chat::BridgeChatAtomContent>>::sse_decode(deserializer);
+        let mut var_payload =
+            <Option<crate::api::studio::types::chat::BridgePayloadData>>::sse_decode(deserializer);
+        let mut var_contentItemId = <Option<String>>::sse_decode(deserializer);
+        let mut var_position = <Option<u64>>::sse_decode(deserializer);
+        let mut var_admissionClosed = <bool>::sse_decode(deserializer);
+        return crate::api::studio::types::timeline::BridgeTimelineItem {
+            id: var_id,
+            kind: var_kind,
+            source: var_source,
+            atom_kind: var_atomKind,
+            delivery: var_delivery,
+            outcome: var_outcome,
+            text_channel: var_textChannel,
+            turn_id: var_turnId,
+            started_at: var_startedAt,
+            finished_at: var_finishedAt,
+            summary: var_summary,
+            members: var_members,
+            contents: var_contents,
+            payload: var_payload,
+            content_item_id: var_contentItemId,
+            position: var_position,
+            admission_closed: var_admissionClosed,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineItemKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::timeline::BridgeTimelineItemKind::Text,
+            1 => crate::api::studio::types::timeline::BridgeTimelineItemKind::WorkGroup,
+            2 => crate::api::studio::types::timeline::BridgeTimelineItemKind::Status,
+            _ => unreachable!("Invalid variant for BridgeTimelineItemKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineMembersRef {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_databaseId = <String>::sse_decode(deserializer);
+        let mut var_projectionVersion = <u32>::sse_decode(deserializer);
+        let mut var_projectionGeneration = <String>::sse_decode(deserializer);
+        let mut var_itemId = <String>::sse_decode(deserializer);
+        return crate::api::studio::types::timeline::BridgeTimelineMembersRef {
+            database_id: var_databaseId,
+            projection_version: var_projectionVersion,
+            projection_generation: var_projectionGeneration,
+            item_id: var_itemId,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::thread_stream::BridgeTodoItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -19488,14 +19999,52 @@ impl SseDecode for Vec<crate::api::studio::types::bots::BridgeBotSnapshot> {
     }
 }
 
-impl SseDecode for Vec<crate::api::studio::types::chat::BridgeChatMessage> {
+impl SseDecode for Vec<crate::api::studio::types::chat::BridgeChatAtom> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::chat::BridgeChatAtomContent> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(
-                <crate::api::studio::types::chat::BridgeChatMessage>::sse_decode(deserializer),
+                <crate::api::studio::types::chat::BridgeChatAtomContent>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::chat::BridgeChatEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::studio::types::chat::BridgeChatEntry>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::chat::BridgeChatSourceState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::chat::BridgeChatSourceState>::sse_decode(deserializer),
             );
         }
         return ans_;
@@ -20202,6 +20751,36 @@ impl SseDecode for Vec<crate::api::studio::types::thread_stream::item::BridgeThr
     }
 }
 
+impl SseDecode for Vec<crate::api::studio::types::timeline::BridgeTimelineCategoryCount> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::timeline::BridgeTimelineCategoryCount>::sse_decode(
+                    deserializer,
+                ),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::studio::types::timeline::BridgeTimelineItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::timeline::BridgeTimelineItem>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::thread_stream::BridgeTodoItem> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -20776,6 +21355,32 @@ impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotRegistration
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::chat::BridgeChatAtomKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgeChatAtomKind>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chat::BridgeChatFactPosition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgeChatFactPosition>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -20799,6 +21404,47 @@ impl SseDecode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGpt
                 <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_decode(
                     deserializer,
                 ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chat::BridgeChatSourceState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgeChatSourceState>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chat::BridgeChatTerminalOutcome> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::chat::BridgeChatToolIdentity> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgeChatToolIdentity>::sse_decode(deserializer),
             );
         } else {
             return None;
@@ -21178,6 +21824,19 @@ impl SseDecode for Option<crate::api::studio::types::delegation::BridgeNewThread
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::chat::BridgePayloadData> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::chat::BridgePayloadData>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgePlanDocument> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -21487,6 +22146,36 @@ impl SseDecode
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::api::studio::types::thread_stream::item::BridgeThreadWaitTargetStatus>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::timeline::BridgeTimelineGroupSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::timeline::BridgeTimelineGroupSummary>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::timeline::BridgeTimelineMembersRef> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::timeline::BridgeTimelineMembersRef>::sse_decode(
+                    deserializer,
+                ),
+            );
         } else {
             return None;
         }
@@ -26586,11 +27275,163 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::Bridg
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatActiveStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Running => 0.into_dart(),
+            Self::Waiting => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatActiveStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatActiveStatus>
+    for crate::api::studio::types::chat::BridgeChatActiveStatus
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatActiveStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatAtom {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.completion_item_id.into_into_dart().into_dart(),
+            self.completion_seq.into_into_dart().into_dart(),
+            self.source.into_into_dart().into_dart(),
+            self.source_state.into_into_dart().into_dart(),
+            self.source_order.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.delivery.into_into_dart().into_dart(),
+            self.lifecycle.into_into_dart().into_dart(),
+            self.turn_id.into_into_dart().into_dart(),
+            self.attempt_id.into_into_dart().into_dart(),
+            self.tool.into_into_dart().into_dart(),
+            self.wait.into_into_dart().into_dart(),
+            self.text_channel.into_into_dart().into_dart(),
+            self.content_present.into_into_dart().into_dart(),
+            self.started_at.into_into_dart().into_dart(),
+            self.finished_at.into_into_dart().into_dart(),
+            self.contents.into_into_dart().into_dart(),
+            self.payload.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatAtom
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatAtom>
+    for crate::api::studio::types::chat::BridgeChatAtom
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatAtom {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatAtomContent {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.role.into_into_dart().into_dart(),
+            self.reference.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatAtomContent
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatAtomContent>
+    for crate::api::studio::types::chat::BridgeChatAtomContent
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatAtomContent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatAtomKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Input => 0.into_dart(),
+            Self::Text => 1.into_dart(),
+            Self::Reasoning => 2.into_dart(),
+            Self::ToolCall => 3.into_dart(),
+            Self::FileChange => 4.into_dart(),
+            Self::Skill => 5.into_dart(),
+            Self::Interaction => 6.into_dart(),
+            Self::Plan => 7.into_dart(),
+            Self::Compaction => 8.into_dart(),
+            Self::TurnReceipt => 9.into_dart(),
+            Self::Receipt => 10.into_dart(),
+            Self::Unknown => 11.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatAtomKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatAtomKind>
+    for crate::api::studio::types::chat::BridgeChatAtomKind
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatAtomKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatAtomLifecycle {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::chat::BridgeChatAtomLifecycle::Active {
+                started,
+                status,
+            } => [
+                0.into_dart(),
+                started.into_into_dart().into_dart(),
+                status.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::studio::types::chat::BridgeChatAtomLifecycle::Terminal {
+                started,
+                ended,
+                outcome,
+            } => [
+                1.into_dart(),
+                started.into_into_dart().into_dart(),
+                ended.into_into_dart().into_dart(),
+                outcome.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatAtomLifecycle
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatAtomLifecycle>
+    for crate::api::studio::types::chat::BridgeChatAtomLifecycle
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatAtomLifecycle {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatBatch {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.placement.into_into_dart().into_dart(),
-            self.messages.into_into_dart().into_dart(),
+            self.entries.into_into_dart().into_dart(),
             self.before.into_into_dart().into_dart(),
             self.current.into_into_dart().into_dart(),
         ]
@@ -26605,6 +27446,102 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeCh
     for crate::api::studio::types::chat::BridgeChatBatch
 {
     fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatBatch {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatContentRole {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Body => 0.into_dart(),
+            Self::ReasoningSummary => 1.into_dart(),
+            Self::ToolArguments => 2.into_dart(),
+            Self::ToolOutput => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatContentRole
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatContentRole>
+    for crate::api::studio::types::chat::BridgeChatContentRole
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatContentRole {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatDeliveryKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Foreground => 0.into_dart(),
+            Self::BackgroundHandoff => 1.into_dart(),
+            Self::Independent => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatDeliveryKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatDeliveryKind>
+    for crate::api::studio::types::chat::BridgeChatDeliveryKind
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatDeliveryKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatEntry {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::chat::BridgeChatEntry::Item(field0) => {
+                [0.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatEntry::Atom(field0) => {
+                [1.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatEntry::Source(field0) => {
+                [2.into_dart(), field0.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatEntry
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatEntry>
+    for crate::api::studio::types::chat::BridgeChatEntry
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatEntry {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatFactPosition {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.effect_seq.into_into_dart().into_dart(),
+            self.suborder.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatFactPosition
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatFactPosition>
+    for crate::api::studio::types::chat::BridgeChatFactPosition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatFactPosition {
         self
     }
 }
@@ -26784,27 +27721,6 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatMessage {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.id.into_into_dart().into_dart(),
-            self.payload.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::chat::BridgeChatMessage
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatMessage>
-    for crate::api::studio::types::chat::BridgeChatMessage
-{
-    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatMessage {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatPlacement {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -26831,8 +27747,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCh
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
             crate::api::studio::types::chat::BridgeChatScope::Main => [0.into_dart()].into_dart(),
+            crate::api::studio::types::chat::BridgeChatScope::GroupMembers { reference } => {
+                [1.into_dart(), reference.into_into_dart().into_dart()].into_dart()
+            }
             crate::api::studio::types::chat::BridgeChatScope::Children { parent_id } => {
-                [1.into_dart(), parent_id.into_into_dart().into_dart()].into_dart()
+                [2.into_dart(), parent_id.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -26848,6 +27767,139 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeCh
     for crate::api::studio::types::chat::BridgeChatScope
 {
     fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatScope {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatSourceId {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::chat::BridgeChatSourceId::ForegroundTurn { turn_id } => {
+                [0.into_dart(), turn_id.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::Input { input_id } => {
+                [1.into_dart(), input_id.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::BackgroundResult {
+                message_id,
+            } => [2.into_dart(), message_id.into_into_dart().into_dart()].into_dart(),
+            crate::api::studio::types::chat::BridgeChatSourceId::Operation { operation_id } => {
+                [3.into_dart(), operation_id.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::Receipt { receipt_id } => {
+                [4.into_dart(), receipt_id.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatSourceId
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatSourceId>
+    for crate::api::studio::types::chat::BridgeChatSourceId
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatSourceId {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatSourceLifecycle {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Unknown => {
+                [0.into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Active => {
+                [1.into_dart()].into_dart()
+            }
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Ended { outcome } => {
+                [2.into_dart(), outcome.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatSourceLifecycle
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatSourceLifecycle>
+    for crate::api::studio::types::chat::BridgeChatSourceLifecycle
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatSourceLifecycle {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatSourceState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.source.into_into_dart().into_dart(),
+            self.lifecycle.into_into_dart().into_dart(),
+            self.started.into_into_dart().into_dart(),
+            self.ended.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatSourceState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatSourceState>
+    for crate::api::studio::types::chat::BridgeChatSourceState
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatSourceState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatTerminalOutcome {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Completed => 0.into_dart(),
+            Self::Failed => 1.into_dart(),
+            Self::Cancelled => 2.into_dart(),
+            Self::Transferred => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatTerminalOutcome
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatTerminalOutcome>
+    for crate::api::studio::types::chat::BridgeChatTerminalOutcome
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatTerminalOutcome {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeChatToolIdentity {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.call_id.into_into_dart().into_dart(),
+            self.name.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::chat::BridgeChatToolIdentity
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeChatToolIdentity>
+    for crate::api::studio::types::chat::BridgeChatToolIdentity
+{
+    fn into_into_dart(self) -> crate::api::studio::types::chat::BridgeChatToolIdentity {
         self
     }
 }
@@ -27773,6 +28825,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCu
             self.execution_present.into_into_dart().into_dart(),
             self.active.into_into_dart().into_dart(),
             self.active_turn.into_into_dart().into_dart(),
+            self.sources.into_into_dart().into_dart(),
+            self.items.into_into_dart().into_dart(),
+            self.atoms.into_into_dart().into_dart(),
             self.plan.into_into_dart().into_dart(),
             self.interactions.into_into_dart().into_dart(),
             self.previews.into_into_dart().into_dart(),
@@ -27820,7 +28875,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCu
         [
             self.id.into_into_dart().into_dart(),
             self.phase.into_into_dart().into_dart(),
-            self.children_parent_id.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -34881,6 +35935,172 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::timeline::BridgeTimelineCategory {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Thinking => 0.into_dart(),
+            Self::Read => 1.into_dart(),
+            Self::Image => 2.into_dart(),
+            Self::Command => 3.into_dart(),
+            Self::Search => 4.into_dart(),
+            Self::Edit => 5.into_dart(),
+            Self::Wait => 6.into_dart(),
+            Self::Other => 7.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineCategory
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::timeline::BridgeTimelineCategory>
+    for crate::api::studio::types::timeline::BridgeTimelineCategory
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineCategory {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::timeline::BridgeTimelineCategoryCount
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.category.into_into_dart().into_dart(),
+            self.count.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineCategoryCount
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::timeline::BridgeTimelineCategoryCount,
+    > for crate::api::studio::types::timeline::BridgeTimelineCategoryCount
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineCategoryCount {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::timeline::BridgeTimelineGroupSummary
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.member_count.into_into_dart().into_dart(),
+            self.active_count.into_into_dart().into_dart(),
+            self.failed_count.into_into_dart().into_dart(),
+            self.cancelled_count.into_into_dart().into_dart(),
+            self.categories.into_into_dart().into_dart(),
+            self.started_at.into_into_dart().into_dart(),
+            self.finished_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineGroupSummary
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::timeline::BridgeTimelineGroupSummary,
+    > for crate::api::studio::types::timeline::BridgeTimelineGroupSummary
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::timeline::BridgeTimelineItem {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.source.into_into_dart().into_dart(),
+            self.atom_kind.into_into_dart().into_dart(),
+            self.delivery.into_into_dart().into_dart(),
+            self.outcome.into_into_dart().into_dart(),
+            self.text_channel.into_into_dart().into_dart(),
+            self.turn_id.into_into_dart().into_dart(),
+            self.started_at.into_into_dart().into_dart(),
+            self.finished_at.into_into_dart().into_dart(),
+            self.summary.into_into_dart().into_dart(),
+            self.members.into_into_dart().into_dart(),
+            self.contents.into_into_dart().into_dart(),
+            self.payload.into_into_dart().into_dart(),
+            self.content_item_id.into_into_dart().into_dart(),
+            self.position.into_into_dart().into_dart(),
+            self.admission_closed.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineItem
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::timeline::BridgeTimelineItem>
+    for crate::api::studio::types::timeline::BridgeTimelineItem
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineItem {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::timeline::BridgeTimelineItemKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Text => 0.into_dart(),
+            Self::WorkGroup => 1.into_dart(),
+            Self::Status => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineItemKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::timeline::BridgeTimelineItemKind>
+    for crate::api::studio::types::timeline::BridgeTimelineItemKind
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineItemKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::timeline::BridgeTimelineMembersRef
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.database_id.into_into_dart().into_dart(),
+            self.projection_version.into_into_dart().into_dart(),
+            self.projection_generation.into_into_dart().into_dart(),
+            self.item_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::timeline::BridgeTimelineMembersRef
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::timeline::BridgeTimelineMembersRef>
+    for crate::api::studio::types::timeline::BridgeTimelineMembersRef
+{
+    fn into_into_dart(self) -> crate::api::studio::types::timeline::BridgeTimelineMembersRef {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::thread_stream::BridgeTodoItem {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -37545,6 +38765,13 @@ impl SseEncode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(*self, serializer);
+    }
+}
+
 impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -37675,6 +38902,13 @@ impl SseEncode for Box<crate::api::studio::types::thread_stream::BridgeThreadSub
         <crate::api::studio::types::thread_stream::BridgeThreadSubscriptionUpdate>::sse_encode(
             *self, serializer,
         );
+    }
+}
+
+impl SseEncode for Box<crate::api::studio::types::timeline::BridgeTimelineItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::timeline::BridgeTimelineItem>::sse_encode(*self, serializer);
     }
 }
 
@@ -40306,6 +41540,140 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeCancellingAgent {
     }
 }
 
+impl SseEncode for crate::api::studio::types::chat::BridgeChatActiveStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::chat::BridgeChatActiveStatus::Running => 0,
+                crate::api::studio::types::chat::BridgeChatActiveStatus::Waiting => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatAtom {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <Option<String>>::sse_encode(self.completion_item_id, serializer);
+        <Option<u64>>::sse_encode(self.completion_seq, serializer);
+        <crate::api::studio::types::chat::BridgeChatSourceId>::sse_encode(self.source, serializer);
+        <Option<crate::api::studio::types::chat::BridgeChatSourceState>>::sse_encode(
+            self.source_state,
+            serializer,
+        );
+        <Option<u64>>::sse_encode(self.source_order, serializer);
+        <crate::api::studio::types::chat::BridgeChatAtomKind>::sse_encode(self.kind, serializer);
+        <crate::api::studio::types::chat::BridgeChatDeliveryKind>::sse_encode(
+            self.delivery,
+            serializer,
+        );
+        <crate::api::studio::types::chat::BridgeChatAtomLifecycle>::sse_encode(
+            self.lifecycle,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.turn_id, serializer);
+        <Option<String>>::sse_encode(self.attempt_id, serializer);
+        <Option<crate::api::studio::types::chat::BridgeChatToolIdentity>>::sse_encode(
+            self.tool, serializer,
+        );
+        <Option<crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation>>::sse_encode(self.wait, serializer);
+        <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_encode(
+            self.text_channel,
+            serializer,
+        );
+        <Option<bool>>::sse_encode(self.content_present, serializer);
+        <Option<i64>>::sse_encode(self.started_at, serializer);
+        <Option<i64>>::sse_encode(self.finished_at, serializer);
+        <Vec<crate::api::studio::types::chat::BridgeChatAtomContent>>::sse_encode(
+            self.contents,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgePayloadData>>::sse_encode(
+            self.payload,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatAtomContent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chat::BridgeChatContentRole>::sse_encode(self.role, serializer);
+        <crate::api::studio::types::chat::BridgeContentRef>::sse_encode(self.reference, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatAtomKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::chat::BridgeChatAtomKind::Input => 0,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Text => 1,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Reasoning => 2,
+                crate::api::studio::types::chat::BridgeChatAtomKind::ToolCall => 3,
+                crate::api::studio::types::chat::BridgeChatAtomKind::FileChange => 4,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Skill => 5,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Interaction => 6,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Plan => 7,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Compaction => 8,
+                crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt => 9,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Receipt => 10,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Unknown => 11,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatAtomLifecycle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::chat::BridgeChatAtomLifecycle::Active {
+                started,
+                status,
+            } => {
+                <i32>::sse_encode(0, serializer);
+                <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+                    started, serializer,
+                );
+                <crate::api::studio::types::chat::BridgeChatActiveStatus>::sse_encode(
+                    status, serializer,
+                );
+            }
+            crate::api::studio::types::chat::BridgeChatAtomLifecycle::Terminal {
+                started,
+                ended,
+                outcome,
+            } => {
+                <i32>::sse_encode(1, serializer);
+                <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+                    started, serializer,
+                );
+                <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+                    ended, serializer,
+                );
+                <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_encode(
+                    outcome, serializer,
+                );
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for crate::api::studio::types::chat::BridgeChatBatch {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -40313,8 +41681,8 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatBatch {
             self.placement,
             serializer,
         );
-        <Vec<crate::api::studio::types::chat::BridgeChatMessage>>::sse_encode(
-            self.messages,
+        <Vec<crate::api::studio::types::chat::BridgeChatEntry>>::sse_encode(
+            self.entries,
             serializer,
         );
         <Option<String>>::sse_encode(self.before, serializer);
@@ -40322,6 +41690,78 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatBatch {
             self.current,
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatContentRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::chat::BridgeChatContentRole::Body => 0,
+                crate::api::studio::types::chat::BridgeChatContentRole::ReasoningSummary => 1,
+                crate::api::studio::types::chat::BridgeChatContentRole::ToolArguments => 2,
+                crate::api::studio::types::chat::BridgeChatContentRole::ToolOutput => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatDeliveryKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::chat::BridgeChatDeliveryKind::Foreground => 0,
+                crate::api::studio::types::chat::BridgeChatDeliveryKind::BackgroundHandoff => 1,
+                crate::api::studio::types::chat::BridgeChatDeliveryKind::Independent => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::chat::BridgeChatEntry::Item(field0) => {
+                <i32>::sse_encode(0, serializer);
+                <Box<crate::api::studio::types::timeline::BridgeTimelineItem>>::sse_encode(
+                    field0, serializer,
+                );
+            }
+            crate::api::studio::types::chat::BridgeChatEntry::Atom(field0) => {
+                <i32>::sse_encode(1, serializer);
+                <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_encode(
+                    field0, serializer,
+                );
+            }
+            crate::api::studio::types::chat::BridgeChatEntry::Source(field0) => {
+                <i32>::sse_encode(2, serializer);
+                <crate::api::studio::types::chat::BridgeChatSourceState>::sse_encode(
+                    field0, serializer,
+                );
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatFactPosition {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.effect_seq, serializer);
+        <u32>::sse_encode(self.suborder, serializer);
     }
 }
 
@@ -40413,14 +41853,6 @@ impl SseEncode for crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginSn
     }
 }
 
-impl SseEncode for crate::api::studio::types::chat::BridgeChatMessage {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
-        <crate::api::studio::types::chat::BridgePayloadData>::sse_encode(self.payload, serializer);
-    }
-}
-
 impl SseEncode for crate::api::studio::types::chat::BridgeChatPlacement {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -40445,14 +41877,120 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatScope {
             crate::api::studio::types::chat::BridgeChatScope::Main => {
                 <i32>::sse_encode(0, serializer);
             }
-            crate::api::studio::types::chat::BridgeChatScope::Children { parent_id } => {
+            crate::api::studio::types::chat::BridgeChatScope::GroupMembers { reference } => {
                 <i32>::sse_encode(1, serializer);
+                <crate::api::studio::types::timeline::BridgeTimelineMembersRef>::sse_encode(
+                    reference, serializer,
+                );
+            }
+            crate::api::studio::types::chat::BridgeChatScope::Children { parent_id } => {
+                <i32>::sse_encode(2, serializer);
                 <String>::sse_encode(parent_id, serializer);
             }
             _ => {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatSourceId {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::chat::BridgeChatSourceId::ForegroundTurn { turn_id } => {
+                <i32>::sse_encode(0, serializer);
+                <String>::sse_encode(turn_id, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::Input { input_id } => {
+                <i32>::sse_encode(1, serializer);
+                <String>::sse_encode(input_id, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::BackgroundResult {
+                message_id,
+            } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(message_id, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::Operation { operation_id } => {
+                <i32>::sse_encode(3, serializer);
+                <String>::sse_encode(operation_id, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceId::Receipt { receipt_id } => {
+                <i32>::sse_encode(4, serializer);
+                <String>::sse_encode(receipt_id, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatSourceLifecycle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Unknown => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Active => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::studio::types::chat::BridgeChatSourceLifecycle::Ended { outcome } => {
+                <i32>::sse_encode(2, serializer);
+                <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_encode(
+                    outcome, serializer,
+                );
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatSourceState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chat::BridgeChatSourceId>::sse_encode(self.source, serializer);
+        <crate::api::studio::types::chat::BridgeChatSourceLifecycle>::sse_encode(
+            self.lifecycle,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+            self.started,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+            self.ended, serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatTerminalOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::chat::BridgeChatTerminalOutcome::Completed => 0,
+                crate::api::studio::types::chat::BridgeChatTerminalOutcome::Failed => 1,
+                crate::api::studio::types::chat::BridgeChatTerminalOutcome::Cancelled => 2,
+                crate::api::studio::types::chat::BridgeChatTerminalOutcome::Transferred => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::chat::BridgeChatToolIdentity {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.call_id, serializer);
+        <String>::sse_encode(self.name, serializer);
     }
 }
 
@@ -40948,6 +42486,14 @@ impl SseEncode for crate::api::studio::types::chat::BridgeCurrentProjection {
             self.active_turn,
             serializer,
         );
+        <Vec<crate::api::studio::types::chat::BridgeChatSourceState>>::sse_encode(
+            self.sources,
+            serializer,
+        );
+        <Vec<crate::api::studio::types::timeline::BridgeTimelineItem>>::sse_encode(
+            self.items, serializer,
+        );
+        <Vec<crate::api::studio::types::chat::BridgeChatAtom>>::sse_encode(self.atoms, serializer);
         <Option<crate::api::studio::types::chat::BridgeCurrentPlanHead>>::sse_encode(
             self.plan, serializer,
         );
@@ -40984,7 +42530,6 @@ impl SseEncode for crate::api::studio::types::chat::BridgeCurrentTurnHead {
         <crate::api::studio::types::thread_stream::BridgeTurnPhase>::sse_encode(
             self.phase, serializer,
         );
-        <Option<String>>::sse_encode(self.children_parent_id, serializer);
     }
 }
 
@@ -45514,6 +47059,131 @@ crate::api::studio::types::thread_stream::item::BridgeThreadWaitTargetStatus::In
     }
 }
 
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineCategory {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Thinking => 0,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Read => 1,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Image => 2,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Command => 3,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Search => 4,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Edit => 5,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Wait => 6,
+                crate::api::studio::types::timeline::BridgeTimelineCategory::Other => 7,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineCategoryCount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::timeline::BridgeTimelineCategory>::sse_encode(
+            self.category,
+            serializer,
+        );
+        <u32>::sse_encode(self.count, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.member_count, serializer);
+        <u32>::sse_encode(self.active_count, serializer);
+        <u32>::sse_encode(self.failed_count, serializer);
+        <u32>::sse_encode(self.cancelled_count, serializer);
+        <Vec<crate::api::studio::types::timeline::BridgeTimelineCategoryCount>>::sse_encode(
+            self.categories,
+            serializer,
+        );
+        <Option<i64>>::sse_encode(self.started_at, serializer);
+        <Option<i64>>::sse_encode(self.finished_at, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineItem {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <crate::api::studio::types::timeline::BridgeTimelineItemKind>::sse_encode(
+            self.kind, serializer,
+        );
+        <crate::api::studio::types::chat::BridgeChatSourceId>::sse_encode(self.source, serializer);
+        <Option<crate::api::studio::types::chat::BridgeChatAtomKind>>::sse_encode(
+            self.atom_kind,
+            serializer,
+        );
+        <crate::api::studio::types::chat::BridgeChatDeliveryKind>::sse_encode(
+            self.delivery,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgeChatTerminalOutcome>>::sse_encode(
+            self.outcome,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_encode(
+            self.text_channel,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.turn_id, serializer);
+        <Option<i64>>::sse_encode(self.started_at, serializer);
+        <Option<i64>>::sse_encode(self.finished_at, serializer);
+        <Option<crate::api::studio::types::timeline::BridgeTimelineGroupSummary>>::sse_encode(
+            self.summary,
+            serializer,
+        );
+        <Option<crate::api::studio::types::timeline::BridgeTimelineMembersRef>>::sse_encode(
+            self.members,
+            serializer,
+        );
+        <Vec<crate::api::studio::types::chat::BridgeChatAtomContent>>::sse_encode(
+            self.contents,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgePayloadData>>::sse_encode(
+            self.payload,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.content_item_id, serializer);
+        <Option<u64>>::sse_encode(self.position, serializer);
+        <bool>::sse_encode(self.admission_closed, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineItemKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::timeline::BridgeTimelineItemKind::Text => 0,
+                crate::api::studio::types::timeline::BridgeTimelineItemKind::WorkGroup => 1,
+                crate::api::studio::types::timeline::BridgeTimelineItemKind::Status => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineMembersRef {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.database_id, serializer);
+        <u32>::sse_encode(self.projection_version, serializer);
+        <String>::sse_encode(self.projection_generation, serializer);
+        <String>::sse_encode(self.item_id, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::thread_stream::BridgeTodoItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -46846,12 +48516,42 @@ impl SseEncode for Vec<crate::api::studio::types::bots::BridgeBotSnapshot> {
     }
 }
 
-impl SseEncode for Vec<crate::api::studio::types::chat::BridgeChatMessage> {
+impl SseEncode for Vec<crate::api::studio::types::chat::BridgeChatAtom> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::studio::types::chat::BridgeChatMessage>::sse_encode(item, serializer);
+            <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::chat::BridgeChatAtomContent> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::chat::BridgeChatAtomContent>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::chat::BridgeChatEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::chat::BridgeChatEntry>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::chat::BridgeChatSourceState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::chat::BridgeChatSourceState>::sse_encode(item, serializer);
         }
     }
 }
@@ -47402,6 +49102,28 @@ impl SseEncode for Vec<crate::api::studio::types::thread_stream::item::BridgeThr
     }
 }
 
+impl SseEncode for Vec<crate::api::studio::types::timeline::BridgeTimelineCategoryCount> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::timeline::BridgeTimelineCategoryCount>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::studio::types::timeline::BridgeTimelineItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::timeline::BridgeTimelineItem>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::thread_stream::BridgeTodoItem> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -47860,6 +49582,28 @@ impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotRegistration
     }
 }
 
+impl SseEncode for Option<crate::api::studio::types::chat::BridgeChatAtomKind> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgeChatAtomKind>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chat::BridgeChatFactPosition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgeChatFactPosition>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGptAccountInfo> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -47878,6 +49622,40 @@ impl SseEncode for Option<crate::api::studio::types::chatgpt_auth::BridgeChatGpt
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::chatgpt_auth::BridgeChatGptLoginFailure>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chat::BridgeChatSourceState> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgeChatSourceState>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chat::BridgeChatTerminalOutcome> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgeChatTerminalOutcome>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::chat::BridgeChatToolIdentity> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgeChatToolIdentity>::sse_encode(
                 value, serializer,
             );
         }
@@ -48184,6 +49962,16 @@ impl SseEncode for Option<crate::api::studio::types::delegation::BridgeNewThread
     }
 }
 
+impl SseEncode for Option<crate::api::studio::types::chat::BridgePayloadData> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::chat::BridgePayloadData>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgePlanDocument> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -48458,6 +50246,30 @@ impl SseEncode
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::thread_stream::item::BridgeThreadWaitTargetStatus>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::timeline::BridgeTimelineGroupSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::timeline::BridgeTimelineGroupSummary>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::timeline::BridgeTimelineMembersRef> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::timeline::BridgeTimelineMembersRef>::sse_encode(
+                value, serializer,
+            );
         }
     }
 }

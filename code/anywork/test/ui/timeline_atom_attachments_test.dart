@@ -147,6 +147,12 @@ void main() {
             ),
           ),
         );
+        expect(mediaItems, isEmpty);
+        expect(reads, 0);
+        await tester.tap(
+          find.byKey(const ValueKey('timeline-tool-details:tool')),
+        );
+        await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('report.txt'), findsOneWidget);
         expect(find.byType(TimelineAttachmentsConnector), findsOneWidget);
         expect(mediaItems, isNotEmpty);

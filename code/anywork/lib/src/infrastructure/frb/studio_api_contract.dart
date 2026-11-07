@@ -2640,6 +2640,10 @@ class FrbStudioTransport
           threadId: threadId,
           scope: switch (scope) {
             MainChatScope() => const frb_chat_types.BridgeChatScope.main(),
+            GroupMembersChatScope(:final reference) =>
+              frb_chat_types.BridgeChatScope.groupMembers(
+                reference: _timelineMembersToFrb(reference),
+              ),
             ChildrenChatScope(:final parentId) =>
               frb_chat_types.BridgeChatScope.children(parentId: parentId),
           },

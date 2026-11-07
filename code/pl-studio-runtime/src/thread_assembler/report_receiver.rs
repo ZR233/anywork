@@ -143,6 +143,12 @@ impl AgentServices {
             let operation = owner.agent_operation(parent).await;
             let recipient = {
                 let state = owner.0.state();
+                // Final close rejects new execution but still owns the original
+                // admitted report. This private storage write never resumes it.
+                let closing_inbox = matches!(write, StorageWrite::Inbox(_))
+                    && (state.sealed_agents.contains_key(parent) || state.closing)
+                    && !state.unpublished_children.contains_key(parent)
+                    && !state.preparing_children.contains_key(parent);
                 if state.creating.contains_key(parent) {
                     Recipient::Preparing
                 } else {
@@ -168,6 +174,7 @@ impl AgentServices {
                             }
                             EntryPurpose::Execution
                                 if (entry.ready
+                                    || closing_inbox
                                     || matches!(write, StorageWrite::ReviewDelivery(_)))
                                     && entry.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>

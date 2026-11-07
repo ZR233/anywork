@@ -1,0 +1,230 @@
+import 'dart:convert';
+
+import 'models.dart';
+
+String _threadTextChannelToJson(ThreadTextChannel channel) =>
+    channel == ThreadTextChannel.finalAnswer ? 'final' : channel.name;
+
+/// Mechanical canonical conversation JSON. No presentation grouping or state.
+Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
+  'id': atom.id,
+  'completionItemId': atom.completionItemId,
+  'completionSeq': atom.completionSeq,
+  'source': chatSourceIdToJson(atom.source),
+  if (atom.sourceState case final state?)
+    'sourceState': chatSourceStateToJson(state),
+  'sourceOrder': atom.sourceOrder,
+  'kind': atom.kind.name,
+  'delivery': atom.delivery.name,
+  'lifecycle': switch (atom.lifecycle) {
+    ActiveChatAtom(:final started, :final status) => {
+      'kind': 'active',
+      'started': chatFactPositionToJson(started),
+      'status': status.name,
+    },
+    TerminalChatAtom(:final started, :final ended, :final outcome) => {
+      'kind': 'terminal',
+      'started': chatFactPositionToJson(started),
+      'ended': chatFactPositionToJson(ended),
+      'outcome': outcome.name,
+    },
+  },
+  'turnId': atom.turnId,
+  'attemptId': atom.attemptId,
+  'tool': atom.tool == null
+      ? null
+      : {'callId': atom.tool!.callId, 'name': atom.tool!.name},
+  if (atom.wait case final wait?) 'wait': _threadWaitToJson(wait),
+  'textChannel': atom.textChannel == null
+      ? null
+      : _threadTextChannelToJson(atom.textChannel!),
+  if (atom.contentPresent != null) 'contentPresent': atom.contentPresent,
+  'startedAt': atom.startedAt,
+  'finishedAt': atom.finishedAt,
+  'contents': [
+    for (final content in atom.contents)
+      {
+        'role': content.role.name,
+        'reference': contentRefToJson(content.reference),
+      },
+  ],
+  'payload': atom.payload == null ? null : chatPayloadToJson(atom.payload!),
+};
+
+Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
+  'intent': switch (wait.intent) {
+    ThreadWaitEventsIntentView(:final targets, :final timeoutMs) => {
+      'kind': 'events',
+      'data': {
+        'targets': [
+          for (final target in targets)
+            {
+              'taskId': target.taskId,
+              if (target.toolName != null) 'toolName': target.toolName,
+              if (target.summary != null) 'summary': target.summary,
+              if (target.summaryTruncated) 'summaryTruncated': true,
+              if (target.status != null) 'status': target.status!.name,
+            },
+        ],
+        'timeoutMs': timeoutMs,
+      },
+    },
+    ThreadWaitTimerIntentView(:final durationMs) => {
+      'kind': 'timer',
+      'data': {'durationMs': durationMs},
+    },
+  },
+  'state': wait.state.name,
+  if (wait.messagesReady != null) 'messagesReady': wait.messagesReady,
+};
+
+Map<String, Object?> chatEntryToJson(ChatEntry entry) => switch (entry) {
+  ItemChatEntry(:final item) => {
+    'kind': 'item',
+    'value': timelineItemToJson(item),
+  },
+  ChatAtomEntry(:final atom) => {'kind': 'atom', 'value': chatAtomToJson(atom)},
+  ChatSourceEntry(:final state) => {
+    'kind': 'source',
+    'value': chatSourceStateToJson(state),
+  },
+};
+
+Map<String, Object?> timelineMembersRefToJson(TimelineMembersRef reference) => {
+  'databaseId': reference.databaseId,
+  'projectionVersion': reference.projectionVersion,
+  'projectionGeneration': reference.projectionGeneration,
+  'itemId': reference.itemId,
+};
+
+Map<String, Object?> timelineItemToJson(TimelineItem item) => {
+  'id': item.id,
+  'kind': item.kind.name,
+  'source': chatSourceIdToJson(item.source),
+  if (item.atomKind != null) 'atomKind': item.atomKind!.name,
+  'delivery': item.delivery.name,
+  if (item.outcome != null) 'outcome': item.outcome!.name,
+  if (item.textChannel != null)
+    'textChannel': _threadTextChannelToJson(item.textChannel!),
+  if (item.turnId != null) 'turnId': item.turnId,
+  'startedAt': item.startedAt,
+  'finishedAt': item.finishedAt,
+  if (item.summary case final summary?)
+    'summary': {
+      'memberCount': summary.memberCount,
+      'activeCount': summary.activeCount,
+      'failedCount': summary.failedCount,
+      'cancelledCount': summary.cancelledCount,
+      'categories': [
+        for (final category in summary.categories)
+          {'category': category.category.name, 'count': category.count},
+      ],
+      'startedAt': summary.startedAt,
+      'finishedAt': summary.finishedAt,
+    },
+  if (item.members case final reference?)
+    'members': timelineMembersRefToJson(reference),
+  if (item.contents.isNotEmpty)
+    'contents': [
+      for (final content in item.contents)
+        {
+          'role': content.role.name,
+          'reference': contentRefToJson(content.reference),
+        },
+    ],
+  if (item.payload case final payload?) 'payload': chatPayloadToJson(payload),
+  if (item.contentItemId != null) 'contentItemId': item.contentItemId,
+  'position': item.position,
+  'admissionClosed': item.admissionClosed,
+};
+
+/// Encodes a current preview using the same canonical channel names as items.
+Map<String, Object?> currentContentPreviewToJson(
+  CurrentContentPreview preview,
+) => {
+  'id': preview.id,
+  'role': preview.role.name,
+  if (preview.textChannel != null)
+    'textChannel': _threadTextChannelToJson(preview.textChannel!),
+  'text': preview.text,
+  'reference': contentRefToJson(preview.reference),
+};
+
+/// Counts the canonical UTF-8 entry, including the discriminant and envelope.
+/// The caller owns the workset; this function retains no atom or encoded bytes.
+int chatAtomEntryEncodedLength(ChatAtom atom) => utf8
+    .encode(jsonEncode({'kind': 'atom', 'value': chatAtomToJson(atom)}))
+    .length;
+
+Map<String, Object?> chatSourceIdToJson(ChatSourceId source) =>
+    switch (source) {
+      ForegroundTurnChatSource(:final turnId) => {
+        'kind': 'foregroundTurn',
+        'turnId': turnId,
+      },
+      InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
+      BackgroundResultChatSource(:final messageId) => {
+        'kind': 'backgroundResult',
+        'messageId': messageId,
+      },
+      OperationChatSource(:final operationId) => {
+        'kind': 'operation',
+        'operationId': operationId,
+      },
+      ReceiptChatSource(:final receiptId) => {
+        'kind': 'receipt',
+        'receiptId': receiptId,
+      },
+    };
+
+Map<String, Object?>? chatFactPositionToJson(ChatFactPosition? position) =>
+    position == null
+    ? null
+    : {'effectSeq': position.effectSeq, 'suborder': position.suborder};
+
+Map<String, Object?> chatSourceStateToJson(ChatSourceState state) => {
+  'source': chatSourceIdToJson(state.source),
+  'lifecycle': switch (state.lifecycle) {
+    UnknownChatSource() => {'kind': 'unknown'},
+    ActiveChatSource() => {'kind': 'active'},
+    EndedChatSource(:final outcome) => {
+      'kind': 'ended',
+      'outcome': outcome.name,
+    },
+  },
+  'started': chatFactPositionToJson(state.started),
+  'ended': chatFactPositionToJson(state.ended),
+};
+
+Map<String, Object?> chatPayloadToJson(PayloadData payload) =>
+    switch (payload) {
+      InlinePayload(:final bytes) => {'kind': 'inline', 'bytes': bytes},
+      DeferredPayload(:final reference, :final byteLength) => {
+        'kind': 'deferred',
+        'reference': contentRefToJson(reference),
+        'byteLength': byteLength,
+      },
+    };
+
+Map<String, Object?> contentRefToJson(ContentRef reference) => {
+  'databaseId': reference.databaseId,
+  'target': switch (reference.target) {
+    ItemPayloadTarget(:final itemId) => {
+      'kind': 'itemPayload',
+      'itemId': itemId,
+    },
+    BodyContentTarget(:final owner, :final key) => {
+      'kind': 'body',
+      'owner': switch (owner) {
+        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
+        CurrentContentOwner(:final domain, :final id, :final revision) => {
+          'kind': 'current',
+          'domain': domain,
+          'id': id,
+          'revision': revision,
+        },
+      },
+      'key': key,
+    },
+  },
+};

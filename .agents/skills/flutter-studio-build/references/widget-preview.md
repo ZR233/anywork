@@ -1,5 +1,11 @@
 # 项目组件预览入口
 
+## 按目标选择无头入口
+
+界面设计对齐优先使用官方无头 Widget 测试或 Widget Previewer；项目入口为
+`cargo xtask preview-gui --headless --no-devtools`。截图注明合成组件预览，
+原生插件、FRB、持久化、真实窗口及进程退出由相应原生入口证明。
+
 通用 `@Preview`、主题、尺寸与交互方法使用用户级官方 `flutter-add-widget-preview`；
 布局问题使用 `flutter-fix-layout-issues`，测试使用 `flutter-add-widget-test`。这里只维护项目差异。
 

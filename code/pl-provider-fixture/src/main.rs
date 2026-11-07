@@ -12,11 +12,10 @@ use pl_provider_fixture::{
     FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS,
     GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES, ReadyFile, WebSearchFault, WebSearchOptions,
     gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
-    gui_plan_recovery_script, gui_question_history_script, gui_realtime_script, gui_script,
-    gui_shutdown_script, gui_statistics_script, gui_stress_body_large_script,
-    gui_stress_body_script, gui_stress_script, gui_timeline_history_20k_script,
-    gui_timeline_history_script, gui_tool_scroll_script, gui_wait_events_script,
-    gui_web_search_script, gui_websocket_recovery_script,
+    gui_plan_recovery_script, gui_realtime_script, gui_script, gui_shutdown_script,
+    gui_statistics_script, gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
+    gui_timeline_history_20k_script, gui_timeline_history_script, gui_tool_scroll_script,
+    gui_wait_events_script, gui_web_search_script, gui_websocket_recovery_script,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -220,6 +219,12 @@ async fn main() -> Result<()> {
     // the coordination files, so it is never the repository root, the session
     // project workspace or a shared global temporary directory.
     let mut realtime_host_cwd: Option<tempfile::TempDir> = None;
+    let timeline_concept = match scenario {
+        "timeline-concept" => Some(pl_provider_fixture::timeline_concept::Control::default()),
+        "question-history" => Some(pl_provider_fixture::timeline_concept::Control::questions()),
+        "realtime-presentation" => Some(pl_provider_fixture::timeline_concept::Control::realtime()),
+        _ => None,
+    };
     let steps = match scenario {
         "gui" => gui_script(),
         "markdown-layout" => pl_provider_fixture::markdown_layout::script(),
@@ -234,7 +239,8 @@ async fn main() -> Result<()> {
         "timeline-history" => gui_timeline_history_script(),
         "timeline-history-20k" => gui_timeline_history_20k_script(),
         "statistics" => gui_statistics_script(),
-        "realtime" => {
+        "timeline-concept" => timeline_concept.as_ref().unwrap().script(),
+        "realtime" | "realtime-presentation" => {
             let directory = realtime_host_cwd_directory(args.ready_file.as_deref())?;
             let path = directory
                 .path()
@@ -247,7 +253,10 @@ async fn main() -> Result<()> {
                 })?
                 .to_owned();
             realtime_host_cwd = Some(directory);
-            gui_realtime_script(&path)
+            match timeline_concept.as_ref() {
+                Some(control) => control.realtime_script(&path),
+                None => gui_realtime_script(&path, None, None),
+            }
         }
         "history-lock" => gui_history_lock_script(),
         "history-fault" => gui_history_fault_script(),
@@ -256,7 +265,7 @@ async fn main() -> Result<()> {
         "context-replay-recovery" => pl_provider_fixture::gui_context_replay_recovery_script(),
         "websocket-recovery" => gui_websocket_recovery_script(),
         "call-lifecycle-recovery" => pl_provider_fixture::gui_call_lifecycle_recovery_script(),
-        "question-history" => gui_question_history_script(),
+        "question-history" => timeline_concept.as_ref().unwrap().question_script(),
         "web-search" => gui_web_search_script(),
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
@@ -282,6 +291,7 @@ async fn main() -> Result<()> {
         wait_events: scenario == "wait-events",
         agent_definitions: None,
         delegation: pl_provider_fixture::delegation::Scenario::parse(scenario),
+        timeline_concept,
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict

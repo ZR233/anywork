@@ -15,9 +15,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
-process-wrap = { workspace = true }
+pl-remote-helper = { workspace = true }
 lsp-server = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util", "rt"] }
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true }

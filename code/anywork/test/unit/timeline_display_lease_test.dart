@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -36,11 +36,7 @@ void main() {
     );
     final controller = InMemoryChatController();
     final images = TimelineImageResources(threadId: 'thread');
-    final adapter = TimelineMessageController(
-      controller,
-      generation: 1,
-      imageResources: images,
-    );
+    final adapter = TimelineMemberController(controller);
     final consumer = children.attachConsumer(adapter, demand: chatDemand);
     addTearDown(() async {
       transport.childReader.failClose = false;
@@ -185,22 +181,40 @@ void main() {
     'mounted lease retains controller ownership until unbind and close retry',
     () async {
       final h = _Harness([chatMessage('a')]);
+      h.owner.noteVisibleSelection('thread');
       await h.open();
       final lease = h.lease..bind();
       final controller = lease.controller;
+      expect(h.owner.visibleLayoutSnapshot!.firstContentLayout, isNull);
+      h.owner.recordContentLayout(lease, 'a', h.owner.monotonicMicros);
+      final visible = h.owner.visibleLayoutSnapshot!;
+      expect(visible.threadId, 'thread');
+      expect(visible.selectionId, lease.selectionId);
+      expect(visible.generation, lease.generation);
+      expect(visible.firstContentLayout, same(lease.firstContentLayout));
+      expect(visible.firstContentLayout, isNotNull);
+      expect(h.owner.visibleLayoutSnapshot, visible);
+      expect(h.transport.opens, 1);
+      expect(h.transport.reader.boundaries, isEmpty);
+      expect(h.transport.reader.demands, isEmpty);
       h.client.conversations.setVisibleThread(null);
       final closing = h.owner.close(deadline: DateTime.utc(2000));
+      expect(h.owner.visibleLayoutSnapshot, isNull);
       expect(h.owner.close(), same(closing));
       expect((await closing).complete, isFalse);
       expect(lease.isRetired, isTrue);
       expect(lease.isReleased, isFalse);
       expect(lease.controller, same(controller));
       expect(h.owner.lease('thread'), isNull);
+      h.owner.recordContentLayout(lease, 'a', h.owner.monotonicMicros);
+      expect(h.owner.visibleLayoutSnapshot, isNull);
+      expect(lease.firstContentLayout, same(visible.firstContentLayout));
       await lease.unbind();
       expect(lease.isReleased, isTrue);
       expect(lease.loadedCount, 0);
       expect(() => lease.controller, throwsStateError);
       expect((await h.owner.close()).complete, isTrue);
+      expect(h.owner.visibleLayoutSnapshot, isNull);
     },
   );
 
@@ -302,7 +316,7 @@ void main() {
 }
 
 final class _Harness {
-  _Harness(List<ChatMessage> messages, {String? before})
+  _Harness(List<TimelineItem> messages, {String? before})
     : transport = _LeaseTransport(
         chatBatch(messages, before: before, current: chatCurrent()),
       ) {
@@ -336,7 +350,7 @@ final class _Harness {
     await transport.feed.accepted(1);
   }
 
-  Future<void> append(List<ChatMessage> messages) async {
+  Future<void> append(List<TimelineItem> messages) async {
     transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }
@@ -408,7 +422,10 @@ final class _ScopedTransport extends Fake implements StudioTransport {
     threadId: 'thread',
     subscriptionId: 'child',
     reader: childReader,
-    initial: () => chatBatch([chatMessage('child')]),
+    initial: () => ChatBatch(
+      placement: ChatPlacement.set,
+      entries: [ChatAtomEntry(chatAtomMessage('child'))],
+    ),
   );
   final scopes = <ChatScope>[];
   @override

@@ -19,7 +19,12 @@ impl MigratorTraitSelf for Published12 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != MODEL_ROUTE_HEAD)
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }
@@ -145,12 +150,12 @@ async fn schema12_preserves_checkpoint_route_revision_owner_and_recovery_facts()
         ),
         1,
     );
-    super::super::super::conversation::append_records(&db, [&completion], true).await?;
+    super::super::super::conversation::migration::append_published(&db, &completion).await?;
     let before = retained(&db).await?;
     let mut expected = checkpoint::read(&db, THREAD).await?.unwrap();
     assert!(model_route::saved(&legacy_checkpoint()?.state).is_err());
     prepare(&db, THREAD, Preparation::Schema, None).await?;
-    assert_eq!(version(&db).await?, 13);
+    assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
     assert_eq!(retained(&db).await?, before);
     let recovered = checkpoint::read(&db, THREAD).await?.unwrap();
     model_route::migration::upgrade(&mut expected.state)?;
@@ -318,7 +323,7 @@ async fn schema12_failed_head_backfill_rolls_back_encoding_columns_version_and_r
     );
     db.execute_unprepared("DROP TRIGGER reject_head").await?;
     prepare(&db, THREAD, Preparation::Schema, None).await?;
-    assert_eq!(version(&db).await?, 13);
+    assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
     assert_eq!(
         checkpoint::read_model_route_head(&db)
             .await?
@@ -389,7 +394,7 @@ async fn schema12_rejects_bad_checkpoint_hash_identity_fence_and_route_without_a
         ))
         .await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, 13);
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
     }
     Ok(())
 }
@@ -434,6 +439,10 @@ async fn current_cold_head_ignores_recovery_bodies_but_rejects_bad_head_without_
     )
     .await?;
     let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
+    assert!(
+        store.conversation_current().await?.is_some(),
+        "small current must not decode the corrupt recovery body"
+    );
     let saved = cold(&store).await?.model_route.unwrap();
     assert_eq!(saved.revision, 7);
     assert_eq!(saved.bot_id.as_deref(), Some("original-bot"));

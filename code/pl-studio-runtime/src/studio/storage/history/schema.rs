@@ -1,9 +1,11 @@
 //! Official, ordered history migrations. Format numbers are only legacy import markers.
 use super::*;
+mod atom_metadata;
 mod conversion;
 mod demand_conversation;
 mod model_route_head;
 mod sqlite_metadata;
+mod timeline_items;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
     migrate_unconsumed_input_bindings,
@@ -108,6 +110,8 @@ impl MigratorTraitSelf for Migrator {
             Box::new(model_route_head::RootModelRouteHead {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(atom_metadata::AtomMetadata),
+            Box::new(timeline_items::TimelineItems),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -150,6 +154,8 @@ const METERING_FACTS: &str = "m20261028_000001_history_metering_facts";
 const COMBINED_CONTENT: &str = "m20261028_000002_history_combined_content";
 const DEMAND_CONVERSATION: &str = "m20261029_000001_history_demand_conversation";
 const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
+const ATOM_METADATA: &str = "m20261102_000001_history_atom_metadata";
+const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -158,6 +164,21 @@ fn is_lifecycle_migration(name: &str) -> bool {
         name,
         PROJECT_KIND | MODEL_ACCESS | WORKSPACE_RECEIPT | BOT_ROOT | EXECUTION_IDENTITY
     )
+}
+
+pub(super) async fn needs_content_preparation(
+    db: &impl ConnectionTrait,
+    thread_id: &str,
+) -> Result<bool> {
+    Ok(Migrator {
+        thread_id: thread_id.to_owned(),
+        execution_identity: None,
+        bot_root: None,
+    }
+    .get_pending_migrations_read_only(db)
+    .await?
+    .iter()
+    .any(|step| !is_lifecycle_migration(step.name())))
 }
 
 pub(super) async fn prepare(
@@ -207,18 +228,19 @@ pub(super) async fn prepare_with_bot_root(
         Preparation::ExecutionIdentity => pending.len(),
     };
     let steps = u32::try_from(steps)?;
+    if steps == 0 {
+        return Ok(());
+    }
     let started = std::time::Instant::now();
     let result = migrator.up(db, Some(steps)).await;
-    if steps > 0 {
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id,
-            migration_steps = steps,
-            success = result.is_ok(),
-            elapsed_us = started.elapsed().as_micros() as u64,
-            "history migration completed"
-        );
-    }
+    tracing::debug!(
+        target: "conversation_work",
+        thread_id,
+        migration_steps = steps,
+        success = result.is_ok(),
+        elapsed_us = started.elapsed().as_micros() as u64,
+        "history migration completed"
+    );
     if let Err(error) = result {
         let pending = migrator
             .get_pending_migrations_read_only(db)
@@ -316,10 +338,14 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .iter()
         .any(|step| step.name() == DEMAND_CONVERSATION);
     let model_route_head_pending = pending.iter().any(|step| step.name() == MODEL_ROUTE_HEAD);
+    let metadata_pending = pending.iter().any(|step| step.name() == ATOM_METADATA);
+    let timeline_pending = pending.iter().any(|step| step.name() == TIMELINE_ITEMS);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         model_route_head_pending == (version < 13)
+            && metadata_pending == (version < 14)
+            && timeline_pending == (version < 15)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
                 9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -331,7 +357,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12 | 13 => {
+                12..=15 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -353,16 +379,58 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         );
         validate_identity_collations(db).await?;
         if version == HISTORY_SCHEMA_VERSION {
-            validate_current(db, thread_id).await?;
+            validate_current_structure(db).await?;
+            ensure!(
+                pending
+                    .iter()
+                    .all(|step| { is_lifecycle_migration(step.name()) }),
+                "current history format has pending earlier content migrations; existing data preserved"
+            );
         } else {
             demand_conversation::validate_tables(db).await?;
-            model_route_head::validate_source(db).await?;
-            ensure!(
-                pending.iter().all(|step| {
-                    step.name() == MODEL_ROUTE_HEAD || is_lifecycle_migration(step.name())
-                }),
-                "schema 12 has pending earlier content migrations; existing data preserved"
-            );
+            match version {
+                12 => {
+                    model_route_head::validate_source(db).await?;
+                    atom_metadata::validate_source(db).await?;
+                    timeline_items::validate_source(db).await?;
+                    ensure!(
+                        pending.iter().all(|step| {
+                            matches!(
+                                step.name(),
+                                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+                            ) || is_lifecycle_migration(step.name())
+                        }),
+                        "schema 12 has pending earlier content migrations; existing data preserved"
+                    );
+                }
+                13 => {
+                    model_route_head::validate_tables(db).await?;
+                    atom_metadata::validate_source(db).await?;
+                    timeline_items::validate_source(db).await?;
+                    ensure!(
+                        pending.iter().all(|step| {
+                            matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS)
+                                || is_lifecycle_migration(step.name())
+                        }),
+                        "schema 13 has pending earlier content migrations; existing data preserved"
+                    );
+                }
+                14 => {
+                    model_route_head::validate_tables(db).await?;
+                    atom_metadata::validate_tables(db).await?;
+                    timeline_items::validate_source(db).await?;
+                    ensure!(
+                        pending.iter().all(|step| {
+                            matches!(step.name(), TIMELINE_ITEMS)
+                                || is_lifecycle_migration(step.name())
+                        }),
+                        "schema 14 has pending earlier content migrations; existing data preserved"
+                    );
+                }
+                _ => anyhow::bail!(
+                    "unsupported pending history format {version}; existing data preserved"
+                ),
+            }
         }
         return Ok(());
     }
@@ -421,14 +489,6 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     }
     if version == 10 && !metering_pending {
         checkpoint::read(db, thread_id).await?;
-    }
-    if version == HISTORY_SCHEMA_VERSION {
-        ensure!(
-            pending
-                .iter()
-                .all(|step| is_lifecycle_migration(step.name())),
-            "current history format has pending content migrations; existing data preserved"
-        );
     }
     if SchemaManager::new(db)
         .has_table("session_checkpoint")
@@ -490,6 +550,12 @@ pub(super) async fn validate_identity_collations(db: &DatabaseConnection) -> Res
             &["owner_key", "content_key"][..],
         ),
         ("conversation_view_entries", &["collection", "entry_id"][..]),
+        ("conversation_sources", &["source_key"][..]),
+        ("timeline_items", &["item_id", "kind"][..]),
+        (
+            "timeline_item_members",
+            &["item_id", "member_id", "completion_item_id"][..],
+        ),
     ] {
         if !manager.has_table(table).await? {
             continue;
@@ -534,26 +600,43 @@ pub(super) async fn validate_identity_collations(db: &DatabaseConnection) -> Res
 /// Ordinary readers accept only the prepared content format; lifecycle migrations may remain
 /// pending until explicit recovery supplies model and execution identity facts.
 pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
+    validate_current_structure(db).await?;
+    ensure!(
+        !needs_content_preparation(db, thread_id).await?,
+        "history content requires explicit storage preparation; existing data preserved"
+    );
+    Ok(())
+}
+
+async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
     ensure!(
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
     demand_conversation::validate_tables(db).await?;
     model_route_head::validate_tables(db).await?;
-    checkpoint::read_model_route_head(db).await?;
-    let migrator = Migrator {
-        thread_id: thread_id.to_owned(),
-        execution_identity: None,
-        bot_root: None,
-    };
-    ensure!(
-        migrator
-            .get_pending_migrations_read_only(db)
-            .await?
-            .iter()
-            .all(|step| is_lifecycle_migration(step.name())),
-        "history content requires explicit storage preparation; existing data preserved"
+    atom_metadata::validate_tables(db).await?;
+    super::conversation::timeline::validate_tables(db).await?;
+    let head = super::conversation::timeline::read_state(db)
+        .await?
+        .context("timeline recovery head is missing; existing data preserved")?;
+    let database_id = db
+        .query_one_raw(statement(
+            "SELECT database_id FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("history identity is missing; existing data preserved")?
+        .try_get::<String>("", "database_id")?;
+    let mut projection = crate::studio::thread_projection::TimelineProjection::new(
+        database_id,
+        head.generation,
+        head.next_position,
     );
+    projection
+        .restore_recovery(&head.recovery)
+        .context("timeline recovery is invalid; existing data preserved")?;
+    checkpoint::read_model_route_head(db).await?;
     Ok(())
 }
 
@@ -999,7 +1082,11 @@ impl MigrationTrait for CombinedContent {
                     // Later content steps are still pending at the format-10 boundary.
                     !matches!(
                         step.name(),
-                        COMBINED_CONTENT | DEMAND_CONVERSATION | MODEL_ROUTE_HEAD
+                        COMBINED_CONTENT
+                            | DEMAND_CONVERSATION
+                            | MODEL_ROUTE_HEAD
+                            | ATOM_METADATA
+                            | TIMELINE_ITEMS
                     ) && !is_lifecycle_migration(step.name())
                 })
         {

@@ -26,10 +26,12 @@ pub(super) struct Owner {
     pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
-    pub(super) compacting_progress: Option<watch::Receiver<bool>>,
+    pub(super) compaction_call: Option<context_preparation::CompactionCall>,
+    pub(super) pending_context_compactions: Vec<ContextCompactionEvent>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
     pub(super) model_members: Option<super::model_members::MemberCall>,
     pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,
+    pub(super) pending_model_member_starts: Vec<crate::model::ModelStartedMember>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
@@ -349,12 +351,13 @@ impl Owner {
         // fault that just latched — reaches this Thread without waiting for its next command. It is
         // a wake-up only: the latch and the readiness are still computed here, by this one owner.
         let mut pressure_updates = self.subscribe_pressure();
+        let mut pressure_watch_closed = false;
         loop {
             tokio::task::consume_budget().await;
             if self.tools.poll_cleanup() {
                 self.publish_snapshot();
             }
-            if pressure_updates.is_none() {
+            if pressure_updates.is_none() && !pressure_watch_closed {
                 pressure_updates = self.subscribe_pressure();
             }
             if let Some(Some(completion)) =
@@ -376,7 +379,6 @@ impl Owner {
                     if self.drive_one_input().await {
                         continue;
                     }
-                    let awaiting_storage = self.state.persistence.resume_required;
                     tokio::select! {
                         () = self.tools.next_cleanup(), if self.tools.has_cleanup() => {
                             self.publish_snapshot();
@@ -391,23 +393,25 @@ impl Owner {
                                 Some(update) => update.changed().await.is_ok(),
                                 None => std::future::pending::<bool>().await,
                             }
-                        }, if awaiting_storage => {
+                        } => {
                             if !update {
-                                // A dropped backend never wakes this owner again; the fixed fence
-                                // below stays the fact that decides readiness.
+                                // This owner cannot replace its attached backend. Once that binding
+                                // closes its watch, read its final report below and never subscribe
+                                // to the same closed source again.
                                 pressure_updates = None;
+                                pressure_watch_closed = true;
                             }
                             // A storage change is a wake-up, never a second fact source: this owner
                             // re-reads the backend's typed report, re-presents what it never handed
                             // over, and republishes the readiness it owns — so a Thread parked
                             // between Turns learns about the recovery instead of waiting for work.
                             self.admit_cold();
+                            self.refresh_storage_pressure();
                             if self.cold_error.is_some() {
                                 // A failed save is not pressure: new model/tool admission stays held
                                 // until an explicit continue releases this generation.
                                 self.state.persistence.resume_required = true;
                             }
-                            self.refresh_storage_pressure();
                             self.publish_snapshot();
                             continue;
                         },
@@ -788,6 +792,8 @@ impl Owner {
             &self.state,
             sequence,
             std::mem::take(&mut self.pending_model_members).into(),
+            std::mem::take(&mut self.pending_model_member_starts).into(),
+            std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {
             // Nothing was committed, so no fact can take a reservation over: the claim is dropped
             // and the operation's own boundary releases its ceiling instead.

@@ -31,7 +31,16 @@ fn complete() -> ModelUsage {
 #[test]
 fn legacy_accounting_is_converted_only_at_the_explicit_boundary() {
     let checkpoint = ThreadCheckpoint::capture("thread".into(), 0, Default::default());
-    for schema in 1..=5 {
+    for (schema, timing) in (1..=5).flat_map(|schema| {
+        [
+            serde_json::json!({}),
+            serde_json::json!({"turnDecodeMillis": 99}),
+            serde_json::json!({"turnResponseMillis": 101}),
+            serde_json::json!({"turnDecodeMillis": 99, "turnResponseMillis": 101}),
+        ]
+        .into_iter()
+        .map(move |timing| (schema, timing))
+    }) {
         let mut root = serde_json::to_value(&checkpoint).unwrap();
         root["schemaVersion"] = serde_json::json!(schema);
         root["state"]["usageSummary"] = serde_json::json!({
@@ -39,6 +48,10 @@ fn legacy_accounting_is_converted_only_at_the_explicit_boundary() {
             "hasIncompleteUsage": true, "cacheIncomplete": true,
             "turnId": "old-turn", "turnCompletionTokens": 9
         });
+        root["state"]["usageSummary"]
+            .as_object_mut()
+            .unwrap()
+            .extend(timing.as_object().unwrap().clone());
         let envelope = serde_json::to_string(&root).unwrap();
         // The normal schema-6 reader cannot silently default away the saved flat counters.
         assert!(serde_json::from_str::<ThreadCheckpoint>(&envelope).is_err());
@@ -49,12 +62,25 @@ fn legacy_accounting_is_converted_only_at_the_explicit_boundary() {
         assert!(upgraded.state.usage_summary.diagnostics.legacy_unknown);
         assert!(upgraded.state.usage_summary.diagnostics.legacy_incomplete);
         assert!(upgraded.state.usage_summary.cache.incomplete);
-        assert_eq!(upgraded.state.usage_summary.throughput, Default::default());
+        assert_eq!(
+            upgraded.state.usage_summary.throughput,
+            if timing.get("turnResponseMillis").is_some() {
+                pl_core::usage::UsageThroughputSummary {
+                    turn_id: "old-turn".into(),
+                    completion_tokens: 9,
+                    response_millis: 101,
+                }
+            } else {
+                Default::default()
+            }
+        );
         assert!(upgraded.state.usage_summary.context.latest_call.is_none());
         assert_eq!(upgraded.state.usage_summary.diagnostics.incomplete_calls, 0);
         for malformed in [
             serde_json::json!({"totalTokens": "not-a-counter"}),
             serde_json::json!({"totals": {"totalTokens": 500}}),
+            serde_json::json!({"turnDecodeMillis": "not-a-counter"}),
+            serde_json::json!({"futureTiming": 10}),
             serde_json::json!([]),
         ] {
             root["state"]["usageSummary"] = malformed;

@@ -14,7 +14,12 @@ impl MigratorTraitSelf for Published11 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), DEMAND_CONVERSATION | MODEL_ROUTE_HEAD))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                DEMAND_CONVERSATION | MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }
@@ -30,7 +35,12 @@ impl MigratorTraitSelf for Published12 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != MODEL_ROUTE_HEAD)
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                MODEL_ROUTE_HEAD | ATOM_METADATA | TIMELINE_ITEMS
+            )
+        })
         .collect()
     }
 }
@@ -153,6 +163,28 @@ fn record(id: &str, seq: u64, kind: &str) -> Result<String> {
     }))?)
 }
 
+/// Inspect the published schema-12 representation without invoking a current-format reader.
+async fn published_item(db: &DatabaseConnection, id: &str) -> Result<pl_core::chat::ChatItem> {
+    let row = db.query_one_raw(statement(
+        "SELECT seq,item_id,query_class,parent_id,payload FROM conversation_items WHERE item_id=?",
+        vec![id.into()],
+    )).await?.context("published item missing")?;
+    let mut draft = pl_core::chat::ChatDraft::new(
+        row.try_get::<String>("", "item_id")?,
+        row.try_get::<String>("", "query_class")?,
+        std::sync::Arc::from(row.try_get::<Vec<u8>>("", "payload")?),
+    );
+    draft.parent_id = row
+        .try_get::<Option<String>>("", "parent_id")?
+        .map(pl_core::chat::ChatKey::from_encoded)
+        .transpose()?;
+    draft.contents = std::sync::Arc::new(conversation::read_contents(db, id).await?);
+    Ok(pl_core::chat::ChatItem::complete(
+        draft,
+        u64::try_from(row.try_get::<i64>("", "seq")?)?,
+    ))
+}
+
 async fn insert(
     db: &DatabaseConnection,
     id: &str,
@@ -188,7 +220,7 @@ async fn formal_schema12_preserves_nonempty_unknown_records_and_identity() -> Re
         .try_get("", "database_id")?;
     prepare_published12(&db).await?;
     assert_eq!(version(&db).await?, 12);
-    let item = conversation::read_item(&db, "old-tool").await?.unwrap();
+    let item = published_item(&db, "old-tool").await?;
     assert_eq!(item.header.append_seq, 1);
     assert_eq!(item.header.query_class, "activity");
     assert_eq!(
@@ -199,7 +231,7 @@ async fn formal_schema12_preserves_nonempty_unknown_records_and_identity() -> Re
     assert_eq!(payload["data"]["oldUnknown"]["opaque"], "原文 🦀");
     assert!(payload["data"].get("presentationContract").is_none());
     assert_eq!(conversation::latest_append_seq(&db).await?, 3);
-    let unsupported = conversation::read_item(&db, "bad-meta").await?.unwrap();
+    let unsupported = published_item(&db, "bad-meta").await?;
     let content = unsupported.contents.values().next().unwrap();
     assert_eq!(content.descriptor.key.key, "legacy.record");
     assert_eq!(
@@ -403,7 +435,7 @@ async fn formal_migration_rejects_malformed_nullable_provenance_and_retries() ->
             .await?
             .is_some()
         );
-        let migrated = conversation::read_item(&db, "damaged").await?.unwrap();
+        let migrated = published_item(&db, "damaged").await?;
         let retained = migrated
             .contents
             .values()

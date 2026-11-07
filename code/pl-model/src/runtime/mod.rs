@@ -44,6 +44,7 @@ pub use pl_protocol::{PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPro
 
 mod thread_model;
 pub use thread_model::migration;
+pub(crate) use thread_model::progress as model_part_identity;
 pub use thread_model::{
     ModelCallBinding, ModelFailureReceipt, ModelMemberReceipt, ModelMemberState,
     ModelRequestReceipt, ModelResponseReceipt, ThreadCompaction, ThreadCompactionDecision,

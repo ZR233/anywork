@@ -27,7 +27,9 @@ async fn managed_worktrees_are_detached_and_keep_every_branch() -> Result<()> {
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo)?;
     git(&repo, &["init", "-b", "main"])?;
-    let manager = WorktreeManager::new(repo.clone(), Arc::new(LocalWorktreeBackend::default()));
+    let backend = Arc::new(LocalWorktreeBackend::default());
+    let repo = WorktreeManager::resolve_repository_root(backend.as_ref(), &repo).await?;
+    let manager = WorktreeManager::new(repo.clone(), backend);
     assert!(
         matches!(
             manager.resolve_head(&repo).await,
@@ -149,7 +151,7 @@ struct Repository {
 }
 
 impl Repository {
-    fn new() -> Result<Self> {
+    async fn new() -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("repo");
         std::fs::create_dir(&path)?;
@@ -161,7 +163,9 @@ impl Repository {
         git(&path, &["add", "."])?;
         git(&path, &["commit", "-m", "initial"])?;
         let base = git(&path, &["rev-parse", "HEAD"])?;
-        let manager = WorktreeManager::new(path.clone(), Arc::new(LocalWorktreeBackend::default()));
+        let backend = Arc::new(LocalWorktreeBackend::default());
+        let path = WorktreeManager::resolve_repository_root(backend.as_ref(), &path).await?;
+        let manager = WorktreeManager::new(path.clone(), backend);
         Ok(Self {
             _temp: temp,
             path,
@@ -190,7 +194,7 @@ impl Repository {
 
 #[tokio::test]
 async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() -> Result<()> {
-    let repo = Repository::new()?;
+    let repo = Repository::new().await?;
     let handle = repo.create("dirty").await?;
     std::fs::write(handle.path.join("file.txt"), "dirty\n")?;
     std::fs::write(handle.path.join("untracked.txt"), "untracked\n")?;
@@ -261,7 +265,7 @@ async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() 
 
 #[tokio::test]
 async fn missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics() -> Result<()> {
-    let repo = Repository::new()?;
+    let repo = Repository::new().await?;
     let first = repo.create("backlink-first").await?;
     let second = repo.create("backlink-second").await?;
     for relative_links in [false, true] {

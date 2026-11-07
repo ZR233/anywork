@@ -41,11 +41,19 @@ Thread 快照的 `observation_revision` 标记同一物理 owner 的每次内存
 
 模型输出通过类型化的 `turnAction` 区分无工具调用后的继续执行（`continue`）与轮次结束（`finish`）；工具调用仍按自身控制结果推进。模型适配器从完整协议回放材料推导该意图：仅包含 `commentary` 的助手消息属于中间进展，须在同一轮次继续请求；包含最终回答或未声明通道的普通回复可正常结束。Chat 标签沿用统一通道解码器，不通过正文措辞猜测是否完成，也不从展示投影反推执行意图。继续执行仍消耗模型步数，并遵守取消、存储准入与步数上限；达到上限保留 `stepLimit` 及既有继续点，不能把进展消息标记为完成。旧输出缺少该字段时只表示其原有隐式 `finish` 行为，不追溯改写历史轮次。
 
-模型调用具有彼此独立的观察面：可合并的当前进度，以及不可丢失的已校验成员完成事实。可靠完成载荷以真实 attempt、恢复 generation、provider item 与 part 身份绑定调用；Core 在等待模型结果及处理邮箱期间持续接纳，不等整个模型调用返回。调用所有者复用有界可靠通道与既有 effect/checkpoint、输出准入和 pending 交接，不允许 watch 覆盖完成事实，也不允许适配器绕过 owner 直接操作 `Session` 或产品历史。
+模型调用具有彼此独立的观察面：可合并的当前进度，以及不可丢失的已校验成员开始/完成事实。可靠载荷以真实 attempt、恢复 generation、provider item 与 part 身份绑定调用；Core 在等待模型结果及处理邮箱期间持续接纳，不等整个模型调用返回。调用所有者复用有界可靠通道与既有 effect/checkpoint、输出准入和 pending 交接，不允许 watch 覆盖成员边界，也不允许适配器绕过 owner 直接操作 `Session` 或产品历史。
 
 接纳单个成员不提前提交模型上下文、调用用量或 Turn 终态。最终模型回执与已接纳成员必须身份一致、载荷幂等；后续失败或取消保留已接纳事实，先收束生产者和完成交接，再结束调用。产品封口与 live 退出协调的唯一契约见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，Core 不包含展示分组或实时 UI 生命周期。
 
 `ModelRequest.members` 是调用所有者提供的可选 `ModelMemberSender`，与 `progress` 分开。`submit(generation, member_id, payload)` 只接收适配器已校验的独立结束事实；Core 补入原 `turn_id/attempt_id`，形成 `ModelCompletedMember`。`member_id` 是厂商真实成员身份，part 身份及内容由模型拥有的版本化 `OpaquePayload` 表达，Core 不解释厂商或产品 schema。`ThreadEffectBatch.model_members` 保存同一冻结信封，缺失字段表示没有成员事实，不是从 progress 恢复它们的许可。
+
+同一端口的 `start(generation, identity)` 接纳已经由 canonical accumulator 校验的规范 part 开始，形成 `ModelStartedMember`。`identity` 复用 `ObservedPartIdentity`：有真实 provider part 时保留其身份和类型/频道，无 itemized 协议时使用原 attempt 的明确 aggregate channel，不解析字符串补造身份。开始信封只含调用与 part 身份，不含正文、结束标记或产品分组。`ThreadEffectBatch.model_member_starts` 保存同一冻结事实；同一开始只准入一次，开始和结束的去重空间明确分离。开始事实不能伪装为完成成员，不能推进上下文、用量或 Turn 终态，也不能根据正文开始推断前一成员已经结束。
+
+适配器在原规范流处理路径内完成开始准入后才消费下一条 provider 事件，归一化后同一输入产生的边界保持原顺序；始终复用原单槽通道、原 owner、取消收束、输出预算与可靠 effect，不新增后台发布任务或逐 token 可靠记录。后续终态元数据丰富不产生第二次开始；原 started identity 与最终内容采用同一稳定身份映射。老 effect 没有开始事实时，仅有明确的历史完成事实，不据此恢复当时未记录的流式时刻。
+
+上下文准备明确进入压缩时，原 Thread owner 准入 `ThreadEffectBatch.context_compactions` 中的类型化 `Started` 事实，分配本次操作的稳定身份并保留可证明的 Turn/attempt 关联；idle 手动压缩有独立 operation 身份，不把准备请求借用的旧 turn_id 当作正在运行的 Turn。每次真实压缩操作都有同身份的 `Finished`，明确 Changed、Unchanged、Failed 或 Cancelled；panic、取消、无替换和失败无 partial receipt 的路径也不能遗漏结束。Changed 仅在 replacement 真正接纳后成立，其他结果不推进上下文版本。
+
+host 的 `ContextPreparationRequest.enter_compacting` 改为可等待的可靠开始接纳：复用原 owner、有界准入、ACK、取消与保存义务，重复调用同一操作幂等；不再以 watch 的布尔阶段作为可靠来源。强制压缩使用同一开始入口，普通准备未真正进入压缩则不制造操作。开始事实先进入可靠义务再公开 CompactingContext；结束在原准备结果及相关状态变更可靠接纳后发布。保存故障保留义务并阻止新的执行，不因 UI 需要而补成功/取消。普通模型准备阶段仍为轻量观察，不将所有阶段或 token 变为可靠记录。Core 事实不包含产品分组。
 
 该端口是原调用内的单槽 Tokio bounded mpsc 与逐项接纳回执，不是保存队列或广播事件总线。`submit` 成功表示 owner 已将事实转交既有可靠 effect 义务；不表示 SQLite 提交或产品消费者接纳。等待期间邮箱、取消和关闭仍可达；已经送入端口的事实必须先收束交接，再处理调用终态，不能在取消竞争中丢弃，也不能分离出无 owner 的发布任务。调用返回后关闭入口并排空已接纳项，不因仍存在无用 sender 克隆而等待 EOF。
 

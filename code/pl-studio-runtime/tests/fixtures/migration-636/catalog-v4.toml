@@ -1,0 +1,44 @@
+# Synthetic v6.36.0 CatalogV4. Existing children retain the mode from creation.
+schemaVersion = 4
+revision = 3
+
+[[entries]]
+id = "cold"
+projectId = "project-cold"
+title = "Synthetic root after changing mode"
+mode = "mode.simple"
+workspaceMode = "local"
+delegationMode = "profile"
+delegationPreference = "balanced"
+workspacePath = "/tmp/project-cold"
+rootThreadId = "cold"
+role = "root"
+agentPath = "cold"
+status = "idle"
+createdAt = 1
+updatedAt = 3
+explicitlyClosed = false
+archived = false
+
+[[entries]]
+id = "synthetic-child"
+projectId = "project-cold"
+title = "Synthetic frozen child"
+mode = "mode.task"
+workspaceMode = "local"
+delegationMode = "profile"
+delegationPreference = "balanced"
+workspacePath = "/tmp/project-cold"
+parentThreadId = "cold"
+rootThreadId = "cold"
+role = "explorer"
+agentPath = "synthetic-child"
+status = "idle"
+createdAt = 2
+updatedAt = 2
+explicitlyClosed = false
+archived = false
+
+[entries.frozenModel]
+accountId = "synthetic-account"
+modelId = "synthetic-model"

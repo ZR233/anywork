@@ -9,6 +9,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:anywork/src/capture/capture_protocol.dart';
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
@@ -38,7 +39,7 @@ Future<void> main(List<String> args) async {
     final isolateId = await _isolateForView(service, runInfo, options.view);
     if (output != null) {
       final response = await service
-          .callServiceExtension('ext.anywork.capture', isolateId: isolateId)
+          .callServiceExtension(kCaptureExtensionName, isolateId: isolateId)
           .timeout(const Duration(seconds: 12));
       final payload = response.json;
       if (payload == null) {
@@ -83,7 +84,7 @@ Future<void> main(List<String> args) async {
     }
     if (options.exitApp) {
       final exitResponse = await service
-          .callServiceExtension('ext.anywork.requestExit', isolateId: isolateId)
+          .callServiceExtension(kRequestExitExtensionName, isolateId: isolateId)
           .timeout(const Duration(seconds: 12));
       final exitPayload = exitResponse.json;
       if (exitPayload == null ||
@@ -273,8 +274,8 @@ Future<String> _isolateForView(
     if (id == null) continue;
     final detail = await service.getIsolate(id);
     final rpcs = detail.extensionRPCs ?? const <String>[];
-    if (rpcs.contains('ext.anywork.capture') ||
-        rpcs.contains('ext.anywork.requestExit')) {
+    if (rpcs.contains(kCaptureExtensionName) ||
+        rpcs.contains(kRequestExitExtensionName)) {
       withCapture.add(id);
     }
   }

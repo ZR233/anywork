@@ -5,7 +5,7 @@ use pl_core::chat::{
 };
 use sea_orm::{Database, DatabaseConnection, TransactionTrait};
 
-struct Budget;
+pub(super) struct Budget;
 impl ChatBudget for Budget {
     fn fixed_bytes(&self) -> usize {
         0
@@ -21,7 +21,7 @@ impl ChatBudget for Budget {
     }
 }
 
-async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
+pub(super) async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("history.sqlite");
     let mut options = sea_orm::ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
@@ -36,6 +36,11 @@ async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
     )
     .await?;
     db.execute_unprepared(migration::CREATE_SCHEMA).await?;
+    db.execute_unprepared(
+        "ALTER TABLE conversation_items ADD COLUMN metadata BLOB NOT NULL DEFAULT X''",
+    )
+    .await?;
+    db.execute_unprepared(sources::CREATE_SCHEMA).await?;
     Ok((dir, db))
 }
 
@@ -46,13 +51,114 @@ fn item(seq: u64, class: &str, payload: &[u8]) -> ChatItem {
     )
 }
 
+pub(super) fn metadata(id: &str) -> Arc<[u8]> {
+    serde_json::to_vec(&pl_protocol::ChatAtom {
+        id: id.into(),
+        completion_item_id: Some(id.into()),
+        content_present: None,
+        completion_seq: None,
+        source_state: None,
+        source: pl_protocol::ChatSourceId::Receipt {
+            receipt_id: id.into(),
+        },
+        source_order: None,
+        kind: pl_protocol::ChatAtomKind::Unknown,
+        delivery: pl_protocol::ChatDeliveryKind::Independent,
+        lifecycle: pl_protocol::ChatAtomLifecycle::Terminal {
+            started: None,
+            ended: None,
+            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+        },
+        turn_id: None,
+        attempt_id: None,
+        tool: None,
+        wait: None,
+        text_channel: None,
+        started_at: None,
+        finished_at: None,
+        contents: vec![],
+        payload: None,
+    })
+    .unwrap()
+    .into()
+}
+
+#[tokio::test]
+async fn metadata_budget_deferred_keyset_and_immutable_blob_conflicts() -> Result<()> {
+    struct MetadataBudget;
+    impl ChatBudget for MetadataBudget {
+        fn fixed_bytes(&self) -> usize {
+            0
+        }
+        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
+            header.metadata.len()
+                + match mode {
+                    PayloadMode::Inline => 64 + header.byte_length as usize,
+                    PayloadMode::Deferred => 64,
+                }
+        }
+        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
+            unreachable!()
+        }
+    }
+    let (_dir, db) = fixture().await?;
+    let mut first = item(1, "conversation", &[255; 256 * 1024]);
+    first.header.metadata = metadata("item:1");
+    let mut second = item(2, "conversation", b"opaque neighbour");
+    second.header.metadata = metadata("item:2");
+    append_records(&db, [&first, &second], true).await?;
+    append_records(&db, [&first, &second], false).await?;
+    let mut changed = first.clone();
+    changed.header.metadata = Arc::from(b"same payload, different metadata".as_slice());
+    assert!(append_records(&db, [&changed], false).await.is_err());
+    let exact = MetadataBudget.item_bytes(&first.header, PayloadMode::Deferred);
+    let request = ChatHistoryRequest {
+        query: Some(ChatQuery::new("conversation", None)),
+        after: 0,
+        before: Some(2),
+        ceiling: 2,
+        demand: ReadDemand::new(2, exact),
+    };
+    let selected = page(&db, &request, &MetadataBudget, false).await?;
+    assert!(selected.exhausted);
+    assert_eq!(selected.items.len(), 1);
+    assert_eq!(selected.items[0].header, first.header);
+    assert!(matches!(
+        selected.items[0].payload,
+        PayloadData::Deferred {
+            byte_length: 262144,
+            ..
+        }
+    ));
+    let under = ChatHistoryRequest {
+        demand: ReadDemand::new(2, exact - 1),
+        ..request.clone()
+    };
+    let selected = page(&db, &under, &MetadataBudget, false).await?;
+    assert!(selected.items.is_empty());
+    assert!(!selected.exhausted, "byte truncation is not EOF");
+    let remaining = ChatHistoryRequest {
+        after: 1,
+        before: None,
+        demand: ReadDemand::new(2, 4096),
+        ..request
+    };
+    let selected = page(&db, &remaining, &MetadataBudget, true).await?;
+    assert_eq!(selected.items.len(), 1);
+    assert_eq!(selected.items[0].header.metadata, second.header.metadata);
+    assert!(
+        matches!(&selected.items[0].payload, PayloadData::Inline(bytes) if bytes.as_ref()==b"opaque neighbour")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<()> {
     let (_dir, db) = fixture().await?;
     let a = item(1, "conversation", b"small");
-    let mut b = item(2, "activity", &vec![b'x'; 128 * 1024]);
+    let mut b = item(2, "conversation", &vec![b'x'; 128 * 1024]);
     b.header.parent_id = Some(ChatKey::new("turn", "id:with:colons")?);
-    let c = item(3, "conversation", &vec![b'y'; 128 * 1024]);
+    let c = item(3, "diagnostic", &vec![b'y'; 128 * 1024]);
     append_records(&db, [&a, &b, &c], true).await?;
     let request = ChatHistoryRequest {
         query: Some(ChatQuery::new("conversation", None)),
@@ -68,7 +174,7 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
             .iter()
             .map(|item| item.header.append_seq)
             .collect::<Vec<_>>(),
-        [1, 3]
+        [1, 2]
     );
     assert!(matches!(
         selected_page.items[0].payload,
@@ -84,7 +190,7 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
     );
     let children = ChatHistoryRequest {
         query: Some(ChatQuery::new(
-            "activity",
+            "conversation",
             Some(ChatKey::new("turn", "id:with:colons")?),
         )),
         demand: ReadDemand::new(4, 200),
@@ -108,188 +214,183 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
 }
 
 #[tokio::test]
-async fn cold_scope_budget_fits_exact_envelope_and_rejects_one_byte_less() -> Result<()> {
-    use pl_protocol::{
-        ChatBatch, ChatMessage, ChatPlacement, ChatScope, ContentTarget, CurrentCollectionRef,
-        CurrentProjection, PayloadData as WirePayload,
-    };
-
-    struct ColdBudget {
+async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_payload()
+-> Result<()> {
+    use pl_protocol::{ChatBatch, ChatEntry, ChatPlacement, ChatScope};
+    // Budget the complete wire envelope, not a synthetic per-row byte constant.
+    // Match the reader's conservative source annotation and JSON byte-array bound;
+    // the opaque fixture payload must never be decoded to make this decision.
+    struct EnvelopeBudget {
         database_id: String,
-        fixed: usize,
+        empty: ChatBatch,
     }
-    impl ChatBudget for ColdBudget {
-        fn fixed_bytes(&self) -> usize {
-            self.fixed
-        }
-        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
-            let payload = match mode {
-                PayloadMode::Inline => WirePayload::Inline { bytes: Vec::new() },
-                PayloadMode::Deferred => WirePayload::Deferred {
+    impl EnvelopeBudget {
+        fn entry(&self, header: &ChatItemHeader, mode: PayloadMode) -> Result<ChatEntry> {
+            let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(&header.metadata)?;
+            atom.completion_seq = Some(header.append_seq);
+            atom.payload = Some(match mode {
+                PayloadMode::Inline => pl_protocol::PayloadData::Inline { bytes: Vec::new() },
+                PayloadMode::Deferred => pl_protocol::PayloadData::Deferred {
                     reference: pl_protocol::ContentRef {
                         database_id: self.database_id.clone(),
-                        target: ContentTarget::ItemPayload {
+                        target: pl_protocol::ContentTarget::ItemPayload {
                             item_id: header.item_id.clone(),
                         },
                     },
                     byte_length: header.byte_length,
                 },
-            };
-            let base = serde_json::to_vec(&ChatMessage {
-                id: header.item_id.clone(),
-                payload,
-            })
-            .unwrap()
-            .len();
-            if mode == PayloadMode::Inline && header.byte_length != 0 {
-                // Each JSON byte uses at most three digits, plus inter-byte commas.
-                base + header.byte_length as usize * 4 - 1
+            });
+            Ok(ChatEntry::Atom(Box::new(atom)))
+        }
+    }
+    impl ChatBudget for EnvelopeBudget {
+        fn fixed_bytes(&self) -> usize {
+            serde_json::to_vec(&self.empty).unwrap().len()
+        }
+        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
+            let base = timeline::entry_bytes(&self.entry(header, mode).unwrap()).unwrap();
+            if mode == PayloadMode::Inline {
+                base + usize::try_from(header.byte_length).unwrap() * 4
             } else {
                 base
             }
         }
         fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
-            unreachable!("cold pages do not read manifests")
+            unreachable!("this test does not read a content manifest")
         }
     }
-    fn wire_batch(
-        database_id: &str,
-        current: Option<CurrentProjection>,
-        items: &[ChatPageItem],
-    ) -> ChatBatch {
-        ChatBatch {
-            placement: ChatPlacement::Set,
-            before: None,
-            current,
-            messages: items
-                .iter()
-                .map(|item| ChatMessage {
-                    id: item.header.item_id.clone(),
-                    payload: match &item.payload {
-                        PayloadData::Inline(bytes) => WirePayload::Inline {
-                            bytes: bytes.to_vec(),
-                        },
-                        PayloadData::Deferred {
-                            item_id,
-                            byte_length,
-                        } => WirePayload::Deferred {
-                            reference: pl_protocol::ContentRef {
-                                database_id: database_id.into(),
-                                target: ContentTarget::ItemPayload {
-                                    item_id: item_id.clone(),
-                                },
-                            },
-                            byte_length: *byte_length,
-                        },
-                    },
-                })
-                .collect(),
-        }
-    }
-
     let dir = tempfile::tempdir()?;
     let store =
         super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget").await?;
     store.prepare_write().await?;
-    let database_id = store.conversation_database_id().await?.unwrap();
-    let parent = ChatKey::new("turn", "target:parent")?;
-    let main_item = item(1, "conversation", &[255; 2048]);
-    let mut child_item = item(2, "activity", &[255; 2048]);
-    child_item.header.parent_id = Some(parent.clone());
-    let mut other_child = item(3, "activity", &[255; 2048]);
-    other_child.header.parent_id = Some(ChatKey::new("turn", "other:parent")?);
-    let mut projection = CurrentProjection::empty(0, pl_protocol::ThreadStatus::Idle);
-    projection.collections.push(CurrentCollectionRef {
-        database_id: database_id.clone(),
-        collection: "无关集合".repeat(1024),
-        revision: 1,
-    });
-    let writer = store.writer().await?;
-    let tx = writer.db.begin().await?;
-    append_records(&tx, [&main_item, &child_item, &other_child], true).await?;
-    tx.execute_raw(statement(
-        "UPDATE conversation_view_state SET payload=? WHERE singleton_id=1",
-        vec![serde_json::to_vec(&projection)?.into()],
-    ))
-    .await?;
-    tx.commit().await?;
-    let budget = ColdBudget {
-        fixed: wire_batch(&database_id, None, &[]).encoded_len()?,
-        database_id: database_id.clone(),
-    };
-    for (scope, target) in [
-        (
-            ChatScope::Children {
-                parent_id: parent.as_str().into(),
-            },
-            &child_item,
-        ),
-        (ChatScope::Main, &main_item),
-    ] {
-        let main = scope == ChatScope::Main;
-        let expected = ChatPageItem {
-            header: target.header.clone(),
-            payload: PayloadData::Deferred {
-                item_id: target.header.item_id.clone(),
-                byte_length: target.header.byte_length,
-            },
-        };
-        let minimum = wire_batch(
-            &database_id,
-            main.then(|| projection.clone()),
-            std::slice::from_ref(&expected),
-        )
-        .encoded_len()?;
-        if !main {
-            assert!(
-                serde_json::to_vec(&projection)?.len() > minimum,
-                "the unrelated Main current must exceed the entire Children demand"
-            );
+    let parent = ChatKey::new("turn", "actual-parent")?;
+    let mut records = Vec::new();
+    for seq in 1..=3 {
+        let mut record = item(seq, "conversation", &[255; 2048]);
+        record.header.metadata = metadata(&record.header.item_id);
+        if seq == 2 {
+            record.header.parent_id = Some(parent.clone());
         }
-        let query = ChatQuery::new(
-            scope.query_class(),
-            scope
-                .parent_id()
-                .map(|parent| ChatKey::from_encoded(parent.to_owned()))
-                .transpose()?,
-        );
-        let cold = store
-            .cold_conversation(query.clone(), ReadDemand::new(2, minimum), &budget)
-            .await?
-            .context("existing cold database")?;
-        assert_eq!(cold.database_id, database_id);
-        assert_eq!(cold.head, 3);
-        assert_eq!(cold.current, projection);
-        assert!(cold.page.exhausted);
-        assert_eq!(cold.page.items, [expected]);
-        let actual = wire_batch(
-            &cold.database_id,
-            main.then_some(cold.current),
-            &cold.page.items,
-        );
-        actual.validate_for(&scope)?;
-        assert_eq!(actual.encoded_len()?, minimum);
-        assert!(
-            actual.encoded_len()? <= minimum,
-            "actual scope delivery must stay within demand"
-        );
-        let error = store
-            .cold_conversation(query, ReadDemand::new(2, minimum - 1), &budget)
-            .await
-            .err()
-            .context("one byte less must reject the target envelope")?;
-        assert!(
-            matches!(
-                error.downcast_ref::<ChatError>(),
-                Some(ChatError::InvalidDemand(_))
-            ),
-            "{scope:?}: {error:#}"
-        );
-        eprintln!(
-            "cold budget {scope:?}: exact={minimum}, actual={}, one-byte-less=InvalidDemand",
-            actual.encoded_len()?
-        );
+        records.push(Arc::new(record));
     }
+    let current = super::super::test_current(1);
+    store
+        .commit_effect(
+            1,
+            super::super::EffectCommit {
+                items: &[],
+                completions: &records,
+                current: &current,
+                rolled_back_turns: &Default::default(),
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            },
+        )
+        .await?;
+    // The synthetic fixture represents frozen legacy facts, prepared once at
+    // their formal normalization boundary, not a second normal Main algorithm.
+    let connection = store.writer().await?;
+    let tx = connection.db.begin().await?;
+    timeline::normalize_legacy(&tx).await?;
+    let generation = timeline::rebuild(&tx, &connection.database_id).await?;
+    tx.commit().await?;
+    // The synthetic legacy fixture is prepared before admitting any consumer.
+    // There is no normal read-triggered rebuild or live maintenance entry.
+    store.state.timeline_generation.send_replace(generation);
+    let budget = EnvelopeBudget {
+        database_id: connection.database_id.clone(),
+        empty: ChatBatch {
+            placement: ChatPlacement::Prepend,
+            entries: Vec::new(),
+            before: Some("cold-budget-continuation".into()),
+            current: None,
+        },
+    };
+    let cold = store
+        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, 256 * 1024), &budget)
+        .await?
+        .unwrap();
+    let page = cold.timeline.context("derived page")?;
+    assert!(cold.page.items.is_empty(), "Main selected atomic records");
+    let [pl_protocol::ChatEntry::Item(latest)] = page.entries.as_slice() else {
+        panic!("Main returned Atom");
+    };
+    assert_eq!(latest.position, Some(2));
+    assert_eq!(latest.content_item_id.as_deref(), Some("item:3"));
+    assert!(matches!(
+        latest.payload,
+        Some(pl_protocol::PayloadData::Deferred { .. })
+    ));
+    let minimum = budget.fixed_bytes() + serde_json::to_vec(&cold.current)?.len() - b"null".len()
+        + timeline::entry_bytes(&page.entries[0])?;
+    let exact = store
+        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(exact.timeline.unwrap().entries, page.entries);
+    let mut main_envelope = budget.empty.clone();
+    main_envelope.entries = page.entries.clone();
+    main_envelope.current = Some(cold.current.clone());
+    assert!(serde_json::to_vec(&main_envelope)?.len() <= minimum);
+    assert!(
+        store
+            .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum - 1), &budget)
+            .await
+            .is_err()
+    );
+    let child_minimum =
+        budget.fixed_bytes() + budget.item_bytes(&records[1].header, PayloadMode::Deferred);
+    let query = ChatQuery::new("conversation", Some(parent));
+    let child = store
+        .cold_conversation(query.clone(), ReadDemand::new(1, child_minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(child.page.items.len(), 1);
+    assert_eq!(child.page.items[0].header, records[1].header);
+    assert!(matches!(
+        child.page.items[0].payload,
+        PayloadData::Deferred { .. }
+    ));
+    let mut child_envelope = budget.empty.clone();
+    child_envelope.entries =
+        vec![budget.entry(&child.page.items[0].header, PayloadMode::Deferred)?];
+    assert!(serde_json::to_vec(&child_envelope)?.len() <= child_minimum);
+    assert!(
+        !child.page.exhausted,
+        "a full scoped page conservatively continues without an existence probe"
+    );
+    let short = store
+        .cold_conversation(query.clone(), ReadDemand::new(2, child_minimum), &budget)
+        .await?
+        .unwrap();
+    assert_eq!(short.page.items, child.page.items);
+    assert!(short.page.exhausted, "a short scoped page proves EOF");
+    let end = super::page(
+        &connection.db,
+        &ChatHistoryRequest {
+            query: Some(query.clone()),
+            after: 0,
+            before: Some(records[1].header.append_seq),
+            ceiling: records[2].header.append_seq,
+            demand: ReadDemand::new(1, child_minimum),
+        },
+        &budget,
+        false,
+    )
+    .await?;
+    assert!(end.items.is_empty());
+    assert!(end.exhausted, "an empty scoped continuation proves EOF");
+    assert!(
+        store
+            .cold_conversation(query, ReadDemand::new(1, child_minimum - 1), &budget)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -514,9 +615,9 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
     projection.collections.push(reference.clone());
     let entries = [(37, "first"), (900, "second")];
     let body: Arc<[u8]> = Arc::from(vec![255; 64 * 1024]);
-    let prepared = current::PreparedCurrent {
-        projection,
-        changes: entries
+    let prepared = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        entries
             .iter()
             .map(|&(position, id)| {
                 current::CurrentEntryChange::Put(current::CurrentEntryWrite {
@@ -528,8 +629,8 @@ async fn current_collection_budget_reserves_qualified_cursor_before_selecting_en
             })
             .collect::<Vec<_>>()
             .into(),
-        contents: Arc::from([]),
-    };
+        Arc::from([]),
+    );
     let writer = store.writer().await?;
     let tx = writer.db.begin().await?;
     current::apply(&tx, 1, &prepared).await?;
@@ -667,9 +768,9 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 collection: "entries".into(),
                 revision,
             });
-        Ok(current::PreparedCurrent {
-            projection,
-            changes: Arc::from([
+        Ok(current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+            Arc::from([
                 current::CurrentEntryChange::Clear {
                     collection: "entries".into(),
                 },
@@ -680,7 +781,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                     payload: Arc::from(b"{\"known\":true}".as_slice()),
                 }),
             ]),
-            contents: Arc::from([current::CurrentContentWrite {
+            Arc::from([current::CurrentContentWrite {
                 content: Arc::new(ChatContent {
                     descriptor: ContentDescriptor {
                         key,
@@ -692,7 +793,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
                 }),
                 sealed: true,
             }]),
-        })
+        ))
     };
     let mut first = prepare(1, b"first revision")?;
     let auxiliary = ChatContentKey {
@@ -767,7 +868,7 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
         read_content(&db, &request).await?.bytes.as_bytes(),
         b"first revision"
     );
-    let reference = &first.projection.collections[0];
+    let reference = &first.projection().collections[0];
     let page = current::page(
         &db,
         reference,
@@ -870,6 +971,74 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
         .downcast_ref::<ChatError>(),
         Some(ChatError::StaleContent)
     ));
+    // Ordered batch mutations must still retire intermediate owners even
+    // though only the final complete singleton is written.
+    db.execute_unprepared(
+        "CREATE TABLE written_current(sequence INTEGER NOT NULL);
+         CREATE TRIGGER count_current_header AFTER UPDATE ON conversation_view_state
+         BEGIN INSERT INTO written_current VALUES(json_extract(CAST(NEW.payload AS TEXT),'$.sourceEffectSeq')); END;",
+    ).await?;
+    let third = prepare(3, b"intermediate revision")?;
+    let empty = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(
+            pl_protocol::CurrentProjection::empty(4, pl_protocol::ThreadStatus::Idle),
+        ),
+        Arc::from([]),
+        Arc::from([]),
+    );
+    let last = prepare(5, b"last revision")?;
+    let tx = db.begin().await?;
+    let baseline = current::read_head(&tx).await?;
+    current::apply_changes(&tx, 3, &third, baseline.as_ref()).await?;
+    current::apply_changes(&tx, 4, &empty, Some(third.projection())).await?;
+    current::apply_changes(&tx, 5, &last, Some(empty.projection())).await?;
+    assert_eq!(current::read_head(&tx).await?.unwrap().source_effect_seq, 2);
+    current::write_head(&tx, &last).await?;
+    tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=5")
+        .await?;
+    tx.commit().await?;
+    let written = db
+        .query_all_raw(statement("SELECT sequence FROM written_current", vec![]))
+        .await?;
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].try_get::<i64>("", "sequence")?, 5);
+    let retired = ContentReadRequest {
+        reference: ContentRef::Body(third.contents[0].content.descriptor.key.clone()),
+        ..request.clone()
+    };
+    assert!(matches!(
+        read_content(&db, &retired)
+            .await
+            .unwrap_err()
+            .downcast_ref::<ChatError>(),
+        Some(ChatError::StaleContent)
+    ));
+    assert_eq!(
+        read_content(
+            &db,
+            &ContentReadRequest {
+                reference: ContentRef::Body(last.contents[0].content.descriptor.key.clone()),
+                ..request
+            }
+        )
+        .await?
+        .bytes
+        .as_bytes(),
+        b"last revision"
+    );
+    let page = current::page(
+        &db,
+        &last.projection().collections[0],
+        None,
+        pl_protocol::ReadDemand {
+            max_items: 1,
+            max_bytes: 4096,
+        },
+        &Ok,
+    )
+    .await?;
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].position, 37);
     Ok(())
 }
 
@@ -1107,9 +1276,21 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
         collection: "interactions".into(),
         revision: 1,
     });
-    let prepared = current::PreparedCurrent {
-        projection,
-        changes: Arc::from([current::CurrentEntryChange::Put(
+    let source = pl_protocol::ChatSourceId::ForegroundTurn {
+        turn_id: "actual-turn".into(),
+    };
+    let source_state = pl_protocol::ChatSourceState {
+        source: source.clone(),
+        lifecycle: pl_protocol::ChatSourceLifecycle::Active,
+        started: Some(pl_protocol::ChatFactPosition {
+            effect_seq: 1,
+            suborder: 2,
+        }),
+        ended: None,
+    };
+    let mut prepared = current::PreparedCurrent::new(
+        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        Arc::from([current::CurrentEntryChange::Put(
             current::CurrentEntryWrite {
                 collection: "interactions".into(),
                 position: 19,
@@ -1117,11 +1298,22 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
                 payload: Arc::from(b"first".as_slice()),
             },
         )]),
-        contents: Arc::from([]),
-    };
+        Arc::from([]),
+    );
+    prepared.source_changes = Arc::from([source_state.clone()]);
     let tx = db.begin().await?;
     assert!(current::apply(&tx, 2, &prepared).await.is_err());
+    append_records(
+        &tx,
+        [&item(1, "conversation", b"same-effect completion")],
+        true,
+    )
+    .await?;
     current::apply(&tx, 1, &prepared).await?;
+    assert_eq!(
+        sources::read(&tx, std::slice::from_ref(&source), 1).await?,
+        [source_state]
+    );
     assert!(
         current::read(&tx).await.is_err(),
         "current cannot exceed watermark"
@@ -1165,9 +1357,11 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
     current::apply(
         &tx,
         1,
-        &current::PreparedCurrent {
-            projection: prepared.projection.clone(),
-            changes: Arc::from([
+        &current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(
+                prepared.projection().clone(),
+            ),
+            Arc::from([
                 current::CurrentEntryChange::Remove {
                     collection: "interactions".into(),
                     entry_id: "one".into(),
@@ -1176,11 +1370,16 @@ async fn frozen_current_cannot_cross_effect_and_rolls_back_with_its_transaction(
                     collection: "interactions".into(),
                 },
             ]),
-            contents: Arc::from([]),
-        },
+            Arc::from([]),
+        ),
     )
     .await?;
     tx.rollback().await?;
+    assert_eq!(latest_append_seq(&db).await?, 0);
+    assert!(matches!(
+        sources::read(&db, &[source], 1).await?[0].lifecycle,
+        pl_protocol::ChatSourceLifecycle::Unknown
+    ));
     assert!(
         current::read(&db).await.is_err(),
         "rolled-back current is absent, not checkpoint fallback"

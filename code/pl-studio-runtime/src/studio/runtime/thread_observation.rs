@@ -12,7 +12,9 @@ mod directory;
 mod publication;
 mod reports;
 mod slot;
-pub(super) use publication::{ConversationCut, ConversationRegistration, ConversationSource};
+pub(super) use publication::{
+    ConversationCut, ConversationRegistration, ConversationSource, DeliveryReceiver,
+};
 pub(super) use slot::ObservationSlot;
 
 use super::{ModelPerformanceOwner, StudioRuntime};
@@ -39,8 +41,8 @@ use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
 /// Fixed bound on the frames one subscriber may fall behind the projection owner.
 ///
-/// The feed is a bounded observation channel, not a log: a subscriber that stops draining observes
-/// a lag and resynchronizes from the database window instead of letting this queue grow with history.
+/// The original publisher waits for actual reads at this bound. Owner closure
+/// revokes outward delivery before joining observation and storage responsibilities.
 const LIVE_FEED_FRAMES: usize = 512;
 
 /// One output of a Thread's single realtime projection owner.
@@ -97,7 +99,9 @@ pub(super) struct RuntimeStateCut {
 /// session at the same time. Subscribers therefore forward typed events and never project, publish
 /// or read the effect window themselves.
 pub(in crate::studio) struct ThreadLiveFeed {
+    delivery_closed: tokio_util::sync::CancellationToken,
     events: broadcast::Sender<ThreadLiveEvent>,
+    event_capacity: Arc<Notify>,
     /// The Thread's authoritative typed storage state, published by this owner only.
     ///
     /// The projection owner is the one place that derives it from the owner snapshot and the
@@ -148,22 +152,31 @@ impl ThreadLiveFeed {
         session: &pl_core::chat::Session,
         current: Arc<crate::studio::thread_projection::CurrentState>,
         handoff: Option<Arc<crate::studio::thread_projection::CurrentHandoff>>,
+        generation: &str,
     ) -> Result<()> {
-        self.conversation.publish(session, current, handoff)
+        if handoff.is_some() {
+            self.conversation.publish(session, current, handoff)
+        } else {
+            self.conversation
+                .publish_generation(session, current, generation)
+        }
     }
 
     pub(super) fn new(
         storage: Option<pl_protocol::ThreadStorageState>,
         owner_progress: watch::Receiver<Progress>,
+        delivery_closed: tokio_util::sync::CancellationToken,
     ) -> Self {
         let (events, _) = broadcast::channel(LIVE_FEED_FRAMES);
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
+            conversation: publication::ConversationPublication::new(delivery_closed.clone()),
+            delivery_closed,
             events,
+            event_capacity: Arc::new(Notify::new()),
             storage,
             last_turn,
-            conversation: Default::default(),
             owner_progress,
             #[cfg(test)]
             first_open_wait: Default::default(),
@@ -188,8 +201,21 @@ impl ThreadLiveFeed {
             .clone()
     }
 
-    pub(in crate::studio) fn subscribe(&self) -> broadcast::Receiver<ThreadLiveEvent> {
-        self.events.subscribe()
+    pub(in crate::studio) fn subscribe(&self) -> DeliveryReceiver<ThreadLiveEvent> {
+        DeliveryReceiver::new(
+            self.events.subscribe(),
+            self.event_capacity.clone(),
+            self.delivery_closed.clone(),
+        )
+    }
+    async fn wait_event_capacity(&self) {
+        publication::wait_capacity(
+            &self.events,
+            LIVE_FEED_FRAMES,
+            &self.event_capacity,
+            &self.delivery_closed,
+        )
+        .await;
     }
 
     /// Watches the newest terminal Turn this owner projected, so a subscriber that registers after
@@ -235,7 +261,7 @@ impl ThreadLiveFeed {
     }
 
     fn has_subscribers(&self) -> bool {
-        self.events.receiver_count() != 0
+        !self.delivery_closed.is_cancelled() && self.events.receiver_count() != 0
     }
 
     fn publish(&self, event: impl FnOnce() -> ThreadLiveEvent) {
@@ -323,6 +349,7 @@ impl WorkerState {
 }
 struct Observation {
     thread: ThreadHandle,
+    feed: Arc<ThreadLiveFeed>,
     state: Arc<WorkerState>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -376,6 +403,7 @@ pub(super) struct ObservationServices {
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
 }
 struct Shared {
+    delivery_closed: tokio_util::sync::CancellationToken,
     projector: ObservationServices,
     observations: Mutex<BTreeMap<String, Vec<Arc<Observation>>>>,
     /// Stable passive slots survive absent → live → absent transitions.
@@ -389,6 +417,7 @@ pub(super) struct ThreadObservations(Arc<Shared>);
 impl ThreadObservations {
     pub(super) fn new(projector: ObservationServices) -> Self {
         Self(Arc::new(Shared {
+            delivery_closed: Default::default(),
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
@@ -427,6 +456,27 @@ impl ThreadObservations {
             .and_then(|slot| slot.source())
     }
 
+    /// End outward delivery before joining producers; their original save
+    /// responsibility continues independently of an idle external receiver.
+    pub(super) fn close_deliveries(&self) {
+        self.0.delivery_closed.cancel();
+    }
+
+    fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
+        let observations = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entries) = observations.get(id) {
+            for observation in entries {
+                if observation.thread.same_instance(thread) {
+                    observation.feed.delivery_closed.cancel();
+                }
+            }
+        }
+    }
+
     /// Register before any asynchronous read or source lookup. This does not activate execution.
     pub(super) fn observation_slot(&self, id: &str) -> Arc<ObservationSlot> {
         self.0
@@ -451,6 +501,7 @@ impl ThreadObservations {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let synchronizing = owner.clone();
+        let closing = owner.clone();
         let message_store = self.0.projector.store.clone();
         let closing_factory = thread_factory.clone();
         self.0.projector.threads.observe_assembly(
@@ -532,6 +583,9 @@ impl ThreadObservations {
                 })
             })),
             move |id, thread| {
+                if let Some(owner) = closing.upgrade() {
+                    ThreadObservations(owner).close_delivery(&id, &thread);
+                }
                 // Cancellation is synchronous, so no new preparation can pass the gate.
                 let gate = closing_factory.stop_tool_operation(&id);
                 let rejected = rejected_tools.clone();
@@ -657,12 +711,14 @@ impl ThreadObservations {
         let feed = Arc::new(ThreadLiveFeed::new(
             initial_storage,
             state.progress.subscribe(),
+            self.0.delivery_closed.child_token(),
         ));
         self.observation_slot(&id).install(feed.clone());
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
+        let observed_feed = feed.clone();
         let task = tokio::spawn(async move {
             run(
                 projector,
@@ -677,6 +733,7 @@ impl ThreadObservations {
         });
         let observation = Arc::new(Observation {
             thread,
+            feed: observed_feed,
             state,
             task: tokio::sync::Mutex::new(Some(task)),
         });
@@ -903,11 +960,19 @@ impl PendingHandoff {
     /// The same measurement the reliable channel charges when it takes the batch over, so the
     /// Thread's existing budget covers the batch under exactly one owner at a time — never twice
     /// outside the one synchronous handoff boundary, and never unbounded while a report awaits.
+    #[cfg(test)]
     fn retained_bytes(&self) -> u64 {
+        self.prepared
+            .retained_bytes()
+            .saturating_add(self.extra_retained_bytes())
+    }
+
+    /// Delivery changes owned here in addition to the shared prepared batch.
+    fn extra_retained_bytes(&self) -> u64 {
         // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
         // the one implementation the writer shares); the delivery changes are this owner's own
         // residents and are charged element by element.
-        let mut bytes = self.prepared.retained_bytes();
+        let mut bytes = 0_u64;
         if let Some(changes) = self.changes.as_ref() {
             for event in changes {
                 bytes = bytes.saturating_add(event.retained_bytes());
@@ -1040,6 +1105,8 @@ impl LiveOwner {
         let (seed_items, hidden) =
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
         projection.seed(seed_items, hidden);
+        projection.restore_current(&chat, &thread, snapshot).await?;
+        projection.initialize_timeline().await?;
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1063,6 +1130,7 @@ impl LiveOwner {
             &thread,
             &config.config,
         )?;
+        feed.wait_event_capacity().await;
         feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: catalog.revision,
@@ -1131,7 +1199,7 @@ impl LiveOwner {
         // the prepared content is added and no body is counted twice in steady state.
         let pending = self.pending.as_ref().map(|pending| {
             let prepared_bytes = pending.prepared.retained_bytes();
-            bytes = bytes.saturating_add(pending.retained_bytes().saturating_sub(prepared_bytes));
+            bytes = bytes.saturating_add(pending.extra_retained_bytes());
             PendingProjectionRetention {
                 sequence: pending.prepared.sequence,
                 prepared_bytes,
@@ -1218,6 +1286,7 @@ impl LiveOwner {
         // A receiver may register while this effect is being prepared or retained before handoff.
         // Freeze its typed State facts in the original charged slot regardless of current demand;
         // only the outward envelope is optional. Otherwise that receiver loses a reliable commit.
+        let started = std::time::Instant::now();
         let projected = self
             .projection
             .prepare(&self.thread, effect, &write.checkpoint.state, true)
@@ -1256,7 +1325,16 @@ impl LiveOwner {
             mode: HandoffMode::Live,
         });
         self.publish_retained()?;
-        self.finish_pending(services).await
+        let result = self.finish_pending(services).await;
+        tracing::debug!(
+            target: "conversation_work",
+            thread_id = self.thread.id,
+            source_effect_seq = effect.sequence,
+            projection_handoff_elapsed_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok(),
+            "live owner projection and handoff"
+        );
+        result
     }
 
     /// Prepares the retained batch's original parent report, then hands the batch over.
@@ -1272,22 +1350,26 @@ impl LiveOwner {
             self.projection
                 .publish_prepared(&self.chat, &mut pending.prepared)
                 .await?;
-            if let Some(current) = pending.prepared.current_state.as_ref() {
-                let handoff = pending
-                    .prepared
-                    .current_handoff
-                    .as_ref()
-                    .context("prepared current has no reliable delivery handoff")?;
-                self.feed.conversation.publish(
-                    &self.chat,
-                    current.clone(),
-                    Some(handoff.clone()),
-                )?;
-                let prepared = Arc::get_mut(&mut pending.prepared)
-                    .context("prepared effect is shared before its reliable handoff")?;
-                prepared.current_state = None;
-                prepared.current_handoff = None;
-            }
+        }
+        // Publication's derived member/item increment is now concrete. Charge
+        // that same retained slot before exposing its display cut.
+        self.publish_retained()?;
+        if let Some(pending) = self.pending.as_mut()
+            && let Some(current) = pending.prepared.current_state.as_ref()
+        {
+            self.feed.conversation.wait_capacity().await;
+            let handoff = pending
+                .prepared
+                .current_handoff
+                .as_ref()
+                .context("prepared current has no reliable delivery handoff")?;
+            self.feed
+                .conversation
+                .publish(&self.chat, current.clone(), Some(handoff.clone()))?;
+            let prepared = Arc::get_mut(&mut pending.prepared)
+                .context("prepared effect is shared before its reliable handoff")?;
+            prepared.current_state = None;
+            prepared.current_handoff = None;
         }
         self.publish_retained()?;
         // Test-only fault boundary: a fault test that installed a hook parks the real batch right
@@ -1328,6 +1410,13 @@ impl LiveOwner {
         }
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.mode == HandoffMode::Live)
+        {
+            self.feed.wait_event_capacity().await;
+        }
         if let Some(pending) = &self.pending
             && pending.mode == HandoffMode::Live
         {
@@ -1346,8 +1435,7 @@ impl LiveOwner {
     /// refuse the batch, this pending slot remains its sole owner. That prevents the next worker pass
     /// from starting delivery before the reliable handoff and keeps cancellation/retry on one batch.
     fn prepare_terminal_delivery(&mut self, services: &ObservationServices) -> Result<()> {
-        let before = self.retention();
-        let Some(pending) = self.pending.as_mut() else {
+        let Some(pending) = self.pending.as_ref() else {
             return Ok(());
         };
         if pending.terminal.is_some() {
@@ -1356,6 +1444,13 @@ impl LiveOwner {
         let Some(original) = pending.prepared.parent_report.clone() else {
             return Ok(());
         };
+        // Ordinary effects have no terminal material to transfer. Measure only after that
+        // qualification; the retained batch cannot change during these synchronous borrows.
+        let before = self.retention();
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("terminal batch was checked above");
         anyhow::ensure!(
             self.terminal_transfer
                 .lock()
@@ -1635,10 +1730,14 @@ impl LiveOwner {
             .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
             .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
-        self.observe_runtime(snapshot)?;
-        self.observe_activity(snapshot);
+        self.observe_runtime(snapshot).await?;
+        self.observe_activity(snapshot).await;
         if let Some(current) = self.projection.current_state() {
-            self.feed.conversation.publish(&self.chat, current, None)?;
+            self.feed.conversation.publish_generation(
+                &self.chat,
+                current,
+                self.projection.timeline_generation(),
+            )?;
         }
         self.publish_retained()?;
         Ok(())
@@ -1647,7 +1746,7 @@ impl LiveOwner {
     /// Execution residency is live-only; next-admission availability also consumes current config.
     /// Derive runtime from the latest owner snapshot after folding all admitted usage,
     /// never from an effect's storage checkpoint. Stable timestamps allow deduplication.
-    fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
+    async fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
         let at = self
             .runtime_published
             .as_ref()
@@ -1669,13 +1768,17 @@ impl LiveOwner {
             (None, None) => true,
             _ => false,
         };
-        if self.config.model_catalog_revision()? == self.qualification_revision && same_identity {
+        let qualification_revision = if self.config.model_catalog_revision()?
+            == self.qualification_revision
+            && same_identity
+        {
             if let (Some(previous), Some(current)) =
                 (self.model_route_published.as_ref(), model_route.as_mut())
             {
                 current.available = previous.available;
                 current.unavailable_reason = previous.unavailable_reason.clone();
             }
+            self.qualification_revision
         } else {
             let (config, catalog) = self.config.read_with_catalog()?;
             crate::studio::model_route::annotate_availability(
@@ -1683,15 +1786,18 @@ impl LiveOwner {
                 &self.thread,
                 &config.config,
             )?;
-            self.qualification_revision = catalog.revision;
-        }
+            catalog.revision
+        };
         if self.runtime_published.as_ref() == Some(&runtime)
             && self.model_route_published == model_route
         {
+            self.qualification_revision = qualification_revision;
             return Ok(());
         }
         runtime.updated_at = crate::studio::unix_seconds();
         runtime.usage.updated_at = runtime.updated_at;
+        self.feed.wait_event_capacity().await;
+        self.qualification_revision = qualification_revision;
         self.model_route_published.clone_from(&model_route);
         let runtime = self.runtime_published.insert(runtime);
         self.feed.publish(|| ThreadLiveEvent::Runtime {
@@ -1709,12 +1815,13 @@ impl LiveOwner {
     /// tool or an interaction change reaches it through the owner snapshot, never through `effect`.
     /// Shared producer versions cover body changes even when the bounded summary stays identical.
     /// The completion ceiling also advances independently of the activity summary.
-    fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
+    async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
         let activity = self.projection.current_activity();
         let activity_changed = activity != self.activity_published;
         if !activity_changed {
             return;
         }
+        self.feed.wait_event_capacity().await;
         self.activity_published = activity;
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
@@ -1734,6 +1841,9 @@ impl LiveOwner {
         snapshot: &ThreadSnapshot,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
     ) {
+        if let Some(through) = persistence.and_then(|detail| detail.history_durable_sequence) {
+            self.projection.confirm_sources(through);
+        }
         let storage = persistence.map(|detail| storage_state(snapshot, detail));
         if storage == self.storage_published {
             return;
@@ -1891,6 +2001,20 @@ fn live_usage(
     }
 }
 
+fn product_revision(
+    snapshot: &ThreadSnapshot,
+) -> (
+    u64,
+    ThreadLifecycle,
+    Option<pl_core::thread::ActiveExecution>,
+) {
+    (
+        snapshot.commit_sequence,
+        snapshot.lifecycle,
+        snapshot.execution.clone(),
+    )
+}
+
 async fn run(
     projector: ObservationServices,
     id: String,
@@ -1930,8 +2054,9 @@ async fn run(
         // reliable channel was installed before any execution or model call.
         continuous,
     };
-    // Product facts are projected once per committed revision; the live projection additionally
-    // follows every owner snapshot so streaming previews reach the same single publisher.
+    // Execution preparation and retirement can change without a history commit. The directory must
+    // follow that identity as well as committed facts, but not pay for preview-only publications.
+    // The live projection still follows every owner snapshot through the same single publisher.
     let mut projected = None;
     loop {
         let issue_id = format!("tool-cleanup:{}", worker.id);
@@ -1969,7 +2094,8 @@ async fn run(
                 worker.services.events.emit_recovery_state(issues);
             },
         );
-        let products = projected != Some((current.commit_sequence, current.lifecycle));
+        let revision = product_revision(&current);
+        let products = projected.as_ref() != Some(&revision);
         // Read the coordinator's newest typed facts before publishing: a storage change is a fact
         // this pass has to carry, exactly like a commit or a preview it also projects.
         let detail = persistence
@@ -1989,7 +2115,7 @@ async fn run(
             Ok(()) => {
                 worker.continuous = true;
                 if products {
-                    projected = Some((current.commit_sequence, current.lifecycle));
+                    projected = Some(revision);
                 }
                 let finished = current.lifecycle == ThreadLifecycle::Closed;
                 worker.state.progress.send_replace(Progress {
@@ -2378,6 +2504,10 @@ impl ProjectionWorker {
         // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
         let mut newest_commit_at = 0_i64;
         loop {
+            // One projection includes table scans and encoding, not one cheap iterator item.
+            // Yield between complete handoffs instead of spending only one cooperative credit
+            // per effect; writer progress must not depend on exhausting a whole batch of them.
+            tokio::task::yield_now().await;
             // The retained handoff is completed before any new queue work: its write is the very
             // Arc the queue admitted, so even a queue entry that already disappeared cannot make
             // this owner forget or re-project the commit it still owes.
@@ -2480,7 +2610,7 @@ mod readiness_tests {
                     finished: mode == 0 || mode == 2,
                     ..Default::default()
                 });
-                let feed = Arc::new(ThreadLiveFeed::new(None, receiver));
+                let feed = Arc::new(ThreadLiveFeed::new(None, receiver, Default::default()));
                 slot.install(feed.clone());
                 let entered = (mode == 1 || mode == 3).then(|| feed.arm_first_open_wait());
                 let open = env.runtime.open_conversation_feed(
@@ -2718,7 +2848,11 @@ mod storage_fault_tests {
                 pending_hook: None,
             }),
             recovered_through: 0,
-            feed: Arc::new(ThreadLiveFeed::new(None, owner_progress)),
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                owner_progress,
+                Default::default(),
+            )),
             live: None,
             live_floor: 0,
             continuous: true,
@@ -2730,6 +2864,105 @@ mod storage_fault_tests {
             .await?;
         sink.flush(&child.id, 1).await?;
         Ok((resources, observations, worker, sink))
+    }
+
+    #[tokio::test]
+    async fn execution_only_snapshot_republishes_the_same_agent_directory_row() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let (resources, observations, mut worker, sink) =
+            terminal_projection_fixture(&store, false).await?;
+        let result = async {
+            // The history-only fixture registers durable rows after constructing its event bus.
+            // Admit those real catalog rows through the directory's ordinary bootstrap path.
+            let catalog = store.catalog();
+            let rows = catalog
+                .sessions()
+                .iter()
+                .flat_map(|session| {
+                    catalog
+                        .agents_for_session(&session.session_id)
+                        .into_iter()
+                        .map(move |agent| crate::studio::records::row_projection(session, &agent))
+                })
+                .collect();
+            worker
+                .services
+                .events
+                .apply_thread_delta(rows, Vec::new())
+                .await?;
+            worker.services.events.initialize_directories().await?;
+            let mut snapshot = crate::studio::storage_fault_test_support::ticket(&worker.id, 1)
+                .checkpoint
+                .state;
+            snapshot.execution = Some(pl_core::thread::ActiveExecution {
+                id: "execution:1".into(),
+                phase: pl_core::thread::ExecutionPhase::Stopping,
+                turn_id: None,
+            });
+            let projected = product_revision(&snapshot);
+            worker.project(&snapshot, true, None).await?;
+            let stopping = worker.services.events.read_agent_directory().await;
+            let row = stopping
+                .state
+                .value()
+                .context("loaded stopping directory")?
+                .agents
+                .iter()
+                .find(|row| row.thread_id == worker.id)
+                .context("the original agent row")?;
+            anyhow::ensure!(
+                row.execution.as_ref().is_some_and(|execution| {
+                    execution.id() == "execution:1"
+                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping
+                }),
+                "the directory must first publish the exact stopping execution"
+            );
+
+            // finish_execution only clears the execution and publishes a snapshot: no new
+            // history commit or lifecycle transition is required to retire this identity.
+            snapshot.execution = None;
+            snapshot.observation_revision += 1;
+            let retired = product_revision(&snapshot);
+            worker
+                .project(&snapshot, retired != projected, None)
+                .await?;
+            let settled = worker.services.events.read_agent_directory().await;
+            let row = settled
+                .state
+                .value()
+                .context("loaded settled directory")?
+                .agents
+                .iter()
+                .find(|row| row.thread_id == worker.id)
+                .context("stopping must not remove the original agent row")?;
+            anyhow::ensure!(
+                row.execution.is_none() && !row.can_stop,
+                "the same committed revision must publish execution retirement"
+            );
+            anyhow::ensure!(settled.state.revision() > stopping.state.revision());
+
+            // A preview-only owner snapshot is not another directory change.
+            snapshot.observation_revision += 1;
+            worker
+                .project(&snapshot, product_revision(&snapshot) != retired, None)
+                .await?;
+            let preview = worker.services.events.read_agent_directory().await;
+            anyhow::ensure!(preview.state.revision() == settled.state.revision());
+            Ok(())
+        }
+        .await;
+        let channel = worker.state.channel.clone();
+        drop(worker);
+        drop(sink);
+        let cleanup = async {
+            channel.stop_and_join().await?;
+            observations.finish().await?;
+            resources.shutdown().await
+        }
+        .await;
+        result?;
+        cleanup
     }
 
     async fn completion_publication_retry(mode: HandoffMode, cancel: bool) -> Result<()> {
@@ -3622,6 +3855,11 @@ mod storage_fault_tests {
         let (release, released) = tokio::sync::oneshot::channel();
         let observation = Observation {
             thread: owner.clone(),
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                progress.subscribe(),
+                Default::default(),
+            )),
             state: Arc::new(WorkerState {
                 terminal_transfer: Default::default(),
                 progress,
@@ -3654,6 +3892,11 @@ mod storage_fault_tests {
         let (progress, _) = watch::channel(Progress::default());
         let failed = Observation {
             thread: owner,
+            feed: Arc::new(ThreadLiveFeed::new(
+                None,
+                progress.subscribe(),
+                Default::default(),
+            )),
             state: Arc::new(WorkerState {
                 terminal_transfer: Default::default(),
                 progress,
@@ -3726,7 +3969,7 @@ mod storage_fault_tests {
             projection
                 .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
             let (_owner, owner_progress) = watch::channel(Progress::default());
-            let feed = ThreadLiveFeed::new(None, owner_progress);
+            let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
             assert!(!feed.has_subscribers());
             let (changes, mut prepared) = projection
                 .prepare(
@@ -3814,7 +4057,7 @@ mod storage_fault_tests {
             mode: HandoffMode::Behind,
         };
         let (_owner, owner_progress) = watch::channel(Progress::default());
-        let feed = ThreadLiveFeed::new(None, owner_progress);
+        let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
         let mut frames = feed.subscribe();
         let mut last_turn = feed.last_turn();
         // 1) 通道尚未受理该提交：交接被拒，批次与原报告原样保留，预算可见。
@@ -3916,6 +4159,96 @@ mod storage_fault_tests {
         services: ObservationServices,
         observations: ThreadObservations,
         writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    }
+
+    #[tokio::test]
+    async fn full_delivery_does_not_block_thread_or_runtime_close() -> Result<()> {
+        for shutdown_runtime in [false, true] {
+            let prompt = "close-with-idle-delivery";
+            let env = crate::runtime_test_support::Environment::new(
+                vec![crate::runtime_test_support::prompt_step(
+                    prompt,
+                    0,
+                    pl_provider_fixture::gui_streaming_output_reply(2_000, 1),
+                )],
+                Vec::new(),
+            )
+            .await?;
+            let result = async {
+                let thread = env
+                    .start(pl_protocol::ThreadWorkspaceMode::Local, prompt)
+                    .await?;
+                let id = &thread.thread.id;
+                let mut delivery = env
+                    .runtime
+                    .open_conversation_feed(
+                        id,
+                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ReadDemand {
+                            max_items: 37,
+                            max_bytes: 256 * 1024,
+                        },
+                    )
+                    .await?;
+                let source = env
+                    .runtime
+                    .thread_observations
+                    .live_feed(id)
+                    .context("original feed")?;
+                let mut changes = source.content_changes();
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        let capacity = source.conversation.wait_capacity();
+                        tokio::pin!(capacity);
+                        if futures::poll!(capacity.as_mut()).is_pending() {
+                            break;
+                        }
+                        changes
+                            .changed()
+                            .await
+                            .context("original source closed before filling")?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                let target = source
+                    .current_conversation()
+                    .context("filled source cut")?
+                    .current
+                    .projection()
+                    .source_effect_seq;
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    if shutdown_runtime {
+                        env.runtime.shutdown_runtime().await?;
+                    } else {
+                        env.runtime.threads.close(id).await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                assert!(source.delivery_closed.is_cancelled());
+                assert!(env.runtime.thread_observations.live_feed(id).is_none());
+                let saved = crate::runtime_test_support::saved(&env.home, id).await?;
+                assert!(saved.checkpoint.state.commit_sequence >= target);
+                assert_eq!(saved.checkpoint.state.lifecycle, ThreadLifecycle::Closed);
+                assert!(
+                    env.runtime
+                        .thread_observations
+                        .0
+                        .observations
+                        .lock()
+                        .unwrap()
+                        .get(id)
+                        .is_none()
+                );
+                delivery.close().await?;
+                delivery.reader().close().await?;
+                Ok(())
+            }
+            .await;
+            env.finish(result).await?;
+        }
+        Ok(())
     }
 
     async fn observation_fixture() -> Result<ObservationFixture> {
@@ -4468,7 +4801,11 @@ mod storage_fault_tests {
             observed_before_execution: false,
             pending_hook: Some(hook),
         });
-        let feed = Arc::new(ThreadLiveFeed::new(None, state.progress.subscribe()));
+        let feed = Arc::new(ThreadLiveFeed::new(
+            None,
+            state.progress.subscribe(),
+            Default::default(),
+        ));
         let mut live = LiveOwner::open(
             &fixture.services,
             &handle,
@@ -4590,9 +4927,6 @@ mod storage_fault_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = bound_thread("qa-restart");
         register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
         let history = store.history(&thread.id).await?;
         let call_id = "call-restart";
         let tool_id = crate::studio::thread_projection::order::tool_id(call_id);
@@ -4618,11 +4952,13 @@ mod storage_fault_tests {
                 )),
             )),
         );
-        let current = crate::studio::storage::history::conversation::current::PreparedCurrent {
-            projection: pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
-            changes: Arc::from([]),
-            contents: Arc::from([]),
-        };
+        let current = crate::studio::storage::history::conversation::current::PreparedCurrent::new(
+            crate::studio::thread_projection::FrozenCurrentProjection::new(
+                pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
+            ),
+            Arc::from([]),
+            Arc::from([]),
+        );
         history
             .commit_effect(
                 1,
@@ -4651,6 +4987,19 @@ mod storage_fault_tests {
             .await?;
 
         // 2) 重启：新投影没有任何驻留正文，Turn/Task 都不在（空且已剪枝的状态）。
+        // The fresh writer must adopt the same durable fence as the simulated restored owner,
+        // rather than retaining a pre-seed channel that still thinks sequence zero is durable.
+        let restored = ThreadCheckpoint::capture(
+            thread.id.clone(),
+            1,
+            ThreadSnapshot {
+                commit_sequence: 1,
+                ..Default::default()
+            },
+        );
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), Some(&restored)).await?;
+        let channel = store.thread_persistence().history_channel(&thread.id);
+        let chat = store.chat_session(&thread.id).await?;
         let mut projection = LiveProjection::new();
         projection.bind_execution_history(
             store
@@ -4719,7 +5068,8 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_current_compaction_receipt_is_projected_and_saved() -> Result<()> {
         use pl_core::thread::{
-            ContextReplacement, ContextReplacementReason,
+            ContextCompactionEvent, ContextCompactionOutcome, ContextReplacement,
+            ContextReplacementReason,
             extensions::{ExtensionChange, ExtensionRecord},
         };
         use pl_model::{
@@ -4770,6 +5120,15 @@ mod storage_fault_tests {
             thread_id: thread.id.clone(),
             sequence: 1,
             committed_at: 10,
+            // The model receipt supplies accounting; Core's operation fact supplies the atom.
+            // No start was saved in this fixture, so its true start must remain unknown.
+            context_compactions: [ContextCompactionEvent::Finished {
+                operation_id: "current-compaction".into(),
+                outcome: ContextCompactionOutcome::Changed {
+                    context_revision: state.context.revision,
+                },
+            }]
+            .into(),
             extensions: [ExtensionChange::Put {
                 id: crate::compaction::LATEST_RECEIPT.into(),
                 record: extension,
@@ -4801,13 +5160,47 @@ mod storage_fault_tests {
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
         let history = store.history(&thread.id).await?;
-        let items = history.items_for_turn(&receipt.turn_id).await?;
+        let items = history.items_for_turn("").await?;
         assert_eq!(items.len(), 1);
         let saved = &items[0];
-        assert_eq!(saved.turn_id, receipt.turn_id);
+        assert!(
+            saved.turn_id.is_empty(),
+            "an operation must not borrow the model receipt's Turn"
+        );
         assert!(matches!(
             saved.state(),
             ThreadItemState::ContextCompaction(_)
+        ));
+        let checkpoint = history
+            .checkpoint()
+            .await?
+            .context("saved receipt checkpoint")?;
+        let saved_receipt = &checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT];
+        let decoded = crate::compaction::decode_receipt(
+            saved_receipt.payload.version(),
+            saved_receipt.payload.content(),
+        )?;
+        assert_eq!(
+            serde_json::to_value(decoded)?,
+            serde_json::to_value(&receipt)?
+        );
+        let record = pl_core::chat::ChatHistory::item(&history, &saved.id)
+            .await?
+            .context("saved operation atom")?;
+        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+        assert_eq!(
+            atom.source,
+            pl_protocol::ChatSourceId::Operation {
+                operation_id: "current-compaction".into(),
+            }
+        );
+        assert!(matches!(
+            atom.lifecycle,
+            pl_protocol::ChatAtomLifecycle::Terminal {
+                started: None,
+                ended: Some(_),
+                outcome: pl_protocol::ChatTerminalOutcome::Completed,
+            }
         ));
         Ok(())
     }
@@ -4915,6 +5308,15 @@ mod storage_fault_tests {
         let mut restored = LiveProjection::new();
         restored.bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
         restored.seed(items, hidden);
+        restored.bind_conversation_identity(
+            store
+                .history(&thread.id)
+                .await?
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+        )?;
+        restored.restore_current(&chat, &thread, &current).await?;
         restored.stream(&chat, &thread, &current, 2).await?;
         if delayed_admission {
             sink.admit(&thread.id, recovery.clone())?;

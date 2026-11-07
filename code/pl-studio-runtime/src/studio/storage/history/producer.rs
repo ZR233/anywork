@@ -227,7 +227,13 @@ mod tests {
                 'm20261027_000002_history_producer_payloads',
                 'm20261027_000004_history_atomic_timeline',
                 'm20261028_000001_history_metering_facts',
-                'm20261028_000002_history_combined_content');
+                'm20261028_000002_history_combined_content',
+                'm20261101_000010_history_model_route_head',
+                'm20261102_000001_history_atom_metadata',
+                'm20261103_000001_history_timeline_items');
+             DROP TABLE IF EXISTS timeline_item_members;
+             DROP TABLE IF EXISTS timeline_items;
+             DROP TABLE IF EXISTS timeline_projection_state;
              DROP TABLE timeline_records;
              UPDATE history_meta SET schema_version=9;",
         )

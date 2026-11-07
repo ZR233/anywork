@@ -177,19 +177,24 @@ final class ProductionStudioHarness {
       remainingMs: 30000,
       closeClient: (deadline) => graph.close(deadline: deadline),
     );
-    await File('${artifacts.path}/sidebar-shutdown.json').writeAsString(
-      const JsonEncoder.withIndent('  ').convert({
-        'clean': report.shutdown.isClean,
-        'issues': report.shutdown.issues.map((issue) => '$issue').toList(),
-        'persistence': report.shutdown.persistence.runtimeType.toString(),
-      }),
-      flush: true,
-    );
-    expect(
-      report.shutdown.isClean,
-      isTrue,
-      reason: report.shutdown.issues.toString(),
-    );
+    final shutdownDiagnostic = const JsonEncoder.withIndent('  ').convert({
+      'clean': report.shutdown.isClean,
+      'issues': report.shutdown.issues
+          .map(
+            (issue) => {
+              'stage': issue.stage,
+              'code': issue.code,
+              'message': issue.message,
+              'retryable': issue.retryable,
+              'correlationId': issue.correlationId,
+            },
+          )
+          .toList(growable: false),
+      'persistence': report.shutdown.persistence.runtimeType.toString(),
+    });
+    await File('${artifacts.path}/sidebar-shutdown.json')
+        .writeAsString(shutdownDiagnostic, flush: true);
+    expect(report.shutdown.isClean, isTrue, reason: shutdownDiagnostic);
     expect(report.shutdown.issues, isEmpty);
     expect(report.shutdown.persistence, isA<DrainedStudioPendingPersistence>());
   }

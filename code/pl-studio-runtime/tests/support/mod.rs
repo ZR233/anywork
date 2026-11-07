@@ -24,6 +24,25 @@ use std::{
 pub const MODEL: &str = "lifecycle-model";
 pub const EXECUTOR: &str = "lifecycle_executor";
 
+/// A runner watchdog for real database integration, not a product latency target.
+/// One configured deadline covers the operation; notifications never extend it.
+pub fn integration_test_deadline() -> Result<Duration> {
+    match std::env::var("ANYWORK_TEST_INTEGRATION_TIMEOUT_SECONDS") {
+        Ok(value) => {
+            let seconds = value
+                .parse::<u64>()
+                .context("ANYWORK_TEST_INTEGRATION_TIMEOUT_SECONDS must be a positive integer")?;
+            ensure!(
+                seconds > 0,
+                "ANYWORK_TEST_INTEGRATION_TIMEOUT_SECONDS must be greater than zero"
+            );
+            Ok(Duration::from_secs(seconds))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(Duration::from_secs(300)),
+        Err(error) => Err(error).context("read integration test watchdog configuration"),
+    }
+}
+
 pub fn git(path: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -68,7 +87,7 @@ pub fn held_reply(stage: &ReplyStage, id: &str) -> Reply {
 }
 
 pub async fn reached(stage: &ReplyStage) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(20), stage.wait_reached())
+    tokio::time::timeout(integration_test_deadline()?, stage.wait_reached())
         .await
         .context("provider stage was not reached")
 }
@@ -91,7 +110,7 @@ async fn terminal(
             thread_id: id.into(),
         })
         .await?;
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(integration_test_deadline()?, async {
         while let Some(update) = subscription.recv().await? {
             if let ThreadSubscriptionUpdate::Notification { notification } = update
                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
@@ -118,6 +137,14 @@ pub struct Environment {
 
 impl Environment {
     pub async fn new(root: Vec<Step>, child: Vec<Step>) -> Result<Self> {
+        Self::with_transport(root, child, ModelTransportProfile::responses_http()).await
+    }
+
+    pub async fn with_transport(
+        root: Vec<Step>,
+        child: Vec<Step>,
+        transport: ModelTransportProfile,
+    ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
@@ -145,9 +172,7 @@ impl Environment {
             ("child-fixture", &child_provider),
         ] {
             let mut model = ModelInfo::compatible(MODEL);
-            model
-                .binding
-                .set_transport(ModelTransportProfile::responses_http());
+            model.binding.set_transport(transport.clone());
             model.capabilities.instruction_snapshot_overrides = true;
             model.base_instructions = "Lifecycle fixture model base".into();
             config.models.accounts.insert(

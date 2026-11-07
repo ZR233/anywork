@@ -14,6 +14,10 @@ pub(super) struct ReplyProjection {
     covered: bool,
     active: bool,
     current: Vec<(String, String)>,
+    observed_terminal: Option<TurnState>,
+    terminal_cut_delivered: bool,
+    current_cut: Option<u64>,
+    current_seen: bool,
 }
 
 impl ReplyProjection {
@@ -24,6 +28,10 @@ impl ReplyProjection {
             covered: false,
             active: false,
             current: Vec::new(),
+            observed_terminal: None,
+            terminal_cut_delivered: false,
+            current_cut: None,
+            current_seen: false,
         }
     }
 
@@ -53,7 +61,7 @@ impl ReplyProjection {
             if existing
                 .iter()
                 .chain(&items[..index])
-                .any(|old| old.id == item.id)
+                .any(|old| old.id == item.id || old.member_id == item.member_id)
             {
                 return Err(gap("duplicate reply completion identity"));
             }
@@ -92,6 +100,16 @@ impl ReplyProjection {
         // Completed members have already been accepted from this same batch. A concrete
         // empty snapshot retires the current preview; None is handled by the caller.
         let mut previews = Vec::new();
+        self.current_seen = true;
+        self.current_cut = (!current
+            .items
+            .iter()
+            .any(|item| item.turn_id.as_deref() == Some(self.turn_id.as_str())))
+        .then_some(current.source_effect_seq);
+        self.terminal_cut_delivered = current.sources.iter().any(|state|
+            matches!(&state.source,pl_protocol::ChatSourceId::ForegroundTurn {turn_id} if turn_id==&self.turn_id)
+                && matches!(state.lifecycle,pl_protocol::ChatSourceLifecycle::Ended {..}))
+            && !current.items.iter().any(|item|item.turn_id.as_deref()==Some(self.turn_id.as_str()));
         let active = current.execution_present
             && current
                 .active_turn
@@ -133,7 +151,7 @@ impl ReplyProjection {
         let bytes = self
             .current
             .iter()
-            .filter(|(id, _)| !self.items.iter().any(|item| item.id == *id))
+            .filter(|(id, _)| !self.items.iter().any(|item| item.member_id == *id))
             .try_fold(completed.unwrap_or(usize::MAX), |size, (_, text)| {
                 size.checked_add(text.len())
             });
@@ -147,10 +165,42 @@ impl ReplyProjection {
 
     /// A hint only. The explicit reliable barrier is still required before any final delivery.
     pub(super) fn terminal(&self) -> Option<TurnState> {
+        if self.active || (self.current_seen && self.current_cut.is_none()) {
+            return None;
+        }
+        if self.observed_terminal.is_some()
+            && (!self.terminal_cut_delivered || self.active || self.current_cut.is_none())
+        {
+            return None;
+        }
+        if self.terminal_cut_delivered
+            && !self.active
+            && let Some(state) = &self.observed_terminal
+        {
+            return Some(state.clone());
+        }
         self.items.iter().rev().find_map(|item| match &item.kind {
             ReplyItemKind::Terminal(state) => Some(state.clone()),
             _ => None,
         })
+    }
+
+    pub(super) fn observe_terminal(&mut self, state: &TurnState) {
+        if state.is_terminal() {
+            self.observed_terminal = Some(state.clone());
+        }
+    }
+
+    pub(super) fn terminal_cut_to_qualify(&self) -> Option<u64> {
+        (self.covered
+            && self.observed_terminal.is_some()
+            && !self.active
+            && !self.terminal_cut_delivered)
+            .then_some(self.current_cut)
+            .flatten()
+    }
+    pub(super) fn qualify_terminal_cut(&mut self) {
+        self.terminal_cut_delivered = true;
     }
 
     pub(super) fn completed(&self) -> Result<&[ReplyItem], FinalError> {
@@ -182,7 +232,7 @@ impl ReplyProjection {
             }
         }
         for (id, preview) in &self.current {
-            if !self.items.iter().any(|item| item.id == *id) {
+            if !self.items.iter().any(|item| item.member_id == *id) {
                 text.push_str(preview);
             }
         }

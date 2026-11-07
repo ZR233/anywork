@@ -3,6 +3,7 @@ import '../support/chat_fixtures.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -95,7 +96,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
-    await tester.tap(find.byIcon(Icons.more_horiz));
+    final statusOverflow = find.descendant(
+      of: find.byType(ThreadStatusBar),
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is IconButton &&
+            widget.icon is Icon &&
+            (widget.icon as Icon).icon == Icons.more_horiz,
+      ),
+    );
+    expect(statusOverflow, findsOneWidget);
+    await tester.tap(statusOverflow);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
     await tester.pumpAndSettle();

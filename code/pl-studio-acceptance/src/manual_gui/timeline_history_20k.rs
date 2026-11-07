@@ -447,6 +447,7 @@ fn run_phase(
             context.home,
             &gui_log,
             &native_exit,
+            false,
         )?);
         let active_gui = gui
             .as_mut()

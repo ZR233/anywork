@@ -6,6 +6,7 @@ import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/acp_ports.dart';
+import 'package:anywork_client/conversation_encoding.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_ports.dart';
@@ -4513,16 +4514,42 @@ class DemoStudioTransport extends StudioTransport
   /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
   /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
   @visibleForTesting
-  void seedChatMessages(
+  void seedChatAtoms(
     String threadId,
-    Iterable<ChatMessage> messages, {
-    ChatScope scope = const MainChatScope(),
+    Iterable<ChatAtom> atoms, {
+    required ChatScope scope,
+    List<ChatSourceState> sources = const [],
   }) {
     _ensureDemoRunning();
     _demoWorkspace(threadId);
     var changed = false;
-    for (final message in messages) {
-      changed = _historyOf(threadId).accept(message, scope) || changed;
+    final history = _historyOf(threadId);
+    for (final source in sources) {
+      history.sourceStates[source.source] = source;
+    }
+    for (final atom in atoms) {
+      changed = history.accept(atom, scope) || changed;
+    }
+    if (changed) _publishContent(threadId);
+  }
+
+  @visibleForTesting
+  String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
+
+  @visibleForTesting
+  String conversationProjectionGeneration(String threadId) =>
+      _historyOf(threadId).projectionGeneration;
+
+  /// Explicit display fixtures and their already chosen member scopes. No atom
+  /// grouping or payload-based membership inference is performed by Demo.
+  @visibleForTesting
+  void seedTimelineItems(String threadId, Iterable<TimelineItem> items) {
+    _ensureDemoRunning();
+    _demoWorkspace(threadId);
+    final history = _historyOf(threadId);
+    var changed = false;
+    for (final item in items) {
+      changed = history.acceptDisplay(item) || changed;
     }
     if (changed) _publishContent(threadId);
   }
@@ -5617,6 +5644,9 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: now,
         content: (
           kind: _DemoContentKind.completed,
+          itemKind: TimelineItemKind.status,
+          category: null,
+          contentPresent: null,
           textChannel: null,
           descriptor: {
             'type': 'tool',

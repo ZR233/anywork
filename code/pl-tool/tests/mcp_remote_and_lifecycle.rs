@@ -1,11 +1,15 @@
-//! Verification suite for MCP lifecycle concurrency (T06, T08, T09) and remote MCP
+//! Verification suite for MCP lifecycle concurrency (T08, T09) and remote MCP
 //! forwarding over `pl-remote-helper` (T10, T11, T12, T13).
 #![cfg(target_os = "linux")]
 
 #[path = "support/helper.rs"]
 mod helper;
+#[path = "support/mcp_stdio.rs"]
+mod stdio;
 #[path = "support/remote.rs"]
 mod support;
+
+use stdio::{STDIO_MCP_SCRIPT, stdio_effective_config, write_python_mcp_server};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -30,200 +34,6 @@ use pl_tool::mcp::config::{
 };
 use pl_tool::mcp::{McpConnectRequest, McpConnector, McpRuntime};
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
-
-fn write_python_mcp_server(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-    let path = dir.join(name);
-    std::fs::write(&path, body).expect("write python mcp server");
-    path
-}
-
-const STDIO_MCP_SCRIPT: &str = r#"import json, os, signal, sys, time
-
-pid_file = os.environ.get("MCP_PID_FILE")
-if pid_file:
-    with open(pid_file, "w") as f:
-        f.write(str(os.getpid()))
-
-exit_marker = os.environ.get("MCP_EXIT_MARKER")
-ignore_term_ms = int(os.environ.get("MCP_IGNORE_TERM_MS", "0"))
-hang_initialize = os.environ.get("MCP_HANG_INITIALIZE") == "1"
-hang_call_ms = int(os.environ.get("MCP_HANG_CALL_MS", "0"))
-
-def on_term(signum, frame):
-    if ignore_term_ms > 0:
-        time.sleep(ignore_term_ms / 1000.0)
-    if exit_marker:
-        with open(exit_marker, "w") as f:
-            f.write("terminated")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, on_term)
-
-for raw in sys.stdin:
-    line = raw.strip()
-    if not line:
-        continue
-    msg = json.loads(line)
-    method = msg.get("method")
-    msg_id = msg.get("id")
-    if method == "server/discover":
-        resp = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "error": {"code": -32601, "message": "method not found"}
-        }
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-    elif method == "initialize":
-        if hang_initialize:
-            time.sleep(60)
-        resp = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "test-stdio", "version": "1.0.0"}
-            }
-        }
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-    elif method == "notifications/initialized":
-        continue
-    elif method == "tools/list":
-        resp = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "tools": [{
-                    "name": "inspect_env",
-                    "description": "Returns argv, cwd, and env",
-                    "inputSchema": {"type": "object", "properties": {}}
-                }]
-            }
-        }
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-    elif method == "tools/call":
-        if hang_call_ms > 0:
-            time.sleep(hang_call_ms / 1000.0)
-        payload = {
-            "argv": sys.argv[1:],
-            "cwd": os.getcwd(),
-            "special_env": os.environ.get("SPECIAL_ENV"),
-            "bash_env": os.environ.get("BASH_ENV"),
-        }
-        resp = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(payload)}]
-            }
-        }
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-    elif method == "resources/read":
-        if hang_call_ms > 0:
-            time.sleep(hang_call_ms / 1000.0)
-        resp = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "contents": [{"uri": "test://doc", "text": "hello"}]
-            }
-        }
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-"#;
-
-fn stdio_effective_config(
-    id: &str,
-    script: &std::path::Path,
-    extra_args: Vec<String>,
-    env: BTreeMap<String, String>,
-    cwd: Option<String>,
-    execution_context: McpExecutionContext,
-) -> EffectiveMcpServerConfig {
-    let mut args = vec![script.to_string_lossy().into_owned()];
-    args.extend(extra_args);
-    EffectiveMcpServerConfig {
-        id: id.to_owned(),
-        source_kind: McpServerSourceKind::User,
-        source_label: "user".to_owned(),
-        source_detail: None,
-        status_kind: McpServerStatusKind::Enabled,
-        status_message: None,
-        mutation_policy: McpServerMutationPolicy::UserEditable,
-        bearer_token: None,
-        tool_effect: None,
-        execution_context,
-        config: McpServerConfig {
-            transport: McpServerTransport::Stdio,
-            command: Some("python3".to_owned()),
-            args,
-            env,
-            cwd,
-            url: None,
-            bearer_token_env_var: None,
-            headers: BTreeMap::new(),
-            enabled: true,
-            startup_timeout_secs: Some(10),
-            tool_timeout_secs: Some(10),
-            enabled_tools: None,
-            disabled_tools: Vec::new(),
-        },
-    }
-}
-
-/// T06: `ConnectedMcp::close` does not block waiting for an in-flight `call_tool` / `read_resource`
-/// before taking `owner` and cancelling the service.
-#[tokio::test]
-async fn t06_close_does_not_block_on_inflight_call_tool() -> anyhow::Result<()> {
-    let executable = helper::remote_helper_executable();
-    let temp = tempfile::tempdir()?;
-    let script = write_python_mcp_server(temp.path(), "server.py", STDIO_MCP_SCRIPT);
-    let mut env = BTreeMap::new();
-    env.insert("MCP_HANG_CALL_MS".to_owned(), "10000".to_owned());
-
-    let connector = McpConnector::default().with_stdio_worker(executable.to_path_buf());
-    let config = stdio_effective_config(
-        "slow-call",
-        &script,
-        Vec::new(),
-        env,
-        Some(temp.path().to_string_lossy().into_owned()),
-        McpExecutionContext::Host,
-    );
-    let session = Arc::new(
-        connector
-            .connect(McpConnectRequest {
-                server_id: "slow-call".to_owned(),
-                server: config,
-            })
-            .await?,
-    );
-
-    let call_session = session.clone();
-    let call_task = tokio::spawn(async move {
-        call_session
-            .call_tool("inspect_env".to_owned(), serde_json::json!({}))
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let close_start = Instant::now();
-    session.close().await?;
-    assert!(
-        close_start.elapsed() < Duration::from_secs(3),
-        "close() blocked on in-flight call_tool instead of cancelling immediately"
-    );
-    let call_result = tokio::time::timeout(Duration::from_secs(2), call_task).await??;
-    assert!(
-        call_result.is_err(),
-        "in-flight call_tool should fail after close()"
-    );
-    Ok(())
-}
 
 /// T08 & T09:
 /// - T08: `prepare_generation` receiving `Shutdown` cancels in-flight preparation and closes
@@ -307,12 +117,8 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
     );
 
     // --- T09: First shutdown() times out, second shutdown() joins in-flight close and succeeds ---
-    // Connect via a slow-closing Remote stdio command where Terminate is delayed on the wire,
-    // or use a short close_timeout (80ms) while the process delays exit by 350ms.
-    // Note: ManagedWorker on Linux sends SIGKILL after control.cancel() if child ignores SIGTERM,
-    // wait: ManagedWorker::cancel sends Cancel over control socket, which kills the process group
-    // immediately. For remote stdio, Terminate sends SIGTERM then waits up to 2s before SIGKILL!
-    // Let's test T09 with a remote stdio server that ignores SIGTERM for 350ms while close_timeout is 80ms!
+    // Hold the real remote SIGTERM handler until the first 80ms shutdown returns.
+    // Once released, the handler still delays exit by the original 400ms.
     let helper_instance = support::Helper::start(executable).await?;
     let remote_commands = helper_instance
         .client
@@ -324,11 +130,24 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
         STDIO_MCP_SCRIPT,
     );
     let exit_marker = helper_instance.root.path().join("exited.marker");
+    let term_started_marker = helper_instance.root.path().join("terminating.marker");
+    let term_release_marker = helper_instance
+        .root
+        .path()
+        .join("release-termination.marker");
     let mut delayed_env = BTreeMap::new();
     delayed_env.insert("MCP_IGNORE_TERM_MS".to_owned(), "400".to_owned());
     delayed_env.insert(
         "MCP_EXIT_MARKER".to_owned(),
         exit_marker.to_string_lossy().into_owned(),
+    );
+    delayed_env.insert(
+        "MCP_TERM_STARTED_MARKER".to_owned(),
+        term_started_marker.to_string_lossy().into_owned(),
+    );
+    delayed_env.insert(
+        "MCP_TERM_RELEASE_MARKER".to_owned(),
+        term_release_marker.to_string_lossy().into_owned(),
     );
 
     let short_connector = McpConnector::default()
@@ -353,7 +172,21 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
     );
     retry_handle.reconcile(retry_servers).await?;
 
-    let first_shutdown = retry_handle.shutdown().await;
+    let first_shutdown_handle = retry_handle.clone();
+    let first_shutdown_task = tokio::spawn(async move { first_shutdown_handle.shutdown().await });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !term_started_marker.exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let handler_started = term_started_marker.exists();
+    let first_shutdown = first_shutdown_task.await;
+    // Release even if readiness, the join, or the original timeout assertion fails.
+    std::fs::write(&term_release_marker, b"release")?;
+    let first_shutdown = first_shutdown?;
+    assert!(
+        handler_started,
+        "remote stdio server must enter its real SIGTERM handler"
+    );
     assert!(
         first_shutdown.is_err(),
         "first shutdown with 80ms close_timeout should report timeout while process takes 400ms"

@@ -1,8 +1,11 @@
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
@@ -25,18 +28,16 @@ ChatItemPresentation _item(
   String type,
   Map<String, Object?> data, {
   List<Map<String, Object?>> bodies = const [],
-}) => ChatItemPresentation.decode(
-  ChatMessage(
-    id: id,
-    payload: InlinePayload(
-      bytes: utf8.encode(
-        jsonEncode({
-          'contract': 'anywork.chat/1',
-          'type': type,
-          'data': data,
-          'bodies': bodies,
-        }),
-      ),
+}) => ChatItemPresentation.decodePayload(
+  id,
+  InlinePayload(
+    bytes: utf8.encode(
+      jsonEncode({
+        'contract': 'anywork.chat/1',
+        'type': type,
+        'data': data,
+        'bodies': bodies,
+      }),
     ),
   ),
 );
@@ -92,6 +93,141 @@ Finder get _rowTap => find
 
 void main() {
   testWidgets(
+    'Main tool Status keeps its original unit and discloses Item-owned ranges in live and history',
+    (tester) async {
+      final tool = _tool('builtin.exec@2');
+      for (final live in [true, false]) {
+        final mode = live ? 'live' : 'history';
+        final contentItemId = 'original-main-result-$mode';
+        final owner = ItemContentOwner(itemId: contentItemId);
+        final arguments = ContentRef(
+          databaseId: 'main-status-db',
+          target: BodyContentTarget(owner: owner, key: 'tool.arguments'),
+        );
+        final output = ContentRef(
+          databaseId: 'main-status-db',
+          target: BodyContentTarget(owner: owner, key: 'tool.result'),
+        );
+        final unit = TimelineDisplayUnit(
+          live: live,
+          item: TimelineItem(
+            id: 'status:main-result-$mode',
+            kind: TimelineItemKind.status,
+            source: BackgroundResultChatSource(messageId: 'result-$mode'),
+            atomKind: ChatAtomKind.toolCall,
+            delivery: ChatDeliveryKind.independent,
+            outcome: ChatTerminalOutcome.completed,
+            turnId: 'original-turn',
+            contentItemId: contentItemId,
+            payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
+            contents: [
+              ChatAtomContent(
+                role: ChatContentRole.toolArguments,
+                reference: arguments,
+              ),
+              ChatAtomContent(
+                role: ChatContentRole.toolOutput,
+                reference: output,
+              ),
+            ],
+            admissionClosed: true,
+          ),
+        );
+        final item = ChatItemPresentation.forUnit(unit);
+        expect(item.displayUnit, same(unit));
+        expect(item.atom, isNull);
+        expect(item.compatibility, ChatItemCompatibility.current);
+        expect(item.type, 'tool');
+        final declared = {
+          ChatContentRole.toolArguments.name: arguments,
+          ChatContentRole.toolOutput.name: output,
+        };
+        final requests = <({String id, String key, ContentRef reference})>[];
+        await tester.pumpWidget(
+          _host(
+            ChatItemView(
+              key: ValueKey(unit.id),
+              item: item,
+              contentRangeBuilder: (id, key, label, reference, witness) {
+                expect(id, unit.id);
+                expect(declared, contains(key));
+                expect(reference, same(declared[key]));
+                // Observe renderer wiring only; this builder does not read IO.
+                requests.add((id: id, key: key, reference: reference));
+                return Text('declared:$key');
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(TimelineToolDetails), findsOneWidget);
+        final rendered = tester.widget<TimelineToolDetails>(
+          find.byType(TimelineToolDetails),
+        );
+        expect(rendered.item.toolCallId, 'call');
+        expect(rendered.item.statusString, 'succeeded');
+        for (final key in declared.keys) {
+          expect(find.text('declared:$key'), findsNothing);
+        }
+        await tester.tap(_rowTap);
+        await tester.pumpAndSettle();
+        final l10n = AppLocalizations.of(
+          tester.element(find.byType(TimelineToolDetails)),
+        );
+        expect(
+          find.textContaining(l10n.timelineToolExitCode(0)),
+          findsOneWidget,
+        );
+        for (final key in declared.keys) {
+          expect(find.text('declared:$key'), findsOneWidget);
+        }
+        expect(
+          requests.map((request) => request.key).toSet(),
+          declared.keys.toSet(),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        unit.expansion.retirement.dispose();
+        unit.expansion.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'declared tool bodies preserve diagnostics and successful workflow payload hiding',
+    (tester) async {
+      for (final hidden in [false, true]) {
+        final item = _tool(
+          hidden ? 'builtin.workflow_transition@1' : 'builtin.exec@2',
+          name: hidden ? 'workflow_transition' : 'exec',
+        );
+        await tester.pumpWidget(
+          _host(
+            TimelineToolDetails(
+              key: ValueKey(hidden),
+              item: (item.toolCard as DecodedToolCard).value,
+              initiallyExpanded: true,
+              declaredContents: const [Text('declared internal body')],
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text('declared internal body'),
+          hidden ? findsNothing : findsOneWidget,
+        );
+        final l10n = AppLocalizations.of(
+          tester.element(find.byType(TimelineToolDetails)),
+        );
+        expect(
+          find.textContaining(l10n.timelineToolExitCode(0)),
+          findsOneWidget,
+        );
+      }
+    },
+  );
+
+  testWidgets(
     'Turn completion, failure and stop preserve distinct semantics without invented meta',
     (tester) async {
       for (final (outcome, icon) in [
@@ -128,8 +264,8 @@ void main() {
     (tester) async {
       final cases = [
         (_item('compact-thinking', 'thinking', {}), 28.0),
-        // Tools also expose a separate public-record disclosure row.
-        (_tool('builtin.exec@2'), 56.0),
+        // One call has one semantic disclosure, including all public details.
+        (_tool('builtin.exec@2'), 28.0),
         (
           _item('compact-plan', 'plan', {
             'decision': 'approved',
@@ -382,11 +518,6 @@ void main() {
           },
           Icons.model_training_outlined,
         ),
-        (
-          'contextCompaction',
-          {'beforeTokens': 50, 'afterTokens': 20},
-          Icons.compress_outlined,
-        ),
         ('raw', {'notice': 'raw diagnostic'}, Icons.data_object_outlined),
       ];
       for (final (type, data, icon) in cases) {
@@ -424,38 +555,43 @@ void main() {
   );
 
   testWidgets(
-    'terminal children mount only while expanded and use the real opaque parent',
+    'completed compaction is a static single-line receipt, not another process disclosure',
     (tester) async {
-      final turn = _item('turn', 'turn', {
-        'outcome': {'kind': 'failed'},
-        'childrenParentId': 'opaque-parent',
-      });
-      var mounts = 0;
-      var disposes = 0;
-      await tester.pumpWidget(
-        _host(
-          ChatItemView(
-            item: turn,
-            childrenBuilder: (parent) {
-              expect(parent, 'opaque-parent');
-              return _Mount(
-                onMount: () => mounts++,
-                onDispose: () => disposes++,
-              );
-            },
-          ),
-        ),
+      await _show(
+        tester,
+        _item('compaction', 'contextCompaction', {
+          'beforeTokens': 50,
+          'afterTokens': 20,
+        }),
       );
-      await tester.pumpAndSettle();
-      expect(mounts, 0);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
-      expect(mounts, 1);
-      await tester.tap(_rowTap);
-      await tester.pumpAndSettle();
-      expect(disposes, 1);
+      expect(find.text('已完成压缩'), findsOneWidget);
+      expect(find.byType(ExpansionTile), findsNothing);
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(row.active, isFalse);
+      expect(row.meta, isNull);
+      expect(find.textContaining('tokens'), findsNothing);
     },
   );
+
+  testWidgets('Turn receipt never opens an entire Turn as a work group', (
+    tester,
+  ) async {
+    final turn = _item('turn', 'turn', {
+      'outcome': {'kind': 'failed'},
+      'childrenParentId': 'opaque-parent',
+    });
+    await tester.pumpWidget(_host(ChatItemView(item: turn)));
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+    await tester.tap(_rowTap);
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+    await tester.tap(_rowTap);
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineChildrenConnector), findsNothing);
+  });
 
   testWidgets(
     'user-input receipt uses public manifest and suppresses secret/redacted answers',
@@ -628,28 +764,4 @@ void main() {
       failedResources.release();
     },
   );
-}
-
-class _Mount extends StatefulWidget {
-  const _Mount({required this.onMount, required this.onDispose});
-  final VoidCallback onMount, onDispose;
-  @override
-  State<_Mount> createState() => _MountState();
-}
-
-class _MountState extends State<_Mount> {
-  @override
-  void initState() {
-    super.initState();
-    widget.onMount();
-  }
-
-  @override
-  void dispose() {
-    widget.onDispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => const Text('children');
 }

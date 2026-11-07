@@ -2784,67 +2784,255 @@ async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
 
 #[tokio::test]
 async fn responses_message_parts_retain_distinct_provider_identity_and_trace_rows() {
-    let events = vec![
-        json!({"type":"response.created","response":{"id":"parts-response","model":"parts-model"}}),
-        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"message-a","type":"message","role":"assistant","content":[]}}),
-        json!({"type":"response.output_text.delta","item_id":"message-a","content_index":1,"delta":"first "}),
-        json!({"type":"response.output_text.delta","item_id":"message-a","content_index":2,"delta":"second"}),
-        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"message-a","type":"message","role":"assistant","content":[{"type":"refusal","refusal":""},{"id":"part-a","type":"output_text","text":"first "},{"id":"part-b","type":"output_text","text":"second"}]}}),
-        json!({"type":"response.completed","response":{"id":"parts-response","model":"parts-model","usage":{"input_tokens":1,"output_tokens":2}}}),
-    ];
+    for websocket in [false, true] {
+        let item = json!({"id":"message-a","type":"message","role":"assistant","content":[
+            {"type":"refusal","refusal":""},
+            {"id":"part-a","type":"output_text","text":"first "},
+            {"id":"part-b","type":"output_text","text":"second"}
+        ]});
+        let first = json!({"type":"response.content_part.added","item_id":"message-a",
+            "output_index":0,"content_index":1,"part":{"type":"output_text","text":""}});
+        let second = json!({"type":"response.content_part.added","output_index":0,
+            "content_index":2,"part":{"type":"output_text","text":"second"}});
+        let events = vec![
+            json!({"type":"response.created","response":{"id":"parts-response","model":"parts-model"}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"message-a","type":"message","role":"assistant","content":[]}}),
+            json!({"type":"response.content_part.added","item_id":"message-a","output_index":0,
+                "content_index":0,"part":{"type":"refusal","refusal":""}}),
+            first.clone(),
+            first,
+            second.clone(),
+            second,
+            json!({"type":"response.output_text.delta","item_id":"message-a","content_index":1,"delta":"first "}),
+            json!({"type":"response.output_text.delta","item_id":"message-a","content_index":2,"delta":"second"}),
+            json!({"type":"response.content_part.done","item_id":"message-a","output_index":0,
+                "content_index":2,"part":{"type":"output_text","text":"second"}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            json!({"type":"response.completed","response":{"id":"parts-response","model":"parts-model",
+                "output":[item],"usage":{"input_tokens":1,"output_tokens":2}}}),
+        ];
+        let (protocol, profile, reply) = if websocket {
+            (
+                Protocol::ResponsesWebSocket,
+                ModelTransportProfile::responses_websocket(),
+                Reply::WebSocket(events),
+            )
+        } else {
+            (
+                Protocol::ResponsesHttp,
+                ModelTransportProfile::responses_http(),
+                Reply::Sse(events),
+            )
+        };
+        let fixture = FixtureServer::start(vec![Step::prompt(protocol, "two parts", 0, reply)])
+            .await
+            .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("parts-model", profile),
+        )
+        .unwrap();
+        let session = ModelSession::default();
+        let sink = Arc::new(InMemoryTraceEventSink::new("parts-session", 0));
+        let result = runtime
+            .complete(
+                request("two parts"),
+                ModelInvocationContext::new(session.clone()).with_trace(
+                    CompletionTraceContext {
+                        session_id: "parts-session".into(),
+                        turn_id: "parts-turn".into(),
+                        inference_id: "parts-inference".into(),
+                    },
+                    sink.clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content.as_deref(), Some("first second"));
+        assert_eq!(result.presentation_items.len(), 1);
+        let item = &result.presentation_items[0];
+        assert_eq!(item.provider_item_id, "message-a");
+        assert_eq!(item.output_index, Some(0));
+        assert_eq!(
+            item.parts
+                .iter()
+                .map(|part| (part.content_index, part.provider_part_id.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![(1, Some("part-a")), (2, Some("part-b"))]
+        );
+        let trace = sink.events();
+        let started = trace
+            .iter()
+            .filter_map(|event| match &event.kind {
+                TraceEventKind::TracePartStarted { item } if item.kind() == TracePartKind::Text => {
+                    Some(item.item_id())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(started.len(), 2, "one start per real text part");
+        assert_eq!(
+            started
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        let deltas = trace
+            .iter()
+            .filter_map(|event| match &event.kind {
+                TraceEventKind::TracePartDelta { event } => match &event.delta {
+                    pl_protocol::trace::TraceDelta::Text { delta, .. } => Some(delta.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deltas,
+            ["first ", "second"],
+            "added must not duplicate part.text"
+        );
+        session.close().await.unwrap();
+        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn responses_content_part_added_rejects_invalid_parts_without_losing_prefix() {
+    for (label, field, value) in [
+        ("missing part", "part", Value::Null),
+        ("non-object part", "part", json!([])),
+        ("missing type", "part", json!({"text":""})),
+        ("invalid type", "part", json!({"type":42,"text":""})),
+        ("missing text", "part", json!({"type":"output_text"})),
+        (
+            "invalid text",
+            "part",
+            json!({"type":"output_text","text":42}),
+        ),
+        (
+            "null text",
+            "part",
+            json!({"type":"output_text","text":null}),
+        ),
+        ("missing item identity", "item_id", Value::Null),
+        ("empty item identity", "item_id", json!("")),
+        ("missing output index", "output_index", Value::Null),
+        ("missing content index", "content_index", Value::Null),
+        ("negative content index", "content_index", json!(-1)),
+        (
+            "overflowing content index",
+            "content_index",
+            json!(u64::from(u32::MAX) + 1),
+        ),
+    ] {
+        let mut invalid = json!({
+            "type":"response.content_part.added","item_id":"invalid-item",
+            "output_index":9,"content_index":1,"part":{"type":"output_text","text":""}
+        });
+        invalid[field] = value;
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "invalid part",
+            0,
+            Reply::Sse(vec![
+                json!({"type":"response.created","response":{"id":"invalid-part-response","model":"parts-model"}}),
+                json!({"type":"response.output_item.added","output_index":0,
+                    "item":{"id":"retained","type":"message","role":"assistant","content":[]}}),
+                json!({"type":"response.output_text.delta","item_id":"retained",
+                    "content_index":0,"delta":"retained prefix"}),
+                invalid,
+            ]),
+        )])
+        .await
+        .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("parts-model", ModelTransportProfile::responses_http()),
+        )
+        .unwrap();
+        let session = ModelSession::default();
+        let failure = runtime
+            .complete(
+                request("invalid part"),
+                ModelInvocationContext::new(session.clone()),
+            )
+            .await
+            .expect_err(label);
+        assert_eq!(
+            failure
+                .source
+                .provider_failure_ref()
+                .unwrap()
+                .code
+                .as_deref(),
+            Some("invalid_response"),
+            "{label}"
+        );
+        let progress = failure
+            .partial_progress
+            .expect("accepted prefix is retained");
+        assert_eq!(progress.parts().len(), 1, "{label}: no fabricated part");
+        assert_eq!(progress.parts()[0].text(), "retained prefix", "{label}");
+        session.close().await.unwrap();
+        assert_eq!(
+            fixture.finish().await.unwrap().len(),
+            1,
+            "{label}: no retry"
+        );
+    }
+}
+
+#[tokio::test]
+async fn responses_empty_content_part_start_keeps_content_timing_unobserved() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
-        "two parts",
+        "empty text part",
         0,
-        Reply::Sse(events),
+        Reply::PacedEvents {
+            initial_delay_ms: 0,
+            step_millis: 10,
+            events: vec![
+                json!({"type":"response.created","response":{"id":"empty-part-response","model":"parts-model"}}),
+                json!({"type":"response.output_item.added","output_index":0,
+                    "item":{"id":"empty-part","type":"message","role":"assistant","content":[]}}),
+                json!({"type":"response.content_part.added","output_index":0,"item_id":"empty-part",
+                    "content_index":0,"part":{"type":"output_text","text":""}}),
+                json!({"type":"response.output_item.done","output_index":0,
+                    "item":{"id":"empty-part","type":"message","role":"assistant",
+                        "content":[{"type":"output_text","text":""}]}}),
+                json!({"type":"response.completed","response":{"id":"empty-part-response",
+                    "model":"parts-model","usage":{"input_tokens":1,"output_tokens":0}}}),
+            ],
+        },
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+    let result = complete(
+        &fixture,
         model("parts-model", ModelTransportProfile::responses_http()),
+        request("empty text part"),
+        ModelSession::default(),
     )
-    .unwrap();
-    let sink = Arc::new(InMemoryTraceEventSink::new("parts-session", 0));
-    let result = runtime
-        .complete(
-            request("two parts"),
-            ModelInvocationContext::new(ModelSession::default()).with_trace(
-                CompletionTraceContext {
-                    session_id: "parts-session".into(),
-                    turn_id: "parts-turn".into(),
-                    inference_id: "parts-inference".into(),
-                },
-                sink.clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.content.as_deref(), Some("first second"));
+    .await;
+    assert!(result.content.as_deref().unwrap_or_default().is_empty());
     assert_eq!(result.presentation_items.len(), 1);
-    let item = &result.presentation_items[0];
-    assert_eq!(item.provider_item_id, "message-a");
-    assert_eq!(item.output_index, Some(0));
+    assert!(result.presentation_items[0].parts[0].text.is_empty());
+    let timing = result.timing.unwrap();
     assert_eq!(
-        item.parts
-            .iter()
-            .map(|part| (part.content_index, part.provider_part_id.as_deref()))
-            .collect::<Vec<_>>(),
-        vec![(1, Some("part-a")), (2, Some("part-b"))]
+        timing.first_output_source,
+        pl_protocol::FirstOutputSource::Unobserved
     );
-    let started = sink
-        .events()
-        .into_iter()
-        .filter_map(|event| match event.kind {
-            TraceEventKind::TracePartStarted { item } if item.kind() == TracePartKind::Text => {
-                Some(item.item_id().to_owned())
-            }
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(started.len(), 2);
-    fixture.finish().await.unwrap();
+    assert_eq!(timing.ttft_millis, None);
+    assert_eq!(timing.decode_millis, None);
+    assert_eq!(
+        pl_model::model::usage::throughput_output_tokens(timing, &result.accounting.usage),
+        None
+    );
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

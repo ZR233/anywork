@@ -15,12 +15,25 @@ use pl_tool::workspace::resolve_workspace_root;
 
 use super::super::StudioRuntime;
 
-fn background_git_command() -> tokio::process::Command {
+async fn background_git_output(
+    directory: &Path,
+    args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    use pl_remote_helper::process::{spawn_background_command, wrap_background_command};
+    use std::process::Stdio;
+
     let mut command = tokio::process::Command::new("git");
     #[cfg(windows)]
     command.args(["-c", "core.longpaths=true"]);
-    pl_remote_helper::process::configure_background_command(&mut command);
     command
+        .args(args)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn_background_command(&mut wrap_background_command(command))?
+        .wait_with_output()
+        .await
 }
 
 impl StudioRuntime {
@@ -102,11 +115,8 @@ impl StudioRuntime {
                 continue;
             }
             let project_path = PathBuf::from(&project.path);
-            let root = background_git_command()
-                .args(["rev-parse", "--show-toplevel"])
-                .current_dir(&project_path)
-                .output()
-                .await;
+            let root =
+                background_git_output(&project_path, &["rev-parse", "--show-toplevel"]).await;
             let Ok(root) = root else {
                 continue;
             };
@@ -127,11 +137,8 @@ impl StudioRuntime {
                     }
                 }
             }
-            let registered = background_git_command()
-                .args(["worktree", "list", "--porcelain", "-z"])
-                .current_dir(&root)
-                .output()
-                .await?;
+            let registered =
+                background_git_output(&root, &["worktree", "list", "--porcelain", "-z"]).await?;
             anyhow::ensure!(
                 registered.status.success(),
                 "cannot inspect registered worktrees for {}: {}",

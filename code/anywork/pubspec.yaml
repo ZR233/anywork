@@ -44,6 +44,7 @@ dependency_overrides:
     path: packages/cross_cache
 dev_dependencies:
   analyzer: 14.5.0
+  args: 2.7.0
   ffi: ^2.2.0
   win32: ^6.4.0
   flutter_test:

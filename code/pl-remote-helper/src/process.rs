@@ -1,6 +1,25 @@
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use tokio::process::Command as TokioCommand;
 
+mod pipes;
+
+pub use pipes::{
+    BackgroundChild, BackgroundSpawnError, BackgroundStderr, BackgroundStdin, BackgroundStdout,
+};
+
+/// Spawns an owned background process and transfers its fresh stdio to the I/O driver.
+///
+/// On Windows, the standard library creates overlapped parent pipe endpoints.
+/// Register them with Tokio's named-pipe driver before any I/O starts, rather than
+/// reading them as synchronous files on the blocking pool. Registration errors
+/// propagate and the process-tree owner's drop policy reclaims the failed launch.
+/// A `Stdio` failure means the child may already have performed side effects.
+pub fn spawn_background_command(
+    command: &mut CommandWrap,
+) -> Result<BackgroundChild, BackgroundSpawnError> {
+    pipes::spawn(command)
+}
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -31,8 +50,9 @@ impl process_wrap::tokio::CommandWrapper for WindowsBackgroundCreationFlags {
 /// Windows 上统一使用 `CREATE_NO_WINDOW`，保证 GUI 进程派生的控制台子进程
 /// 不弹出新的命令行窗口；Unix 上统一使用独立进程组，便于整树回收。
 ///
-/// 调用约定：先构建 `Command`（program、args、cwd、env、stdio），再调用对应
-/// 配置函数，最后 `spawn`/`status`。`tokio` 版本额外启用 `kill_on_drop`。
+/// 有管道的 Tokio command 必须使用 [`wrap_background_command`] 和
+/// [`spawn_background_command`]，同时接管进程树与平台 I/O 驱动。本配置函数
+/// 只用于不接管管道的短命令，并额外启用 `kill_on_drop`。
 pub fn configure_background_command(command: &mut TokioCommand) {
     command.kill_on_drop(true);
     #[cfg(windows)]

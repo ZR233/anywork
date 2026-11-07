@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::Engine as _;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -33,6 +34,7 @@ mod model_catalog;
 mod provider_usage;
 mod question_history;
 mod skill_activity;
+pub mod timeline_concept;
 mod wait_events;
 mod web_search;
 pub use context_replay_recovery::{
@@ -149,7 +151,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the operator runbook. `--delegation-driver`
 /// only records an optional script path in evidence; the harness does not launch it.
-pub const GUI_SCENARIOS: [&str; 32] = [
+pub const GUI_SCENARIOS: [&str; 34] = [
     "gui",
     "markdown-layout",
     "storage-compaction",
@@ -159,6 +161,8 @@ pub const GUI_SCENARIOS: [&str; 32] = [
     "stress-body-large",
     "statistics",
     "realtime",
+    "realtime-presentation",
+    "timeline-concept",
     "history-lock",
     "history-fault",
     "plan-recovery",
@@ -1173,6 +1177,20 @@ impl Protocol {
     }
 }
 
+/// An attachment caption and the exact PNG bytes expected in one user input.
+#[derive(Debug, Clone)]
+pub struct PromptImage {
+    pub filename: String,
+    pub png_sha256: String,
+}
+
+/// One image result's committed call identity and original PNG content.
+#[derive(Debug, Clone)]
+pub struct ToolImage {
+    pub call_id: String,
+    pub png_sha256: String,
+}
+
 /// An exact JSON body or a strict prompt plus ordinal step match.
 #[derive(Debug, Clone)]
 pub enum RequestMatch {
@@ -1189,6 +1207,12 @@ pub enum RequestMatch {
     },
     Prompt {
         text: String,
+        step: usize,
+    },
+    /// One real user message contains the prompt followed by ordered caption/PNG pairs.
+    PromptImages {
+        text: String,
+        images: Vec<PromptImage>,
         step: usize,
     },
     /// Exact answers plus the real client's opaque, nonempty decision identity.
@@ -1227,6 +1251,17 @@ pub enum RequestMatch {
     ToolOutput {
         call_id: String,
         marker: String,
+        step: usize,
+    },
+    /// Every named foreground result must be present in the same continuation.
+    ToolOutputs {
+        outputs: Vec<(String, String)>,
+        step: usize,
+    },
+    /// Requires committed image calls, their ordered media deliveries, and text results.
+    ToolImages {
+        images: Vec<ToolImage>,
+        outputs: Vec<(String, String)>,
         step: usize,
     },
     /// One terminal tool result, either returned directly or delivered after
@@ -1809,6 +1844,7 @@ struct AppState {
     model_catalog_hits: model_catalog::ModelCatalogHits,
     agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     delegation: delegation::Environment,
+    timeline_concept: Option<timeline_concept::Control>,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1834,6 +1870,8 @@ pub struct FixtureOptions {
     pub agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     /// Dedicated scripted-provider journey; never changes product routing.
     pub delegation: Option<delegation::Scenario>,
+    /// Explicit observation gates for the independent desktop scripts.
+    pub timeline_concept: Option<timeline_concept::Control>,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1895,6 +1933,7 @@ impl FixtureServer {
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
             agent_definitions: options.agent_definitions,
             delegation: delegation::Environment::new(options.delegation),
+            timeline_concept: options.timeline_concept,
         };
         let responses_route = if agent_definitions_enabled {
             post(agent_definitions::responses)
@@ -1908,6 +1947,10 @@ impl FixtureServer {
             post(handle)
         };
         let app = Router::new()
+            .route(
+                "/__timeline_concept/{stage}",
+                get(timeline_concept::reached).post(timeline_concept::release),
+            )
             .route(
                 "/v1/responses",
                 responses_route
@@ -2516,13 +2559,12 @@ pub fn gui_timeline_history_script() -> Vec<Step> {
     ]
 }
 
-/// Thirty normal provider turns for the Linux cumulative-history acceptance.
+/// Strict seed-only portion of the cumulative-history fixture.
 ///
-/// The first ten turns seed 20,000 independently completed text items. The
-/// following twenty turns append 2,000 more items while the Driver separately
-/// observes Live and History windows. Optional title requests remain normal
-/// product traffic, but only the batch prompts create the measured output.
-pub fn gui_timeline_history_20k_script() -> Vec<Step> {
+/// Ten normal provider turns produce 20,000 independently completed text items.
+/// Optional title requests retain the same matching and ordering as the full
+/// scenario; callers do not copy or truncate its individual protocol steps.
+pub fn gui_timeline_history_20k_seed_script() -> Vec<Step> {
     let mut steps = Vec::new();
     for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
         push_timeline_history_20k_batch(
@@ -2534,6 +2576,17 @@ pub fn gui_timeline_history_20k_script() -> Vec<Step> {
             0,
         );
     }
+    steps
+}
+
+/// Thirty normal provider turns for the Linux cumulative-history acceptance.
+///
+/// The first ten turns seed 20,000 independently completed text items. The
+/// following twenty turns append 2,000 more items while the Driver separately
+/// observes Live and History windows. Optional title requests remain normal
+/// product traffic, but only the batch prompts create the measured output.
+pub fn gui_timeline_history_20k_script() -> Vec<Step> {
+    let mut steps = gui_timeline_history_20k_seed_script();
     push_timeline_history_20k_batch(
         &mut steps,
         "switch",
@@ -2563,6 +2616,32 @@ fn push_timeline_history_20k_batch(
     item_count: usize,
     step_millis: u64,
 ) {
+    if (phase == "seed" && batch > 1) || phase == "growth" {
+        let completed_seed_batches = if phase == "seed" {
+            batch - 1
+        } else {
+            GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
+        };
+        let completed_growth_batches = if phase == "growth" { batch - 1 } else { 0 };
+        let compaction_step = steps.len();
+        steps.push(
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "请根据以上完整上下文生成压缩摘要。",
+                compaction_step,
+                Reply::Sse(responses_text(
+                    &format!(
+                        "Timeline history fixture: {completed_seed_batches} seed batches and \
+                         {completed_growth_batches} growth batches completed. \
+                         Continue according to the next explicit batch prompt."
+                    ),
+                    &format!("timeline-history-20k-{phase}-{batch:02}-compaction"),
+                    "fixture-model",
+                )),
+            )
+            .optional(),
+        );
+    }
     let title_step = steps.len();
     steps.push(
         Step::prompt(
@@ -2825,7 +2904,16 @@ pub fn gui_statistics_script() -> Vec<Step> {
 /// project that the host-cwd command runs in. The caller owns it and keeps it
 /// alive for the whole run; the command reports the directory it really runs in,
 /// so the delivered output never depends on this argument alone.
-pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
+///
+/// `parallel_observer` holds the two parallel calls behind a completed reasoning
+/// prefix so the desktop observer can mount the original member window before
+/// the calls begin their foreground lifetime. `host_observer` prepares the same
+/// observation boundary for the host-cwd call.
+pub fn gui_realtime_script(
+    host_cwd: &str,
+    parallel_observer: Option<&ReplyStage>,
+    host_observer: Option<&ReplyStage>,
+) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
@@ -2918,34 +3006,56 @@ pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
         )
     });
     script.add(|step| {
+        let calls = [
+            RealtimeToolCall {
+                item_id: "realtime-parallel-item-a",
+                call_id: "realtime-parallel-call-a",
+                name: TOOL_EXEC_NAME,
+                arguments: realtime_exec_arguments(
+                    &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
+                    None,
+                ),
+            },
+            RealtimeToolCall {
+                item_id: "realtime-parallel-item-b",
+                call_id: "realtime-parallel-call-b",
+                name: TOOL_EXEC_NAME,
+                arguments: realtime_exec_arguments(
+                    &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
+                    None,
+                ),
+            },
+        ];
+        let reply = if let Some(stage) = parallel_observer {
+            // Prepare the real group window before either command is issued.
+            // The original foreground lifetime begins only after the observer
+            // releases this prefix; command durations and receipts stay exact.
+            let events = responses_reasoning_tool_calls(
+                &["realtime parallel observers ready"],
+                "realtime-parallel",
+                "fixture-model",
+                &calls,
+            );
+            let tool_start = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.added"
+                        && event["item"]["type"] == "function_call"
+                })
+                .expect("parallel fixture must contain its original exec calls");
+            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-parallel",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_PARALLEL_PROMPT,
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-parallel",
-                "fixture-model",
-                &[
-                    RealtimeToolCall {
-                        item_id: "realtime-parallel-item-a",
-                        call_id: "realtime-parallel-call-a",
-                        name: TOOL_EXEC_NAME,
-                        arguments: realtime_exec_arguments(
-                            &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
-                            None,
-                        ),
-                    },
-                    RealtimeToolCall {
-                        item_id: "realtime-parallel-item-b",
-                        call_id: "realtime-parallel-call-b",
-                        name: TOOL_EXEC_NAME,
-                        arguments: realtime_exec_arguments(
-                            &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
-                            None,
-                        ),
-                    },
-                ],
-            )),
+            reply,
         )
     });
     // Both commands outlive the foreground window, so the Turn is answered with
@@ -3008,23 +3118,39 @@ pub fn gui_realtime_script(host_cwd: &str) -> Vec<Step> {
         )
     });
     script.add(|step| {
+        let calls = [RealtimeToolCall {
+            item_id: "realtime-host-cwd-item",
+            call_id: "realtime-host-cwd-call",
+            name: TOOL_EXEC_NAME,
+            arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
+        }];
+        let reply = if let Some(stage) = host_observer {
+            let events = responses_reasoning_tool_calls(
+                &["realtime host cwd observers ready"],
+                "realtime-host-cwd",
+                "fixture-model",
+                &calls,
+            );
+            let tool_start = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.added"
+                        && event["item"]["type"] == "function_call"
+                })
+                .expect("host-cwd fixture must contain its original exec call");
+            stage.gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-host-cwd",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::prompt(
             Protocol::ResponsesHttp,
             GUI_REALTIME_HOST_CWD_PROMPT,
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-host-cwd",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-host-cwd-item",
-                    call_id: "realtime-host-cwd-call",
-                    name: TOOL_EXEC_NAME,
-                    arguments: realtime_exec_arguments(
-                        &realtime_host_cwd_command(),
-                        Some(host_cwd),
-                    ),
-                }],
-            )),
+            reply,
         )
     });
     // The command outlives the runtime's one-second foreground window on its own,
@@ -4552,6 +4678,9 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                     RequestMatch::InteractionAnswers { text, step } => {
                         *step == index && question_history::matches_answers(prompt(body), text)
                     }
+                    RequestMatch::PromptImages { text, images, step } => {
+                        *step == index && prompt_images_match(body, text, images)
+                    }
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
                             && body["input"]
@@ -4568,6 +4697,23 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                         marker,
                         step,
                     } => *step == index && tool_output_contains(body, call_id, marker),
+                    RequestMatch::ToolOutputs { outputs, step } => {
+                        *step == index
+                            && !outputs.is_empty()
+                            && outputs.iter().all(|(call_id, marker)| {
+                                tool_output_contains(body, call_id, marker)
+                            })
+                    }
+                    RequestMatch::ToolImages {
+                        images,
+                        outputs,
+                        step,
+                    } => {
+                        *step == index
+                            && tool_images_pending(body, images, outputs).is_some_and(|pending| {
+                                pending.is_empty() || tool_scroll_wait_count(body, index) < 32
+                            })
+                    }
                     RequestMatch::ToolCompletion {
                         call_id,
                         tool_id,
@@ -4596,10 +4742,14 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
         diagnostic,
     });
     let index = selected.ok_or(())?;
-    if let RequestMatch::ToolScrollCompletion { call_ids, .. } = script.steps[index].request.base()
-        && let Some(pending) = tool_scroll_pending(body, call_ids)
-        && !pending.is_empty()
-    {
+    let pending = match script.steps[index].request.base() {
+        RequestMatch::ToolScrollCompletion { call_ids, .. } => tool_scroll_pending(body, call_ids),
+        RequestMatch::ToolImages {
+            images, outputs, ..
+        } => tool_images_pending(body, images, outputs),
+        _ => None,
+    };
+    if let Some(pending) = pending.filter(|pending| !pending.is_empty()) {
         let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
         let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
         return Ok(Reply::Sse(responses_tool_calls(
@@ -4637,6 +4787,7 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::PromptImages { text, .. }) => ("prompt_images", Some(text.clone())),
         Some(RequestMatch::EmptyContinuation {
             previous_response_id,
             ..
@@ -4649,6 +4800,26 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => ("tool_output", Some(format!("{call_id}:{marker}"))),
+        Some(RequestMatch::ToolOutputs { outputs, .. }) => (
+            "tool_outputs",
+            Some(
+                outputs
+                    .iter()
+                    .map(|(id, marker)| format!("{id}:{marker}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
+        Some(RequestMatch::ToolImages { images, .. }) => (
+            "tool_images",
+            Some(
+                images
+                    .iter()
+                    .map(|image| image.call_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ),
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => ("tool_completion", Some(format!("{call_id}:{marker}"))),
@@ -4661,6 +4832,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
+        Some(RequestMatch::PromptImages { text, images, .. }) => {
+            prompt_images_match(body, text, images)
+        }
         Some(RequestMatch::InteractionAnswers { text, .. }) => {
             question_history::matches_answers(actual, text)
         }
@@ -4671,6 +4845,12 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolOutputs { outputs, .. }) => outputs
+            .iter()
+            .all(|(id, marker)| tool_output_contains(body, id, marker)),
+        Some(RequestMatch::ToolImages {
+            images, outputs, ..
+        }) => tool_images_match(body, images, outputs),
         Some(RequestMatch::ToolCompletion {
             call_id,
             tool_id,
@@ -4704,6 +4884,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolImages {
+            images, outputs, ..
+        }) => tool_images_match(body, images, outputs),
         Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
@@ -4738,6 +4921,168 @@ fn reject_diagnostic(
         delivery_seen,
         tool_output_seen,
     }
+}
+
+fn prompt_images_match(body: &Value, text: &str, images: &[PromptImage]) -> bool {
+    if images.is_empty() || prompt(body) != Some(text) {
+        return false;
+    }
+    let Some(content) = body["input"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .rev()
+                .find(|item| item["role"] == "user" && user_text(item) == Some(text))
+        })
+        .and_then(|item| item["content"].as_array())
+    else {
+        return false;
+    };
+    // Count only this input, never images from earlier inputs or tool results.
+    // Production retains each filename as its own text part immediately before
+    // the image. Match that actual structure, not an invented captionless wire.
+    content.len() == images.len() * 2 + 1
+        && content[0]["type"] == "input_text"
+        && content[1..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(images)
+            .all(|(parts, image)| {
+                parts[0]["type"] == "input_text"
+                    && parts[0]["text"] == format!("Attachment: {}", image.filename)
+                    && png_image_matches(&parts[1], &image.png_sha256)
+            })
+}
+
+fn png_image_matches(part: &Value, digest: &str) -> bool {
+    part["type"] == "input_image"
+        && part["image_url"]
+            .as_str()
+            .and_then(|url| url.strip_prefix("data:image/png;base64,"))
+            .and_then(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .is_some_and(|bytes| {
+                bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                    && hex::encode(Sha256::digest(&bytes)) == digest
+            })
+}
+
+fn tool_images_match(body: &Value, images: &[ToolImage], outputs: &[(String, String)]) -> bool {
+    tool_images_pending(body, images, outputs).is_some_and(|pending| pending.is_empty())
+}
+
+/// A running receipt is not an image result. Immediate media and task-owned
+/// completion media both retain their real call and original PNG identity.
+fn tool_images_pending(
+    body: &Value,
+    images: &[ToolImage],
+    outputs: &[(String, String)],
+) -> Option<Vec<String>> {
+    let items = body["input"].as_array()?;
+    if images.is_empty()
+        || !outputs
+            .iter()
+            .all(|(id, marker)| tool_output_contains(body, id, marker))
+    {
+        return None;
+    }
+    let last_user = items.iter().rposition(|item| item["role"] == "user")?;
+    let mut last_user_verified = false;
+    let mut pending = Vec::new();
+    let mut previous_result = None;
+    let mut previous_media = None;
+    let mut immediate_media = Vec::new();
+    for image in images {
+        let mut results = items.iter().enumerate().filter(|(_, item)| {
+            item["type"] == "function_call_output" && item["call_id"] == image.call_id
+        });
+        let (position, result) = results.next()?;
+        if results.next().is_some() || previous_result.is_some_and(|before| position <= before) {
+            return None;
+        }
+        previous_result = Some(position);
+        let output = result["output"].as_str()?;
+        if output.is_empty() {
+            let label = format!(
+                "Image from view_image call {}: pl.studio.resource:{}",
+                image.call_id, image.png_sha256
+            );
+            let mut found = None;
+            for (message_index, item) in items.iter().enumerate() {
+                if item["role"] != "user" {
+                    continue;
+                }
+                let Some(parts) = item["content"].as_array() else {
+                    continue;
+                };
+                for (part_index, pair) in parts.windows(2).enumerate() {
+                    if pair[0]["type"] == "input_text" && pair[0]["text"] == label {
+                        if found.is_some() || !png_image_matches(&pair[1], &image.png_sha256) {
+                            return None;
+                        }
+                        found = Some((message_index, part_index));
+                    }
+                }
+            }
+            let position = found?;
+            if position.0 <= previous_result?
+                || previous_media.is_some_and(|before| position <= before)
+            {
+                return None;
+            }
+            previous_media = Some(position);
+            immediate_media.push(position);
+        } else if output == tool_running_receipt(&image.call_id) {
+            let prefix = format!("Task task:{} for tool view_image finished: ", image.call_id);
+            let deliveries = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item["role"] == "user")
+                .filter(|(_, item)| user_text(item).is_some_and(|text| text.starts_with(&prefix)))
+                .collect::<Vec<_>>();
+            if deliveries.is_empty() {
+                pending.push(image.call_id.clone());
+                continue;
+            }
+            let &(delivery_index, delivery) = deliveries.first()?;
+            let parts = delivery["content"].as_array()?;
+            if deliveries.len() != 1
+                || delivery_index <= position
+                || parts.len() != 2
+                || parts[0]["type"] != "input_text"
+                || parts[0]["text"] != format!("{prefix}Succeeded.")
+                || !png_image_matches(&parts[1], &image.png_sha256)
+            {
+                return None;
+            }
+            last_user_verified |= delivery_index == last_user;
+        } else {
+            return None;
+        }
+    }
+    for &(message_index, part_index) in &immediate_media {
+        let expected_pairs = immediate_media
+            .iter()
+            .filter(|(index, _)| *index == message_index)
+            .count();
+        if part_index % 2 != 0
+            || items[message_index]["content"].as_array()?.len() != expected_pairs * 2
+        {
+            return None;
+        }
+        last_user_verified |= message_index == last_user;
+    }
+    // Old media cannot complete this step after an unrelated new input.
+    // Before a first delivery, the original input precedes the tool receipts.
+    if !last_user_verified && (pending.is_empty() || last_user > previous_result?) {
+        return None;
+    }
+    Some(pending)
 }
 
 fn prompt(body: &Value) -> Option<&str> {
@@ -5245,6 +5590,191 @@ mod timeline_history_20k_tests {
     use std::collections::HashSet;
 
     #[tokio::test]
+    async fn seed_batches_finish_with_and_without_text_compaction() {
+        let client = reqwest::Client::new();
+        for compact in [false, true] {
+            let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+                .await
+                .unwrap();
+            for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+                if compact && batch > 1 {
+                    // Synthetic instructions exercise the production prefix/suffix shape
+                    // without copying the private production prompt or captured input.
+                    let response = client
+                        .post(format!("{}/responses", fixture.base_url()))
+                        .json(&json!({
+                            "stream": true,
+                            "input": [
+                                {
+                                    "role": "user",
+                                    "content": gui_timeline_history_20k_seed_prompt(batch - 1)
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": GUI_TIMELINE_HISTORY_20K_TEXT
+                                },
+                                {
+                                    "role": "user",
+                                    "content": concat!(
+                                        "Summarize the completed timeline batches and preserve ",
+                                        "the remaining task for the next explicit batch prompt.",
+                                        "\n\n\n请根据以上完整上下文生成压缩摘要。"
+                                    )
+                                }
+                            ]
+                        }))
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK, "batch {batch}");
+                    let body = response.text().await.unwrap();
+                    assert!(
+                        body.contains(&format!("timeline-history-20k-seed-{batch:02}-compaction")),
+                        "{body}"
+                    );
+                    assert!(!body.contains("-item-"));
+                    assert!(!fixture.live_status().remaining_optional);
+                }
+                let response = client
+                    .post(format!("{}/responses", fixture.base_url()))
+                    .json(&json!({
+                        "stream": true,
+                        "input": [{
+                            "role": "user",
+                            "content": gui_timeline_history_20k_seed_prompt(batch)
+                        }]
+                    }))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "batch {batch}, compact={compact}"
+                );
+                let body = response.text().await.unwrap();
+                assert!(body.contains(&format!("timeline-history-20k-seed-{batch:02}-response")));
+                let completed_items = body
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter(|data| *data != "[DONE]")
+                    .map(|data| serde_json::from_str::<Value>(data).unwrap())
+                    .filter(|event| event["type"] == "response.output_item.done")
+                    .count();
+                assert_eq!(completed_items, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS);
+            }
+            assert!(fixture.live_status().remaining_optional);
+            let requests = fixture.finish().await.unwrap();
+            assert_eq!(
+                requests.len(),
+                GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
+                    + if compact {
+                        GUI_TIMELINE_HISTORY_20K_SEED_BATCHES - 1
+                    } else {
+                        0
+                    }
+            );
+            assert!(requests.iter().all(|request| request.accepted));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_compaction_requests_still_fail_verification_after_all_seed_batches() {
+        let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let compaction = json!({
+            "stream": true,
+            "input": [{
+                "role": "user",
+                "content": concat!(
+                    "Preserve completed timeline history for the next batch.",
+                    "\n\n\n请根据以上完整上下文生成压缩摘要。"
+                )
+            }]
+        });
+        for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+            if batch <= 2 {
+                let response = client
+                    .post(format!("{}/responses", fixture.base_url()))
+                    .json(&compaction)
+                    .send()
+                    .await
+                    .unwrap();
+                let expected = if batch == 1 {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::OK
+                };
+                assert_eq!(response.status(), expected);
+                let body = response.text().await.unwrap();
+                if batch == 1 {
+                    assert!(body.contains("fixture_mismatch"));
+                } else {
+                    assert!(body.contains("timeline-history-20k-seed-02-compaction"));
+                    for invalid in [
+                        compaction.clone(),
+                        json!({
+                            "stream": true,
+                            "input": [{
+                                "role": "user",
+                                "content": "请根据以上完整上下文生成压缩摘要。\nUnrelated request."
+                            }]
+                        }),
+                    ] {
+                        let response = client
+                            .post(format!("{}/responses", fixture.base_url()))
+                            .json(&invalid)
+                            .send()
+                            .await
+                            .unwrap();
+                        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                        assert!(response.text().await.unwrap().contains("fixture_mismatch"));
+                    }
+                }
+            }
+            let response = client
+                .post(format!("{}/responses", fixture.base_url()))
+                .json(&json!({
+                    "stream": true,
+                    "input": [{
+                        "role": "user",
+                        "content": gui_timeline_history_20k_seed_prompt(batch)
+                    }]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "batch {batch}");
+            assert!(
+                response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains(&format!("timeline-history-20k-seed-{batch:02}-response"))
+            );
+        }
+        let report = fixture.shutdown().await.unwrap();
+        assert!(report.remaining_optional);
+        assert_eq!(
+            report
+                .requests
+                .iter()
+                .filter(|request| !request.accepted)
+                .count(),
+            3
+        );
+        assert!(
+            report
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("3 rejected")
+        );
+    }
+
+    #[tokio::test]
     async fn large_history_request_capacity_is_explicit_and_still_bounded() {
         let client = reqwest::Client::new();
         let body = json!({"padding": "a".repeat(1024 * 1024)});
@@ -5306,6 +5836,36 @@ mod timeline_history_20k_tests {
     #[test]
     fn cumulative_history_script_has_exact_batches_items_and_unique_identities() {
         let script = gui_timeline_history_20k_script();
+        let compactions: HashSet<_> = script
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                let RequestMatch::Prompt {
+                    text,
+                    step: request_step,
+                } = &step.request
+                else {
+                    panic!("expected prompt request");
+                };
+                assert_eq!(*request_step, index);
+                if text != "请根据以上完整上下文生成压缩摘要。" {
+                    return None;
+                }
+                assert!(step.optional);
+                let Reply::Sse(events) = &step.reply else {
+                    panic!("expected text compaction SSE");
+                };
+                Some(events[0]["response"]["id"].as_str().unwrap().to_owned())
+            })
+            .collect();
+        let expected_compactions: HashSet<_> = (2..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES)
+            .map(|batch| format!("timeline-history-20k-seed-{batch:02}-compaction"))
+            .chain(
+                (1..=GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES)
+                    .map(|batch| format!("timeline-history-20k-growth-{batch:02}-compaction")),
+            )
+            .collect();
+        assert_eq!(compactions, expected_compactions);
         let required: Vec<&Step> = script.iter().filter(|step| !step.optional).collect();
         assert_eq!(
             required.len(),

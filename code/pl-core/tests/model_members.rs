@@ -9,8 +9,9 @@ use std::time::Duration;
 use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload},
     model::{
-        DynModelSession, ModelError, ModelFailureKind, ModelMemberError, ModelMemberSender,
-        ModelRequest, ModelSession, ModelStepOutput, PreparedModelCall,
+        AggregateChannel, DynModelSession, ModelError, ModelFailureKind, ModelMemberError,
+        ModelMemberSender, ModelRequest, ModelSession, ModelStepOutput, ObservedItemKind,
+        ObservedPartIdentity, ObservedPartKind, PreparedModelCall, ProviderPartIdentity,
     },
     thread::{
         AttemptOutcome, AttemptStatus, ModelStepLimit, ThreadHandle, TurnInput,
@@ -107,7 +108,7 @@ impl ColdStore for Storage {
                 });
             }
         }
-        if !write.effect.model_members.is_empty() {
+        if !write.effect.model_members.is_empty() || !write.effect.model_member_starts.is_empty() {
             assert!(
                 !self.released.load(Ordering::SeqCst),
                 "member precedes budget release"
@@ -141,7 +142,7 @@ impl ColdStore for Storage {
                 retained,
             });
         }
-        if !write.effect.model_members.is_empty() {
+        if !write.effect.model_members.is_empty() || !write.effect.model_member_starts.is_empty() {
             account.member_sequence = Some(sequence);
         }
         if account.member_sequence.is_some()
@@ -345,6 +346,290 @@ fn model_error(source: impl std::error::Error + Send + Sync + 'static) -> ModelE
         details: None,
         usage: Box::default(),
     }
+}
+
+struct StartingModel {
+    admitted: Arc<Notify>,
+    complete: bool,
+    queued: bool,
+    conflict: bool,
+    identity: ObservedPartIdentity,
+}
+
+impl ModelSession for StartingModel {
+    async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        let admitted = self.admitted.clone();
+        let complete = self.complete;
+        let queued = self.queued;
+        let conflict = self.conflict;
+        let identity = self.identity.clone();
+        Ok(PreparedModelCall::new(async move {
+            let sender = request.members.as_ref().unwrap();
+            if queued {
+                use futures::FutureExt;
+                assert!(sender.start(0, identity).now_or_never().is_none());
+                return Err(model_error(std::io::Error::other(
+                    "return with occupied slot",
+                )));
+            }
+            sender
+                .start(0, identity.clone())
+                .await
+                .map_err(model_error)?;
+            let mut enriched = identity;
+            if let ObservedPartIdentity::Provider(part) = &mut enriched {
+                part.output_index = Some(7);
+            }
+            sender
+                .start(0, enriched.clone())
+                .await
+                .map_err(model_error)?;
+            if conflict {
+                if let ObservedPartIdentity::Provider(part) = &mut enriched {
+                    part.output_index = Some(8);
+                }
+                return sender
+                    .start(0, enriched)
+                    .await
+                    .map(|()| unreachable!("conflicting start cannot be admitted"))
+                    .map_err(model_error);
+            }
+            if complete {
+                sender
+                    .submit(0, "starting-item".into(), OpaquePayload::text("ended"))
+                    .await
+                    .map_err(model_error)?;
+            }
+            admitted.notify_one();
+            request.cancellation.cancelled().await;
+            Err(model_error(std::io::Error::other("cancelled after start")))
+        }))
+    }
+
+    async fn close(&mut self) -> Result<(), ModelError> {
+        Ok(())
+    }
+}
+
+fn starting_identity() -> ObservedPartIdentity {
+    ObservedPartIdentity::Provider(ProviderPartIdentity {
+        item_id: Arc::from("starting-item"),
+        output_index: None,
+        item_kind: ObservedItemKind::Reasoning,
+        part: ObservedPartKind::ReasoningText,
+        content_index: 0,
+    })
+}
+
+async fn exercise_start(complete: bool, reject_storage: bool) {
+    let admitted = Arc::new(Notify::new());
+    let store = Arc::new(Store::default());
+    store.reject_member.store(reject_storage, Ordering::SeqCst);
+    let thread = ThreadHandle::start(
+        "starts".into(),
+        DynModelSession::new(StartingModel {
+            admitted: admitted.clone(),
+            complete,
+            queued: false,
+            conflict: false,
+            identity: starting_identity(),
+        }),
+    )
+    .unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .await
+        .unwrap();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let task = {
+        let thread = thread.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            thread
+                .run_turn(TurnInput {
+                    turn_id: "member-turn".into(),
+                    attempt_prefix: "member-attempt".into(),
+                    content: vec![],
+                    max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                    cancellation,
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), admitted.notified())
+        .await
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    let starts: Vec<_> = effects
+        .iter()
+        .filter(|e| !e.model_member_starts.is_empty())
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "late output index is not a second identity"
+    );
+    assert_eq!(
+        starts[0].model_member_starts[0].identity,
+        starting_identity()
+    );
+    assert!(starts[0].context.is_none());
+    assert!(starts[0].attempt.is_none());
+    assert!(starts[0].turn.is_none());
+    let snapshot = thread.snapshot();
+    assert_eq!(
+        snapshot.attempts.last().unwrap().status,
+        AttemptStatus::Running
+    );
+    assert!(snapshot.attempts.last().unwrap().usage.is_none());
+    assert!(
+        !snapshot
+            .context
+            .records
+            .iter()
+            .any(|r| r.source == ContextSource::Assistant)
+    );
+    let completed: Vec<_> = effects
+        .iter()
+        .filter(|e| !e.model_members.is_empty())
+        .collect();
+    assert_eq!(completed.len(), usize::from(complete));
+    if complete {
+        assert!(starts[0].sequence < completed[0].sequence);
+    }
+    if reject_storage {
+        assert!(
+            store
+                .writes
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|w| w.effect.model_member_starts.is_empty())
+        );
+        store.reject_member.store(false, Ordering::SeqCst);
+    }
+    assert!(!store.released.load(Ordering::SeqCst));
+    cancellation.cancel();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    {
+        let writes = store.writes.lock().unwrap();
+        assert_eq!(
+            writes
+                .iter()
+                .map(|w| w.effect.model_member_starts.len())
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .map(|w| w.effect.model_members.len())
+                .sum::<usize>(),
+            usize::from(complete)
+        );
+    }
+    assert!(store.released.load(Ordering::SeqCst));
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn beginning_only_is_reliable_without_context_and_cancellation_drains_started_and_completed()
+{
+    exercise_start(false, false).await;
+    exercise_start(true, false).await;
+    exercise_start(false, true).await;
+}
+
+#[tokio::test]
+async fn queued_start_drains_and_conflicts_or_budget_refusals_do_not_publish_new_starts() {
+    for (queued, conflict, limit) in [
+        (true, false, None),
+        (false, true, None),
+        (false, false, Some(512)),
+    ] {
+        let store = Arc::new(Store {
+            limit,
+            ..Default::default()
+        });
+        let thread = ThreadHandle::start(
+            "starts".into(),
+            DynModelSession::new(StartingModel {
+                admitted: Arc::new(Notify::new()),
+                complete: false,
+                queued,
+                conflict,
+                identity: starting_identity(),
+            }),
+        )
+        .unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            thread.run_turn(TurnInput {
+                turn_id: "member-turn".into(),
+                attempt_prefix: "member-attempt".into(),
+                content: vec![],
+                max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                cancellation: Default::default(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        let effects = thread.effects().await.unwrap();
+        assert_eq!(
+            effects
+                .iter()
+                .map(|e| e.model_member_starts.len())
+                .sum::<usize>(),
+            usize::from(limit.is_none())
+        );
+        assert!(effects.iter().all(|e| e.model_members.is_empty()));
+        assert!(store.released.load(Ordering::SeqCst));
+        thread.close().await.unwrap();
+    }
+}
+
+#[test]
+fn older_effect_does_not_infer_starts_from_completed_members() {
+    let mut effect = serde_json::to_value(pl_core::thread::ThreadEffectBatch {
+        model_members: vec![pl_core::model::ModelCompletedMember {
+            turn_id: "turn".into(),
+            attempt_id: "attempt".into(),
+            generation: 0,
+            member_id: "completed".into(),
+            payload: OpaquePayload::text("already ended"),
+        }]
+        .into(),
+        ..Default::default()
+    })
+    .unwrap();
+    effect.as_object_mut().unwrap().remove("modelMemberStarts");
+    let decoded: pl_core::thread::ThreadEffectBatch = serde_json::from_value(effect).unwrap();
+    assert!(decoded.model_member_starts.is_empty());
+    assert_eq!(decoded.model_members.len(), 1);
+    let aggregate = ObservedPartIdentity::Aggregate {
+        channel: AggregateChannel::Text,
+    };
+    let started = pl_core::model::ModelStartedMember {
+        turn_id: "turn".into(),
+        attempt_id: "attempt".into(),
+        generation: 0,
+        identity: aggregate,
+    };
+    assert_eq!(
+        serde_json::to_value(started).unwrap()["attemptId"],
+        "attempt"
+    );
 }
 
 async fn exercise(ending: Ending) {

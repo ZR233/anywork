@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -13,25 +12,33 @@ import '../support/chat_fixtures.dart';
 // Placement/order are producer facts. The adapter must not recreate the deleted
 // atom/seq/group ledger, deduplicate, or merge adjacent same-turn activities.
 void main() {
+  test('only explicit contentPresent false proves emptiness; legacy unknown and whitespace are preserved', () {
+    final legacy = ChatItemPresentation.decode(
+      chatAtomMessage('legacy', body: ''),
+    );
+    final empty = ChatItemPresentation.decode(
+      chatAtomMessage('empty', body: '', contentPresent: false),
+    );
+    final whitespace = ChatItemPresentation.decode(
+      chatAtomMessage('space', body: '  \n', contentPresent: true),
+    );
+    expect(legacy.isKnownEmptyText, isFalse);
+    expect(empty.isKnownEmptyText, isTrue);
+    expect(whitespace.isKnownEmptyText, isFalse);
+    expect(whitespace.inlineText('body'), '  \n');
+  });
   late InMemoryChatController stock;
   late TimelineMessageController adapter;
-  late TimelineImageResources images;
   late List<ChatOperation> operations;
   late StreamSubscription<ChatOperation> observed;
   setUp(() {
     stock = InMemoryChatController();
-    images = TimelineImageResources(threadId: 'thread');
-    adapter = TimelineMessageController(
-      stock,
-      generation: 7,
-      imageResources: images,
-    );
+    adapter = TimelineMessageController(stock, generation: 7);
     operations = [];
     observed = stock.operationsStream.listen(operations.add);
   });
   tearDown(() async {
     adapter.dispose();
-    images.release();
     await observed.cancel();
     stock.dispose();
   });
@@ -63,13 +70,18 @@ void main() {
     operations.clear();
     await adapter.applyBatch(
       chatBatch([
-        chatEnvelope('thinking', type: 'thinking', data: const {}),
-        chatEnvelope(
-          'tool',
-          type: 'tool',
-          data: const {
-            'invocation': {'name': 'exec', 'presentationContract': 'generic@1'},
-          },
+        statusItem(chatEnvelope('thinking', type: 'thinking', data: const {})),
+        statusItem(
+          chatEnvelope(
+            'tool',
+            type: 'tool',
+            data: const {
+              'invocation': {
+                'name': 'exec',
+                'presentationContract': 'generic@1',
+              },
+            },
+          ),
         ),
         chatMessage('separator'),
       ], placement: ChatPlacement.append),
@@ -131,28 +143,30 @@ void main() {
   test('attachments do not manufacture extra messages and only real sealedAt creates a date', () async {
     await adapter.applyBatch(
       chatBatch([
-        chatEnvelope(
-          'media',
-          type: 'text',
-          sealedAt: 123,
-          data: const {
-            'channel': 'user',
-            'attachments': [
-              {
-                'id': 'image',
-                'modality': 'image',
-                'mediaType': 'image/png',
-                'byteSize': 10,
-              },
-              {
-                'id': 'file',
-                'modality': 'file',
-                'mediaType': 'text/plain',
-                'byteSize': 20,
-              },
-            ],
-          },
-          bodies: [inlineBody('body', 'caption')],
+        statusItem(
+          chatEnvelope(
+            'media',
+            type: 'text',
+            sealedAt: 123,
+            data: const {
+              'channel': 'user',
+              'attachments': [
+                {
+                  'id': 'image',
+                  'modality': 'image',
+                  'mediaType': 'image/png',
+                  'byteSize': 10,
+                },
+                {
+                  'id': 'file',
+                  'modality': 'file',
+                  'mediaType': 'text/plain',
+                  'byteSize': 20,
+                },
+              ],
+            },
+            bodies: [inlineBody('body', 'caption')],
+          ),
         ),
       ]),
     );
@@ -180,10 +194,12 @@ void main() {
       () async {
         await adapter.applyBatch(
           chatBatch([
-            chatEnvelope(
-              'assistant-looking-id',
-              type: 'text',
-              data: {'channel': channel},
+            statusItem(
+              chatEnvelope(
+                'assistant-looking-id',
+                type: 'text',
+                data: {'channel': channel},
+              ),
             ),
           ]),
         );
@@ -196,13 +212,17 @@ void main() {
     final raw = '{"contract":"future/2","type":"thinking","data":{}}';
     await adapter.applyBatch(
       chatBatch([
-        ChatMessage(
-          id: 'unknown',
-          payload: InlinePayload(bytes: utf8.encode(raw)),
+        statusItem(
+          fixtureAtom(
+            id: 'unknown',
+            payload: InlinePayload(bytes: utf8.encode(raw)),
+          ),
         ),
-        ChatMessage(
-          id: 'bad',
-          payload: InlinePayload(bytes: utf8.encode('{broken')),
+        statusItem(
+          fixtureAtom(
+            id: 'bad',
+            payload: InlinePayload(bytes: utf8.encode('{broken')),
+          ),
         ),
       ]),
     );
@@ -220,9 +240,11 @@ void main() {
     );
     await adapter.applyBatch(
       chatBatch([
-        ChatMessage(
-          id: 'large',
-          payload: DeferredPayload(reference: reference, byteLength: 123456),
+        statusItem(
+          fixtureAtom(
+            id: 'large',
+            payload: DeferredPayload(reference: reference, byteLength: 123456),
+          ),
         ),
       ]),
     );

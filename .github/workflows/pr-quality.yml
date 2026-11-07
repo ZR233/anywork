@@ -214,7 +214,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
+      # Omit DWARF in Linux CI; keep assertions and leave disk for native GUI outputs.
       CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -258,6 +261,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -346,6 +352,10 @@ jobs:
     if: needs.changes.outputs.gui_generated == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     permissions:
       contents: read
     steps:
@@ -389,6 +399,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -429,16 +442,38 @@ jobs:
           cache-bin: false
       # A shard owns its checkout, display and fixtures. Cases inside it stay
       # sequential so no two Flutter processes rewrite the same build inputs.
+      - name: Record disk usage before desktop build
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+            if [ -d "$directory" ]; then
+              du -sh "$directory"
+            else
+              printf 'Not created: %s\n' "$directory"
+            fi
+          done
       - name: Run the complete selected desktop shard
         env:
           SHARD_INDEX: ${{ matrix.shard }}
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+            bash .github/scripts/linux-desktop-session.sh target/ci-desktop-secret-service \
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
               --shard-index "$2" --shard-count 3 --output target/ci-desktop-linux
           ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
+      - name: Record disk usage after desktop build
+        if: always()
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+            if [ -d "$directory" ]; then
+              du -sh "$directory"
+            else
+              printf 'Not created: %s\n' "$directory"
+            fi
+          done
       - name: Preserve desktop reports and runner logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -447,6 +482,13 @@ jobs:
           path: |
             target/ci-desktop-linux/report.json
             target/ci-desktop-linux/cases/**/report.json
+            target/ci-desktop-linux/cases/**/realtime-live-text-*.json
+            target/ci-desktop-linux/cases/**/timeline-concept.json
+            target/ci-desktop-linux/cases/**/timeline-concept-reopen.json
+            target/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
+            target/ci-desktop-linux/cases/**/sidebar-shutdown.json
+            target/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
+            target/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
             target/ci-desktop-linux/cases/**/gui.log
             target/ci-desktop-linux/cases/**/*-integration.log
             target/ci-desktop-linux/cases/**/*-driver.log
@@ -461,6 +503,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
     permissions:
       contents: read
@@ -499,14 +544,36 @@ jobs:
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
+      - name: Record disk usage before native build
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+            if [ -d "$directory" ]; then
+              du -sh "$directory"
+            else
+              printf 'Not created: %s\n' "$directory"
+            fi
+          done
       - name: Run the full native lifecycle suite
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+            bash .github/scripts/linux-desktop-session.sh target/ci-native-secret-service \
+              xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite native --set full --output target/ci-native-linux
           ' -- "$PR_QUALITY_XTASK"
-      - name: Preserve native reports
+      - name: Record disk usage after native build
+        if: always()
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+            if [ -d "$directory" ]; then
+              du -sh "$directory"
+            else
+              printf 'Not created: %s\n' "$directory"
+            fi
+          done
+      - name: Preserve native reports and bounded diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -514,6 +581,13 @@ jobs:
           path: |
             target/ci-native-linux/report.json
             target/ci-native-linux/cases/**/report.json
+            target/ci-native-linux/cases/**/shutdown-*-gui.log
+            target/ci-native-linux/cases/**/shutdown-launch-*.json
+            target/ci-native-linux/cases/**/shutdown-native-exit-*.json
+            target/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
+            target/ci-native-linux/cases/**/shutdown-stage*
+            target/ci-native-linux/cases/**/diagnostics.json
+            target/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
           if-no-files-found: warn
           retention-days: 7
 

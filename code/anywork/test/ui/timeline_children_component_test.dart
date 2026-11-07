@@ -9,8 +9,10 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_chil
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/conversation/data/conversation_repository_impl.dart';
 import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart'
@@ -18,7 +20,11 @@ import 'package:flutter_chat_core/flutter_chat_core.dart'
 import 'package:flutter_chat_ui/flutter_chat_ui.dart' show Chat;
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart';
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    hide chatMessage, chatSet;
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    as main_fixtures
+    show chatMessage;
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
@@ -28,12 +34,94 @@ ThreadDirectoryStore _threadDirectory() => ThreadDirectoryStore(
 );
 
 void main() {
+  for (final lateFailure in [false, true]) {
+    testWidgets(
+      'genuine business parent rejects retired open ${lateFailure ? 'failure' : 'success'} without rebinding into B',
+      (tester) async {
+        final repository = _PendingRepository();
+        final a = ValueNotifier(false);
+        final b = ValueNotifier(false);
+        addTearDown(a.dispose);
+        addTearDown(b.dispose);
+        final displays = <TimelineChildrenDisplay>{};
+        Widget host(String parent, ValueNotifier<bool> retirement) =>
+            MaterialApp(
+              theme: pureStudioTheme(),
+              locale: const Locale('zh'),
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              home: Scaffold(
+                body: TimelineChildrenConnector(
+                  key: ValueKey(parent),
+                  repository: repository,
+                  threadId: 'thread',
+                  parentId: parent,
+                  parentRetirement: retirement,
+                  isParentActive: () => !retirement.value,
+                  registerDisplay: (display) {
+                    displays.add(display);
+                    return () => displays.remove(display);
+                  },
+                ),
+              ),
+            );
+        await tester.pumpWidget(host('business-parent:α/17', a));
+        expect(repository.requests.single.$1, 'business-parent:α/17');
+        final originalState = tester.state(
+          find.byType(TimelineChildrenConnector),
+        );
+        final originalDisplay = originalState as TimelineChildrenDisplay;
+        a.value = true;
+        expect(originalState.mounted, isTrue);
+        expect(originalDisplay.isCurrent, isFalse);
+        await tester.pumpWidget(host('business-parent:β/91', b));
+        final current = _LateContent();
+        repository.requests.last.$2.complete(current);
+        await tester.pump();
+        await current.consumer!.applyBatch(
+          memberSet(messages: [memberMessage(id: 'B')]),
+        );
+        await tester.pump();
+        final displayB = displays.single;
+        final messageB = displayB.messages.single;
+        final late = _LateContent();
+        if (lateFailure) {
+          repository.requests.first.$2.completeError(
+            StateError('retired open failed'),
+          );
+        } else {
+          repository.requests.first.$2.complete(late);
+        }
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await tester.pump();
+        expect(displayB.parentId, 'business-parent:β/91');
+        expect(displayB.messages.single, same(messageB));
+        expect(displayB.error, isNull);
+        expect(find.textContaining('retired open failed'), findsNothing);
+        if (!lateFailure) {
+          expect(late.closeCalls, 1);
+          expect(late.consumer, isNull);
+        }
+        a.value = false; // A's old notifier cannot requalify the B display.
+        expect(displayB.isCurrent, isTrue);
+        expect(repository.requests.length, 2);
+        await tester.pumpWidget(const SizedBox());
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await tester.pump();
+        expect(displays, isEmpty);
+        expect(current.attachment!.isCancelled, isTrue);
+        expect(current.closeCalls, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'Children use one controller, shrink naturally, stay transparent and scroll only at the cap',
     (tester) async {
       final controller = InMemoryChatController(
         messages: [
-          _controllerMessage(chatMessage(id: 'short', body: '短的真实子内容')),
+          _controllerMessage(memberMessage(id: 'short', body: '短的真实子内容')),
         ],
       );
       var pages = 0;
@@ -76,7 +164,7 @@ void main() {
 
       await controller.setMessages([
         for (var i = 0; i < 40; i++)
-          _controllerMessage(chatMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
+          _controllerMessage(memberMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
       ], animated: false);
       await tester.pumpAndSettle();
       expect(tester.getSize(children).height, 320);
@@ -148,7 +236,7 @@ void main() {
       await tester.pump();
       expect(displays, isEmpty);
       transport.feed.send(
-        ConversationChatEvent(batch: chatSet(before: 'before')),
+        ConversationChatEvent(batch: memberSet(before: 'before')),
       );
       await tester.pump();
       await tester.pump();
@@ -195,7 +283,7 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            messages: [chatMessage(id: 'append')],
+            entries: [ChatAtomEntry(memberMessage(id: 'append'))],
           ),
         ),
       );
@@ -205,7 +293,7 @@ void main() {
       page.complete(
         ChatBatch(
           placement: ChatPlacement.prepend,
-          messages: [chatMessage(id: 'older')],
+          entries: [ChatAtomEntry(memberMessage(id: 'older'))],
         ),
       );
       await pumpClientUntil(
@@ -237,7 +325,7 @@ void main() {
       retireDuringSet = true;
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(messages: [chatMessage(id: 'retired-during-Set')]),
+          batch: memberSet(messages: [memberMessage(id: 'retired-during-Set')]),
         ),
       );
       await tester.pump();
@@ -255,8 +343,8 @@ void main() {
       );
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(
-            messages: [chatMessage(id: 'replacement', body: '旧 Children 正文')],
+          batch: memberSet(
+            messages: [memberMessage(id: 'replacement', body: '旧 Children 正文')],
           ),
         ),
       );
@@ -273,8 +361,8 @@ void main() {
       final generationBeforeSet = display.generation;
       transport.feeds.last.send(
         ConversationChatEvent(
-          batch: chatSet(
-            messages: [chatMessage(id: 'replacement', body: '新 Children 正文')],
+          batch: memberSet(
+            messages: [memberMessage(id: 'replacement', body: '新 Children 正文')],
           ),
         ),
       );
@@ -344,7 +432,7 @@ void main() {
       );
       await tester.pump();
       expect(transport.opened.isCompleted, isTrue);
-      transport.feed.send(ConversationChatEvent(batch: chatSet()));
+      transport.feed.send(ConversationChatEvent(batch: memberSet()));
       await tester.pump();
       await tester.pump();
       expect(transport.feed.acknowledgements, [1]);
@@ -439,7 +527,7 @@ void main() {
         await tester.pump();
         transport.feed.send(
           ConversationChatEvent(
-            batch: chatSet(before: 'old-before', messages: [_deferred()]),
+            batch: memberSet(before: 'old-before', messages: [_deferred()]),
           ),
         );
         await tester.pump();
@@ -494,7 +582,7 @@ void main() {
         expect(newLoads, 0);
         replacement.send(
           ConversationChatEvent(
-            batch: chatSet(before: 'new-before', messages: [_deferred()]),
+            batch: memberSet(before: 'new-before', messages: [_deferred()]),
           ),
         );
         await tester.pump();
@@ -546,8 +634,13 @@ void main() {
         newPage.complete(
           ChatBatch(
             placement: ChatPlacement.prepend,
-            messages: [
-              chatMessage(id: 'replacement-older', body: 'older from new feed'),
+            entries: [
+              ChatAtomEntry(
+                memberMessage(
+                  id: 'replacement-older',
+                  body: 'older from new feed',
+                ),
+              ),
             ],
           ),
         );
@@ -583,7 +676,7 @@ void main() {
   }
 }
 
-Message _controllerMessage(ChatMessage item) {
+Message _controllerMessage(ChatAtom item) {
   final value = ChatItemPresentation.decode(item);
   return Message.custom(
     id: item.id,
@@ -593,9 +686,19 @@ Message _controllerMessage(ChatMessage item) {
   );
 }
 
-ChatMessage _deferred() => const ChatMessage(
+ChatAtom _deferred() => ChatAtom(
   id: 'deferred',
-  payload: DeferredPayload(
+  source: const ReceiptChatSource(receiptId: 'deferred'),
+  sourceOrder: null,
+  kind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: const DeferredPayload(
     reference: ContentRef(
       databaseId: 'database',
       target: ItemPayloadTarget(itemId: 'deferred'),
@@ -632,6 +735,50 @@ final class _RecordingRepository extends Fake
   }
 }
 
+final class _PendingRepository extends Fake implements ConversationRepository {
+  final requests = <(String, Completer<ConversationContent>)>[];
+  @override
+  Future<ConversationContent> openChildren({
+    required String threadId,
+    required String parentId,
+    required ReadDemand demand,
+  }) {
+    final completion = Completer<ConversationContent>();
+    requests.add((parentId, completion));
+    return completion.future;
+  }
+}
+
+final class _LateContent extends Fake implements ConversationContent {
+  final source = LatestValue<ChatUiState<bool>>(
+    const ChatReady('thread', true),
+  );
+  final attachments = LatestValue(false);
+  ConversationBatchConsumer? consumer;
+  Observation? attachment;
+  int closeCalls = 0;
+  @override
+  ValueObservation<ChatUiState<bool>> get state => source;
+  @override
+  AttemptId get currentAttemptId => const AttemptId(1);
+  @override
+  bool get isClosed => closeCalls != 0;
+  @override
+  Observation attachConsumer(
+    ConversationBatchConsumer consumer, {
+    required ReadDemand demand,
+  }) {
+    this.consumer = consumer;
+    return attachment = attachments.watch((_) {});
+  }
+
+  @override
+  Future<CloseReport> close({DateTime? deadline}) async {
+    closeCalls++;
+    return CloseReport();
+  }
+}
+
 final class _Transport implements ConversationTransport {
   final feed = TestConversationFeed();
   final feeds = <TestConversationFeed>[];
@@ -654,3 +801,30 @@ final class _Transport implements ConversationTransport {
     return next;
   }
 }
+
+// Real business Children carry raw atoms, not Main TimelineItems.
+ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: ReceiptChatSource(receiptId: id),
+  sourceOrder: null,
+  kind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.independent,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: main_fixtures.chatMessage(id: id, body: body).payload,
+);
+ChatBatch memberSet({
+  List<ChatAtom>? messages,
+  String? before,
+  CurrentProjection? current,
+}) => ChatBatch(
+  placement: ChatPlacement.set,
+  entries: (messages ?? [memberMessage()]).map(ChatAtomEntry.new).toList(),
+  before: before,
+  current: current,
+);

@@ -294,8 +294,8 @@ async fn exec_input_contract() -> anyhow::Result<()> {
 
 async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     use pl_tool::workspace::{
-        AgentWorkspace, POOL_GITIGNORE, SessionFiles, WorkspaceMutability, prepare_session_files,
-        prepare_worktree_pool,
+        AgentWorkspace, POOL_GITIGNORE, SessionFiles, ToolPathPolicy, WorkspaceMutability,
+        prepare_session_files, prepare_worktree_pool,
     };
     use pl_tool::workspace_file::LocalWorkspaceFileBackend;
     use sha2::{Digest, Sha256};
@@ -355,24 +355,35 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
 
     let writable = vec![root.path().join("src")];
     std::fs::create_dir_all(root.path().join("src"))?;
+    let policy = ToolPathPolicy::new(root.path().to_path_buf(), false, "file")?;
+    let resolve = |path: PathBuf| {
+        let original = path.to_string_lossy();
+        policy.resolve_existing_or_parent_path(&path, &original)
+    };
     let workspace =
         AgentWorkspace::directory(root.path(), Some(writable)).with_session_files(files.clone());
-    workspace.ensure_path_writable(&root.path().join("src/lib.rs"))?;
-    workspace.ensure_path_writable(&root.path().join(files.scratch()).join("probe.sh"))?;
-    workspace.ensure_path_writable(&root.path().join(files.artifacts()).join("out.bin"))?;
+    workspace.ensure_path_writable(&resolve(root.path().join("src/lib.rs"))?)?;
+    workspace.ensure_path_writable(&resolve(
+        root.path().join(files.scratch()).join("probe.sh"),
+    )?)?;
+    workspace.ensure_path_writable(&resolve(
+        root.path().join(files.artifacts()).join("out.bin"),
+    )?)?;
     anyhow::ensure!(
         workspace
-            .ensure_path_writable(&root.path().join(files.commands()).join("output.log"))
+            .ensure_path_writable(&resolve(
+                root.path().join(files.commands()).join("output.log")
+            )?)
             .is_ok()
     );
     anyhow::ensure!(
         workspace
-            .ensure_path_writable(&root.path().join(neighbor.scratch()).join("x"))
+            .ensure_path_writable(&resolve(root.path().join(neighbor.scratch()).join("x"))?)
             .is_err()
     );
     anyhow::ensure!(
         workspace
-            .ensure_path_writable(&root.path().join(".anywork/sessions/.gitignore"))
+            .ensure_path_writable(&resolve(root.path().join(".anywork/sessions/.gitignore"))?)
             .is_err()
     );
     anyhow::ensure!(
@@ -383,7 +394,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         .with_session_files(files.clone());
     anyhow::ensure!(
         readonly
-            .ensure_path_writable(&root.path().join(files.scratch()).join("x"))
+            .ensure_path_writable(&resolve(root.path().join(files.scratch()).join("x"))?)
             .is_err()
     );
 
@@ -393,8 +404,6 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         std::fs::create_dir_all(&linked)?;
         let link = root.path().join(files.scratch()).join("escape");
         std::os::unix::fs::symlink(&linked, &link)?;
-        let policy =
-            pl_tool::workspace::ToolPathPolicy::new(root.path().to_path_buf(), false, "file")?;
         anyhow::ensure!(
             policy
                 .resolve_existing_or_parent_path(&link.join("secret"), "escape/secret")
@@ -402,42 +411,56 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         );
     }
 
-    let relative =
-        workspace.ensure_relative_path_writable(None, &files.scratch().to_string_lossy());
+    // Backend-relative mutation inputs use POSIX separators on every host.
+    let relative = workspace
+        .ensure_relative_path_writable(None, &files.scratch().to_string_lossy().replace('\\', "/"));
     anyhow::ensure!(relative.is_ok());
     anyhow::ensure!(
         workspace
-            .ensure_relative_path_writable(None, &files.commands().join("x").to_string_lossy())
+            .ensure_relative_path_writable(
+                None,
+                &files
+                    .commands()
+                    .join("x")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            )
             .is_ok()
     );
 
     let empty =
         AgentWorkspace::directory(root.path(), Some(Vec::new())).with_session_files(files.clone());
-    empty.ensure_path_writable(&root.path().join(files.scratch()).join("probe.sh"))?;
-    empty.ensure_path_writable(&root.path().join(files.artifacts()).join("out.bin"))?;
+    empty.ensure_path_writable(&resolve(
+        root.path().join(files.scratch()).join("probe.sh"),
+    )?)?;
+    empty.ensure_path_writable(&resolve(
+        root.path().join(files.artifacts()).join("out.bin"),
+    )?)?;
     anyhow::ensure!(
         empty
-            .ensure_path_writable(&root.path().join("src/lib.rs"))
+            .ensure_path_writable(&resolve(root.path().join("src/lib.rs"))?)
             .is_err()
     );
     anyhow::ensure!(
         empty
-            .ensure_path_writable(&root.path().join(files.commands()).join("output.log"))
+            .ensure_path_writable(&resolve(
+                root.path().join(files.commands()).join("output.log")
+            )?)
             .is_ok()
     );
     anyhow::ensure!(
         empty
-            .ensure_path_writable(&root.path().join(neighbor.scratch()).join("x"))
+            .ensure_path_writable(&resolve(root.path().join(neighbor.scratch()).join("x"))?)
             .is_err()
     );
     anyhow::ensure!(
         empty
-            .ensure_path_writable(&root.path().join(".anywork"))
+            .ensure_path_writable(&resolve(root.path().join(".anywork"))?)
             .is_err()
     );
     anyhow::ensure!(
         empty
-            .ensure_path_writable(&root.path().join(".anywork/sessions"))
+            .ensure_path_writable(&resolve(root.path().join(".anywork/sessions"))?)
             .is_err()
     );
 
@@ -1075,9 +1098,17 @@ async fn model_output_cap_counts_bytes_not_chars() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn write_command_capture_fixture(root: &Path) -> std::io::Result<()> {
+    std::fs::write(
+        root.join("command_capture_fixture.py"),
+        include_bytes!("support/command_capture_fixture.py"),
+    )
+}
+
 /// 可选：真实进程后端（`LocalCommandBackend`）在低自定义预算下也必须被取消并等它结束。
 async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
     let root = tempfile::tempdir().context("tempdir")?;
+    write_command_capture_fixture(root.path())?;
     let inner = local_command_backend(root.path());
     let backend = LowBudgetBackend::new(
         inner,
@@ -1087,7 +1118,7 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
     );
     let manager = CommandProcessManager::new(Arc::new(backend));
     let mut request = start_request();
-    request.command = "while :; do printf '0123456789abcdef'; done".to_string();
+    request.command = "python3 command_capture_fixture.py endless".to_string();
     let snapshot = tokio::time::timeout(
         Duration::from_secs(60),
         manager.run_task("task-real-capture-limit", request),
@@ -1110,6 +1141,7 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
     );
     println!("OK  真实进程后端：低自定义预算触顶后命令被取消并等到终态");
     let root = tempfile::tempdir()?;
+    write_command_capture_fixture(root.path())?;
     let local = pl_tool::command::LocalCommandBackend::new(root.path().to_path_buf());
     let target = local
         .output_target("tiny", "header", "call", "touch must-not-start")
@@ -1136,8 +1168,7 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
         Arc::new(CaptureFacts::default()),
     )));
     let mut request = start_request();
-    request.command =
-        "python3 -c 'import os; os.write(1,b\"h\"*262144); os.write(2,b\"e\"*196608)'".into();
+    request.command = "python3 command_capture_fixture.py rollover".into();
     let snapshot = manager.run_task("task-real-rollover", request).await?;
     anyhow::ensure!(matches!(
         snapshot.state.final_result(),
@@ -1170,9 +1201,10 @@ async fn real_backend_limit_terminates_process() -> anyhow::Result<()> {
 /// 一次运行的观察事实：由 backend 在真实落盘/取消时记录，供断言使用。
 async fn real_stdin_eof_and_raw_utf8() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
+    write_command_capture_fixture(root.path())?;
     let manager = CommandProcessManager::new(Arc::new(local_command_backend(root.path())));
     let mut request = start_request();
-    request.command = "cat > stdin.txt; printf done".into();
+    request.command = "python3 command_capture_fixture.py stdin".into();
     let started = manager.start(request).await?;
     let process_id = started.process_id.context("running exec")?;
     let text = "中文🌙\nfinite input\n";
@@ -1209,19 +1241,19 @@ async fn real_stdin_eof_and_raw_utf8() -> anyhow::Result<()> {
     for (id, command, expected, lossy) in [
         (
             "task-raw-utf8",
-            r#"python3 -c 'import os,time; b="中文🌙".encode(); os.write(1,b[:2]); time.sleep(0.02); os.write(1,b[2:]); os.write(2,b"error")'"#,
+            "python3 command_capture_fixture.py utf8-split",
             "中文🌙".as_bytes().to_vec(),
             false,
         ),
         (
             "task-invalid-utf8",
-            "python3 -c 'import os; os.write(1,bytes([255,97,226]))'",
+            "python3 command_capture_fixture.py invalid-utf8",
             vec![255, 97, 226],
             true,
         ),
         (
             "task-long-utf8",
-            r#"python3 -c 'import os; os.write(1,"中文🌙".encode()*20000)'"#,
+            "python3 command_capture_fixture.py long-utf8",
             "中文🌙".repeat(20000).into_bytes(),
             false,
         ),

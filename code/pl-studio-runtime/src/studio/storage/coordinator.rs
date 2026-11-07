@@ -36,10 +36,34 @@ pub(crate) struct ThreadPersistenceMetrics {
 
 /// One owner's absolute reliable-history state.
 pub(crate) struct ThreadPersistenceReport {
-    pub(crate) pending: Vec<u64>,
+    pub(crate) pending: Option<PendingSequenceRange>,
     pub(crate) pending_checkpoint: bool,
     pub(crate) error: Option<String>,
     pub(crate) metrics: ThreadPersistenceMetrics,
+}
+
+/// One writer's continuous reliable queue, expressed without copying every sequence on each report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingSequenceRange {
+    pub(crate) first: u64,
+    pub(crate) last: u64,
+}
+
+impl PendingSequenceRange {
+    pub(crate) fn count(self) -> u64 {
+        self.last
+            .checked_sub(self.first)
+            .and_then(|length| length.checked_add(1))
+            .expect("validated pending sequence range")
+    }
+
+    fn covers(self, previous: Self, durable: u64) -> bool {
+        if durable >= previous.last {
+            return true;
+        }
+        let first_undurable = previous.first.max(durable.saturating_add(1));
+        self.first <= first_undurable && self.last >= previous.last
+    }
 }
 
 /// Process-wide persistence pressure plus the per-Thread watermarks behind it.
@@ -95,7 +119,7 @@ pub(crate) struct CallsQueueMetrics {
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
     /// Admitted effects this incarnation still owes an ordered history write.
-    pending: BTreeMap<u64, ()>,
+    pending: Option<PendingSequenceRange>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
     pending_checkpoint: bool,
     /// Last write failure of this incarnation, kept until one of its own writes succeeds.
@@ -113,7 +137,7 @@ struct IncarnationStatus {
 impl IncarnationStatus {
     /// Commits this incarnation still owes durability for.
     fn owed(&self) -> u64 {
-        self.pending.len() as u64 + u64::from(self.pending_checkpoint)
+        self.pending.map_or(0, PendingSequenceRange::count) + u64::from(self.pending_checkpoint)
     }
 
     /// Last failure worth surfacing for this incarnation; its own write error outranks the terminal
@@ -609,7 +633,7 @@ impl ThreadPersistenceCoordinator {
                 snapshot.oldest_pending_age_millis,
                 snapshot.calls_oldest_pending_age_millis,
             ) {
-                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(left), Some(right)) => Some(left.max(right)),
                 (left, right) => left.or(right),
             },
             pressure_paused: snapshot.pressure_paused,
@@ -640,11 +664,7 @@ impl ThreadPersistenceCoordinator {
             let Some(incarnation) = status.incarnations.get_mut(&owner) else {
                 return;
             };
-            incarnation.pending = report
-                .pending
-                .into_iter()
-                .map(|sequence| (sequence, ()))
-                .collect();
+            incarnation.pending = report.pending;
             incarnation.pending_checkpoint = report.pending_checkpoint;
             incarnation.error = report.error;
             incarnation.metrics = report.metrics;
@@ -658,9 +678,10 @@ impl ThreadPersistenceCoordinator {
                 .filter_map(|(id, previous)| {
                     (*id != owner
                         && previous.released_dirty.is_some()
-                        && previous.pending.keys().all(|sequence| {
-                            inherited.pending.contains_key(sequence)
-                                || inherited.metrics.history_durable_sequence >= *sequence
+                        && previous.pending.is_none_or(|previous| {
+                            inherited.pending.is_some_and(|pending| {
+                                pending.covers(previous, inherited.metrics.history_durable_sequence)
+                            }) || inherited.metrics.history_durable_sequence >= previous.last
                         })
                         && (!previous.pending_checkpoint
                             || inherited.metrics.state_durable_revision
@@ -1101,11 +1122,11 @@ fn aggregate(
         let mut failure: Option<String> = None;
         for (owner, incarnation) in &status.incarnations {
             snapshot.pending_commits = snapshot.pending_commits.saturating_add(incarnation.owed());
-            if let Some(sequence) = incarnation.pending.keys().next().copied() {
+            if let Some(pending) = incarnation.pending {
                 snapshot.oldest_pending_revision = Some(
                     snapshot
                         .oldest_pending_revision
-                        .map_or(sequence, |current: u64| current.min(sequence)),
+                        .map_or(pending.first, |current: u64| current.min(pending.first)),
                 );
             }
             let metrics = &incarnation.metrics;
@@ -1117,7 +1138,7 @@ fn aggregate(
                 snapshot.oldest_pending_age_millis = Some(
                     snapshot
                         .oldest_pending_age_millis
-                        .map_or(age, |current: u64| current.min(age)),
+                        .map_or(age, |current: u64| current.max(age)),
                 );
             }
             snapshot.pressure_paused |= metrics.pressure_paused;
@@ -1186,7 +1207,7 @@ mod tests {
 
     fn history_report() -> ThreadPersistenceReport {
         ThreadPersistenceReport {
-            pending: vec![3],
+            pending: Some(PendingSequenceRange { first: 3, last: 3 }),
             pending_checkpoint: false,
             error: Some("retained failure".into()),
             metrics: ThreadPersistenceMetrics {
@@ -1198,6 +1219,54 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn continuous_ranges_and_oldest_age_aggregate_without_sequence_vectors() -> Result<()> {
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let _first = coordinator.claim("range-first", 1)?;
+        let _second = coordinator.claim("range-second", 2)?;
+        let mut first = history_report();
+        first.pending = Some(PendingSequenceRange { first: 3, last: 5 });
+        first.metrics.pending_operations = 3;
+        first.metrics.oldest_pending_age_millis = Some(40);
+        coordinator.report("range-first", 1, first, None);
+        let mut second = history_report();
+        second.pending = Some(PendingSequenceRange {
+            first: 10,
+            last: 11,
+        });
+        second.metrics.pending_operations = 2;
+        second.metrics.oldest_pending_age_millis = Some(90);
+        coordinator.report("range-second", 2, second, None);
+
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.pending_commits, 5);
+        assert_eq!(snapshot.oldest_pending_revision, Some(3));
+        assert_eq!(snapshot.oldest_pending_age_millis, Some(90));
+        {
+            let mut calls = coordinator.0.calls.lock().unwrap();
+            calls.oldest_pending_age_millis = Some(120);
+        }
+        coordinator.refresh();
+        assert_eq!(
+            coordinator.queue_snapshot().oldest_pending_age_millis,
+            Some(120)
+        );
+        for (thread_id, owner) in [("range-first", 1), ("range-second", 2)] {
+            coordinator.report(
+                thread_id,
+                owner,
+                ThreadPersistenceReport {
+                    pending: None,
+                    pending_checkpoint: false,
+                    error: None,
+                    metrics: ThreadPersistenceMetrics::default(),
+                },
+                None,
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -1241,7 +1310,7 @@ mod tests {
         release.send(())?;
         *coordinator.0.calls_sample_gate.lock().unwrap() = Some((entered, waiting));
         let mut historical = history_report();
-        historical.pending = vec![4];
+        historical.pending = Some(PendingSequenceRange { first: 4, last: 4 });
         historical.metrics.history_admitted_sequence = 4;
         historical.metrics.history_durable_sequence = 3;
         coordinator.report("joint-report", 7, historical, None);
