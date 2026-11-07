@@ -466,10 +466,10 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            bash .github/scripts/linux-desktop-session.sh target/ci-desktop-secret-service \
+            bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
-              --shard-index "$2" --shard-count 3 --output target/ci-desktop-linux
+              --shard-index "$2" --shard-count 3 --output output/ci-desktop-linux
           ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
       - name: Record disk usage after desktop build
         if: always()
@@ -488,19 +488,19 @@ jobs:
         with:
           name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/ci-desktop-linux/report.json
-            target/ci-desktop-linux/cases/**/report.json
-            target/ci-desktop-linux/cases/**/realtime-live-text-*.json
-            target/ci-desktop-linux/cases/**/timeline-concept.json
-            target/ci-desktop-linux/cases/**/timeline-concept-reopen.json
-            target/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
-            target/ci-desktop-linux/cases/**/sidebar-shutdown.json
-            target/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
-            target/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
-            target/ci-desktop-linux/cases/**/gui.log
-            target/ci-desktop-linux/cases/**/*-integration.log
-            target/ci-desktop-linux/cases/**/*-driver.log
-            target/ci-desktop-linux/cases/**/*-errors.txt
+            output/ci-desktop-linux/report.json
+            output/ci-desktop-linux/cases/**/report.json
+            output/ci-desktop-linux/cases/**/realtime-live-text-*.json
+            output/ci-desktop-linux/cases/**/timeline-concept.json
+            output/ci-desktop-linux/cases/**/timeline-concept-reopen.json
+            output/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
+            output/ci-desktop-linux/cases/**/sidebar-shutdown.json
+            output/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
+            output/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
+            output/ci-desktop-linux/cases/**/gui.log
+            output/ci-desktop-linux/cases/**/*-integration.log
+            output/ci-desktop-linux/cases/**/*-driver.log
+            output/ci-desktop-linux/cases/**/*-errors.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -567,9 +567,9 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            bash .github/scripts/linux-desktop-session.sh target/ci-native-secret-service \
+            bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-              "$1" test-project --suite native --set full --output target/ci-native-linux
+              "$1" test-project --suite native --set full --output output/ci-native-linux
           ' -- "$PR_QUALITY_XTASK"
       - name: Record disk usage after native build
         if: always()
@@ -588,15 +588,15 @@ jobs:
         with:
           name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/ci-native-linux/report.json
-            target/ci-native-linux/cases/**/report.json
-            target/ci-native-linux/cases/**/shutdown-*-gui.log
-            target/ci-native-linux/cases/**/shutdown-launch-*.json
-            target/ci-native-linux/cases/**/shutdown-native-exit-*.json
-            target/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
-            target/ci-native-linux/cases/**/shutdown-stage*
-            target/ci-native-linux/cases/**/diagnostics.json
-            target/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
+            output/ci-native-linux/report.json
+            output/ci-native-linux/cases/**/report.json
+            output/ci-native-linux/cases/**/shutdown-*-gui.log
+            output/ci-native-linux/cases/**/shutdown-launch-*.json
+            output/ci-native-linux/cases/**/shutdown-native-exit-*.json
+            output/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
+            output/ci-native-linux/cases/**/shutdown-stage*
+            output/ci-native-linux/cases/**/diagnostics.json
+            output/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
           if-no-files-found: warn
           retention-days: 7
 
