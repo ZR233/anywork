@@ -16,12 +16,39 @@ use crate::studio::{
     },
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArchivePurpose {
+    Preserve,
+    Delete,
+}
+
 impl StudioRuntime {
     pub(super) async fn freeze_thread_archive(
         &self,
         scope: ArchiveScope,
         threads: &[ThreadRecord],
         admitted: &[PreparationIdentity],
+    ) -> Result<ThreadArchiveOperation> {
+        self.freeze_archive_scope(scope, threads, admitted, ArchivePurpose::Preserve)
+            .await
+    }
+
+    pub(super) async fn freeze_thread_removal(
+        &self,
+        scope: ArchiveScope,
+        threads: &[ThreadRecord],
+        admitted: &[PreparationIdentity],
+    ) -> Result<ThreadArchiveOperation> {
+        self.freeze_archive_scope(scope, threads, admitted, ArchivePurpose::Delete)
+            .await
+    }
+
+    async fn freeze_archive_scope(
+        &self,
+        scope: ArchiveScope,
+        threads: &[ThreadRecord],
+        admitted: &[PreparationIdentity],
+        purpose: ArchivePurpose,
     ) -> Result<ThreadArchiveOperation> {
         let previous = self.store.thread_archive(&scope).await?;
         let mut catalog_projection = threads.to_vec();
@@ -51,8 +78,9 @@ impl StudioRuntime {
                 ArchiveScope::Workspace(workspace) => record.identity.workspace_id == *workspace,
             };
             if in_scope
-                && !record.published
-                && !(record.disposition == PreparationDisposition::Remove && record.retired)
+                && (purpose == ArchivePurpose::Delete || !record.published)
+                && (purpose == ArchivePurpose::Delete
+                    || !(record.disposition == PreparationDisposition::Remove && record.retired))
                 && !admitted
                     .iter()
                     .any(|identity| identity.thread_id == record.identity.thread_id)
@@ -272,14 +300,19 @@ impl StudioRuntime {
                 private_members.retain(|member| member.identity.thread_id != identity.thread_id);
                 continue;
             }
-            if record.disposition == PreparationDisposition::Remove && record.retired {
+            if purpose == ArchivePurpose::Preserve
+                && record.disposition == PreparationDisposition::Remove
+                && record.retired
+            {
                 private_members.retain(|member| member.identity.thread_id != identity.thread_id);
                 continue;
             }
-            if matches!(
-                record.disposition,
-                PreparationDisposition::Pending | PreparationDisposition::Remove
-            ) {
+            if (purpose == ArchivePurpose::Preserve || !record.retired)
+                && matches!(
+                    record.disposition,
+                    PreparationDisposition::Pending | PreparationDisposition::Remove
+                )
+            {
                 self.store
                     .set_preparation_disposition(
                         &identity.thread_id,

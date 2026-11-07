@@ -308,6 +308,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       style: MenuStyle(
         minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
         maximumSize: WidgetStatePropertyAll(Size(menuWidth, menuHeight)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
       ),
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
@@ -360,11 +361,10 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     return depth;
   }
 
-  /// 单个智能体行：层级缩进、状态图标、任务概要/角色、右侧状态、行内停止与选中勾。
+  /// 固定四列：选中标记、双行摘要、运行状态、停止操作。
   ///
-  /// 图标、正文与尾部件分别落在 [MenuItemButton] 的官方槽位上，行内空间由 Flex
-  /// 与行内省略分配；正文持有显式有限宽度，状态列单独保留空间，深层缩进在窄窗有界。
-  /// 选中勾在所有行保留同宽占位，各行状态右边缘因此对齐。
+  /// MenuItemButton 继续负责选择、聚焦与菜单生命周期；其正文内用 Flex 分配列宽，
+  /// 不让有无停止按钮、错误图标或状态说明改变列位与行高。
   Widget _agentRow(
     StudioAgentView agent, {
     required bool selected,
@@ -383,14 +383,11 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       threadId: agent.threadId,
     ).firstOrNull;
     final error = agent.error;
-    final hasError = error != null;
     final summary = row?.title.trim().isNotEmpty == true
         ? row!.title
         : agent.task.trim().isNotEmpty
         ? agent.task
         : context.roleLabel(agent.role);
-    final status =
-        error ?? context.threadStatusLabel(_agentThreadStatus(agent.state));
     final secondaryStyle = Theme.of(context).textTheme.labelSmall
         ?.copyWith(color: context.colors.onSurfaceVariant);
     final role = agent.role.trim();
@@ -415,18 +412,66 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final modelTooltip = frozen == null
         ? modelLabel
         : '$modelLabel\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
-    final indent = (_agentDepth(agent) * _agentIndentStep).clamp(
-      0.0,
-      (menuWidth - 208).clamp(0.0, menuWidth),
-    );
     final stop = AgentListStopState.resolve(
       agent: agent,
       acceptedExecutionId: _acceptedStopFor(agent),
     );
-    final rowWidth = (menuWidth - 88 - indent).clamp(0.0, menuWidth);
-    final statusGap = rowWidth.clamp(0.0, _agentRowGap);
-    final statusWidth = (rowWidth - statusGap).clamp(0.0, 84.0);
     final stopFailure = _stopFailureFor(agent);
+    final unconfirmed =
+        stop.action == AgentListStopAction.stop &&
+        _stopPendingFor(agent.threadId, stop.executionId!) &&
+        _stopUnconfirmedFor(agent);
+    final stopNote = switch (stop.action) {
+      AgentListStopAction.stopping => context.l10n.agentStopping,
+      AgentListStopAction.stoppedWaitingScheduling =>
+        context.l10n.agentStopWaitingScheduling,
+      _ => null,
+    };
+    final statusDetail = stopFailure != null
+        ? context.l10n.agentStopFailed(_stopFailureText(context, stopFailure))
+        : unconfirmed
+        ? context.l10n.composerBlockerUnknown
+        : stopNote ??
+              error ??
+              context.threadStatusLabel(_agentThreadStatus(agent.state));
+    final status = stopFailure != null || error != null
+        ? context.l10n.agentListStatusFailed
+        : unconfirmed
+        ? context.l10n.agentListStatusUnknown
+        : switch (stop.action) {
+            AgentListStopAction.stopping => context.l10n.agentStopping,
+            AgentListStopAction.stoppedWaitingScheduling =>
+              context.l10n.agentListStatusWaiting,
+            _ => switch (agent.state) {
+              WaitingToolStudioAgent() => context.l10n.agentListStatusApproval,
+              WaitingInteractionStudioAgent() =>
+                context.l10n.agentListStatusInput,
+              CancellingStudioAgent() => context.l10n.agentStopping,
+              FaultedStudioAgent() => context.l10n.agentListStatusFailed,
+              _ => context.threadStatusLabel(_agentThreadStatus(agent.state)),
+            },
+          };
+    final statusKey = stopFailure != null
+        ? ValueKey('agent-stop-failure-${agent.threadId}')
+        : unconfirmed
+        ? ValueKey('agent-stop-unconfirmed-${agent.threadId}')
+        : stopNote != null
+        ? StudioDriverKeys.agentStopNote(agent.threadId)
+        : null;
+    // Recovery 是独立诊断，不替换运行状态。它始终在状态列内部占位，
+    // 诊断出现或消失也不会移动四列边界。
+    final statusWidth = (menuWidth < 320 ? 56.0 : 72.0) + _agentRecoverySize;
+    final contentWidth = (menuWidth - 24).clamp(0.0, menuWidth);
+    final summaryWidth =
+        contentWidth -
+        _agentCheckSize -
+        _agentActionSize -
+        statusWidth -
+        _agentRowGap * 3;
+    final indent = (_agentDepth(agent) * _agentIndentStep).clamp(
+      0.0,
+      (summaryWidth - 48).clamp(0.0, menuWidth),
+    );
     return MenuItemButton(
       key: StudioDriverKeys.agentRow(agent.threadId),
       onPressed: recoveryIssue?.blocksAccess == true
@@ -449,142 +494,131 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
                     }),
               );
             },
-      // 选中背景走官方样式工厂；内边距、行高、悬浮与墨迹效果沿用
-      // MenuItemButton 的官方默认值。
       style: MenuItemButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        minimumSize: const Size(0, 48),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         backgroundColor: selected
             ? Theme.of(context).colorScheme.surfaceContainerHigh
             : null,
       ),
-      // 层级缩进按真实父子深度表达；Material 菜单项没有对应能力。
-      leadingIcon: Padding(
-        padding: EdgeInsetsDirectional.only(start: indent),
-        child: Icon(
-          hasError ? Icons.error_outline : Icons.circle,
-          size: hasError ? 16 : 9,
-          color: hasError
-              ? Theme.of(context).colorScheme.error
-              : _statusColor(context, agent),
-        ),
-      ),
-      // 行尾：独立的停止按钮 + 选中勾占位；两者各有自己的点击与语义。
-      trailingIcon: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (recoveryIssue != null)
-            RecoveryIssueIndicator(issue: recoveryIssue),
-          if (recoveryIssue?.canRetry == true)
-            IconButton(
-              key: StudioDriverKeys.retryRecoveryIssue(recoveryIssue!.id),
-              tooltip: context.l10n.runtimeFatalRetry,
-              visualDensity: VisualDensity.compact,
-              iconSize: 18,
-              onPressed: () async {
-                try {
-                  await ref
-                      .read(anyworkClientProvider)
-                      .directoryCommands
-                      .retryRecovery();
-                } on Object catch (error) {
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text(error.toString())));
-                }
-              },
-              icon: const Icon(Icons.refresh),
-            ),
-          _stopControl(agent, stop, summary: summary),
-          Visibility(
-            visible: selected,
-            maintainSize: true,
-            maintainAnimation: true,
-            maintainState: true,
-            child: const Icon(Icons.check, size: _agentCheckSize),
-          ),
-        ],
-      ),
       child: SizedBox(
-        width: rowWidth,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        width: contentWidth,
+        child: Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Tooltip(
-                    message: summary,
-                    child: Text(
-                      summary,
-                      key: StudioDriverKeys.agentTaskSummary(agent.threadId),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-                SizedBox(width: statusGap),
-                SizedBox(
-                  width: statusWidth,
-                  child: Tooltip(
-                    message: status,
-                    child: Text(
-                      status,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: secondaryStyle,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            Tooltip(
-              message: modelTooltip,
-              child: Text(
-                '${roleLabel ?? role} · $modelLabel',
-                key: StudioDriverKeys.agentModel(agent.threadId),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: secondaryStyle,
+            SizedBox(
+              key: ValueKey('agent-selection-slot-${agent.threadId}'),
+              width: _agentCheckSize,
+              child: Visibility(
+                visible: selected,
+                maintainSize: true,
+                maintainAnimation: true,
+                maintainState: true,
+                child: const Icon(Icons.check, size: _agentCheckSize),
               ),
             ),
-            if (stop.action == AgentListStopAction.stopping)
-              Text(
-                context.l10n.agentStopping,
-                key: StudioDriverKeys.agentStopNote(agent.threadId),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: secondaryStyle,
-              )
-            else if (stop.action ==
-                AgentListStopAction.stoppedWaitingScheduling)
-              Text(
-                context.l10n.agentStopWaitingScheduling,
-                key: StudioDriverKeys.agentStopNote(agent.threadId),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: secondaryStyle,
-              ),
-            if (stop.action == AgentListStopAction.stop &&
-                _stopPendingFor(agent.threadId, stop.executionId!) &&
-                _stopUnconfirmedFor(agent))
-              Text(
-                context.l10n.composerBlockerUnknown,
-                key: ValueKey('agent-stop-unconfirmed-${agent.threadId}'),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: secondaryStyle,
-              ),
-            if (stopFailure case final failure?)
-              Text(
-                context.l10n.agentStopFailed(
-                  _stopFailureText(context, failure),
+            const SizedBox(width: _agentRowGap),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsetsDirectional.only(start: indent),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Tooltip(
+                      message: summary,
+                      child: Text(
+                        summary,
+                        key: StudioDriverKeys.agentTaskSummary(agent.threadId),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Tooltip(
+                      message: modelTooltip,
+                      child: Text(
+                        '${roleLabel ?? role} · $modelLabel',
+                        key: StudioDriverKeys.agentModel(agent.threadId),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: secondaryStyle,
+                      ),
+                    ),
+                  ],
                 ),
-                key: ValueKey('agent-stop-failure-${agent.threadId}'),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(color: context.colors.error),
               ),
+            ),
+            const SizedBox(width: _agentRowGap),
+            SizedBox(
+              key: ValueKey('agent-status-slot-${agent.threadId}'),
+              width: statusWidth,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: _agentRecoverySize,
+                    height: _agentActionSize,
+                    child: recoveryIssue == null
+                        ? null
+                        : recoveryIssue.canRetry
+                        ? IconButton(
+                            key: StudioDriverKeys.retryRecoveryIssue(
+                              recoveryIssue.id,
+                            ),
+                            tooltip: context.l10n.runtimeFatalRetry,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: _agentRecoverySize,
+                              height: _agentActionSize,
+                            ),
+                            iconSize: 18,
+                            onPressed: () async {
+                              try {
+                                await ref
+                                    .read(anyworkClientProvider)
+                                    .directoryCommands
+                                    .retryRecovery();
+                              } on Object catch (error) {
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(error.toString())),
+                                );
+                              }
+                            },
+                            icon: RecoveryIssueIndicator(issue: recoveryIssue),
+                          )
+                        : Center(
+                            child: RecoveryIssueIndicator(issue: recoveryIssue),
+                          ),
+                  ),
+                  Expanded(
+                    child: Tooltip(
+                      message: statusDetail,
+                      child: Text(
+                        status,
+                        semanticsLabel: statusDetail,
+                        key: statusKey,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                        style: secondaryStyle?.copyWith(
+                          color: stopFailure != null
+                              ? context.colors.error
+                              : unconfirmed
+                              ? context.statusColors.warning
+                              : _statusColor(context, agent),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: _agentRowGap),
+            SizedBox.square(
+              key: ValueKey('agent-action-slot-${agent.threadId}'),
+              dimension: _agentActionSize,
+              child: _stopControl(agent, stop, summary: summary),
+            ),
           ],
         ),
       ),
@@ -621,7 +655,15 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
             : const Icon(Icons.stop_circle_outlined),
       );
     }
-    // 正在停止与等待主智能体调度的行没有可点操作，只在行内说明状态。
+    if (stop.action == AgentListStopAction.stopping) {
+      return const Center(
+        child: SizedBox.square(
+          dimension: 14,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    // 等待主智能体调度的行没有可点操作；外层操作槽始终保留。
     return const SizedBox.shrink();
   }
 }
@@ -630,11 +672,13 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
 const double _agentMenuMaxHeight = 320;
 
 /// 任务概要与状态文本之间的行内间距。
-const double _agentRowGap = 12;
+const double _agentRowGap = 8;
 
 /// 单层层级缩进的步长，以及行尾选中勾占位宽度。
 const double _agentIndentStep = 12;
 const double _agentCheckSize = 18;
+const double _agentActionSize = 36;
+const double _agentRecoverySize = 24;
 
 String _stopFailureText(BuildContext context, Object error) {
   final reason = studioFailureReason(error);

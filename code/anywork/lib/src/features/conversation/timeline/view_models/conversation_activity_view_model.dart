@@ -21,7 +21,7 @@ ConversationActivityState? projectConversationActivityState({
     storage: storage,
     interaction: interaction,
   );
-  return view == null
+  return view == null && current == null
       ? null
       : ConversationActivityState(view: view, current: current);
 }

@@ -1163,10 +1163,41 @@ impl ThreadHandle {
     /// # Errors
     /// Returns model close failure or an unavailable owner.
     pub async fn close(&self) -> Result<(), ThreadError> {
-        self.interrupt.begin_close();
+        self.close_with_purpose(crate::thread::owner::ClosePurpose::Preserve)
+            .await
+    }
+
+    /// Stops and joins owned work without forming a recovery stop or flushing cold storage.
+    ///
+    /// The caller must already have sealed writes and retained responsibility for deleting this
+    /// Thread's durable content. Failed resource cleanup keeps the owner available for retry.
+    ///
+    /// # Errors
+    /// Returns resource close failure or an unavailable owner.
+    pub async fn close_for_deletion(&self) -> Result<(), ThreadError> {
+        self.close_with_purpose(crate::thread::owner::ClosePurpose::Delete)
+            .await
+    }
+
+    /// Seals deletion and cancels running work before the host joins its other producers.
+    ///
+    /// This only requests shutdown. The caller must still await [`Self::close_for_deletion`] to
+    /// release the real model, tool and task owners, including retryable cleanup failures.
+    pub fn prepare_close_for_deletion(&self) {
+        self.interrupt.begin_delete();
+    }
+
+    async fn close_with_purpose(
+        &self,
+        purpose: crate::thread::owner::ClosePurpose,
+    ) -> Result<(), ThreadError> {
+        match purpose {
+            crate::thread::owner::ClosePurpose::Preserve => self.interrupt.begin_close(),
+            crate::thread::owner::ClosePurpose::Delete => self.interrupt.begin_delete(),
+        }
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::Close(reply))
+            .send(Command::Close(purpose, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

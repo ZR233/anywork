@@ -205,7 +205,15 @@ final class _Harness {
     );
   }
 
-  Widget host({ConversationActivityView? view, Widget? dock}) {
+  Widget host({
+    ConversationActivityView? view = const ConversationActivityView(
+      identity: 'active',
+      kind: ConversationActivityKind.thinking,
+      summary: '思考中',
+      expandable: true,
+    ),
+    Widget? dock,
+  }) {
     for (final unit in presentation.live.value) {
       unit.expansion.expanded ??= false;
     }
@@ -213,14 +221,7 @@ final class _Harness {
       key: ObjectKey(content),
       current: current,
       content: content,
-      view:
-          view ??
-          const ConversationActivityView(
-            identity: 'active',
-            kind: ConversationActivityKind.thinking,
-            summary: '思考中',
-            expandable: true,
-          ),
+      view: view,
       units: presentation.live,
       images: images,
       readAttachment: (_) async => Uint8List(0),
@@ -864,6 +865,17 @@ void main() {
       await tester.pump();
       expect(find.text('旧文档'), findsOneWidget);
       final borrowed = h.display!.windows.single;
+      final display = h.display;
+      await tester.pumpWidget(h.host(view: null));
+      expect(h.display, same(display));
+      expect(h.display!.windows.single, same(borrowed));
+      expect(h.content.scopes, [old]);
+      expect(old.active, isTrue);
+      expect(old.watches, hasLength(1));
+      expect(find.byType(ConversationActivityBar), findsOneWidget);
+      expect(find.byType(ConversationResponseView), findsOneWidget);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(find.text('旧文档'), findsOneWidget);
       await h.accept([_textItem()]);
       await tester.pumpWidget(h.host());
       expect(h.content.scopes, [old]);
@@ -893,6 +905,11 @@ void main() {
       await tester.idle();
       await tester.pump();
       expect(find.textContaining('真实读取失败'), findsOneWidget);
+      await h.accept([]);
+      await tester.pumpWidget(h.host(view: null));
+      expect(h.display, same(display));
+      expect(h.display!.windows, isEmpty);
+      expect(find.byType(ConversationActivityBar), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(h.content.scopes.every((scope) => scope.closed), isTrue);

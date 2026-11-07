@@ -5851,6 +5851,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get agentStopping => 'Stopping';
 
   @override
+  String get agentListStatusWaiting => 'Waiting';
+
+  @override
+  String get agentListStatusFailed => 'Failed';
+
+  @override
+  String get agentListStatusUnknown => 'Unknown';
+
+  @override
+  String get agentListStatusApproval => 'Approval';
+
+  @override
+  String get agentListStatusInput => 'Input';
+
+  @override
   String get agentStopWaitingScheduling =>
       'Stopped, waiting for the main agent to schedule';
 

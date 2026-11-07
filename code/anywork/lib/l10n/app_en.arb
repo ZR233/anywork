@@ -2826,6 +2826,11 @@
     }
   },
   "agentStopping": "Stopping",
+  "agentListStatusWaiting": "Waiting",
+  "agentListStatusFailed": "Failed",
+  "agentListStatusUnknown": "Unknown",
+  "agentListStatusApproval": "Approval",
+  "agentListStatusInput": "Input",
   "agentStopWaitingScheduling": "Stopped, waiting for the main agent to schedule",
   "agentStopFailed": "Stop was not accepted: {message}",
   "@agentStopFailed": {

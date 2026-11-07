@@ -661,28 +661,35 @@ impl CallsStore {
                 .await
                 .context("calls writer stopped before deletion drain")?;
         }
-        let mut log = self.writer.log.lock().await;
         let ids = thread_ids.iter().cloned().collect::<BTreeSet<_>>();
-        log.delete_threads(&ids).await?;
-        // Rebuild is also the crash recovery path for a segment replaced before its index commit.
-        log.rebuild_index(&self.writer.db).await?;
-        let tx = self.writer.db.begin().await?;
-        for id in thread_ids {
-            for table in [
-                "call_log_index",
-                "call_usage_summary",
-                "performance_samples",
-                "legacy_call_fences",
-                "legacy_auxiliary_usage",
-            ] {
-                tx.execute_raw(statement(
-                    &format!("DELETE FROM {table} WHERE thread_id=?"),
-                    vec![id.clone().into()],
-                ))
-                .await?;
+        // Once mutation starts it must retain the lock across atomic replacement, even if
+        // the caller is cancelled. close() also waits for this same log lock.
+        let writer = self.writer.clone();
+        let thread_ids = thread_ids.to_vec();
+        tokio::spawn(async move {
+            let mut log = writer.log.lock().await;
+            log.delete_threads(&writer.db, &ids).await?;
+            let tx = writer.db.begin().await?;
+            for id in &thread_ids {
+                for table in [
+                    "call_log_index",
+                    "call_usage_summary",
+                    "performance_samples",
+                    "legacy_call_fences",
+                    "legacy_auxiliary_usage",
+                ] {
+                    tx.execute_raw(statement(
+                        &format!("DELETE FROM {table} WHERE thread_id=?"),
+                        vec![id.clone().into()],
+                    ))
+                    .await?;
+                }
             }
-        }
-        tx.commit().await?;
+            tx.commit().await?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("failed to join calls deletion")??;
         Ok(())
     }
 
@@ -1209,6 +1216,7 @@ async fn run_writer(shared: Arc<CallsWriter>) {
 
 /// 清理日志并回收索引；周期任务与启动路径共用。
 async fn maintenance(db: &DatabaseConnection, log: &mut CallLog) -> Result<()> {
+    log.repair_pending_index(db).await?;
     let outcome = log.cleanup(crate::studio::unix_seconds()).await;
     if !outcome.removed.is_empty() {
         let tx = db.begin().await?;
@@ -1236,6 +1244,20 @@ async fn apply_batch(
     shared
         .observation
         .lock_acquired(false, lock_started.elapsed());
+    // Locator recovery is a prerequisite only for diagnostics, never for absolute costs.
+    // Recovery commits independently before this batch; its pending segment responsibility
+    // stays with the log on failure, while rejected diagnostics report the original error.
+    let locator_error = if pending
+        .iter()
+        .any(|entry| !matches!(&entry.mutation, CallMutation::Summary(_)))
+    {
+        log.repair_pending_index(&shared.db)
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
     let tx = shared.db.begin().await?;
     let mut completed = 0;
     let mut failures = Vec::new();
@@ -1288,7 +1310,17 @@ async fn apply_batch(
                     }
                 }
             }
-            _ => apply_live_mutation(shared, &mut log, &tx, &entry.mutation).await,
+            _ => {
+                if let Some(error) = &locator_error {
+                    // Do not defer the batch suffix behind failed diagnostic recovery: it may
+                    // contain reliable Summary projections. The next diagnostic batch retries
+                    // the still-pending repair before consulting identities or appending bodies.
+                    failures.push(error.clone());
+                    completed += 1;
+                    continue;
+                }
+                apply_live_mutation(shared, &mut log, &tx, &entry.mutation).await
+            }
         };
         match result {
             Ok(change) => {
@@ -1777,11 +1809,41 @@ mod storage_fault_tests {
         let store = CallsStore::open(&path).await?;
         store.record_effect(&attempt_effect("deleted", "first", 1));
         store.record_effect(&attempt_effect("neighbor", "retained", 1));
-        store.record_effect(&attempt_effect("deleted", "second", 2));
+        let mut progress = store.subscribe_materials();
+        wait_material_ticket(&mut progress, store.admitted_ticket()).await?;
+        store.writer.log.lock().await.close();
+        // The same identity has a historical body that is no longer in the locator index.
+        store.record_effect(&attempt_effect("deleted", "first", 2));
+        wait_material_ticket(&mut progress, store.admitted_ticket()).await?;
+        {
+            let mut log = store.writer.log.lock().await;
+            let now = crate::studio::unix_seconds();
+            let (line, _) = event::encode_record(&CallLogRecord {
+                version: event::CALL_LOG_RECORD_VERSION,
+                kind: "attempt".into(),
+                thread_id: "unindexed-child".into(),
+                root_thread_id: Some("deleted".into()),
+                call_id: "orphan-child-body".into(),
+                recorded_at: now,
+                ..Default::default()
+            })?;
+            // A complete orphan append must also be deleted by its root identity.
+            log.append(event::record_day(now), now, &line).await?;
+            log.sync_pending().await?;
+            log.close();
+        }
+        store.record_effect(&attempt_effect("neighbor", "retained", 2));
+        wait_material_ticket(&mut progress, store.admitted_ticket()).await?;
+        let before = indexed_bodies(&store).await?;
+        assert!(before.iter().any(|record| record.thread_id == "neighbor"));
         store.delete_threads(&["deleted".into()]).await?;
+        let retained = indexed_bodies(&store).await?;
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].thread_id, "neighbor");
+        assert_eq!(retained[0].revision, 2);
         // A late producer uses the original writer; its stale fact must not recreate a body.
         store.record_effect(&attempt_effect("deleted", "late", 3));
-        store.record_effect(&attempt_effect("neighbor", "new", 2));
+        store.record_effect(&attempt_effect("neighbor", "new", 3));
         store.close().await?;
         let reopened = CallsStore::open(&path).await?;
         let rows = reopened
@@ -1797,13 +1859,397 @@ mod storage_fault_tests {
             rows.iter()
                 .all(|row| row.try_get::<String>("", "thread_id").unwrap() == "neighbor")
         );
+        assert_eq!(indexed_bodies(&reopened).await?.len(), 2);
         let mut logs = tokio::fs::read_dir(temp.path().join("logs")).await?;
         while let Some(entry) = logs.next_entry().await? {
             let text = tokio::fs::read_to_string(entry.path()).await?;
             assert!(!text.contains("\"threadId\":\"deleted\""));
             assert!(!text.contains("\"callId\":\"late\""));
+            assert!(!text.contains("orphan-child-body"));
         }
         reopened.close().await?;
+        Ok(())
+    }
+
+    /// Exercise actual byte offsets and hashes, rather than only counting locator rows.
+    async fn indexed_bodies(store: &CallsStore) -> Result<Vec<CallLogRecord>> {
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement("SELECT * FROM call_log_index", vec![]))
+            .await?;
+        let dir = store.writer.log.lock().await.root_dir().join("logs");
+        let mut records = Vec::new();
+        for row in rows {
+            let segment: String = row.try_get("", "segment")?;
+            let offset = usize::try_from(row.try_get::<i64>("", "offset")?)?;
+            let length = usize::try_from(row.try_get::<i64>("", "length")?)?;
+            let bytes = tokio::fs::read(dir.join(segment)).await?;
+            let text = std::str::from_utf8(&bytes[offset..offset + length])?;
+            let record = event::decode_record(text)?;
+            assert_eq!(record.thread_id, row.try_get::<String>("", "thread_id")?);
+            assert_eq!(record.call_id, row.try_get::<String>("", "call_id")?);
+            assert_eq!(record.revision, row.try_get::<i64>("", "revision")?);
+            assert_eq!(
+                pl_core::context::content_hash(text.as_bytes()),
+                row.try_get::<String>("", "content_hash")?
+            );
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_calls_preserves_unrelated_segments_and_performance_samples()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store.writer.log.lock().await.close();
+        let (_, failures, deferred) =
+            apply_batch(&store.writer, &batch(vec![billing("unrelated")?])).await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT segment FROM call_log_index WHERE thread_id='unrelated'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        let segment: String = row.try_get("", "segment")?;
+        let path = temp.path().join("logs").join(segment);
+        let before = tokio::fs::read(&path).await?;
+        let modified = tokio::fs::metadata(&path).await?.modified()?;
+        store.writer.db.execute_unprepared(
+            "UPDATE performance_samples SET output_tokens=1234 WHERE thread_id='neighbor';
+             CREATE TRIGGER forbid_unrelated_delete BEFORE DELETE ON call_log_index
+             WHEN OLD.thread_id='unrelated' BEGIN SELECT RAISE(ABORT,'unrelated locator deleted'); END;
+             CREATE TRIGGER forbid_unrelated_insert BEFORE INSERT ON call_log_index
+             WHEN NEW.thread_id='unrelated' BEGIN SELECT RAISE(ABORT,'unrelated locator replayed'); END;
+             CREATE TRIGGER forbid_unrelated_update BEFORE UPDATE ON call_log_index
+             WHEN OLD.thread_id='unrelated' BEGIN SELECT RAISE(ABORT,'unrelated locator updated'); END;
+             CREATE TRIGGER forbid_sample_insert BEFORE INSERT ON performance_samples
+             BEGIN SELECT RAISE(ABORT,'performance replayed'); END;
+             CREATE TRIGGER forbid_sample_update BEFORE UPDATE ON performance_samples
+             BEGIN SELECT RAISE(ABORT,'performance updated'); END;"
+        ).await?;
+        store.delete_threads(&["deleted".into()]).await?;
+        // The second deletion is an idempotent retry after all bodies have gone.
+        store.delete_threads(&["deleted".into()]).await?;
+        assert_eq!(tokio::fs::read(&path).await?, before);
+        assert_eq!(tokio::fs::metadata(path).await?.modified()?, modified);
+        let records = indexed_bodies(&store).await?;
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.thread_id != "deleted"));
+        let samples = store.recent_performance_samples(100).await?;
+        assert_eq!(samples.len(), 2);
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT output_tokens FROM performance_samples WHERE thread_id='neighbor'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        assert_eq!(row.try_get::<i64>("", "output_tokens")?, 1234);
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_calls_failed_segment_repair_retries_before_next_write() -> Result<()>
+    {
+        permanent_delete_calls_failed_segment_repair(false).await
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_calls_failed_segment_repair_recovers_after_restart() -> Result<()> {
+        permanent_delete_calls_failed_segment_repair(true).await
+    }
+
+    #[tokio::test]
+    async fn failed_locator_repair_does_not_starve_absolute_accounting() -> Result<()> {
+        assert_failed_locator_repair_does_not_starve_absolute_accounting(
+            "injected persistent locator failure",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn busy_locator_repair_does_not_starve_absolute_accounting() -> Result<()> {
+        assert_failed_locator_repair_does_not_starve_absolute_accounting("database is busy").await
+    }
+
+    async fn assert_failed_locator_repair_does_not_starve_absolute_accounting(
+        message: &str,
+    ) -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let pending = batch(vec![billing("deleted")?, billing("neighbor")?]);
+        let (_, failures, deferred) = apply_batch(&store.writer, &pending).await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store
+            .writer
+            .db
+            .execute_unprepared(&format!(
+                "CREATE TRIGGER reject_locator_repair BEFORE INSERT ON call_log_index
+             WHEN NEW.thread_id='neighbor' BEGIN
+                 SELECT RAISE(ABORT,'{message}');
+             END;"
+            ))
+            .await?;
+        assert!(
+            store
+                .delete_threads(&["deleted".into()])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains(message)
+        );
+        assert!(indexed_bodies(&store).await?.is_empty());
+
+        let mut materials = store.subscribe_materials();
+        // Queue diagnostics before the reliable projection so the test exercises the
+        // real writer's mixed-batch error isolation and receipt publication.
+        store.record_effect(&attempt_effect("another-session", "blocked-diagnostic", 1));
+        let mut projection = SessionUsageProjection {
+            root_thread_id: "another-root".into(),
+            thread_id: "another-session".into(),
+            revision: 9,
+            has_unpriced_usage: false,
+            purpose_costs: vec![PurposeUsageProjection {
+                purpose: None,
+                estimated_costs: vec![RuntimeCostAmount {
+                    currency: "USD".into(),
+                    amount: 4.25,
+                }],
+            }],
+        };
+        store.replace_session_usage(projection.clone())?;
+        store.start().await;
+        wait_material_ticket(&mut materials, store.admitted_ticket()).await?;
+        assert!(store.statistics_gap());
+        assert!(store.last_error().unwrap().contains(message));
+        assert_eq!(materials.borrow().versions.costs, 1);
+        assert_eq!(materials.borrow().versions.performance, 1);
+        assert_eq!(
+            store.session_cost_rollups().await?[0].estimated_costs[0].amount,
+            4.25
+        );
+        assert!(indexed_bodies(&store).await?.is_empty());
+
+        // The fault remains enabled for a second, Summary-only batch.
+        projection.revision = 10;
+        projection.purpose_costs[0].estimated_costs[0].amount = 6.5;
+        store.replace_session_usage(projection)?;
+        wait_material_ticket(&mut materials, store.admitted_ticket()).await?;
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT amount,revision FROM call_usage_summary WHERE thread_id='another-session'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        assert_eq!(row.try_get::<f64>("", "amount")?, 6.5);
+        assert_eq!(row.try_get::<i64>("", "revision")?, 10);
+        assert_eq!(materials.borrow().versions.costs, 2);
+        assert!(
+            store
+                .writer
+                .log
+                .lock()
+                .await
+                .repair_pending_index(&store.writer.db)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains(message)
+        );
+
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "DROP TRIGGER reject_locator_repair;
+             CREATE TRIGGER forbid_sample_replay BEFORE INSERT ON performance_samples
+             BEGIN SELECT RAISE(ABORT,'performance replayed'); END;",
+            )
+            .await?;
+        let CallMutation::Billing(neighbor) = &pending[1].mutation else {
+            unreachable!()
+        };
+        let retry = batch(vec![CallMutation::Billing(Box::new(PreparedRecord::new(
+            neighbor.record.clone(),
+        )?))]);
+        let (completed, failures, deferred) = apply_batch(&store.writer, &retry).await?;
+        assert_eq!(completed, 1);
+        assert!(failures.is_empty() && deferred.is_none(), "{failures:?}");
+        let records = indexed_bodies(&store).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].thread_id, "neighbor");
+        assert_eq!(materials.borrow().versions.costs, 2);
+        assert_eq!(materials.borrow().versions.performance, 1);
+        store.delete_threads(&["deleted".into()]).await?;
+        assert_eq!(store.recent_performance_samples(100).await?.len(), 1);
+        store.close().await?;
+        Ok(())
+    }
+
+    async fn permanent_delete_calls_failed_segment_repair(restart: bool) -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::prepare(&path).await?;
+        let pending = batch(vec![billing("deleted")?, billing("neighbor")?]);
+        let (_, failures, deferred) = apply_batch(&store.writer, &pending).await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "CREATE TABLE repair_parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE repair_probe(parent INTEGER REFERENCES repair_parent(id)
+                 DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER reject_locator_repair AFTER INSERT ON call_log_index
+             WHEN NEW.thread_id='neighbor' BEGIN INSERT INTO repair_probe VALUES(1); END;",
+            )
+            .await?;
+        let error = store.delete_threads(&["deleted".into()]).await.unwrap_err();
+        assert!(error.to_string().contains("FOREIGN KEY constraint failed"));
+        // Replacement completed, but no old offset is allowed to survive a failed commit.
+        assert!(indexed_bodies(&store).await?.is_empty());
+        let mut entries = tokio::fs::read_dir(temp.path().join("logs")).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            assert!(
+                !tokio::fs::read_to_string(entry.path())
+                    .await?
+                    .contains("\"threadId\":\"deleted\"")
+            );
+        }
+        store
+            .writer
+            .db
+            .execute_unprepared("DROP TRIGGER reject_locator_repair")
+            .await?;
+        let store = if restart {
+            store.close().await?;
+            CallsStore::prepare(&path).await?
+        } else {
+            store
+        };
+        // Repair precedes identity deduplication: retrying the same neighbor billing must
+        // not append it again or replay its performance sample.
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "CREATE TRIGGER forbid_sample_replay BEFORE INSERT ON performance_samples
+             BEGIN SELECT RAISE(ABORT,'performance replayed'); END;",
+            )
+            .await?;
+        let CallMutation::Billing(neighbor) = &pending[1].mutation else {
+            unreachable!()
+        };
+        let retry = batch(vec![CallMutation::Billing(Box::new(PreparedRecord::new(
+            neighbor.record.clone(),
+        )?))]);
+        let (_, failures, deferred) = apply_batch(&store.writer, &retry).await?;
+        assert!(failures.is_empty() && deferred.is_none(), "{failures:?}");
+        assert_eq!(indexed_bodies(&store).await?.len(), 1);
+        store.delete_threads(&["deleted".into()]).await?;
+        assert_eq!(store.recent_performance_samples(100).await?.len(), 1);
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_calls_invalidation_failure_preserves_original_locators() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "CREATE TABLE invalidation_parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE invalidation_probe(parent INTEGER REFERENCES invalidation_parent(id)
+                 DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER reject_invalidation AFTER DELETE ON call_log_index
+             BEGIN INSERT INTO invalidation_probe VALUES(1); END;",
+            )
+            .await?;
+        let error = store.delete_threads(&["deleted".into()]).await.unwrap_err();
+        assert!(error.to_string().contains("FOREIGN KEY constraint failed"));
+        // The invalidation commit failed, so replacement must not have started.
+        assert_eq!(indexed_bodies(&store).await?.len(), 2);
+        store
+            .writer
+            .db
+            .execute_unprepared("DROP TRIGGER reject_invalidation")
+            .await?;
+        store.delete_threads(&["deleted".into()]).await?;
+        let records = indexed_bodies(&store).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].thread_id, "neighbor");
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_calls_cancellation_keeps_replacement_and_index_serialized()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store
+            .writer
+            .db
+            .execute_unprepared("CREATE TABLE deletion_blocker(value INTEGER)")
+            .await?;
+        let blocker = store.writer.db.begin().await?;
+        blocker
+            .execute_unprepared("INSERT INTO deletion_blocker VALUES(1)")
+            .await?;
+        let deleting = store.clone();
+        let caller =
+            tokio::spawn(async move { deleting.delete_threads(&["deleted".into()]).await });
+        // The SQLite write lock holds the deletion inside its mutation task.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.writer.log.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        blocker.rollback().await?;
+        // Queue behind the owned deletion task, rather than racing its blocking file write.
+        drop(store.writer.log.lock().await);
+        let records = indexed_bodies(&store).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].thread_id, "neighbor");
+        assert_eq!(store.recent_performance_samples(100).await?.len(), 1);
+        store.close().await?;
         Ok(())
     }
 

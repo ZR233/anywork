@@ -1026,13 +1026,30 @@ final class _ConceptScene {
       final ids = <String>{};
       var olderPageCommands = 0;
       while (true) {
+        await _until(tester, () {
+          expect(display.isCurrent, isTrue);
+          expect(display.expanded, isTrue);
+          if (display.error case final error?) throw error;
+          return !display.loading;
+        }, 'original group member window is ready');
         ids.addAll(display.atoms.map((atom) => atom.id));
-        if (display.before == null && !display.loading) break;
+        if (display.before == null) break;
         final before = display.before;
         final older = find.descendant(
           of: observed.groupRow(id),
           matching: find.byKey(const ValueKey('timeline-children-load-older')),
         );
+        // SDK admission precedes the frame that installs the enabled control.
+        // Keep the original window and cursor while waiting for that same UI.
+        await _until(tester, () {
+          expect(display.isCurrent, isTrue);
+          expect(display.before, before);
+          if (display.error case final error?) throw error;
+          final matches = older.evaluate().length;
+          expect(matches, lessThanOrEqualTo(1));
+          return matches == 1 &&
+              tester.widget<TextButton>(older).onPressed != null;
+        }, 'enabled original group pagination control');
         await observed.tap(older);
         olderPageCommands++;
         await _until(tester, () {
@@ -1416,7 +1433,14 @@ final class _ConceptScene {
     await _until(tester, () => !lease.hasOlder, 'empty conversation EOF');
     expect(lease.controller.messages, isEmpty);
     expect(live, isEmpty);
-    expect(find.byType(ConversationCurrentConnector), findsNothing);
+    // Keep the original current observer mounted across activity transitions,
+    // while an idle empty conversation must render no content or activity.
+    expect(find.byType(ConversationCurrentConnector), findsOneWidget);
+    expect(lease.currentDisplay!.isCurrent, isTrue);
+    expect(lease.currentDisplay!.windows, isEmpty);
+    expect(find.byType(ConversationActivityBar), findsNothing);
+    expect(find.byType(TimelineActivityRow), findsNothing);
+    expect(find.byType(TimelineDisplayUnitView), findsNothing);
     await capture('empty');
     final evidence = <String, Object?>{};
     report['conversationCredit'] = evidence;
@@ -1585,15 +1609,16 @@ final class _ConceptScene {
     await _record('same-member-window-terminal');
     expect(quiet.item.admissionClosed, isFalse);
     expect(quiet.live, isTrue);
+    final quietHeader = find.byKey(ValueKey('source-unit-header:$g1'));
+    expect(quietHeader, findsOneWidget);
+    final quietRow = tester.widget<TimelineActivityRow>(quietHeader);
     expect(
-      tester
-          .widget<TimelineActivityRow>(
-            find.byKey(ValueKey('source-unit-header:$g1')),
-          )
-          .label,
-      '思考中',
-      reason: '成员已终态但执行仍在继续时，标题沿用现有用户文案',
+      quietRow.label,
+      '梳理会话共享组件与锁定边界',
+      reason: '成员已终态但执行仍在继续时，工作组标题保留原思考摘要',
     );
+    expect(quietRow.active, isFalse);
+    expect(quietRow.expanded, isTrue);
     expect(main.where((unit) => unit.id == g1), isEmpty);
     expect(
       membersOf(quiet.id)
@@ -2056,6 +2081,13 @@ final class _ConceptScene {
       ),
       findsOneWidget,
       reason: '压缩沿用唯一的实时状态栏，不创建第二个面板',
+    );
+    expect(
+      find.descendant(
+        of: currentConnector,
+        matching: find.byType(ConversationActivityStatus),
+      ),
+      findsNothing,
     );
     final rowFinder = currentRows(unit);
     expect(rowFinder, findsOneWidget);
@@ -2943,16 +2975,43 @@ final class _ConceptScene {
       final item = presentation(itemValue);
       await showUnit(itemValue.id);
       final card = itemFinder(itemValue.id);
-      await _until(
-        tester,
-        () => item.attachments.every(
-          (attachment) => find
-              .byKey(StudioDriverKeys.viewImageThumbnail(attachment.id))
-              .evaluate()
-              .isNotEmpty,
-        ),
-        'three decoded real user input thumbnails',
-      );
+      try {
+        await _until(tester, () {
+          for (final view in tester.widgetList<TimelineImageView>(
+            find.descendant(of: card, matching: find.byType(TimelineImageView)),
+          )) {
+            if (view.error case final error?) throw error;
+          }
+          return item.attachments.every(
+            (attachment) => find
+                .byKey(StudioDriverKeys.viewImageThumbnail(attachment.id))
+                .evaluate()
+                .isNotEmpty,
+          );
+        }, 'three decoded real user input thumbnails');
+      } catch (error) {
+        report['inputThumbnailFailure'] = {
+          'itemId': itemValue.id,
+          'cardCount': card.evaluate().length,
+          'sameLease': identical(lease, originalLease),
+          'error': error.toString(),
+          'views': [
+            for (final view in tester.widgetList<TimelineImageView>(
+              find.byType(TimelineImageView, skipOffstage: false),
+            ))
+              if (view.itemId == itemValue.id)
+                {
+                  'attachmentId': view.attachment.id,
+                  'active': view.active,
+                  'bytes': view.bytes?.length,
+                  'width': view.width,
+                  'height': view.height,
+                  'error': view.error?.toString(),
+                },
+          ],
+        };
+        rethrow;
+      }
       report['imageInput'] = input.verifyHorizontalLayout(
         tester,
         item: itemValue,

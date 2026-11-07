@@ -68,6 +68,8 @@ pub(super) struct CallLog {
     total_bytes: u64,
     next_sequence: u64,
     degraded: Option<String>,
+    /// Only retry scheduling; JSONL remains the source of locator contents.
+    unindexed_segments: BTreeSet<String>,
     #[cfg(test)]
     pub(super) fail_next_sync: bool,
 }
@@ -109,6 +111,7 @@ impl CallLog {
                     total_bytes: 0,
                     next_sequence: 0,
                     degraded: Some(error.to_string()),
+                    unindexed_segments: BTreeSet::new(),
                     #[cfg(test)]
                     fail_next_sync: false,
                 });
@@ -129,6 +132,7 @@ impl CallLog {
             total_bytes,
             next_sequence,
             degraded: None,
+            unindexed_segments: BTreeSet::new(),
             #[cfg(test)]
             fail_next_sync: false,
         };
@@ -340,12 +344,18 @@ impl CallLog {
         outcome
     }
 
-    /// Rebuilds the disposable locator index from complete retained records after a crash.
-    pub(super) async fn delete_threads(&mut self, ids: &BTreeSet<String>) -> Result<()> {
+    /// Removes every body revision, updating locators only for segments that change.
+    pub(super) async fn delete_threads(
+        &mut self,
+        db: &DatabaseConnection,
+        ids: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.repair_pending_index(db).await?;
         self.sync_pending().await?;
         self.current.take();
         let mut segments = list_segments(&self.dir).await?;
         segments.sort_by_key(|segment| (segment.day, segment.seq));
+        self.total_bytes = segments.iter().map(|segment| segment.len).sum();
         for segment in segments {
             ensure!(
                 segment.len <= SEGMENT_MAX_BYTES,
@@ -370,17 +380,62 @@ impl CallLog {
                 }
             }
             if retained != bytes {
+                // Invalidate before replacing: an error or crash can leave locators missing,
+                // but never leave old offsets pointing into a different retained record.
+                // The caller owns the log lock until the replacement task has finished.
+                self.unindexed_segments.insert(segment.name.clone());
+                let tx = db.begin().await?;
+                super::prune_index(&tx, std::slice::from_ref(&segment.name)).await?;
+                tx.commit().await?;
+                let retained_len = retained.len() as u64;
                 tokio::task::spawn_blocking(move || {
                     pl_tool::workspace::write_file_atomically(&path, &retained)
                 })
                 .await??;
+                self.total_bytes = self.total_bytes.saturating_sub(segment.len - retained_len);
+                self.repair_pending_index(db).await?;
             }
         }
-        self.total_bytes = list_segments(&self.dir)
-            .await?
-            .iter()
-            .map(|segment| segment.len)
-            .sum();
+        Ok(())
+    }
+
+    /// Run under the writer's log lock before any mutation consults locator identities.
+    /// Failed commits retain retry responsibility; restart uses the existing full recovery.
+    pub(super) async fn repair_pending_index(&mut self, db: &DatabaseConnection) -> Result<()> {
+        while let Some(segment) = self.unindexed_segments.first().cloned() {
+            let path = self.dir.join(&segment);
+            ensure!(
+                tokio::fs::metadata(&path).await?.len() <= SEGMENT_MAX_BYTES,
+                "oversized diagnostic segment"
+            );
+            let bytes = tokio::fs::read(path).await?;
+            let tx = db.begin().await?;
+            super::prune_index(&tx, std::slice::from_ref(&segment)).await?;
+            let mut offset = 0usize;
+            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+                ensure!(
+                    line.last() == Some(&b'\n'),
+                    "incomplete call record during locator repair"
+                );
+                let text = std::str::from_utf8(&line[..line.len() - 1])?;
+                let record = event::decode_record(text)?;
+                super::index_record(
+                    &tx,
+                    &record,
+                    &pl_core::context::content_hash(text.as_bytes()),
+                    &AppendedRecord {
+                        segment: segment.clone(),
+                        offset: offset as u64,
+                        length: text.len() as u64,
+                    },
+                    record.truncated,
+                )
+                .await?;
+                offset += line.len();
+            }
+            tx.commit().await?;
+            self.unindexed_segments.remove(&segment);
+        }
         Ok(())
     }
 

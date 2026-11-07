@@ -341,6 +341,8 @@ impl Progress {
 }
 
 struct WorkerState {
+    deletion: tokio_util::sync::CancellationToken,
+    join_failure: std::sync::Mutex<Option<Arc<anyhow::Error>>>,
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
     >,
@@ -382,19 +384,31 @@ impl Drop for Observation {
 
 impl Observation {
     async fn join(&self) -> Result<()> {
+        self.join_for_purpose(crate::thread_assembler::ClosePurpose::Preserve)
+            .await
+    }
+
+    async fn join_for_purpose(&self, purpose: crate::thread_assembler::ClosePurpose) -> Result<()> {
         let mut slot = self.task.lock().await;
         if let Some(task) = slot.as_mut() {
             let joined = task.await;
             *slot = None;
             if let Err(error) = joined {
                 let error = Arc::new(anyhow::Error::new(error));
+                *self
+                    .state
+                    .join_failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
                 self.state.progress.send_modify(|progress| {
                     progress.finished = true;
                     progress.error = Some(error.clone());
                 });
                 bail!("Thread product observer join failed: {error:#}");
             }
-            if !self.state.progress.borrow().finished {
+            if purpose == crate::thread_assembler::ClosePurpose::Preserve
+                && !self.state.progress.borrow().finished
+            {
                 let error = Arc::new(anyhow::anyhow!(
                     "Thread product observer ended without its final durable projection"
                 ));
@@ -403,6 +417,18 @@ impl Observation {
                     progress.error = Some(error.clone());
                 });
             }
+        }
+        if let Some(error) = self
+            .state
+            .join_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            bail!("Thread product observer join failed: {error:#}");
+        }
+        if purpose == crate::thread_assembler::ClosePurpose::Delete {
+            return Ok(());
         }
         if let Some(error) = self.state.progress.borrow().error.as_ref() {
             bail!("Thread product observer failed: {error:#}");
@@ -529,7 +555,7 @@ impl ThreadObservations {
                     ThreadObservations(owner).observe(id, thread);
                 }
             },
-            move |id| {
+            move |id, purpose| {
                 let owner = draining.clone();
                 let thread_factory = thread_factory.clone();
                 Box::pin(async move {
@@ -537,7 +563,8 @@ impl ThreadObservations {
                         .upgrade()
                         .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
                     let observations = ThreadObservations(owner);
-                    observations
+                    if purpose == crate::thread_assembler::ClosePurpose::Preserve {
+                        observations
                         .synchronize(Some(&id))
                         .await
                         .map_err(|source| {
@@ -546,10 +573,11 @@ impl ThreadObservations {
                                 source: source.into_boxed_dyn_error(),
                             }
                         })?;
+                    }
                     if !observations.0.projector.threads.is_report_receiver(&id) {
                         thread_factory.forget_tool_binding(&id).await;
                     }
-                    observations.drain(&id).await.map_err(|source| {
+                    observations.drain_for_purpose(&id, purpose).await.map_err(|source| {
                         crate::thread_assembler::ThreadAssemblyError::Resource {
                             operation: "join Thread storage and observation workers",
                             source: source.into_boxed_dyn_error(),
@@ -601,9 +629,13 @@ impl ThreadObservations {
                     ))
                 })
             })),
-            move |id, thread| {
+            move |id, thread, purpose| {
                 if let Some(owner) = closing.upgrade() {
-                    ThreadObservations(owner).close_delivery(&id, &thread);
+                    let observations = ThreadObservations(owner);
+                    observations.close_delivery(&id, &thread);
+                    if purpose == crate::thread_assembler::ClosePurpose::Delete {
+                        observations.cancel_for_deletion(&id);
+                    }
                 }
                 // Cancellation is synchronous, so no new preparation can pass the gate.
                 let gate = closing_factory.stop_tool_operation(&id);
@@ -637,7 +669,30 @@ impl ThreadObservations {
     /// registry released the owner would keep every session that was ever activated resident. The
     /// entry is removed once its final projection is durable, so a later re-activation installs a
     /// fresh observation instead of reusing the released handle.
+    #[cfg(test)]
     async fn drain(&self, id: &str) -> Result<()> {
+        self.drain_for_purpose(id, crate::thread_assembler::ClosePurpose::Preserve)
+            .await
+    }
+
+    fn cancel_for_deletion(&self, id: &str) {
+        let all = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(observations) = all.get(id) {
+            for observation in observations {
+                observation.state.deletion.cancel();
+            }
+        }
+    }
+
+    async fn drain_for_purpose(
+        &self,
+        id: &str,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<()> {
         let observations = self
             .0
             .observations
@@ -652,8 +707,16 @@ impl ThreadObservations {
                 observation.thread.snapshot().lifecycle == ThreadLifecycle::Closed,
                 "cannot retire workers of an open Thread"
             );
-            observation.join().await?;
-            observation.state.channel.stop_and_join().await?;
+            observation.join_for_purpose(purpose).await?;
+            if purpose == crate::thread_assembler::ClosePurpose::Delete {
+                observation
+                    .state
+                    .channel
+                    .stop_and_join_for_deletion()
+                    .await?;
+            } else {
+                observation.state.channel.stop_and_join().await?;
+            }
         }
         let mut all = self
             .0
@@ -703,6 +766,8 @@ impl ThreadObservations {
             .thread_persistence()
             .history_channel(&id);
         let state = Arc::new(WorkerState {
+            deletion: Default::default(),
+            join_failure: Default::default(),
             terminal_transfer: Default::default(),
             progress,
             retry: Notify::new(),
@@ -738,8 +803,12 @@ impl ThreadObservations {
         let worker_thread = thread.clone();
         let worker_id = id.clone();
         let observed_feed = feed.clone();
+        let deletion = state.deletion.clone();
         let task = tokio::spawn(async move {
-            run(
+            tokio::select! {
+                biased;
+                () = deletion.cancelled() => {},
+                () = run(
                 projector,
                 worker_id,
                 worker_thread,
@@ -747,8 +816,8 @@ impl ThreadObservations {
                 recovered_through,
                 feed,
                 catalogs,
-            )
-            .await;
+                ) => {},
+            }
         });
         let observation = Arc::new(Observation {
             thread,
@@ -2848,6 +2917,8 @@ mod storage_fault_tests {
             id: child.id.clone(),
             thread: ThreadHandle::resume_without_model(child.id.clone(), None)?,
             state: Arc::new(WorkerState {
+                deletion: Default::default(),
+                join_failure: Default::default(),
                 terminal_transfer: Default::default(),
                 progress,
                 retry: Notify::new(),
@@ -3870,6 +3941,8 @@ mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                deletion: Default::default(),
+                join_failure: Default::default(),
                 terminal_transfer: Default::default(),
                 progress,
                 retry: Notify::new(),
@@ -3907,6 +3980,8 @@ mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                deletion: Default::default(),
+                join_failure: Default::default(),
                 terminal_transfer: Default::default(),
                 progress,
                 retry: Notify::new(),
@@ -5099,6 +5174,8 @@ mod storage_fault_tests {
             ..Progress::default()
         });
         let state = Arc::new(WorkerState {
+            deletion: Default::default(),
+            join_failure: Default::default(),
             terminal_transfer: Default::default(),
             progress,
             retry: Notify::new(),

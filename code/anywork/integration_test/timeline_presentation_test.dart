@@ -755,30 +755,39 @@ final class _TimelineScene {
             !paragraph.text.toPlainText().startsWith(prefix)) {
           return false;
         }
-        // The fixture is plain text. Require a real glyph from its accepted
-        // prefix, clipped by the production current scroll view and ancestors.
-        for (final box in paragraph.getBoxesForSelection(
-          TextSelection(baseOffset: glyphOffset, extentOffset: glyphOffset + 1),
-        )) {
-          var visible = MatrixUtils.transformRect(
-            paragraph.getTransformTo(surface),
-            box.toRect(),
-          ).intersect(Offset.zero & surface.size);
-          RenderObject child = paragraph;
-          while (!identical(child, surface)) {
-            final parent = child.parent;
-            if (parent == null || !parent.attached) return false;
-            final clip = parent.describeApproximatePaintClip(child);
-            if (clip != null) {
-              visible = visible.intersect(
-                MatrixUtils.transformRect(parent.getTransformTo(surface), clip),
-              );
+        // The production viewport follows growing output. Require a real glyph
+        // at the start or tail of this accepted body, clipped by its actual
+        // scroll view and ancestors; the first glyph need not stay on screen.
+        final tailGlyph = paragraph.text.toPlainText().lastIndexOf(
+          RegExp(r'\S'),
+        );
+        for (final offset in {glyphOffset, tailGlyph}) {
+          for (final box in paragraph.getBoxesForSelection(
+            TextSelection(baseOffset: offset, extentOffset: offset + 1),
+          )) {
+            var visible = MatrixUtils.transformRect(
+              paragraph.getTransformTo(surface),
+              box.toRect(),
+            ).intersect(Offset.zero & surface.size);
+            RenderObject child = paragraph;
+            while (!identical(child, surface)) {
+              final parent = child.parent;
+              if (parent == null || !parent.attached) return false;
+              final clip = parent.describeApproximatePaintClip(child);
+              if (clip != null) {
+                visible = visible.intersect(
+                  MatrixUtils.transformRect(
+                    parent.getTransformTo(surface),
+                    clip,
+                  ),
+                );
+              }
+              child = parent;
             }
-            child = parent;
-          }
-          if (visible.isFinite && !visible.isEmpty) {
-            visibleGlyphBounds = visible;
-            return true;
+            if (visible.isFinite && !visible.isEmpty) {
+              visibleGlyphBounds = visible;
+              return true;
+            }
           }
         }
         return false;

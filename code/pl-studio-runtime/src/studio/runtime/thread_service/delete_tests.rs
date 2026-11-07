@@ -13,6 +13,147 @@ use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle};
 use pl_tool::workspace::SessionFiles;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
+#[path = "delete_required_tests.rs"]
+mod required;
+
+#[tokio::test]
+async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_repair()
+-> Result<()> {
+    use crate::thread_assembler::{
+        agent_review::ReviewDeliverySource,
+        review_dispatch::{TerminalAuthority, TerminalDelivery, TerminalMaterialRetention},
+    };
+    use pl_core::{context::OpaquePayload, thread::extensions::ExtensionMutation};
+    use std::sync::{Arc, atomic::AtomicU64};
+    use tokio_util::sync::CancellationToken;
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let _endpoint = configure(&home)?;
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let root = runtime
+        .create_thread_with_id("delete-live-fault", &project.id, "root")
+        .await?;
+    let owner = runtime.ensure_thread_owner(&root.id).await?;
+    owner.flush().await?;
+    runtime.synchronize_thread_observation(&root.id).await?;
+    let child = cold_child(&runtime, &root).await?;
+    let producer_released = CancellationToken::new();
+    let released = producer_released.clone();
+    runtime
+        .threads
+        .start_terminal_delivery(Arc::new(TerminalDelivery {
+            thread: child.clone(),
+            sequence: 1,
+            authority: Arc::new(TerminalAuthority::capture(&owner.snapshot())?),
+            original: None,
+            source: ReviewDeliverySource::Reconciliation,
+            revocation: Arc::new(AtomicU64::new(0)),
+            channel: None,
+            wake: false,
+            _material: Some(Arc::new(TerminalMaterialRetention::new(move || {
+                released.cancel()
+            }))),
+        }))
+        .await?;
+    let failure = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        runtime.threads.join_review_delivery(&child.id),
+    )
+    .await?
+    .expect_err("missing original must block the actual terminal producer");
+    ensure!(
+        format!("{failure:#}").contains("original terminal message is missing"),
+        "{failure:#}"
+    );
+    assert!(
+        !producer_released.is_cancelled(),
+        "failed producer must remain retained before deletion"
+    );
+
+    let host = runtime.store.session_paths(&project.id, &root.id)?;
+    let db = sea_orm::Database::connect(
+        crate::studio::paths::sqlite_file_options(
+            &host.history_database(),
+            crate::studio::paths::SqliteFileMode::ReadWrite,
+            |options| options,
+        )
+        .await?,
+    )
+    .await?;
+    db.execute_unprepared("CREATE TRIGGER reject_delete_save BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'permanent deletion must not repair this save'); END").await?;
+    owner
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: "delete-fault".into(),
+            expected_revision: None,
+            payload: OpaquePayload::text("unsaved content"),
+        }])
+        .await?;
+    let save_error = tokio::time::timeout(std::time::Duration::from_secs(10), owner.flush())
+        .await?
+        .expect_err("the live writer must expose its real save failure");
+    ensure!(
+        format!("{save_error:#}").contains("permanent deletion must not repair"),
+        "{save_error:#}"
+    );
+    db.close().await?;
+    let channel = runtime.store.thread_persistence().history_channel(&root.id);
+    let durable = channel.subscribe().borrow().committed_sequence;
+    let unsaved_sequence = owner.snapshot().commit_sequence;
+    assert!(durable < unsaved_sequence);
+    assert!(runtime.thread_observations.live_feed(&root.id).is_some());
+    let history = runtime.store.history(&root.id).await?;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        runtime.delete_thread("delete-live-fault".into(), root.id.clone()),
+    )
+    .await??
+    .context("deletion reply")?;
+    assert!(
+        producer_released.is_cancelled(),
+        "the failed producer's retained task must actually exit"
+    );
+    assert!(channel.deletion_joined(), "writer must actually join");
+    assert_eq!(
+        channel.subscribe().borrow().committed_sequence,
+        durable,
+        "deletion must not invent a save ACK"
+    );
+    assert_eq!(
+        owner.snapshot().commit_sequence,
+        unsaved_sequence,
+        "deletion adds no preservation facts"
+    );
+    assert_eq!(
+        owner.snapshot().lifecycle,
+        pl_core::thread::ThreadLifecycle::Closed
+    );
+    assert!(runtime.threads.observed_thread(&root.id).is_none());
+    assert!(runtime.thread_observations.live_feed(&root.id).is_none());
+    assert!(
+        runtime
+            .store
+            .thread_persistence()
+            .shared_history(&root.id)
+            .is_none()
+    );
+    assert!(!host.root().exists());
+    let closed = history
+        .parent_report(1)
+        .await
+        .expect_err("the original pool must reject reads after deletion");
+    ensure!(
+        format!("{closed:#}").contains("permanently closed"),
+        "{closed:#}"
+    );
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
 async fn cold_child(
     runtime: &StudioRuntime,
     root: &crate::studio::ThreadRecord,
@@ -47,6 +188,107 @@ async fn cold_child(
     // S1 archive belongs to the Session, not independently to a child. The caller exercises
     // both active and archived Session trees while this child stays cold in either case.
     Ok(child)
+}
+
+#[tokio::test]
+async fn permanent_delete_cold_missing_or_unreadable_history_skips_storage_and_temp_cleanup()
+-> Result<()> {
+    for unreadable_history in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let _endpoint = configure(&home)?;
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        let project = runtime.open_project(&workspace).await?;
+        let (delta, session, agent) = DirectoryDelta::register_session(
+            "delete-cold".into(),
+            &project.id,
+            "cold",
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            dunce::canonicalize(&workspace)?
+                .to_string_lossy()
+                .into_owned(),
+            crate::config::ROOT_AGENT_ROUTE_KEY,
+        );
+        runtime
+            .agent_facility
+            .product_events
+            .commit_directory(delta)
+            .await?;
+        let root = crate::studio::ThreadRecord::from_directory_thread(
+            crate::studio::records::thread_projection(&session, &agent),
+        );
+        let neighbor = runtime
+            .create_thread_with_id("keep-cold", &project.id, "neighbor")
+            .await?;
+        let host = runtime.store.session_paths(&project.id, &root.id)?;
+        assert!(runtime.threads.observed_thread(&root.id).is_none());
+        assert!(!host.history_database().exists());
+        if unreadable_history {
+            tokio::fs::create_dir_all(host.root()).await?;
+            tokio::fs::write(host.history_database(), b"not a SQLite database").await?;
+        }
+        let files = SessionFiles::new(&root.id);
+        tokio::fs::create_dir_all(workspace.join(files.root())).await?;
+        // A stale temp file must not need to satisfy archive temp-directory validation:
+        // permanent deletion removes the dedicated session root in one operation.
+        tokio::fs::write(workspace.join(files.temp()), b"disposable temp file").await?;
+        runtime.store.database().execute_unprepared(
+            "CREATE TRIGGER pause_cold_delete BEFORE UPDATE ON studio_objects
+             WHEN NEW.object_kind='threadDelete' AND json_extract(NEW.payload_json,'$.phase')='removing'
+             BEGIN SELECT RAISE(ABORT,'pause before physical deletion'); END"
+        ).await?;
+        let error = runtime
+            .delete_thread("pause-cold".into(), root.id.clone())
+            .await
+            .expect_err("the phase commit must reach the injected barrier");
+        assert!(
+            format!("{error:#}").contains("pause before physical deletion"),
+            "{error:#}"
+        );
+        assert!(
+            runtime
+                .store
+                .thread_persistence()
+                .shared_history(&root.id)
+                .is_none(),
+            "cold deletion must not open a history pool"
+        );
+        assert_eq!(
+            tokio::fs::read(workspace.join(files.temp())).await?,
+            b"disposable temp file"
+        );
+        if unreadable_history {
+            assert_eq!(
+                tokio::fs::read(host.history_database()).await?,
+                b"not a SQLite database"
+            );
+        } else {
+            assert!(!host.history_database().exists());
+        }
+        runtime
+            .store
+            .database()
+            .execute_unprepared("DROP TRIGGER pause_cold_delete")
+            .await?;
+        runtime
+            .delete_thread("finish-cold".into(), root.id.clone())
+            .await?
+            .context("cold deletion reply")?;
+        assert!(!host.root().exists());
+        assert!(!workspace.join(files.root()).exists());
+        assert!(runtime.store.read_thread(&neighbor.id).await?.is_some());
+        assert!(
+            runtime
+                .delete_thread("repeat-cold".into(), root.id.clone())
+                .await?
+                .is_none()
+        );
+        runtime.shutdown_runtime().await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -110,6 +352,13 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
         runtime
             .store
             .confirm_preparation_stop(&private.thread_id)
+            .await?;
+        runtime
+            .store
+            .set_preparation_disposition(
+                &private.thread_id,
+                crate::studio::store::thread_preparation::PreparationDisposition::Remove,
+            )
             .await?;
         runtime
             .store

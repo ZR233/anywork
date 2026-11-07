@@ -5531,6 +5531,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get agentStopping => '正在停止';
 
   @override
+  String get agentListStatusWaiting => '待调度';
+
+  @override
+  String get agentListStatusFailed => '失败';
+
+  @override
+  String get agentListStatusUnknown => '未确认';
+
+  @override
+  String get agentListStatusApproval => '待批准';
+
+  @override
+  String get agentListStatusInput => '待输入';
+
+  @override
   String get agentStopWaitingScheduling => '已停止，等待主智能体调度';
 
   @override

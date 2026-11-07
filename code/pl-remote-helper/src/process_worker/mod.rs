@@ -185,7 +185,6 @@ impl Worker {
                 self.discover_and_signal();
             }
             if empty && !terminal_queued {
-                self.channel.stop_reading();
                 if let Some(status) = self.root_status {
                     if let Err(error) = self.channel.enqueue(ProcessWorkerEvent::Exited {
                         exit_code: status.code(),
@@ -209,10 +208,16 @@ impl Worker {
                 }
             };
             if empty && terminal_queued && flushed {
-                return match self.failure {
-                    Some(error) => Err(error),
-                    None => Ok(()),
-                };
+                match self.channel.finish() {
+                    Ok(true) => {
+                        return match self.failure {
+                            Some(error) => Err(error),
+                            None => Ok(()),
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(error) => self.failed("closeControl", error),
+                }
             }
             let timeout = if empty { -1 } else { self.timeout() };
             if let Err(error) = self.kernel.wait(self.channel.interest(), timeout)

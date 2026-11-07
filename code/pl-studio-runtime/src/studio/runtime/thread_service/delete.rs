@@ -1,4 +1,4 @@
-//! Explicit root deletion reuses the archive stop/save/resource owner.
+//! Explicit root deletion reuses lifecycle and Git cleanup owners without cold archive repair.
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
@@ -9,7 +9,7 @@ use crate::studio::{
     agent_host::worktree_lease::WorkspaceEndpoint,
     store::{
         directory::DirectoryDelta,
-        thread_archive::{ArchivePhase, ArchiveScope, ThreadArchiveOperation},
+        thread_archive::{ArchiveScope, ThreadArchiveOperation},
         thread_delete::{DeleteMember, DeletePhase, ThreadDeleteOperation},
         thread_preparation::{PreparationBinding, PreparationIdentity},
     },
@@ -70,34 +70,9 @@ impl StudioRuntime {
         } else {
             let tree = self.store.read_directory_tree(&root_id).await?;
             let archive = self
-                .freeze_thread_archive(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
+                .freeze_thread_removal(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
                 .await?;
-            let mut members = delete_members(&archive);
-            // Finished private preparations can still own host history and external artifacts.
-            for preparation in self.store.thread_preparations().await? {
-                if preparation.identity.root_id == root_id
-                    && !members
-                        .iter()
-                        .any(|member| member.identity.thread_id == preparation.identity.thread_id)
-                {
-                    members.push(DeleteMember {
-                        host_session: self
-                            .store
-                            .session_paths(
-                                &preparation.identity.workspace_id,
-                                &preparation.identity.thread_id,
-                            )?
-                            .root()
-                            .to_owned(),
-                        identity: preparation.identity,
-                        execution: preparation.binding,
-                        execution_deleted: false,
-                        host_deleted: false,
-                        execution_removal_started: false,
-                        host_removal_started: false,
-                    });
-                }
-            }
+            let members = delete_members(&archive);
             let mut thread_ids = members
                 .iter()
                 .map(|member| member.identity.thread_id.clone())
@@ -116,6 +91,7 @@ impl StudioRuntime {
         };
         let ids = operation.thread_ids.clone();
         let _pins = self.residency.pin_many(ids.iter().cloned());
+        self.threads.prepare_deletion(&ids);
         scope.cancel_preparations();
         let _bots = self.bots.quiesce_archive_threads(&ids).await?;
         if operation.phase == DeletePhase::Sealed {
@@ -127,7 +103,6 @@ impl StudioRuntime {
                     )
                     .await;
             }
-            self.end_thread_tree_work(&ids).await?;
             tokio::time::timeout(
                 self.archive_settle_timeout(),
                 self.threads.drain_archive_preparations(&scope),
@@ -140,7 +115,7 @@ impl StudioRuntime {
                 "delete scope gained an unfrozen member"
             );
             let mut archive = self
-                .freeze_thread_archive(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
+                .freeze_thread_removal(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
                 .await?;
             ensure!(
                 archive.thread_ids().iter().all(|id| ids.contains(id)),
@@ -165,16 +140,23 @@ impl StudioRuntime {
             }
             operation.changed()?;
             self.store.save_thread_delete(&operation).await?;
-            if archive.phase == ArchivePhase::Sealed {
-                let public = tree
-                    .iter()
-                    .map(|thread| thread.id.clone())
-                    .collect::<Vec<_>>();
-                self.retire_archived_thread_tree(&public).await?;
-                self.retire_private_archive_members(&mut archive).await?;
+            // Existing owners must really stop/join and release their storage and workspace
+            // handles. Cold members have no producer to close and need no checkpoint recovery.
+            let identities = operation
+                .members
+                .iter()
+                .map(|member| member.identity.clone())
+                .collect::<Vec<_>>();
+            self.threads
+                .close_tree_for_deletion(&root_id, &identities)
+                .await?;
+            self.retire_private_deleted_members(&archive).await?;
+            for id in &ids {
+                self.residency.remove(id).await;
             }
-            self.archive_save_confirmed(&mut archive).await?;
-            self.clean_archive_temps(&mut archive).await?;
+            // Git owns worktree removal. Dedicated execution and host roots are removed below
+            // as a whole; archive temp migration/cleanup would only traverse them twice.
+            self.clean_archive_worktrees(&mut archive).await?;
             // Worktrees may contain this member's entire execution SessionFiles root.
             for member in &mut operation.members {
                 member.execution_removal_started = false;
@@ -308,6 +290,30 @@ impl StudioRuntime {
         }))
     }
 
+    async fn retire_private_deleted_members(&self, archive: &ThreadArchiveOperation) -> Result<()> {
+        for member in &archive.private_members {
+            let record = self
+                .store
+                .thread_preparation(&member.identity.thread_id)
+                .await?
+                .context("private deletion responsibility is missing")?;
+            ensure!(
+                record.identity == member.identity && record.binding == member.binding,
+                "private deletion original binding changed"
+            );
+            ensure!(
+                record.stopped,
+                "private deletion producers have not actually stopped"
+            );
+            if !record.retired {
+                self.thread_factory
+                    .retire_deleted_preparation(&record)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     fn delete_thread_settings(&self, ids: &[String]) -> Result<()> {
         let current = self.config_runtime.read()?;
         self.config_runtime.update(current.revision, |desired| {
@@ -377,16 +383,17 @@ impl StudioRuntime {
         backend: SessionTempBackend<'_>,
     ) -> Result<()> {
         let files = SessionFiles::new(&operation.members[index].identity.thread_id);
-        if backend.session_exists(&files).await? {
+        if operation.members[index].execution_removal_started {
             ensure!(
-                !operation.members[index].execution_removal_started,
+                !backend.session_exists(&files).await?,
                 "previous execution session removal outcome is unresolved; existing object preserved"
             );
-            operation.members[index].execution_removal_started = true;
-            operation.changed()?;
-            self.store.save_thread_delete(operation).await?;
-            backend.remove_session(&files).await?;
+            return Ok(());
         }
+        operation.members[index].execution_removal_started = true;
+        operation.changed()?;
+        self.store.save_thread_delete(operation).await?;
+        backend.remove_session(&files).await?;
         Ok(())
     }
 }

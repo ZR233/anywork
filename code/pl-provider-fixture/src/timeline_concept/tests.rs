@@ -538,6 +538,39 @@ async fn observe(control: Control, step: Step, prompt: &str, counts: &[usize]) -
 }
 
 #[tokio::test]
+async fn realtime_text_gates_preserve_the_first_token_and_terminal_body() {
+    let control = Control::realtime();
+    let delayed = control
+        .realtime_script("fixture-host-cwd")
+        .into_iter()
+        .find(|step| {
+            matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_DELAYED_PROMPT)
+        })
+        .unwrap();
+    let observer = Control {
+        names: control.names[..2].to_vec(),
+        stages: control.stages[..2].to_vec(),
+    };
+    let step = Step::prompt(
+        Protocol::ResponsesHttp,
+        GUI_REALTIME_DELAYED_PROMPT,
+        0,
+        delayed.reply,
+    );
+    let observed = observe(observer, step, GUI_REALTIME_DELAYED_PROMPT, &[1, 3]).await;
+    assert_eq!(observed.len(), 8);
+    assert_eq!(observed[0]["type"], "response.created");
+    assert_eq!(observed[2]["type"], "response.output_text.delta");
+    assert_eq!(observed[2]["delta"], "realtime ");
+    assert_eq!(observed[6]["type"], "response.output_item.done");
+    assert_eq!(
+        observed[6]["item"]["content"][0]["text"],
+        "realtime delayed first token"
+    );
+    assert_eq!(observed[7]["type"], "response.completed");
+}
+
+#[tokio::test]
 async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
     let control = Control::realtime();
     let parallel = control
@@ -552,8 +585,8 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
         parallel.reply,
     );
     let observer = Control {
-        names: vec![control.names[0]],
-        stages: vec![control.stages[0].clone()],
+        names: vec![control.names[2]],
+        stages: vec![control.stages[2].clone()],
     };
     // The real HTTP observer sees only created/added/delta/done reasoning before
     // release. observe also rejects premature or repeated release requests.
@@ -602,8 +635,8 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
         host.reply,
     );
     let observer = Control {
-        names: vec![control.names[1]],
-        stages: vec![control.stages[1].clone()],
+        names: vec![control.names[3]],
+        stages: vec![control.stages[3].clone()],
     };
     let observed = observe(observer, step, GUI_REALTIME_HOST_CWD_PROMPT, &[4]).await;
     assert_eq!(observed.len(), 8);
