@@ -10434,6 +10434,36 @@ abstract class AppLocalizations {
   /// **'Stopping'**
   String get agentStopping;
 
+  /// No description provided for @agentListStatusWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting'**
+  String get agentListStatusWaiting;
+
+  /// No description provided for @agentListStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get agentListStatusFailed;
+
+  /// No description provided for @agentListStatusUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get agentListStatusUnknown;
+
+  /// No description provided for @agentListStatusApproval.
+  ///
+  /// In en, this message translates to:
+  /// **'Approval'**
+  String get agentListStatusApproval;
+
+  /// No description provided for @agentListStatusInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Input'**
+  String get agentListStatusInput;
+
   /// No description provided for @agentStopWaitingScheduling.
   ///
   /// In en, this message translates to:
