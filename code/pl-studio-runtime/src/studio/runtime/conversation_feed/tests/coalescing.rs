@@ -72,9 +72,8 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
         let effect_floor = feed.state_effect_floor;
         let runtime_floor = feed.runtime_floor.0.max(feed.runtime_floor.1);
         let (events, state) = broadcast::channel(64);
-        feed.state = Some(DeliveryReceiver::new(
+        feed.state = Some(super::super::super::thread_observation::StateReceiver::new(
             state,
-            Arc::new(tokio::sync::Notify::new()),
             CancellationToken::new(),
         ));
         feed.state_turn = true;
@@ -219,9 +218,8 @@ async fn bounded_scan_preserves_budget_and_raw_channel_failures() -> Result<()> 
             let revision = feed.state_revision;
             let floor = feed.runtime_floor.0.max(feed.runtime_floor.1);
             let (events, state) = broadcast::channel(if case == "lagged" { 2 } else { 128 });
-            feed.state = Some(DeliveryReceiver::new(
+            feed.state = Some(super::super::super::thread_observation::StateReceiver::new(
                 state,
-                Arc::new(tokio::sync::Notify::new()),
                 CancellationToken::new(),
             ));
             feed.state_turn = true;
