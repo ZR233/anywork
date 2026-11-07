@@ -173,7 +173,10 @@ Future<AppGraph> _graph(
 
 Future<void> _openMenu(WidgetTester tester) async {
   await tester.tap(find.byKey(StudioDriverKeys.agentSwitcher));
-  await tester.pumpAndSettle();
+  // The stopping state owns an intentionally infinite progress indicator.
+  // Use a bounded menu transition pump instead of waiting for global quiescence.
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
 }
 
 /// 重建同一位置的 Widget 会保留菜单状态：只有在菜单确实关闭时才重新打开。
