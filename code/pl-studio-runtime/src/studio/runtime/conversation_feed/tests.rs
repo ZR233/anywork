@@ -6,8 +6,10 @@ use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 mod atoms;
+mod coalescing;
 mod payload;
 mod qualification;
+mod scheduling;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EchoArgs {

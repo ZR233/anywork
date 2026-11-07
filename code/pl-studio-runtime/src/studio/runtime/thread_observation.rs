@@ -1933,6 +1933,20 @@ fn live_usage(
     }
 }
 
+fn product_revision(
+    snapshot: &ThreadSnapshot,
+) -> (
+    u64,
+    ThreadLifecycle,
+    Option<pl_core::thread::ActiveExecution>,
+) {
+    (
+        snapshot.commit_sequence,
+        snapshot.lifecycle,
+        snapshot.execution.clone(),
+    )
+}
+
 async fn run(
     projector: ObservationServices,
     id: String,
@@ -1972,8 +1986,9 @@ async fn run(
         // reliable channel was installed before any execution or model call.
         continuous,
     };
-    // Product facts are projected once per committed revision; the live projection additionally
-    // follows every owner snapshot so streaming previews reach the same single publisher.
+    // Execution preparation and retirement can change without a history commit. The directory must
+    // follow that identity as well as committed facts, but not pay for preview-only publications.
+    // The live projection still follows every owner snapshot through the same single publisher.
     let mut projected = None;
     loop {
         let issue_id = format!("tool-cleanup:{}", worker.id);
@@ -2011,7 +2026,8 @@ async fn run(
                 worker.services.events.emit_recovery_state(issues);
             },
         );
-        let products = projected != Some((current.commit_sequence, current.lifecycle));
+        let revision = product_revision(&current);
+        let products = projected.as_ref() != Some(&revision);
         // Read the coordinator's newest typed facts before publishing: a storage change is a fact
         // this pass has to carry, exactly like a commit or a preview it also projects.
         let detail = persistence
@@ -2031,7 +2047,7 @@ async fn run(
             Ok(()) => {
                 worker.continuous = true;
                 if products {
-                    projected = Some((current.commit_sequence, current.lifecycle));
+                    projected = Some(revision);
                 }
                 let finished = current.lifecycle == ThreadLifecycle::Closed;
                 worker.state.progress.send_replace(Progress {
@@ -2776,6 +2792,105 @@ mod storage_fault_tests {
             .await?;
         sink.flush(&child.id, 1).await?;
         Ok((resources, observations, worker, sink))
+    }
+
+    #[tokio::test]
+    async fn execution_only_snapshot_republishes_the_same_agent_directory_row() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let (resources, observations, mut worker, sink) =
+            terminal_projection_fixture(&store, false).await?;
+        let result = async {
+            // The history-only fixture registers durable rows after constructing its event bus.
+            // Admit those real catalog rows through the directory's ordinary bootstrap path.
+            let catalog = store.catalog();
+            let rows = catalog
+                .sessions()
+                .iter()
+                .flat_map(|session| {
+                    catalog
+                        .agents_for_session(&session.session_id)
+                        .into_iter()
+                        .map(move |agent| crate::studio::records::row_projection(session, &agent))
+                })
+                .collect();
+            worker
+                .services
+                .events
+                .apply_thread_delta(rows, Vec::new())
+                .await?;
+            worker.services.events.initialize_directories().await?;
+            let mut snapshot = crate::studio::storage_fault_test_support::ticket(&worker.id, 1)
+                .checkpoint
+                .state;
+            snapshot.execution = Some(pl_core::thread::ActiveExecution {
+                id: "execution:1".into(),
+                phase: pl_core::thread::ExecutionPhase::Stopping,
+                turn_id: None,
+            });
+            let projected = product_revision(&snapshot);
+            worker.project(&snapshot, true, None).await?;
+            let stopping = worker.services.events.read_agent_directory().await;
+            let row = stopping
+                .state
+                .value()
+                .context("loaded stopping directory")?
+                .agents
+                .iter()
+                .find(|row| row.thread_id == worker.id)
+                .context("the original agent row")?;
+            anyhow::ensure!(
+                row.execution.as_ref().is_some_and(|execution| {
+                    execution.id() == "execution:1"
+                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping
+                }),
+                "the directory must first publish the exact stopping execution"
+            );
+
+            // finish_execution only clears the execution and publishes a snapshot: no new
+            // history commit or lifecycle transition is required to retire this identity.
+            snapshot.execution = None;
+            snapshot.observation_revision += 1;
+            let retired = product_revision(&snapshot);
+            worker
+                .project(&snapshot, retired != projected, None)
+                .await?;
+            let settled = worker.services.events.read_agent_directory().await;
+            let row = settled
+                .state
+                .value()
+                .context("loaded settled directory")?
+                .agents
+                .iter()
+                .find(|row| row.thread_id == worker.id)
+                .context("stopping must not remove the original agent row")?;
+            anyhow::ensure!(
+                row.execution.is_none() && !row.can_stop,
+                "the same committed revision must publish execution retirement"
+            );
+            anyhow::ensure!(settled.state.revision() > stopping.state.revision());
+
+            // A preview-only owner snapshot is not another directory change.
+            snapshot.observation_revision += 1;
+            worker
+                .project(&snapshot, product_revision(&snapshot) != retired, None)
+                .await?;
+            let preview = worker.services.events.read_agent_directory().await;
+            anyhow::ensure!(preview.state.revision() == settled.state.revision());
+            Ok(())
+        }
+        .await;
+        let channel = worker.state.channel.clone();
+        drop(worker);
+        drop(sink);
+        let cleanup = async {
+            channel.stop_and_join().await?;
+            observations.finish().await?;
+            resources.shutdown().await
+        }
+        .await;
+        result?;
+        cleanup
     }
 
     async fn completion_publication_retry(mode: HandoffMode, cancel: bool) -> Result<()> {

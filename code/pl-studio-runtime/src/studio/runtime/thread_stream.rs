@@ -588,7 +588,7 @@ impl LiveSubscription {
 /// A live frame from a new turn or retry is a distinct generation even when it is adjacent to the
 /// previous frame in the pending queue. Keeping the identity check here prevents coalescing from
 /// reusing the previous frame's envelope revision for a newer generation.
-fn same_live_runtime_identity(
+pub(super) fn same_live_runtime_identity(
     incoming: &pl_protocol::ThreadRuntimeSnapshot,
     previous: &pl_protocol::ThreadRuntimeSnapshot,
 ) -> bool {

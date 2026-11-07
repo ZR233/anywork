@@ -2359,6 +2359,30 @@ fn run_timeline_history_scenario(
         (app_dir.to_string_lossy().into_owned(), "<app>"),
         (workspace.to_string_lossy().into_owned(), "<workspace>"),
     ];
+    let continuity_result = (|| -> Result<()> {
+        let continuity_source = home.join("studio/logs/studio.log");
+        let mut continuity_evidence = File::create(output.join("timeline-history-continuity.log"))?;
+        writeln!(
+            continuity_evidence,
+            "source_scope=current studio.log only; rolling archives not included"
+        )?;
+        if continuity_source.is_file() {
+            for line in fs::read_to_string(&continuity_source)?.lines() {
+                if line.split_once(": ").is_some_and(|(header, _)| {
+                    header.split_whitespace().last() == Some("conversation_continuity")
+                }) {
+                    writeln!(
+                        continuity_evidence,
+                        "{}",
+                        sanitize_driver_line(line, &redactions)
+                    )?;
+                }
+            }
+        } else {
+            writeln!(continuity_evidence, "source_status=missing")?;
+        }
+        Ok(())
+    })();
     for (phase, gui_exit) in &phases {
         let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
         if gui_log.is_file() {
@@ -2429,6 +2453,7 @@ fn run_timeline_history_scenario(
         }))?,
     )?;
     require_timeline_history_completion(journey, fixture_result)?;
+    continuity_result?;
     ensure!(
         rejected == 0,
         "timeline-history fixture rejected {rejected} account request(s)"

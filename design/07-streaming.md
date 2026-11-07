@@ -119,6 +119,8 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 
 会话观察绑定同一注册 Session、读取资格和被动 observation slot。事件与切点遵循 [26](./26-timeline-content.md)，不是旧状态/内容流的兼容壳。多 GUI、HTTP、机器人各自持需求；登记与捕获必须防漏，接收者数量提示不替代证明。打开与旧页不装配执行，idle pending 也属于有效来源。
 
+原会话接收 owner 在 State 与 Chat 之间公平调度；读取 State 的机会不依赖正文预览是否变化或是否实际输出 Chat。每次 State 检查扫描开始时已排队的有界事件，再沿原 pending 顺序交付；忽略的 Activity 或已被基线覆盖的事件不消耗一次逻辑 State 交付机会。同一模型 attempt 的相邻、尚未交付且仍为 Live 的 Runtime 观察复用现有原生订阅的身份判定，仅就地替换 pending 队尾载荷并重新核验预算，保留该帧原信封修订；不能跨 Turn、attempt、权威用量或可靠 State 事实合并。State 交付后仍给 Chat 一次处理机会，纯 progress 或无可见变化的 cut 也须返回 State 检查边界，不得持续抢占。该调度不增加广播、pending 或传输预算，不改变可靠 cut 的顺序屏障；真实 lag 仍明确失败，不能吞错或从 current 重建可靠事实。
+
 FRB 保留单 producer，每句柄最多一个未确认普通数据批次（包括首 Set），单帧和待发/在途总字节均有上界；StreamSink.add 成功仅表示端口接纳。Frame 保留会话、订阅身份及递增 deliverySequence，不在 ChatBatch/Message 再复制身份。Failure/Closed 在 producer 退出时至多尝试一次，复用最后 sent 序号，首普通帧前可为零，不占 credit、不 ACK、不等待确认且有固定字节上限。
 
 SDK feed owner 唯一发送 ACK：Chat 在 applyBatch 完成并复核原 lease 后 ready，State 在所属 Repository 提交后 ready，只确认同一句柄连续前缀，后 State 不越过未接纳 Chat。终态先分类，不进入普通连续序号/重复过滤，作为同一消费链的资格屏障，其后不公开旧数据。重复旧 ACK 幂等，未发送/其他句柄 ACK 明确拒绝；转投无界队列不是接纳。

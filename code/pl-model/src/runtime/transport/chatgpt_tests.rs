@@ -318,7 +318,6 @@ async fn transport_completion(
                 on_stream_end: &|| {},
                 members: None,
                 generation: 0,
-                member_admitted: None,
             },
             None,
         )

@@ -583,20 +583,39 @@ async fn authoritative_member_is_reliable_while_provider_stream_is_still_open() 
 }
 
 #[tokio::test]
-async fn admitted_member_prevents_transparent_replay_after_early_eof() {
-    use pl_core::thread::AttemptOutcome;
-    use pl_model::runtime::model_member_receipt;
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "do not replay",
-        0,
-        Reply::Sse(vec![
-            json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
-            json!({"type":"response.output_item.done","output_index":0,"item":{
-                "id":"irrevocable","type":"reasoning",
-                "summary":[{"type":"summary_text","text":"frozen before EOF"}]}}),
-        ]),
-    )])
+async fn admitted_member_survives_safe_recovery_after_clean_eof() {
+    use pl_core::model::{ModelRecoveryPhase, ObservedPartKind};
+    use pl_core::thread::{AttemptOutcome, TurnOutcome};
+    use pl_model::runtime::{ModelMemberState, model_member_receipt, model_response_receipt};
+    let recovered_item = json!({
+        "id":"recovered-answer","type":"message","role":"assistant",
+        "content":[{"type":"output_text","text":"successful answer"}]
+    });
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "recover after EOF",
+            0,
+            // A clean transport EOF, not a provider error event or a gated stream.
+            Reply::Sse(vec![
+                json!({"type":"response.created","response":{"id":"response","model":"live-fixture"}}),
+                json!({"type":"response.output_item.done","output_index":0,"item":{
+                    "id":"irrevocable","type":"reasoning",
+                    "summary":[{"type":"summary_text","text":"frozen before EOF"}]}}),
+            ]),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "recover after EOF",
+            1,
+            Reply::Sse(vec![
+                json!({"type":"response.created","response":{"id":"recovered","model":"live-fixture"}}),
+                json!({"type":"response.output_item.done","output_index":0,"item":recovered_item}),
+                json!({"type":"response.completed","response":{
+                    "id":"recovered","model":"live-fixture","output":[recovered_item]}}),
+            ]),
+        ),
+    ])
     .await
     .unwrap();
     let runtime = ModelRuntime::new_with_account_id(
@@ -609,10 +628,10 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
         .open_session()
         .await
         .unwrap();
-    let thread = ThreadHandle::start("no-replay".into(), session).unwrap();
+    let thread = ThreadHandle::start("clean-eof-recovery".into(), session).unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        thread.run_turn(user_turn("do not replay")),
+        thread.run_turn(user_turn("recover after EOF")),
     )
     .await
     .unwrap();
@@ -625,7 +644,7 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
         .iter()
         .flat_map(|e| e.model_member_starts.iter())
         .collect();
-    // Capture the ungated call before any assertion can hide an unexpected replay. Only the local
+    // Capture the ungated call before any assertion can hide recovery evidence. Only the local
     // fixture's request metadata is included, never request bodies or account configuration.
     let requests_before_assertions = fixture.recorded();
     let request_metadata: Vec<_> = requests_before_assertions
@@ -678,35 +697,183 @@ async fn admitted_member_prevents_transparent_replay_after_early_eof() {
          decoded_failure_receipts={failure_receipts:#?}",
         requests_before_assertions.len(),
     );
-    assert!(result.is_err(), "{diagnostic}");
-    assert_eq!(members.len(), 1, "{diagnostic}");
-    assert_eq!(beginnings.len(), 1, "{diagnostic}");
-    let receipt =
-        model_member_receipt(members[0]).unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"));
-    let failed = effects
+    let completed = result.unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"));
+    assert_eq!(completed.outcome, TurnOutcome::Completed, "{diagnostic}");
+    assert_eq!(completed.model_steps, 1, "{diagnostic}");
+    assert!(completed.last_output.tool_calls.is_empty(), "{diagnostic}");
+    let snapshot = thread.snapshot();
+    // Completed attempts are exported to effects, not retained in the live snapshot.
+    let attempt_id = &completed.last_output.attempt_id;
+    assert!(
+        effects
+            .iter()
+            .filter_map(|effect| effect.attempt.as_ref())
+            .all(|attempt| &attempt.attempt_id == attempt_id && attempt.retry_of.is_none()),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(
+                effect.attempt.as_ref().map(|attempt| &attempt.outcome),
+                Some(AttemptOutcome::Running)
+            ))
+            .count(),
+        1,
+        "{diagnostic}"
+    );
+    assert_eq!(members.len(), 2, "{diagnostic}");
+    assert_eq!(beginnings.len(), 2, "{diagnostic}");
+    let mut receipts = Vec::new();
+    for (index, generation, id, kind, text, part_kind) in [
+        (
+            0,
+            0,
+            "irrevocable",
+            CompletionPresentationItemKind::Reasoning,
+            "frozen before EOF",
+            ObservedPartKind::SummaryText,
+        ),
+        (
+            1,
+            1,
+            "recovered-answer",
+            CompletionPresentationItemKind::Text(TraceTextChannel::Final),
+            "successful answer",
+            ObservedPartKind::OutputText,
+        ),
+    ] {
+        let member = members[index];
+        assert_eq!(member.generation, generation, "{diagnostic}");
+        assert_eq!(&member.attempt_id, attempt_id, "{diagnostic}");
+        assert_eq!(member.turn_id, "live-turn", "{diagnostic}");
+        assert_eq!(member.member_id, id, "{diagnostic}");
+        let receipt =
+            model_member_receipt(member).unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"));
+        assert_eq!(receipt.state, ModelMemberState::Completed, "{diagnostic}");
+        assert_eq!(
+            receipt.item,
+            CompletionPresentationItem {
+                provider_item_id: id.into(),
+                output_index: Some(0),
+                kind,
+                parts: vec![CompletionPresentationPart {
+                    content_index: 0,
+                    provider_part_id: None,
+                    kind: if generation == 0 {
+                        CompletionPresentationPartKind::SummaryText
+                    } else {
+                        CompletionPresentationPartKind::OutputText
+                    },
+                    text: text.into(),
+                }],
+            },
+            "{diagnostic}"
+        );
+        let start = beginnings[index];
+        assert_eq!(start.generation, generation, "{diagnostic}");
+        assert_eq!(start.attempt_id, member.attempt_id, "{diagnostic}");
+        assert_eq!(start.turn_id, member.turn_id, "{diagnostic}");
+        let ObservedPartIdentity::Provider(identity) = &start.identity else {
+            panic!("expected provider start identity\n{diagnostic}");
+        };
+        assert_eq!(identity.item_id.as_ref(), id, "{diagnostic}");
+        assert_eq!(identity.part, part_kind, "{diagnostic}");
+        assert_eq!(identity.content_index, 0, "{diagnostic}");
+        receipts.push(receipt);
+    }
+    let terminal = effects
         .iter()
         .filter_map(|effect| effect.attempt.as_ref())
         .next_back()
         .unwrap_or_else(|| panic!("missing terminal attempt\n{diagnostic}"));
-    let AttemptOutcome::Failed(error) = &failed.outcome else {
-        panic!(
-            "early EOF remains an attempt failure, not a successful member's context\n{diagnostic}"
-        );
+    assert_eq!(&terminal.attempt_id, attempt_id, "{diagnostic}");
+    let AttemptOutcome::Committed(output) = &terminal.outcome else {
+        panic!("safe recovery must commit only the successful generation\n{diagnostic}");
     };
+    let response = model_response_receipt(output)
+        .unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"))
+        .unwrap_or_else(|| panic!("missing success receipt\n{diagnostic}"))
+        .response;
     assert_eq!(
-        model_failure_receipt(error)
-            .unwrap_or_else(|error| panic!("{error:?}\n{diagnostic}"))
-            .unwrap_or_else(|| panic!("missing failure receipt\n{diagnostic}"))
-            .presentation_items,
-        vec![receipt.item],
+        response.presentation_items,
+        vec![receipts[1].item.clone()],
         "{diagnostic}"
     );
+    assert_eq!(
+        response.content.as_deref(),
+        Some("successful answer"),
+        "{diagnostic}"
+    );
+    assert!(response.reasoning_content.is_none(), "{diagnostic}");
+    assert_eq!(response.orchestration.transport_attempts, 2, "{diagnostic}");
+    assert_eq!(response.observation.generation, 1, "{diagnostic}");
+    assert_eq!(response.observation.failed.len(), 1, "{diagnostic}");
+    let failed = &response.observation.failed[0];
+    assert_eq!(failed.generation, 0, "{diagnostic}");
+    assert!(
+        failed
+            .message
+            .contains("provider stream ended before completion"),
+        "clean EOF must remain distinguishable from a provider error\n{diagnostic}"
+    );
+    assert_eq!(
+        failed
+            .parts
+            .iter()
+            .map(|part| part.text())
+            .collect::<String>(),
+        "frozen before EOF",
+        "{diagnostic}"
+    );
+    assert_eq!(
+        response.observation.recovery.as_ref().unwrap().phase,
+        ModelRecoveryPhase::Recovered,
+        "{diagnostic}"
+    );
+    let assistant_records: Vec<_> = snapshot
+        .context
+        .records
+        .iter()
+        .filter(|record| record.source == ContextSource::Assistant)
+        .collect();
+    assert_eq!(assistant_records.len(), 1, "{diagnostic}");
+    assert_eq!(
+        assistant_records[0]
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ContextContent::Text { text } => Some(text.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["successful answer"],
+        "{diagnostic}"
+    );
+    assert_eq!(assistant_records[0].content, output.content, "{diagnostic}");
+    // The opaque assistant receipt intentionally retains failed display observations. Only its
+    // successful replay becomes model input; do not confuse the receipt's diagnostics with input.
+    let replay = serde_json::to_string(response.replay.as_ref().unwrap()).unwrap();
+    assert!(replay.contains("successful answer"), "{diagnostic}");
+    assert!(!replay.contains("frozen before EOF"), "{diagnostic}");
     thread.close().await.unwrap();
-    let requests = fixture
-        .finish()
-        .await
-        .unwrap_or_else(|error| panic!("no unexpected replay request: {error:?}\n{diagnostic}"));
-    assert_eq!(requests.len(), 1, "{diagnostic}");
+    let requests = fixture.finish().await.unwrap_or_else(|error| {
+        panic!("only the safe recovery request is expected: {error:?}\n{diagnostic}")
+    });
+    assert_eq!(requests.len(), 2, "{diagnostic}");
+    assert!(
+        requests.iter().all(|request| request.accepted),
+        "{diagnostic}"
+    );
+    assert!(requests[0].body["input"].is_array(), "{diagnostic}");
+    assert_eq!(
+        requests[0].body["input"], requests[1].body["input"],
+        "{diagnostic}"
+    );
+    assert!(
+        requests[1].body.get("previous_response_id").is_none(),
+        "{diagnostic}"
+    );
 }
 
 #[tokio::test]

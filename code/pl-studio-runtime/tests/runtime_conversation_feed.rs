@@ -228,6 +228,229 @@ async fn history(
 }
 
 #[tokio::test]
+async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> Result<()> {
+    observe_reliable_websocket_output(false).await
+}
+
+#[tokio::test]
+async fn websocket_reconnect_keeps_admitted_members_and_bodies_through_restart() -> Result<()> {
+    observe_reliable_websocket_output(true).await
+}
+
+async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
+    use pl_model::model::ModelTransportProfile;
+    use pl_provider_fixture::{Protocol, Reply, Step, WebSocketAction};
+    use tokio_util::sync::CancellationToken;
+
+    let reached = CancellationToken::new();
+    let release = CancellationToken::new();
+    let frames = pl_provider_fixture::responses_reasoning_text(
+        &[" a"],
+        &[" a"; 96],
+        "burst",
+        support::MODEL,
+    );
+    let mut actions = frames[..4]
+        .iter()
+        .cloned()
+        .map(WebSocketAction::Event)
+        .collect::<Vec<_>>();
+    actions.push(WebSocketAction::Barrier {
+        reached: reached.clone(),
+        release: release.clone(),
+    });
+    if reconnect {
+        actions.push(WebSocketAction::Event(serde_json::json!({
+            "type":"error","status":400,"error":{
+                "code":"websocket_connection_limit_reached",
+                "message":"Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."
+            }
+        })));
+    } else {
+        actions.extend(frames[4..].iter().cloned().map(WebSocketAction::Event));
+    }
+    let mut steps = vec![Step::prompt(
+        Protocol::ResponsesWebSocket,
+        "burst",
+        0,
+        Reply::WebSocketScript(actions),
+    )];
+    if reconnect {
+        // Reuse the same provider item IDs. The observation generation, not a new
+        // display-only ID or deletion of old output, must isolate the two attempts.
+        steps.push(Step::prompt(
+            Protocol::ResponsesWebSocket,
+            "burst",
+            1,
+            Reply::WebSocket(frames),
+        ));
+    }
+    let expected_members = if reconnect { 3 } else { 2 };
+    let expected_bytes = if reconnect { 196 } else { 194 };
+    let mut env =
+        Environment::with_transport(steps, vec![], ModelTransportProfile::responses_websocket())
+            .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, "burst").await?;
+        let id = thread.thread.id;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .await?;
+        let observed = async {
+            let first = chat(&mut feed).await?;
+            ensure!(first.placement == ChatPlacement::Set);
+            tokio::time::timeout(support::integration_test_deadline()?, reached.cancelled())
+                .await?;
+            let mut latest = first.clone();
+            let mut appended = Vec::new();
+            // Observe the real product owner admitting the first complete member before
+            // releasing the provider burst/error. Neither the writer nor Main is gated.
+            loop {
+                if latest.current.as_ref().is_some_and(|current| {
+                    current.items.iter().any(|item| {
+                        item.is_work_group()
+                            && item.summary.as_ref().is_some_and(|summary| {
+                                summary.member_count == 1 && summary.active_count == 0
+                            })
+                    })
+                }) {
+                    break;
+                }
+                latest = chat(&mut feed).await?;
+                appended.extend(items(latest.entries.clone())?);
+            }
+            release.cancel();
+            let mut terminal = None;
+            let mut retired = false;
+            while terminal.is_none() || !retired {
+                match next(&mut feed).await? {
+                    ConversationEvent::Chat { batch } => {
+                        batch.validate_for(&ChatScope::Main)?;
+                        ensure!(batch.placement == ChatPlacement::Append);
+                        if let Some(current) = &batch.current {
+                            retired = current.active_turn.is_none() && current.items.is_empty();
+                        }
+                        appended.extend(items(batch.entries)?);
+                    }
+                    ConversationEvent::State { update } => {
+                        if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                            && let ThreadNotification::TurnCompleted { turn } =
+                                notification.notification
+                        {
+                            ensure!(
+                                matches!(turn.state, TurnState::Completed(_)),
+                                "burst Turn failed: {:?}",
+                                turn.state
+                            );
+                            terminal = Some(turn.id);
+                        }
+                    }
+                }
+            }
+            let mut published = history(feed.reader(), first, demand(7)).await?;
+            published.extend(appended);
+            if !reconnect {
+                ensure!(published.iter().filter(|item| item.is_work_group()).count() == 1);
+            }
+            let (members, bytes) =
+                websocket_output(&env, &id, feed.reader(), &published, reconnect).await?;
+            ensure!(
+                members == expected_members && bytes == expected_bytes,
+                "burst lost or duplicated original output: {members} members, {bytes} bytes"
+            );
+            Ok(published
+                .into_iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>())
+        }
+        .await;
+        let identities = finish_feed(&mut feed, observed).await?;
+        let recorded = env.root_provider.recorded();
+        ensure!(recorded.len() == if reconnect { 2 } else { 1 });
+        ensure!(
+            recorded
+                .iter()
+                .all(|request| request.accepted && request.method == "WS")
+        );
+        if reconnect {
+            ensure!(recorded[1].body.get("previous_response_id").is_none());
+            ensure!(recorded[0].body["input"] == recorded[1].body["input"]);
+        }
+        env.restart().await?;
+        let mut reopened = env
+            .runtime
+            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .await?;
+        let read = async {
+            let first = chat(&mut reopened).await?;
+            let published = history(reopened.reader(), first, demand(7)).await?;
+            ensure!(
+                published.iter().map(|item| &item.id).eq(identities.iter()),
+                "restart changed Timeline identities/order"
+            );
+            let (members, bytes) =
+                websocket_output(&env, &id, reopened.reader(), &published, reconnect).await?;
+            ensure!(members == expected_members && bytes == expected_bytes);
+            Ok(())
+        }
+        .await;
+        finish_feed(&mut reopened, read).await?;
+        ensure!(
+            env.root_provider.recorded().len() == recorded.len(),
+            "cold read activated the provider"
+        );
+        Ok(())
+    }
+    .await;
+    release.cancel();
+    env.finish(result).await
+}
+
+async fn websocket_output(
+    env: &Environment,
+    thread_id: &str,
+    reader: &ConversationReader,
+    messages: &[TimelineItem],
+    reconnect: bool,
+) -> Result<(usize, u64)> {
+    let mut output = Vec::new();
+    let mut notices = HashSet::new();
+    for message in messages {
+        let owner = message.content_item_id.as_deref().unwrap_or_default();
+        let notice = if owner.ends_with(":recovery:retry:1") {
+            Some("连接中断，正在重试（1/5）。")
+        } else if owner.ends_with(":recovery:result") {
+            Some("连接已恢复，继续执行。")
+        } else {
+            None
+        };
+        if let Some(notice) = notice {
+            ensure!(
+                reconnect && notices.insert(notice),
+                "unexpected or repeated recovery notice"
+            );
+            let value = envelope(reader, message.payload.as_ref(), owner).await?;
+            ensure!(value["type"] == "text" && value["data"]["channel"] == "commentary");
+            ensure!(bodies(reader, &value, &message.contents, owner).await? == [notice.as_bytes()]);
+        } else {
+            output.push(message.clone());
+        }
+    }
+    ensure!(notices.len() == if reconnect { 2 } else { 0 });
+    count_output(
+        env,
+        thread_id,
+        reader,
+        &output,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
+    .await
+}
+
+#[tokio::test]
 async fn nonempty_feed_keeps_its_open_cut_and_appends_completed_current_in_one_batch() -> Result<()>
 {
     let stage = ReplyStage::new();
@@ -1026,6 +1249,459 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
             ensure!(body_bytes == (OUTPUT_TOKENS * 2) as u64, "public output body length mismatch: {body_bytes}");
             eprintln!("realistic output: items={item_count}, reference_tokens={OUTPUT_TOKENS}, completed_items={completed_items}, body_bytes={body_bytes}, peak_chat_bytes={peak_batch}");
             Ok(())
+        }.await;
+        finish_feed(&mut feed, observed).await
+    }.await;
+    env.finish(result).await
+}
+
+#[derive(Debug)]
+struct LiveBodyTarget {
+    reference: ContentRef,
+    display_id: String,
+    turn_id: String,
+}
+
+fn live_body_target(batch: &ChatBatch) -> Result<Option<LiveBodyTarget>> {
+    let Some(current) = &batch.current else {
+        return Ok(None);
+    };
+    let Some(turn) = &current.active_turn else {
+        return Ok(None);
+    };
+    let Some(preview) = current.previews.iter().find(|preview| {
+        preview.role == pl_protocol::CurrentContentRole::Response && !preview.text.is_empty()
+    }) else {
+        return Ok(None);
+    };
+    ensure!(matches!(
+        &preview.reference.target,
+        ContentTarget::Body {
+            owner: ContentOwner::Item { .. },
+            ..
+        }
+    ));
+    let item = current
+        .items
+        .iter()
+        .find(|item| {
+            item.contents
+                .iter()
+                .any(|content| content.reference == preview.reference)
+        })
+        .context("live response omitted its original Timeline item")?;
+    Ok(Some(LiveBodyTarget {
+        reference: preview.reference.clone(),
+        display_id: item.id.clone(),
+        turn_id: turn.id.clone(),
+    }))
+}
+
+fn running_execution<'a>(
+    snapshot: &'a pl_protocol::ThreadSnapshot,
+    turn_id: &str,
+) -> Option<&'a str> {
+    let turn = snapshot.active_turn.as_ref()?;
+    if turn.id != turn_id || !matches!(turn.state, TurnState::Running(_)) {
+        return None;
+    }
+    let execution = snapshot.runtime.as_ref()?.execution.as_ref()?;
+    (execution.phase() == pl_protocol::AgentExecutionPhase::Running
+        && execution.turn_id() == Some(turn_id))
+    .then_some(execution.id())
+}
+
+#[derive(Debug)]
+struct LiveBodyConsumption {
+    target: LiveBodyTarget,
+    execution_id: String,
+    bytes: u64,
+    windows: usize,
+    live_reads: usize,
+    live_bytes: u64,
+}
+
+async fn consume_live_body(
+    runtime: &pl_studio_runtime::StudioRuntime,
+    thread_id: &str,
+    reader: &ConversationReader,
+    target: LiveBodyTarget,
+) -> Result<LiveBodyConsumption> {
+    let first = runtime.thread_snapshot(thread_id).await?;
+    let execution_id = running_execution(&first, &target.turn_id)
+        .context("first live body arrived after its original execution ended")?
+        .to_owned();
+    let total = (pl_provider_fixture::GUI_STREAMING_OUTPUT_REFERENCE_TOKENS * 2) as u64;
+    let mut watch = reader
+        .watch_content(
+            &target.reference,
+            ContentRange {
+                offset: 0,
+                max_bytes: 64 * 1024,
+            },
+        )
+        .await?;
+    let result = async {
+        let mut cursor = 0;
+        let mut available = 0;
+        let mut generation = None;
+        let mut windows = 0;
+        let mut live_reads = 0;
+        let mut live_bytes = 0;
+        loop {
+            let before = runtime.thread_snapshot(thread_id).await?;
+            let window = watch
+                .recv()
+                .await?
+                .context("content watch ended before a sealed body")?;
+            ensure!(window.offset == 0 && window.bytes.len() <= 64 * 1024);
+            ensure!(window.bytes.len() as u64 <= window.available_through);
+            ensure!(window.available_through >= available && window.available_through <= total);
+            ensure!(generation.as_ref().is_none_or(|value| value == &window.generation));
+            generation = Some(window.generation.clone());
+            available = window.available_through;
+            let sealed = window.sealed;
+            let previous = cursor;
+            let (parts, remainder) = window.bytes.as_chunks::<2>();
+            ensure!(remainder.is_empty() && parts.iter().all(|part| part == b" a"));
+            if cursor < window.bytes.len() as u64 {
+                cursor = window.bytes.len() as u64;
+            }
+            // Retain only the cursor/generation, not a second growing body or a queue of windows.
+            drop(window);
+            while cursor < available {
+                let suffix = reader
+                    .read_content(
+                        &target.reference,
+                        ContentRange {
+                            offset: cursor,
+                            max_bytes: (available - cursor).min(64 * 1024) as u32,
+                        },
+                    )
+                    .await?;
+                ensure!(suffix.offset == cursor && !suffix.bytes.is_empty());
+                ensure!(suffix.bytes.len() as u64 <= available - cursor);
+                ensure!(suffix.available_through >= available && suffix.available_through <= total);
+                ensure!(generation.as_ref() == Some(&suffix.generation));
+                let (parts, remainder) = suffix.bytes.as_chunks::<2>();
+                ensure!(remainder.is_empty() && parts.iter().all(|part| part == b" a"));
+                cursor += suffix.bytes.len() as u64;
+            }
+            let after = runtime.thread_snapshot(thread_id).await?;
+            windows += 1;
+            // Fresh hot snapshots bracket the actual read. A pending Main notification alone
+            // cannot prove that the original Turn/execution was still running.
+            if cursor > previous
+                && running_execution(&before, &target.turn_id) == Some(execution_id.as_str())
+                && running_execution(&after, &target.turn_id) == Some(execution_id.as_str())
+            {
+                live_reads += 1;
+                live_bytes += cursor - previous;
+            }
+            if sealed {
+                ensure!(cursor == total, "continuous reader did not consume the complete body");
+                let end = reader
+                    .read_content(
+                        &target.reference,
+                        ContentRange {
+                            offset: cursor,
+                            max_bytes: 1,
+                        },
+                    )
+                    .await?;
+                ensure!(end.offset == cursor && end.bytes.is_empty() && end.sealed);
+                ensure!(end.available_through == total && generation.as_ref() == Some(&end.generation));
+                ensure!(live_reads >= 2 && live_bytes > 0,
+                    "no repeated original-running body reads: windows={windows}, live_reads={live_reads}, live_bytes={live_bytes}");
+                break;
+            }
+        }
+        Ok(LiveBodyConsumption {
+            target,
+            execution_id,
+            bytes: cursor,
+            windows,
+            live_reads,
+            live_bytes,
+        })
+    }
+    .await;
+    watch.request_close();
+    let closed = watch.close().await;
+    let result = result.with_context(|| format!("live content-watch cleanup: {closed:?}"))?;
+    closed?;
+    Ok(result)
+}
+
+#[tokio::test]
+async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
+    let prompt = "realistic-single-live-body";
+    let env = Environment::new(
+        vec![prompt_step(
+            prompt,
+            0,
+            pl_provider_fixture::gui_streaming_output_reply(1, 1),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, prompt).await?;
+        let id = &thread.thread.id;
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand(37))
+            .await?;
+        let observed = async {
+            let first = chat(&mut feed).await?;
+            first.validate_for(&ChatScope::Main)?;
+            ensure!(first.placement == ChatPlacement::Set);
+            let reader = feed.reader().clone();
+            let (offer, received) = tokio::sync::oneshot::channel();
+            let mut offer = Some(offer);
+            let mut retired = first
+                .current
+                .as_ref()
+                .is_some_and(|current| current.active_turn.is_none() && current.items.is_empty());
+            let mut peak_batch = first.encoded_len()?;
+            ensure!(first.entries.len() <= demand(37).max_items as usize);
+            ensure!(peak_batch <= demand(37).max_bytes as usize);
+            let mut last_position = items(first.entries.clone())?.last().and_then(|item| item.position);
+            if let Some(target) = live_body_target(&first)?
+                && let Some(sender) = offer.take()
+            {
+                sender.send(target).map_err(|_| anyhow::anyhow!("live reader closed before its first target"))?;
+            }
+            let consume = async {
+                let target = received.await.context("Main never published an original live body")?;
+                consume_live_body(&env.runtime, id, &reader, target).await
+            };
+            let observe = async {
+                let result = async {
+                    let mut appended = Vec::new();
+                    let mut terminal = None;
+                    while terminal.is_none() || !retired {
+                        match next(&mut feed).await? {
+                            ConversationEvent::Chat { batch } => {
+                                batch.validate_for(&ChatScope::Main)?;
+                                ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
+                                ensure!(batch.entries.len() <= demand(37).max_items as usize);
+                                peak_batch = peak_batch.max(batch.encoded_len()?);
+                                ensure!(peak_batch <= demand(37).max_bytes as usize);
+                                if let Some(target) = live_body_target(&batch)?
+                                    && let Some(sender) = offer.take()
+                                {
+                                    sender.send(target).map_err(|_| anyhow::anyhow!("live reader closed before its first target"))?;
+                                }
+                                if let Some(current) = &batch.current {
+                                    retired = current.active_turn.is_none() && current.items.is_empty();
+                                }
+                                let items = items(batch.entries)?;
+                                for item in &items {
+                                    ensure!(item.position > last_position, "Main Append changed item order");
+                                    last_position = item.position;
+                                }
+                                appended.extend(items);
+                            }
+                            ConversationEvent::State { update } => {
+                                if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                                {
+                                    ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+                                    ensure!(matches!(turn.state, TurnState::Completed(_)), "real output Turn failed: {:?}", turn.state);
+                                    terminal = Some(turn.id);
+                                }
+                            }
+                        }
+                    }
+                    Ok::<_, anyhow::Error>((appended, terminal.context("typed Turn terminal")?, peak_batch))
+                }
+                .await;
+                drop(offer);
+                result
+            };
+            tokio::time::timeout(Duration::from_secs(120), async {
+                // The one-time identity transfer is synchronous; it cannot stall Main on body IO.
+                // Both owners remain joined even if either branch fails.
+                let (main, body) = tokio::join!(observe, consume);
+                let (appended, terminal, peak_batch) = main.with_context(|| format!("continuous body result: {body:?}"))?;
+                let body = body?;
+                let mut completed = history(&reader, first, demand(37)).await?;
+                completed.extend(appended);
+                let matching = completed.iter().filter(|item| item.id == body.target.display_id).collect::<Vec<_>>();
+                ensure!(matching.len() == 1 && body.target.turn_id == terminal);
+                ensure!(matching[0].contents.iter().any(|content| content.reference == body.target.reference));
+                let mut display_ids = HashSet::new();
+                let mut identities = HashSet::new();
+                let mut turns = HashSet::new();
+                let (count, bytes) = count_output(&env, id, &reader, &completed,
+                    &mut display_ids, &mut identities, &mut turns).await?;
+                ensure!(turns.len() == 1 && turns.contains(&terminal));
+                ensure!(count == 1 && bytes == body.bytes && bytes == 256_000);
+                eprintln!("continuous single body: execution={}, turn={}, bytes={}, windows={}, original_running_reads={}, original_running_bytes={}, peak_chat_bytes={}",
+                    body.execution_id, terminal, bytes, body.windows, body.live_reads, body.live_bytes, peak_batch);
+                Ok::<_, anyhow::Error>(())
+            }).await.context("paced single-item live consumer exceeded its original deadline")?
+        }
+        .await;
+        finish_feed(&mut feed, observed).await
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Result<()> {
+    const ITEMS: usize = 2_000;
+    const BYTES: u64 = 256_000;
+    let prompt = "realistic-many-live-bodies";
+    let env = Environment::new(
+        vec![prompt_step(
+            prompt,
+            0,
+            pl_provider_fixture::gui_streaming_output_reply(ITEMS, 1),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env.start(ThreadWorkspaceMode::Worktree, prompt).await?;
+        let id = &thread.thread.id;
+        let (turn_id, execution_id) = {
+            let snapshot = env.runtime.thread_snapshot(id).await?;
+            let turn = snapshot.active_turn.as_ref().context("original active Turn")?;
+            ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+            let execution = running_execution(&snapshot, &turn.id)
+                .context("original execution was not running before the many-item read")?;
+            (turn.id.clone(), execution.to_owned())
+        };
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand(37))
+            .await?;
+        let observed = async {
+            let first = chat(&mut feed).await?;
+            first.validate_for(&ChatScope::Main)?;
+            ensure!(first.placement == ChatPlacement::Set);
+            ensure!(first.entries.len() <= demand(37).max_items as usize);
+            let mut peak_batch = first.encoded_len()?;
+            ensure!(peak_batch <= demand(37).max_bytes as usize);
+            let mut seen_original = first.current.as_ref().is_some_and(|current| {
+                current.active_turn.as_ref().is_some_and(|turn| turn.id == turn_id)
+            });
+            let mut retired = seen_original
+                && first.current.as_ref().is_some_and(|current| {
+                    current.active_turn.is_none() && current.items.is_empty()
+                });
+            let reader = feed.reader().clone();
+            let initial = history(&reader, first, demand(37)).await?;
+            let mut last_position = initial.last().and_then(|item| item.position);
+            // This is the single admitted header inventory used by the assertion, not a second
+            // body or window queue. The independent reader clones at most one demand-sized slice.
+            let admitted = std::sync::Mutex::new((initial, false));
+            let (changed, mut changes) = tokio::sync::watch::channel(0_usize);
+            let observe = async {
+                let result = async {
+                    let mut terminal = None;
+                    while terminal.is_none() || !retired {
+                        match next(&mut feed).await? {
+                            ConversationEvent::Chat { batch } => {
+                                batch.validate_for(&ChatScope::Main)?;
+                                ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
+                                ensure!(batch.entries.len() <= demand(37).max_items as usize);
+                                peak_batch = peak_batch.max(batch.encoded_len()?);
+                                ensure!(peak_batch <= demand(37).max_bytes as usize);
+                                if let Some(current) = &batch.current {
+                                    seen_original |= current.active_turn.as_ref()
+                                        .is_some_and(|turn| turn.id == turn_id);
+                                    retired = seen_original && current.active_turn.is_none()
+                                        && current.items.is_empty();
+                                }
+                                let items = items(batch.entries)?;
+                                for item in &items {
+                                    ensure!(item.position > last_position, "Main Append changed item order");
+                                    last_position = item.position;
+                                }
+                                let count = {
+                                    let mut state = admitted.lock().expect("test header owner poisoned");
+                                    state.0.extend(items);
+                                    state.0.len()
+                                };
+                                changed.send_replace(count);
+                            }
+                            ConversationEvent::State { update } => {
+                                if let ThreadSubscriptionUpdate::Notification { notification } = *update
+                                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                                {
+                                    ensure!(turn.id == turn_id);
+                                    ensure!(turn.input_id.as_deref() == Some(format!("input-{prompt}").as_str()));
+                                    ensure!(matches!(turn.state, TurnState::Completed(_)),
+                                        "real many-item Turn failed: {:?}", turn.state);
+                                    ensure!(terminal.replace(turn.id).is_none(), "duplicate target terminal");
+                                }
+                            }
+                        }
+                    }
+                    terminal.context("typed many-item terminal").map(|terminal| (terminal, peak_batch))
+                }.await;
+                let count = {
+                    let mut state = admitted.lock().expect("test header owner poisoned");
+                    state.1 = true;
+                    state.0.len()
+                };
+                changed.send_replace(count);
+                result
+            };
+            let consume = async {
+                let mut cursor = 0;
+                let mut display_ids = HashSet::new();
+                let mut identities = HashSet::new();
+                let mut turns = HashSet::new();
+                let (mut count, mut bytes) = (0, 0);
+                let (mut live_batches, mut live_items, mut live_bytes) = (0, 0, 0);
+                loop {
+                    let (batch, done) = {
+                        let state = admitted.lock().expect("test header owner poisoned");
+                        (state.0.iter().skip(cursor).take(37).cloned().collect::<Vec<_>>(), state.1)
+                    };
+                    if batch.is_empty() {
+                        if done {
+                            break;
+                        }
+                        changes.changed().await.context("header observation closed before completion")?;
+                        continue;
+                    }
+                    let before = env.runtime.thread_snapshot(id).await?;
+                    let (members, body_bytes) = count_output(&env, id, &reader, &batch,
+                        &mut display_ids, &mut identities, &mut turns).await?;
+                    let after = env.runtime.thread_snapshot(id).await?;
+                    if members > 0
+                        && running_execution(&before, &turn_id) == Some(execution_id.as_str())
+                        && running_execution(&after, &turn_id) == Some(execution_id.as_str())
+                    {
+                        live_batches += 1;
+                        live_items += members;
+                        live_bytes += body_bytes;
+                    }
+                    cursor += batch.len();
+                    count += members;
+                    bytes += body_bytes;
+                }
+                ensure!(turns.len() == 1 && turns.contains(&turn_id));
+                ensure!(count == ITEMS && bytes == BYTES,
+                    "many-item body coverage changed: items={count}, bytes={bytes}");
+                ensure!(live_batches >= 2 && live_items >= 2 && live_bytes > 0,
+                    "no repeated original-running many-item reads: batches={live_batches}, items={live_items}, bytes={live_bytes}");
+                Ok::<_, anyhow::Error>((count, bytes, live_batches, live_items, live_bytes))
+            };
+            tokio::time::timeout(Duration::from_secs(120), async {
+                let (main, bodies) = tokio::join!(observe, consume);
+                let (terminal, peak_batch) = main.with_context(|| format!("many-item body consumer: {bodies:?}"))?;
+                let (count, bytes, live_batches, live_items, live_bytes) = bodies?;
+                ensure!(terminal == turn_id);
+                eprintln!("continuous many bodies: execution={execution_id}, turn={turn_id}, items={count}, bytes={bytes}, original_running_batches={live_batches}, original_running_items={live_items}, original_running_bytes={live_bytes}, peak_chat_bytes={peak_batch}");
+                Ok::<_, anyhow::Error>(())
+            }).await.context("paced many-item live consumer exceeded its original deadline")?
         }.await;
         finish_feed(&mut feed, observed).await
     }.await;
