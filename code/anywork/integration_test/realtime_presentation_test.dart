@@ -37,6 +37,8 @@ import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
 
+const _firstTokenObserverStage = 'realtime-first-token';
+const _readableTextObserverStage = 'realtime-text-readable';
 const _parallelObserverStage = 'realtime-parallel-observer';
 const _parallelObserverPrefix = 'realtime parallel observers ready';
 const _hostCwdObserverStage = 'realtime-host-cwd-observer';
@@ -184,12 +186,27 @@ void main() {
 
       await capturePresentation(tester, 'realtime-start.png');
       await scene.submit('Realtime delayed first token');
+      await fixtureGate(tester, provider, _firstTokenObserverStage);
       await scene.untilKey(const ValueKey('conversation-activity'));
+      expect(scene.observed.live, isEmpty);
       await capturePresentation(tester, 'realtime-thinking.png');
+      await fixtureGate(
+        tester,
+        provider,
+        _firstTokenObserverStage,
+        release: true,
+      );
+      await fixtureGate(tester, provider, _readableTextObserverStage);
       await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 20),
       );
       await capturePresentation(tester, 'realtime-streaming.png');
+      await fixtureGate(
+        tester,
+        provider,
+        _readableTextObserverStage,
+        release: true,
+      );
       await scene.completed(answer: 'realtime delayed first token');
 
       await scene.submit('Realtime reasoning then answer');
