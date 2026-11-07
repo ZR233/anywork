@@ -2357,11 +2357,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionReasonLabel => 'Reason';
 
   @override
-  String get interactionPlanConfirmTitle => 'Confirm this plan?';
+  String get interactionPlanConfirmTitle => 'Confirm implementation plan';
 
   @override
   String get interactionPlanConfirmSubtitle =>
-      'Confirm it, or describe what should change.';
+      'Approve to continue with this plan, or request changes.';
 
   @override
   String get interactionPlanReadyTitle => 'Implementation plan ready';
@@ -2379,6 +2379,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get planDetailRevisionRequested => 'Changes requested';
 
   @override
+  String get planDetailDraftingHelp =>
+      'You will be asked to confirm when the plan is ready.';
+
+  @override
+  String get planDetailAwaitingHelp =>
+      'Read the plan, then approve it or request changes.';
+
+  @override
+  String get planDetailRevisionHelp =>
+      'Your feedback was submitted. You will be asked to confirm the updated plan.';
+
+  @override
+  String get planDetailApprovedHelp =>
+      'Approved and available to read at any time.';
+
+  @override
+  String get planDetailEmptyTitle => 'The plan is being drafted';
+
+  @override
+  String get planDetailEmptyHelp =>
+      'You can read the full plan here when it is ready.';
+
+  @override
+  String get planDecisionSubmitting => 'Submitting your decision…';
+
+  @override
   String get statusPlanEntry => 'Plan';
 
   @override
@@ -2393,13 +2419,14 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get interactionPlanAdjust => 'Tell anywork how to adjust';
+  String get interactionPlanAdjust => 'Requested changes';
 
   @override
-  String get interactionPlanConfirmAction => 'Confirm and execute';
+  String get interactionPlanConfirmAction => 'Approve plan';
 
   @override
-  String get interactionPlanAdjustHint => 'Describe what should change...';
+  String get interactionPlanAdjustHint =>
+      'Write what you would like to change…';
 
   @override
   String get interactionPlanAdjustSubmit => 'Submit changes';
@@ -6109,4 +6136,44 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpServiceInfoSectionTitle => 'Managed server and connection';
+
+  @override
+  String get conversationActivityResponding => 'Generating response';
+
+  @override
+  String get conversationActivityFollowOutput => 'Follow output';
+
+  @override
+  String get timelineGroupWorking => 'Working';
+
+  @override
+  String get timelineGroupUnfinished => 'Work unfinished';
+
+  @override
+  String get timelineGroupRecord => 'Work record';
+
+  @override
+  String timelineGroupMemberCount(int count) {
+    return '$count items';
+  }
+
+  @override
+  String timelineGroupFailedCount(int count) {
+    return '$count failed';
+  }
+
+  @override
+  String timelineGroupStoppedCount(int count) {
+    return '$count stopped';
+  }
+
+  @override
+  String timelineGroupCompletedCount(int count) {
+    return '$count completed';
+  }
+
+  @override
+  String timelineGroupActiveCount(int count) {
+    return '$count running';
+  }
 }

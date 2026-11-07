@@ -148,7 +148,7 @@
   }
 
   const describe = member => member.kind === 'thinking'
-    ? '思考：' + member.title
+    ? '思考：' + (member.summary || member.title)
     : member.kind === 'readImage'
       ? member.title
       : member.title + (member.target ? ' ' + member.target : '');
@@ -157,7 +157,7 @@
     return [
       `工作组 · ${group.members.length} 步 · ${group.elapsed}s`,
       ...group.members.map(member => [
-        `${member.title}${member.kind !== 'readImage' && member.target ? ' · ' + member.target : ''} · ${statusLabel(member.status)} · ${member.elapsed}s`,
+        `${member.summary || member.title}${member.kind !== 'readImage' && member.target ? ' · ' + member.target : ''} · ${statusLabel(member.status)} · ${member.elapsed}s`,
         member.content || member.output || member.rule || '',
         ...(member.files || []).map(file => file.name + '\n' + file.diff),
         ...(member.targets || []).map(target => target.name + ' · ' + statusLabel(target.status) + '\n' + target.report)
@@ -186,7 +186,8 @@
       if (member.kind !== 'readImage' && member.target) {
         this.label.append(node(`<code class="cv-target" title="${escape(member.path || member.target)}">${escape(member.target)}</code>`));
       }
-      if (member.kind !== 'thinking') this.label.append(node(`<span class="cv-chevron">${icon('chevron-right')}</span>`));
+      this.chevron = node(`<span class="cv-chevron">${icon('chevron-right')}</span>`);
+      this.label.append(this.chevron);
       this.body = node('<div class="cv-member-body"></div>');
       this.node.append(this.head, this.body);
       if (member.kind === 'thinking') {
@@ -203,9 +204,7 @@
         this.body.firstChild.append(button('复制命令', 'copy', () => actions.copy(this.current.target), 'cv-quiet'));
         this.log = node('<pre class="cv-terminal" tabindex="0" aria-label="命令输出"></pre>');
         this.logContent = new SelectableContent(this.log, value => {
-          const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 22;
           this.log.textContent = value;
-          if (follow) this.log.scrollTop = this.log.scrollHeight;
         });
         this.exit = node('<div class="cv-detail-meta"></div>');
         this.body.append(this.log, this.exit);
@@ -246,8 +245,35 @@
     }
     update(member) {
       this.current = member;
-      if (this.verb.textContent !== member.title) {
-        this.verb.textContent = member.title;
+      const thinking = member.kind === 'thinking';
+      const hasContent = Boolean(member.content?.trim());
+      const elapsed = Number.isFinite(member.elapsed) && member.elapsed >= 0
+        ? member.elapsed < 1 ? '不到 1 秒'
+          : member.elapsed < 60 ? `${member.elapsed} 秒`
+          : `${Math.floor(member.elapsed / 60)} 分${member.elapsed % 60 ? ` ${member.elapsed % 60} 秒` : ''}`
+        : null;
+      const label = thinking
+        ? member.summary || (elapsed ? `思考了 ${elapsed}` : member.status === 'running' ? '思考中' : '思考结束')
+        : member.title;
+      if (this.verb.textContent !== label) this.verb.textContent = label;
+      this.verb.title = label;
+      if (thinking) {
+        const expandable = hasContent;
+        this.chevron.hidden = !expandable;
+        if (expandable !== (this.node.tagName === 'DETAILS')) {
+          const replacement = document.createElement(expandable ? 'details' : 'section');
+          for (const attribute of this.node.attributes) replacement.setAttribute(attribute.name, attribute.value);
+          const heading = document.createElement(expandable ? 'summary' : 'div');
+          heading.className = this.head.className;
+          heading.append(...this.head.childNodes);
+          this.head.replaceWith(heading);
+          this.head = heading;
+          replacement.append(...this.node.childNodes);
+          this.node.replaceWith(replacement);
+          this.node = replacement;
+        }
+        this.body.hidden = !hasContent;
+        this.markdown.update(member.content || '');
       }
       if (this.status !== member.status) {
         this.status = member.status;
@@ -262,7 +288,7 @@
         this.statusText.textContent = statusLabel(member.status);
       }
       const interrupted = member.status === 'failed' || member.status === 'stopped' ? statusLabel(member.status) + ' · ' : '';
-      this.meta.textContent = interrupted + member.elapsed + 's';
+      this.meta.textContent = thinking ? '' : interrupted + member.elapsed + 's';
       if (this.logContent) {
         this.logContent.update(member.output);
         this.exit.textContent = member.exitCode === null ? '正在接收输出' : '退出码 ' + member.exitCode;

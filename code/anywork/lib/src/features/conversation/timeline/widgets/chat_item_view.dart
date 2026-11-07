@@ -11,9 +11,11 @@ import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/timeline_display_unit.dart';
+import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
+import 'timeline_reasoning_view.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
 import 'timeline_display_unit_view.dart';
@@ -40,8 +42,8 @@ class ChatItemView extends StatefulWidget {
     this.onContentLayout,
     this.isDisplayActive,
     this.groupMembersBuilder,
-    this.onToolExpansionChanged,
-    this.toolInitiallyExpanded = false,
+    this.onExpansionChanged,
+    this.initiallyExpanded = false,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
@@ -52,8 +54,8 @@ class ChatItemView extends StatefulWidget {
   onContentLayout;
   final bool Function()? isDisplayActive;
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
-  final ValueChanged<bool>? onToolExpansionChanged;
-  final bool toolInitiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
+  final bool initiallyExpanded;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -228,38 +230,65 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _thinking(BuildContext context) {
     final outcome = item.data['outcome'];
     final state = outcome is Map<String, Object?> ? outcome['kind'] : null;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TimelineActivityRow(
-          icon: state == 'cancelled'
-              ? Icons.stop_circle_outlined
-              : Icons.psychology_alt_outlined,
-          isIssue: state == 'failed' || state == 'budgetLimited',
-          label: switch (state) {
-            'failed' => '思考失败',
-            'cancelled' => '思考已停止',
-            _ => context.l10n.timelineReasoningEnded,
+    final nonemptyBodies = item.bodies.where(
+      (body) =>
+          body.byteLength > 0 &&
+          (body.inline == null || utf8.decode(body.inline!).trim().isNotEmpty),
+    );
+    final summaries = nonemptyBodies
+        .where((body) => body.key.startsWith('part.summaryText.'))
+        .toList();
+    final bodies = nonemptyBodies
+        .where((body) => !body.key.startsWith('part.summaryText.'))
+        .toList();
+    final inlineSummary = summaries.every((body) => body.inline != null);
+    final summary = inlineSummary
+        ? summaries.map((body) => utf8.decode(body.inline!)).join(' ')
+        : null;
+    final atom = item.atom;
+    return TimelineReasoningView(
+      summary: summary,
+      summaryWidget: inlineSummary
+          ? null
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final body in summaries)
+                  Flexible(
+                    child: body.reference != null || body.inline == null
+                        ? TimelineBodyReadIntent(
+                            summary: true,
+                            child: _body(body),
+                          )
+                        : TimelineReasoningSummary(
+                            text: utf8.decode(body.inline!),
+                          ),
+                  ),
+              ],
+            ),
+      startedAt: atom?.startedAt,
+      finishedAt: atom?.finishedAt,
+      outcome:
+          (state is String ? state : null) ??
+          switch (atom?.lifecycle) {
+            TerminalChatAtom(:final outcome) => outcome.name,
+            _ => null,
           },
-          expandable: false,
-        ),
-        Padding(
-          padding: const EdgeInsetsDirectional.only(
-            start: TimelineActivityRow.contentIndent,
-          ),
-          child: TimelineBodyReadIntent(
-            child: Column(
+      diagnostic: state == null || state == 'completed'
+          ? null
+          : const JsonEncoder.withIndent('  ').convert(outcome),
+      initiallyExpanded: widget.initiallyExpanded,
+      onExpansionChanged: widget.onExpansionChanged,
+      body: bodies.isEmpty
+          ? null
+          : Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final body in item.bodies) _body(body),
-                _outcomeNotice(item.data['outcome']),
+                for (final body in bodies) _body(body),
+                _outcomeNotice(outcome),
               ],
             ),
-          ),
-        ),
-      ],
     );
   }
 
@@ -297,8 +326,8 @@ class _ChatItemViewState extends State<ChatItemView> {
       final details = TimelineToolDetails(
         item: tool,
         inline: wait != null,
-        initiallyExpanded: widget.toolInitiallyExpanded,
-        onExpansionChanged: widget.onToolExpansionChanged,
+        initiallyExpanded: widget.initiallyExpanded,
+        onExpansionChanged: widget.onExpansionChanged,
         additionalContentBuilder: item.attachments.isEmpty
             ? null
             : (_) => _media(),
@@ -326,17 +355,17 @@ class _ChatItemViewState extends State<ChatItemView> {
             ? TimelineWaitPanel(
                 identity: item.id,
                 presentation: wait,
-                initiallyExpanded: widget.toolInitiallyExpanded,
+                initiallyExpanded: widget.initiallyExpanded,
                 diagnostics: details,
-                onExpansionChanged: widget.onToolExpansionChanged,
+                onExpansionChanged: widget.onExpansionChanged,
               )
             : timelineIsWebSearch(tool) &&
                   item.attachments.isEmpty &&
                   (contents == null || contents.isEmpty)
             ? TimelineWebSearchToolCard(
                 item: tool,
-                initiallyExpanded: widget.toolInitiallyExpanded,
-                onExpansionChanged: widget.onToolExpansionChanged,
+                initiallyExpanded: widget.initiallyExpanded,
+                onExpansionChanged: widget.onExpansionChanged,
               )
             : details,
       );
@@ -384,16 +413,21 @@ class _ChatItemViewState extends State<ChatItemView> {
       'revisionRequested' => context.l10n.planReceiptRevisionRequested,
       'cancelled' => context.l10n.planReceiptCancelled,
       'resolved' => context.l10n.planReceiptAnswered,
-      _ => '计划 · $decision',
+      _ => '${context.l10n.statusPlanEntry} · $decision',
+    };
+    final icon = switch (decision) {
+      'approved' => Icons.check,
+      'revisionRequested' => Icons.edit_outlined,
+      'cancelled' => Icons.close,
+      _ => Icons.description_outlined,
     };
     final version = item.data['documentVersion'];
-    final summary = version is int ? '$label · v$version' : label;
-    return KeyedSubtree(
+    return PlanReceiptView(
       key: StudioDriverKeys.timelinePlanReceipt(item.id),
-      child: _disclosure(Icons.checklist_rtl, summary, [
-        for (final body in item.bodies) _body(body),
-        _rawRecord(),
-      ]),
+      label: label,
+      icon: icon,
+      documentVersion: version is int ? version : null,
+      children: [for (final body in item.bodies) _body(body), _rawRecord()],
     );
   }
 
@@ -563,7 +597,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       ]);
   Widget _metadata(Object? value) => StudioCodeBlock(
     text: const JsonEncoder.withIndent('  ').convert(value),
-    maxHeight: 240,
+    horizontalScroll: false,
   );
   Widget _outcomeNotice(Object? value) {
     if (value == null) return const SizedBox.shrink();
@@ -622,9 +656,9 @@ class _ChatItemViewState extends State<ChatItemView> {
   }) => TimelineActivityTileTheme(
     child: TimelineActivityDisclosure(
       key: ValueKey(('item-disclosure', item.id)),
-      initiallyExpanded: item.type == 'tool' && widget.toolInitiallyExpanded,
+      initiallyExpanded: item.type == 'tool' && widget.initiallyExpanded,
       onExpansionChanged: item.type == 'tool'
-          ? widget.onToolExpansionChanged
+          ? widget.onExpansionChanged
           : null,
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: icon,
@@ -656,7 +690,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     }
     final id = '${item.id}:${body.key}';
     final child = code
-        ? StudioCodeBlock(text: text, maxHeight: 280)
+        ? StudioCodeBlock(text: text, horizontalScroll: false)
         : widget.bodyBuilder?.call(id, text) ??
               TimelinePlainText(id: id, text: text);
     return _contentWitness(text, child);

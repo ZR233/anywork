@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../platform/external_url_launcher.dart';
+import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../views/plan_detail_view.dart';
 export '../views/plan_detail_view.dart'
@@ -23,7 +23,7 @@ class PlanDetailConnector extends ConsumerWidget {
     this.fullWidth = false,
   });
   final String identity;
-  final String markdown;
+  final String? markdown;
   final PlanDetailStatus status;
   final VoidCallback onClose;
   final VoidCallback? onToggleReadingMode;
@@ -31,32 +31,35 @@ class PlanDetailConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) => PlanDetailView(
     identity: identity,
-    title: planDocumentTitle(markdown, fallback: '计划'),
+    title: context.l10n.interactionPlanDetailsTitle,
     status: status,
     onClose: onClose,
     onToggleReadingMode: onToggleReadingMode,
     fullWidth: fullWidth,
-    body: TimelineMarkdown(
-      key: StudioDriverKeys.planDetailsMarkdown,
-      id: identity,
-      text: markdown,
-      isSafeLink: (url) => safeExternalWebUrl(url) != null,
-      onLink: (raw) {
-        final url = safeExternalWebUrl(raw);
-        if (url != null) {
-          unawaited(
-            ref.read(externalUrlLauncherProvider)(url).catchError((
-              Object error,
-            ) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text(error.toString())));
+    body: markdown == null
+        ? null
+        : TimelineMarkdown(
+            key: StudioDriverKeys.planDetailsMarkdown,
+            id: identity,
+            text: markdown!,
+            isSafeLink: (url) => safeExternalWebUrl(url) != null,
+            onLink: (raw) {
+              final url = safeExternalWebUrl(raw);
+              if (url != null) {
+                unawaited(
+                  ref.read(externalUrlLauncherProvider)(url).catchError((
+                    Object error,
+                  ) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text(error.toString())));
+                    }
+                  }),
+                );
               }
-            }),
-          );
-        }
-      },
-      imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
-    ),
+            },
+            imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
+          ),
   );
 }

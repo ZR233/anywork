@@ -83,6 +83,7 @@ class _PlanConfirmationConnectorState
     return plan_view.PlanConfirmationView(
       controller: _feedbackController,
       available: available,
+      submitting: (command?.pending ?? false) || (command?.accepted ?? false),
       enabled:
           widget.enabled &&
           !(command?.blocked ?? false) &&

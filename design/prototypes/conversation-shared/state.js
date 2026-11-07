@@ -288,6 +288,22 @@
         const target = this.state.queue.findIndex(event => event.label === spec.at);
         if (target < 0) throw new Error('Unknown story frame: ' + spec.at);
         while (this.state.cursor <= target) this.advance();
+        if (spec.id === 'long-tool-output') {
+          this.state.live.members = [{
+            id: 'long-tool-output', kind: 'command', title: '执行命令', target: 'cargo flutter analyze',
+            status: 'running', elapsed: 12, cwd: '~/work/anywork', exitCode: null,
+            output: Array.from({length: 60}, (_, i) => `检查第 ${i + 1} 项：通过。`).join('\n')
+          }];
+        }
+        if (spec.id === 'reasoning-variants') {
+          this.state.live.members = [
+            { id: 'reasoning-summary-body', kind: 'thinking', title: '思考', summary: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 125,
+              content: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。' },
+            { id: 'reasoning-summary-only', kind: 'thinking', title: '思考', summary: '核对运行期选择器锁定规则', status: 'completed', elapsed: 125 },
+            { id: 'reasoning-body-only', kind: 'thinking', title: '思考', status: 'completed', elapsed: 125,
+              content: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。' }
+          ];
+        }
       } else if (spec.live === 'compacting') {
         this.startCompression();
       } else if (spec.pending) {
