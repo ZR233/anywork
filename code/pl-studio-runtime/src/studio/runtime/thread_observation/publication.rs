@@ -88,6 +88,7 @@ fn current_frame_len(serial: u64, head: u64, handoff: &CurrentHandoff) -> serde_
         before: (),
         after: (),
         entries: &'a [pl_protocol::ChatEntry],
+        updates: &'a [pl_protocol::TimelineItem],
         members: &'a [crate::studio::thread_projection::timeline::MemberChange],
         sources: &'a [pl_protocol::ChatSourceState],
         retirements: &'a [crate::studio::thread_projection::CurrentRetirement],
@@ -99,6 +100,7 @@ fn current_frame_len(serial: u64, head: u64, handoff: &CurrentHandoff) -> serde_
         before: (),
         after: (),
         entries: handoff.entries(),
+        updates: handoff.updates(),
         members: handoff.members(),
         sources: handoff.sources(),
         retirements: handoff.retirements(),
@@ -368,8 +370,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn component_frame_length_matches_original_json() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn component_frame_length_matches_original_json() -> anyhow::Result<()> {
         use pl_protocol::*;
         let source = ChatSourceState {
             source: ChatSourceId::ForegroundTurn {
@@ -464,7 +466,9 @@ mod tests {
                         through: 0,
                     },
                 ]),
-            );
+            )
+            .with_updates(update.current().to_vec().into());
+            assert!(!handoff.updates().is_empty());
             for (serial, head) in [(0, 42), (u64::MAX, u64::MAX)] {
                 let retirements = handoff.retirements().iter().map(|retirement| {
                 serde_json::json!({"itemId":retirement.item_id,"through":retirement.through})
@@ -476,6 +480,7 @@ mod tests {
                     "before":handoff.before().projection(),
                     "after":handoff.after().projection(),
                     "entries":handoff.entries(),
+                    "updates":handoff.updates(),
                     "members":handoff.members(),
                     "sources":handoff.sources(),
                     "retirements":retirements,
@@ -488,6 +493,90 @@ mod tests {
                 }
             }
         }
+        let mut projection = crate::studio::thread_projection::LiveProjection::new();
+        projection.bind_conversation_identity("db".into())?;
+        projection.observe_test_current(&Thread::placeholder("thread"), Vec::new())?;
+        let current = projection.current_state().expect("frozen current");
+        let base = CurrentHandoff::new(
+            0,
+            current.frozen_projection().clone(),
+            current.frozen_projection().clone(),
+            Arc::from([]),
+        );
+        let mut group = update.current()[0].clone();
+        group.source = ChatSourceId::BackgroundResult {
+            message_id: "result".into(),
+        };
+        group.delivery = ChatDeliveryKind::Independent;
+        group.position = Some(0);
+        group.admission_closed = true;
+        group.summary.as_mut().expect("group summary").active_count = 0;
+        // Synthetic summary padding isolates this owner's exact frame boundary.
+        group
+            .summary
+            .as_mut()
+            .expect("group summary")
+            .latest_thinking_summary = Some(String::new());
+        let measured = base.clone().with_updates(vec![group.clone()].into());
+        let padding = CURRENT_FRAME_BYTES - usize::try_from(current_frame_len(1, 0, &measured)?)?;
+        group
+            .summary
+            .as_mut()
+            .expect("group summary")
+            .latest_thinking_summary = Some("x".repeat(padding));
+        let at_limit = Arc::new(base.clone().with_updates(vec![group.clone()].into()));
+        assert_eq!(
+            current_frame_len(1, 0, &at_limit)?,
+            CURRENT_FRAME_BYTES as u64
+        );
+        group
+            .summary
+            .as_mut()
+            .expect("group summary")
+            .latest_thinking_summary
+            .as_mut()
+            .expect("summary text")
+            .push('x');
+        let over_limit = Arc::new(base.clone().with_updates(vec![group].into()));
+        assert!(current_frame_len(2, 0, &base)? < CURRENT_FRAME_BYTES as u64);
+        assert_eq!(
+            current_frame_len(2, 0, &over_limit)?,
+            CURRENT_FRAME_BYTES as u64 + 1
+        );
+
+        let directory = tempfile::tempdir()?;
+        let history = crate::studio::storage::history::HistoryStore::open(
+            &directory.path().join("history.sqlite"),
+            "thread",
+        )
+        .await?;
+        let session = Session::new(
+            history.clone(),
+            pl_core::chat::TimelineEpoch::new("frame-budget")?,
+        );
+        let publication = ConversationPublication::new(CancellationToken::new());
+        let (_owner, progress) = watch::channel(super::super::Progress::default());
+        let mut registration = publication.capture(progress);
+        publication.publish(&session, current.clone(), Some(at_limit.clone()))?;
+        let accepted = publication.current().expect("accepted boundary frame");
+        assert_eq!(registration.cuts.try_recv()?.serial, 1);
+        let error = publication
+            .publish(&session, current, Some(over_limit))
+            .expect_err("updates must participate in the publication budget");
+        assert!(
+            error
+                .to_string()
+                .contains("current handoff exceeds bounded publication budget")
+        );
+        assert!(Arc::ptr_eq(
+            &publication.current().expect("unchanged publication"),
+            &accepted
+        ));
+        assert!(matches!(
+            registration.cuts.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        history.close_for_deletion().await?;
         Ok(())
     }
 }
