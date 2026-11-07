@@ -10,6 +10,7 @@ import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/typed_json.dart';
 import '../state/tool_presentation.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_activity_clock.dart';
 
 /// 默认显示的工具摘要来源：命令首行 / 路径 / 查询词。
 String? _commandSummary(String arguments) {
@@ -397,7 +398,9 @@ class TimelineToolDetails extends StatelessWidget {
       isIssue: timelineIssueStatuses.contains(item.statusString),
       expanded: expanded,
       expandable: expandable,
-      meta: elapsed == null ? null : _toolElapsedLabel(context, elapsed),
+      meta: elapsed == null
+          ? null
+          : activityDurationLabel(context, elapsed.inSeconds),
       tooltip: targets.tooltip,
     );
   }
@@ -557,18 +560,6 @@ Duration? _toolElapsed(TimelineToolPresentation item) {
   if (createdAt == null || completedAt == null) return null;
   final elapsed = completedAt.difference(createdAt);
   return elapsed.isNegative ? null : elapsed;
-}
-
-String _toolElapsedLabel(BuildContext context, Duration elapsed) {
-  final l10n = context.l10n;
-  final seconds = elapsed.inSeconds;
-  if (seconds <= 0) return l10n.timelineToolElapsedUnderSecond;
-  if (seconds < 60) return l10n.timelineToolElapsedSeconds(seconds);
-  final minutes = seconds ~/ 60;
-  final remainder = seconds % 60;
-  return remainder == 0
-      ? l10n.timelineToolElapsedMinutes(minutes)
-      : l10n.timelineToolElapsedMinutesSeconds(minutes, remainder);
 }
 
 /// 取消与中断的原始诊断保留原文，但按正常控制结果用中性色呈现；

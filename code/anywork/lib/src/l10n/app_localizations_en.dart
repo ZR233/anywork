@@ -6109,4 +6109,44 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpServiceInfoSectionTitle => 'Managed server and connection';
+
+  @override
+  String get conversationActivityResponding => 'Generating response';
+
+  @override
+  String get conversationActivityFollowOutput => 'Follow output';
+
+  @override
+  String get timelineGroupWorking => 'Working';
+
+  @override
+  String get timelineGroupUnfinished => 'Work unfinished';
+
+  @override
+  String get timelineGroupRecord => 'Work record';
+
+  @override
+  String timelineGroupMemberCount(int count) {
+    return '$count items';
+  }
+
+  @override
+  String timelineGroupFailedCount(int count) {
+    return '$count failed';
+  }
+
+  @override
+  String timelineGroupStoppedCount(int count) {
+    return '$count stopped';
+  }
+
+  @override
+  String timelineGroupCompletedCount(int count) {
+    return '$count completed';
+  }
+
+  @override
+  String timelineGroupActiveCount(int count) {
+    return '$count running';
+  }
 }

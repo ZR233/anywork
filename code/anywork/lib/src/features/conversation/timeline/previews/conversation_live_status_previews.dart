@@ -1,301 +1,324 @@
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../../../../app/theme/material3_theme.dart';
-import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/tool_presentation.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
+import '../widgets/chat_item_view.dart';
+import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
+import '../widgets/timeline_work_group_view.dart';
 
-Widget _liveStatusPreviewHost(
-  Widget child, {
-  TextScaler textScaler = TextScaler.noScaling,
-  double maxWidth = StudioLayout.conversationWidth,
-}) {
-  return MaterialApp(
-    debugShowCheckedModeBanner: false,
-    locale: const Locale('zh'),
-    theme: pureStudioTheme(locale: const Locale('zh')),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
-    supportedLocales: AppLocalizations.supportedLocales,
-    builder: (context, appChild) => MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaler: textScaler),
-      child: ListTileTheme(
-        data: Theme.of(context).listTileTheme,
-        child: appChild!,
-      ),
+/// 官方预览只装配生产组件，不装配 Client、原生桥或第二套状态投影。
+Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
+  debugShowCheckedModeBanner: false,
+  locale: const Locale('zh'),
+  theme: pureStudioTheme(locale: const Locale('zh')),
+  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  supportedLocales: AppLocalizations.supportedLocales,
+  builder: (context, appChild) => MediaQuery(
+    data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+    child: ListTileTheme(
+      data: Theme.of(context).listTileTheme,
+      child: appChild!,
     ),
-    home: Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(
-              maxWidth: StudioLayout.conversationWidth,
+  ),
+  home: Scaffold(body: Center(child: child)),
+);
+
+const liveStatusResponseText =
+    '已经把会话界面收敛为同一套共享模块：**起始页与运行期会话共用外壳、顶栏与输入框，上方时间线只放已结束内容，下方状态栏承载正在进行的工作组**。\n\n'
+    '### 运行期配置可配性分层\n'
+    '- **创建期一次性冻结**：工作区模式与子智能体分发在会话创建后上移至顶栏只读徽标。\n'
+    '- **运行期条件锁定**：轮次运行或等待期间锁定模式、主模型与思考强度。\n'
+    '- **子智能体只读**：详情展示历史、进展与工作区，主会话保持独立草稿。\n\n'
+    '长正文达到可用高度后在区内滚动，向上阅读或选择文字暂停跟随，点击“跟随输出”回到底部。\n\n'
+    '接下来继续核对各项交互：保留当前草稿与附件，检查宽窄窗口下的对齐，并逐项确认停止、等待和保存异常的呈现。\n\n'
+    '工作组成员逐项结束后仍留在当前区域，正文结束后完整进入时间线。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
+
+Widget liveStatusGroupPreview({
+  bool idle = false,
+  bool history = false,
+  bool thinkingOnly = false,
+}) => TimelineWorkGroupView(
+  id: history ? 'preview-history' : 'preview-live',
+  summary: TimelineGroupSummary(
+    memberCount: thinkingOnly ? 1 : 4,
+    activeCount: idle || history ? 0 : 1,
+    failedCount: 0,
+    cancelledCount: 0,
+    startedAt: history ? 100 : null,
+    finishedAt: history ? 225 : null,
+    categories: [
+      const TimelineCategoryCount(
+        category: TimelineCategory.thinking,
+        count: 1,
+      ),
+      if (!thinkingOnly) ...[
+        const TimelineCategoryCount(category: TimelineCategory.read, count: 1),
+        const TimelineCategoryCount(
+          category: TimelineCategory.command,
+          count: 1,
+        ),
+        const TimelineCategoryCount(
+          category: TimelineCategory.search,
+          count: 1,
+        ),
+      ],
+    ],
+  ),
+  live: !history,
+  executionPresent: !history,
+  admissionClosed: history,
+  initiallyExpanded: !history,
+  childBuilder: (_) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      if (thinkingOnly && !idle && !history)
+        const ConversationCurrentWindowView(
+          id: 'preview-reasoning',
+          text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
+        )
+      else
+        ChatItemView(
+          item: TimelinePreviewFixtures.item(
+            'preview-reasoning',
+            'thinking',
+            const {},
+            bodies: [
+              TimelinePreviewFixtures.body(
+                'reasoning',
+                '已完成的成员**留在状态栏的当前工作组**；同时核对运行期选择器的就地锁定提示。',
+              ),
+            ],
+          ),
+          bodyBuilder: (id, text) =>
+              ConversationCurrentWindowView(id: id, text: text),
+        ),
+      if (!thinkingOnly) ...[
+        const TimelineToolDetails(
+          item: TimelineToolPresentation(
+            id: 'preview-read',
+            toolCallId: 'preview-read',
+            name: 'stat_path',
+            presentationContract: 'builtin.stat_path@1',
+            statusString: 'succeeded',
+            arguments: '{"path":"composer_dock_connector.dart"}',
+            output: '{"kind":"file"}',
+          ),
+        ),
+        TimelineToolDetails(
+          item: TimelineToolPresentation(
+            id: 'preview-command',
+            toolCallId: 'preview-command',
+            name: 'exec',
+            presentationContract: 'builtin.exec@2',
+            statusString: idle || history ? 'succeeded' : 'running',
+            arguments: '{"command":"cargo test -p pl-core --features sqlite"}',
+            output: 'running 12 tests\ntest completed_items_keep_their_identity ... ok',
+            workingDirectory: '.',
+          ),
+        ),
+        const TimelineToolDetails(
+          item: TimelineToolPresentation(
+            id: 'preview-search',
+            toolCallId: 'preview-search',
+            name: 'search_session_note',
+            presentationContract: 'builtin.search_session_note@1',
+            statusString: 'succeeded',
+            arguments: '{"query":"选择器锁定 · 运行中发送"}',
+            output: '已找到交互约定',
+          ),
+        ),
+      ],
+    ],
+  ),
+);
+
+Widget _status(ConversationActivityKind kind, {String? error}) =>
+    ConversationActivityStatus(
+      view: ConversationActivityView(
+        identity: 'preview-${kind.name}',
+        kind: kind,
+        thinkingSeconds: kind == ConversationActivityKind.thinking ? 17 : null,
+        errorMessage: error,
+      ),
+    );
+
+@Preview(name: '思考中 · 无内容', group: '实时状态栏', size: Size(760, 110))
+Widget conversationLiveStatusWaitingPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [_status(ConversationActivityKind.thinking)],
+  ),
+);
+
+@Preview(name: '正在压缩上下文', group: '实时状态栏', size: Size(760, 110))
+Widget conversationLiveStatusCompactingPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [_status(ConversationActivityKind.compacting)],
+  ),
+);
+
+@Preview(name: '工作组 · 进行中', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(children: [liveStatusGroupPreview()]),
+);
+
+@Preview(name: '工作组 · 成员完成待交接', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusIdleGroupPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(children: [liveStatusGroupPreview(idle: true)]),
+);
+
+@Preview(name: '工作组 · 已完成', group: '实时状态栏', size: Size(760, 150))
+Widget conversationLiveStatusCompletedGroupPreview() => liveStatusPreviewHost(
+  Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 26),
+    child: liveStatusGroupPreview(history: true),
+  ),
+);
+
+@Preview(name: '工作组 · 推理详情', group: '实时状态栏', size: Size(760, 260))
+Widget conversationLiveStatusThinkingPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [liveStatusGroupPreview(thinkingOnly: true)],
+  ),
+);
+
+@Preview(name: '正文 · 长文与跟随', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusRespondingPreview() => liveStatusPreviewHost(
+  const ConversationActivityBar(
+    children: [
+      ConversationResponseView(
+        child: ConversationCurrentWindowView(
+          id: 'preview-response',
+          text: liveStatusResponseText,
+        ),
+      ),
+    ],
+  ),
+);
+
+@Preview(name: '正文 · 短文自然高度', group: '实时状态栏', size: Size(760, 180))
+Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
+  const ConversationActivityBar(
+    children: [
+      ConversationResponseView(
+        child: ConversationCurrentWindowView(
+          id: 'preview-short',
+          text: '已完成组件布局调整，正在核对各工况。',
+        ),
+      ),
+    ],
+  ),
+);
+
+@Preview(name: '等待成员', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [
+      TimelineWorkGroupView(
+        id: 'preview-wait',
+        live: true,
+        executionPresent: true,
+        admissionClosed: false,
+        initiallyExpanded: true,
+        summary: TimelineGroupSummary(
+          memberCount: 1,
+          activeCount: 1,
+          failedCount: 0,
+          cancelledCount: 0,
+          categories: const [
+            TimelineCategoryCount(category: TimelineCategory.wait, count: 1),
+          ],
+        ),
+        childBuilder: (_) => TimelineWaitDetails(
+          identity: 'preview-wait-member',
+          presentation: ThreadWaitPresentationView(
+            intent: ThreadWaitEventsIntentView(
+              targets: [
+                ThreadWaitTargetView(
+                  taskId: 'explorer',
+                  toolName: 'delegation',
+                  summary: '梳理组件边界',
+                  status: ThreadWaitTargetStatusView.succeeded,
+                ),
+                ThreadWaitTargetView(
+                  taskId: 'reviewer',
+                  toolName: 'delegation',
+                  summary: '复核布局与状态文案',
+                  status: ThreadWaitTargetStatusView.running,
+                ),
+              ],
+              timeoutMs: 300000,
             ),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: maxWidth),
-              child: child,
-            ),
+            state: ThreadWaitStateView.waiting,
+            messagesReady: false,
           ),
         ),
       ),
-    ),
-  );
-}
+    ],
+  ),
+);
 
-/// Pure inputs for the production widget; previews own no feed or reducer.
-abstract final class ConversationLiveStatusPreviewFixtures {
-  static const waiting = ConversationActivityView(
-    identity: 'preview:waiting',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.thinking,
-  );
+@Preview(name: '窄窗 · 160% 文字缩放', group: '实时状态栏', size: Size(360, 380))
+Widget conversationLiveStatusNarrowScaledPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(children: [liveStatusGroupPreview()]),
+  scale: 1.6,
+);
 
-  static const compacting = ConversationActivityView(
-    identity: 'preview:compacting',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.compacting,
-    summary: '正在整理前序记录，保留本轮任务与关键决定。',
-  );
-
-  static const thinking = ConversationActivityView(
-    identity: 'preview:thinking',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.thinking,
-    thinkingSummary: '核对依赖，准备下一步修改',
-    expandable: true,
-  );
-
-  static const tools = ConversationActivityView(
-    identity: 'preview:tools',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.runningTool,
-    thinkingSummary: '核对依赖，准备下一步修改',
-    summary: '运行检查并读取相关说明',
-    activeToolCount: 2,
-    activeTools: [
-      ThreadActivityToolEntry(
-        callId: 'preview-exec',
-        name: 'exec',
-        summary: 'cargo test -p pl-core --features sqlite',
-        arguments: ThreadActivityArgumentsKind.commandLine,
-        state: ThreadActivityToolState.running,
-      ),
-      ThreadActivityToolEntry(
-        callId: 'preview-read',
-        name: 'exec',
-        summary: 'rg -n "publish_batch" code/pl-core',
-        arguments: ThreadActivityArgumentsKind.commandLine,
-        state: ThreadActivityToolState.running,
+@Preview(name: '宽窗 · 正文', group: '实时状态栏', size: Size(1040, 300))
+Widget conversationLiveStatusWidePreview() => liveStatusPreviewHost(
+  const ConversationActivityBar(
+    children: [
+      ConversationResponseView(
+        child: ConversationCurrentWindowView(
+          id: 'preview-wide',
+          text: liveStatusResponseText,
+        ),
       ),
     ],
-    expandable: true,
-  );
+  ),
+);
 
-  static final waitPresentation = ThreadWaitPresentationView(
-    intent: ThreadWaitEventsIntentView(
-      targets: const [
-        ThreadWaitTargetView(
-          taskId: 'task:explorer',
-          toolName: 'delegation',
-          summary: '梳理实时投影与内容读取边界',
-          status: ThreadWaitTargetStatusView.succeeded,
-        ),
-        ThreadWaitTargetView(
-          taskId: 'task:reviewer',
-          toolName: 'delegation',
-          summary: '复核工具与等待详情的视觉层级',
-          status: ThreadWaitTargetStatusView.running,
-        ),
-      ],
-      timeoutMs: 300000,
-    ),
-    state: ThreadWaitStateView.waiting,
-    messagesReady: false,
-  );
+@Preview(name: '停止中', group: '实时状态栏', size: Size(760, 110))
+Widget conversationLiveStatusStoppingPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [_status(ConversationActivityKind.stopping)],
+  ),
+);
 
-  static final waitingOnTools = ConversationActivityView(
-    identity: 'preview:wait-tools',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.runningTool,
-    activeTools: [
-      ThreadActivityToolEntry(
-        callId: 'preview-wait',
-        name: 'wait',
-        summary: '等待两个成员返回结果',
-        arguments: ThreadActivityArgumentsKind.opaque,
-        state: ThreadActivityToolState.running,
-        wait: waitPresentation,
+@Preview(name: '保存故障', group: '实时状态栏', size: Size(760, 150))
+Widget conversationLiveStatusStorageFailurePreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [
+      _status(
+        ConversationActivityKind.storageBlocked,
+        error: '保存暂时失败，当前内容已保留。',
       ),
     ],
-    activeToolCount: 1,
-    wait: waitPresentation,
-    expandable: true,
-  );
-
-  static const responding = ConversationActivityView(
-    identity: 'preview:responding',
-    turnId: 'preview-turn',
-    kind: ConversationActivityKind.responding,
-  );
-
-  static const toolPresentations = [
-    TimelineToolPresentation(
-      id: 'preview-tool-exec',
-      toolCallId: 'preview-exec',
-      name: 'exec',
-      presentationContract: 'builtin.exec@2',
-      statusString: 'running',
-      arguments: 'cargo test -p pl-core --features sqlite',
-      output:
-          'running 12 tests\n'
-          'test completed_items_keep_their_identity ... ok',
-      workingDirectory: 'code/pl-core',
-    ),
-    TimelineToolPresentation(
-      id: 'preview-tool-read',
-      toolCallId: 'preview-read',
-      name: 'exec',
-      presentationContract: 'builtin.exec@2',
-      statusString: 'running',
-      arguments: 'rg -n "publish_batch" code/pl-core',
-      output: 'code/pl-core/src/conversation.rs:318: publish_batch(...)',
-      workingDirectory: '.',
-    ),
-  ];
-}
-
-const _thinkingText =
-    '先核对现有调用链和测试入口，再确认需要修改的边界。\n\n'
-    '长段落应在阅读列内自然换行，展开后仍能完整阅读与选择复制。\n\n'
-    '随后检查错误传播与关闭后的资源归属，保留已有验证证据。';
-
-const _respondingText =
-    '已完成当前修改，并保留相关验证结果。\n\n'
-    '- 已完成的内容逐条进入历史；\n'
-    '- 当前工具输出仍按原始段落展示；\n'
-    '- 长中文、链接和 `行内代码` 在阅读列内换行。\n\n'
-    '这段回复继续增长时，状态栏先按 Markdown 的自然高度展开；'
-    '达到上限后只在正文区域滚动，不显示暗示额外业务状态的箭头。\n\n'
-    '接下来检查剩余调用方和实际界面表现。';
-
-Widget _thinkingContent() => const ConversationCurrentDetailsView(
-  windows: [
-    ConversationCurrentWindowView(
-      id: 'preview-thinking',
-      label: '当前思考',
-      text: _thinkingText,
-    ),
-  ],
-);
-
-Widget _respondingContent() => const ConversationCurrentDetailsView(
-  windows: [
-    ConversationCurrentWindowView(
-      id: 'preview-response',
-      text: _respondingText,
-    ),
-  ],
-);
-
-Widget _toolsContent() => ConversationCurrentDetailsView(
-  windows: [
-    for (final tool in ConversationLiveStatusPreviewFixtures.toolPresentations)
-      TimelineToolDetails(item: tool),
-  ],
-);
-
-Widget _waitContent() => ConversationCurrentDetailsView(
-  windows: [
-    TimelineWaitDetails(
-      presentation: ConversationLiveStatusPreviewFixtures.waitPresentation,
-      identity: 'preview-wait',
-    ),
-  ],
-);
-
-@Preview(
-  name: '实时活动 / 等待正文（不可展开）',
-  group: 'Timeline · 实时活动',
-  size: Size(760, 140),
-)
-Widget conversationLiveStatusWaitingPreview() => _liveStatusPreviewHost(
-  const ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.waiting,
   ),
 );
 
-@Preview(name: '实时活动 / 正在压缩', group: 'Timeline · 实时活动', size: Size(760, 140))
-Widget conversationLiveStatusCompactingPreview() => _liveStatusPreviewHost(
-  const ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.compacting,
-  ),
-);
-
-@Preview(
-  name: '实时活动 / 并行工具（点击展开）',
-  group: 'Timeline · 实时活动',
-  size: Size(760, 380),
-)
-Widget conversationLiveStatusToolsPreview() => _liveStatusPreviewHost(
+@Preview(name: '正文窗口 · 分页与诊断', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusWindowPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.tools,
-    content: _toolsContent(),
+    children: [
+      ConversationResponseView(
+        child: ConversationCurrentWindowView(
+          id: 'preview-window',
+          text: liveStatusResponseText,
+          offset: 32768,
+          end: 65536,
+          availableThrough: 98304,
+          onFirst: () {},
+          onNext: () {},
+        ),
+      ),
+    ],
   ),
-);
-
-@Preview(
-  name: '实时活动 / 等待成员详情（点击展开）',
-  group: 'Timeline · 实时活动',
-  size: Size(760, 420),
-)
-Widget conversationLiveStatusWaitPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.waitingOnTools,
-    content: _waitContent(),
-  ),
-);
-
-@Preview(
-  name: '实时活动 / 分段思考（点击展开）',
-  group: 'Timeline · 实时活动',
-  size: Size(760, 260),
-)
-Widget conversationLiveStatusThinkingPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.thinking,
-    content: _thinkingContent(),
-  ),
-);
-
-@Preview(
-  name: '实时活动 / Markdown 回复（动态高度）',
-  group: 'Timeline · 实时活动',
-  size: Size(760, 280),
-)
-Widget conversationLiveStatusRespondingPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.responding,
-    content: _respondingContent(),
-  ),
-);
-
-@Preview(
-  name: '实时活动 / 窄窗与 160% 字体缩放',
-  group: 'Timeline · 实时活动',
-  size: Size(390, 420),
-)
-Widget conversationLiveStatusNarrowScaledPreview() => _liveStatusPreviewHost(
-  ConversationActivityBar(
-    view: ConversationLiveStatusPreviewFixtures.responding,
-    content: _respondingContent(),
-    maxResponseHeight: 240,
-  ),
-  textScaler: const TextScaler.linear(1.6),
-  maxWidth: 350,
 );

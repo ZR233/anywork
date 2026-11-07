@@ -2947,5 +2947,20 @@
   "acpMethodOauthBusinessDesc": "Sign in with a Google Cloud identity that has a Gemini Enterprise license",
   "acpMethodGeminiApiKeyDesc": "Use a Gemini API key from Google AI Studio (requires GEMINI_API_KEY in host environment)",
   "acpMethodAgentPlatformDesc": "Connect to a Gemini Enterprise Agent Platform deployment",
-  "acpServiceInfoSectionTitle": "Managed server and connection"
+  "acpServiceInfoSectionTitle": "Managed server and connection",
+  "conversationActivityResponding": "Generating response",
+  "conversationActivityFollowOutput": "Follow output",
+  "timelineGroupWorking": "Working",
+  "timelineGroupUnfinished": "Work unfinished",
+  "timelineGroupRecord": "Work record",
+  "timelineGroupMemberCount": "{count} items",
+  "@timelineGroupMemberCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupFailedCount": "{count} failed",
+  "@timelineGroupFailedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupStoppedCount": "{count} stopped",
+  "@timelineGroupStoppedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupCompletedCount": "{count} completed",
+  "@timelineGroupCompletedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupActiveCount": "{count} running",
+  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}}
 }

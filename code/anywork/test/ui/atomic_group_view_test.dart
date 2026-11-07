@@ -22,6 +22,34 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 );
 
 void main() {
+  for (final executing in [true, false]) {
+    testWidgets('实时组首次展开遵循执行资格 ($executing)', (tester) async {
+      final unit = TimelineDisplayUnit(
+        item: workItem('initial', closed: false, active: 1),
+        live: true,
+      );
+      var builds = 0;
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            unit: unit,
+            executionPresent: executing,
+            childBuilder: (_) {
+              builds++;
+              return const Text('原成员正文');
+            },
+          ),
+        ),
+      );
+      expect(unit.expansion.bodyActive, executing);
+      expect(unit.expansion.expanded, executing);
+      expect(builds > 0, executing);
+      expect(find.text('原成员正文'), executing ? findsOneWidget : findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(unit.expansion.bodyActive, isFalse);
+    });
+  }
+
   testWidgets(
     'folded huge group never invokes its member builder; fold revokes before animation',
     (tester) async {
@@ -115,7 +143,7 @@ void main() {
           ),
         ),
       );
-      expect(find.text('等待后继边界'), findsOneWidget);
+      expect(find.text('思考中'), findsOneWidget);
       expect(
         tester
             .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
@@ -123,7 +151,7 @@ void main() {
         isFalse,
       );
       await tester.pump(const Duration(seconds: 10));
-      expect(find.text('等待后继边界'), findsOneWidget);
+      expect(find.text('思考中'), findsOneWidget);
       expect(find.textContaining('秒'), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -136,6 +164,7 @@ void main() {
         item: workItem('handoff', closed: false, active: 1),
         live: true,
       );
+      live.expansion.expanded = false;
       Widget scene(
         TimelineDisplayUnit unit, {
         required bool executionPresent,

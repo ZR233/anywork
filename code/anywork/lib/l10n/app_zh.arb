@@ -2359,5 +2359,20 @@
   "acpMethodOauthBusinessDesc": "使用具备 Gemini Enterprise 许可的 Google Cloud 企业身份登录",
   "acpMethodGeminiApiKeyDesc": "使用 Google AI Studio 的 Gemini API 密钥（需在宿主环境配置 GEMINI_API_KEY）",
   "acpMethodAgentPlatformDesc": "连接到 Gemini Enterprise Agent Platform 企业部署",
-  "acpServiceInfoSectionTitle": "受管服务与连接信息"
+  "acpServiceInfoSectionTitle": "受管服务与连接信息",
+  "conversationActivityResponding": "正在输出",
+  "conversationActivityFollowOutput": "跟随输出",
+  "timelineGroupWorking": "工作中",
+  "timelineGroupUnfinished": "工作未完成",
+  "timelineGroupRecord": "工作记录",
+  "timelineGroupMemberCount": "{count} 项",
+  "@timelineGroupMemberCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupFailedCount": "{count} 项执行失败",
+  "@timelineGroupFailedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupStoppedCount": "{count} 项已停止",
+  "@timelineGroupStoppedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupCompletedCount": "{count} 完成",
+  "@timelineGroupCompletedCount": {"placeholders": {"count": {"type": "int"}}},
+  "timelineGroupActiveCount": "{count} 进行中",
+  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}}
 }

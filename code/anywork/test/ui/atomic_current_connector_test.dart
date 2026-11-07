@@ -205,6 +205,9 @@ final class _Harness {
   }
 
   Widget host({ConversationActivityView? view, Widget? dock}) {
+    for (final unit in presentation.live.value) {
+      unit.expansion.expanded ??= false;
+    }
     final currentView = ConversationCurrentConnector(
       key: ObjectKey(content),
       current: current,
@@ -624,7 +627,7 @@ void main() {
       expect(active.icon, Icons.compress_outlined);
       expect(active.active, isTrue);
       expect(active.expandable, isFalse);
-      expect(find.byType(ConversationActivityBar), findsNothing);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
       expect(h.content.scopes, isEmpty);
       expect(h.controller.messages, isEmpty);
 
@@ -644,7 +647,7 @@ void main() {
       expect(completed.label, l10n.timelineContextCompacted);
       expect(completed.active, isFalse);
       expect(completed.expandable, isFalse);
-      expect(find.byType(ConversationActivityBar), findsNothing);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
       expect(h.content.scopes, isEmpty);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
@@ -714,7 +717,7 @@ void main() {
         await tester.pumpWidget(h.host());
         expect(find.text('内容状态未知'), findsOneWidget);
         expect(find.byType(TimelineActivityRow), findsNothing);
-        expect(find.byType(ConversationActivityBar), findsNothing);
+        expect(find.byType(ConversationActivityStatus), findsNothing);
         expect(h.content.scopes, isEmpty);
         await tester.pumpWidget(const SizedBox());
         await _flush(tester);
