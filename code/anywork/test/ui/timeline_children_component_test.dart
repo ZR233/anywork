@@ -483,6 +483,108 @@ void main() {
     },
   );
 
+  testWidgets(
+    'parent qualification loss rejects an active SDK lease without ACK and new owner gets a clean lease',
+    (tester) async {
+      final transport = _Transport();
+      final repository = ConversationRepositoryImpl(
+        transport: transport,
+        directory: _threadDirectory(),
+        onRevision: (_, _) {},
+      );
+      var parentActive = true;
+      Widget host(String parentId) => MaterialApp(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: TimelineChildrenConnector(
+            key: ValueKey(parentId),
+            repository: repository,
+            threadId: 'thread',
+            parentId: parentId,
+            isParentActive: () => parentActive,
+          ),
+        ),
+      );
+      await tester.pumpWidget(host('owner-A'));
+      await tester.pump();
+      final oldFeed = transport.feeds.single;
+      oldFeed.send(ConversationChatEvent(batch: memberSet()));
+      await pumpClientUntil(
+        tester,
+        () => oldFeed.acknowledgements.contains(1),
+        'initial Children Set ACK',
+      );
+      expect(
+        tester
+            .widget<Chat>(find.byType(Chat))
+            .chatController
+            .messages
+            .map((message) => message.id),
+        ['item'],
+      );
+
+      // This changes only the original parent qualification callback result:
+      // neither the widget nor the retirement notifier is rebuilt/signalled.
+      parentActive = false;
+      oldFeed.send(
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            entries: [ChatAtomEntry(memberMessage(id: 'must-not-apply'))],
+          ),
+        ),
+      );
+      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => oldFeed.closeStarted.isCompleted,
+        'retired original Children lease close',
+      );
+      expect(oldFeed.acknowledgements, [1]);
+      expect(oldFeed.closeCalls, greaterThan(0));
+
+      parentActive = true;
+      await tester.pumpWidget(host('owner-B'));
+      await pumpClientUntil(
+        tester,
+        () => transport.feeds.length == 2,
+        'new Children owner lease',
+      );
+      final newFeed = transport.feeds.last;
+      newFeed.send(
+        ConversationChatEvent(
+          batch: memberSet(messages: [memberMessage(id: 'new-owner')]),
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => newFeed.acknowledgements.contains(1),
+        'new Children owner Set ACK',
+      );
+      expect(
+        tester
+            .widget<Chat>(find.byType(Chat))
+            .chatController
+            .messages
+            .map((message) => message.id),
+        ['new-owner'],
+      );
+      expect(oldFeed.acknowledgements, [1]);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      await pumpClientFuture(
+        tester,
+        repository.close(),
+        'close Children repository',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final failBeforeReplacement in [false, true]) {
     testWidgets(
       'Children query follows replacement feed and rejects old completions (early failure: $failBeforeReplacement)',

@@ -44,6 +44,9 @@ pub enum ChatAtomKind {
     Compaction,
     TurnReceipt,
     Receipt,
+    Raw,
+    Agent,
+    Inference,
     Unknown,
 }
 

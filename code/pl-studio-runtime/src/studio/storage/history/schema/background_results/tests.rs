@@ -28,7 +28,10 @@ impl MigratorTraitSelf for Published {
         .filter(|step| {
             !matches!(
                 step.name(),
-                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+                BACKGROUND_RESULTS
+                    | MEMBER_READ_METADATA
+                    | TIMELINE_THINKING_SUMMARY
+                    | SOURCE_CLASSIFICATION
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)

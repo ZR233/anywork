@@ -121,7 +121,6 @@ fn classify(atom: &ChatAtom) -> Class {
         | ChatAtomKind::ToolCall
         | ChatAtomKind::FileChange
         | ChatAtomKind::Skill
-        | ChatAtomKind::Unknown
             if matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
                 && atom.delivery != ChatDeliveryKind::Independent =>
         {
@@ -324,6 +323,9 @@ fn serialize_live_items<S: serde::Serializer>(
 type SourceItems = BTreeMap<(bool, u64, FactKey), BTreeSet<u64>>;
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct TimelineProjection {
+    // Only the published TimelineItems migration selects the old rule. Runtime
+    // and later named content migrations always use typed-source semantics.
+    published_classification: bool,
     database_id: String,
     generation: String,
     next_position: u64,
@@ -397,6 +399,7 @@ impl TimelineProjection {
         next_position: u64,
     ) -> Self {
         Self {
+            published_classification: false,
             database_id,
             generation,
             next_position,
@@ -411,6 +414,23 @@ impl TimelineProjection {
             facts: Vec::new(),
             retained_bytes: OnceLock::new(),
         }
+    }
+    pub(in crate::studio) fn published_classification(&mut self) {
+        self.published_classification = true;
+    }
+    fn classify(&self, atom: &ChatAtom) -> Class {
+        if self.published_classification
+            && atom.kind == ChatAtomKind::Unknown
+            && matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
+            && atom.delivery != ChatDeliveryKind::Independent
+        {
+            Class::Work
+        } else {
+            classify(atom)
+        }
+    }
+    fn excluded(&self, atom: &ChatAtom) -> bool {
+        !self.published_classification && atom.kind == ChatAtomKind::Inference
     }
     pub(in crate::studio) fn generation(&self) -> &str {
         &self.generation
@@ -534,7 +554,8 @@ impl TimelineProjection {
     ) -> Result<(), ProjectionError> {
         // Current is a bounded preview, not a replay stream. Terminal facts enter
         // exactly once from the original completion publication.
-        if outcome(atom).is_some() || atom.kind == ChatAtomKind::TurnReceipt {
+        if outcome(atom).is_some() || atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom)
+        {
             return Ok(());
         }
         if let Some(member) = self.active.get_mut(&atom.id) {
@@ -593,7 +614,7 @@ impl TimelineProjection {
         &mut self,
         atom: &ChatAtom,
     ) -> Result<(), ProjectionError> {
-        if atom.kind == ChatAtomKind::TurnReceipt {
+        if atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom) {
             return Ok(());
         }
         let mut header = lightweight(atom);
@@ -610,7 +631,7 @@ impl TimelineProjection {
         header.completion_seq = None;
         header.content_present = None;
         self.admit(header, atom.completion_seq, None, None)?;
-        if outcome(atom).is_some() && classify(atom) == Class::Work {
+        if outcome(atom).is_some() && self.classify(atom) == Class::Work {
             // A legacy header is not a real active fact. Keep only the group's
             // unresolved count; its member association is already an incremental
             // SQLite row and is restored one at a time for the actual terminal.
@@ -653,6 +674,9 @@ impl TimelineProjection {
         atom: &ChatAtom,
         thinking_summary: Option<String>,
     ) -> Result<(), ProjectionError> {
+        if self.excluded(atom) {
+            return Ok(());
+        }
         if !self.active.contains_key(&atom.id) {
             return Err(ProjectionError::History(
                 "saved active atom has no canonical start at rebuild cut".into(),
@@ -684,6 +708,10 @@ impl TimelineProjection {
         payload: Option<PayloadData>,
         thinking_summary: Option<String>,
     ) -> Result<(), ProjectionError> {
+        if self.excluded(&atom) {
+            // Diagnostics cannot admit a member or close the current work segment.
+            return Ok(());
+        }
         self.retained_bytes.take();
         let terminal = outcome(&atom).is_some();
         if atom.kind == ChatAtomKind::TurnReceipt
@@ -702,7 +730,7 @@ impl TimelineProjection {
             })?;
             (index, member.order, false)
         } else {
-            let class = classify(&atom);
+            let class = self.classify(&atom);
             if class != Class::Work {
                 self.close_group_for(&atom.source, started);
             }

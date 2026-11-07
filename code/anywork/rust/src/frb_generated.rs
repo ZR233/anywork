@@ -10985,7 +10985,10 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatAtomKind {
             8 => crate::api::studio::types::chat::BridgeChatAtomKind::Compaction,
             9 => crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt,
             10 => crate::api::studio::types::chat::BridgeChatAtomKind::Receipt,
-            11 => crate::api::studio::types::chat::BridgeChatAtomKind::Unknown,
+            11 => crate::api::studio::types::chat::BridgeChatAtomKind::Raw,
+            12 => crate::api::studio::types::chat::BridgeChatAtomKind::Agent,
+            13 => crate::api::studio::types::chat::BridgeChatAtomKind::Inference,
+            14 => crate::api::studio::types::chat::BridgeChatAtomKind::Unknown,
             _ => unreachable!("Invalid variant for BridgeChatAtomKind: {}", inner),
         };
     }
@@ -27371,7 +27374,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCh
             Self::Compaction => 8.into_dart(),
             Self::TurnReceipt => 9.into_dart(),
             Self::Receipt => 10.into_dart(),
-            Self::Unknown => 11.into_dart(),
+            Self::Raw => 11.into_dart(),
+            Self::Agent => 12.into_dart(),
+            Self::Inference => 13.into_dart(),
+            Self::Unknown => 14.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -41628,7 +41634,10 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatAtomKind {
                 crate::api::studio::types::chat::BridgeChatAtomKind::Compaction => 8,
                 crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt => 9,
                 crate::api::studio::types::chat::BridgeChatAtomKind::Receipt => 10,
-                crate::api::studio::types::chat::BridgeChatAtomKind::Unknown => 11,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Raw => 11,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Agent => 12,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Inference => 13,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Unknown => 14,
                 _ => {
                     unimplemented!("");
                 }

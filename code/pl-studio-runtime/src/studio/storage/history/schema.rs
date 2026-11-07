@@ -6,6 +6,7 @@ mod conversion;
 mod demand_conversation;
 mod member_read_metadata;
 mod model_route_head;
+mod source_classification;
 mod sqlite_metadata;
 mod timeline_items;
 mod timeline_thinking_summary;
@@ -118,6 +119,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(background_results::BackgroundResults),
             Box::new(timeline_items::TimelineItems),
             Box::new(timeline_thinking_summary::TimelineThinkingSummary),
+            Box::new(source_classification::SourceClassification),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -165,6 +167,7 @@ const BACKGROUND_RESULTS: &str = "m20261104_000001_history_background_results";
 const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
 const TIMELINE_THINKING_SUMMARY: &str = "m20261108_000001_history_timeline_thinking_summary";
 const MEMBER_READ_METADATA: &str = "m20261107_000001_history_member_read_metadata";
+const SOURCE_CLASSIFICATION: &str = "m20261108_000001_history_source_classification";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -349,6 +352,9 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let model_route_head_pending = pending.iter().any(|step| step.name() == MODEL_ROUTE_HEAD);
     let metadata_pending = pending.iter().any(|step| step.name() == ATOM_METADATA);
     let timeline_pending = pending.iter().any(|step| step.name() == TIMELINE_ITEMS);
+    let source_classification_pending = pending
+        .iter()
+        .any(|step| step.name() == SOURCE_CLASSIFICATION);
     let thinking_summary_pending = pending
         .iter()
         .any(|step| step.name() == TIMELINE_THINKING_SUMMARY);
@@ -358,6 +364,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
+            && (source_classification_pending || matches!(version, 15 | 16))
             && thinking_summary_pending == (version < 16)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -406,8 +413,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
             }
             ensure!(
                 pending.iter().all(|step| {
-                    matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA)
-                        || is_lifecycle_migration(step.name())
+                    matches!(
+                        step.name(),
+                        BACKGROUND_RESULTS | MEMBER_READ_METADATA | SOURCE_CLASSIFICATION
+                    ) || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
             );
@@ -423,6 +432,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                             matches!(
                                 step.name(),
                                 MODEL_ROUTE_HEAD
+                                    | SOURCE_CLASSIFICATION
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
@@ -442,6 +452,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                             matches!(
                                 step.name(),
                                 ATOM_METADATA
+                                    | SOURCE_CLASSIFICATION
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
@@ -462,6 +473,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | MEMBER_READ_METADATA
+                                    | SOURCE_CLASSIFICATION
                                     | TIMELINE_THINKING_SUMMARY
                             ) || is_lifecycle_migration(step.name())
                         }),
@@ -483,6 +495,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 BACKGROUND_RESULTS
                                     | MEMBER_READ_METADATA
                                     | TIMELINE_THINKING_SUMMARY
+                                    | SOURCE_CLASSIFICATION
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
@@ -1154,6 +1167,7 @@ impl MigrationTrait for CombinedContent {
                             | MEMBER_READ_METADATA
                             | BACKGROUND_RESULTS
                             | TIMELINE_ITEMS
+                            | SOURCE_CLASSIFICATION
                             | TIMELINE_THINKING_SUMMARY
                     ) && !is_lifecycle_migration(step.name())
                 })

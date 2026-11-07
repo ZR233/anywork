@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
@@ -58,6 +59,31 @@ void main() {
       expect(stock.messages.single.id, 'first');
       expect(stock.messages.single.createdAt, isNull);
       expect(card(0).inlineText('body'), '中文 🐱');
+    },
+  );
+
+  test(
+    'large Main page builds one temporary ID index and still rejects repeats',
+    () async {
+      final counted = _CountingController();
+      final countedAdapter = TimelineMessageController(counted, generation: 8);
+      await countedAdapter.applyBatch(
+        chatBatch([for (var i = 0; i < 2000; i++) chatMessage('item-$i')]),
+      );
+      counted.resetAccessCounts();
+      await expectLater(
+        countedAdapter.applyBatch(
+          chatBatch([
+            chatMessage('item-1999'),
+          ], placement: ChatPlacement.append),
+        ),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+      expect(counted.iterations, 1);
+      expect(counted.elementReads, 2000);
+      expect(counted.messages, hasLength(2000));
+      countedAdapter.dispose();
+      counted.dispose();
     },
   );
 
@@ -264,4 +290,44 @@ void main() {
     ]);
     expect(stock.messages.map((message) => message.id), ['loaded', 'owner']);
   });
+}
+
+final class _CountingController extends InMemoryChatController {
+  int iterations = 0;
+  int elementReads = 0;
+
+  void resetAccessCounts() {
+    iterations = 0;
+    elementReads = 0;
+  }
+
+  @override
+  List<Message> get messages => _CountingList(super.messages, this);
+}
+
+final class _CountingList extends ListBase<Message> {
+  _CountingList(this._messages, this.owner);
+  final List<Message> _messages;
+  final _CountingController owner;
+
+  @override
+  int get length => _messages.length;
+
+  @override
+  Message operator [](int index) {
+    owner.elementReads++;
+    return _messages[index];
+  }
+
+  @override
+  void operator []=(int index, Message value) => _messages[index] = value;
+
+  @override
+  set length(int value) => _messages.length = value;
+
+  @override
+  Iterator<Message> get iterator {
+    owner.iterations++;
+    return super.iterator;
+  }
 }

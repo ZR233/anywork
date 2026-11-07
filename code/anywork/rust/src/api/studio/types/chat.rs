@@ -124,6 +124,9 @@ pub enum BridgeChatAtomKind {
     Compaction,
     TurnReceipt,
     Receipt,
+    Raw,
+    Agent,
+    Inference,
     Unknown,
 }
 

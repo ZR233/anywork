@@ -898,7 +898,14 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
     .await?;
     assert!(end.entries.is_empty());
     assert!(end.continuation.is_none());
-    let second = prepare(2, b"second revision")?;
+    let mut second = prepare(2, b"second revision")?;
+    // The producer, not the writer's directory scan, freezes the exact withdrawn identities.
+    second.retirements = first
+        .contents
+        .iter()
+        .map(|write| current::CurrentContentRetirement::new(&write.content.descriptor))
+        .collect::<Result<Vec<_>>>()?
+        .into();
     current::apply(&db, 2, &second).await?;
     db.execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
         .await?;
@@ -978,20 +985,27 @@ async fn current_revision_retirement_is_stale_and_collection_pages_use_stored_po
          CREATE TRIGGER count_current_header AFTER UPDATE ON conversation_view_state
          BEGIN INSERT INTO written_current VALUES(json_extract(CAST(NEW.payload AS TEXT),'$.sourceEffectSeq')); END;",
     ).await?;
-    let third = prepare(3, b"intermediate revision")?;
-    let empty = current::PreparedCurrent::new(
+    let mut third = prepare(3, b"intermediate revision")?;
+    third.retirements = Arc::from([current::CurrentContentRetirement::new(
+        &second.contents[0].content.descriptor,
+    )?]);
+    let mut empty = current::PreparedCurrent::new(
         crate::studio::thread_projection::FrozenCurrentProjection::new(
             pl_protocol::CurrentProjection::empty(4, pl_protocol::ThreadStatus::Idle),
         ),
-        Arc::from([]),
+        Arc::from([current::CurrentEntryChange::Clear {
+            collection: "entries".into(),
+        }]),
         Arc::from([]),
     );
+    empty.retirements = Arc::from([current::CurrentContentRetirement::new(
+        &third.contents[0].content.descriptor,
+    )?]);
     let last = prepare(5, b"last revision")?;
     let tx = db.begin().await?;
-    let baseline = current::read_head(&tx).await?;
-    current::apply_changes(&tx, 3, &third, baseline.as_ref()).await?;
-    current::apply_changes(&tx, 4, &empty, Some(third.projection())).await?;
-    current::apply_changes(&tx, 5, &last, Some(empty.projection())).await?;
+    current::apply_changes(&tx, 3, &third, &[]).await?;
+    current::apply_changes(&tx, 4, &empty, &[]).await?;
+    current::apply_changes(&tx, 5, &last, &[]).await?;
     assert_eq!(current::read_head(&tx).await?.unwrap().source_effect_seq, 2);
     current::write_head(&tx, &last).await?;
     tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=5")

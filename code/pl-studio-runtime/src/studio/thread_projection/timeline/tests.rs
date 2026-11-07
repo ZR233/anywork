@@ -417,6 +417,177 @@ fn completed_summary_reads_only_bounded_summary_roles_and_handles_utf8_tail() {
 }
 
 #[test]
+fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
+    let mut timeline = fold();
+    timeline.published_classification();
+    timeline
+        .complete(
+            terminal(
+                "old-unknown",
+                ChatAtomKind::Unknown,
+                1,
+                pos(1, 0),
+                pos(1, 1),
+                vec![],
+            ),
+            1,
+            None,
+        )
+        .unwrap();
+    timeline
+        .complete(
+            terminal(
+                "work",
+                ChatAtomKind::Reasoning,
+                2,
+                pos(2, 0),
+                pos(2, 1),
+                vec![],
+            ),
+            2,
+            None,
+        )
+        .unwrap();
+    timeline.end_source(&source());
+    timeline.commit_ready().unwrap();
+    let items = timeline.take_committed();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
+    assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
+}
+
+#[test]
+fn foreground_neutral_sources_are_independent_status_boundaries() {
+    for kind in [
+        ChatAtomKind::Raw,
+        ChatAtomKind::Agent,
+        ChatAtomKind::Unknown,
+    ] {
+        let mut timeline = fold();
+        let mut neutral = terminal("neutral", kind, 2, pos(2, 0), pos(3, 0), vec![]);
+        neutral.completion_seq = Some(2);
+        timeline
+            .complete(
+                terminal(
+                    "before",
+                    ChatAtomKind::Reasoning,
+                    1,
+                    pos(1, 0),
+                    pos(1, 1),
+                    vec![],
+                ),
+                1,
+                None,
+            )
+            .unwrap();
+        timeline
+            .observe(&active("neutral", kind, 2, pos(2, 0), vec![]), None)
+            .unwrap();
+        timeline.complete(neutral.clone(), 2, None).unwrap();
+        timeline
+            .complete(
+                terminal(
+                    "after",
+                    ChatAtomKind::ToolCall,
+                    3,
+                    pos(4, 0),
+                    pos(4, 1),
+                    vec![],
+                ),
+                3,
+                None,
+            )
+            .unwrap();
+        timeline.end_source(&source());
+        timeline.commit_ready().unwrap();
+        let items = timeline.take_committed();
+        assert_eq!(
+            items.iter().map(|item| item.kind).collect::<Vec<_>>(),
+            [
+                TimelineItemKind::WorkGroup,
+                TimelineItemKind::Status,
+                TimelineItemKind::WorkGroup
+            ]
+        );
+        assert_eq!(items[1].atom_kind, Some(kind));
+        assert_eq!(items[1].source, neutral.source);
+        assert_eq!(items[1].outcome, Some(ChatTerminalOutcome::Completed));
+        assert_eq!(items[1].content_item_id.as_deref(), Some("neutral"));
+        let update = timeline.take_update().unwrap();
+        assert_eq!(
+            update
+                .members()
+                .iter()
+                .map(|member| member.atom.id.as_str())
+                .collect::<Vec<_>>(),
+            ["before", "after"]
+        );
+    }
+}
+
+#[test]
+fn inference_is_noop_between_work_including_legacy_and_current_entries() {
+    let mut timeline = fold();
+    timeline
+        .complete(
+            terminal(
+                "before",
+                ChatAtomKind::Reasoning,
+                1,
+                pos(1, 0),
+                pos(1, 1),
+                vec![],
+            ),
+            1,
+            None,
+        )
+        .unwrap();
+    let diagnostic = active("diagnostic", ChatAtomKind::Inference, 2, pos(2, 0), vec![]);
+    timeline.observe(&diagnostic, None).unwrap();
+    timeline.refresh_current(&diagnostic, None).unwrap();
+    let done = terminal(
+        "diagnostic",
+        ChatAtomKind::Inference,
+        2,
+        pos(2, 0),
+        pos(2, 1),
+        vec![],
+    );
+    timeline.admit_legacy_header(&done).unwrap();
+    timeline.complete(done, 2, None).unwrap();
+    timeline
+        .complete(
+            terminal(
+                "after",
+                ChatAtomKind::ToolCall,
+                3,
+                pos(3, 0),
+                pos(3, 1),
+                vec![],
+            ),
+            3,
+            None,
+        )
+        .unwrap();
+    timeline.end_source(&source());
+    timeline.commit_ready().unwrap();
+    let items = timeline.take_committed();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
+    assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
+    let update = timeline.take_update().unwrap();
+    assert_eq!(
+        update
+            .members()
+            .iter()
+            .map(|member| member.atom.id.as_str())
+            .collect::<Vec<_>>(),
+        ["before", "after"]
+    );
+    assert!(update.facts().iter().all(|atom| atom.id != "diagnostic"));
+}
+
+#[test]
 fn terminal_text_freezes_its_authoritative_channel() {
     let mut timeline = fold();
     let mut start = active("answer", ChatAtomKind::Text, 1, pos(1, 0), content());

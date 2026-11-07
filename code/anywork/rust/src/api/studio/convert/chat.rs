@@ -148,6 +148,9 @@ fn atom_kind(value: protocol::ChatAtomKind) -> BridgeChatAtomKind {
         protocol::ChatAtomKind::Compaction => BridgeChatAtomKind::Compaction,
         protocol::ChatAtomKind::TurnReceipt => BridgeChatAtomKind::TurnReceipt,
         protocol::ChatAtomKind::Receipt => BridgeChatAtomKind::Receipt,
+        protocol::ChatAtomKind::Raw => BridgeChatAtomKind::Raw,
+        protocol::ChatAtomKind::Agent => BridgeChatAtomKind::Agent,
+        protocol::ChatAtomKind::Inference => BridgeChatAtomKind::Inference,
         protocol::ChatAtomKind::Unknown => BridgeChatAtomKind::Unknown,
     }
 }

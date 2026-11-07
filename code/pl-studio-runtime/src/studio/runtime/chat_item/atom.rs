@@ -23,9 +23,9 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         ThreadItemState::Skill(_) => ChatAtomKind::Skill,
         ThreadItemState::Turn(_) => ChatAtomKind::TurnReceipt,
         ThreadItemState::ContextCompaction(_) => ChatAtomKind::Compaction,
-        ThreadItemState::Raw(_) | ThreadItemState::Agent(_) | ThreadItemState::Inference(_) => {
-            ChatAtomKind::Unknown
-        }
+        ThreadItemState::Raw(_) => ChatAtomKind::Raw,
+        ThreadItemState::Agent(_) => ChatAtomKind::Agent,
+        ThreadItemState::Inference(_) => ChatAtomKind::Inference,
     };
     let source = if kind == ChatAtomKind::Input {
         ChatSourceId::Input {
@@ -114,5 +114,77 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         finished_at: item.state().terminal_at(),
         contents: Vec::new(),
         payload: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_sources_keep_kind_origin_and_foreground_identity() -> anyhow::Result<()> {
+        let cases = [
+            (
+                ThreadItemState::Raw(ThreadRawItem::stored(vec![], "undecodable", 7)),
+                ChatAtomKind::Raw,
+            ),
+            (
+                ThreadItemState::Raw(ThreadRawItem::runtime_control("control", 7)),
+                ChatAtomKind::Raw,
+            ),
+            (
+                ThreadItemState::Agent(ThreadAgentItem::new(
+                    ThreadAgentIdentity::new(
+                        "child".into(),
+                        "root/child".into(),
+                        "worker".into(),
+                        "task".into(),
+                        1,
+                    ),
+                    ThreadAgentState::Succeeded(SucceededThreadAgent::new(7, "done".into())),
+                )),
+                ChatAtomKind::Agent,
+            ),
+            (
+                ThreadItemState::Inference(ThreadInferenceItem::new(
+                    "call".into(),
+                    "model".into(),
+                    ThreadInferenceState::Running(RunningThreadInference),
+                )),
+                ChatAtomKind::Inference,
+            ),
+        ];
+        for (index, (state, kind)) in cases.into_iter().enumerate() {
+            let original = state.clone();
+            let item = ThreadItem::new(
+                format!("item-{index}"),
+                "thread".into(),
+                "turn".into(),
+                1,
+                1,
+                1,
+                7,
+                state,
+            );
+            let metadata = atom(&item);
+            assert_eq!(metadata.kind, kind);
+            assert_eq!(
+                metadata.source,
+                ChatSourceId::ForegroundTurn {
+                    turn_id: "turn".into()
+                }
+            );
+            assert_eq!(item.state(), &original);
+            if let ThreadItemState::Raw(raw) = item.state() {
+                let draft = super::super::completion_draft(&item, 1, "database")?;
+                let envelope: serde_json::Value = serde_json::from_slice(draft.payload.as_ref())?;
+                assert_eq!(envelope["type"], "raw");
+                assert_eq!(
+                    envelope["data"]["origin"],
+                    serde_json::to_value(raw.origin)?
+                );
+            }
+        }
+        Ok(())
     }
 }

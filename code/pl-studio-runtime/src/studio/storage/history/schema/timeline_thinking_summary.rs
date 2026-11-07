@@ -58,7 +58,12 @@ mod tests {
                 .migrations()
                 .into_iter()
                 .take_while(|step| !is_lifecycle_migration(step.name()))
-                .filter(|step| step.name() != TIMELINE_THINKING_SUMMARY)
+                .filter(|step| {
+                    !matches!(
+                        step.name(),
+                        TIMELINE_THINKING_SUMMARY | SOURCE_CLASSIFICATION
+                    )
+                })
                 .collect()
         }
     }
