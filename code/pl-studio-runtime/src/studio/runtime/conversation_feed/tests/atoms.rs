@@ -201,6 +201,281 @@ impl Harness {
     pub async fn save(&self, prepared: &PreparedEffect) -> Result<()> {
         save_effect(&self.history, &self.session, prepared).await
     }
+    async fn background_result(&mut self, index: u64) -> Result<Arc<PreparedEffect>> {
+        self.prepare_background_result(index, true).await
+    }
+    async fn prepare_background_result(
+        &mut self,
+        index: u64,
+        publish_cut: bool,
+    ) -> Result<Arc<PreparedEffect>> {
+        use pl_core::{
+            context::{
+                AgentMessageKind, ContextContent, ContextRecord, ContextSnapshot, ContextSource,
+            },
+            model::ModelToolCall,
+            thread::{
+                ToolDelivery, ToolOutcome,
+                inbox::{InboxRecord, ThreadMessage},
+                task::{TaskAcknowledgement, TaskRecord, TaskStatus},
+            },
+        };
+        self.sequence += 1;
+        let call = format!("background-call-{index}");
+        let turn = format!("origin-turn-{index}");
+        let payload = OpaquePayload::text(format!("result-{index}"));
+        let task = TaskRecord {
+            id: format!("background-task-{index}"),
+            call_id: call.clone(),
+            tool_id: "exec".into(),
+            turn_id: turn.clone(),
+            revision: 2,
+            status: TaskStatus::Succeeded,
+            cancel_requested: false,
+            acknowledgement: Some(TaskAcknowledgement {
+                record_id: format!("ack-{index}"),
+                context_revision: 1,
+            }),
+            started_sequence: Some(self.sequence),
+        };
+        let delivery = ToolDelivery {
+            target: Default::default(),
+            call_id: call.clone(),
+            tool_id: "exec".into(),
+            output: pl_core::tool::ToolOutput::new(payload.clone(), vec![]),
+            delivered_context: vec![ContextContent::Text {
+                text: format!("result-{index}").into(),
+            }],
+            outcome: ToolOutcome::Succeeded,
+        };
+        let inbox = InboxRecord {
+            sequence: index,
+            message: ThreadMessage {
+                id: format!("result-message-{index}"),
+                source_id: task.id.clone(),
+                kind: AgentMessageKind::Report,
+                payload,
+                context: vec![],
+            },
+        };
+        let state = CoreSnapshot {
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![ContextRecord {
+                    id: format!("request-{index}"),
+                    turn_id: Some(turn),
+                    source: ContextSource::Assistant,
+                    content: vec![],
+                    tool_calls: vec![ModelToolCall {
+                        call_id: call,
+                        tool_id: "exec".into(),
+                        arguments: OpaquePayload::text("{}"),
+                        presentation_contract: None,
+                        rejection: None,
+                    }],
+                }]
+                .into(),
+            },
+            tasks: [(task.id.clone(), task.clone())].into_iter().collect(),
+            deliveries: vec![delivery.clone()].into(),
+            inbox: vec![inbox.clone()].into(),
+            ..Default::default()
+        };
+        let effect = ThreadEffectBatch {
+            thread_id: self.thread.id.clone(),
+            sequence: self.sequence,
+            committed_at: self.sequence as i64 + 10,
+            tasks: vec![task].into(),
+            deliveries: vec![delivery].into(),
+            inbox: vec![inbox].into(),
+            ..Default::default()
+        };
+        let (_, mut prepared) = self
+            .projection
+            .prepare(&self.thread, &effect, &state, false)
+            .await?;
+        self.projection
+            .publish_prepared(&self.session, &mut prepared)
+            .await?;
+        if publish_cut {
+            publish(&self.source, &self.session, &prepared)?;
+        }
+        Ok(prepared)
+    }
+}
+
+#[tokio::test]
+async fn background_tail_initial_set_ahead_of_live_cut_does_not_repeat_or_downgrade_head()
+-> Result<()> {
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let first = harness.background_result(1).await?;
+        harness.save(&first).await?;
+        // The writer can commit the next head while an opener still holds the
+        // previous live cut. The original group's commit position remains 0.
+        let second = harness.prepare_background_result(2, false).await?;
+        harness.save(&second).await?;
+        let mut main = env
+            .runtime
+            .open_conversation_feed(&harness.thread.id, ChatScope::Main, demand())
+            .await?;
+        let initial = chat(&mut main).await?;
+        let ChatEntry::Item(group) = &initial.entries[0] else {
+            panic!("group")
+        };
+        assert_eq!(group.summary.as_ref().unwrap().member_count, 2);
+        publish(&harness.source, &harness.session, &second)?;
+        let after = chat(&mut main).await?;
+        assert_eq!(after.placement, ChatPlacement::Append);
+        assert!(
+            after.entries.is_empty(),
+            "Set already delivered this updated head"
+        );
+        let third = harness.background_result(3).await?;
+        let update = chat(&mut main).await?;
+        assert_eq!(update.placement, ChatPlacement::Update);
+        let ChatEntry::Item(updated) = &update.entries[0] else {
+            panic!("updated group")
+        };
+        assert_eq!(updated.id, group.id);
+        assert_eq!(updated.summary.as_ref().unwrap().member_count, 3);
+        chat(&mut main).await?;
+        harness.save(&third).await?;
+        // A retry of the first immutable effect verifies the head's proven
+        // extension instead of requiring its old derived summary bytes.
+        harness.save(&first).await?;
+        let mut invalid = third.current.timeline_update.updates()[0].clone();
+        invalid.id.push_str("-unknown");
+        main.cut = Some(Arc::new(ConversationCut {
+            serial: main.seen_serial + 1,
+            session: harness.session.clone(),
+            head: harness.session.head_seq(),
+            handoff: Arc::new(
+                third
+                    .current_handoff
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .clone()
+                    .with_updates(vec![invalid].into()),
+            ),
+        }));
+        assert!(
+            chat(&mut main).await.is_err(),
+            "an unknown update target must require resync"
+        );
+        main.close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&harness.thread.id)
+            .retire(&harness.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn background_tail_feed_appends_once_updates_and_streams_real_member_sources() -> Result<()> {
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut harness = Harness::new(&env).await?;
+        let mut main = env
+            .runtime
+            .open_conversation_feed(&harness.thread.id, ChatScope::Main, demand())
+            .await?;
+        assert!(chat(&mut main).await?.entries.is_empty());
+        let first = harness.background_result(1).await?;
+        let append = chat(&mut main).await?;
+        assert_eq!(append.placement, ChatPlacement::Append);
+        assert_eq!(append.entries.len(), 1);
+        let ChatEntry::Item(group) = &append.entries[0] else {
+            panic!("group")
+        };
+        let group = group.as_ref().clone();
+        let reference = group.members.clone().context("member reference")?;
+        harness.save(&first).await?;
+        let mut members = env
+            .runtime
+            .open_conversation_feed(
+                &harness.thread.id,
+                ChatScope::GroupMembers {
+                    reference: reference.clone(),
+                },
+                demand(),
+            )
+            .await?;
+        let set = chat(&mut members).await?;
+        assert_eq!(set.placement, ChatPlacement::Set);
+        assert!(
+            set.entries
+                .iter()
+                .any(|entry| matches!(entry, ChatEntry::Atom(_)))
+        );
+        for index in 2..=3 {
+            let prepared = harness.background_result(index).await?;
+            assert!(prepared.timeline.is_empty());
+            assert_eq!(prepared.current.timeline_update.updates().len(), 1);
+            let update = chat(&mut main).await?;
+            assert_eq!(update.placement, ChatPlacement::Update);
+            assert_eq!(update.entries.len(), 1);
+            let ChatEntry::Item(updated) = &update.entries[0] else {
+                panic!("group update")
+            };
+            assert_eq!(updated.id, group.id);
+            assert_eq!(updated.position, group.position);
+            assert_eq!(updated.source, group.source);
+            assert_eq!(updated.members.as_ref(), Some(&reference));
+            assert_eq!(updated.summary.as_ref().unwrap().member_count, index as u32);
+            assert!(update.current.is_none());
+            assert!(main.delivered < prepared.current_handoff.as_ref().unwrap().main_through());
+            let current_after = chat(&mut main).await?;
+            assert_eq!(current_after.placement, ChatPlacement::Append);
+            assert!(current_after.entries.is_empty());
+            assert!(current_after.current.is_some());
+            assert_eq!(
+                main.delivered,
+                prepared.current_handoff.as_ref().unwrap().main_through()
+            );
+            let mut found = false;
+            for _ in 0..2 {
+                let delta = chat(&mut members).await?;
+                assert_eq!(delta.placement, ChatPlacement::Append);
+                for entry in delta.entries {
+                    if let ChatEntry::Atom(atom) = entry {
+                        assert_eq!(
+                            atom.source,
+                            ChatSourceId::BackgroundResult {
+                                message_id: format!("result-message-{index}"),
+                            }
+                        );
+                        assert!(
+                            atom.source_state.is_some(),
+                            "new terminal member needs its real source cut"
+                        );
+                        found = true;
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+            assert!(found);
+            harness.save(&prepared).await?;
+        }
+        let cold = read_all_timeline(&harness.history, ChatScope::Main, 1).await?;
+        assert_eq!(cold.len(), 1);
+        main.close().await?;
+        members.close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&harness.thread.id)
+            .retire(&harness.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 async fn save_effect(
@@ -1647,6 +1922,27 @@ impl A14Reads {
         match batch.placement {
             ChatPlacement::Set => self.main.clear(),
             ChatPlacement::Append => {}
+            ChatPlacement::Update => {
+                for entry in batch.entries {
+                    let ChatEntry::Item(item) = entry else {
+                        bail!("Main update returned non-item")
+                    };
+                    let previous = self
+                        .main
+                        .iter_mut()
+                        .find(|previous| previous.id == item.id)
+                        .context("Main update target was not loaded")?;
+                    ensure!(
+                        previous.position == item.position && previous.source == item.source,
+                        "Main update changed identity"
+                    );
+                    *previous = *item;
+                }
+                if batch.current.is_some() {
+                    self.current = batch.current;
+                }
+                return Ok(());
+            }
             ChatPlacement::Prepend => bail!("A14 unexpectedly paged Main"),
         }
         for entry in batch.entries {

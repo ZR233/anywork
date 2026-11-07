@@ -181,6 +181,8 @@ final class TimelineDisplayLease implements TimelineUiControllers {
         _appliedPrepends++;
       case ChatPlacement.append:
         _appliedAppends++;
+      case ChatPlacement.update:
+        break;
     }
   }
 

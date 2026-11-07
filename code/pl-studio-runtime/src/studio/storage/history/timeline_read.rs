@@ -105,7 +105,7 @@ impl HistoryStore {
                 current.timeline_update.generation() == generation,
                 ChatError::StaleContent
             );
-            let item = &current.timeline[index].item;
+            let item = current.history_item(index);
             conversation::timeline::validate_item(item, database, &generation)?;
             if let Some(position) = item.position {
                 rows.insert(position, ChatEntry::Item(Box::new(item.clone())));
@@ -121,7 +121,7 @@ impl HistoryStore {
             let item = if is_current {
                 &current.timeline_update.current()[index]
             } else {
-                &current.timeline[index].item
+                current.history_item(index)
             };
             if let ChatScope::GroupMembers { reference } = scope {
                 ensure!(

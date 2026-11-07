@@ -232,7 +232,7 @@ class BridgeChatFactPosition {
           suborder == other.suborder;
 }
 
-enum BridgeChatPlacement { set_, prepend, append }
+enum BridgeChatPlacement { set_, prepend, append, update }
 
 @freezed
 sealed class BridgeChatScope with _$BridgeChatScope {

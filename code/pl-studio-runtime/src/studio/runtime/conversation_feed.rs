@@ -40,7 +40,10 @@ pub struct ConversationFeed {
     generation_changed: watch::Receiver<String>,
     cut: Option<Arc<ConversationCut>>,
     cut_entry: usize,
-    cut_entries: Option<Vec<ChatEntry>>,
+    cut_entries: Option<Vec<(ChatPlacement, ChatEntry)>>,
+    cut_appended: usize,
+    main_loaded_through: u64,
+    main_tail: Option<TimelineItem>,
     delivered: u64,
     seen_serial: u64,
     current: Option<CurrentProjection>,
@@ -433,6 +436,13 @@ impl StudioRuntime {
         pending.push_back(ThreadSubscriptionUpdate::Snapshot {
             snapshot: Box::new(snapshot),
         });
+        let main_tail = initial.entries.iter().rev().find_map(|entry| {
+            if let ChatEntry::Item(item) = entry {
+                Some(item.as_ref().clone())
+            } else {
+                None
+            }
+        });
         let mut feed = ConversationFeed {
             reader,
             initial: Some(initial),
@@ -447,6 +457,9 @@ impl StudioRuntime {
             cut: None,
             cut_entry: 0,
             cut_entries: None,
+            cut_appended: 0,
+            main_loaded_through: read_ceiling,
+            main_tail,
             delivered: head,
             seen_serial: initial_serial,
             current,
@@ -502,6 +515,8 @@ impl ConversationFeed {
         self.initial = None;
         self.pending.clear();
         self.current = None;
+        self.main_tail = None;
+        self.cut_appended = 0;
     }
     fn notification(&mut self, notification: ThreadNotification) -> Result<()> {
         if let ThreadNotification::ThreadRuntimeUpdated { runtime, .. } = &notification
@@ -734,13 +749,36 @@ impl ConversationFeed {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;
                     self.cut_entries = None;
+                    self.cut_appended = 0;
                     continue;
                 }
                 let main = matches!(self.reader.inner.scope, ChatScope::Main);
                 if !matches!(self.reader.inner.scope, ChatScope::Children { .. }) {
                     if self.cut_entries.is_none() {
-                        let mut candidates = if main {
-                            cut.handoff.entries().to_vec()
+                        let mut candidates: Vec<ChatEntry> = if main {
+                            cut.handoff
+                                .entries()
+                                .iter()
+                                .filter_map(|entry| {
+                                    let ChatEntry::Item(item) = entry else {
+                                        return Some(entry.clone());
+                                    };
+                                    if item
+                                        .position
+                                        .is_some_and(|position| position < self.main_loaded_through)
+                                    {
+                                        self.cut_appended += 1;
+                                        return None;
+                                    }
+                                    let item = cut
+                                        .handoff
+                                        .updates()
+                                        .iter()
+                                        .find(|update| update.id == item.id)
+                                        .unwrap_or(item);
+                                    Some(ChatEntry::Item(Box::new(item.clone())))
+                                })
+                                .collect()
                         } else {
                             let ChatScope::GroupMembers { reference } = &self.reader.inner.scope
                             else {
@@ -785,16 +823,88 @@ impl ConversationFeed {
                             )
                             .await?;
                         if !main {
+                            let delivered_sources: Vec<_> = candidates
+                                .iter()
+                                .filter_map(|entry| {
+                                    if let ChatEntry::Atom(atom) = entry {
+                                        Some(atom.source.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
                             candidates.extend(
                                 cut.handoff
                                     .sources()
                                     .iter()
-                                    .filter(|state| self.reader.observes_source(&state.source))
+                                    .filter(|state| {
+                                        self.reader.observes_source(&state.source)
+                                            || delivered_sources.contains(&state.source)
+                                    })
                                     .cloned()
                                     .map(ChatEntry::Source),
                             );
                         }
-                        self.cut_entries = Some(candidates);
+                        let mut deliveries = Vec::new();
+                        if main {
+                            for item in cut.handoff.updates() {
+                                if candidates.iter().any(|entry| {
+                                    matches!(entry,
+                                    ChatEntry::Item(appended) if appended.id == item.id)
+                                }) {
+                                    continue;
+                                }
+                                let Some(tail) = &self.main_tail else {
+                                    ensure!(
+                                        item.position.is_some_and(
+                                            |position| position < self.main_loaded_through
+                                        ),
+                                        resync()
+                                    );
+                                    continue;
+                                };
+                                if tail.id != item.id {
+                                    // An initial Set may already include a later
+                                    // visible separator than this queued cut.
+                                    ensure!(
+                                        item.position
+                                            .zip(tail.position)
+                                            .is_some_and(|(updated, loaded)| updated < loaded),
+                                        resync()
+                                    );
+                                    continue;
+                                }
+                                ensure!(
+                                    tail.position == item.position
+                                        && tail.source == item.source
+                                        && tail.members == item.members,
+                                    resync()
+                                );
+                                let old = tail
+                                    .summary
+                                    .as_ref()
+                                    .map_or(0, |summary| summary.member_count);
+                                let new = item
+                                    .summary
+                                    .as_ref()
+                                    .map_or(0, |summary| summary.member_count);
+                                ensure!(new != old || item == tail, resync());
+                                // The initial SQLite snapshot can already contain a
+                                // newer head than the captured live publication cut.
+                                if new > old {
+                                    deliveries.push((
+                                        ChatPlacement::Update,
+                                        ChatEntry::Item(Box::new(item.clone())),
+                                    ));
+                                }
+                            }
+                        }
+                        deliveries.extend(
+                            candidates
+                                .into_iter()
+                                .map(|entry| (ChatPlacement::Append, entry)),
+                        );
+                        self.cut_entries = Some(deliveries);
                     }
                     let candidates = self
                         .cut_entries
@@ -802,27 +912,38 @@ impl ConversationFeed {
                         .expect("captured member/item frame");
                     let total = candidates.len();
                     let mut product = ChatBatch {
-                        placement: ChatPlacement::Append,
+                        placement: candidates
+                            .get(self.cut_entry)
+                            .map_or(ChatPlacement::Append, |(placement, _)| *placement),
                         entries: Vec::new(),
                         before: None,
-                        current: main.then(|| cut.handoff.projection_after_items(self.cut_entry)),
+                        current: main
+                            .then(|| cut.handoff.projection_after_items(self.cut_appended)),
                     };
+                    if product.placement == ChatPlacement::Update {
+                        product.current = None;
+                    }
                     let mut next = self.cut_entry;
-                    for entry in candidates
+                    let mut appended = self.cut_appended;
+                    for (placement, entry) in candidates
                         .iter()
                         .skip(next)
                         .take(self.demand.max_items as usize)
                     {
+                        if *placement != product.placement {
+                            break;
+                        }
                         product.entries.push(entry.clone());
-                        product.current =
-                            main.then(|| cut.handoff.projection_after_items(next + 1));
+                        let after = appended + usize::from(*placement == ChatPlacement::Append);
+                        product.current = (main && product.placement != ChatPlacement::Update)
+                            .then(|| cut.handoff.projection_after_items(after));
                         self.reader
                             .inline_timeline_payloads(&mut product, self.demand)
                             .await?;
                         if product.encoded_len()? > self.demand.max_bytes as usize {
                             product.entries.pop();
-                            product.current =
-                                main.then(|| cut.handoff.projection_after_items(next));
+                            product.current = (main && product.placement != ChatPlacement::Update)
+                                .then(|| cut.handoff.projection_after_items(appended));
                             ensure!(
                                 !product.entries.is_empty(),
                                 core::ChatError::InvalidDemand(
@@ -832,19 +953,40 @@ impl ConversationFeed {
                             break;
                         }
                         next += 1;
+                        appended = after;
                     }
                     self.cut_entry = next;
-                    if next == total {
+                    self.cut_appended = appended;
+                    // Update changes only a loaded header. The original Append
+                    // frame (possibly empty) still publishes currentAfter and
+                    // qualifies the reliable cut/ACK after all header changes.
+                    if next == total && product.placement != ChatPlacement::Update {
                         self.delivered = cut.head;
                         self.seen_serial = cut.serial;
                         self.cut = None;
                         self.cut_entry = 0;
                         self.cut_entries = None;
+                        self.cut_appended = 0;
                     }
                     if !product.entries.is_empty() || product.current != self.current {
                         let product = self.reader.finish_batch(product, self.demand)?;
+                        if main {
+                            for entry in &product.entries {
+                                if let ChatEntry::Item(item) = entry {
+                                    if product.placement == ChatPlacement::Append {
+                                        self.main_loaded_through = item
+                                            .position
+                                            .and_then(|position| position.checked_add(1))
+                                            .ok_or_else(resync)?;
+                                    }
+                                    self.main_tail = Some(item.as_ref().clone());
+                                }
+                            }
+                        }
                         self.reader.select_member_window(&product.entries);
-                        self.current = product.current.clone();
+                        if product.current.is_some() {
+                            self.current = product.current.clone();
+                        }
                         self.state_turn = true;
                         return Ok(Some(ConversationEvent::Chat {
                             batch: Box::new(product),

@@ -15,7 +15,7 @@ pub(super) struct MemberPageCapture {
 #[derive(Default)]
 pub(super) struct TimelinePending {
     pub(super) effects: BTreeMap<u64, Arc<PreparedCurrent>>,
-    main: BTreeMap<u64, (u64, usize, Arc<PreparedCurrent>)>,
+    main: BTreeMap<u64, MemberVersions>,
     main_through: BTreeMap<u64, u64>,
     members: BTreeMap<String, BTreeMap<u64, MemberVersions>>,
     heads: BTreeMap<String, BTreeMap<u64, IndexedHead>>,
@@ -26,24 +26,23 @@ impl TimelinePending {
         let effect = current.projection().source_effect_seq;
         if let Some(previous) = self.effects.insert(effect, current.clone()) {
             self.remove_members(effect, &previous);
-            for entry in previous.timeline.iter() {
-                if let Some(position) = entry.item.position {
-                    self.main.remove(&position);
-                }
-            }
+            self.remove_main(effect, &previous);
             self.main_through.remove(&effect);
         }
-        for (index, entry) in current.timeline.iter().enumerate() {
-            if let Some(position) = entry.item.position {
-                self.main.insert(position, (effect, index, current.clone()));
+        for (index, item) in current.history_items().enumerate() {
+            if let Some(position) = item.position {
+                self.main
+                    .entry(position)
+                    .or_default()
+                    .insert(effect, (index, current.clone()));
                 self.main_through
                     .entry(effect)
                     .and_modify(|through| *through = (*through).max(position))
                     .or_insert(position);
             }
-            if entry.item.members.is_some() {
+            if item.members.is_some() {
                 self.heads
-                    .entry(entry.item.id.clone())
+                    .entry(item.id.clone())
                     .or_default()
                     .insert(effect, (false, index, current.clone()));
             }
@@ -85,7 +84,7 @@ impl TimelinePending {
             let item = if *is_current {
                 &current.timeline_update.current()[*index]
             } else {
-                &current.timeline[*index].item
+                current.history_item(*index)
             };
             item.summary
                 .as_ref()
@@ -131,11 +130,23 @@ impl TimelinePending {
                 }
             }
         }
-        for item in current.timeline.iter() {
-            if let Some(heads) = self.heads.get_mut(&item.item.id) {
+        for item in current.history_items() {
+            if let Some(heads) = self.heads.get_mut(&item.id) {
                 heads.remove(&effect);
                 if heads.is_empty() {
-                    self.heads.remove(&item.item.id);
+                    self.heads.remove(&item.id);
+                }
+            }
+        }
+    }
+    fn remove_main(&mut self, effect: u64, current: &PreparedCurrent) {
+        for item in current.history_items() {
+            if let Some(position) = item.position
+                && let Some(versions) = self.main.get_mut(&position)
+            {
+                versions.remove(&effect);
+                if versions.is_empty() {
+                    self.main.remove(&position);
                 }
             }
         }
@@ -160,11 +171,13 @@ impl TimelinePending {
         self.main
             .range(..upper)
             .rev()
-            .take(max_items.saturating_add(1))
-            .map(|(_, (effect, index, current))| {
-                debug_assert!(*effect <= effect_cut);
-                (*index, current.clone())
+            .filter_map(|(_, versions)| {
+                versions
+                    .range(..=effect_cut)
+                    .next_back()
+                    .map(|(_, (index, current))| (*index, current.clone()))
             })
+            .take(max_items.saturating_add(1))
             .collect()
     }
 
@@ -177,13 +190,11 @@ impl TimelinePending {
             self.heads.clear();
             return;
         };
-        if let Some((_, position)) = self.main_through.range(..=through).next_back() {
-            self.main = self.main.split_off(&position.saturating_add(1));
-        }
         self.main_through = self.main_through.split_off(&keep_effect);
         let remaining = self.effects.split_off(&keep_effect);
         let saved = std::mem::replace(&mut self.effects, remaining);
         for (effect, current) in saved {
+            self.remove_main(effect, &current);
             self.remove_members(effect, &current);
         }
     }

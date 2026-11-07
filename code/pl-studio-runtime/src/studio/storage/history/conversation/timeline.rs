@@ -18,7 +18,7 @@ use crate::studio::thread_projection::{
 use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
     ContentRef, ContentTarget, CurrentProjection, PayloadData, TIMELINE_PROJECTION_VERSION,
-    TimelineItem, TimelineMembersRef,
+    TimelineItem, TimelineItemKind, TimelineMembersRef,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -201,6 +201,93 @@ async fn save_item(
     );
     Ok(())
 }
+/// Only the derived, already committed background tail is mutable. Reconstruct
+/// the authorized change from canonical terminal member rows before replacing
+/// its head; the generic item writer stays strictly immutable.
+async fn update_background_tail(db: &impl ConnectionTrait, item: &TimelineItem) -> Result<()> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT metadata FROM timeline_items WHERE item_id=? AND location='history'
+         AND position=(SELECT MAX(position) FROM timeline_items WHERE location='history')",
+            vec![item.id.clone().into()],
+        ))
+        .await?
+        .context("background update is not an existing history tail")?;
+    let previous: Vec<u8> = row.try_get("", "metadata")?;
+    validate_background_extension(db, serde_json::from_slice(&previous)?, item).await?;
+    let written = db.execute_raw(statement(
+        "UPDATE timeline_items SET metadata=? WHERE item_id=? AND metadata=? AND location='history'",
+        vec![serde_json::to_vec(item)?.into(), item.id.clone().into(), previous.into()],
+    )).await?;
+    ensure!(
+        written.rows_affected() == 1,
+        "background tail update conflict"
+    );
+    Ok(())
+}
+async fn validate_background_extension(
+    db: &impl ConnectionTrait,
+    mut expected: TimelineItem,
+    item: &TimelineItem,
+) -> Result<()> {
+    ensure!(
+        expected.kind == TimelineItemKind::WorkGroup
+            && matches!(expected.source, ChatSourceId::BackgroundResult { .. })
+            && expected.admission_closed
+            && expected
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.active_count == 0),
+        "only a completed background result tail can be updated"
+    );
+    let first = u64::from(
+        expected
+            .summary
+            .as_ref()
+            .context("missing tail summary")?
+            .member_count,
+    );
+    let end = u64::from(
+        item.summary
+            .as_ref()
+            .context("missing updated summary")?
+            .member_count,
+    );
+    ensure!(end >= first, "background tail lost members");
+    let mut order = first;
+    // Bounded query windows; a rebuild batch or one effect may contain many results.
+    while order < end {
+        let rows = db.query_all_raw(statement(
+            "SELECT member_order,metadata FROM timeline_item_members
+             WHERE item_id=? AND member_order>=? AND member_order<? ORDER BY member_order LIMIT 128",
+            vec![item.id.clone().into(), integer(order)?.into(), integer(end)?.into()],
+        )).await?;
+        ensure!(!rows.is_empty(), "background tail has missing members");
+        for row in rows {
+            ensure!(
+                u64::try_from(row.try_get::<i64>("", "member_order")?)? == order,
+                "background member append is not contiguous"
+            );
+            let atom: ChatAtom = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+            ensure!(
+                atom.kind == ChatAtomKind::ToolCall
+                    && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+                    && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
+                "background tail contains a non-result member"
+            );
+            crate::studio::thread_projection::timeline::extend_background_head(
+                &mut expected,
+                &atom,
+            )?;
+            order += 1;
+        }
+    }
+    ensure!(
+        expected == *item,
+        "background tail identity or derived summary changed"
+    );
+    Ok(())
+}
 async fn save_fact(db: &impl ConnectionTrait, atom: &ChatAtom, fallback: u64) -> Result<()> {
     let (at, phase) = match atom.lifecycle {
         ChatAtomLifecycle::Active { started, .. } => (started, "start"),
@@ -285,8 +372,20 @@ async fn save_changes(
             "timeline member identity/completion conflict"
         );
     }
+    // An old tail update precedes newly committed visible separators. Otherwise
+    // its SQL tail qualification would incorrectly see a later item.
+    for item in update.updates() {
+        if !committed.iter().any(|entry| entry.item.id == item.id) {
+            update_background_tail(db, item).await?;
+        }
+    }
     for entry in committed {
-        save_item(db, database, &entry.item, effect).await?;
+        let item = update
+            .updates()
+            .iter()
+            .find(|item| item.id == entry.item.id)
+            .unwrap_or(&entry.item);
+        save_item(db, database, item, effect).await?;
     }
     Ok(())
 }
@@ -312,6 +411,7 @@ pub(in super::super) async fn save_snapshot(
 fn validate_unqualified(current: &PreparedCurrent) -> Result<()> {
     ensure!(
         current.timeline.is_empty()
+            && current.timeline_update.updates().is_empty()
             && current.timeline_update.facts().is_empty()
             && current.timeline_update.members().is_empty(),
         "unqualified derived write"
@@ -327,7 +427,7 @@ pub(in super::super) async fn apply_delta(
     head: &mut ProjectionState,
 ) -> Result<()> {
     ensure!(
-        current.timeline.is_empty()
+        current.history_items().next().is_none()
             || current.timeline_commit == current.projection().source_effect_seq,
         "timeline publication is not bound to its source effect"
     );
@@ -351,6 +451,12 @@ pub(in super::super) async fn apply_delta(
         current.timeline_update.next_position() == expected,
         "timeline recovery order differs from history prefix"
     );
+    for item in current.timeline_update.updates() {
+        ensure!(
+            item.position.is_some_and(|position| position < expected),
+            "background update has no existing position"
+        );
+    }
     save_changes(
         db,
         database,
@@ -369,19 +475,34 @@ pub(in super::super) async fn verify(
     database: &str,
     current: &PreparedCurrent,
 ) -> Result<()> {
-    for entry in current.timeline.iter() {
+    for item in current
+        .timeline
+        .iter()
+        .filter(|entry| {
+            !current
+                .timeline_update
+                .updates()
+                .iter()
+                .any(|update| update.id == entry.item.id)
+        })
+        .map(|entry| &entry.item)
+        .chain(current.timeline_update.updates())
+    {
         let row = db
             .query_one_raw(statement(
                 "SELECT metadata FROM timeline_items WHERE item_id=? AND location='history'",
-                vec![entry.item.id.clone().into()],
+                vec![item.id.clone().into()],
             ))
             .await?
             .context("retried timeline item missing")?;
-        ensure!(
-            row.try_get::<Vec<u8>>("", "metadata")?
-                == serde_json::to_vec(&deferred_item(database, &entry.item))?,
-            "retried timeline item differs"
-        );
+        let stored = row.try_get::<Vec<u8>>("", "metadata")?;
+        let expected = deferred_item(database, item);
+        if stored != serde_json::to_vec(&expected)? {
+            // Retried earlier effects can be a prefix of an already committed
+            // batch. Only a proven append of real background members may have
+            // advanced this derived header since that earlier effect.
+            validate_background_extension(db, expected, &serde_json::from_slice(&stored)?).await?;
+        }
     }
     for atom in current.timeline_update.facts() {
         let phase = if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
@@ -609,7 +730,7 @@ pub(in crate::studio) async fn rebuild_batched(
     database: &str,
     batch_size: usize,
 ) -> Result<String> {
-    rebuild_with_classification(db, database, batch_size, false).await
+    rebuild_with_classification(db, database, batch_size, false, true).await
 }
 /// Frozen classification of the already-published TimelineItems content step.
 /// Later rule upgrades must use their own named migration, not change this phase.
@@ -617,13 +738,21 @@ pub(in super::super) async fn rebuild_published(
     db: &impl ConnectionTrait,
     database: &str,
 ) -> Result<String> {
-    rebuild_with_classification(db, database, 128, true).await
+    rebuild_with_classification(db, database, 128, true, false).await
+}
+/// Freeze the already-published schema-16 fold. The new rule has its own step.
+pub(in super::super) async fn rebuild_schema16(
+    db: &impl ConnectionTrait,
+    database: &str,
+) -> Result<String> {
+    rebuild_with_classification(db, database, 128, false, false).await
 }
 async fn rebuild_with_classification(
     db: &impl ConnectionTrait,
     database: &str,
     batch_size: usize,
     published: bool,
+    background_groups: bool,
 ) -> Result<String> {
     ensure!(
         (1..=128).contains(&batch_size),
@@ -636,6 +765,9 @@ async fn rebuild_with_classification(
     let mut projection = TimelineProjection::new(database.into(), candidate.clone(), 0);
     if published {
         projection.published_classification();
+    }
+    if !background_groups {
+        projection.published_background_groups();
     }
     let mut cursor = (-1i64, -1i64, -1i64, -1i64, String::new(), String::new());
     loop {

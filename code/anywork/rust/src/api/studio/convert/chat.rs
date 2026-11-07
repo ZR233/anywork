@@ -315,6 +315,7 @@ pub(crate) fn batch(value: protocol::ChatBatch) -> BridgeChatBatch {
             protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
             protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
             protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
+            protocol::ChatPlacement::Update => BridgeChatPlacement::Update,
         },
         entries: value.entries.into_iter().map(entry).collect(),
         before: value.before,

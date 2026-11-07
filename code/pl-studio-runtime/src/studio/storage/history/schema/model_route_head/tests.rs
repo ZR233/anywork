@@ -25,6 +25,7 @@ impl MigratorTraitSelf for Published12 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
             )
         })

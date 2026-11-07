@@ -2410,6 +2410,9 @@ impl LiveProjection {
         if let Some(timeline) = candidate.as_mut() {
             current_after.timeline_update = Arc::new(timeline.take_update()?);
         }
+        if !current_after.timeline_update.updates().is_empty() {
+            current_after.timeline_commit = prepared.sequence;
+        }
         let handoff = Arc::new(
             super::CurrentHandoff::new(
                 main_through,
@@ -2429,7 +2432,8 @@ impl LiveProjection {
                 current_after.source_changes.clone(),
                 current_after.timeline_update.members().to_vec().into(),
                 retirements.into(),
-            ),
+            )
+            .with_updates(current_after.timeline_update.updates().to_vec().into()),
         );
         let prepared = Arc::make_mut(prepared);
         self.current

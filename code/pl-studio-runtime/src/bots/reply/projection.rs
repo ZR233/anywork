@@ -40,6 +40,14 @@ impl ReplyProjection {
         placement: ChatPlacement,
         items: Vec<ReplyItem>,
     ) -> Result<(), FinalError> {
+        // Main group-header updates carry no target reply body. Canonical
+        // completion identities remain immutable in this reply projection.
+        if placement == ChatPlacement::Update {
+            if !items.is_empty() {
+                return Err(gap("reply body received a Main group-header update"));
+            }
+            return Ok(());
+        }
         let existing = if placement == ChatPlacement::Set {
             &[][..]
         } else {
@@ -88,6 +96,7 @@ impl ReplyProjection {
                 all.append(&mut self.items);
                 self.items = all;
             }
+            ChatPlacement::Update => unreachable!("handled before body validation"),
         }
         Ok(())
     }

@@ -56,7 +56,7 @@ final class DeferredPayload extends PayloadData {
   final int byteLength;
 }
 
-enum ChatPlacement { set, prepend, append }
+enum ChatPlacement { set, prepend, append, update }
 
 /// The sole message delivery model. Null current means retain the previous current snapshot.
 final class ChatBatch {
