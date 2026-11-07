@@ -1,6 +1,16 @@
 //! Private serial execution and atomic publication.
 use super::*;
 
+#[cfg(test)]
+#[path = "close_tests.rs"]
+mod close_tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClosePurpose {
+    Preserve,
+    Delete,
+}
+
 #[derive(Clone)]
 pub(super) struct PendingCall {
     pub(super) context: ContextSnapshot,
@@ -428,7 +438,7 @@ impl Owner {
                     }
                 }
             };
-            if self.interrupt.is_closing() && !matches!(command, Command::Close(_)) {
+            if self.interrupt.is_closing() && !matches!(command, Command::Close(_, _)) {
                 command.reject();
                 continue;
             }
@@ -571,19 +581,25 @@ impl Owner {
                     let result = self.step(input).await;
                     let _ = reply.send(result);
                 }
-                Command::Close(reply) => {
+                Command::Close(purpose, reply) => {
                     if self.state.lifecycle == ThreadLifecycle::Open {
                         self.state.lifecycle = ThreadLifecycle::Closing;
-                        // Whatever this close is about to cut stays owed as a durable fact in the same
-                        // boundary; an idle close forms nothing.
-                        self.form_host_shutdown();
+                        // Preserving close records cut work for recovery; deletion owes only
+                        // actual resource shutdown, because its caller will remove the content.
+                        if purpose == ClosePurpose::Preserve && !self.interrupt.is_deleting() {
+                            self.form_host_shutdown();
+                        }
                         self.publish();
                     }
                     let result = match self.close_resources().await {
                         Ok(()) => {
                             self.state.lifecycle = ThreadLifecycle::Closed;
                             self.publish();
-                            self.flush_cold().await
+                            if purpose == ClosePurpose::Delete || self.interrupt.is_deleting() {
+                                Ok(())
+                            } else {
+                                self.flush_cold().await
+                            }
                         }
                         Err(error) => Err(error),
                     };
@@ -599,13 +615,17 @@ impl Owner {
         // A last-handle drop seals admission and still settles owned work before releasing it. The
         // work the shutdown is cutting stays owed, so a restart offers an explicit continuation.
         self.state.lifecycle = ThreadLifecycle::Closing;
-        self.form_host_shutdown();
+        if !self.interrupt.is_deleting() {
+            self.form_host_shutdown();
+        }
         self.publish();
         match self.close_resources().await {
             Ok(()) => {
                 self.state.lifecycle = ThreadLifecycle::Closed;
                 self.publish();
-                if let Err(error) = self.flush_cold().await {
+                if !self.interrupt.is_deleting()
+                    && let Err(error) = self.flush_cold().await
+                {
                     tracing::error!(thread = self.id, %error, "abandoned Thread flush failed");
                 }
             }
@@ -626,13 +646,17 @@ impl Owner {
     }
 
     async fn close_resources(&mut self) -> Result<(), ThreadError> {
-        self.retry_tool_commits()?;
+        if !self.interrupt.is_deleting() {
+            self.retry_tool_commits()?;
+        }
         let tasks = self.task_tokens.keys().cloned().collect::<Vec<_>>();
         for id in tasks {
             self.cancel_task(&id)?;
         }
         self.drain_background().await;
-        self.retry_tool_commits()?;
+        if !self.interrupt.is_deleting() {
+            self.retry_tool_commits()?;
+        }
         self.cancel_pending_calls(None)?;
         // Submitted interactions are persistent logical facts, not runtime resources: closing the
         // model, tools and background tasks must not answer or cancel them. Only the explicit
@@ -661,6 +685,10 @@ impl Owner {
             .map_err(|error| ThreadError::Tool(Arc::new(error)))?;
         self.pending.clear();
         self.retry_plan = None;
+        if self.interrupt.is_deleting() {
+            self.uncommitted_tools.clear();
+            self.pending_effects.clear();
+        }
         self.resources = None;
         Ok(())
     }
@@ -734,6 +762,7 @@ impl Owner {
         );
         snapshot.pending_tool_commits = self.uncommitted_tools.keys().cloned().collect();
         if snapshot.lifecycle == ThreadLifecycle::Closed
+            && !self.interrupt.is_deleting()
             && snapshot.persistence.attached
             && snapshot.persistence.durable_sequence < snapshot.commit_sequence
         {
@@ -749,6 +778,12 @@ impl Owner {
     }
 
     pub(super) fn publish(&mut self) {
+        if self.interrupt.is_deleting() {
+            // Deletion still publishes real execution/resource state to resident waiters, but
+            // never creates a new cold-store obligation for the content being removed.
+            self.publish_snapshot();
+            return;
+        }
         if self.retry_plan.as_ref().is_some_and(|(id, plan)| {
             !self.state.attempts.last().is_some_and(|attempt| {
                 &attempt.attempt_id == id

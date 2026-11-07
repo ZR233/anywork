@@ -1431,11 +1431,19 @@ impl Owner {
     }
 
     pub(super) fn admit_cold(&mut self) {
+        if self.interrupt.is_deleting() {
+            return;
+        }
         let Some(store) = self.cold.clone() else {
             return;
         };
         self.state.persistence.attached = true;
         while let Some(pending) = self.pending_effects.front_mut() {
+            // Pressure notifications and mailbox paths share this admission boundary. A
+            // deletion seal may arrive between batches; never re-offer the remaining content.
+            if self.interrupt.is_deleting() {
+                return;
+            }
             // Commits made before storage was attached already have transfer checkpoints. Fold
             // them in order before admission so each retained checkpoint carries its own total.
             if pending.write.effect.sequence
@@ -1481,6 +1489,9 @@ impl Owner {
     }
 
     pub(super) async fn flush_cold(&mut self) -> Result<(), ThreadError> {
+        if self.interrupt.is_deleting() {
+            return Err(ThreadError::Closed);
+        }
         self.admit_cold();
         if let Some(error) = &self.cold_error {
             self.publish_snapshot();
@@ -1489,10 +1500,14 @@ impl Owner {
         let Some(store) = &self.cold else {
             return Ok(());
         };
-        let result = store
-            .0
-            .flush(&self.id, self.state.persistence.admitted_sequence)
-            .await;
+        let deletion = self.interrupt.deletion_token();
+        // Stop only this preservation wait. The host still owns the backend's accepted writes
+        // and must join its real writer before removing storage; this branch confirms no watermark.
+        let result = tokio::select! {
+            biased;
+            () = deletion.cancelled() => return Err(ThreadError::Closed),
+            result = store.0.flush(&self.id, self.state.persistence.admitted_sequence) => result,
+        };
         match result {
             Ok(()) => {
                 self.state.persistence.durable_sequence = self.state.persistence.admitted_sequence;
