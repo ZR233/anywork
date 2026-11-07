@@ -50,11 +50,12 @@ runs:
         archive="$RUNNER_TEMP/quality-$INPUT_KIND/quality.tar.gz"
         common=(--archive "$archive" --sha256 "$INPUT_SHA256" --source-sha "$INPUT_SOURCE")
         if [ "$INPUT_KIND" = tool ]; then
+          # Cargo cache restores may retain or clean target/ci-tools; keep this run's input outside it.
           python3 .github/scripts/pr_quality_handoff.py restore-tool "${common[@]}" \
             --workspace "$INPUT_WORKSPACE" --environment "$INPUT_ENVIRONMENT" \
             --expected-environment "${LINUX_BUILD_IMAGE:?exact Linux environment must be restored first}" \
-            --destination target/ci-tools
-          echo "PR_QUALITY_XTASK=$GITHUB_WORKSPACE/target/ci-tools/pl-xtask" >> "$GITHUB_ENV"
+            --destination output/ci-quality-tool
+          echo "PR_QUALITY_XTASK=$GITHUB_WORKSPACE/output/ci-quality-tool/pl-xtask" >> "$GITHUB_ENV"
         else
           python3 .github/scripts/pr_quality_handoff.py restore-helpers "${common[@]}" \
             --destination dist/remote-helper
