@@ -142,6 +142,9 @@ pub enum ChatPlacement {
     Set,
     Prepend,
     Append,
+    /// Replace an already loaded background-result group at its stable position.
+    /// This updates only the derived header; original completion facts stay immutable.
+    Update,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -164,6 +167,13 @@ impl ChatBatch {
             (ChatPlacement::Append, ChatScope::Main) => {
                 self.before.is_none() && (!self.entries.is_empty() || self.current.is_some())
             }
+            (ChatPlacement::Update, ChatScope::Main) => {
+                self.before.is_none() && self.current.is_none() && !self.entries.is_empty()
+            }
+            (
+                ChatPlacement::Update,
+                ChatScope::GroupMembers { .. } | ChatScope::Children { .. },
+            ) => false,
             (ChatPlacement::Set | ChatPlacement::Prepend, ChatScope::GroupMembers { .. }) => {
                 self.current.is_none()
             }
@@ -181,6 +191,10 @@ impl ChatBatch {
             ChatScope::Main => matches!(entry, ChatEntry::Item(item)
                 if item.position.is_some()
                     && item.admission_closed
+                    && (self.placement != ChatPlacement::Update
+                        || (item.kind == TimelineItemKind::WorkGroup
+                            && item.delivery == ChatDeliveryKind::Independent
+                            && matches!(item.source, ChatSourceId::BackgroundResult { .. })))
                     && (item.kind != TimelineItemKind::WorkGroup
                         || (item.summary.as_ref().is_some_and(|summary| summary.active_count == 0)
                             && item.members.as_ref().is_some_and(|members| members.item_id == item.id)))),
@@ -560,6 +574,34 @@ mod tests {
         assert_eq!(item.members.as_ref(), Some(&members));
         assert_eq!(item.member_count(), 12_000);
         assert!(item.payload.is_none());
+
+        value.placement = ChatPlacement::Update;
+        assert!(value.validate_for(&ChatScope::Main).is_err());
+        let ChatEntry::Item(item) = &mut value.entries[0] else {
+            unreachable!();
+        };
+        item.source = ChatSourceId::BackgroundResult {
+            message_id: "first-result".into(),
+        };
+        item.delivery = ChatDeliveryKind::Independent;
+        assert!(value.validate_for(&ChatScope::Main).is_ok());
+        assert!(
+            value
+                .validate_for(&ChatScope::GroupMembers {
+                    reference: members.clone(),
+                })
+                .is_err()
+        );
+        value.before = Some("not-a-header-update".into());
+        assert!(value.validate_for(&ChatScope::Main).is_err());
+        value.before = None;
+        value.current = Some(CurrentProjection::empty(8, ThreadStatus::Idle));
+        assert!(value.validate_for(&ChatScope::Main).is_err());
+        value.current = None;
+        assert_eq!(
+            serde_json::from_slice::<ChatBatch>(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            value
+        );
 
         let ChatEntry::Item(item) = &mut value.entries[0] else {
             unreachable!();

@@ -5,6 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
+import 'timeline_reasoning_view.dart';
 
 /// 实时与历史共用的纯工作组视图，不读取成员或持有领域资源。
 class TimelineWorkGroupView extends StatefulWidget {
@@ -71,7 +72,9 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
         running: active,
         builder: (context, elapsed) {
           final l10n = context.l10n;
-          final thinkingSummary = summary?.latestThinkingSummary?.trim();
+          final thinkingSummary = widget.live
+              ? summary?.latestThinkingSummary?.trim()
+              : null;
           final label = active
               ? l10n.timelineGroupWorking
               : widget.live && (summary?.activeCount ?? 0) > 0
@@ -122,6 +125,10 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
                   label: thinkingSummary == null || thinkingSummary.isEmpty
                       ? label
                       : thinkingSummary,
+                  labelWidget:
+                      thinkingSummary == null || thinkingSummary.isEmpty
+                      ? null
+                      : TimelineReasoningSummary(text: thinkingSummary),
                   meta: meta.isEmpty ? null : meta,
                   header: true,
                   emphasized: widget.live,

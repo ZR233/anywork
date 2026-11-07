@@ -44,6 +44,7 @@ pub enum BridgeChatPlacement {
     Set,
     Prepend,
     Append,
+    Update,
 }
 
 #[derive(Debug, Clone)]

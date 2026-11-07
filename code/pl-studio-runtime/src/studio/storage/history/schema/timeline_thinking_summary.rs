@@ -32,7 +32,7 @@ impl MigrationTrait for TimelineThinkingSummary {
                 .await?
                 .context("timeline thinking summary migration has no history identity")?;
             let database_id: String = row.try_get("", "database_id")?;
-            timeline::rebuild(db, &database_id).await?;
+            timeline::rebuild_schema16(db, &database_id).await?;
             set_version(db, 16).await?;
             Ok(())
         }
@@ -61,7 +61,9 @@ mod tests {
                 .filter(|step| {
                     !matches!(
                         step.name(),
-                        TIMELINE_THINKING_SUMMARY | SOURCE_CLASSIFICATION
+                        TIMELINE_THINKING_SUMMARY
+                            | SOURCE_CLASSIFICATION
+                            | TIMELINE_BACKGROUND_TAIL
                     )
                 })
                 .collect()
@@ -253,7 +255,7 @@ mod tests {
             .await?;
         // Exercise schema preflight as well as SeaORM's transactional step.
         prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, 16);
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         let row = db
             .query_one_raw(statement(
                 "SELECT metadata,projection_version FROM timeline_items WHERE kind='workGroup' AND json_extract(CAST(metadata AS TEXT),'$.source.kind')='foregroundTurn'",

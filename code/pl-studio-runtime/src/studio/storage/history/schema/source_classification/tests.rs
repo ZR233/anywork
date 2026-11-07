@@ -20,7 +20,12 @@ impl MigratorTraitSelf for Published16 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != SOURCE_CLASSIFICATION)
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                SOURCE_CLASSIFICATION | TIMELINE_BACKGROUND_TAIL
+            )
+        })
         .collect()
     }
 }
@@ -281,7 +286,7 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
     let db = &store.writer().await?.db;
     assert_eq!(originals(db).await?, original);
     let new_ledger = ledger(db).await?;
-    assert_eq!(new_ledger.len(), old_ledger.len() + 1);
+    assert_eq!(new_ledger.len(), old_ledger.len() + 2);
     assert!(old_ledger.iter().all(|record| new_ledger.contains(record)));
     assert_ne!(timeline::generation(db).await?, generation);
     assert_eq!(rows(db, "SELECT json_extract(metadata,'$.kind') AS value FROM conversation_items WHERE seq IN (2,4,6,7) ORDER BY seq").await?,

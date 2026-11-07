@@ -25,6 +25,7 @@ pub(in crate::studio) struct CurrentHandoff {
     retirements: Arc<[CurrentRetirement]>,
     /// Actual start/source events, including effects that publish no completion seq.
     entries: Arc<[ChatEntry]>,
+    updates: Arc<[pl_protocol::TimelineItem]>,
     retained_bytes: OnceLock<u64>,
 }
 
@@ -44,6 +45,7 @@ impl CurrentHandoff {
             after,
             retirements: Arc::from([]),
             entries,
+            updates: Arc::from([]),
             retained_bytes: OnceLock::new(),
         }
     }
@@ -87,6 +89,14 @@ impl CurrentHandoff {
     pub fn entries(&self) -> &Arc<[ChatEntry]> {
         &self.entries
     }
+    pub fn with_updates(mut self, updates: Arc<[pl_protocol::TimelineItem]>) -> Self {
+        self.retained_bytes.take();
+        self.updates = updates;
+        self
+    }
+    pub fn updates(&self) -> &[pl_protocol::TimelineItem] {
+        &self.updates
+    }
 
     pub fn retained_bytes(&self) -> u64 {
         *self.retained_bytes.get_or_init(|| {
@@ -102,6 +112,7 @@ impl CurrentHandoff {
                     .saturating_add(
                         serde_json::to_vec(&(
                             self.entries.as_ref(),
+                            self.updates.as_ref(),
                             self.members.as_ref(),
                             self.sources.as_ref(),
                         ))

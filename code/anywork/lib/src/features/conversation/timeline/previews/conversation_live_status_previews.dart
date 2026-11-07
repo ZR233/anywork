@@ -54,6 +54,9 @@ Widget liveStatusGroupPreview({
     cancelledCount: 0,
     startedAt: history ? 100 : null,
     finishedAt: history ? 225 : null,
+    latestThinkingSummary: thinkingOnly
+        ? '**Reading receipt metadata** · *检查* `owner`'
+        : null,
     categories: [
       const TimelineCategoryCount(
         category: TimelineCategory.thinking,

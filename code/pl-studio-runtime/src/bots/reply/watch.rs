@@ -180,9 +180,13 @@ impl ReplyWatch {
             ConversationEvent::State { update } => self.state(*update),
             ConversationEvent::Chat { batch } => {
                 if (!self.chat_ready && batch.placement != ChatPlacement::Set)
-                    || (self.chat_ready && batch.placement != ChatPlacement::Append)
+                    || (self.chat_ready
+                        && !matches!(
+                            batch.placement,
+                            ChatPlacement::Append | ChatPlacement::Update
+                        ))
                 {
-                    return Err(gap("reply feed expected first Set then Append"));
+                    return Err(gap("reply feed expected first Set then Append or Update"));
                 }
                 self.stage(*batch)?;
                 self.finish_pending().await
@@ -227,7 +231,7 @@ impl ReplyWatch {
         if self.turn_id.is_some() {
             if batch.placement == ChatPlacement::Append {
                 self.coverage.admit(&batch.entries)?;
-            } else {
+            } else if batch.placement != ChatPlacement::Update {
                 self.coverage.page(&batch.entries)?;
             }
         }
@@ -281,7 +285,7 @@ impl ReplyWatch {
             current,
             ..
         } = pending.batch;
-        if placement != ChatPlacement::Append {
+        if matches!(placement, ChatPlacement::Set | ChatPlacement::Prepend) {
             if let Some(token) = &before {
                 self.coverage.cursor(token)?;
             }

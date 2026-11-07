@@ -305,6 +305,8 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             _appliedPrepends++;
           case ChatPlacement.append:
             _appliedAppends++;
+          case ChatPlacement.update:
+            throw StateError('Children accepted a Main header update');
         }
         _registerCurrent();
       });

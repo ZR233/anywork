@@ -96,6 +96,150 @@ fn background(id: &str, order: u64, ended: ChatFactPosition) -> ChatAtom {
     atom
 }
 
+fn background_tool(index: u64) -> ChatAtom {
+    let id = format!("background-{index}");
+    let mut atom = background(&id, index, pos(index, 0));
+    atom.kind = ChatAtomKind::ToolCall;
+    atom.source = ChatSourceId::BackgroundResult {
+        message_id: format!("message-{index}"),
+    };
+    atom.turn_id = Some(format!("origin-turn-{index}"));
+    atom.completion_seq = Some(index);
+    atom
+}
+
+fn result_input(atom: ChatAtom) -> TimelineInput {
+    TimelineInput::Atom {
+        atom: Box::new(atom),
+        payload: None,
+        thinking_summary: None,
+    }
+}
+
+#[test]
+fn background_tail_updates_across_effects_restore_and_invisible_facts() {
+    let mut timeline = fold();
+    let foreground = active(
+        "foreground",
+        ChatAtomKind::ToolCall,
+        1,
+        pos(1, 0),
+        Vec::new(),
+    );
+    timeline.observe(&foreground, None).unwrap();
+    timeline
+        .apply_input(result_input(background_tool(2)))
+        .unwrap();
+    let first = timeline.take_committed().pop().unwrap();
+    assert_eq!(first.position, Some(0));
+    assert_eq!(first.source, background_tool(2).source);
+    assert!(!timeline.current_items()[0].admission_closed);
+    let update = timeline.take_update().unwrap();
+    assert!(update.updates().is_empty());
+    assert_eq!(update.members().len(), 2);
+    let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
+    restored.restore_recovery(update.recovery()).unwrap();
+    for index in [3, 4] {
+        // Neither a source end nor diagnostics nor a genuinely empty text item
+        // is another visible committed item.
+        restored.end_source(&ChatSourceId::BackgroundResult {
+            message_id: "unrelated".into(),
+        });
+        let mut diagnostic = background_tool(index + 100);
+        diagnostic.kind = ChatAtomKind::Inference;
+        restored.apply_input(result_input(diagnostic)).unwrap();
+        let mut empty = terminal(
+            "empty",
+            ChatAtomKind::Text,
+            index,
+            pos(index, 1),
+            pos(index, 1),
+            vec![],
+        );
+        empty.id = format!("empty-{index}");
+        empty.source = ChatSourceId::Receipt {
+            receipt_id: format!("empty-{index}"),
+        };
+        restored.apply_input(result_input(empty)).unwrap();
+        restored
+            .apply_input(result_input(background_tool(index)))
+            .unwrap();
+        assert!(restored.take_committed().is_empty());
+        let update = restored.take_update().unwrap();
+        assert_eq!(update.next_position(), 1);
+        assert_eq!(update.updates().len(), 1);
+        let item = &update.updates()[0];
+        assert_eq!(item.id, first.id);
+        assert_eq!(item.source, first.source);
+        assert_eq!(item.position, first.position);
+        assert_eq!(
+            item.summary.as_ref().unwrap().member_count,
+            (index - 1) as u32
+        );
+        let member = update.members().last().unwrap();
+        assert_eq!(member.member_order, index - 2);
+        assert_eq!(member.atom.source, background_tool(index).source);
+        assert_eq!(member.atom.completion_seq, Some(index));
+        assert!(update.recovery().len() < CHAT_BATCH_MAX_BYTES as usize);
+        assert!(!restored.current_items()[0].admission_closed);
+    }
+}
+
+#[test]
+fn visible_commit_separates_background_tail_but_not_active_foreground() {
+    let mut timeline = fold();
+    for index in 1..=3 {
+        timeline
+            .apply_input(result_input(background_tool(index)))
+            .unwrap();
+    }
+    let first = timeline.take_committed();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].summary.as_ref().unwrap().member_count, 3);
+    assert!(timeline.take_update().unwrap().updates().is_empty());
+    let receipt = background("independent-status", 4, pos(4, 0));
+    timeline.apply_input(result_input(receipt)).unwrap();
+    timeline
+        .apply_input(result_input(background_tool(5)))
+        .unwrap();
+    let next = timeline.take_committed();
+    assert_eq!(next.len(), 2);
+    assert_eq!(next[0].kind, TimelineItemKind::Status);
+    assert_eq!(next[0].position, Some(1));
+    assert_eq!(next[1].position, Some(2));
+    assert_ne!(next[1].id, first[0].id);
+    assert_eq!(next[1].summary.as_ref().unwrap().member_count, 1);
+}
+
+#[test]
+fn background_tail_recovery_remains_bounded_after_many_results_and_rejects_bad_position() {
+    let mut timeline = fold();
+    for index in 1..=512 {
+        timeline
+            .apply_input(result_input(background_tool(index)))
+            .unwrap();
+        timeline.take_committed();
+        let update = timeline.take_update().unwrap();
+        assert_eq!(update.next_position(), 1);
+        assert!(
+            update.recovery().len() < 2048,
+            "tail metadata grew with result history"
+        );
+        let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
+        restored.restore_recovery(update.recovery()).unwrap();
+        timeline = restored;
+    }
+    assert_eq!(timeline.background_tail.as_ref().unwrap().next_member, 512);
+    let mut recovery: Recovery = serde_json::from_slice(&timeline.recovery().unwrap()).unwrap();
+    recovery.background_tail.as_mut().unwrap().item.position = Some(1);
+    let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
+    assert!(
+        restored
+            .restore_recovery(&serde_json::to_vec(&recovery).unwrap())
+            .is_err()
+    );
+}
+
 fn status(id: &str, order: u64, started: ChatFactPosition, ended: ChatFactPosition) -> ChatAtom {
     let mut atom = terminal(id, ChatAtomKind::Receipt, order, started, ended, content());
     atom.source = ChatSourceId::Receipt {
@@ -150,15 +294,27 @@ fn independent_background_tools_commit_without_splitting_foreground_or_waiting_f
         let source = atom.source.clone();
         timeline.apply_input(summary_input(atom, None)).unwrap();
         let committed = timeline.take_committed();
-        assert_eq!(committed.len(), 1);
-        let group = &committed[0];
+        let update = timeline.take_update().unwrap();
+        assert_eq!(committed.len(), usize::from(offset == 0));
+        assert_eq!(update.updates().len(), usize::from(offset != 0));
+        let group = if offset == 0 {
+            &committed[0]
+        } else {
+            &update.updates()[0]
+        };
         assert_eq!(group.kind, TimelineItemKind::WorkGroup);
-        assert_eq!(group.source, source);
+        if offset == 0 {
+            assert_eq!(group.source, source);
+        }
+        assert_eq!(update.members().last().unwrap().atom.source, source);
         assert_eq!(group.delivery, ChatDeliveryKind::Independent);
         assert_eq!(group.outcome, None);
         assert!(group.admission_closed);
-        assert_eq!(group.position, Some(offset as u64));
-        assert_eq!(group.summary.as_ref().unwrap().member_count, 1);
+        assert_eq!(group.position, Some(0));
+        assert_eq!(
+            group.summary.as_ref().unwrap().member_count,
+            offset as u32 + 1
+        );
         assert_eq!(group.summary.as_ref().unwrap().active_count, 0);
         assert_eq!(
             group.summary.as_ref().unwrap().latest_thinking_summary,
@@ -843,6 +999,7 @@ fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
     struct CanonicalUpdate<'a> {
         facts: &'a [ChatAtom],
         members: &'a [MemberChange],
+        updates: &'a [TimelineItem],
         current: &'a [TimelineItem],
         recovery: &'a [u8],
         next_position: u64,
@@ -851,6 +1008,7 @@ fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
     serde_json::to_vec(&CanonicalUpdate {
         facts: update.facts(),
         members: update.members(),
+        updates: update.updates(),
         current: update.current(),
         recovery: update.recovery(),
         next_position: update.next_position(),
@@ -1270,6 +1428,7 @@ fn restored_current_fragments_continue_the_same_projection() {
     let empty_recovery = serde_json::to_vec(&Recovery {
         items: timeline.items.values().cloned().collect(),
         active: timeline.active.clone(),
+        background_tail: timeline.background_tail.clone(),
     })
     .unwrap();
     assert_eq!(timeline.take_update().unwrap().recovery, empty_recovery);
@@ -1289,6 +1448,7 @@ fn restored_current_fragments_continue_the_same_projection() {
     let owned_recovery = serde_json::to_vec(&Recovery {
         items: timeline.items.values().cloned().collect(),
         active: timeline.active.clone(),
+        background_tail: timeline.background_tail.clone(),
     })
     .unwrap();
     let recovery = timeline.take_update().unwrap().recovery;
@@ -1310,6 +1470,7 @@ fn restored_current_fragments_continue_the_same_projection() {
     let restored_owned_recovery = serde_json::to_vec(&Recovery {
         items: restored.items.values().cloned().collect(),
         active: restored.active.clone(),
+        background_tail: restored.background_tail.clone(),
     })
     .unwrap();
     assert_eq!(
