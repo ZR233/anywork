@@ -8,6 +8,8 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -145,6 +147,14 @@ void main() {
         ),
       );
       await tester.pump();
+      await _frames(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TimelineReasoningView),
+          matching: find.byType(TimelineActivityRow),
+        ),
+      );
+      await tester.pump();
       final oldDisplay = display!;
       final oldScope = original.scopes.single;
       original.closeGate = Completer<void>();
@@ -174,6 +184,14 @@ void main() {
         ChatBatch(
           placement: ChatPlacement.set,
           entries: [ChatAtomEntry(_reasoning())],
+        ),
+      );
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TimelineReasoningView),
+          matching: find.byType(TimelineActivityRow),
         ),
       );
       await tester.pump();
@@ -240,7 +258,7 @@ void main() {
   );
 
   testWidgets(
-    'GroupMembers is lazy, thinking reads on first expansion, folding revokes and joins original resources',
+    'GroupMembers and reasoning bodies are lazy, folding revokes and joins original resources',
     (tester) async {
       final opened = <_Content>[];
       final references = <TimelineMembersRef>[];
@@ -267,6 +285,14 @@ void main() {
           placement: ChatPlacement.set,
           entries: [ChatAtomEntry(_reasoning())],
           before: 'members-next',
+        ),
+      );
+      await tester.pump();
+      await _frames(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(TimelineReasoningView),
+          matching: find.byType(TimelineActivityRow),
         ),
       );
       await tester.pump();
@@ -343,6 +369,14 @@ void main() {
             ),
           ),
           'admit initial GroupMembers prefix',
+        );
+        await tester.pump();
+        await _frames(tester);
+        await tester.tap(
+          find.descendant(
+            of: find.byType(TimelineReasoningView),
+            matching: find.byType(TimelineActivityRow),
+          ),
         );
         await tester.pump();
         final body = ContentWindow(
@@ -453,6 +487,17 @@ void main() {
           same(controller),
         );
         expect(operations, ['set']);
+        expect(content.scopes, [
+          oldScope,
+        ], reason: 'The newly admitted member starts folded');
+        await _frames(tester);
+        await tester.tap(
+          find.descendant(
+            of: find.byType(TimelineReasoningView),
+            matching: find.byType(TimelineActivityRow),
+          ),
+        );
+        await tester.pump();
         expect(content.scopes, hasLength(2));
         content.scopes.last.watch.add(body);
         await tester.pump();

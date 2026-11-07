@@ -165,7 +165,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.textContaining('$state-thinking-proof'), findsOneWidget);
+      expect(
+        tester.widget<Tooltip>(find.byType(Tooltip)).message,
+        contains('$state-thinking-proof'),
+      );
+      expect(find.byType(ExpansionTile), findsNothing);
       final row = tester.widget<TimelineActivityRow>(
         find.byType(TimelineActivityRow),
       );

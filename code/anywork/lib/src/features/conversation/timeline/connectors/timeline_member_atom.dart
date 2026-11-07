@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../state/chat_item_presentation.dart';
+import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
 import '../state/tool_presentation.dart';
@@ -16,6 +17,7 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import 'timeline_content_connector.dart';
@@ -56,7 +58,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   VoidCallback? _unregister;
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows sync* {
-    if (!_bodyActive) return;
+    if (!_active) return;
     yield* _owner?.windows ?? const [];
     yield* _rangeDisplays;
   }
@@ -67,14 +69,19 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   }
 
   bool _retired = false;
-  bool _toolExpanded = false;
+  bool _expanded = false;
   bool get _active =>
       mounted &&
       !_retired &&
       !(widget.retirement?.value ?? false) &&
       widget.isActive();
-  bool get _bodyActive =>
-      _active && (widget.atom.kind != ChatAtomKind.toolCall || _toolExpanded);
+  bool _readActive(String key) =>
+      _active &&
+      (key == 'payload' ||
+          key.startsWith('part.summaryText.') ||
+          (widget.atom.kind != ChatAtomKind.toolCall &&
+              widget.atom.kind != ChatAtomKind.reasoning) ||
+          _expanded);
   @override
   void initState() {
     super.initState();
@@ -91,11 +98,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     // A disclosure can reopen before ExpansionTile unmounts its children.
     // Folding revokes reads immediately, but is not permanent member retirement.
     if ((widget.retirement?.value ?? false)) {
-      _rangeQualification = Object();
+      _retireRanges();
       _closeBodies();
-      _scope?.retire();
-      if (_scope != null) unawaited(_scope!.close());
-      _scope = null;
     } else if (widget.atom.kind != ChatAtomKind.toolCall &&
         widget.atom.payload == null) {
       _observe();
@@ -108,28 +112,42 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     _owner ??= ConversationCurrentOwner(widget.content);
     _owner!.synchronizeSources([
       for (final content in widget.atom.contents)
-        CurrentWindowSource(
-          id: widget.atom.id,
-          reference: content.reference,
-          text: '',
-        ),
+        if (widget.atom.kind != ChatAtomKind.reasoning ||
+            content.role == ChatContentRole.reasoningSummary ||
+            _expanded)
+          CurrentWindowSource(
+            id: widget.atom.id,
+            reference: content.reference,
+            text: '',
+          ),
     ]);
   }
 
-  void _expandTool(bool expanded) {
+  void _expand(bool expanded) {
     if (!_active) return;
     setState(() {
-      _toolExpanded = expanded;
+      _expanded = expanded;
       if (expanded) {
         if (widget.atom.payload == null) _observe();
       } else {
-        _rangeQualification = Object();
-        _closeBodies();
-        _scope?.retire();
-        if (_scope != null) unawaited(_scope!.close());
-        _scope = null;
+        _retireRanges();
+        if (widget.atom.kind == ChatAtomKind.reasoning &&
+            widget.atom.payload == null) {
+          _observe();
+        } else {
+          _closeBodies();
+        }
       }
     });
+  }
+
+  void _retireRanges() {
+    _rangeQualification = Object();
+    _rangeDisplays.clear();
+    final scope = _scope;
+    _scope = null;
+    scope?.retire();
+    if (scope != null) unawaited(scope.close());
   }
 
   void _closeBodies() {
@@ -144,10 +162,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   void retire() {
     if (_retired) return;
     _retired = true;
+    _retireRanges();
     _closeBodies();
-    _scope?.retire();
-    if (_scope != null) unawaited(_scope!.close());
-    _scope = null;
   }
 
   @override
@@ -168,7 +184,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     super.dispose();
   }
 
-  Widget _windows() => _owner == null
+  bool _hasRole(CurrentWindowObservation observation, ChatContentRole role) =>
+      widget.atom.contents.any(
+        (content) =>
+            content.role == role &&
+            contentReferenceIdentity(content.reference) ==
+                contentReferenceIdentity(observation.reference),
+      );
+
+  Widget _windows({ChatContentRole? role}) => _owner == null
       ? const SizedBox.shrink()
       : ListenableBuilder(
           listenable: _owner!,
@@ -179,30 +203,79 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
               if (_owner!.cleanupError != null)
                 Text(_owner!.cleanupError.toString()),
               for (final observation in _owner!.windows)
-                _witness(
-                  observation,
-                  ConversationCurrentWindowView(
-                    id: observation.id,
-                    text: observation.window == null
-                        ? observation.source.text
-                        : utf8.decode(
-                            observation.window!.bytes,
-                            allowMalformed: true,
-                          ),
-                    error: observation.error,
-                    offset: observation.window?.offset,
-                    end: observation.window == null
-                        ? null
-                        : observation.window!.offset +
-                              observation.window!.bytes.length,
-                    availableThrough: observation.window?.availableThrough,
-                    onFirst: () => _owner!.firstWindow(observation),
-                    onNext: () => _owner!.nextWindow(observation),
+                if (role == null || _hasRole(observation, role))
+                  _witness(
+                    observation,
+                    ConversationCurrentWindowView(
+                      id: observation.id,
+                      text: observation.window == null
+                          ? observation.source.text
+                          : utf8.decode(
+                              observation.window!.bytes,
+                              allowMalformed: true,
+                            ),
+                      error: observation.error,
+                      offset: observation.window?.offset,
+                      end: observation.window == null
+                          ? null
+                          : observation.window!.offset +
+                                observation.window!.bytes.length,
+                      availableThrough: observation.window?.availableThrough,
+                      onFirst: () => _owner!.firstWindow(observation),
+                      onNext: () => _owner!.nextWindow(observation),
+                    ),
                   ),
-                ),
             ],
           ),
         );
+
+  Widget _reasoning() {
+    Widget view() {
+      final summaries =
+          _owner?.windows.where(
+            (window) => _hasRole(window, ChatContentRole.reasoningSummary),
+          ) ??
+          const <CurrentWindowObservation>[];
+      final summary = summaries
+          .map(
+            (window) => window.window == null
+                ? window.source.text
+                : utf8.decode(window.window!.bytes, allowMalformed: true),
+          )
+          .join(' ');
+      final atom = widget.atom;
+      final row = TimelineReasoningView(
+        summary: summary,
+        startedAt: atom.startedAt,
+        finishedAt: atom.finishedAt,
+        running: atom.lifecycle is ActiveChatAtom,
+        outcome: switch (atom.lifecycle) {
+          TerminalChatAtom(:final outcome) => outcome.name,
+          _ => null,
+        },
+        diagnostic:
+            _owner?.cleanupError?.toString() ??
+            summaries
+                .map((window) => window.error)
+                .whereType<Object>()
+                .firstOrNull
+                ?.toString(),
+        initiallyExpanded: _expanded,
+        onExpansionChanged: _expand,
+        body:
+            atom.contents.any((content) => content.role == ChatContentRole.body)
+            ? _windows(role: ChatContentRole.body)
+            : null,
+      );
+      return summaries.isEmpty ? row : _witness(summaries.first, row);
+    }
+
+    final owner = _owner;
+    return owner == null
+        ? view()
+        : ListenableBuilder(listenable: owner, builder: (_, _) => view());
+  }
+
   @override
   Widget build(BuildContext context) {
     final atom = widget.atom;
@@ -218,13 +291,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (atom.payload != null) {
       final qualification = _rangeQualification;
       bool qualified() =>
-          _bodyActive && identical(qualification, _rangeQualification);
+          _readActive('attachments') &&
+          identical(qualification, _rangeQualification);
       return ChatItemView(
         item: ChatItemPresentation.decode(atom),
-        toolInitiallyExpanded: _toolExpanded,
+        initiallyExpanded: _expanded,
         monotonicMicros: widget.monotonicMicros,
         onContentLayout: widget.onContentLayout,
-        onToolExpansionChanged: _expandTool,
+        onExpansionChanged: _expand,
         isDisplayActive: () => _active,
         attachmentBuilder: (item) => TimelineAttachmentsConnector(
           item: item,
@@ -235,7 +309,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         contentRangeBuilder: (id, key, label, reference, witness) {
           final qualification = _rangeQualification;
           bool active() =>
-              _bodyActive && identical(qualification, _rangeQualification);
+              _readActive(key) && identical(qualification, _rangeQualification);
           return TimelineContentRangeConnector(
             key: ValueKey((id, key, qualification)),
             itemId: id,
@@ -257,10 +331,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         },
       );
     }
+    if (atom.kind == ChatAtomKind.reasoning) return _reasoning();
     if (atom.tool case final tool?) {
       final details = TimelineToolDetails(
         inline: atom.wait != null,
-        initiallyExpanded: _toolExpanded,
+        initiallyExpanded: _expanded,
         item: TimelineToolPresentation(
           id: atom.id,
           toolCallId: tool.callId,
@@ -278,7 +353,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           arguments: '',
           output: '',
         ),
-        onExpansionChanged: _expandTool,
+        onExpansionChanged: _expand,
         declaredContents: [_windows()],
       );
       return atom.wait == null
@@ -286,15 +361,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           : TimelineWaitPanel(
               identity: atom.id,
               presentation: atom.wait!,
-              initiallyExpanded: _toolExpanded,
+              initiallyExpanded: _expanded,
               diagnostics: details,
-              onExpansionChanged: _expandTool,
+              onExpansionChanged: _expand,
             );
     }
     if (atom.kind == ChatAtomKind.toolCall) {
       return TimelineActivityDisclosure(
-        initiallyExpanded: _toolExpanded,
-        onExpansionChanged: _expandTool,
+        initiallyExpanded: _expanded,
+        onExpansionChanged: _expand,
         titleBuilder: (_, expanded) => TimelineActivityRow(
           label: '工具调用',
           icon: Icons.build_outlined,
