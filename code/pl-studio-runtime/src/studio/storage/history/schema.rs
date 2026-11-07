@@ -4,6 +4,7 @@ mod atom_metadata;
 mod background_results;
 mod conversion;
 mod demand_conversation;
+mod member_read_metadata;
 mod model_route_head;
 mod sqlite_metadata;
 mod timeline_items;
@@ -112,6 +113,7 @@ impl MigratorTraitSelf for Migrator {
                 thread_id: self.thread_id.clone(),
             }),
             Box::new(atom_metadata::AtomMetadata),
+            Box::new(member_read_metadata::MemberReadMetadata),
             Box::new(background_results::BackgroundResults),
             Box::new(timeline_items::TimelineItems),
             Box::new(ProjectKind {
@@ -159,6 +161,7 @@ const MODEL_ROUTE_HEAD: &str = "m20261101_000010_history_model_route_head";
 const ATOM_METADATA: &str = "m20261102_000001_history_atom_metadata";
 const BACKGROUND_RESULTS: &str = "m20261104_000001_history_background_results";
 const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
+const MEMBER_READ_METADATA: &str = "m20261107_000001_history_member_read_metadata";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 // Content preparation and current-only readers share the same lifecycle boundary.
@@ -382,10 +385,22 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         );
         validate_identity_collations(db).await?;
         if version == HISTORY_SCHEMA_VERSION {
-            validate_current_structure(db).await?;
+            if pending
+                .iter()
+                .any(|step| step.name() == MEMBER_READ_METADATA)
+            {
+                demand_conversation::validate_tables(db).await?;
+                model_route_head::validate_tables(db).await?;
+                atom_metadata::validate_tables(db).await?;
+                member_read_metadata::validate_source(db).await?;
+                validate_saved_heads(db).await?;
+            } else {
+                validate_current_structure(db).await?;
+            }
             ensure!(
                 pending.iter().all(|step| {
-                    step.name() == BACKGROUND_RESULTS || is_lifecycle_migration(step.name())
+                    matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA)
+                        || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
             );
@@ -404,6 +419,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
+                                    | MEMBER_READ_METADATA
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 12 has pending earlier content migrations; existing data preserved"
@@ -417,7 +433,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         pending.iter().all(|step| {
                             matches!(
                                 step.name(),
-                                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
+                                ATOM_METADATA
+                                    | BACKGROUND_RESULTS
+                                    | TIMELINE_ITEMS
+                                    | MEMBER_READ_METADATA
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 13 has pending earlier content migrations; existing data preserved"
@@ -429,8 +448,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     timeline_items::validate_source(db).await?;
                     ensure!(
                         pending.iter().all(|step| {
-                            matches!(step.name(), BACKGROUND_RESULTS | TIMELINE_ITEMS)
-                                || is_lifecycle_migration(step.name())
+                            matches!(
+                                step.name(),
+                                BACKGROUND_RESULTS | TIMELINE_ITEMS | MEMBER_READ_METADATA
+                            ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 14 has pending earlier content migrations; existing data preserved"
                     );
@@ -625,6 +646,10 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
     model_route_head::validate_tables(db).await?;
     atom_metadata::validate_tables(db).await?;
     super::conversation::timeline::validate_tables(db).await?;
+    validate_saved_heads(db).await
+}
+
+async fn validate_saved_heads(db: &impl ConnectionTrait) -> Result<()> {
     let head = super::conversation::timeline::read_state(db)
         .await?
         .context("timeline recovery head is missing; existing data preserved")?;
@@ -1094,6 +1119,7 @@ impl MigrationTrait for CombinedContent {
                             | DEMAND_CONVERSATION
                             | MODEL_ROUTE_HEAD
                             | ATOM_METADATA
+                            | MEMBER_READ_METADATA
                             | BACKGROUND_RESULTS
                             | TIMELINE_ITEMS
                     ) && !is_lifecycle_migration(step.name())

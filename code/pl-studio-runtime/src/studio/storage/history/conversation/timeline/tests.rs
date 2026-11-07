@@ -130,7 +130,7 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
     projection.observe(&work, None)?;
     persist(&db, &mut projection, 1).await?;
     assert!(
-        page_rows(&db, &ChatScope::Main, None, 100, 1, 1)
+        page_rows(&db, &ChatScope::Main, None, 100, 1, 1, &[])
             .await?
             .is_empty()
     );
@@ -162,13 +162,13 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
     )?;
     persist(&db, &mut projection, 2).await?;
     assert!(
-        page_rows(&db, &ChatScope::Main, None, 100, 2, 1)
+        page_rows(&db, &ChatScope::Main, None, 100, 2, 1, &[])
             .await?
             .is_empty()
     );
     projection.observe(&active("text", ChatAtomKind::Text, 3), None)?;
     persist(&db, &mut projection, 3).await?;
-    let before = page_rows(&db, &ChatScope::Main, None, 100, 3, 1).await?;
+    let before = page_rows(&db, &ChatScope::Main, None, 100, 3, 1, &[]).await?;
     assert_eq!(before.len(), 1);
     let ChatEntry::Item(item) = &before[0].1 else {
         panic!("Main returned a member");
@@ -216,6 +216,7 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
         100,
         3,
         1,
+        &[],
     )
     .await?;
     assert!(
@@ -223,15 +224,23 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
     );
     let mut wrong = reference.clone();
     wrong.database_id = "another".into();
-    assert!(validate_members_ref(&db, "db", &wrong).await.is_err());
+    assert!(
+        validate_members_ref(&db, "db", &generation(&db).await?, &wrong)
+            .await
+            .is_err()
+    );
     wrong = reference;
     wrong.projection_version += 1;
-    assert!(validate_members_ref(&db, "db", &wrong).await.is_err());
+    assert!(
+        validate_members_ref(&db, "db", &generation(&db).await?, &wrong)
+            .await
+            .is_err()
+    );
     let tx = db.begin().await?;
     tx.execute_unprepared("DELETE FROM timeline_items;DELETE FROM timeline_item_members;DELETE FROM timeline_projection_state;").await?;
     rebuild(&tx, "db").await?;
     tx.commit().await?;
-    let after = page_rows(&db, &ChatScope::Main, None, 100, 3, 1).await?;
+    let after = page_rows(&db, &ChatScope::Main, None, 100, 3, 1, &[]).await?;
     assert_eq!(logical(before.clone()), logical(after));
     let head = read_state(&db).await?.ok_or(ProjectionFault)?;
     let mut restored = TimelineProjection::new("db".into(), head.generation, head.next_position);
@@ -251,7 +260,7 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
     assert_eq!(bytes, b"opaque original body");
     // An actual failed replacement transaction retains the complete old index,
     // not merely a use_transaction declaration.
-    let before_failure = page_rows(&db, &ChatScope::Main, None, 100, 3, 1).await?;
+    let before_failure = page_rows(&db, &ChatScope::Main, None, 100, 3, 1, &[]).await?;
     let before_generation = generation(&db).await?;
     let tx = db.begin().await?;
     tx.execute_unprepared("CREATE TRIGGER reject_timeline_rebuild BEFORE INSERT ON timeline_items BEGIN SELECT RAISE(ABORT,'injected rebuild failure'); END;").await?;
@@ -259,7 +268,7 @@ async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_
     tx.rollback().await?;
     assert_eq!(
         before_failure,
-        page_rows(&db, &ChatScope::Main, None, 100, 3, 1).await?
+        page_rows(&db, &ChatScope::Main, None, 100, 3, 1, &[]).await?
     );
     assert_eq!(before_generation, generation(&db).await?);
     Ok(())
@@ -356,12 +365,12 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
             }
             assert_eq!(read_state(&db).await?.unwrap().source_effect_seq, 2);
             assert_eq!(
-                page_rows(&db, &scope, None, 100, 1, 10).await?,
+                page_rows(&db, &scope, None, 100, 1, 10, std::slice::from_ref(&start)).await?,
                 vec![(0, ChatEntry::Atom(Box::new(start.clone())))],
                 "the effect-2 head must not leak contents or Waiting into cut 1"
             );
             assert_eq!(
-                page_rows(&db, &scope, None, 100, 2, 10).await?,
+                page_rows(&db, &scope, None, 100, 2, 10, &[]).await?,
                 vec![(0, ChatEntry::Atom(Box::new(mutable.clone())))],
                 "cut 2 must retain the admitted member's identity, order, active status and original body reference"
             );
@@ -502,6 +511,11 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
             super::super::content::write_content(&tx, &content, false).await?;
             None
         };
+        let mut saved_update = serde_json::to_value(&terminal_update)?;
+        if let Some(PayloadData::Deferred { byte_length, .. }) = &terminal_payload {
+            saved_update["members"][0]["payload_bytes"] = (*byte_length).into();
+        }
+        let terminal_update: TimelineUpdate = serde_json::from_value(saved_update)?;
         save_update(&tx, "db", &terminal_update, &[], 3, true).await?;
         tx.commit().await?;
         let mut delivered_terminal = terminal.clone();
@@ -509,18 +523,34 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
         let terminal_rows = vec![(0, ChatEntry::Atom(Box::new(delivered_terminal)))];
         for cut in [1, 2] {
             let expected = if completion.is_some() {
-                vec![(0, ChatEntry::Atom(Box::new(start.clone())))]
+                vec![(
+                    0,
+                    ChatEntry::Atom(Box::new(if cut == 1 {
+                        start.clone()
+                    } else {
+                        mutable.clone()
+                    })),
+                )]
             } else {
                 Vec::new()
             };
             assert_eq!(
-                page_rows(&db, &scope, None, 100, cut, 10).await?,
+                page_rows(
+                    &db,
+                    &scope,
+                    None,
+                    100,
+                    cut,
+                    10,
+                    std::slice::from_ref(if cut == 1 { &start } else { &mutable })
+                )
+                .await?,
                 expected,
                 "cut {cut} must not expose the future terminal, completion or payload"
             );
         }
         assert_eq!(
-            page_rows(&db, &scope, None, 100, 3, 10).await?,
+            page_rows(&db, &scope, None, 100, 3, 10, &[]).await?,
             terminal_rows,
             "the terminal cut must return the exact terminal and original deferred payload"
         );
@@ -528,7 +558,7 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
         save_update(&tx, "db", &terminal_update, &[], 4, true).await?;
         tx.commit().await?;
         assert_eq!(
-            page_rows(&db, &scope, None, 100, 3, 10).await?,
+            page_rows(&db, &scope, None, 100, 3, 10, &[]).await?,
             terminal_rows,
             "a later identical upsert must preserve the earlier canonical terminal cut"
         );
@@ -631,12 +661,12 @@ async fn member_terminal_upsert_preserves_identity_and_rejects_regression() -> R
         save_update(&tx, "db", &late_update, &[], 5, true).await?;
         tx.commit().await?;
         assert_eq!(
-            page_rows(&db, &scope, None, 100, 4, 10).await?,
+            page_rows(&db, &scope, None, 100, 4, 10, &[]).await?,
             terminal_rows,
             "a member first admitted after the captured cut must remain invisible"
         );
         assert_eq!(
-            page_rows(&db, &scope, None, 100, 5, 10).await?,
+            page_rows(&db, &scope, None, 100, 5, 10, &[]).await?,
             vec![
                 (1, ChatEntry::Atom(Box::new(late))),
                 terminal_rows[0].clone()
@@ -715,7 +745,7 @@ async fn legacy_ordinals_normalize_admission_without_fabricating_start_events_or
     assert_eq!(starts, 0, "normalization invented reliable starts");
     rebuild(&tx, "db").await?;
     tx.commit().await?;
-    let rows = page_rows(&db, &ChatScope::Main, None, 100, 3, 10).await?;
+    let rows = page_rows(&db, &ChatScope::Main, None, 100, 3, 10, &[]).await?;
     assert_eq!(rows.len(), 2);
     let ChatEntry::Item(text) = &rows[0].1 else {
         panic!("text item missing");
@@ -740,6 +770,7 @@ async fn legacy_ordinals_normalize_admission_without_fabricating_start_events_or
         100,
         3,
         10,
+        &[],
     )
     .await?;
     assert!(matches!(&members[1],(0,ChatEntry::Atom(atom)) if atom.id=="z"));
@@ -800,7 +831,7 @@ async fn legacy_long_completed_group_does_not_stage_all_members_as_active_recove
     }
     normalize_legacy(&tx).await?;
     rebuild_batched(&tx, "db", 1).await?;
-    let rows = page_rows(&tx, &ChatScope::Main, None, 100, 300, 10).await?;
+    let rows = page_rows(&tx, &ChatScope::Main, None, 100, 300, 10, &[]).await?;
     assert_eq!(rows.len(), 2);
     let ChatEntry::Item(group) = &rows[1].1 else {
         panic!("group missing")
@@ -859,7 +890,7 @@ async fn legacy_current_predecessor_blocks_already_completed_text_without_fabric
     normalize_legacy(&tx).await?;
     rebuild_batched(&tx, "db", 1).await?;
     assert!(
-        page_rows(&tx, &ChatScope::Main, None, 100, 3, 10)
+        page_rows(&tx, &ChatScope::Main, None, 100, 3, 10, &[])
             .await?
             .is_empty()
     );

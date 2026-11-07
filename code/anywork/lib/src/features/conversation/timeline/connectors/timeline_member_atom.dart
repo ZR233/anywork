@@ -153,8 +153,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   @override
   void didUpdateWidget(covariant TimelineMemberAtom oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.atom.payload != null &&
-        widget.atom.kind != ChatAtomKind.toolCall) {
+    if (widget.atom.payload != null) {
       _closeBodies();
     } else if (_owner != null) {
       _observe();
@@ -222,6 +221,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           _bodyActive && identical(qualification, _rangeQualification);
       return ChatItemView(
         item: ChatItemPresentation.decode(atom),
+        toolInitiallyExpanded: _toolExpanded,
         monotonicMicros: widget.monotonicMicros,
         onContentLayout: widget.onContentLayout,
         onToolExpansionChanged: _expandTool,
@@ -260,6 +260,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (atom.tool case final tool?) {
       final details = TimelineToolDetails(
         inline: atom.wait != null,
+        initiallyExpanded: _toolExpanded,
         item: TimelineToolPresentation(
           id: atom.id,
           toolCallId: tool.callId,
@@ -285,12 +286,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           : TimelineWaitPanel(
               identity: atom.id,
               presentation: atom.wait!,
+              initiallyExpanded: _toolExpanded,
               diagnostics: details,
               onExpansionChanged: _expandTool,
             );
     }
     if (atom.kind == ChatAtomKind.toolCall) {
       return TimelineActivityDisclosure(
+        initiallyExpanded: _toolExpanded,
         onExpansionChanged: _expandTool,
         titleBuilder: (_, expanded) => TimelineActivityRow(
           label: '工具调用',

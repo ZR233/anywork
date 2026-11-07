@@ -25,6 +25,7 @@ impl MigratorTraitSelf for Published {
         }
         .migrations()
         .into_iter()
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)
         .filter(|step| match self.0 {
             10 => !matches!(
@@ -298,6 +299,15 @@ async fn existing_15_correction_preserves_live_facts_rolls_back_and_reopens_with
     .await?;
     db.execute_unprepared("UPDATE history_meta SET applied_write_seq=42;
         UPDATE conversation_view_state SET payload=CAST(json_set(payload,'$.sourceEffectSeq',42) AS BLOB);").await?;
+    // Freeze the independently committed predecessor before faulting the
+    // original background correction's own Applied transaction.
+    Migrator {
+        thread_id: THREAD.into(),
+        execution_identity: None,
+        bot_root: None,
+    }
+    .up(&db, Some(1))
+    .await?;
     let live = unrelated_facts(&db).await?;
     let before = snapshot(&db).await?;
     db.execute_unprepared(&format!(

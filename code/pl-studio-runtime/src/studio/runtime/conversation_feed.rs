@@ -5,7 +5,7 @@ use super::{
         JsonBudget, ReadResources, annotate_atoms, annotate_sources, core_demand, entries, query,
         resync,
     },
-    thread_observation::{ConversationCut, ConversationSource, ThreadLiveEvent},
+    thread_observation::{ConversationCut, ConversationSource, DeliveryReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
 #[cfg(test)]
@@ -31,9 +31,9 @@ pub struct ConversationFeed {
     reader: ConversationReader,
     initial: Option<ChatBatch>,
     pending: VecDeque<ThreadSubscriptionUpdate>,
-    cuts: Option<broadcast::Receiver<Arc<ConversationCut>>>,
+    cuts: Option<DeliveryReceiver<Arc<ConversationCut>>>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    state: Option<broadcast::Receiver<ThreadLiveEvent>>,
+    state: Option<DeliveryReceiver<ThreadLiveEvent>>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
@@ -110,6 +110,7 @@ impl StudioRuntime {
         let mut initial_interactions = Vec::new();
         let mut source_states = Vec::new();
         let mut cold_sources = None;
+        let mut active_heads = Vec::new();
         let (session, database_id, head, current, items, boundary) = if let Some((
             registration,
             state_rx,
@@ -155,6 +156,20 @@ impl StudioRuntime {
                 }
             }
             let source = source.ok_or_else(resync)?;
+            if matches!(scope, ChatScope::GroupMembers { .. }) {
+                active_heads = source
+                    .current
+                    .projection()
+                    .atoms
+                    .iter()
+                    .filter(|atom| matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }))
+                    .cloned()
+                    .collect();
+                for atom in &mut active_heads {
+                    atom.payload = None;
+                    atom.source_state = None;
+                }
+            }
             initial_serial = source.serial;
             if !source.projection_generation.is_empty() {
                 captured_generation = Some(source.projection_generation.clone());
@@ -179,8 +194,11 @@ impl StudioRuntime {
                         .timeline_page(
                             &scope,
                             None,
-                            i64::MAX as u64,
-                            state_effect_floor,
+                            crate::studio::storage::history::TimelineReadCut {
+                                ceiling: i64::MAX as u64,
+                                effect: state_effect_floor,
+                                active_heads: &active_heads,
+                            },
                             demand,
                             core::ChatBudget::fixed_bytes(&budget),
                         )
@@ -262,6 +280,20 @@ impl StudioRuntime {
                         .then(|| cold.page.items.first().map(|item| item.header.append_seq))
                         .flatten();
                     let mut current = cold.current;
+                    if matches!(scope, ChatScope::GroupMembers { .. }) {
+                        active_heads = current
+                            .atoms
+                            .iter()
+                            .filter(|atom| {
+                                matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+                            })
+                            .cloned()
+                            .collect();
+                        for atom in &mut active_heads {
+                            atom.payload = None;
+                            atom.source_state = None;
+                        }
+                    }
                     cold_sources = Some(cold.sources);
                     initial_interactions = cold.interactions;
                     model_route = cold.model_route.map(|route| route.snapshot(false));
@@ -337,6 +369,7 @@ impl StudioRuntime {
             slot,
             position.epoch,
             ReadResources {
+                active_heads,
                 projection_generation,
                 history,
                 session,
@@ -630,6 +663,22 @@ impl ConversationFeed {
         }
         result
     }
+    fn take_progress(&mut self) -> Result<bool> {
+        let Some(progress) = self.progress.as_mut() else {
+            return Ok(false);
+        };
+        // Capture and mark the same watch value in one read. Reconsider retained
+        // progress after each reliable cut even if its notification was already seen.
+        let newest = progress.borrow_and_update().clone();
+        if let Some(newest) = newest
+            && newest.reliable_serial <= self.seen_serial
+            && newest.serial > self.seen_serial
+        {
+            self.cut = Some(newest.cut());
+            return Ok(true);
+        }
+        Ok(false)
+    }
     async fn receive(&mut self) -> Result<Option<ConversationEvent>> {
         loop {
             if self.cancel.is_cancelled() {
@@ -653,7 +702,7 @@ impl ConversationFeed {
                 self.state_turn = false;
                 // Scan the captured prefix before delivery so adjacent live Runtime observations
                 // can replace the pending tail. Never chase events published after this check began.
-                let queued = self.state.as_ref().map_or(0, broadcast::Receiver::len);
+                let queued = self.state.as_ref().map_or(0, DeliveryReceiver::len);
                 for _ in 0..queued {
                     match self
                         .state
@@ -863,18 +912,8 @@ impl ConversationFeed {
                     Err(broadcast::error::TryRecvError::Empty) => {}
                 }
             }
-            if let Some(progress) = self.progress.as_mut() {
-                let changed = progress.has_changed().map_err(|_| resync())?;
-                if changed {
-                    let newest = progress.borrow_and_update().clone();
-                    if let Some(newest) = newest {
-                        // Never let coalesced current cross an undelivered reliable completion cut.
-                        if newest.head == self.delivered && newest.serial > self.seen_serial {
-                            self.cut = Some(newest.cut());
-                            continue;
-                        }
-                    }
-                }
+            if self.take_progress()? {
+                continue;
             }
             enum Wake {
                 Cut(Result<Arc<ConversationCut>, broadcast::error::RecvError>),
@@ -917,15 +956,7 @@ impl ConversationFeed {
                 }
                 Wake::State(Err(broadcast::error::RecvError::Closed)) => return Err(resync()),
                 Wake::Progress => {
-                    if let Some(progress) = self.progress.as_mut() {
-                        let newest = progress.borrow_and_update().clone();
-                        if let Some(newest) = newest
-                            && newest.head == self.delivered
-                            && newest.serial > self.seen_serial
-                        {
-                            self.cut = Some(newest.cut());
-                        }
-                    }
+                    self.take_progress()?;
                 }
                 Wake::Storage(storage) => {
                     self.notification(ThreadNotification::StorageChanged {

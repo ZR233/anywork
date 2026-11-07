@@ -13,12 +13,8 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| {
-            !matches!(
-                step.name(),
-                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
-            )
-        })
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
         .collect()
     }
 }

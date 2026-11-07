@@ -135,8 +135,13 @@ impl Harness {
         projection.bind_conversation_identity(database)?;
         projection.observe_test_current(&thread, Vec::new())?;
         let (owner, progress) = watch::channel(Default::default());
-        let source =
-            Arc::new(super::super::super::thread_observation::ThreadLiveFeed::new(None, progress));
+        let source = Arc::new(
+            super::super::super::thread_observation::ThreadLiveFeed::new(
+                None,
+                progress,
+                Default::default(),
+            ),
+        );
         env.runtime
             .thread_observations
             .observation_slot(&thread.id)
@@ -245,8 +250,11 @@ async fn read_all_timeline(
             .timeline_page(
                 &scope,
                 before,
-                i64::MAX as u64,
-                4,
+                crate::studio::storage::history::TimelineReadCut {
+                    ceiling: i64::MAX as u64,
+                    effect: 4,
+                    active_heads: &[],
+                },
                 ReadDemand {
                     max_items: size,
                     ..demand()
@@ -265,6 +273,49 @@ async fn read_all_timeline(
         before = Some(next);
     }
     Ok(result)
+}
+
+#[tokio::test]
+async fn progress_cannot_skip_a_work_group_handoff_at_the_same_completion_head() -> Result<()> {
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let mut h = Harness::new(&env).await?;
+    h.effect(vec![start("reasoning", true)], vec![]).await?;
+    h.effect(vec![], vec![finish("reasoning", true, "work complete")?])
+        .await?;
+    let mut feed = env
+        .runtime
+        .open_conversation_feed(
+            &h.thread.id,
+            ChatScope::Main,
+            ReadDemand {
+                max_items: 4,
+                max_bytes: CHAT_BATCH_MAX_BYTES,
+            },
+        )
+        .await?;
+    let initial = chat(&mut feed).await?;
+    assert_eq!(initial.current.as_ref().unwrap().items.len(), 1);
+    let completion_head = h.session.head_seq();
+    h.effect(vec![start("answer", false)], vec![]).await?;
+    h.effect(vec![], vec![]).await?;
+    assert_eq!(h.session.head_seq(), completion_head);
+    // This is the scheduling gap after an empty reliable poll and before reading progress.
+    assert!(!feed.take_progress()?);
+    let group = chat(&mut feed).await?;
+    assert!(
+        matches!(group.entries.as_slice(), [ChatEntry::Item(item)] if item.kind == TimelineItemKind::WorkGroup)
+    );
+    assert!(
+        group
+            .current
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.kind != TimelineItemKind::WorkGroup)
+    );
+    feed.close().await?;
+    env.finish(Ok(())).await
 }
 
 fn logical_timeline(mut entries: Vec<ChatEntry>) -> Vec<ChatEntry> {
@@ -1060,7 +1111,7 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
         projection.observe_test_current(&thread, Vec::new())?;
         let (_owner, progress) = watch::channel(Default::default());
         let source =
-            Arc::new(super::super::super::thread_observation::ThreadLiveFeed::new(None, progress));
+            Arc::new(super::super::super::thread_observation::ThreadLiveFeed::new(None, progress, Default::default()));
         env.runtime
             .thread_observations
             .observation_slot(&thread.id)

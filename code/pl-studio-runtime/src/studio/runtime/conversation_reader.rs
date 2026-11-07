@@ -33,6 +33,8 @@ pub(super) struct ReadLease {
     resync: AtomicBool,
 }
 pub(super) struct ReadResources {
+    /// Bounded metadata at this read cut; never retains a body or a current collection.
+    pub active_heads: Vec<ChatAtom>,
     pub projection_generation: String,
     pub history: HistoryStore,
     pub session: core::Session,
@@ -507,8 +509,12 @@ impl ConversationReader {
         );
         let page = tokio::select! { biased;
             _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-            page = resources.history.timeline_page(&self.inner.scope, Some(boundary), self.inner.ceiling,
-                self.inner.effect_cut, demand, core::ChatBudget::fixed_bytes(&budget)) => page?,
+            page = resources.history.timeline_page(&self.inner.scope, Some(boundary),
+                crate::studio::storage::history::TimelineReadCut {
+                    ceiling: self.inner.ceiling,
+                    effect: self.inner.effect_cut,
+                    active_heads: &resources.active_heads,
+                }, demand, core::ChatBudget::fixed_bytes(&budget)) => page?,
         };
         let mut batch = ChatBatch {
             placement: ChatPlacement::Prepend,

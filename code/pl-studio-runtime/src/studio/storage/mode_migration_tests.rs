@@ -2837,7 +2837,6 @@ async fn persist_schema12_fixture(
          DELETE FROM seaql_migrations
              WHERE version IN ('m20261101_000010_history_model_route_head',
                                'm20261102_000001_history_atom_metadata',
-                               'm20261104_000001_history_background_results',
                                'm20261103_000001_history_timeline_items');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
@@ -2866,8 +2865,6 @@ async fn persist_schema12_fixture(
                  WHERE name='conversation_sources') AS source_tables,
                 (SELECT COUNT(*) FROM seaql_migrations
                  WHERE version='m20261102_000001_history_atom_metadata') AS metadata_completed,
-                (SELECT COUNT(*) FROM seaql_migrations
-                 WHERE version='m20261104_000001_history_background_results') AS correction_completed,
                 (SELECT COUNT(*) FROM sqlite_schema
                  WHERE type='table' AND name IN ('timeline_items','timeline_item_members',
                        'timeline_projection_state','conversation_atom_facts')) AS timeline_tables,
@@ -2883,7 +2880,6 @@ async fn persist_schema12_fixture(
     assert_eq!(boundary.try_get::<i64>("", "metadata_columns")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "source_tables")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "metadata_completed")?, 0);
-    assert_eq!(boundary.try_get::<i64>("", "correction_completed")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "timeline_tables")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "timeline_completed")?, 0);
     assert_eq!(saved_checkpoint_payload(&db).await?, payload);

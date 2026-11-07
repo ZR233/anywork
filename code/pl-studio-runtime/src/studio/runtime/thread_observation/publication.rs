@@ -2,7 +2,78 @@
 use crate::studio::thread_projection::{CurrentHandoff, CurrentState};
 use pl_core::chat::Session;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{Notify, broadcast, watch};
+use tokio_util::sync::CancellationToken;
+
+/// A borrowed slot is released by the actual broadcast read or receiver drop.
+/// This adapter owns no queue or copied delivery material.
+pub(in crate::studio) struct DeliveryReceiver<T: Clone> {
+    receiver: Option<broadcast::Receiver<T>>,
+    capacity: Arc<Notify>,
+    closed: CancellationToken,
+}
+impl<T: Clone> DeliveryReceiver<T> {
+    pub(in crate::studio::runtime) fn new(
+        receiver: broadcast::Receiver<T>,
+        capacity: Arc<Notify>,
+        closed: CancellationToken,
+    ) -> Self {
+        Self {
+            receiver: Some(receiver),
+            capacity,
+            closed,
+        }
+    }
+    /// Captures the raw queued prefix without consuming events or releasing capacity.
+    pub(in crate::studio::runtime) fn len(&self) -> usize {
+        self.receiver.as_ref().expect("live receiver").len()
+    }
+    pub(crate) async fn recv(&mut self) -> Result<T, broadcast::error::RecvError> {
+        let result = tokio::select! { biased;
+            _ = self.closed.cancelled() => Err(broadcast::error::RecvError::Closed),
+            result = self.receiver.as_mut().expect("live receiver").recv() => result,
+        };
+        if result.is_ok() {
+            self.capacity.notify_waiters();
+        }
+        result
+    }
+    pub(crate) fn try_recv(&mut self) -> Result<T, broadcast::error::TryRecvError> {
+        if self.closed.is_cancelled() {
+            return Err(broadcast::error::TryRecvError::Closed);
+        }
+        let result = self.receiver.as_mut().expect("live receiver").try_recv();
+        if result.is_ok() {
+            self.capacity.notify_waiters();
+        }
+        result
+    }
+}
+impl<T: Clone> Drop for DeliveryReceiver<T> {
+    fn drop(&mut self) {
+        drop(self.receiver.take());
+        self.capacity.notify_waiters();
+    }
+}
+pub(super) async fn wait_capacity<T: Clone>(
+    sender: &broadcast::Sender<T>,
+    limit: usize,
+    capacity: &Notify,
+    closed: &CancellationToken,
+) {
+    loop {
+        let released = capacity.notified();
+        tokio::pin!(released);
+        released.as_mut().enable();
+        if closed.is_cancelled() || sender.len() < limit {
+            return;
+        }
+        tokio::select! { biased;
+            _ = closed.cancelled() => return,
+            _ = released => {},
+        }
+    }
+}
 
 pub(in crate::studio::runtime) const CURRENT_FRAME_BYTES: usize = 64 * 1024;
 const CUT_FRAMES: usize = 16;
@@ -46,6 +117,7 @@ fn current_frame_len(serial: u64, head: u64, handoff: &CurrentHandoff) -> serde_
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct ConversationSource {
     pub projection_generation: String,
+    pub reliable_serial: u64,
     pub serial: u64,
     pub session: Session,
     pub head: u64,
@@ -72,7 +144,7 @@ impl ConversationSource {
 }
 pub(in crate::studio::runtime) struct ConversationRegistration {
     pub source: Option<Arc<ConversationSource>>,
-    pub cuts: broadcast::Receiver<Arc<ConversationCut>>,
+    pub cuts: DeliveryReceiver<Arc<ConversationCut>>,
     pub progress: watch::Receiver<Option<Arc<ConversationSource>>>,
     pub owner_progress: watch::Receiver<super::Progress>,
 }
@@ -80,20 +152,25 @@ pub(in crate::studio::runtime) struct ConversationRegistration {
 pub(super) struct ConversationPublication {
     latest: Mutex<Option<Arc<ConversationSource>>>,
     cuts: broadcast::Sender<Arc<ConversationCut>>,
+    capacity: Arc<Notify>,
     progress: watch::Sender<Option<Arc<ConversationSource>>>,
     content_changed: watch::Sender<u64>,
+    closed: CancellationToken,
 }
-impl Default for ConversationPublication {
-    fn default() -> Self {
+impl ConversationPublication {
+    pub(super) fn new(closed: CancellationToken) -> Self {
         Self {
             latest: Mutex::new(None),
             cuts: broadcast::channel(CUT_FRAMES).0,
+            capacity: Arc::new(Notify::new()),
             progress: watch::channel(None).0,
             content_changed: watch::channel(0).0,
+            closed,
         }
     }
-}
-impl ConversationPublication {
+    pub(super) async fn wait_capacity(&self) {
+        wait_capacity(&self.cuts, CUT_FRAMES, &self.capacity, &self.closed).await;
+    }
     pub(super) fn content_changes(&self) -> watch::Receiver<u64> {
         self.content_changed.subscribe()
     }
@@ -113,7 +190,11 @@ impl ConversationPublication {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ConversationRegistration {
             source: latest.clone(),
-            cuts: self.cuts.subscribe(),
+            cuts: DeliveryReceiver::new(
+                self.cuts.subscribe(),
+                self.capacity.clone(),
+                self.closed.clone(),
+            ),
             progress: self.progress.subscribe(),
             owner_progress,
         }
@@ -176,6 +257,11 @@ impl ConversationPublication {
             )
         });
         let source = Arc::new(ConversationSource {
+            reliable_serial: if reliable {
+                serial
+            } else {
+                latest.as_ref().map_or(0, |source| source.reliable_serial)
+            },
             projection_generation: handoff.projection_generation().to_owned(),
             serial,
             session: session.clone(),
@@ -210,7 +296,7 @@ impl ConversationPublication {
                 <= CURRENT_FRAME_BYTES as u64,
             "current handoff exceeds bounded publication budget"
         );
-        if reliable {
+        if reliable && !self.closed.is_cancelled() {
             let _ = self.cuts.send(source.cut());
         }
         self.progress.send_replace(Some(source.clone()));
@@ -224,6 +310,63 @@ impl ConversationPublication {
 mod tests {
     use super::*;
     use crate::studio::thread_projection::{CurrentRetirement, FrozenCurrentProjection};
+
+    #[tokio::test]
+    async fn bounded_slots_wait_for_all_actual_reads_and_receiver_drop() {
+        let (sender, first) = broadcast::channel(CUT_FRAMES);
+        let capacity = Arc::new(Notify::new());
+        let closed = CancellationToken::new();
+        let mut first = DeliveryReceiver::new(first, capacity.clone(), closed.clone());
+        let mut second =
+            DeliveryReceiver::new(sender.subscribe(), capacity.clone(), closed.clone());
+        for value in 0..CUT_FRAMES {
+            sender.send(value).unwrap();
+        }
+        let waiting = wait_capacity(&sender, CUT_FRAMES, &capacity, &closed);
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(first.recv().await.unwrap(), 0);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(second.try_recv().unwrap(), 0);
+        assert!(futures::poll!(waiting.as_mut()).is_ready());
+        sender.send(CUT_FRAMES).unwrap();
+        let dropped = wait_capacity(&sender, CUT_FRAMES, &capacity, &closed);
+        tokio::pin!(dropped);
+        assert!(futures::poll!(dropped.as_mut()).is_pending());
+        drop(first);
+        assert!(futures::poll!(dropped.as_mut()).is_pending());
+        drop(second);
+        assert!(futures::poll!(dropped.as_mut()).is_ready());
+    }
+
+    #[tokio::test]
+    async fn cancelled_capacity_wait_keeps_the_slots_and_owner_close_releases_the_wait() {
+        let (sender, receiver) = broadcast::channel(CUT_FRAMES);
+        let capacity = Arc::new(Notify::new());
+        let closed = CancellationToken::new();
+        let mut receiver = DeliveryReceiver::new(receiver, capacity.clone(), closed.clone());
+        for value in 0..CUT_FRAMES {
+            sender.send(value).unwrap();
+        }
+        let mut cancelled = Box::pin(wait_capacity(&sender, CUT_FRAMES, &capacity, &closed));
+        assert!(futures::poll!(cancelled.as_mut()).is_pending());
+        drop(cancelled);
+        assert_eq!(sender.len(), CUT_FRAMES);
+        let waiting = wait_capacity(&sender, CUT_FRAMES, &capacity, &closed);
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        closed.cancel();
+        assert!(futures::poll!(waiting.as_mut()).is_ready());
+        assert_eq!(sender.len(), CUT_FRAMES);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
+    }
 
     #[test]
     fn component_frame_length_matches_original_json() -> anyhow::Result<()> {

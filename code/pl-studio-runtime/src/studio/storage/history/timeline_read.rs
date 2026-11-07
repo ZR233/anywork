@@ -13,6 +13,11 @@ pub(in crate::studio) struct TimelinePage {
     pub ceiling: u64,
     pub generation: String,
 }
+pub(in crate::studio) struct TimelineReadCut<'a> {
+    pub ceiling: u64,
+    pub effect: u64,
+    pub active_heads: &'a [pl_protocol::ChatAtom],
+}
 impl HistoryStore {
     pub(crate) fn timeline_publish(
         &self,
@@ -38,11 +43,15 @@ impl HistoryStore {
         &self,
         scope: &ChatScope,
         before: Option<u64>,
-        ceiling: u64,
-        effect_cut: u64,
+        cut: TimelineReadCut<'_>,
         demand: ReadDemand,
         fixed: usize,
     ) -> Result<TimelinePage> {
+        let TimelineReadCut {
+            ceiling,
+            effect: effect_cut,
+            active_heads,
+        } = cut;
         demand.validate(fixed)?;
         let generation = self.timeline_generation().await?;
         let database = self
@@ -57,7 +66,7 @@ impl HistoryStore {
                 ChatError::StaleContent
             );
         }
-        let (pending, main) = {
+        let (members, member_capture, main) = {
             let pending = self
                 .state
                 .timeline_pending
@@ -66,22 +75,29 @@ impl HistoryStore {
             match scope {
                 ChatScope::Main => (
                     Vec::new(),
+                    None,
                     pending.main_page(before, ceiling, effect_cut, demand.max_items as usize),
                 ),
-                _ => (
-                    pending
-                        .effects
-                        .range(..=effect_cut)
-                        .map(|(_, current)| current.clone())
-                        .collect::<Vec<_>>(),
-                    Vec::new(),
-                ),
+                ChatScope::GroupMembers { reference } => {
+                    let page = pending.member_page(
+                        &reference.item_id,
+                        before,
+                        ceiling,
+                        effect_cut,
+                        demand.max_items as usize,
+                    );
+                    (page.members, page.head, Vec::new())
+                }
+                ChatScope::Children { .. } => {
+                    anyhow::bail!("business children use their original reader")
+                }
             }
         };
         let mut rows = std::collections::BTreeMap::new();
         tracing::debug!(
             target: "conversation_work",
             pending_main_candidates = main.len(),
+            pending_member_candidates = members.len(),
             "pending timeline indexed selection"
         );
         for (index, current) in main {
@@ -97,6 +113,28 @@ impl HistoryStore {
         }
         let mut member_exists = false;
         let mut member_head = None;
+        if let Some((is_current, index, current)) = member_capture {
+            ensure!(
+                current.timeline_update.generation() == generation,
+                ChatError::StaleContent
+            );
+            let item = if is_current {
+                &current.timeline_update.current()[index]
+            } else {
+                &current.timeline[index].item
+            };
+            if let ChatScope::GroupMembers { reference } = scope {
+                ensure!(
+                    item.members.as_ref() == Some(reference),
+                    ChatError::StaleContent
+                );
+                member_exists = true;
+                member_head = item
+                    .summary
+                    .as_ref()
+                    .map(|summary| u64::from(summary.member_count));
+            }
+        }
         let member_database = match scope {
             ChatScope::GroupMembers { reference } => {
                 ensure!(
@@ -107,54 +145,38 @@ impl HistoryStore {
             }
             _ => None,
         };
-        for current in &pending {
+        for (index, current) in members {
             ensure!(
                 current.timeline_update.generation() == generation,
                 ChatError::StaleContent
             );
             match scope {
                 ChatScope::GroupMembers { reference } => {
-                    let known = current
-                        .timeline_update
-                        .current()
-                        .iter()
-                        .chain(current.timeline.iter().map(|entry| &entry.item))
-                        .any(|item| item.members.as_ref() == Some(reference));
-                    member_exists |= known;
-                    for item in current
-                        .timeline_update
-                        .current()
-                        .iter()
-                        .chain(current.timeline.iter().map(|entry| &entry.item))
-                        .filter(|item| item.members.as_ref() == Some(reference))
+                    let member = &current.timeline_update.members()[index];
+                    ensure!(member.item_id == reference.item_id, ChatError::StaleContent);
+                    let mut atom = member.atom.clone();
+                    if matches!(
+                        atom.lifecycle,
+                        pl_protocol::ChatAtomLifecycle::Active { .. }
+                    ) && let Some(captured) = active_heads.iter().find(|head| head.id == atom.id)
                     {
-                        if let Some(summary) = &item.summary {
-                            member_head = Some(u64::from(summary.member_count));
-                        }
+                        ensure!(captured.source == atom.source, ChatError::StaleContent);
+                        atom = captured.clone();
                     }
-                    for member in current.timeline_update.members() {
-                        if member.item_id != reference.item_id
-                            || member.member_order >= ceiling
-                            || before.is_some_and(|before| member.member_order >= before)
-                        {
-                            continue;
-                        }
-                        let mut atom = member.atom.clone();
-                        if let (Some(id), Some(bytes)) =
-                            (&atom.completion_item_id, member.payload_bytes)
-                        {
-                            atom.payload = Some(PayloadData::Deferred {
-                                reference: ContentRef {
-                                    database_id: reference.database_id.clone(),
-                                    target: ContentTarget::ItemPayload {
-                                        item_id: id.clone(),
-                                    },
+                    if let (Some(id), Some(bytes)) =
+                        (&atom.completion_item_id, member.payload_bytes)
+                    {
+                        atom.payload = Some(PayloadData::Deferred {
+                            reference: ContentRef {
+                                database_id: reference.database_id.clone(),
+                                target: ContentTarget::ItemPayload {
+                                    item_id: id.clone(),
                                 },
-                                byte_length: bytes,
-                            });
-                        }
-                        rows.insert(member.member_order, ChatEntry::Atom(Box::new(atom)));
+                            },
+                            byte_length: bytes,
+                        });
                     }
+                    rows.insert(member.member_order, ChatEntry::Atom(Box::new(atom)));
                 }
                 ChatScope::Main | ChatScope::Children { .. } => {
                     anyhow::bail!("non-member scope has an unexpected member capture")
@@ -217,6 +239,7 @@ impl HistoryStore {
                 conversation::timeline::validate_members_ref(
                     &tx,
                     &connection.database_id,
+                    &head.generation,
                     reference,
                 )
                 .await?;
@@ -225,9 +248,16 @@ impl HistoryStore {
         let mut boundary = before;
         let mut exhausted = false;
         loop {
-            let stored =
-                conversation::timeline::page_rows(&tx, scope, boundary, ceiling, effect_cut, 128)
-                    .await?;
+            let stored = conversation::timeline::page_rows(
+                &tx,
+                scope,
+                boundary,
+                ceiling,
+                effect_cut,
+                128,
+                active_heads,
+            )
+            .await?;
             if stored.is_empty() {
                 exhausted = true;
                 break;

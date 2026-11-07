@@ -131,7 +131,7 @@ mod tests {
         let slot = ObservationSlot::default();
         let (absent, mut changes) = slot.capture();
         let (_owner, progress) = watch::channel(Default::default());
-        let source = Arc::new(ThreadLiveFeed::new(None, progress));
+        let source = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
         slot.install(source.clone());
         slot.retire(&source);
         assert!(!slot.is_current(absent.epoch));
@@ -146,8 +146,8 @@ mod tests {
         let slot = ObservationSlot::default();
         let (_old_owner, old_progress) = watch::channel(Default::default());
         let (_new_owner, new_progress) = watch::channel(Default::default());
-        let old = Arc::new(ThreadLiveFeed::new(None, old_progress));
-        let new = Arc::new(ThreadLiveFeed::new(None, new_progress));
+        let old = Arc::new(ThreadLiveFeed::new(None, old_progress, Default::default()));
+        let new = Arc::new(ThreadLiveFeed::new(None, new_progress, Default::default()));
         slot.install(old.clone());
         slot.install(new.clone());
         let (position, _) = slot.capture();

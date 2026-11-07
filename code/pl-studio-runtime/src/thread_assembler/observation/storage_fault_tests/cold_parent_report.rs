@@ -176,6 +176,107 @@ async fn activate_parent(fixture: &Fixture) -> Result<ThreadHandle> {
 }
 
 #[tokio::test]
+async fn closing_execution_accepts_only_the_original_storage_report_without_resuming() -> Result<()>
+{
+    for global_close in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let saved = save_pending_close(&store).await?;
+        let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
+        let fixture = Fixture::new(store.clone())?;
+        resources.install(&fixture.owner)?;
+        let active = activate_parent(&fixture).await?;
+        let before = active.snapshot();
+        fixture
+            .owner
+            .0
+            .state()
+            .entries
+            .get_mut("parent")
+            .unwrap()
+            .ready = false;
+        let services = fixture
+            .owner
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .context("real report services")?;
+        let error = services
+            .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ThreadAssemblyError>(),
+            Some(ThreadAssemblyError::Unpublished(_))
+        ));
+        assert!(
+            store
+                .history("parent")
+                .await?
+                .message_identity(&saved.message.id)
+                .await?
+                .is_none()
+        );
+        let seal = if global_close {
+            fixture.owner.0.state().closing = true;
+            None
+        } else {
+            Some(fixture.owner.seal_agent_operation("parent"))
+        };
+        fixture.owner.admit_thread_close("parent")?;
+        services
+            .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
+            .await?;
+        let receipt = store
+            .history("parent")
+            .await?
+            .message_identity(&saved.message.id)
+            .await?
+            .context("original report durable receipt")?;
+        assert_eq!(
+            receipt.digest.as_deref(),
+            Some(saved.message.digest().as_str())
+        );
+        services
+            .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
+            .await?;
+        let repeated = store
+            .history("parent")
+            .await?
+            .message_identity(&saved.message.id)
+            .await?
+            .context("idempotent original report receipt")?;
+        assert_eq!(repeated.sequence, receipt.sequence);
+        assert_eq!(repeated.digest, receipt.digest);
+        {
+            let state = fixture.owner.0.state();
+            let entry = &state.entries["parent"];
+            assert_eq!(entry.purpose, super::super::super::EntryPurpose::Execution);
+            assert!(!entry.ready);
+            assert!(entry.thread.same_instance(&active));
+        }
+        let after = active.snapshot();
+        assert_eq!(after.execution_sequence, before.execution_sequence);
+        assert!(before.attempts.is_empty() && after.attempts.is_empty());
+        assert_eq!(after.execution, before.execution);
+        assert_eq!(
+            after
+                .inbox
+                .iter()
+                .filter(|entry| entry.message.id == saved.message.id)
+                .count(),
+            1
+        );
+        drop(seal);
+        assert!(fixture.owner.close_all().await.is_empty());
+        fixture.stop_writers().await?;
+        resources.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn cold_parent_close_recovery_releases_receiver_and_preserves_original_ack_after_failure()
 -> Result<()> {
     for path in [

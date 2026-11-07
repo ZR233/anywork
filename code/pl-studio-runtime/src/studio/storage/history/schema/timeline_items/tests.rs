@@ -25,12 +25,8 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| {
-            !matches!(
-                step.name(),
-                ATOM_METADATA | BACKGROUND_RESULTS | TIMELINE_ITEMS
-            )
-        })
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -45,7 +41,8 @@ impl MigratorTraitSelf for Published14 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | TIMELINE_ITEMS))
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
         .collect()
     }
 }
@@ -287,6 +284,15 @@ async fn schema14() -> Result<(tempfile::TempDir, std::path::PathBuf, Vec<String
     assert_eq!(steps, 1, "fixture advances only the real AtomMetadata step");
     Published14.up(&db, Some(u32::try_from(steps)?)).await?;
     assert_eq!(version(&db).await?, 14);
+    // These steps precede TimelineItems in the official sequence and each owns
+    // its own transaction. Freeze their completed boundary for the backfill story.
+    Migrator {
+        thread_id: THREAD.into(),
+        execution_identity: None,
+        bot_root: None,
+    }
+    .up(&db, Some(2))
+    .await?;
     validate_source(&db).await?;
     checkpoint::write(
         &db,
@@ -376,7 +382,8 @@ async fn group_members(
         .members
         .as_ref()
         .context("complete member directory")?;
-    timeline::validate_members_ref(db, database, reference).await?;
+    timeline::validate_members_ref(db, database, &timeline::generation(db).await?, reference)
+        .await?;
     let count = group
         .summary
         .as_ref()
@@ -391,6 +398,7 @@ async fn group_members(
         u64::from(count),
         4,
         usize::try_from(count)? + 1,
+        &[],
     )
     .await?;
     assert_eq!(rows.len(), usize::try_from(count)?);
@@ -475,7 +483,7 @@ async fn assert_migrated_content(
 
     let (_, _, next, _) = store.timeline_snapshot().await?.context("Timeline head")?;
     assert_eq!(next, 2);
-    let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3).await?;
+    let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3, &[]).await?;
     history.reverse();
     assert_eq!(history.len(), 2);
     let mut items = Vec::new();
@@ -549,6 +557,200 @@ async fn failed_backfill_rolls_back_then_fresh_retry_applies_once_and_restores_r
     .context("Timeline migration regression exceeded its watchdog")?
 }
 
+async fn published_members(old_columns: bool) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let (directory, path, _, _) = schema14().await?;
+    let store = HistoryStore::open(&path, THREAD).await?;
+    store.prepare_conversation_read().await?;
+    assert_migrated_content(&store).await?;
+    store.close_for_deletion().await?;
+    let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+        .await?;
+    db.execute_raw(statement(
+        "DELETE FROM seaql_migrations WHERE version=?",
+        vec![MEMBER_READ_METADATA.into()],
+    ))
+    .await?;
+    if old_columns {
+        db.execute_unprepared(
+            "ALTER TABLE timeline_item_members DROP COLUMN updated_effect;
+            ALTER TABLE timeline_item_members DROP COLUMN payload_bytes;",
+        )
+        .await?;
+    }
+    assert!(
+        db.query_one_raw(statement(
+            "SELECT 1 FROM seaql_migrations WHERE version=?",
+            vec![BACKGROUND_RESULTS.into()]
+        ))
+        .await?
+        .is_some()
+    );
+    db.close().await?;
+    Ok((directory, path))
+}
+
+#[tokio::test]
+async fn applied_background_migration_and_both_published_member_layouts_reopen_without_rebuild()
+-> Result<()> {
+    for old_columns in [true, false] {
+        let (_directory, path) = published_members(old_columns).await?;
+        let db =
+            super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+                .await?;
+        let source = source_bytes(&db).await?;
+        let derived = derived_bytes(&db).await?;
+        let ledger = migration_records(&db).await?;
+        install_output_rejections(&db).await?;
+        if old_columns {
+            db.execute_unprepared("DROP TRIGGER reject_member_update;
+                CREATE TRIGGER reject_member_update BEFORE UPDATE OF item_id,member_order,member_id,completion_item_id,admitted_effect,metadata ON timeline_item_members
+                BEGIN SELECT RAISE(ABORT,'member metadata upgrade rewrote original members'); END;").await?;
+        }
+        db.close().await?;
+
+        let store = HistoryStore::open(&path, THREAD).await?;
+        store.prepare_conversation_read().await?;
+        assert_migrated_content(&store).await?;
+        let db = &store.writer().await?.db;
+        assert_eq!(source_bytes(db).await?, source);
+        assert_eq!(derived_bytes(db).await?, derived);
+        let upgraded_ledger = migration_records(db).await?;
+        assert_eq!(upgraded_ledger.len(), ledger.len() + 1);
+        assert!(ledger.iter().all(|record| upgraded_ledger.contains(record)));
+        let invalid = db.query_one_raw(statement("SELECT 1 FROM timeline_item_members m
+            LEFT JOIN conversation_items c ON c.item_id=m.completion_item_id
+            WHERE m.updated_effect>4 OR m.updated_effect<m.admitted_effect
+              OR (m.completion_item_id IS NOT NULL AND m.payload_bytes IS NOT length(c.payload)) LIMIT 1", vec![])).await?;
+        assert!(invalid.is_none());
+        store.close_for_deletion().await?;
+
+        let store = HistoryStore::open(&path, THREAD).await?;
+        store.prepare_conversation_read().await?;
+        assert_migrated_content(&store).await?;
+        assert_eq!(
+            migration_records(&store.writer().await?.db).await?,
+            upgraded_ledger
+        );
+        store.close_for_deletion().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn member_metadata_ddl_and_receipt_roll_back_then_retry_preserves_the_original_cut()
+-> Result<()> {
+    let (_directory, path) = published_members(true).await?;
+    let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+        .await?;
+    let source = source_bytes(&db).await?;
+    let derived = derived_bytes(&db).await?;
+    let ledger = migration_records(&db).await?;
+    db.execute_unprepared(&format!("CREATE TRIGGER reject_member_metadata BEFORE INSERT ON seaql_migrations
+        WHEN NEW.version='{MEMBER_READ_METADATA}' BEGIN SELECT RAISE(ABORT,'member metadata commit fault'); END;")).await?;
+    db.close().await?;
+    let store = HistoryStore::open(&path, THREAD).await?;
+    let failure = store
+        .prepare_conversation_read()
+        .await
+        .expect_err("the Applied record is in the migration transaction");
+    assert!(
+        format!("{failure:#}").contains("member metadata commit fault"),
+        "{failure:#}"
+    );
+    store.close_for_deletion().await?;
+    let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+        .await?;
+    assert!(!member_read_metadata::validate_source(&db).await?);
+    assert_eq!(source_bytes(&db).await?, source);
+    assert_eq!(derived_bytes(&db).await?, derived);
+    assert_eq!(migration_records(&db).await?, ledger);
+    db.execute_unprepared("DROP TRIGGER reject_member_metadata")
+        .await?;
+    db.close().await?;
+    let store = HistoryStore::open(&path, THREAD).await?;
+    store.prepare_conversation_read().await?;
+    assert_migrated_content(&store).await?;
+    store.close_for_deletion().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn applied_member_metadata_with_missing_columns_is_corruption_and_never_repaired_on_read()
+-> Result<()> {
+    let (_directory, path) = published_members(true).await?;
+    let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+        .await?;
+    db.execute_raw(statement(
+        "INSERT INTO seaql_migrations(version,applied_at) VALUES(?,1)",
+        vec![MEMBER_READ_METADATA.into()],
+    ))
+    .await?;
+    let source = source_bytes(&db).await?;
+    let derived = derived_bytes(&db).await?;
+    let ledger = migration_records(&db).await?;
+    db.close().await?;
+    let store = HistoryStore::open(&path, THREAD).await?;
+    assert!(store.prepare_conversation_read().await.is_err());
+    store.close_for_deletion().await?;
+    let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+        .await?;
+    assert!(!member_read_metadata::validate_source(&db).await?);
+    assert_eq!(source_bytes(&db).await?, source);
+    assert_eq!(derived_bytes(&db).await?, derived);
+    assert_eq!(migration_records(&db).await?, ledger);
+    db.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn member_metadata_rejects_incomplete_layout_or_missing_completion_without_changing_the_source()
+-> Result<()> {
+    for corruption in [
+        "ALTER TABLE timeline_item_members ADD COLUMN updated_effect INTEGER NOT NULL DEFAULT 0",
+        "DELETE FROM conversation_items WHERE item_id='sealed-member-1'",
+    ] {
+        let (_directory, path) = published_members(true).await?;
+        let db =
+            super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+                .await?;
+        db.execute_unprepared(corruption).await?;
+        let source = source_bytes(&db).await?;
+        let derived = derived_bytes(&db).await?;
+        let ledger = migration_records(&db).await?;
+        let columns = db
+            .query_all_raw(statement(
+                "SELECT name FROM pragma_table_info('timeline_item_members') ORDER BY cid",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "name"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        db.close().await?;
+        let store = HistoryStore::open(&path, THREAD).await?;
+        assert!(store.prepare_conversation_read().await.is_err());
+        store.close_for_deletion().await?;
+        let db =
+            super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+                .await?;
+        assert_eq!(source_bytes(&db).await?, source);
+        assert_eq!(derived_bytes(&db).await?, derived);
+        assert_eq!(migration_records(&db).await?, ledger);
+        let after = db
+            .query_all_raw(statement(
+                "SELECT name FROM pragma_table_info('timeline_item_members') ORDER BY cid",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "name"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(after, columns);
+        db.close().await?;
+    }
+    Ok(())
+}
+
 async fn formal_migration_round_trip() -> Result<()> {
     let (_directory, path, original_source, original_current) = schema14().await?;
     let fault =
@@ -606,24 +808,7 @@ async fn formal_migration_round_trip() -> Result<()> {
         "the migration's output indexes must roll back with its tables and head"
     );
     assert_eq!(source_bytes(&inspect).await?, original_source);
-    let corrected_ledger = migration_records(&inspect).await?;
-    assert_eq!(corrected_ledger.len(), original_ledger.len() + 1);
-    for record in &original_ledger {
-        assert!(
-            corrected_ledger.contains(record),
-            "an earlier Applied record changed"
-        );
-    }
-    assert!(
-        inspect
-            .query_one_raw(statement(
-                "SELECT 1 FROM seaql_migrations WHERE version=?",
-                vec![BACKGROUND_RESULTS.into()],
-            ))
-            .await?
-            .is_some(),
-        "the preceding correction commits independently of the failed Timeline transaction"
-    );
+    assert_eq!(migration_records(&inspect).await?, original_ledger);
     assert_eq!(
         inspect
             .query_one_raw(statement(
@@ -672,8 +857,8 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 2,
-        "content preparation records BackgroundResults and TimelineItems, not lifecycle migrations"
+        original_ledger.len() + 1,
+        "content preparation records TimelineItems, not lifecycle migrations"
     );
     for record in &original_ledger {
         assert!(

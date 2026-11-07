@@ -1227,6 +1227,9 @@ pub(in crate::studio) struct LiveProjection {
     /// A new attempt uses entirely new observation identities, so the caches of the previous one no
     /// longer apply.
     preview_attempt: Option<String>,
+    /// Confirmed terminal prefix of the current model generation. Its weak
+    /// layout identity retains no completed bodies or per-part key inventory.
+    retired_model_prefix: Option<(u32, pl_core::model::ModelPartsPrefix, usize)>,
     /// In-flight streaming previews keyed by their stable identity.
     ///
     /// Each observation snapshot carries its own content version and only an identity whose version
@@ -1285,6 +1288,17 @@ pub(in crate::studio) struct LiveProjection {
     timeline_position_restored: bool,
 }
 
+impl Drop for LiveProjection {
+    fn drop(&mut self) {
+        if let Some(index) = &self.order_index {
+            // The original fact owner is leaving. Pending saves and real live
+            // sources keep their own protection after these references retire.
+            let removed = std::mem::take(&mut self.facts).into_keys().collect();
+            index.retain::<()>(&BTreeMap::new(), removed);
+        }
+    }
+}
+
 impl LiveProjection {
     /// Creates an empty projection owner.
     ///
@@ -1303,6 +1317,7 @@ impl LiveProjection {
             turn_phases: BTreeMap::new(),
             turn_failures: BTreeMap::new(),
             preview_attempt: None,
+            retired_model_prefix: None,
             previews: BTreeMap::new(),
             observed: HashMap::new(),
             revisions: BTreeMap::new(),
@@ -1695,6 +1710,10 @@ impl LiveProjection {
             .saturating_add(self.facts_bytes)
             .saturating_add(self.previews_bytes)
             .saturating_add(self.revisions_bytes)
+            .saturating_add(self.retired_model_prefix.as_ref().map_or(0, |_| {
+                std::mem::size_of::<(u32, pl_core::model::ModelPartsPrefix, usize)>() as u64
+                    + RETAINED_ENTRY_OVERHEAD
+            }))
             .saturating_add(self.current.retained_bytes())
             .saturating_add(
                 self.timeline
@@ -2590,8 +2609,21 @@ impl LiveProjection {
         failure: Option<&Arc<str>>,
     ) -> Result<(), ProjectionError> {
         let at = crate::studio::unix_seconds();
+        let (prefix, prefix_end) = parts.stable_prefix();
+        let mut retired = if failure.is_none() {
+            self.retired_model_prefix
+                .as_ref()
+                .filter(|(known_generation, known_prefix, _)| {
+                    *known_generation == generation && *known_prefix == prefix
+                })
+                .map_or(0, |(_, _, retired)| *retired)
+        } else {
+            0
+        };
         // Consume each shared part in place, never an allocated per-frame list of observations.
-        for part in parts {
+        let first = retired;
+        for index in first..parts.len() {
+            let part = parts.get(index).expect("model part index is in range");
             // An observation with no body yet is not a displayable preview; wait for its first byte.
             if part.is_empty() {
                 continue;
@@ -2636,6 +2668,11 @@ impl LiveProjection {
                     .get(&id)
                     .is_some_and(|previous| previous.state().is_terminal())
             {
+                // Only a continuous prefix inside the immutable filled index
+                // may retire. A still-active earlier part blocks this advance.
+                if failure.is_none() && index == retired && index < prefix_end {
+                    retired += 1;
+                }
                 continue;
             }
             // The observation's own content version advanced, so this is a real body change: advance
@@ -2685,6 +2722,9 @@ impl LiveProjection {
             entry.observed_version = part.version();
             entry.fields.insert(field, part.content().clone());
             self.store_preview(id, entry);
+        }
+        if failure.is_none() {
+            self.retired_model_prefix = (retired > 0).then_some((generation, prefix, retired));
         }
         Ok(())
     }
@@ -3263,6 +3303,11 @@ impl LiveProjection {
 
     /// Stores one placement fact, keeping the retained-byte estimate in step.
     fn store_fact(&mut self, id: String, fact: Fact) {
+        if !self.facts.contains_key(&id)
+            && let Some(index) = &self.order_index
+        {
+            index.retain_reference(&id);
+        }
         let next = fact_bytes(&id, &fact);
         let id_len = id.len() as u64;
         match self.facts.insert(id, fact) {
@@ -3336,6 +3381,7 @@ impl LiveProjection {
     /// Model attempts do not own background tools: preserve their observation baselines until
     /// their own committed result or retained-fact release retires them.
     fn clear_model_previews(&mut self) {
+        self.retired_model_prefix = None;
         self.previews.retain(|id, preview| {
             if preview.observed.is_none() || self.atom_starts.contains_key(id) {
                 return true;
@@ -3450,7 +3496,14 @@ impl LiveProjection {
             }
         }
         let keep = |id: &str, turn_id: &str| live.contains(turn_id) || referenced.contains(id);
-        self.facts.retain(|id, fact| keep(id, &fact.turn_id));
+        let mut removed = Vec::new();
+        self.facts.retain(|id, fact| {
+            let retained = keep(id, &fact.turn_id);
+            if !retained {
+                removed.push(id.clone());
+            }
+            retained
+        });
         self.results.retain(|turn_id, _| live.contains(turn_id));
         self.turn_phases.retain(|turn_id, _| live.contains(turn_id));
         self.turns_seen.retain(|turn_id| live.contains(turn_id));
@@ -3494,7 +3547,13 @@ impl LiveProjection {
                     .filter(|id| self.facts.contains_key(*id))
                     .cloned(),
             );
-            self.facts.retain(|id, _| newest.contains(id));
+            self.facts.retain(|id, _| {
+                let retained = newest.contains(id);
+                if !retained {
+                    removed.push(id.clone());
+                }
+                retained
+            });
             self.items.retain(|id, _| newest.contains(id));
         }
         // An in-flight preview belongs to an identity still inside the retained window; once its
@@ -3506,13 +3565,7 @@ impl LiveProjection {
         self.revisions
             .retain(|id, _| self.items.contains_key(id) || self.previews.contains_key(id));
         if let Some(index) = &self.order_index {
-            let sources = state
-                .attempts
-                .iter()
-                .filter(|attempt| matches!(attempt.status, pl_core::thread::AttemptStatus::Running))
-                .map(|attempt| attempt.attempt_id.clone())
-                .collect();
-            index.retain(&sources, &self.facts);
+            index.retain(&self.facts, removed);
         }
         // This pass only removes entries: equal lengths prove that the charged store helpers'
         // totals and observation mirror remain current. Predicates, window ordering and the

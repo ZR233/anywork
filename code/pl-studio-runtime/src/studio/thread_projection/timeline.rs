@@ -3,7 +3,7 @@
 use super::ProjectionError;
 use pl_protocol::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::result::Result;
 use std::sync::OnceLock;
 
@@ -221,18 +221,12 @@ impl LiveItem {
         self.active == 0
             && (self.item.kind != TimelineItemKind::WorkGroup || self.item.admission_closed)
     }
-    fn precedes(&self, other: &Self) -> bool {
-        self.item.kind != TimelineItemKind::Status
-            && other.item.kind != TimelineItemKind::Status
-            && self.item.source == other.item.source
-            && match (self.source_order, other.source_order) {
-                (Some(left), Some(right)) => {
-                    left < right || (left == right && self.anchor < other.anchor)
-                }
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => self.anchor < other.anchor,
-            }
+    fn source_key(&self) -> (bool, u64, FactKey) {
+        (
+            self.source_order.is_none(),
+            self.source_order.unwrap_or(0),
+            self.anchor,
+        )
     }
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -242,15 +236,27 @@ struct Recovery {
 }
 #[derive(Serialize)]
 struct RecoveryView<'a> {
-    items: &'a [LiveItem],
+    #[serde(serialize_with = "serialize_live_items")]
+    items: &'a BTreeMap<u64, LiveItem>,
     active: &'a BTreeMap<String, ActiveMember>,
 }
+fn serialize_live_items<S: serde::Serializer>(
+    items: &BTreeMap<u64, LiveItem>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.values())
+}
+type SourceItems = BTreeMap<(bool, u64, FactKey), BTreeSet<u64>>;
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct TimelineProjection {
     database_id: String,
     generation: String,
     next_position: u64,
-    items: Vec<LiveItem>,
+    items: BTreeMap<u64, LiveItem>,
+    item_ids: BTreeMap<String, u64>,
+    sources: BTreeMap<ChatSourceId, SourceItems>,
+    ready: BTreeSet<(FactKey, u64)>,
+    next_item: u64,
     active: BTreeMap<String, ActiveMember>,
     committed: Vec<TimelineItem>,
     changes: Vec<MemberChange>,
@@ -318,7 +324,11 @@ impl TimelineProjection {
             database_id,
             generation,
             next_position,
-            items: Vec::new(),
+            items: BTreeMap::new(),
+            item_ids: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            ready: BTreeSet::new(),
+            next_item: 0,
             active: BTreeMap::new(),
             committed: Vec::new(),
             changes: Vec::new(),
@@ -412,7 +422,14 @@ impl TimelineProjection {
             }
         }
         self.retained_bytes.take();
-        self.items = state.items;
+        self.items.clear();
+        self.item_ids.clear();
+        self.sources.clear();
+        self.ready.clear();
+        self.next_item = 0;
+        for item in state.items {
+            self.insert_item(item)?;
+        }
         self.active = state.active;
         Ok(())
     }
@@ -435,7 +452,7 @@ impl TimelineProjection {
             member.atom = next.clone();
             if let Some(item) = self
                 .items
-                .iter_mut()
+                .values_mut()
                 .find(|item| item.item.id == member.item_id)
                 && item.item.kind != TimelineItemKind::WorkGroup
             {
@@ -443,7 +460,7 @@ impl TimelineProjection {
             }
             // A mutable active head is not a second start. The first frozen
             // phase remains immutable even when this update shares its batch.
-            if self.items.iter().any(|item| {
+            if self.items.values().any(|item| {
                 item.item.id == member.item_id && item.item.kind == TimelineItemKind::WorkGroup
             }) {
                 self.changes.push(MemberChange {
@@ -509,7 +526,7 @@ impl TimelineProjection {
         }
         if !self
             .items
-            .iter()
+            .values()
             .any(|item| item.item.id == item_id && item.active > 0)
         {
             return Err(ProjectionError::History(
@@ -557,13 +574,9 @@ impl TimelineProjection {
         let ended = key(&atom, sequence, true);
         let existing = self.active.remove(&atom.id);
         let (index, order, fresh) = if let Some(member) = existing {
-            let index = self
-                .items
-                .iter()
-                .position(|item| item.item.id == member.item_id)
-                .ok_or_else(|| {
-                    ProjectionError::History("timeline active member lost its item".into())
-                })?;
+            let index = self.item_ids.get(&member.item_id).copied().ok_or_else(|| {
+                ProjectionError::History("timeline active member lost its item".into())
+            })?;
             (index, member.order, false)
         } else {
             let class = classify(&atom);
@@ -572,14 +585,15 @@ impl TimelineProjection {
             }
             let open = (class == Class::Work)
                 .then(|| {
-                    self.items.iter().rposition(|item| {
-                        item.item.kind == TimelineItemKind::WorkGroup
+                    self.items.iter().rev().find_map(|(index, item)| {
+                        (item.item.kind == TimelineItemKind::WorkGroup
                             && item.item.source == atom.source
                             && !item.item.admission_closed
                             && atom
                                 .source_order
                                 .zip(item.last_source_order)
-                                .is_none_or(|(a, b)| a >= b)
+                                .is_none_or(|(a, b)| a >= b))
+                        .then_some(*index)
                     })
                 })
                 .flatten();
@@ -597,7 +611,7 @@ impl TimelineProjection {
                         Class::Status => "status",
                     };
                     let id = format!("{prefix}:{}", atom.id);
-                    self.items.push(LiveItem {
+                    self.insert_item(LiveItem {
                         source_order: atom.source_order,
                         item: TimelineItem {
                             id: id.clone(),
@@ -638,11 +652,10 @@ impl TimelineProjection {
                         next_member: 0,
                         last_source_order: None,
                         empty: false,
-                    });
-                    self.items.len() - 1
+                    })?
                 }
             };
-            let item = &mut self.items[index];
+            let item = self.items.get_mut(&index).expect("indexed live item");
             let order = item.next_member;
             item.next_member = order.checked_add(1).ok_or_else(overflow)?;
             item.last_source_order = atom.source_order.or(item.last_source_order);
@@ -653,7 +666,9 @@ impl TimelineProjection {
             Some(PayloadData::Deferred { byte_length, .. }) => Some(*byte_length),
             None => None,
         };
-        let item = &mut self.items[index];
+        let old_ready = self.items[&index].ready_key;
+        self.ready.remove(&(old_ready, index));
+        let item = self.items.get_mut(&index).expect("indexed live item");
         if fresh {
             add(&mut item.active)?;
             if let Some(summary) = &mut item.item.summary {
@@ -700,6 +715,9 @@ impl TimelineProjection {
                 _ => {}
             }
         } else {
+            item.item.atom_kind = Some(atom.kind);
+            item.item.delivery = atom.delivery;
+            item.item.text_channel = atom.text_channel;
             item.item.outcome = outcome(&atom);
             item.item.contents = atom.contents.clone();
             item.item.content_item_id = atom.completion_item_id.clone();
@@ -720,74 +738,146 @@ impl TimelineProjection {
                 payload_bytes,
             });
         }
+        self.refresh_ready(index);
         Ok(())
     }
-    fn close_group_for(&mut self, source: &ChatSourceId, at: FactKey) {
-        for item in &mut self.items {
-            if item.item.kind == TimelineItemKind::WorkGroup
-                && &item.item.source == source
-                && !item.item.admission_closed
+    fn refresh_ready(&mut self, index: u64) {
+        let item = &self.items[&index];
+        let eligible = item.item.kind == TimelineItemKind::Status
+            || self
+                .sources
+                .get(&item.item.source)
+                .and_then(|items| items.first_key_value())
+                .is_some_and(|(key, _)| *key == item.source_key());
+        if eligible && item.ready() {
+            self.ready.insert((item.ready_key, index));
+        }
+    }
+    fn insert_item(&mut self, item: LiveItem) -> Result<u64, ProjectionError> {
+        let index = self.next_item;
+        self.next_item = index.checked_add(1).ok_or_else(overflow)?;
+        if item.item.kind != TimelineItemKind::Status {
+            let key = item.source_key();
+            let source = self.sources.entry(item.item.source.clone()).or_default();
+            if let Some((first, bucket)) = source.first_key_value()
+                && key < *first
             {
-                self.retained_bytes.take();
-                item.item.admission_closed = true;
-                item.ready_key = item.ready_key.max(at);
+                for old in bucket {
+                    self.ready.remove(&(self.items[old].ready_key, *old));
+                }
+            }
+            source.entry(key).or_default().insert(index);
+        }
+        self.item_ids.insert(item.item.id.clone(), index);
+        self.items.insert(index, item);
+        self.refresh_ready(index);
+        Ok(index)
+    }
+    fn remove_item(&mut self, index: u64) -> LiveItem {
+        let item = self.items.remove(&index).expect("ready item exists");
+        self.item_ids.remove(&item.item.id);
+        if item.item.kind != TimelineItemKind::Status {
+            let source = self
+                .sources
+                .get_mut(&item.item.source)
+                .expect("indexed source");
+            let key = item.source_key();
+            let bucket = source.get_mut(&key).expect("indexed source position");
+            bucket.remove(&index);
+            if bucket.is_empty() {
+                source.remove(&key);
+                if let Some((_, next)) = source.first_key_value() {
+                    let next: Vec<_> = next.iter().copied().collect();
+                    for index in next {
+                        self.refresh_ready(index);
+                    }
+                } else {
+                    self.sources.remove(&item.item.source);
+                }
             }
         }
+        item
+    }
+    fn close_groups(&mut self, source: &ChatSourceId, at: Option<FactKey>) {
+        let indices: Vec<_> = self
+            .sources
+            .get(source)
+            .into_iter()
+            .flat_map(|items| items.values())
+            .flatten()
+            .copied()
+            .collect();
+        for index in indices {
+            let item = self.items.get_mut(&index).expect("indexed source item");
+            if item.item.kind == TimelineItemKind::WorkGroup && !item.item.admission_closed {
+                self.retained_bytes.take();
+                self.ready.remove(&(item.ready_key, index));
+                item.item.admission_closed = true;
+                if let Some(at) = at {
+                    item.ready_key = item.ready_key.max(at);
+                }
+                self.refresh_ready(index);
+            }
+        }
+    }
+    fn close_group_for(&mut self, source: &ChatSourceId, at: FactKey) {
+        self.close_groups(source, Some(at));
     }
     pub(in crate::studio) fn end_source(&mut self, source: &ChatSourceId) {
-        for item in &mut self.items {
-            if &item.item.source == source
-                && item.item.kind == TimelineItemKind::WorkGroup
-                && !item.item.admission_closed
-            {
-                self.retained_bytes.take();
-                item.item.admission_closed = true;
-            }
-        }
+        self.close_groups(source, None);
     }
     pub(in crate::studio) fn commit_ready(&mut self) -> Result<(), ProjectionError> {
-        loop {
-            let next = self
-                .items
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| item.ready())
-                .filter(|(_, item)| !self.items.iter().any(|other| other.precedes(item)))
-                .min_by_key(|(_, item)| item.ready_key)
-                .map(|(index, _)| index);
-            let Some(index) = next else {
-                break;
+        while let Some(&(ready_key, index)) = self.ready.first() {
+            let item = &self.items[&index];
+            let visible = item.item.kind != TimelineItemKind::Text || !item.empty;
+            let next = if visible {
+                Some(
+                    self.next_position
+                        .checked_add(1)
+                        .filter(|next| *next <= i64::MAX as u64)
+                        .ok_or_else(overflow)?,
+                )
+            } else {
+                None
             };
+            self.ready.remove(&(ready_key, index));
             self.retained_bytes.take();
-            if self.items[index].item.kind == TimelineItemKind::Text && self.items[index].empty {
-                self.items.remove(index);
+            let mut live = self.remove_item(index);
+            if !visible {
                 continue;
             }
-            let next = self
-                .next_position
-                .checked_add(1)
-                .filter(|next| *next <= i64::MAX as u64)
-                .ok_or_else(overflow)?;
-            let mut live = self.items.remove(index);
             live.item.position = Some(self.next_position);
             live.item.admission_closed = true;
-            self.next_position = next;
+            self.next_position = next.expect("visible item has a validated position");
             self.committed.push(live.item);
         }
         Ok(())
     }
     pub(in crate::studio) fn current_items(&self) -> Vec<TimelineItem> {
-        let mut pending: Vec<_> = self.items.iter().collect();
-        let mut result = Vec::with_capacity(pending.len());
-        while !pending.is_empty() {
-            let next = pending
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| !pending.iter().any(|other| other.precedes(item)))
-                .min_by_key(|(_, item)| item.anchor)
-                .map(|(index, _)| index)
-                .expect("source order is acyclic");
-            result.push(pending.remove(next).item.clone());
+        let mut streams: Vec<VecDeque<u64>> = self
+            .sources
+            .values()
+            .map(|items| items.values().flatten().copied().collect())
+            .collect();
+        let mut next = BTreeSet::new();
+        for (stream, items) in streams.iter_mut().enumerate() {
+            if let Some(index) = items.pop_front() {
+                next.insert((self.items[&index].anchor, index, stream));
+            }
+        }
+        for (index, item) in &self.items {
+            if item.item.kind == TimelineItemKind::Status {
+                next.insert((item.anchor, *index, usize::MAX));
+            }
+        }
+        let mut result = Vec::with_capacity(self.items.len());
+        while let Some((_, index, stream)) = next.pop_first() {
+            result.push(self.items[&index].item.clone());
+            if stream != usize::MAX
+                && let Some(index) = streams[stream].pop_front()
+            {
+                next.insert((self.items[&index].anchor, index, stream));
+            }
         }
         result
     }
@@ -797,7 +887,7 @@ impl TimelineProjection {
         }
         std::mem::take(&mut self.committed)
     }
-    pub(in crate::studio) fn take_update(&mut self) -> Result<TimelineUpdate, ProjectionError> {
+    fn recovery(&self) -> Result<Vec<u8>, ProjectionError> {
         let recovery = serde_json::to_vec(&RecoveryView {
             items: &self.items,
             active: &self.active,
@@ -808,18 +898,33 @@ impl TimelineProjection {
                 "timeline recovery exceeds current budget".into(),
             ));
         }
+        Ok(recovery)
+    }
+    pub(in crate::studio) fn check_recovery_budget(&self) -> Result<(), ProjectionError> {
+        self.recovery().map(drop)
+    }
+    pub(in crate::studio) fn take_update(&mut self) -> Result<TimelineUpdate, ProjectionError> {
+        let recovery = self.recovery()?;
+        let mut update = self.take_changes();
+        update.current = self.current_items();
+        update.recovery = recovery;
+        Ok(update)
+    }
+    /// Migration drains ordered deltas without freezing the unchanged full head.
+    /// Its caller writes the final complete head in the same migration transaction.
+    pub(in crate::studio) fn take_changes(&mut self) -> TimelineUpdate {
         if !self.facts.is_empty() || !self.changes.is_empty() {
             self.retained_bytes.take();
         }
-        Ok(TimelineUpdate {
+        TimelineUpdate {
             facts: std::mem::take(&mut self.facts),
             members: std::mem::take(&mut self.changes),
-            current: self.current_items(),
-            recovery,
+            current: Vec::new(),
+            recovery: Vec::new(),
             next_position: self.next_position,
             generation: self.generation.clone(),
             retained_bytes: OnceLock::new(),
-        })
+        }
     }
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         *self.retained_bytes.get_or_init(|| {
@@ -831,7 +936,21 @@ impl TimelineProjection {
                 &self.facts,
             ))
             .map_or(u64::MAX, |bytes| {
-                (bytes.len() as u64).saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
+                (bytes.len() as u64)
+                    .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
+                    .saturating_add(
+                        self.items
+                            .values()
+                            .map(|item| {
+                                512_u64
+                                    .saturating_add(item.item.id.len() as u64)
+                                    .saturating_add(
+                                        serde_json::to_vec(&item.item.source)
+                                            .map_or(u64::MAX, |bytes| bytes.len() as u64),
+                                    )
+                            })
+                            .fold(0_u64, u64::saturating_add),
+                    )
             })
         })
     }
