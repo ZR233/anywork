@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/previews/conversation
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Widget _wrapWithApp(
@@ -134,6 +135,7 @@ void main() {
         conversationLiveStatusIdleGroupPreview,
         conversationLiveStatusCompletedGroupPreview,
         conversationLiveStatusThinkingPreview,
+        conversationLiveStatusLongToolPreview,
         conversationReasoningVariantsPreview,
         conversationLiveStatusRespondingPreview,
         conversationLiveStatusShortResponsePreview,
@@ -399,6 +401,84 @@ void main() {
       await tester.pumpWidget(conversationLiveStatusWaitPreview());
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.byType(TimelineWaitDetails), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('展开的长工具输出完整增高，窄窗换行并仅由外层滚动到末行', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(360, 480));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const lastLine = '末行检查完成';
+      final output = [
+        for (var i = 0; i < 60; i++) '检查第 $i 项：通过。',
+        '需要检查的连续长路径/' * 12,
+        lastLine,
+      ].join('\n');
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityBar(
+            children: [
+              _group(
+                content: TimelineToolDetails(
+                  initiallyExpanded: true,
+                  item: TimelineToolPresentation(
+                    id: 'long-output',
+                    toolCallId: 'long-output',
+                    name: 'exec',
+                    presentationContract: 'builtin.exec@2',
+                    statusString: 'succeeded',
+                    arguments: '{"command":"cargo flutter analyze"}',
+                    output: output,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          width: 360,
+          textScaler: TextScaler.linear(1.6),
+          disableAnimations: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final positions = tester
+          .stateList<ScrollableState>(find.byType(Scrollable))
+          .map((state) => state.position);
+      final outer = positions.singleWhere(
+        (position) => position.maxScrollExtent > 0,
+      );
+      expect(
+        positions.where((position) => position.maxScrollExtent > 0),
+        hasLength(1),
+      );
+      expect(
+        positions.every((position) => position.axis == Axis.vertical),
+        isTrue,
+      );
+      expect(outer.maxScrollExtent, greaterThan(280));
+      final header = tester.getRect(find.text('工作中'));
+      outer.jumpTo(outer.maxScrollExtent);
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.text('工作中')), header);
+      final paragraph = tester.renderObject<RenderParagraph>(
+        find.byWidgetPredicate(
+          (widget) => widget is RichText && widget.text.toPlainText() == output,
+        ),
+      );
+      final boxes = paragraph.getBoxesForSelection(
+        TextSelection(
+          baseOffset: output.indexOf(lastLine),
+          extentOffset: output.length,
+        ),
+      );
+      expect(boxes, hasLength(1));
+      final glyph = boxes.single.toRect().shift(
+        paragraph.localToGlobal(Offset.zero),
+      );
+      final viewport = tester
+          .getRect(find.byType(SingleChildScrollView).first)
+          .inflate(1);
+      expect(viewport.contains(glyph.topLeft), isTrue);
+      expect(viewport.contains(glyph.bottomRight), isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
     });
 

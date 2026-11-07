@@ -117,7 +117,7 @@ void main() {
   }
 
   testWidgets(
-    'Children use one controller, shrink naturally, stay transparent and scroll only at the cap',
+    'Children use one controller, grow naturally and delegate scrolling to the reading viewport',
     (tester) async {
       final controller = InMemoryChatController(
         messages: [
@@ -132,18 +132,20 @@ void main() {
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
           home: Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(
-                width: 360,
-                child: TimelineChildrenView(
-                  controller: controller,
-                  generation: 1,
-                  isDisplayActive: () => true,
-                  onLoadOlder: () async {
-                    pages++;
-                  },
-                  contentRangeBuilder: (_, _, label, _, _) => Text(label),
+            body: SingleChildScrollView(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 360,
+                  child: TimelineChildrenView(
+                    controller: controller,
+                    generation: 1,
+                    isDisplayActive: () => true,
+                    onLoadOlder: () async {
+                      pages++;
+                    },
+                    contentRangeBuilder: (_, _, label, _, _) => Text(label),
+                  ),
                 ),
               ),
             ),
@@ -167,11 +169,12 @@ void main() {
           _controllerMessage(memberMessage(id: 'long-$i', body: '消息 $i 的真实正文')),
       ], animated: false);
       await tester.pumpAndSettle();
-      expect(tester.getSize(children).height, 320);
-      expect(
-        tester.state<ScrollableState>(scroll).position.maxScrollExtent,
-        greaterThan(0),
+      expect(tester.getSize(children).height, greaterThan(320));
+      expect(tester.state<ScrollableState>(scroll).position.maxScrollExtent, 0);
+      final outer = tester.state<ScrollableState>(
+        find.byType(Scrollable).first,
       );
+      expect(outer.position.maxScrollExtent, greaterThan(0));
       expect(
         tester.widget<Chat>(find.byType(Chat)).chatController,
         same(controller),

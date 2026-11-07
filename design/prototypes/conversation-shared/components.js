@@ -204,9 +204,7 @@
         this.body.firstChild.append(button('复制命令', 'copy', () => actions.copy(this.current.target), 'cv-quiet'));
         this.log = node('<pre class="cv-terminal" tabindex="0" aria-label="命令输出"></pre>');
         this.logContent = new SelectableContent(this.log, value => {
-          const follow = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 22;
           this.log.textContent = value;
-          if (follow) this.log.scrollTop = this.log.scrollHeight;
         });
         this.exit = node('<div class="cv-detail-meta"></div>');
         this.body.append(this.log, this.exit);

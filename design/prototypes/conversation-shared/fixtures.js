@@ -878,6 +878,11 @@
       hint: '当前工作组位于状态栏：成员逐个插入，已完成的切换为对应语义图标留在组内，运行中的继续计时。时间线不出现半成品。'
     },
     {
+      id: 'long-tool-output', group: 'timeline', stage: 'session', at: 'workgroup',
+      label: '状态栏 · 长工具输出',
+      hint: '展开的工具内容自然增高，统一使用工作组外层阅读区纵向滚动；检查最后一行是否仍可到达。'
+    },
+    {
       id: 'reasoning-variants',
       group: 'timeline',
       stage: 'session',

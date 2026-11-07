@@ -2009,8 +2009,6 @@ details.cv-member > summary.cv-member-heading:hover {
   margin: 4px 0;
 }
 .cv-terminal {
-  max-height: 132px;
-  overflow-y: auto;
   padding: 7px 10px;
   background: var(--cv-elevated);
   border-radius: 8px;

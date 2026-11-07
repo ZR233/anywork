@@ -736,6 +736,93 @@ void main() {
   }
 
   testWidgets(
+    'real group members share the outer reading viewport and remain reachable when height shrinks',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final members = _MemberContent();
+      await h.accept([
+        workItem('long-members', count: 30, active: 0, closed: false),
+      ]);
+      final unit = h.presentation.live.value.single;
+      unit.expansion.expanded = true;
+      unit.expansion.openMembers = (_, _) async => members;
+      await tester.binding.setSurfaceSize(const Size(760, 210));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      await members.consumer!.applyBatch(
+        ChatBatch(
+          placement: ChatPlacement.set,
+          entries: [
+            for (var index = 0; index < 30; index++)
+              ChatAtomEntry(
+                chatEnvelope(
+                  'member-$index',
+                  type: 'tool',
+                  data: {
+                    'invocation': {
+                      'toolCallId': 'call-$index',
+                      'name': 'stat_path',
+                      'presentationContract': 'builtin.stat_path@1',
+                    },
+                    'state': {
+                      'kind': 'succeeded',
+                      'completedAt': 1,
+                      'output': {'attachments': []},
+                    },
+                  },
+                  bodies: [
+                    inlineBody(
+                      'tool.arguments',
+                      jsonEncode({'path': '文件-$index.txt'}),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+      await _flush(tester);
+      expect(tester.takeException(), isNull);
+      final scrolls = tester.stateList<ScrollableState>(
+        find.byType(Scrollable),
+      );
+      expect(
+        scrolls.where((scroll) => scroll.position.maxScrollExtent > 0),
+        hasLength(1),
+        reason: 'Only the outer group body scrolls',
+      );
+      final body = find.byType(SingleChildScrollView).first;
+      final position = tester
+          .state<ScrollableState>(
+            find.descendant(of: body, matching: find.byType(Scrollable)).first,
+          )
+          .position;
+      expect(position.maxScrollExtent, greaterThan(320));
+      await tester.drag(body, const Offset(0, -5000));
+      await _flush(tester);
+      final last = find.textContaining('文件-29.txt');
+      expect(last.hitTestable(), findsOneWidget);
+      await tester.binding.setSurfaceSize(const Size(760, 130));
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      await tester.drag(body, const Offset(0, -5000));
+      await _flush(tester);
+      expect(tester.takeException(), isNull);
+      expect(last.hitTestable(), findsOneWidget);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('conversation-activity')))
+            .height,
+        lessThanOrEqualTo(130),
+      );
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+    },
+  );
+
+  testWidgets(
     'an unfinished group does not hide a later response; folded group opens no body or member resource',
     (tester) async {
       final h = _Harness();

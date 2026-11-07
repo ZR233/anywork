@@ -386,3 +386,39 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
     ],
   ),
 );
+
+@Preview(name: '工作组 · 长工具输出', group: '实时状态栏', size: Size(760, 300))
+Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [
+      TimelineWorkGroupView(
+        id: 'long-tool',
+        summary: TimelineGroupSummary(
+          memberCount: 1,
+          activeCount: 1,
+          failedCount: 0,
+          cancelledCount: 0,
+          categories: const [
+            TimelineCategoryCount(category: TimelineCategory.command, count: 1),
+          ],
+        ),
+        live: true,
+        executionPresent: true,
+        admissionClosed: false,
+        initiallyExpanded: true,
+        childBuilder: (_) => TimelineToolDetails(
+          initiallyExpanded: true,
+          item: TimelineToolPresentation(
+            id: 'long-tool-output',
+            toolCallId: 'long-tool-output',
+            name: 'exec',
+            presentationContract: 'builtin.exec@2',
+            statusString: 'running',
+            arguments: '{"command":"cargo flutter analyze"}',
+            output: [for (var i = 1; i <= 60; i++) '检查第 $i 项：通过。'].join('\n'),
+          ),
+        ),
+      ),
+    ],
+  ),
+);

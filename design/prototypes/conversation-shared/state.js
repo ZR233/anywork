@@ -288,6 +288,13 @@
         const target = this.state.queue.findIndex(event => event.label === spec.at);
         if (target < 0) throw new Error('Unknown story frame: ' + spec.at);
         while (this.state.cursor <= target) this.advance();
+        if (spec.id === 'long-tool-output') {
+          this.state.live.members = [{
+            id: 'long-tool-output', kind: 'command', title: '执行命令', target: 'cargo flutter analyze',
+            status: 'running', elapsed: 12, cwd: '~/work/anywork', exitCode: null,
+            output: Array.from({length: 60}, (_, i) => `检查第 ${i + 1} 项：通过。`).join('\n')
+          }];
+        }
         if (spec.id === 'reasoning-variants') {
           this.state.live.members = [
             { id: 'reasoning-summary-body', kind: 'thinking', title: '思考', summary: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 125,

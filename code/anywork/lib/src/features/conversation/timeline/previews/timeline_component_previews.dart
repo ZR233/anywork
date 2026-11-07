@@ -597,8 +597,9 @@ Widget timelineWaitDetailsPreview() => _timelinePreviewHost(
   group: 'Timeline · 资源纯视图',
   size: Size(760, 400),
 )
-Widget timelineChildrenPreview() =>
-    _timelinePreviewHost(const _TimelineChildrenPreview());
+Widget timelineChildrenPreview() => _timelinePreviewHost(
+  const SingleChildScrollView(child: _TimelineChildrenPreview()),
+);
 
 // Only the borrowed UI controller needs a local lifetime. No domain owner,
 // provider, paging simulation or expansion mirror is constructed here.

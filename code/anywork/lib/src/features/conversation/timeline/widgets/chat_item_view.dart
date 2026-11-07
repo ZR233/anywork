@@ -591,7 +591,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       ]);
   Widget _metadata(Object? value) => StudioCodeBlock(
     text: const JsonEncoder.withIndent('  ').convert(value),
-    maxHeight: 240,
+    horizontalScroll: false,
   );
   Widget _outcomeNotice(Object? value) {
     if (value == null) return const SizedBox.shrink();
@@ -684,7 +684,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     }
     final id = '${item.id}:${body.key}';
     final child = code
-        ? StudioCodeBlock(text: text, maxHeight: 280)
+        ? StudioCodeBlock(text: text, horizontalScroll: false)
         : widget.bodyBuilder?.call(id, text) ??
               TimelinePlainText(id: id, text: text);
     return _contentWitness(text, child);

@@ -315,8 +315,6 @@ class TimelineToolDetails extends StatelessWidget {
           padding: const EdgeInsets.only(bottom: 6),
           child: Text(
             diagnostics.join('\n'),
-            maxLines: 6,
-            overflow: TextOverflow.ellipsis,
             style: context.text.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
               height: 1.4,
@@ -330,14 +328,14 @@ class TimelineToolDetails extends StatelessWidget {
           StudioCodeBlock(
             text: _prettyToolPayload(arguments),
             language: context.l10n.timelineToolArguments,
-            maxHeight: 200,
+            horizontalScroll: false,
             margin: const EdgeInsets.only(top: 8),
           ),
         if (output != null && output.trim().isNotEmpty)
           StudioCodeBlock(
             text: _prettyToolPayload(output),
             language: context.l10n.timelineToolOutput,
-            maxHeight: 280,
+            horizontalScroll: false,
             margin: const EdgeInsets.only(top: 8),
           ),
       ],
