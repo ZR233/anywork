@@ -119,7 +119,7 @@ void main() {
     final reasoning = type == 'thinking';
     final body = reasoning ? 'completed reasoning' : 'approved plan';
     testWidgets(
-      'unrelated Append keeps ${reasoning ? 'directly readable reasoning' : 'plan expansion'} and immutable card identity',
+      'unrelated Append keeps ${reasoning ? 'reasoning expansion' : 'plan expansion'} and immutable card identity',
       (tester) async {
         final controller = InMemoryChatController();
         final resources = TimelineImageResources(threadId: 'thread');
@@ -160,19 +160,10 @@ void main() {
           ),
         );
         await tester.pumpWidget(build());
-        if (reasoning) {
-          expect(find.text(body), findsOneWidget);
-          expect(
-            find.byType(ExpansionTile),
-            findsNothing,
-            reason: 'Thinking is directly readable, not a second expansion',
-          );
-        } else {
-          expect(find.text(body), findsNothing);
-          await tester.tap(find.byType(ExpansionTile).first);
-          await tester.pumpAndSettle();
-          expect(find.text(body), findsOneWidget);
-        }
+        expect(find.text(body), findsNothing);
+        await tester.tap(find.byType(ExpansionTile).first);
+        await tester.pumpAndSettle();
+        expect(find.text(body), findsOneWidget);
         final old = controller.messages.single;
         final card = old.metadata![chatItemPresentationKey];
         await adapter.applyBatch(
@@ -185,13 +176,70 @@ void main() {
           same(card),
         );
         expect(find.text(body), findsOneWidget);
-        if (reasoning) {
-          expect(find.byType(ExpansionTile), findsNothing);
-        }
+        if (reasoning) expect(find.byType(ExpansionTile), findsOneWidget);
         await tester.pumpWidget(const SizedBox.shrink());
       },
     );
   }
+
+  testWidgets(
+    'referenced reasoning summary reads immediately in one line, body waits for expansion',
+    (tester) async {
+      Map<String, Object?> body(String key) => {
+        'key': key,
+        'byteLength': 100,
+        'reference': {
+          'databaseId': 'database',
+          'target': {
+            'kind': 'body',
+            'owner': {'kind': 'item', 'itemId': 'thinking'},
+            'key': key,
+          },
+        },
+      };
+      final requests = <String>[];
+      final item = ChatItemPresentation.decode(
+        chatEnvelope(
+          'thinking',
+          type: 'thinking',
+          data: const {},
+          bodies: [body('part.summaryText.0'), body('part.reasoningText.0')],
+        ),
+      );
+      await tester.pumpWidget(
+        rowApp(
+          ChatItemView(
+            item: item,
+            contentRangeBuilder: contentBuilder((reference, range) async {
+              final key = (reference.target as BodyContentTarget).key;
+              requests.add(key);
+              expect(range.offset, 0);
+              expect(range.maxBytes, lessThanOrEqualTo(64 * 1024));
+              return window(
+                key.contains('summaryText') ? '**有界读取的概要**' : '有界读取的思考正文',
+              );
+            }),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(requests, ['part.summaryText.0']);
+      expect(
+        find.textContaining('有界读取的概要', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.byType(ExpansionTile), findsOneWidget);
+      expect(find.textContaining('字节'), findsNothing);
+      await tester.tap(find.byType(ExpansionTile));
+      await tester.pumpAndSettle();
+      expect(requests, ['part.summaryText.0', 'part.reasoningText.0']);
+      expect(find.text('有界读取的思考正文'), findsOneWidget);
+      expect(
+        find.textContaining('有界读取的概要', findRichText: true),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets(
     'Deferred is lazy, requests bounded original-reference windows, and Next advances byte offset',

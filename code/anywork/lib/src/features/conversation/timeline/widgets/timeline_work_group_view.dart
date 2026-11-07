@@ -81,7 +81,11 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
               ? l10n.timelineReasoningActive
               : elapsed == null
               ? l10n.timelineGroupRecord
-              : activityDurationLabel(context, elapsed, worked: true);
+              : activityDurationLabel(
+                  context,
+                  elapsed,
+                  kind: ActivityDurationKind.worked,
+                );
           final meta = [
             if (summary != null) ...[
               if (widget.live && widget.executionPresent) ...[

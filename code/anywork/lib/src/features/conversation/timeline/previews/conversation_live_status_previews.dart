@@ -12,6 +12,7 @@ import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_work_group_view.dart';
+import '../widgets/timeline_reasoning_view.dart';
 
 /// 官方预览只装配生产组件，不装配 Client、原生桥或第二套状态投影。
 Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
@@ -80,9 +81,13 @@ Widget liveStatusGroupPreview({
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       if (thinkingOnly && !idle && !history)
-        const ConversationCurrentWindowView(
-          id: 'preview-reasoning',
-          text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
+        const TimelineReasoningView(
+          summary: '梳理会话共享组件与锁定边界',
+          running: true,
+          body: ConversationCurrentWindowView(
+            id: 'preview-reasoning',
+            text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
+          ),
         )
       else
         ChatItemView(
@@ -92,7 +97,11 @@ Widget liveStatusGroupPreview({
             const {},
             bodies: [
               TimelinePreviewFixtures.body(
-                'reasoning',
+                'part.summaryText.0',
+                '梳理会话共享组件与锁定边界',
+              ),
+              TimelinePreviewFixtures.body(
+                'part.reasoningText.0',
                 '已完成的成员**留在状态栏的当前工作组**；同时核对运行期选择器的就地锁定提示。',
               ),
             ],
@@ -317,6 +326,61 @@ Widget conversationLiveStatusWindowPreview() => liveStatusPreviewHost(
           availableThrough: 98304,
           onFirst: () {},
           onNext: () {},
+        ),
+      ),
+    ],
+  ),
+);
+
+@Preview(name: '思考成员 · 概要与正文组合', group: '实时状态栏', size: Size(760, 300))
+Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [
+      TimelineWorkGroupView(
+        id: 'reasoning-variants',
+        summary: TimelineGroupSummary(
+          memberCount: 3,
+          activeCount: 0,
+          failedCount: 0,
+          cancelledCount: 0,
+          categories: [
+            TimelineCategoryCount(
+              category: TimelineCategory.thinking,
+              count: 3,
+            ),
+          ],
+        ),
+        live: true,
+        executionPresent: true,
+        admissionClosed: false,
+        initiallyExpanded: true,
+        childBuilder: (_) => const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TimelineReasoningView(
+              summary: '梳理会话共享组件与锁定边界',
+              startedAt: 100,
+              finishedAt: 225,
+              body: ConversationCurrentWindowView(
+                id: 'summary-body',
+                text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
+              ),
+            ),
+            TimelineReasoningView(
+              summary: '核对运行期选择器锁定规则',
+              startedAt: 100,
+              finishedAt: 225,
+            ),
+            TimelineReasoningView(
+              startedAt: 100,
+              finishedAt: 225,
+              body: ConversationCurrentWindowView(
+                id: 'body-only',
+                text: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。',
+              ),
+            ),
+          ],
         ),
       ),
     ],

@@ -6,6 +6,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -133,6 +134,7 @@ void main() {
         conversationLiveStatusIdleGroupPreview,
         conversationLiveStatusCompletedGroupPreview,
         conversationLiveStatusThinkingPreview,
+        conversationReasoningVariantsPreview,
         conversationLiveStatusRespondingPreview,
         conversationLiveStatusShortResponsePreview,
         conversationLiveStatusWaitPreview,
@@ -218,6 +220,53 @@ void main() {
         });
       }
     }
+
+    testWidgets('思考概要在窄窗和文字缩放下保持一行，正文保持独立展开', (tester) async {
+      for (final width in [360.0, 760.0, 1040.0]) {
+        await tester.binding.setSurfaceSize(Size(width, 600));
+        for (final scale in [1.0, 1.6]) {
+          Widget scene(String summary) => _wrapWithApp(
+            ConversationActivityBar(
+              children: [
+                _group(
+                  content: TimelineReasoningView(
+                    summary: summary,
+                    body: const Text('按需展开的正文'),
+                  ),
+                ),
+              ],
+            ),
+            width: width,
+            textScaler: TextScaler.linear(scale),
+            disableAnimations: true,
+          );
+          await tester.pumpWidget(scene('短概要'));
+          await tester.pump();
+          final shortHeight = tester
+              .getSize(find.byType(TimelineReasoningView))
+              .height;
+          await tester.pumpWidget(
+            scene('**第一段概要很长，必须在有限宽度内省略而不换行。**' * 8 + '\n\n第二段概要也不能使折叠成员增高。'),
+          );
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+          expect(
+            tester.getSize(find.byType(TimelineReasoningView)).height,
+            closeTo(shortHeight, .1),
+          );
+          expect(find.text('按需展开的正文'), findsNothing);
+          final row = find.descendant(
+            of: find.byType(TimelineReasoningView),
+            matching: find.byType(TimelineActivityRow),
+          );
+          await tester.tap(row);
+          await tester.pumpAndSettle();
+          expect(find.text('按需展开的正文'), findsOneWidget);
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      }
+      await tester.binding.setSurfaceSize(null);
+    });
 
     for (final response in [false, true]) {
       testWidgets('正文自然增长并服从父级高度，标题不滚动 ($response)', (tester) async {

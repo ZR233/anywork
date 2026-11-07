@@ -14,7 +14,6 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_view_s
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
@@ -956,9 +955,11 @@ void main() {
           (pending.loading, pending.active, pending.canRead),
           (true, true, true),
         );
+        expect(pending.disclosed, isTrue);
         expect(
-          tester.widget<TimelineActivityDisclosure>(disclosure).enabled,
-          isFalse,
+          disclosure,
+          findsNothing,
+          reason: 'The outer tool is the sole body disclosure',
         );
         expect(owner.window, isNull);
         expect(owner.error, isNull);
@@ -967,7 +968,7 @@ void main() {
           (outputRef, 0, 64 * 1024),
         ]);
         await Scrollable.ensureVisible(
-          tester.element(disclosure),
+          tester.element(rangeView),
           alignment: 0.5,
         );
         await tester.pump();
@@ -984,10 +985,8 @@ void main() {
           (false, true, true),
         );
         expect(ready.window, same(accepted));
-        expect(
-          tester.widget<TimelineActivityDisclosure>(disclosure).enabled,
-          isTrue,
-        );
+        expect(ready.disclosed, isTrue);
+        expect(disclosure, findsNothing);
         expect(tester.state(connector), same(originalState));
         expect(owner.reference, same(outputRef));
         expect(controls.controller, same(mainController));

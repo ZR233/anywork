@@ -4,33 +4,37 @@ import 'package:flutter/material.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 
+enum ActivityDurationKind { elapsed, worked, reasoning }
+
 /// 只格式化已有时间事实；未知或倒序时间不构造耗时。
 String activityDurationLabel(
   BuildContext context,
   int seconds, {
-  bool worked = false,
+  ActivityDurationKind kind = ActivityDurationKind.elapsed,
 }) {
   final l10n = context.l10n;
-  if (seconds <= 0) {
-    return worked
-        ? l10n.timelineGroupWorkedUnderSecond
-        : l10n.timelineToolElapsedUnderSecond;
-  }
-  if (seconds < 60) {
-    return worked
-        ? l10n.timelineGroupWorkedSeconds(seconds)
-        : l10n.timelineToolElapsedSeconds(seconds);
-  }
   final minutes = seconds ~/ 60;
   final remainder = seconds % 60;
-  if (remainder == 0) {
-    return worked
-        ? l10n.timelineGroupWorkedMinutes(minutes)
-        : l10n.timelineToolElapsedMinutes(minutes);
-  }
-  return worked
-      ? l10n.timelineGroupWorkedMinutesSeconds(minutes, remainder)
-      : l10n.timelineToolElapsedMinutesSeconds(minutes, remainder);
+  return switch (kind) {
+    ActivityDurationKind.worked => switch (seconds) {
+      <= 0 => l10n.timelineGroupWorkedUnderSecond,
+      < 60 => l10n.timelineGroupWorkedSeconds(seconds),
+      _ when remainder == 0 => l10n.timelineGroupWorkedMinutes(minutes),
+      _ => l10n.timelineGroupWorkedMinutesSeconds(minutes, remainder),
+    },
+    ActivityDurationKind.reasoning => switch (seconds) {
+      <= 0 => l10n.timelineReasoningElapsedUnderSecond,
+      < 60 => l10n.timelineReasoningElapsedSeconds(seconds),
+      _ when remainder == 0 => l10n.timelineReasoningElapsedMinutes(minutes),
+      _ => l10n.timelineReasoningElapsedMinutesSeconds(minutes, remainder),
+    },
+    ActivityDurationKind.elapsed => switch (seconds) {
+      <= 0 => l10n.timelineToolElapsedUnderSecond,
+      < 60 => l10n.timelineToolElapsedSeconds(seconds),
+      _ when remainder == 0 => l10n.timelineToolElapsedMinutes(minutes),
+      _ => l10n.timelineToolElapsedMinutesSeconds(minutes, remainder),
+    },
+  };
 }
 
 /// 标题共用的显示时钟。终态停止计时，隐藏子树不保持周期唤醒。
