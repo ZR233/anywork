@@ -383,6 +383,7 @@ async fn uninterrupted(
         inputs.push(TimelineInput::Atom {
             atom: Box::new(atom),
             payload,
+            thinking_summary: None,
         });
     }
     for row in db

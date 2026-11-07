@@ -14,7 +14,12 @@ impl MigratorTraitSelf for Published11 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+            )
+        })
         .filter(|step| {
             !matches!(
                 step.name(),
@@ -36,7 +41,12 @@ impl MigratorTraitSelf for Published12 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+            )
+        })
         .filter(|step| {
             !matches!(
                 step.name(),

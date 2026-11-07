@@ -32,6 +32,7 @@ pub struct BridgeTimelineCategoryCount {
 
 #[derive(Debug, Clone)]
 pub struct BridgeTimelineGroupSummary {
+    pub latest_thinking_summary: Option<String>,
     pub member_count: u32,
     pub active_count: u32,
     pub failed_count: u32,

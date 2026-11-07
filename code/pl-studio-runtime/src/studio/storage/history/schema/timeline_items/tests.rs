@@ -25,7 +25,12 @@ impl MigratorTraitSelf for Published13 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+            )
+        })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
         .collect()
     }
@@ -41,7 +46,12 @@ impl MigratorTraitSelf for Published14 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+            )
+        })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
         .collect()
     }
@@ -857,8 +867,8 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 1,
-        "content preparation records TimelineItems, not lifecycle migrations"
+        original_ledger.len() + 2,
+        "content preparation records TimelineItems and TimelineThinkingSummary, not lifecycle migrations"
     );
     for record in &original_ledger {
         assert!(
@@ -914,6 +924,7 @@ async fn formal_migration_round_trip() -> Result<()> {
     restored.apply_input(TimelineInput::Atom {
         atom: Box::new(terminal),
         payload: None,
+        thinking_summary: None,
     })?;
     assert_eq!(
         restored.current_items()[0]

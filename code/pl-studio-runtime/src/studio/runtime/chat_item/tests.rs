@@ -213,6 +213,7 @@ fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_re
                 projection.apply_input(TimelineInput::Atom {
                     atom: Box::new(projected_atom),
                     payload: None,
+                    thinking_summary: None,
                 })?;
                 let mut items = projection.current_items();
                 items.extend(projection.take_committed());

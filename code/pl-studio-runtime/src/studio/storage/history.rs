@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 15;
+const HISTORY_SCHEMA_VERSION: i64 = 16;
 
 pub(in crate::studio) mod conversation;
 

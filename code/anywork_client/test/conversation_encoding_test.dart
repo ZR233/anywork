@@ -117,6 +117,7 @@ void main() {
       delivery: ChatDeliveryKind.foreground,
       turnId: 'turn',
       summary: TimelineGroupSummary(
+        latestThinkingSummary: '等待审查更新',
         memberCount: 12,
         activeCount: 2,
         failedCount: 1,
@@ -144,6 +145,7 @@ void main() {
         'startedAt': null,
         'finishedAt': null,
         'summary': {
+          'latestThinkingSummary': '等待审查更新',
           'memberCount': 12,
           'activeCount': 2,
           'failedCount': 1,

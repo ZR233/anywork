@@ -18139,6 +18139,7 @@ impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineCategoryCo
 impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_latestThinkingSummary = <Option<String>>::sse_decode(deserializer);
         let mut var_memberCount = <u32>::sse_decode(deserializer);
         let mut var_activeCount = <u32>::sse_decode(deserializer);
         let mut var_failedCount = <u32>::sse_decode(deserializer);
@@ -18149,6 +18150,7 @@ impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineGroupSumma
         let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
         return crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+            latest_thinking_summary: var_latestThinkingSummary,
             member_count: var_memberCount,
             active_count: var_activeCount,
             failed_count: var_failedCount,
@@ -35992,6 +35994,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.latest_thinking_summary.into_into_dart().into_dart(),
             self.member_count.into_into_dart().into_dart(),
             self.active_count.into_into_dart().into_dart(),
             self.failed_count.into_into_dart().into_dart(),
@@ -47095,6 +47098,7 @@ impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineCategoryCo
 impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.latest_thinking_summary, serializer);
         <u32>::sse_encode(self.member_count, serializer);
         <u32>::sse_encode(self.active_count, serializer);
         <u32>::sse_encode(self.failed_count, serializer);

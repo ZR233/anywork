@@ -107,6 +107,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
         : elapsed == null
         ? '工作记录'
         : '工作了 $elapsed 秒';
+    final thinkingSummary = summary?.latestThinkingSummary?.trim();
     final meta = [
       if (summary != null) '${summary.memberCount} 项',
       if ((summary?.failedCount ?? 0) > 0) '${summary!.failedCount} 项执行失败',
@@ -125,7 +126,9 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
       },
       titleBuilder: (_, expanded) => TimelineActivityRow(
         key: ValueKey('source-unit-header:${unit.id}'),
-        label: label,
+        label: thinkingSummary == null || thinkingSummary.isEmpty
+            ? label
+            : thinkingSummary,
         meta: meta,
         expanded: expanded,
         active: _active,

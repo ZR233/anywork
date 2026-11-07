@@ -51,13 +51,18 @@ async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
         return timeline_items::validate_source(db).await;
     }
     ensure!(
-        format == 15,
-        "member read metadata migration requires schema 14 or 15"
+        matches!(format, 15 | 16),
+        "member read metadata migration requires schema 14 through 16"
     );
     if !validate_source(db).await? {
-        let head = timeline::read_state(db)
+        let row = db
+            .query_one_raw(statement(
+                "SELECT source_effect_seq FROM timeline_projection_state WHERE singleton_id=1",
+                vec![],
+            ))
             .await?
             .context("member metadata migration has no projection head")?;
+        let source_effect_seq = u64::try_from(row.try_get::<i64>("", "source_effect_seq")?)?;
         // The former format did not record each mutable member's last update.
         // The committed projection cut is a conservative bound for that head;
         // immutable terminal facts still supply their original cut qualification.
@@ -67,7 +72,7 @@ async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
             "UPDATE timeline_item_members SET updated_effect=?,payload_bytes=(
                SELECT length(c.payload) FROM conversation_items c
                WHERE c.item_id=timeline_item_members.completion_item_id)",
-            vec![integer(head.source_effect_seq)?.into()],
+            vec![integer(source_effect_seq)?.into()],
         ))
         .await?;
     }

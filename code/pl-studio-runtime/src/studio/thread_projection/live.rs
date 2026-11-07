@@ -1550,9 +1550,11 @@ impl LiveProjection {
                 .or_insert_with(|| atom.clone());
         }
         for atom in active.into_values() {
+            let thinking_summary = self.current_thinking_summary(&atom);
             let input = TimelineInput::Atom {
                 atom: Box::new(atom),
                 payload: None,
+                thinking_summary,
             };
             inputs.push((input.order(current.projection().source_effect_seq)?, input));
         }
@@ -1577,9 +1579,12 @@ impl LiveProjection {
             })?;
             atom.completion_seq = Some(record.header.append_seq);
             let payload = timeline_payload(&database_id, &atom, &record.payload);
+            let thinking_summary =
+                super::timeline::completed_thinking_summary(&atom, &record.contents)?;
             let input = TimelineInput::Atom {
                 atom: Box::new(atom),
                 payload: Some(payload),
+                thinking_summary,
             };
             inputs.push((input.order(current.projection().source_effect_seq)?, input));
         }
@@ -1593,10 +1598,26 @@ impl LiveProjection {
         // this is neither another start nor another commit point.
         for atom in &current.projection().atoms {
             if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt {
-                timeline.refresh_current(atom)?;
+                timeline.refresh_current(atom, self.current_thinking_summary(atom))?;
             }
         }
         Ok(Some(timeline))
+    }
+
+    fn current_thinking_summary(&self, atom: &pl_protocol::ChatAtom) -> Option<String> {
+        if atom.kind != pl_protocol::ChatAtomKind::Reasoning {
+            return None;
+        }
+        self.previews
+            .get(&atom.id)?
+            .fields
+            .iter()
+            .rev()
+            .find_map(|(key, block)| {
+                matches!(key, BodyKey::Part(PresentationPart::SummaryText(_)))
+                    .then(|| super::activity::thinking_summary_block(block))
+                    .flatten()
+            })
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -2485,6 +2506,22 @@ impl LiveProjection {
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        if let Some(current) = self.current.snapshot() {
+            let summaries = current
+                .projection()
+                .atoms
+                .iter()
+                .filter_map(|atom| {
+                    self.current_thinking_summary(atom)
+                        .map(|summary| (atom.id.clone(), summary))
+                })
+                .collect::<Vec<_>>();
+            if let Some(timeline) = &mut self.timeline {
+                for (id, summary) in summaries {
+                    timeline.refresh_thinking_summary(&id, summary);
+                }
+            }
+        }
         self.sync_current_items();
         Ok(())
     }

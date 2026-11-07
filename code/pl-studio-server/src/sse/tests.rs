@@ -336,6 +336,7 @@ async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member
                 "delivery": "foreground", "turnId": "turn",
                 "startedAt": 100, "finishedAt": 110,
                 "summary": {
+                    "latestThinkingSummary": "Reviewing updates",
                     "memberCount": 20, "activeCount": 0, "failedCount": 1, "cancelledCount": 2,
                     "categories": [{"category": "command", "count": 20}],
                     "startedAt": 100, "finishedAt": 110
