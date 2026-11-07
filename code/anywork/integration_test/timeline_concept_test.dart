@@ -1583,13 +1583,16 @@ final class _ConceptScene {
     await _record('same-member-window-terminal');
     expect(quiet.item.admissionClosed, isFalse);
     expect(quiet.live, isTrue);
+    expect(quiet.item.summary!.activeCount, 0);
+    expect(lease.content.current.value?.executionPresent, isTrue);
     expect(
       tester
           .widget<TimelineActivityRow>(
             find.byKey(ValueKey('source-unit-header:$g1')),
           )
           .label,
-      '等待后继边界',
+      '思考中',
+      reason: '成员已终态但准入未关闭时，标题遵循实时组文案，不据此提前交接',
     );
     expect(main.where((unit) => unit.id == g1), isEmpty);
     expect(
@@ -2051,7 +2054,8 @@ final class _ConceptScene {
         of: currentConnector,
         matching: find.byType(ConversationActivityBar),
       ),
-      findsNothing,
+      findsOneWidget,
+      reason: '当前压缩状态由统一实时栏承载，不再使用栏外的旧布局',
     );
     final rowFinder = currentRows(unit);
     expect(rowFinder, findsOneWidget);

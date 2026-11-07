@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -189,6 +190,8 @@ Future<void> _runLive(
   try {
     await seedConsumption.readMany(
       loadOlder: () => scene.loadOlder(seedConsumption.lease),
+      prepareMemberRead: (remaining) =>
+          scene.prepareMemberRead(seedConsumption.lease, remaining),
       pump: () async {
         await scene.tester.pump(const Duration(milliseconds: 16));
         expect(scene.tester.takeException(), isNull);
@@ -603,6 +606,64 @@ final class _TimelineScene {
       return true;
     }, 'original running execution for content consumption');
     return consumption!;
+  }
+
+  Future<int> prepareMemberRead(
+    TimelineDisplayLease original,
+    Duration remaining,
+  ) async {
+    final clock = Stopwatch()..start();
+    var retired = 0;
+    debugPrintSynchronously(
+      'timeline member reader handoff: ${jsonEncode({
+        'threadId': original.threadId,
+        'generation': original.generation,
+        'expandedGroups': original.groupDisplays.where((display) => display.expanded).map((display) => display.unitId).toList(),
+        'handles': [
+          for (final usage in graph.client.budget.usage)
+            if (usage.kind == ResourceKind.chatHandle) {'owner': usage.owner, 'phase': usage.phase.name},
+        ],
+      })}',
+    );
+    while (true) {
+      if (clock.elapsed >= remaining) {
+        throw TimeoutException('Original timeline member handoff deadline');
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+      expect(lease, same(original));
+      expect(original.isMounted, isTrue);
+      expect(original.isRetired, isFalse);
+      final expanded = original.groupDisplays
+          .where((display) => display.expanded)
+          .toList();
+      if (expanded.isEmpty) {
+        if (graph.client.budget.used(ResourceKind.chatHandle) == 1) {
+          return retired;
+        }
+      }
+      for (final display in expanded) {
+        if (!display.isCurrent || !display.expanded) continue;
+        // Use the mounted consumer's own disclosure, including an offstage
+        // body whose header is not currently painted. Its original production
+        // listener revokes reading; only actual cleanup releases the permit.
+        final member = find.byElementPredicate(
+          (element) =>
+              element is StatefulElement && identical(element.state, display),
+          skipOffstage: false,
+        );
+        if (member.evaluate().length != 1) continue;
+        final disclosure = tester
+            .element(member)
+            .findAncestorWidgetOfExactType<Expansible>();
+        expect(disclosure, isNotNull);
+        final controller = disclosure!.controller;
+        if (controller.isExpanded) {
+          controller.collapse();
+          retired += 1;
+        }
+      }
+    }
   }
 
   Future<_StreamingTurn> waitForStreamingTurn({String? after}) async {
