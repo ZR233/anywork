@@ -568,10 +568,7 @@ final class TimelineObservation {
         interactionHeader == null
             ? 'ensure original fragment visible'
             : 'ensure original group title visible',
-        () => Scrollable.ensureVisible(
-          tester.element(interaction),
-          alignment: 0.5,
-        ),
+        () => tester.ensureVisible(interaction),
       );
       requireOriginal();
       requireInteraction();
