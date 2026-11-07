@@ -3,7 +3,7 @@ library;
 
 export 'src/commands/mutation_board.dart';
 export 'src/contracts/stamps.dart';
-export 'src/lifecycle/resource_budget.dart';
+export 'src/lifecycle/close_report.dart';
 export 'src/observation/latest_value.dart';
 export 'src/observation/read_model.dart';
 export 'transport_ports.dart';

@@ -374,22 +374,6 @@ void main() {
     },
   );
 
-  test('before admission errors still throw without transport', () async {
-    final transport = _AcpTransport();
-    final client = _client(transport);
-    // Exhaust admission, rather than failing an already admitted request.
-    final capacity = client.budget.capacities[ResourceKind.pendingOperation]!;
-    for (var i = 0; i < capacity; i++) {
-      client.board.begin(target: 'occupied:$i');
-    }
-    await expectLater(
-      client.domains.acp.saveAndConnect(_update),
-      throwsA(isA<ResourceBudgetExceeded>()),
-    );
-    expect(transport.saveCalls, 0);
-    expect(transport.startCalls, 0);
-  });
-
   test('admitted known rejection preserves draft and original error', () async {
     final failure = ArgumentError('invalid account');
     final transport = _AcpTransport()..saveFailure = failure;

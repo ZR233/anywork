@@ -337,9 +337,11 @@ final class ProductionStudioScene {
     try {
       graph.setConversationPageVisible(false);
       await tester.pumpWidget(const SizedBox());
-      await until(
-        () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-        'retired production scene read handles joined',
+      expect(
+        (await graph.client.conversations.retryCleanup(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        )).complete,
+        isTrue,
       );
     } finally {
       tester.testTextInput.unregister();

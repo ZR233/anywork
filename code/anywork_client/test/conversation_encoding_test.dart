@@ -41,6 +41,40 @@ Map<String, Object?> _expectedAtom(Object? wait) => {
 };
 
 void main() {
+  test('typed neutral and inference kinds retain provenance on the wire', () {
+    for (final kind in [
+      ChatAtomKind.raw,
+      ChatAtomKind.agent,
+      ChatAtomKind.inference,
+      ChatAtomKind.unknown,
+    ]) {
+      final atom = ChatAtom(
+        id: 'typed-origin',
+        source: const ForegroundTurnChatSource(turnId: 'turn'),
+        sourceOrder: 2,
+        kind: kind,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const ActiveChatAtom(
+          status: ChatActiveStatus.running,
+          started: ChatFactPosition(effectSeq: 3, suborder: 4),
+        ),
+        turnId: 'turn',
+        contents: const [],
+      );
+      final encoded = chatAtomToJson(atom);
+      expect(encoded['kind'], kind.name);
+      expect(encoded['source'], {'kind': 'foregroundTurn', 'turnId': 'turn'});
+      expect(encoded['lifecycle'], {
+        'kind': 'active',
+        'started': {'effectSeq': 3, 'suborder': 4},
+        'status': 'running',
+      });
+      expect(
+        chatAtomEntryEncodedLength(atom),
+        utf8.encode(jsonEncode({'kind': 'atom', 'value': encoded})).length,
+      );
+    }
+  });
   test('current preview channels use canonical names, omit unknown and count UTF-8 bytes', () {
     const reference = ContentRef(
       databaseId: 'db',
@@ -117,6 +151,7 @@ void main() {
       delivery: ChatDeliveryKind.foreground,
       turnId: 'turn',
       summary: TimelineGroupSummary(
+        latestThinkingSummary: '等待审查更新',
         memberCount: 12,
         activeCount: 2,
         failedCount: 1,
@@ -144,6 +179,7 @@ void main() {
         'startedAt': null,
         'finishedAt': null,
         'summary': {
+          'latestThinkingSummary': '等待审查更新',
           'memberCount': 12,
           'activeCount': 2,
           'failedCount': 1,

@@ -111,6 +111,482 @@ fn fold() -> TimelineProjection {
     TimelineProjection::new("db".into(), "test-generation".into(), 0)
 }
 
+fn summary_input(atom: ChatAtom, summary: Option<&str>) -> TimelineInput {
+    TimelineInput::Atom {
+        atom: Box::new(atom),
+        payload: None,
+        thinking_summary: summary.map(str::to_owned),
+    }
+}
+
+#[test]
+fn independent_background_tools_commit_without_splitting_foreground_or_waiting_for_text() {
+    let mut timeline = fold();
+    timeline
+        .observe(
+            &active("text", ChatAtomKind::Text, 1, pos(1, 0), content()),
+            None,
+        )
+        .unwrap();
+    timeline
+        .apply_input(summary_input(
+            active(
+                "thinking",
+                ChatAtomKind::Reasoning,
+                2,
+                pos(2, 0),
+                Vec::new(),
+            ),
+            Some("前台组摘要"),
+        ))
+        .unwrap();
+    let foreground_id = timeline.current_items()[1].id.clone();
+    for (offset, id) in ["background-a", "background-b"].into_iter().enumerate() {
+        let mut atom = background(id, 1, pos(3 + offset as u64, 0));
+        atom.kind = ChatAtomKind::ToolCall;
+        atom.source = ChatSourceId::BackgroundResult {
+            message_id: format!("result-{offset}"),
+        };
+        let source = atom.source.clone();
+        timeline.apply_input(summary_input(atom, None)).unwrap();
+        let committed = timeline.take_committed();
+        assert_eq!(committed.len(), 1);
+        let group = &committed[0];
+        assert_eq!(group.kind, TimelineItemKind::WorkGroup);
+        assert_eq!(group.source, source);
+        assert_eq!(group.delivery, ChatDeliveryKind::Independent);
+        assert_eq!(group.outcome, None);
+        assert!(group.admission_closed);
+        assert_eq!(group.position, Some(offset as u64));
+        assert_eq!(group.summary.as_ref().unwrap().member_count, 1);
+        assert_eq!(group.summary.as_ref().unwrap().active_count, 0);
+        assert_eq!(
+            group.summary.as_ref().unwrap().latest_thinking_summary,
+            None
+        );
+        assert!(group.members.is_some());
+    }
+    timeline
+        .observe(
+            &active(
+                "foreground-tool",
+                ChatAtomKind::ToolCall,
+                3,
+                pos(5, 0),
+                Vec::new(),
+            ),
+            None,
+        )
+        .unwrap();
+    let current = timeline.current_items();
+    assert_eq!(current.len(), 2);
+    assert_eq!(current[0].kind, TimelineItemKind::Text);
+    assert_eq!(current[1].id, foreground_id);
+    assert!(!current[1].admission_closed);
+    assert_eq!(current[1].summary.as_ref().unwrap().member_count, 2);
+    assert_eq!(
+        current[1]
+            .summary
+            .as_ref()
+            .unwrap()
+            .latest_thinking_summary
+            .as_deref(),
+        Some("前台组摘要")
+    );
+    timeline
+        .apply_input(summary_input(background("non-tool", 1, pos(6, 0)), None))
+        .unwrap();
+    assert_eq!(timeline.take_committed()[0].kind, TimelineItemKind::Status);
+}
+
+fn group_summary(timeline: &TimelineProjection) -> Option<String> {
+    timeline.current_items()[0]
+        .summary
+        .as_ref()
+        .unwrap()
+        .latest_thinking_summary
+        .clone()
+}
+
+#[test]
+fn thinking_summary_advances_without_metadata_changes_and_survives_tools_and_empty_parts() {
+    let mut timeline = fold();
+    let first = active("first", ChatAtomKind::Reasoning, 1, pos(1, 0), Vec::new());
+    timeline
+        .apply_input(summary_input(first.clone(), Some("旧摘要")))
+        .unwrap();
+    timeline
+        .apply_input(summary_input(first, Some("流式新摘要")))
+        .unwrap();
+    assert_eq!(group_summary(&timeline).as_deref(), Some("流式新摘要"));
+    let tool = active("tool", ChatAtomKind::ToolCall, 2, pos(2, 0), Vec::new());
+    timeline
+        .apply_input(summary_input(tool, Some("工具不能提供思考摘要")))
+        .unwrap();
+    let empty = active("empty", ChatAtomKind::Reasoning, 3, pos(3, 0), Vec::new());
+    timeline
+        .apply_input(summary_input(empty, Some(" \r\n ")))
+        .unwrap();
+    assert_eq!(group_summary(&timeline).as_deref(), Some("流式新摘要"));
+    let latest = active("latest", ChatAtomKind::Reasoning, 4, pos(4, 0), Vec::new());
+    timeline
+        .apply_input(summary_input(latest.clone(), None))
+        .unwrap();
+    assert_eq!(group_summary(&timeline).as_deref(), Some("流式新摘要"));
+    timeline
+        .apply_input(summary_input(latest, Some("较晚成员的摘要")))
+        .unwrap();
+    assert_eq!(group_summary(&timeline).as_deref(), Some("较晚成员的摘要"));
+}
+
+#[test]
+fn thinking_summary_source_order_survives_recovery_late_terminal_and_history_handoff() {
+    let mut timeline = fold();
+    for (id, order, text) in [("early", 1, "早摘要"), ("late", 2, "晚摘要")] {
+        timeline
+            .apply_input(summary_input(
+                active(
+                    id,
+                    ChatAtomKind::Reasoning,
+                    order,
+                    pos(order, 0),
+                    Vec::new(),
+                ),
+                Some(text),
+            ))
+            .unwrap();
+    }
+    let update = timeline.take_update().unwrap();
+    let mut restored = fold();
+    restored.restore_recovery(update.recovery()).unwrap();
+    assert_eq!(group_summary(&restored).as_deref(), Some("晚摘要"));
+    restored
+        .apply_input(summary_input(
+            terminal(
+                "late",
+                ChatAtomKind::Reasoning,
+                2,
+                pos(2, 0),
+                pos(3, 0),
+                Vec::new(),
+            ),
+            None,
+        ))
+        .unwrap();
+    restored
+        .apply_input(summary_input(
+            terminal(
+                "early",
+                ChatAtomKind::Reasoning,
+                1,
+                pos(1, 0),
+                pos(4, 0),
+                Vec::new(),
+            ),
+            Some("迟到的较早摘要"),
+        ))
+        .unwrap();
+    assert_eq!(group_summary(&restored).as_deref(), Some("晚摘要"));
+    restored
+        .apply_input(summary_input(
+            terminal(
+                "boundary",
+                ChatAtomKind::Text,
+                3,
+                pos(5, 0),
+                pos(5, 1),
+                content(),
+            ),
+            None,
+        ))
+        .unwrap();
+    let history = restored.take_committed();
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[0]
+            .summary
+            .as_ref()
+            .unwrap()
+            .latest_thinking_summary
+            .as_deref(),
+        Some("晚摘要")
+    );
+    assert!(history[0].position.is_some());
+    restored
+        .apply_input(summary_input(
+            active(
+                "new-group",
+                ChatAtomKind::Reasoning,
+                4,
+                pos(6, 0),
+                Vec::new(),
+            ),
+            None,
+        ))
+        .unwrap();
+    assert_eq!(group_summary(&restored), None);
+    let mut other_source = active("other", ChatAtomKind::Reasoning, 1, pos(7, 0), Vec::new());
+    other_source.source = ChatSourceId::ForegroundTurn {
+        turn_id: "other-turn".into(),
+    };
+    other_source.turn_id = Some("other-turn".into());
+    restored
+        .apply_input(summary_input(other_source, Some("其他组摘要")))
+        .unwrap();
+    assert_eq!(group_summary(&restored), None);
+    assert_eq!(
+        restored.current_items()[1]
+            .summary
+            .as_ref()
+            .unwrap()
+            .latest_thinking_summary
+            .as_deref(),
+        Some("其他组摘要")
+    );
+}
+
+#[test]
+fn completed_summary_reads_only_bounded_summary_roles_and_handles_utf8_tail() {
+    use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
+    use std::sync::Arc;
+
+    let owner = ContentOwner::Item {
+        item_id: "reason".into(),
+    };
+    let key = ChatContentKey {
+        owner: crate::studio::conversation_identity::content_owner_key(&owner).unwrap(),
+        key: "part.summaryText.0".into(),
+    };
+    let text = format!("{}\r\n最新摘要\r\n", "🦀".repeat(4096));
+    let bytes: Arc<[u8]> = Arc::from(text.as_bytes());
+    let mut contents = pl_core::chat::ChatContents::new();
+    contents.insert(
+        key.clone(),
+        Arc::new(ChatContent {
+            descriptor: ContentDescriptor {
+                key: key.clone(),
+                byte_length: bytes.len() as u64,
+                generation: 1,
+                media_type: None,
+            },
+            data: ContentData::Bytes(bytes),
+        }),
+    );
+    let mut atom = active(
+        "reason",
+        ChatAtomKind::Reasoning,
+        1,
+        pos(1, 0),
+        vec![ChatAtomContent {
+            role: ChatContentRole::ReasoningSummary,
+            reference: ContentRef {
+                database_id: "db".into(),
+                target: ContentTarget::Body {
+                    owner,
+                    key: key.key,
+                },
+            },
+        }],
+    );
+    assert_eq!(
+        completed_thinking_summary(&atom, &contents)
+            .unwrap()
+            .as_deref(),
+        Some("最新摘要")
+    );
+    atom.contents[0].role = ChatContentRole::Body;
+    assert_eq!(
+        completed_thinking_summary(&atom, &Default::default()).unwrap(),
+        None
+    );
+    assert_eq!(
+        thinking_summary_tail("🦀最新".as_bytes().get(1..).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some("最新")
+    );
+    let long = "长".repeat(1024);
+    assert_eq!(
+        thinking_summary_tail(long.as_bytes())
+            .unwrap()
+            .unwrap()
+            .chars()
+            .count(),
+        512
+    );
+}
+
+#[test]
+fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
+    let mut timeline = fold();
+    timeline.published_classification();
+    timeline
+        .complete(
+            terminal(
+                "old-unknown",
+                ChatAtomKind::Unknown,
+                1,
+                pos(1, 0),
+                pos(1, 1),
+                vec![],
+            ),
+            1,
+            None,
+        )
+        .unwrap();
+    timeline
+        .complete(
+            terminal(
+                "work",
+                ChatAtomKind::Reasoning,
+                2,
+                pos(2, 0),
+                pos(2, 1),
+                vec![],
+            ),
+            2,
+            None,
+        )
+        .unwrap();
+    timeline.end_source(&source());
+    timeline.commit_ready().unwrap();
+    let items = timeline.take_committed();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
+    assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
+}
+
+#[test]
+fn foreground_neutral_sources_are_independent_status_boundaries() {
+    for kind in [
+        ChatAtomKind::Raw,
+        ChatAtomKind::Agent,
+        ChatAtomKind::Unknown,
+    ] {
+        let mut timeline = fold();
+        let mut neutral = terminal("neutral", kind, 2, pos(2, 0), pos(3, 0), vec![]);
+        neutral.completion_seq = Some(2);
+        timeline
+            .complete(
+                terminal(
+                    "before",
+                    ChatAtomKind::Reasoning,
+                    1,
+                    pos(1, 0),
+                    pos(1, 1),
+                    vec![],
+                ),
+                1,
+                None,
+            )
+            .unwrap();
+        timeline
+            .observe(&active("neutral", kind, 2, pos(2, 0), vec![]), None)
+            .unwrap();
+        timeline.complete(neutral.clone(), 2, None).unwrap();
+        timeline
+            .complete(
+                terminal(
+                    "after",
+                    ChatAtomKind::ToolCall,
+                    3,
+                    pos(4, 0),
+                    pos(4, 1),
+                    vec![],
+                ),
+                3,
+                None,
+            )
+            .unwrap();
+        timeline.end_source(&source());
+        timeline.commit_ready().unwrap();
+        let items = timeline.take_committed();
+        assert_eq!(
+            items.iter().map(|item| item.kind).collect::<Vec<_>>(),
+            [
+                TimelineItemKind::WorkGroup,
+                TimelineItemKind::Status,
+                TimelineItemKind::WorkGroup
+            ]
+        );
+        assert_eq!(items[1].atom_kind, Some(kind));
+        assert_eq!(items[1].source, neutral.source);
+        assert_eq!(items[1].outcome, Some(ChatTerminalOutcome::Completed));
+        assert_eq!(items[1].content_item_id.as_deref(), Some("neutral"));
+        let update = timeline.take_update().unwrap();
+        assert_eq!(
+            update
+                .members()
+                .iter()
+                .map(|member| member.atom.id.as_str())
+                .collect::<Vec<_>>(),
+            ["before", "after"]
+        );
+    }
+}
+
+#[test]
+fn inference_is_noop_between_work_including_legacy_and_current_entries() {
+    let mut timeline = fold();
+    timeline
+        .complete(
+            terminal(
+                "before",
+                ChatAtomKind::Reasoning,
+                1,
+                pos(1, 0),
+                pos(1, 1),
+                vec![],
+            ),
+            1,
+            None,
+        )
+        .unwrap();
+    let diagnostic = active("diagnostic", ChatAtomKind::Inference, 2, pos(2, 0), vec![]);
+    timeline.observe(&diagnostic, None).unwrap();
+    timeline.refresh_current(&diagnostic, None).unwrap();
+    let done = terminal(
+        "diagnostic",
+        ChatAtomKind::Inference,
+        2,
+        pos(2, 0),
+        pos(2, 1),
+        vec![],
+    );
+    timeline.admit_legacy_header(&done).unwrap();
+    timeline.complete(done, 2, None).unwrap();
+    timeline
+        .complete(
+            terminal(
+                "after",
+                ChatAtomKind::ToolCall,
+                3,
+                pos(3, 0),
+                pos(3, 1),
+                vec![],
+            ),
+            3,
+            None,
+        )
+        .unwrap();
+    timeline.end_source(&source());
+    timeline.commit_ready().unwrap();
+    let items = timeline.take_committed();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
+    assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
+    let update = timeline.take_update().unwrap();
+    assert_eq!(
+        update
+            .members()
+            .iter()
+            .map(|member| member.atom.id.as_str())
+            .collect::<Vec<_>>(),
+        ["before", "after"]
+    );
+    assert!(update.facts().iter().all(|atom| atom.id != "diagnostic"));
+}
+
 #[test]
 fn terminal_text_freezes_its_authoritative_channel() {
     let mut timeline = fold();
@@ -220,7 +696,7 @@ fn mutable_projection_retention_tracks_fold_restore_and_drains() {
     timeline.observe(&started, None).unwrap();
     let first = assert_projection_retention(&timeline);
     timeline.observe(&started, None).unwrap();
-    timeline.refresh_current(&started).unwrap();
+    timeline.refresh_current(&started, None).unwrap();
     assert_eq!(assert_projection_retention(&timeline), first);
     let mut waiting = started.clone();
     waiting.lifecycle = ChatAtomLifecycle::Active {
@@ -230,7 +706,7 @@ fn mutable_projection_retention_tracks_fold_restore_and_drains() {
     waiting.contents = content();
     timeline.observe(&waiting, None).unwrap();
     assert_projection_retention(&timeline);
-    timeline.refresh_current(&started).unwrap();
+    timeline.refresh_current(&started, None).unwrap();
     assert_projection_retention(&timeline);
     let update = timeline.take_update().unwrap();
     assert_projection_retention(&timeline);

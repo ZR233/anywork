@@ -132,10 +132,11 @@ void main() {
       try {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _until(
-          tester,
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'question-history read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       } finally {
         tester.testTextInput.unregister();
@@ -583,7 +584,7 @@ Future<ChatItemPresentation> _questionReceipt(
       : null;
   final reason =
       'Known small question fixture requires Inline/current business '
-      'presentation within the original frame budget: id=${status.id}, '
+      'presentation within the original frame =${status.id}, '
       'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
       'Over-budget payloads may remain Deferred in the product.';
   expect(payload is InlinePayload, isTrue, reason: reason);

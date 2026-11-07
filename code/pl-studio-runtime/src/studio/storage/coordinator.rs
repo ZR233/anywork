@@ -282,8 +282,9 @@ impl ThreadPersistenceCoordinator {
                 threads.get(thread_id).is_none_or(|status| status
                     .incarnations
                     .values()
-                    .all(|incarnation| !incarnation.is_live() && incarnation.settled())
-                    && status.channel.is_clean()
+                    .all(|incarnation| !incarnation.is_live()
+                        && (incarnation.settled() || status.channel.deletion_joined()))
+                    && (status.channel.is_clean() || status.channel.deletion_joined())
                     && !status.channel.has_delivery_bytes()),
                 "deleted Thread still has a live writer or reliable delivery responsibility"
             );

@@ -10985,7 +10985,10 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatAtomKind {
             8 => crate::api::studio::types::chat::BridgeChatAtomKind::Compaction,
             9 => crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt,
             10 => crate::api::studio::types::chat::BridgeChatAtomKind::Receipt,
-            11 => crate::api::studio::types::chat::BridgeChatAtomKind::Unknown,
+            11 => crate::api::studio::types::chat::BridgeChatAtomKind::Raw,
+            12 => crate::api::studio::types::chat::BridgeChatAtomKind::Agent,
+            13 => crate::api::studio::types::chat::BridgeChatAtomKind::Inference,
+            14 => crate::api::studio::types::chat::BridgeChatAtomKind::Unknown,
             _ => unreachable!("Invalid variant for BridgeChatAtomKind: {}", inner),
         };
     }
@@ -18139,6 +18142,7 @@ impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineCategoryCo
 impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_latestThinkingSummary = <Option<String>>::sse_decode(deserializer);
         let mut var_memberCount = <u32>::sse_decode(deserializer);
         let mut var_activeCount = <u32>::sse_decode(deserializer);
         let mut var_failedCount = <u32>::sse_decode(deserializer);
@@ -18149,6 +18153,7 @@ impl SseDecode for crate::api::studio::types::timeline::BridgeTimelineGroupSumma
         let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
         return crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
+            latest_thinking_summary: var_latestThinkingSummary,
             member_count: var_memberCount,
             active_count: var_activeCount,
             failed_count: var_failedCount,
@@ -27369,7 +27374,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCh
             Self::Compaction => 8.into_dart(),
             Self::TurnReceipt => 9.into_dart(),
             Self::Receipt => 10.into_dart(),
-            Self::Unknown => 11.into_dart(),
+            Self::Raw => 11.into_dart(),
+            Self::Agent => 12.into_dart(),
+            Self::Inference => 13.into_dart(),
+            Self::Unknown => 14.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -35992,6 +36000,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.latest_thinking_summary.into_into_dart().into_dart(),
             self.member_count.into_into_dart().into_dart(),
             self.active_count.into_into_dart().into_dart(),
             self.failed_count.into_into_dart().into_dart(),
@@ -41625,7 +41634,10 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatAtomKind {
                 crate::api::studio::types::chat::BridgeChatAtomKind::Compaction => 8,
                 crate::api::studio::types::chat::BridgeChatAtomKind::TurnReceipt => 9,
                 crate::api::studio::types::chat::BridgeChatAtomKind::Receipt => 10,
-                crate::api::studio::types::chat::BridgeChatAtomKind::Unknown => 11,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Raw => 11,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Agent => 12,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Inference => 13,
+                crate::api::studio::types::chat::BridgeChatAtomKind::Unknown => 14,
                 _ => {
                     unimplemented!("");
                 }
@@ -47095,6 +47107,7 @@ impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineCategoryCo
 impl SseEncode for crate::api::studio::types::timeline::BridgeTimelineGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.latest_thinking_summary, serializer);
         <u32>::sse_encode(self.member_count, serializer);
         <u32>::sse_encode(self.active_count, serializer);
         <u32>::sse_encode(self.failed_count, serializer);

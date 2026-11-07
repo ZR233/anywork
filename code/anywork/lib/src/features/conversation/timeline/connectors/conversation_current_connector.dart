@@ -42,7 +42,7 @@ class ConversationCurrentConnector extends StatefulWidget {
   });
   final CurrentProjection current;
   final ConversationContent content;
-  final ConversationActivityView view;
+  final ConversationActivityView? view;
   final ValueListenable<List<TimelineDisplayUnit>> units;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String) readAttachment;
@@ -120,12 +120,15 @@ class _CurrentState extends State<ConversationCurrentConnector>
     final units = isCurrent
         ? widget.units.value
         : const <TimelineDisplayUnit>[];
+    final view = widget.view;
+    if (units.isEmpty && view == null) return const SizedBox.shrink();
     return ConversationActivityBar(
       children: [
-        if (units.isEmpty ||
-            widget.view.kind == ConversationActivityKind.storageBlocked ||
-            widget.view.kind == ConversationActivityKind.stopping)
-          ConversationActivityStatus(view: widget.view),
+        if (view != null &&
+            (units.isEmpty ||
+                view.kind == ConversationActivityKind.storageBlocked ||
+                view.kind == ConversationActivityKind.stopping))
+          ConversationActivityStatus(view: view),
         for (final unit in units)
           KeyedSubtree(
             key: ValueKey(unit.id),
@@ -284,7 +287,7 @@ class _CurrentItemState extends State<_CurrentItem> {
         child: _buildContent(context),
       );
     }
-    return _buildContent(context);
+    return SingleChildScrollView(primary: false, child: _buildContent(context));
   }
 
   Widget _buildContent(BuildContext context) {
@@ -354,33 +357,28 @@ class _CurrentItemState extends State<_CurrentItem> {
     }
     return ListenableBuilder(
       listenable: body,
-      builder: (_, _) {
-        final windows = Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (body.cleanupError != null) Text(body.cleanupError.toString()),
-            for (final window in body.windows)
-              ConversationCurrentWindowView(
-                id: window.id,
-                text: window.window == null
-                    ? window.source.text
-                    : utf8.decode(window.window!.bytes, allowMalformed: true),
-                error: window.error,
-                offset: window.window?.offset,
-                end: window.window == null
-                    ? null
-                    : window.window!.offset + window.window!.bytes.length,
-                availableThrough: window.window?.availableThrough,
-                onFirst: () => body.firstWindow(window),
-                onNext: () => body.nextWindow(window),
-              ),
-          ],
-        );
-        return item.kind == TimelineItemKind.text
-            ? windows
-            : SingleChildScrollView(primary: false, child: windows);
-      },
+      builder: (_, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (body.cleanupError != null) Text(body.cleanupError.toString()),
+          for (final window in body.windows)
+            ConversationCurrentWindowView(
+              id: window.id,
+              text: window.window == null
+                  ? window.source.text
+                  : utf8.decode(window.window!.bytes, allowMalformed: true),
+              error: window.error,
+              offset: window.window?.offset,
+              end: window.window == null
+                  ? null
+                  : window.window!.offset + window.window!.bytes.length,
+              availableThrough: window.window?.availableThrough,
+              onFirst: () => body.firstWindow(window),
+              onNext: () => body.nextWindow(window),
+            ),
+        ],
+      ),
     );
   }
 }

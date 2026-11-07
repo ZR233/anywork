@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -139,10 +138,11 @@ void main() {
       try {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _until(
-          tester,
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'timeline read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       } finally {
         tester.testTextInput.unregister();
@@ -190,8 +190,6 @@ Future<void> _runLive(
   try {
     await seedConsumption.readMany(
       loadOlder: () => scene.loadOlder(seedConsumption.lease),
-      prepareMemberRead: (remaining) =>
-          scene.prepareMemberRead(seedConsumption.lease, remaining),
       pump: () async {
         await scene.tester.pump(const Duration(milliseconds: 16));
         expect(scene.tester.takeException(), isNull);
@@ -608,64 +606,6 @@ final class _TimelineScene {
     return consumption!;
   }
 
-  Future<int> prepareMemberRead(
-    TimelineDisplayLease original,
-    Duration remaining,
-  ) async {
-    final clock = Stopwatch()..start();
-    var retired = 0;
-    debugPrintSynchronously(
-      'timeline member reader handoff: ${jsonEncode({
-        'threadId': original.threadId,
-        'generation': original.generation,
-        'expandedGroups': original.groupDisplays.where((display) => display.expanded).map((display) => display.unitId).toList(),
-        'handles': [
-          for (final usage in graph.client.budget.usage)
-            if (usage.kind == ResourceKind.chatHandle) {'owner': usage.owner, 'phase': usage.phase.name},
-        ],
-      })}',
-    );
-    while (true) {
-      if (clock.elapsed >= remaining) {
-        throw TimeoutException('Original timeline member handoff deadline');
-      }
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(tester.takeException(), isNull);
-      expect(lease, same(original));
-      expect(original.isMounted, isTrue);
-      expect(original.isRetired, isFalse);
-      final expanded = original.groupDisplays
-          .where((display) => display.expanded)
-          .toList();
-      if (expanded.isEmpty) {
-        if (graph.client.budget.used(ResourceKind.chatHandle) == 1) {
-          return retired;
-        }
-      }
-      for (final display in expanded) {
-        if (!display.isCurrent || !display.expanded) continue;
-        // Use the mounted consumer's own disclosure, including an offstage
-        // body whose header is not currently painted. Its original production
-        // listener revokes reading; only actual cleanup releases the permit.
-        final member = find.byElementPredicate(
-          (element) =>
-              element is StatefulElement && identical(element.state, display),
-          skipOffstage: false,
-        );
-        if (member.evaluate().length != 1) continue;
-        final disclosure = tester
-            .element(member)
-            .findAncestorWidgetOfExactType<Expansible>();
-        expect(disclosure, isNotNull);
-        final controller = disclosure!.controller;
-        if (controller.isExpanded) {
-          controller.collapse();
-          retired += 1;
-        }
-      }
-    }
-  }
-
   Future<_StreamingTurn> waitForStreamingTurn({String? after}) async {
     _StreamingTurn? streaming;
     await until(
@@ -815,30 +755,39 @@ final class _TimelineScene {
             !paragraph.text.toPlainText().startsWith(prefix)) {
           return false;
         }
-        // The fixture is plain text. Require a real glyph from its accepted
-        // prefix, clipped by the production current scroll view and ancestors.
-        for (final box in paragraph.getBoxesForSelection(
-          TextSelection(baseOffset: glyphOffset, extentOffset: glyphOffset + 1),
-        )) {
-          var visible = MatrixUtils.transformRect(
-            paragraph.getTransformTo(surface),
-            box.toRect(),
-          ).intersect(Offset.zero & surface.size);
-          RenderObject child = paragraph;
-          while (!identical(child, surface)) {
-            final parent = child.parent;
-            if (parent == null || !parent.attached) return false;
-            final clip = parent.describeApproximatePaintClip(child);
-            if (clip != null) {
-              visible = visible.intersect(
-                MatrixUtils.transformRect(parent.getTransformTo(surface), clip),
-              );
+        // The production viewport follows growing output. Require a real glyph
+        // at the start or tail of this accepted body, clipped by its actual
+        // scroll view and ancestors; the first glyph need not stay on screen.
+        final tailGlyph = paragraph.text.toPlainText().lastIndexOf(
+          RegExp(r'\S'),
+        );
+        for (final offset in {glyphOffset, tailGlyph}) {
+          for (final box in paragraph.getBoxesForSelection(
+            TextSelection(baseOffset: offset, extentOffset: offset + 1),
+          )) {
+            var visible = MatrixUtils.transformRect(
+              paragraph.getTransformTo(surface),
+              box.toRect(),
+            ).intersect(Offset.zero & surface.size);
+            RenderObject child = paragraph;
+            while (!identical(child, surface)) {
+              final parent = child.parent;
+              if (parent == null || !parent.attached) return false;
+              final clip = parent.describeApproximatePaintClip(child);
+              if (clip != null) {
+                visible = visible.intersect(
+                  MatrixUtils.transformRect(
+                    parent.getTransformTo(surface),
+                    clip,
+                  ),
+                );
+              }
+              child = parent;
             }
-            child = parent;
-          }
-          if (visible.isFinite && !visible.isEmpty) {
-            visibleGlyphBounds = visible;
-            return true;
+            if (visible.isFinite && !visible.isEmpty) {
+              visibleGlyphBounds = visible;
+              return true;
+            }
           }
         }
         return false;
@@ -1012,20 +961,5 @@ final class _TimelineScene {
       'fresh timeline display after route return',
     );
     expect(before.isReleased, isTrue);
-  }
-}
-
-Future<void> _until(
-  WidgetTester tester,
-  bool Function() ready,
-  String description,
-) async {
-  final clock = Stopwatch()..start();
-  while (!ready()) {
-    if (clock.elapsed >= const Duration(seconds: 60)) {
-      fail('Timed out waiting for $description');
-    }
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.takeException(), isNull);
   }
 }

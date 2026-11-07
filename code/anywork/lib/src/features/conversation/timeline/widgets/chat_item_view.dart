@@ -176,10 +176,10 @@ class _ChatItemViewState extends State<ChatItemView> {
     } on FormatException catch (error) {
       content = _unavailable('内容格式错误', error.message);
     }
-    return ConstrainedBox(
+    return Material(
       key: ValueKey('chat-item:${item.id}'),
-      constraints: const BoxConstraints(minHeight: 28),
-      child: Material(type: MaterialType.transparency, child: content),
+      type: MaterialType.transparency,
+      child: content,
     );
   }
 

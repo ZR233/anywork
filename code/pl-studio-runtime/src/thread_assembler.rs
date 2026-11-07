@@ -37,6 +37,13 @@ pub use child_resources::WorkspacePreparationOwner;
 mod children;
 mod close_storage;
 use close_storage::CloseStorage;
+
+/// Deletion releases the same owners without creating a final preservation obligation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClosePurpose {
+    Preserve,
+    Delete,
+}
 mod published_resources;
 mod report_receiver;
 pub use children::{
@@ -868,26 +875,66 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Propagates resource cleanup or concurrent preparation failures without removing the owner.
     pub async fn close_tree(&self, root: &str) -> Result<(), ThreadAssemblyError> {
+        self.close_tree_with_purpose(root, &[], ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn close_tree_for_deletion(
+        &self,
+        root: &str,
+        members: &[crate::studio::store::thread_preparation::PreparationIdentity],
+    ) -> Result<(), ThreadAssemblyError> {
+        self.close_tree_with_purpose(root, members, ClosePurpose::Delete)
+            .await
+    }
+
+    pub(crate) fn prepare_deletion(&self, ids: &[String]) {
+        for id in ids {
+            self.begin_operation_close(id, ClosePurpose::Delete);
+            if let Some(thread) = self.observed_thread(id) {
+                drop(self.prepare_close_for_purpose(id, &thread, ClosePurpose::Delete));
+            }
+        }
+    }
+
+    async fn close_tree_with_purpose(
+        &self,
+        root: &str,
+        members: &[crate::studio::store::thread_preparation::PreparationIdentity],
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         let root_operation = self.agent_operation(root).await;
         let mut targets = {
             let state = self.0.state();
             let mut targets = Vec::new();
-            for id in state.entries.keys() {
-                let mut cursor = Some(id.as_str());
+            let identities = state
+                .entries
+                .keys()
+                .map(String::as_str)
+                .chain(members.iter().map(|member| member.thread_id.as_str()))
+                .collect::<BTreeSet<_>>();
+            for id in identities {
+                let mut cursor = Some(id);
                 let mut depth = 0;
                 while let Some(current) = cursor {
                     if current == root {
-                        targets.push((depth, id.clone()));
+                        targets.push((depth, id.to_owned()));
                         break;
                     }
                     depth += 1;
-                    if depth > state.entries.len() {
-                        return Err(ThreadAssemblyError::Identity(id.clone()));
+                    if depth > state.entries.len() + members.len() {
+                        return Err(ThreadAssemblyError::Identity(id.to_owned()));
                     }
                     cursor = state
                         .entries
                         .get(current)
-                        .and_then(|entry| entry.parent_id.as_deref());
+                        .and_then(|entry| entry.parent_id.as_deref())
+                        .or_else(|| {
+                            members
+                                .iter()
+                                .find(|member| member.thread_id == current)
+                                .and_then(|member| member.parent_id.as_deref())
+                        });
                 }
             }
             targets
@@ -916,12 +963,13 @@ impl StudioThreadAssembler {
                 .collect::<Vec<_>>()
         };
         for (id, owner) in owners {
-            drop(self.prepare_close(&id, &owner));
+            self.begin_operation_close(&id, purpose);
+            drop(self.prepare_close_for_purpose(&id, &owner, purpose));
         }
         for (_, id) in targets {
-            self.close(&id).await?;
+            self.close_for_purpose(&id, purpose).await?;
         }
-        self.close(root).await
+        self.close_for_purpose(root, purpose).await
     }
 
     /// Closes an owner, including failed unpublished assembly, while retaining failed closes for retry.
@@ -929,12 +977,22 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.close_for_purpose(id, ClosePurpose::Preserve).await
+    }
+
+    async fn close_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
+        self.begin_operation_close(id, purpose);
         if let Some((_, thread)) = self.admit_thread_close(id)? {
-            drop(self.prepare_close(id, &thread));
+            drop(self.prepare_close_for_purpose(id, &thread, purpose));
         }
         let operation = self.agent_operation(id).await;
-        self.close_with_permit(id, operation).await
+        self.close_with_permit_for_purpose(id, operation, purpose)
+            .await
     }
 
     /// The caller retains this identity's operation permit, including cold close restoration.
@@ -943,19 +1001,31 @@ impl StudioThreadAssembler {
         id: &str,
         operation: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<(), ThreadAssemblyError> {
+        self.close_with_permit_for_purpose(id, operation, ClosePurpose::Preserve)
+            .await
+    }
+
+    async fn close_with_permit_for_purpose(
+        &self,
+        id: &str,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
         // Signal the actual owner before a retained collaboration producer can
         // wait for its projection. close_thread awaits the original cleanup.
         if let Some((_, thread)) = self.admit_thread_close(id)? {
-            drop(self.prepare_close(id, &thread));
+            drop(self.prepare_close_for_purpose(id, &thread, purpose));
         }
         drop(operation);
-        self.retry_failed_review_deliveries(id)
-            .await
-            .map_err(|source| ThreadAssemblyError::Resource {
-                operation: "recover failed terminal review producer",
-                source: source.into(),
-            })?;
+        if purpose == ClosePurpose::Preserve {
+            self.retry_failed_review_deliveries(id)
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "recover failed terminal review producer",
+                    source: source.into(),
+                })?;
+        }
         self.join_root_operations(id)
             .await
             .map_err(|source| ThreadAssemblyError::Resource {
@@ -963,7 +1033,8 @@ impl StudioThreadAssembler {
                 source: source.into(),
             })?;
         let operation = self.agent_operation(id).await;
-        self.close_thread(id, operation).await?;
+        self.close_thread_for_purpose(id, operation, purpose)
+            .await?;
         self.discard_unpublished_child(id).await
     }
 
@@ -1019,10 +1090,11 @@ impl StudioThreadAssembler {
         }))
     }
 
-    async fn close_thread(
+    async fn close_thread_for_purpose(
         &self,
         id: &str,
         operation: tokio::sync::OwnedMutexGuard<()>,
+        purpose: ClosePurpose,
     ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
         loop {
@@ -1063,12 +1135,13 @@ impl StudioThreadAssembler {
         let Some((incarnation, thread)) = thread else {
             return Ok(());
         };
-        self.attach_close_storage(id).await?;
-        self.prepare_close(id, &thread).await?;
+        self.attach_close_storage_for_purpose(id, purpose).await?;
+        self.prepare_close_for_purpose(id, &thread, purpose).await?;
         // Pause queued execution and let the admitted execution settle while application CAS is
         // still available. A terminal producer must be able to save its diagnostic before this
         // core/writer is retired; closing the core first would force it to recreate its own source.
-        if thread.snapshot().lifecycle == ThreadLifecycle::Open {
+        if purpose == ClosePurpose::Preserve && thread.snapshot().lifecycle == ThreadLifecycle::Open
+        {
             thread.interrupt_turn(None).await?;
             let mut updates = thread.subscribe();
             while thread.snapshot().execution.is_some() {
@@ -1077,7 +1150,7 @@ impl StudioThreadAssembler {
                 }
             }
         }
-        if self.0.state().observation.is_some() {
+        if purpose == ClosePurpose::Preserve && self.0.state().observation.is_some() {
             self.synchronize_observation(id).await?;
         }
         drop(operation);
@@ -1095,9 +1168,16 @@ impl StudioThreadAssembler {
             .get(id)
             .is_some_and(|entry| !Arc::ptr_eq(&entry.incarnation, &incarnation))
         {
-            return Box::pin(self.close_thread(id, operation)).await;
+            return Box::pin(self.close_thread_for_purpose(id, operation, purpose)).await;
         }
-        if self.close_storage_binding(id)?.is_some() {
+        if purpose == ClosePurpose::Delete {
+            match thread.close_for_deletion().await {
+                Ok(()) => {}
+                Err(ThreadError::Closed)
+                    if thread.snapshot().lifecycle == ThreadLifecycle::Closed => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else if self.close_storage_binding(id)?.is_some() {
             self.close_storage_core(id).await?;
         } else {
             match thread.close().await {
@@ -1110,7 +1190,7 @@ impl StudioThreadAssembler {
                 Err(error) => return Err(error.into()),
             }
         }
-        if self.0.state().observation.is_some() {
+        if purpose == ClosePurpose::Preserve && self.0.state().observation.is_some() {
             self.synchronize_observation(id).await?;
         }
         // Core shutdown can itself publish a terminal. Its producer is registered before the
@@ -1130,13 +1210,14 @@ impl StudioThreadAssembler {
             .get(id)
             .is_some_and(|entry| !Arc::ptr_eq(&entry.incarnation, &incarnation))
         {
-            return Box::pin(self.close_thread(id, operation)).await;
+            return Box::pin(self.close_thread_for_purpose(id, operation, purpose)).await;
         }
-        self.drain_observation(id).await?;
-        self.join_close_storage(id).await?;
+        self.drain_observation_for_purpose(id, purpose).await?;
+        self.join_close_storage_for_purpose(id, purpose).await?;
         self.close_published_resources(id, &incarnation).await?;
         let retired = !self.0.state().unpublished_children.contains_key(id);
-        self.confirm_preparation_close(id, retired).await?;
+        self.confirm_preparation_close_for_purpose(id, retired, purpose)
+            .await?;
         let removed = {
             let mut state = self.0.state();
             if state

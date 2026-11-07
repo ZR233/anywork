@@ -227,7 +227,6 @@ void main() {
       );
       final reading = client.readAttachmentBytes('thread', 'attachment');
       await transport.entered.future;
-      expect(client.budget.used(ResourceKind.pendingOperation), 1);
       final closing = client.close(deadline: DateTime.utc(2000));
       expect(
         identical(closing, client.close(deadline: DateTime.utc(2100))),
@@ -235,7 +234,6 @@ void main() {
       );
       final report = await closing;
       expect(report.unresolved.any((item) => item.owner == 'queries'), isTrue);
-      expect(client.budget.used(ResourceKind.pendingOperation), 1);
       await expectLater(
         client.readAttachmentBytes('thread', 'late'),
         throwsStateError,
@@ -244,7 +242,6 @@ void main() {
       transport.reply.complete(Uint8List.fromList([7]));
       expect(await reading, [7]);
       expect((await client.retryCleanup()).complete, isTrue);
-      expect(client.budget.usage, isEmpty);
     },
   );
 }

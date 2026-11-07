@@ -48,18 +48,17 @@ class TimelineMarkdown extends StatelessWidget {
     if (maxLines == null && !timelineNeedsSafeMarkdown(text)) {
       return TimelinePlainText(id: id, text: text, style: textStyle);
     }
-    final explicitTheme = context
-        .dependOnInheritedWidgetOfExactType<GptMarkdownTheme>()
-        ?.gptThemeData;
     TextStyle heading(double size) => textStyle!.copyWith(
       color: context.colors.onSurface,
       fontSize: size,
       fontWeight: FontWeight.w600,
       height: 1.48,
     );
+    final scopedTheme = context
+        .dependOnInheritedWidgetOfExactType<GptMarkdownTheme>();
     return GptMarkdownTheme(
       gptThemeData:
-          explicitTheme ??
+          scopedTheme?.gptThemeData ??
           GptMarkdownTheme.of(context).copyWith(
             h1: heading(20),
             h2: heading(17),

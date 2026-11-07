@@ -46,22 +46,24 @@ impl LiveProjection {
             .clone()
             .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
         let saved = history
-            .conversation_current()
+            .conversation_current_seed()
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.provenance_restored = true;
         let Some(saved) = saved else {
             return Ok(());
         };
-        if saved.atoms.len() > LIVE_ITEM_WINDOW || saved.sources.len() > LIVE_ITEM_WINDOW {
+        if saved.projection.atoms.len() > LIVE_ITEM_WINDOW
+            || saved.projection.sources.len() > LIVE_ITEM_WINDOW
+        {
             return Err(ProjectionError::History(
                 "saved current provenance exceeds retained window".into(),
             ));
         }
-        for source in saved.sources {
+        for source in saved.projection.sources.iter().cloned() {
             self.source_states.insert(source.source.clone(), source);
         }
-        for atom in saved.atoms {
+        for atom in saved.projection.atoms.iter().cloned() {
             if !matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
                 || atom.payload.is_some()
                 || atom.completion_seq.is_some()
@@ -183,6 +185,16 @@ impl LiveProjection {
                 }
                 let text = String::from_utf8(bytes)
                     .map_err(|error| ProjectionError::History(error.to_string()))?;
+                let saved_body = saved.contents.get(&content_key).ok_or_else(|| {
+                    ProjectionError::History("saved active body has no reliable descriptor".into())
+                })?;
+                if Some(saved_body.descriptor.generation) != generation
+                    || saved_body.descriptor.byte_length != text.len() as u64
+                {
+                    return Err(ProjectionError::History(
+                        "restored active body differs from its saved descriptor".into(),
+                    ));
+                }
                 self.current
                     .restore_generation(
                         content_key,
@@ -236,7 +248,7 @@ impl LiveProjection {
             let orders = index
                 .materialize_execution_batch(
                     std::iter::once(ExecutionMaterialization::from_item(&item)),
-                    saved.source_effect_seq,
+                    saved.projection.source_effect_seq,
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             item.ordinal = orders[&item.id];
@@ -262,8 +274,12 @@ impl LiveProjection {
         // in the original current owner now: completion freezing reads item_contents before the
         // next effect freezes current, and must see these exact generations and content owners.
         let active = self.current_texts();
+        let snapshot = self
+            .current
+            .observe(thread, state, saved.projection.source_effect_seq, active)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.current
-            .observe(thread, state, saved.source_effect_seq, active)
+            .restore_prepared(saved, &snapshot)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         Ok(())
     }

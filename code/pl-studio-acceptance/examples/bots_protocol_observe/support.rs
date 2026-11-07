@@ -371,6 +371,9 @@ pub(crate) async fn completed_atom_payload(
                 ChatAtomKind::Plan => payload_kind == Some("plan"),
                 ChatAtomKind::Compaction => payload_kind == Some("contextCompaction"),
                 ChatAtomKind::TurnReceipt => payload_kind == Some("turn"),
+                ChatAtomKind::Raw => payload_kind == Some("raw"),
+                ChatAtomKind::Agent => payload_kind == Some("agent"),
+                ChatAtomKind::Inference => payload_kind == Some("inference"),
                 ChatAtomKind::Receipt | ChatAtomKind::Unknown => true,
             };
             ensure!(

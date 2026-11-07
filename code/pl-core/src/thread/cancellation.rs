@@ -6,12 +6,13 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct InterruptHandle {
     state: Arc<Mutex<InterruptState>>,
     shutdown: CancellationToken,
+    deletion: CancellationToken,
 }
 
 #[derive(Debug, Default)]
 struct InterruptState {
     active: Option<CancellationToken>,
-    closing: bool,
+    closing: Option<super::owner::ClosePurpose>,
     /// Monotonic count of stop requests issued against this Thread.
     ///
     /// A replacement cancels the preparing generation itself and remembers the count it produced, so
@@ -39,7 +40,7 @@ impl InterruptHandle {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.closing
+            if state.closing.is_some()
                 || self.shutdown.is_cancelled()
                 || authorized_stops.is_some_and(|authorized| authorized != state.stops)
             {
@@ -53,11 +54,41 @@ impl InterruptHandle {
         }
     }
     pub(super) fn begin_close(&self) {
+        self.begin_close_with_purpose(super::owner::ClosePurpose::Preserve);
+    }
+
+    pub(super) fn begin_delete(&self) {
+        self.begin_close_with_purpose(super::owner::ClosePurpose::Delete);
+    }
+
+    fn begin_close_with_purpose(&self, purpose: super::owner::ClosePurpose) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Deletion stays sealed even if a last-handle drop or an older preserving waiter
+            // reaches this same cancellation boundary while resource cleanup is being retried.
+            if state.closing != Some(super::owner::ClosePurpose::Delete) {
+                state.closing = Some(purpose);
+            }
+        }
+        if purpose == super::owner::ClosePurpose::Delete {
+            self.deletion.cancel();
+        }
+        self.request_shutdown();
+    }
+
+    pub(super) fn is_deleting(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .closing = true;
-        self.request_shutdown();
+            .closing
+            == Some(super::owner::ClosePurpose::Delete)
+    }
+
+    pub(super) fn deletion_token(&self) -> CancellationToken {
+        self.deletion.clone()
     }
 
     pub(super) fn request_shutdown(&self) {
@@ -78,6 +109,7 @@ impl InterruptHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closing
+            .is_some()
     }
 
     /// Snapshot of the resident generation's token, if one is active.

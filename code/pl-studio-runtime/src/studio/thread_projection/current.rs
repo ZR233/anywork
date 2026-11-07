@@ -2,7 +2,8 @@
 
 use super::FrozenCurrentProjection;
 use crate::studio::storage::history::conversation::current::{
-    CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, PreparedCurrent,
+    CurrentContentOperation, CurrentContentRetirement, CurrentContentState, CurrentContentWrite,
+    CurrentEntryChange, CurrentEntryWrite, PreparedCurrent, SavedCurrent, references,
 };
 use crate::studio::{
     conversation_identity::content_owner_key,
@@ -76,16 +77,143 @@ pub(super) struct CurrentOwner {
     plan_extension_revision: Option<u64>,
     next_position: i64,
     prepared_collections: BTreeMap<String, PreparedCollection>,
+    /// Last successfully frozen reliable cut. Observation and database ACK never advance it.
+    prepared_contents: BTreeMap<ChatContentKey, PreparedBody>,
+    prepared_references: BTreeSet<PreparedReference>,
     sources: Arc<[ChatSourceState]>,
     atoms: Vec<ChatAtom>,
     restored_generations: BTreeMap<ChatContentKey, u64>,
 }
 struct PreparedCollection {
     revision: u64,
-    ids: BTreeSet<String>,
+    /// Cold activation knows the saved revision, not a second copy of every collection row.
+    /// On its first changed revision, explicitly clear this exact collection before putting rows.
+    ids: Option<BTreeSet<String>>,
+}
+
+#[derive(Clone)]
+struct PreparedBody {
+    descriptor: ContentDescriptor,
+    content: Option<Arc<CurrentContent>>,
+    sealed: bool,
+}
+
+impl PreparedBody {
+    fn operation(&self, content: &CurrentContent, sealed: bool) -> Result<CurrentContentOperation> {
+        let expected = CurrentContentState::new(&self.descriptor, self.sealed);
+        let Some(previous) = &self.content else {
+            return Ok(CurrentContentOperation::Takeover(expected));
+        };
+        let incoming = &content.descriptor;
+        ensure!(
+            !self.sealed,
+            pl_core::chat::ChatError::Conflict("sealed prepared content changed".into())
+        );
+        if incoming.generation > self.descriptor.generation {
+            return Ok(CurrentContentOperation::Replace(expected));
+        }
+        ensure!(
+            incoming.generation == self.descriptor.generation
+                && incoming.media_type == self.descriptor.media_type
+                && incoming.byte_length >= self.descriptor.byte_length
+                && (Arc::ptr_eq(&previous.block, &content.block)
+                    || ContentBlock::appended_since(&content.block, &previous.block).is_some()),
+            pl_core::chat::ChatError::Conflict(
+                "prepared content does not extend its reliable shared prefix".into()
+            )
+        );
+        if incoming.byte_length > self.descriptor.byte_length {
+            Ok(CurrentContentOperation::Append(expected))
+        } else {
+            ensure!(sealed, "unchanged prepared content has no seal transition");
+            Ok(CurrentContentOperation::Seal(expected))
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum PreparedReference {
+    ItemPayload(String),
+    Body(ChatContentKey),
+}
+
+impl PreparedReference {
+    fn new(reference: &ContentRef) -> Result<Self> {
+        Ok(match &reference.target {
+            ContentTarget::ItemPayload { item_id } => Self::ItemPayload(item_id.clone()),
+            ContentTarget::Body { owner, key } => Self::Body(ChatContentKey {
+                owner: content_owner_key(owner)?,
+                key: key.clone(),
+            }),
+        })
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::ItemPayload(id) => (id.len() as u64).saturating_add(128),
+            Self::Body(key) => (key.owner.as_str().len() as u64)
+                .saturating_add(key.key.len() as u64)
+                .saturating_add(128),
+        }
+    }
 }
 
 impl CurrentOwner {
+    /// Install only the admitted durable seed and validated restored blocks, never an arbitrary
+    /// observe result. A missing restored body remains metadata until its exact retirement.
+    pub(super) fn restore_prepared(
+        &mut self,
+        saved: SavedCurrent,
+        snapshot: &CurrentState,
+    ) -> Result<()> {
+        ensure!(
+            self.prepared_contents.is_empty()
+                && self.prepared_references.is_empty()
+                && self.prepared_collections.is_empty(),
+            "current reliable baseline was already established"
+        );
+        let qualified = references(&saved.projection)
+            .map(PreparedReference::new)
+            .collect::<Result<BTreeSet<_>>>()?;
+        let contents = saved
+            .contents
+            .into_iter()
+            .map(|(key, saved)| {
+                let content = snapshot
+                    .contents
+                    .get(&key)
+                    .filter(|content| content.descriptor == saved.descriptor)
+                    .cloned();
+                (
+                    key,
+                    PreparedBody {
+                        descriptor: saved.descriptor,
+                        content,
+                        sealed: saved.sealed,
+                    },
+                )
+            })
+            .collect();
+        self.prepared_contents = contents;
+        self.prepared_references = qualified;
+        self.prepared_collections = saved
+            .projection
+            .collections
+            .iter()
+            .chain(saved.projection.interactions.iter())
+            .map(|reference| {
+                (
+                    reference.collection.clone(),
+                    PreparedCollection {
+                        revision: reference.revision,
+                        ids: None,
+                    },
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
     pub(super) fn restore_generation(
         &mut self,
         key: ChatContentKey,
@@ -111,6 +239,7 @@ impl CurrentOwner {
     pub(super) fn retained_bytes(&self) -> u64 {
         self.activity
             .retained_bytes()
+            .saturating_add(128) // Reliable baseline containers, even before their first cut.
             .saturating_add(
                 self.restored_generations
                     .keys()
@@ -126,12 +255,36 @@ impl CurrentOwner {
                     .as_ref()
                     .map_or(0, |state| state.metadata_bytes()),
             )
+            .saturating_add(self.prepared_collections.iter().fold(
+                0_u64,
+                |bytes, (name, collection)| {
+                    collection.ids.iter().flatten().fold(
+                        bytes.saturating_add(name.len() as u64).saturating_add(128),
+                        |bytes, id| bytes.saturating_add(id.len() as u64).saturating_add(64),
+                    )
+                },
+            ))
+            .saturating_add(self.prepared_contents.values().fold(0_u64, |bytes, body| {
+                // The original shared ContentBlock is not copied. Charge its newly retained
+                // metadata, key, descriptor and ownership handles conservatively.
+                bytes
+                    .saturating_add(384)
+                    .saturating_add(
+                        (body.descriptor.key.owner.as_str().len() as u64).saturating_mul(2),
+                    )
+                    .saturating_add((body.descriptor.key.key.len() as u64).saturating_mul(2))
+                    .saturating_add(
+                        body.descriptor
+                            .media_type
+                            .as_ref()
+                            .map_or(0, |s| s.len() as u64),
+                    )
+            }))
             .saturating_add(
-                self.prepared_collections
-                    .values()
-                    .flat_map(|collection| &collection.ids)
-                    .map(|id| id.len() as u64 + 64)
-                    .sum::<u64>(),
+                self.prepared_references
+                    .iter()
+                    .map(PreparedReference::retained_bytes)
+                    .fold(0_u64, u64::saturating_add),
             )
     }
     pub(super) fn database_id(&self) -> Option<&str> {
@@ -189,7 +342,22 @@ impl CurrentOwner {
     ) -> Result<(Arc<PreparedCurrent>, Arc<CurrentState>)> {
         let snapshot = self.project(thread, state, sequence, active)?;
         let mut changes = Vec::new();
-        for reference in &snapshot.projection().collections {
+        let collections = snapshot
+            .projection()
+            .collections
+            .iter()
+            .chain(snapshot.projection().interactions.iter())
+            .map(|reference| (reference.collection.as_str(), reference))
+            .collect::<BTreeMap<_, _>>();
+        let mut collection_updates = Vec::new();
+        for name in self.prepared_collections.keys() {
+            if !collections.contains_key(name.as_str()) {
+                changes.push(CurrentEntryChange::Clear {
+                    collection: name.clone(),
+                });
+            }
+        }
+        for reference in collections.values() {
             let previous = self.prepared_collections.get(&reference.collection);
             if previous.is_some_and(|previous| previous.revision == reference.revision) {
                 continue;
@@ -204,13 +372,15 @@ impl CurrentOwner {
                 .iter()
                 .map(|entry| entry.entry_id.clone())
                 .collect::<BTreeSet<_>>();
-            if let Some(previous) = previous {
-                changes.extend(previous.ids.difference(&ids).map(|id| {
-                    CurrentEntryChange::Remove {
-                        collection: reference.collection.clone(),
-                        entry_id: id.clone(),
-                    }
-                }));
+            if let Some(previous) = previous.and_then(|previous| previous.ids.as_ref()) {
+                changes.extend(
+                    previous
+                        .difference(&ids)
+                        .map(|id| CurrentEntryChange::Remove {
+                            collection: reference.collection.clone(),
+                            entry_id: id.clone(),
+                        }),
+                );
             } else {
                 changes.push(CurrentEntryChange::Clear {
                     collection: reference.collection.clone(),
@@ -223,13 +393,13 @@ impl CurrentOwner {
                     .into_iter()
                     .map(|entry| CurrentEntryChange::Put(entry.as_ref().clone())),
             );
-            self.prepared_collections.insert(
+            collection_updates.push((
                 reference.collection.clone(),
                 PreparedCollection {
                     revision: reference.revision,
-                    ids,
+                    ids: Some(ids),
                 },
-            );
+            ));
         }
         let plan_owner = snapshot
             .projection()
@@ -241,22 +411,80 @@ impl CurrentOwner {
                 _ => None,
             })
             .transpose()?;
-        let writes = snapshot
-            .contents
-            .values()
-            .map(|content| CurrentContentWrite {
-                content: content.content(),
-                sealed: plan_owner.as_ref() == Some(&content.descriptor.key.owner),
-            })
-            .collect::<Vec<_>>();
-        Ok((
-            Arc::new(PreparedCurrent::new(
-                snapshot.projection.clone(),
-                changes.into(),
-                writes.into(),
-            )),
-            snapshot,
-        ))
+        let mut qualified = BTreeSet::new();
+        let mut added_references = Vec::new();
+        let mut live_keys = BTreeSet::new();
+        for reference in references(snapshot.projection()) {
+            let identity = PreparedReference::new(reference)?;
+            if let PreparedReference::Body(key) = &identity {
+                live_keys.insert(key.clone());
+            }
+            if !self.prepared_references.contains(&identity) && !qualified.contains(&identity) {
+                added_references.push(reference.clone());
+            }
+            qualified.insert(identity);
+        }
+        let mut writes = Vec::new();
+        let mut operations = Vec::new();
+        let mut contents = BTreeMap::new();
+        for (key, content) in snapshot.contents.iter() {
+            live_keys.insert(key.clone());
+            let previous = self.prepared_contents.get(key);
+            let sealed =
+                plan_owner.as_ref() == Some(&key.owner) || previous.is_some_and(|old| old.sealed);
+            if previous.is_none_or(|old| {
+                old.descriptor != content.descriptor
+                    || old
+                        .content
+                        .as_ref()
+                        .is_none_or(|old| !Arc::ptr_eq(old, content))
+                    || old.sealed != sealed
+            }) {
+                operations.push(match previous {
+                    Some(previous) => previous.operation(content, sealed)?,
+                    None => CurrentContentOperation::Create,
+                });
+                writes.push(CurrentContentWrite {
+                    content: content.content(),
+                    sealed,
+                });
+            }
+            contents.insert(
+                key.clone(),
+                PreparedBody {
+                    descriptor: content.descriptor.clone(),
+                    content: Some(content.clone()),
+                    sealed,
+                },
+            );
+        }
+        let mut retirements = Vec::new();
+        for (key, previous) in &self.prepared_contents {
+            if live_keys.contains(key) {
+                // A retained reference may outlive the mutable body in this bounded cut.
+                contents
+                    .entry(key.clone())
+                    .or_insert_with(|| previous.clone());
+            } else {
+                retirements.push(CurrentContentRetirement::with_state(
+                    &previous.descriptor,
+                    previous.sealed,
+                )?);
+            }
+        }
+        let mut prepared =
+            PreparedCurrent::new(snapshot.projection.clone(), changes.into(), writes.into());
+        prepared.references = added_references.into();
+        prepared.retirements = retirements.into();
+        prepared.body_operations = Some(operations.into());
+        prepared.replay_current = Some(snapshot.clone());
+        // No fallible work remains. Advance on successful freezing, not on preview or ACK.
+        self.prepared_collections
+            .retain(|name, _| collections.contains_key(name.as_str()));
+        self.prepared_collections.extend(collection_updates);
+        self.prepared_contents = contents;
+        self.prepared_references = qualified;
+        Ok((Arc::new(prepared), snapshot))
     }
 
     pub(super) fn observe(
@@ -671,7 +899,12 @@ impl CurrentOwner {
         let old = self
             .state
             .as_ref()
-            .and_then(|state| state.contents.get(&key));
+            .and_then(|state| state.contents.get(&key))
+            .or_else(|| {
+                self.prepared_contents
+                    .get(&key)
+                    .and_then(|body| body.content.as_ref())
+            });
         let mut generation = self.restored_generations.get(&key).copied().unwrap_or(1);
         if let Some(old) = old {
             generation = old.descriptor.generation;
@@ -798,6 +1031,10 @@ impl CurrentState {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "current_delta_tests.rs"]
+mod delta_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1059,6 +1296,23 @@ mod tests {
         assert_eq!(published.projection().source_effect_seq, 1);
         drop(state);
         drop(published);
+        drop(prepared); // A reliable prepared cut now also owns the complete replay material.
+        assert!(
+            prior_body.upgrade().is_some(),
+            "observation must not release the last reliable preparation baseline"
+        );
+        owner.freeze(
+            &thread,
+            &ThreadSnapshot::default(),
+            2,
+            [(
+                "body".into(),
+                BodyKey::Body,
+                newer.contents().values().next().unwrap().block.clone(),
+                1,
+                None,
+            )],
+        )?;
         assert!(
             prior_body.upgrade().is_none(),
             "handoff heads must not own prior current bodies"

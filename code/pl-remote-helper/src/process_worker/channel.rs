@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
@@ -7,6 +8,7 @@ use pl_protocol::process_worker::{ProcessWorkerCommand, ProcessWorkerEvent};
 pub(super) struct Channel {
     stream: Option<UnixStream>,
     read_open: bool,
+    write_open: bool,
     pending: Vec<u8>,
     offset: usize,
 }
@@ -53,6 +55,7 @@ impl Channel {
         Ok(Self {
             stream: Some(stream),
             read_open: true,
+            write_open: true,
             pending: Vec::new(),
             offset: 0,
         })
@@ -84,6 +87,9 @@ impl Channel {
     }
 
     pub(super) fn enqueue(&mut self, event: ProcessWorkerEvent) -> io::Result<()> {
+        if !self.write_open {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         if self.stream.is_some() {
             self.pending
                 .extend(serde_json::to_vec(&event).map_err(io::Error::other)?);
@@ -110,9 +116,25 @@ impl Channel {
         Ok(true)
     }
 
+    // Publish event EOF while retaining the command half until the peer seals it.
+    // Closing with an unread late Cancel would reset the socket and discard the result.
+    pub(super) fn finish(&mut self) -> io::Result<bool> {
+        let Some(stream) = &self.stream else {
+            return Ok(true);
+        };
+        if self.write_open {
+            if let Err(error) = stream.shutdown(Shutdown::Write) {
+                return self.disconnect(error);
+            }
+            self.write_open = false;
+        }
+        Ok(!self.read_open)
+    }
+
     fn disconnect(&mut self, error: io::Error) -> io::Result<bool> {
         self.stream = None;
         self.read_open = false;
+        self.write_open = false;
         self.pending.clear();
         self.offset = 0;
         Err(error)

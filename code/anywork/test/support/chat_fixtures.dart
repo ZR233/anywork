@@ -173,6 +173,7 @@ TimelineItem workItem(
   int cancelled = 0,
   int? start,
   int? end,
+  String? latestThinkingSummary,
   String projectionGeneration = 'fixture-projection-generation',
 }) => TimelineItem(
   id: id,
@@ -194,6 +195,7 @@ TimelineItem workItem(
     cancelledCount: cancelled,
     startedAt: start,
     finishedAt: end,
+    latestThinkingSummary: latestThinkingSummary,
     categories: const [
       TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
     ],

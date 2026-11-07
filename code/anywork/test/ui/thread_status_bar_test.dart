@@ -219,7 +219,6 @@ void main() {
     throughputNotifications = 0;
     contextNotifications = 0;
     chromeNotifications = 0;
-    final observersBefore = graph.client.budget.used(ResourceKind.observer);
     final timelineConnections = transport.feeds.length;
 
     await transport.feeds.last.emitStateAndWait(
@@ -359,10 +358,6 @@ void main() {
     expect(
       graph.client.drafts.composer('thread-main').state.draft,
       'keep this draft',
-    );
-    expect(
-      graph.client.budget.used(ResourceKind.observer),
-      lessThan(observersBefore),
     );
   });
 }

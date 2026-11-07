@@ -6,7 +6,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/conversation/data/conversation_read_scope.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -70,16 +70,12 @@ void main() {
     expect(replacement.pendingQueries, 1);
     var closeReturned = false;
     late int pendingWhenCloseReturned;
-    late int permitsWhenCloseReturned;
     final closing = owner.close();
     final observedClose = closing.then((_) {
       closeReturned = true;
       pendingWhenCloseReturned = content.scopes.fold<int>(
         0,
         (sum, scope) => sum + scope.pendingQueries,
-      );
-      permitsWhenCloseReturned = content.budget.used(
-        ResourceKind.pendingOperation,
       );
     });
     expect(
@@ -96,9 +92,6 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     final returnedBeforeReplacementIO = closeReturned;
     final pendingBeforeReplacementIO = replacement.pendingQueries;
-    final permitsBeforeReplacementIO = content.budget.used(
-      ResourceKind.pendingOperation,
-    );
     // Always release independent IO before asserting the recorded early-return
     // observation, so the red test also leaves no pending operations behind.
     content.reader.requests.last.complete(
@@ -115,8 +108,8 @@ void main() {
       reason:
           'Owner close must also join scopes retired after the old snapshot',
     );
-    expect((pendingBeforeReplacementIO, permitsBeforeReplacementIO), (1, 1));
-    expect((pendingWhenCloseReturned, permitsWhenCloseReturned), (0, 0));
+    expect(pendingBeforeReplacementIO, 1);
+    expect(pendingWhenCloseReturned, 0);
     expect(owner.cleanupError, isNull);
   });
 
@@ -149,7 +142,6 @@ final class _RealScopeContent implements ConversationContent {
     const ChatReady<bool>('thread', true),
   );
   final reader = _RealScopeReader();
-  final budget = ResourceBudget();
   final scopes = <ConversationReadScope>[];
 
   @override
@@ -164,7 +156,6 @@ final class _RealScopeContent implements ConversationContent {
       threadId: 'thread',
       generation: generation,
       reader: reader,
-      budget: budget,
       isEligible: () => true,
       applyOlder: (_) async {},
     );

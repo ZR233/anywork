@@ -162,6 +162,7 @@ class TimelineAttachmentsConnector extends StatefulWidget {
 
 class _TimelineAttachmentsConnectorState
     extends State<TimelineAttachmentsConnector> {
+  final Object _imageOwner = Object();
   List<ThreadAttachmentView> _attachments = const [];
   Object? _error;
   @override
@@ -173,7 +174,7 @@ class _TimelineAttachmentsConnectorState
   void _bind() {
     try {
       _attachments = widget.item.attachments;
-      widget.resources.retainItem(widget.item.id, _attachments);
+      widget.resources.retainItem(_imageOwner, _attachments);
       _error = null;
     } on FormatException catch (error) {
       _error = error;
@@ -185,14 +186,18 @@ class _TimelineAttachmentsConnectorState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.item, widget.item) ||
         !identical(oldWidget.resources, widget.resources)) {
-      oldWidget.resources.retainItem(oldWidget.item.id, const []);
+      if (!identical(oldWidget.resources, widget.resources)) {
+        oldWidget.resources.dropItem(_imageOwner);
+      }
+      // A new presentation of the same item updates the existing reference
+      // ledger without detaching unchanged attachments or their in-flight reads.
       _bind();
     }
   }
 
   @override
   void dispose() {
-    widget.resources.retainItem(widget.item.id, const []);
+    widget.resources.dropItem(_imageOwner);
     _attachments = const [];
     super.dispose();
   }

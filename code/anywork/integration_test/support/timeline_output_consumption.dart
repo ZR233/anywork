@@ -34,20 +34,17 @@ final class TimelineOutputConsumption {
   int _runningBytes = 0;
   int _memberScopes = 0;
   int _memberPages = 0;
-  int _retiredMemberDisplays = 0;
   int _sealedEnds = 0;
   int _peakWindowBytes = 0;
   bool _watchEnded = false;
 
-  Duration get _remaining {
+  Future<T> _within<T>(Future<T> operation) {
     final remaining = const Duration(minutes: 6) - _clock.elapsed;
     if (remaining <= Duration.zero) {
       throw TimeoutException('Original timeline consumption deadline');
     }
-    return remaining;
+    return operation.timeout(remaining);
   }
-
-  Future<T> _within<T>(Future<T> operation) => operation.timeout(_remaining);
 
   bool get _running {
     final execution = session.state.runtime?.execution;
@@ -144,7 +141,6 @@ final class TimelineOutputConsumption {
     StackTrace? failureStack;
     try {
       observation = content.attachConsumer(first, demand: demand);
-      // Ready follows first Set acceptance and also propagates opening failures.
       await _within(content.ready);
       final initial = await _within(first.batch.future);
       final attempt = content.currentAttemptId;
@@ -219,7 +215,6 @@ final class TimelineOutputConsumption {
   Future<void> readMany({
     required Future<void> Function() pump,
     required Future<void> Function() loadOlder,
-    required Future<int> Function(Duration remaining) prepareMemberRead,
     required int expectedItems,
     required int expectedBytes,
   }) async {
@@ -238,10 +233,6 @@ final class TimelineOutputConsumption {
       if (item.source == source) {
         expectSync(item.turnId, turnId);
         if (item.kind == TimelineItemKind.workGroup) {
-          // The UI handoff enforces this remaining deadline itself. Await its
-          // pump to settle rather than timing out a still-guarded Flutter call.
-          _retiredMemberDisplays += await prepareMemberRead(_remaining);
-          _checkOriginal();
           await _readGroup(item);
         } else if (item.atomKind == ChatAtomKind.text) {
           expectSync(item.outcome, ChatTerminalOutcome.completed);
@@ -264,7 +255,6 @@ final class TimelineOutputConsumption {
       }
       if (next != null) {
         await consume(next);
-        await _within(pump());
         continue;
       }
       if (lease.hasOlder) {
@@ -282,7 +272,13 @@ final class TimelineOutputConsumption {
           current.items.isEmpty) {
         break;
       }
-      await _within(pump());
+      // Drain already admitted bodies before requesting another layout. A
+      // Future timeout cannot cancel WidgetTester.pump, so always join that
+      // guarded operation before a deadline failure can start teardown.
+      if (_clock.elapsed >= const Duration(minutes: 6)) {
+        throw TimeoutException('Original timeline consumption deadline');
+      }
+      await pump();
     }
     expectSync(_outputs.length, expectedItems);
     expectSync(_bytes, expectedBytes);
@@ -404,7 +400,6 @@ final class TimelineOutputConsumption {
       'runningWitness': 'sdk-current-execution-before-and-after-read',
       'memberScopes': _memberScopes,
       'memberPages': _memberPages,
-      'retiredMemberDisplays': _retiredMemberDisplays,
       'sealedEnds': _sealedEnds,
       'bodyWatchEnded': _watchEnded,
       'peakWindowBytes': _peakWindowBytes,

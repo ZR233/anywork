@@ -64,10 +64,6 @@ void main() {
         'messageIds': display?.controller.messages
             .map((message) => message.id)
             .toList(),
-        'budget': {
-          for (final kind in ResourceKind.values)
-            kind.name: graph.client.budget.used(kind),
-        },
       });
     }
 

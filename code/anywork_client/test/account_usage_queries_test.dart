@@ -227,7 +227,6 @@ void main() {
         AccountUsagePhase.unsupported,
         reason: 'The application owner consumes already admitted facts while it really joins; it is not a disposed Widget',
       );
-      expect(client.budget.used(ResourceKind.observer), 0);
     },
   );
 
@@ -374,11 +373,6 @@ void main() {
     );
     expect(_loading(client), isEmpty);
     await visible.release();
-    expect(
-      client.budget.used(ResourceKind.observer),
-      0,
-      reason: 'A repeated unknown RPC must not overwrite and leak its original business demand',
-    );
 
     final rejected = _refresh(client, 'a');
     final rejection = expectLater(rejected, throwsA(isA<StudioFailure>()));

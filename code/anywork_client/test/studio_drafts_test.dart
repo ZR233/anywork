@@ -439,14 +439,12 @@ ChildInteractionSummary _childInteractionSummary(String childThreadId) =>
 Future<AnyworkClient> _client(
   _DraftTransport transport, {
   String id = 'client',
-  ResourceBudget? budget,
   Future<String?> Function(Uint8List)? stage,
   Future<void> Function(String)? cleanup,
   TestCompletionConsumer? completionConsumer,
 }) async {
-  final resourcesBudget = budget ?? ResourceBudget();
   final coordinator = SettingsWriteCoordinator();
-  final board = MutationBoard(clientId: id, budget: resourcesBudget);
+  final board = MutationBoard(clientId: id);
   final domains = AccountDomainResources(
     feed: transport,
     configuration: transport,
@@ -455,7 +453,6 @@ Future<AnyworkClient> _client(
     acpPort: transport,
     coordinator: coordinator,
     mutations: board,
-    budget: resourcesBudget,
     owner: id,
   );
   domains.adoptOwnerEpoch('owner');
@@ -466,7 +463,6 @@ Future<AnyworkClient> _client(
   final client = AnyworkClient(
     transport: transport,
     clientId: id,
-    budget: resourcesBudget,
     settingsWrites: coordinator,
     mutationBoard: board,
     accountDomains: domains,
@@ -565,16 +561,11 @@ void main() {
         await client.conversations
             .session('thread')
             .deliverWorkspace(_workspace());
-        final baselineObservers = client.budget.used(ResourceKind.observer);
         final owner = client.drafts.composer('thread');
         owner.updateDraft('evidence before receipt');
         final submitting = owner.submit();
         final input = await transport.promptEntered.future;
         final operation = client.mutations.lookup(OperationId(input.inputId))!;
-        expect(
-          client.budget.used(ResourceKind.observer),
-          baselineObservers + 1,
-        );
         await transport.window.emitTurn(
           _inputTurn(
             input.inputId,
@@ -625,7 +616,6 @@ void main() {
         expect(operation.state.value.effective, isTrue);
         expect(operation.state.value.durable, isTrue);
         expect(owner.state.draft, isEmpty);
-        expect(client.budget.used(ResourceKind.observer), baselineObservers);
         expect(
           transport.feedOpens,
           1,
@@ -643,14 +633,6 @@ void main() {
       if (!transport.startCancelGate!.isCompleted)
         transport.startCancelGate!.complete();
     });
-    int nonMcpObservers() => client.budget.usage
-        .where(
-          (usage) =>
-              usage.kind == ResourceKind.observer &&
-              !usage.owner.startsWith('topic:threadMcp:'),
-        )
-        .length;
-    final initialObservers = nonMcpObservers();
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'new input');
     final submission = owner.submit(_project.id);
@@ -717,41 +699,8 @@ void main() {
     expect(operation.state.value.observed, isTrue);
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
-    // The visible root page releases its MCP and child-interactions shares. The new
-    // Conversation still owns exactly one independent metadata observation.
-    bool pageObserversReleased() => !client.budget.usage.any(
-      (usage) =>
-          usage.kind == ResourceKind.observer &&
-          (usage.owner.startsWith('topic:threadMcp:') ||
-              usage.owner.startsWith('topic:childInteractions:')),
-    );
-    final released = Completer<void>();
-    void observeRelease() {
-      if (pageObserversReleased() && !released.isCompleted) released.complete();
-    }
-
-    final releaseWatch = client.budget.watchAvailability(
-      ResourceKind.observer,
-      observeRelease,
-    );
-    try {
-      client.conversations.setVisibleThread(null);
-      observeRelease();
-      await released.future.timeout(const Duration(seconds: 5));
-    } finally {
-      releaseWatch.cancel();
-    }
-    expect(
-      client.budget.usage.where(
-        (usage) =>
-            usage.kind == ResourceKind.observer &&
-            usage.owner == 'directory-observer:thread:new-thread',
-      ),
-      hasLength(1),
-    );
-    // 旧线程的页面份额已释放；新会话只保留自己的元数据观察（目录行随观察
-    // 交付，页面份额在隐藏时同步释放，不再依赖快照时序悬留一个 permit）。
-    expect(nonMcpObservers(), initialObservers);
+    client.conversations.setVisibleThread(null);
+    expect((await client.conversations.retryCleanup()).complete, isTrue);
     selected.cancel();
     await _close(client, transport);
   });
@@ -760,7 +709,6 @@ void main() {
     final transport = _DraftTransport();
     final client = await _client(transport);
     await client.conversations.session('thread').deliverWorkspace(_workspace());
-    final initialObservers = client.budget.used(ResourceKind.observer);
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'preserve conflicted new-thread draft');
     final submission = owner.submit(_project.id);
@@ -803,7 +751,6 @@ void main() {
       owner.state.forProject(_project.id).text,
       'preserve conflicted new-thread draft',
     );
-    expect(client.budget.used(ResourceKind.observer), initialObservers);
     await _close(client, transport);
   });
 
@@ -813,7 +760,6 @@ void main() {
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     final owner = client.drafts.composer('thread')
       ..updateDraft('keep conflicting submission');
-    final baselineObservers = client.budget.used(ResourceKind.observer);
     final submitting = owner.submit();
     final input = await transport.promptEntered.future;
     var seq = 1;
@@ -847,7 +793,6 @@ void main() {
     expect(operation.receipt, isNotNull);
     expect(operation.durable, isFalse);
     expect(owner.state.draft, 'keep conflicting submission');
-    expect(client.budget.used(ResourceKind.observer), baselineObservers);
     await _close(client, transport);
   });
 
@@ -857,14 +802,11 @@ void main() {
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     final owner = client.drafts.composer('thread')
       ..updateDraft('prepare failure');
-    final count = client.budget.used(ResourceKind.observer);
     await owner.submit(
       beforeSubmit: () async {
-        expect(client.budget.used(ResourceKind.observer), count + 1);
         throw StateError('preparation failed');
       },
     );
-    expect(client.budget.used(ResourceKind.observer), count);
     expect(transport.promptCalls, 0);
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
     expect(owner.state.draft, 'prepare failure');
@@ -940,7 +882,6 @@ void main() {
     final client = await _client(transport);
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'one new-thread preparation');
-    final initialObservers = client.budget.used(ResourceKind.observer);
     Future<bool>? nested;
     Future<void>? closing;
     var closed = false;
@@ -961,7 +902,6 @@ void main() {
     expect(closed, isTrue);
     expect(transport.startCalls, 0);
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
-    expect(client.budget.used(ResourceKind.observer), initialObservers);
     expect(
       owner.state.forProject(_project.id).text,
       'one new-thread preparation',
@@ -1164,7 +1104,6 @@ void main() {
     expect(rejected.error, contains('Unsupported file media type'));
     expect(rejected.attachments, admitted);
     expect(owner.state.forProject(_project.id).text, 'keep this draft');
-    expect(client.budget.used(ResourceKind.attachment), 3);
     transport.admissionFailure = null;
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
@@ -1180,7 +1119,6 @@ void main() {
     expect(transport.settingsWrites, 0);
     await owner.discardProject(_project.id);
     await _close(client, transport);
-    expect(client.budget.used(ResourceKind.attachment), 0);
   });
 
   test('actual composer preserves revision 9 text and attachments after revision 8 ACK', () async {
@@ -1261,7 +1199,6 @@ void main() {
       transport.removed,
       unorderedEquals(['attachment-1-0', 'attachment-2-0']),
     );
-    expect(client.budget.used(ResourceKind.attachment), 0);
     await _close(client, transport);
   });
 
@@ -1970,42 +1907,6 @@ void main() {
     },
   );
 
-  test('pre-dispatch input observer budget failure never sends and preserves draft references', () async {
-    final transport = _DraftTransport();
-    final client = await _client(
-      transport,
-      budget: ResourceBudget(
-        // Existing metadata and child-interactions demands consume both slots;
-        // the pre-dispatch input evidence must still be the rejected acquire.
-        capacities: {...ResourceBudget().capacities, ResourceKind.observer: 2},
-      ),
-    );
-    await client.conversations.session('thread').deliverWorkspace(_workspace());
-    expect(client.budget.used(ResourceKind.observer), 2);
-    final owner = client.drafts.composer('thread');
-    owner.updateDraft('keep after observation admission failure');
-    await owner.addLocalAttachments(['/payload.bin']);
-    await owner.submit();
-    expect(transport.promptCalls, 0);
-    final operation = client.mutations.operations.single;
-    expect(operation.phase, OperationPhase.rejected);
-    expect(
-      operation.error,
-      isA<ResourceBudgetExceeded>().having(
-        (error) => error.kind,
-        'rejected resource kind',
-        ResourceKind.observer,
-      ),
-    );
-    expect(operation.receipt, isNull);
-    expect(owner.state.draft, 'keep after observation admission failure');
-    expect(owner.state.attachments.single.id, 'attachment-1-0');
-    expect(transport.removed, isEmpty);
-    expect(client.budget.used(ResourceKind.attachment), 1);
-    await owner.discard();
-    await _close(client, transport);
-  });
-
   test('actual composer queued submission keeps its frozen route revision and preserves rejected draft', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
@@ -2129,7 +2030,6 @@ void main() {
     expect(owner.state, isA<FailedComposerThreadState>());
     expect(owner.state.draft, 'send after display preparation');
     expect(owner.state.attachments.single.id, 'attachment-1-0');
-    expect(client.budget.used(ResourceKind.attachment), 1);
 
     // 草稿没有被永久封住：再次提交可以真正进入后端。
     final submission = owner.submit();
@@ -2152,7 +2052,6 @@ void main() {
     final transport = _DraftTransport();
     final client = await _client(transport);
     await client.conversations.session('thread').deliverWorkspace(_workspace());
-    final observers = client.budget.used(ResourceKind.observer);
     final owner = client.drafts.composer('thread');
     owner.updateDraft('request with uncertain reply');
     await owner.addLocalAttachments(['/payload.bin']);
@@ -2166,24 +2065,17 @@ void main() {
     );
     await owner.submit();
     expect(transport.promptCalls, 1);
-    expect(
-      client.budget.used(ResourceKind.observer),
-      observers + 1,
-      reason: 'Unknown outcome retains the original registered evidence, without re-registering or resending',
-    );
     await owner.discard();
     expect(
       transport.removed,
       isEmpty,
       reason: 'Discarding the visible draft cannot release an unknown submission owner',
     );
-    expect(client.budget.used(ResourceKind.attachment), 1);
     await owner.close();
-    expect(client.budget.used(ResourceKind.observer), observers);
     await _close(client, transport);
   });
 
-  test('actual attachment cleanup failure retains budget until explicit successful retry', () async {
+  test('actual attachment cleanup failure retains ownership until explicit successful retry', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
     await client.conversations.session('thread').deliverWorkspace(_workspace());
@@ -2194,11 +2086,9 @@ void main() {
     expect(client.drafts.attachments.unresolvedAttachmentIds, [
       'attachment-1-0',
     ]);
-    expect(client.budget.used(ResourceKind.attachment), 1);
     transport.removeSucceeds = true;
     await client.drafts.attachments.retryCleanup();
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
-    expect(client.budget.used(ResourceKind.attachment), 0);
     await _close(client, transport);
   });
 
@@ -2220,12 +2110,10 @@ void main() {
     final closing = client.drafts.attachments.close();
     await expectLater(closing, throwsA(isA<AttachmentCleanupUnresolved>()));
     expect(identical(closing, client.drafts.attachments.close()), isTrue);
-    expect(client.budget.used(ResourceKind.attachment), 1);
 
     transport.removeSucceeds = true;
     await client.drafts.attachments.retryCleanup();
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
-    expect(client.budget.used(ResourceKind.attachment), 0);
     await owner.addLocalAttachments(['/forbidden.bin']);
     await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
     expect(transport.admissionCalls, 1);
@@ -2262,11 +2150,6 @@ void main() {
       await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
       expect(transport.admissionCalls, 1);
       expect(staged, 0);
-      expect(
-        client.budget.used(ResourceKind.attachment),
-        1,
-        reason: 'The pending operation still owns its admitted attachment',
-      );
 
       await session.deliverWorkspace(
         _workspace(
@@ -2292,11 +2175,6 @@ void main() {
       expect(owner.state.draft, isEmpty);
       expect(owner.state.attachments, isEmpty);
       expect(transport.removed, ['attachment-1-0']);
-      expect(
-        client.budget.used(ResourceKind.attachment),
-        0,
-        reason: 'Sealing new work permits the last frozen owner to release',
-      );
       await _close(client, transport);
     },
   );
@@ -2333,7 +2211,6 @@ void main() {
       await client.retryCleanup();
     });
     await stageEntered.future;
-    expect(client.budget.used(ResourceKind.attachment), 1);
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
 
@@ -2359,7 +2236,6 @@ void main() {
     );
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
-    expect(client.budget.used(ResourceKind.attachment), 1);
     expect(identical(closing, client.close(deadline: pastDeadline)), isTrue);
 
     staged.complete('/clipboard-staging.png');
@@ -2377,18 +2253,12 @@ void main() {
       pendingCleanupReport.unresolved.map((entry) => entry.owner),
       contains('drafts'),
     );
-    expect(
-      client.budget.used(ResourceKind.attachment),
-      1,
-      reason: 'The staging file still belongs to its in-flight cleanup',
-    );
 
     cleaned.complete();
     await admission;
     final finalReport = await client.retryCleanup();
     expect(finalReport.complete, isTrue);
     expect(client.unresolvedResources, isEmpty);
-    expect(client.budget.usage, isEmpty);
     expect(
       firstReport.complete,
       isFalse,
@@ -2454,13 +2324,7 @@ void main() {
     expect(client.drafts.attachments.unresolvedStagingPaths, [
       '/clipboard-staging.png',
     ]);
-    expect(
-      client.budget.used(ResourceKind.attachment),
-      2,
-      reason: 'Native draft and staging cleanup are distinct owned resources',
-    );
     await client.drafts.attachments.discardProject(_project.id);
-    expect(client.budget.used(ResourceKind.attachment), 1);
     await expectLater(
       client.drafts.attachments.close(),
       throwsA(isA<AttachmentCleanupUnresolved>()),
@@ -2468,7 +2332,6 @@ void main() {
     cleanupSucceeds = true;
     await client.drafts.attachments.retryCleanup();
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
-    expect(client.budget.used(ResourceKind.attachment), 0);
     await client.close();
   });
 

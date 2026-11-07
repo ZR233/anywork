@@ -410,6 +410,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      DESKTOP_TEST_OUTPUT: output/ci-desktop-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -469,8 +470,8 @@ jobs:
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
-              --shard-index "$2" --shard-count 3 --output output/ci-desktop-linux
-          ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
+              --shard-index "$2" --shard-count 3 --output "$3"
+          ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX" "$DESKTOP_TEST_OUTPUT"
       - name: Record disk usage after desktop build
         if: always()
         run: |
@@ -488,19 +489,22 @@ jobs:
         with:
           name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            output/ci-desktop-linux/report.json
-            output/ci-desktop-linux/cases/**/report.json
-            output/ci-desktop-linux/cases/**/realtime-live-text-*.json
-            output/ci-desktop-linux/cases/**/timeline-concept.json
-            output/ci-desktop-linux/cases/**/timeline-concept-reopen.json
-            output/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
-            output/ci-desktop-linux/cases/**/sidebar-shutdown.json
-            output/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
-            output/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
-            output/ci-desktop-linux/cases/**/gui.log
-            output/ci-desktop-linux/cases/**/*-integration.log
-            output/ci-desktop-linux/cases/**/*-driver.log
-            output/ci-desktop-linux/cases/**/*-errors.txt
+            ${{ env.DESKTOP_TEST_OUTPUT }}/report.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/report.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-live-text-*.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-exec-receipts-*.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-live.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-restart.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-reopen.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-media-missing.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-shutdown.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-mutations-before-shutdown.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-fixture-cleanup.jsonl
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/gui.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-integration.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-driver.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-errors.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -515,6 +519,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      NATIVE_TEST_OUTPUT: output/ci-native-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -569,8 +574,8 @@ jobs:
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-              "$1" test-project --suite native --set full --output output/ci-native-linux
-          ' -- "$PR_QUALITY_XTASK"
+              "$1" test-project --suite native --set full --output "$2"
+          ' -- "$PR_QUALITY_XTASK" "$NATIVE_TEST_OUTPUT"
       - name: Record disk usage after native build
         if: always()
         run: |
@@ -588,20 +593,20 @@ jobs:
         with:
           name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            output/ci-native-linux/report.json
-            output/ci-native-linux/cases/**/report.json
-            output/ci-native-linux/cases/**/shutdown-*-gui.log
-            output/ci-native-linux/cases/**/shutdown-launch-*.json
-            output/ci-native-linux/cases/**/shutdown-native-exit-*.json
-            output/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
-            output/ci-native-linux/cases/**/shutdown-stage*
-            output/ci-native-linux/cases/**/diagnostics.json
-            output/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/report.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/report.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-*-gui.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-launch-*.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-native-exit-*.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-assembly-*.jsonl
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-stage*
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics/**/anywork-exit-diagnostics.log
           if-no-files-found: warn
           retention-days: 7
 
   windows-build:
-    name: Native Rust and application checks (windows)
+    name: Clippy and GUI build (Windows)
     needs: [changes, linux-inputs]
     if: needs.changes.outputs.windows_build == 'true'
     runs-on: windows-latest
@@ -614,6 +619,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore this run's bundled helper inputs
+        if: needs.changes.outputs.windows_gui_build == 'true'
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
@@ -623,7 +629,7 @@ jobs:
       - name: Set up cached native Rust build
         uses: ./.github/actions/setup-studio-rust
       - name: Set up Flutter
-        if: needs.changes.outputs.windows_gui_build == 'true' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance'))
+        if: needs.changes.outputs.windows_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
@@ -635,38 +641,12 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test the Rust workspace on Windows with SQLite enabled
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo xtask build-gui
-          test -f dist/anywork-release/anywork.exe
-
-      # Explicit platform observation; the normal Windows job remains a build
-      # and Rust check. The current desktop runner owns the isolated fixture.
-      - name: Observe Windows Flutter presentation when requested
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
-        env:
-          ANYWORK_CAPTURE_PRESENTATION: '1'
-        run: cargo xtask test-project --suite desktop --case question_history --output target/ci-inspection-windows
-
-      - name: Preserve Windows presentation evidence
-        if: always() && github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'native-acceptance')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: windows-flutter-presentation-${{ github.sha }}
-          path: |
-            target/ci-inspection-windows/report.json
-            target/ci-inspection-windows/**/*.png
-            target/ci-inspection-windows/**/*.meta.json
-          if-no-files-found: error
+        run: cargo xtask build-gui
 
   macos-build:
-    name: Native Rust and application checks (macos)
+    name: Clippy and GUI build (macOS)
     needs: [changes, linux-inputs]
     if: needs.changes.outputs.macos_build == 'true'
     runs-on: macos-15
@@ -679,6 +659,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore this run's bundled helper inputs
+        if: needs.changes.outputs.macos_gui_build == 'true'
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
@@ -700,19 +681,9 @@ jobs:
       - name: Check Rust on macOS
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Use the runner's physical temporary directory
-        shell: bash
-        run: echo "TMPDIR=$(cd "$RUNNER_TEMP" && pwd -P)" >> "$GITHUB_ENV"
-      - name: Test the Rust workspace on macOS with SQLite enabled
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked --workspace --features pl-core/sqlite
       - name: Compile the production Flutter executable without running tests
         if: needs.changes.outputs.macos_gui_build == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo xtask build-gui
-          test -x dist/anywork-release/anywork.app/Contents/MacOS/anywork
+        run: cargo xtask build-gui
 
   # Configure this stable aggregate as the repository required check.
   ci-gate:

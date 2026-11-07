@@ -18,7 +18,6 @@ void main() {
     expect(board.operations, hasLength(3));
     expect(board.latest('thread:0'), isNull);
     expect(board.latest('thread:29'), isNotNull);
-    expect(board.budget.used(ResourceKind.pendingOperation), 0);
   });
 
   test('paused observations retain one latest value and cancellation only detaches', () {
@@ -178,7 +177,6 @@ void main() {
             reason: 'Merging a true observation must not erase independently recorded synchronization failure',
           );
         }
-        expect(board.budget.used(ResourceKind.pendingOperation), 0);
       }
     },
   );
@@ -194,7 +192,6 @@ void main() {
 
       expect(board.latest('thread:model'), same(latest));
       expect(latest.state.value.phase, OperationPhase.unknownOutcome);
-      expect(board.budget.used(ResourceKind.pendingOperation), 1);
       latest.accept(
         CommitReceipt(
           operationId: latest.id,

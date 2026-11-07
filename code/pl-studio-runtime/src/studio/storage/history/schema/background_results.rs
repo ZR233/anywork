@@ -39,8 +39,8 @@ enum PublishedTarget {
 async fn correct(db: &impl ConnectionTrait) -> Result<()> {
     let format = version(db).await?;
     ensure!(
-        matches!(format, 14 | 15),
-        "background result correction requires schema 14 or 15"
+        matches!(format, 14..=16),
+        "background result correction requires schema 14 through 16"
     );
     let mut after = 0_i64;
     let mut changed = false;
@@ -135,13 +135,13 @@ async fn correct(db: &impl ConnectionTrait) -> Result<()> {
                 updated.rows_affected() == 1,
                 "background result metadata changed during migration"
             );
-            if format == 15 {
+            if format >= 15 {
                 correct_facts(db, &atom, &corrected, &completion).await?;
             }
             changed = true;
         }
     }
-    if format == 15 && changed {
+    if format >= 15 && changed {
         let identity = db
             .query_one_raw(statement(
                 "SELECT database_id FROM history_meta WHERE id=1",
@@ -150,7 +150,7 @@ async fn correct(db: &impl ConnectionTrait) -> Result<()> {
             .await?
             .context("background result correction has no history identity")?;
         let database: String = identity.try_get("", "database_id")?;
-        timeline::rebuild(db, &database).await?;
+        timeline::rebuild_published(db, &database).await?;
     }
     Ok(())
 }

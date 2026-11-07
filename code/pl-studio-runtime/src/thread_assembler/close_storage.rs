@@ -1,5 +1,5 @@
 //! A cold owner's exact storage binding and one retained AttachCold operation.
-use super::{EntryPurpose, StudioThreadAssembler, ThreadAssemblyError};
+use super::{ClosePurpose, EntryPurpose, StudioThreadAssembler, ThreadAssemblyError};
 use crate::studio::ThreadStorageBinding;
 use futures::{
     FutureExt,
@@ -213,6 +213,16 @@ impl StudioThreadAssembler {
         id: &str,
         retired: bool,
     ) -> Result<(), ThreadAssemblyError> {
+        self.confirm_preparation_close_for_purpose(id, retired, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(super) async fn confirm_preparation_close_for_purpose(
+        &self,
+        id: &str,
+        retired: bool,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
         if let Some(services) = services
             && services
@@ -222,11 +232,15 @@ impl StudioThreadAssembler {
                 .map_err(preparation_storage_error)?
                 .is_some_and(|record| !record.published)
         {
-            services
-                .store
-                .confirm_preparation_stop(id)
-                .await
-                .map_err(preparation_storage_error)?;
+            if purpose == ClosePurpose::Delete {
+                services
+                    .store
+                    .confirm_preparation_stop_for_deletion(id)
+                    .await
+            } else {
+                services.store.confirm_preparation_stop(id).await
+            }
+            .map_err(preparation_storage_error)?;
             if retired {
                 services
                     .store
@@ -241,6 +255,15 @@ impl StudioThreadAssembler {
     /// The caller holds this identity's operation permit. Register the one shared operation
     /// before polling it: cancellation only drops a waiter, not AttachCold or its real result.
     pub(super) async fn attach_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.attach_close_storage_for_purpose(id, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(super) async fn attach_close_storage_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         loop {
             let owned = self.0.state().entries.get(id).map(|entry| {
                 (
@@ -251,10 +274,24 @@ impl StudioThreadAssembler {
             });
             let (incarnation, thread, storage) =
                 owned.ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+            if purpose == ClosePurpose::Delete
+                && matches!(
+                    storage,
+                    Some(CloseStorage::Pending { .. } | CloseStorage::Initialized(_))
+                )
+            {
+                return Ok(());
+            }
             match storage {
                 Some(CloseStorage::Execution { completion, .. }) => {
                     completion
                         .await
+                        .or_else(|source| match (purpose, source.as_ref()) {
+                            // The original queued AttachCold was consumed and rejected by
+                            // deletion admission. Keep its binding for the actual close/join.
+                            (ClosePurpose::Delete, ThreadError::Closed) => Ok(()),
+                            _ => Err(source),
+                        })
                         .map_err(|source| ThreadAssemblyError::Resource {
                             operation: "confirm ordinary storage attachment",
                             source: Box::new(source),
@@ -341,12 +378,19 @@ impl StudioThreadAssembler {
                     binding,
                     completion,
                 }) => {
-                    completion
-                        .await
-                        .map_err(|source| ThreadAssemblyError::Resource {
+                    if let Err(source) = completion.await {
+                        if purpose == ClosePurpose::Delete
+                            && matches!(source.as_ref(), ThreadError::Closed)
+                        {
+                            // Retain the completed rejection, without claiming storage attached.
+                            // The deletion join below still owns and releases this exact binding.
+                            return Ok(());
+                        }
+                        return Err(ThreadAssemblyError::Resource {
                             operation: "attach close-only Thread storage",
                             source: Box::new(source),
-                        })?;
+                        });
+                    }
                     let mut state = self.0.state();
                     let entry = state
                         .entries
@@ -403,6 +447,53 @@ impl StudioThreadAssembler {
     }
 
     pub(super) async fn join_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.join_close_storage_for_purpose(id, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(super) async fn join_close_storage_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
+        if purpose == ClosePurpose::Delete {
+            // Await the retained operation even when its result was a seal rejection. This
+            // checks real failures before the binding can enter the physical writer join.
+            self.attach_close_storage_for_purpose(id, purpose).await?;
+            let binding = {
+                let state = self.0.state();
+                match state
+                    .entries
+                    .get(id)
+                    .and_then(|entry| entry.close_storage.as_ref())
+                {
+                    Some(CloseStorage::Execution { binding, .. }) => binding.clone(),
+                    Some(
+                        CloseStorage::Initialized(binding)
+                        | CloseStorage::Attached(binding)
+                        | CloseStorage::Attaching { binding, .. },
+                    ) => Some(binding.clone()),
+                    Some(CloseStorage::Pending { .. }) | None => None,
+                }
+            };
+            if let Some(binding) = binding {
+                binding
+                    .channel
+                    .stop_and_join_for_deletion()
+                    .await
+                    .map_err(preparation_storage_error)?;
+            }
+            if let Some(CloseStorage::Execution { joined, .. }) = self
+                .0
+                .state()
+                .entries
+                .get_mut(id)
+                .and_then(|entry| entry.close_storage.as_mut())
+            {
+                *joined = true;
+            }
+            return Ok(());
+        }
         let original = {
             let state = self.0.state();
             match state

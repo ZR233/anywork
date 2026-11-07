@@ -11,7 +11,7 @@ use super::{
 
 /// Bumped whenever the grouping rules change. A stored projection of another
 /// version is rebuilt instead of being mixed with current items.
-pub const TIMELINE_PROJECTION_VERSION: u32 = 1;
+pub const TIMELINE_PROJECTION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +61,9 @@ pub struct TimelineCategoryCount {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimelineGroupSummary {
+    /// Latest nonempty reasoning summary in this group's source order.
+    /// Bounded by the activity summary limit; never the reasoning body.
+    pub latest_thinking_summary: Option<String>,
     pub member_count: u32,
     /// Members whose reliable terminal fact is still missing.
     pub active_count: u32,

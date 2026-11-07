@@ -9,6 +9,8 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +19,64 @@ import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 void main() {
+  testWidgets('正文与工作组间距不随作者和时间变化，成员没有重复缩进', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    for (final narrow in [false, true]) {
+      tester.view.physicalSize = narrow
+          ? const Size(390, 1040)
+          : const Size(1040, 680);
+      await tester.pumpWidget(
+        narrow ? timelineSpacingNarrowPreview() : timelineSpacingPreview(),
+      );
+      await tester.pumpAndSettle();
+      final items = [
+        find.byKey(const ValueKey('chat-item:spacing-intro')),
+        find.byKey(const ValueKey('chat-item:spacing-plain')),
+        find.byKey(const ValueKey('source-unit-header:spacing-group-0')),
+        find.byKey(const ValueKey('chat-item:spacing-result-0')),
+        find.byKey(const ValueKey('source-unit-header:spacing-group-1')),
+        find.byKey(const ValueKey('chat-item:spacing-result-1')),
+      ];
+      final gaps = [
+        for (var i = 1; i < items.length; i++)
+          tester.getRect(items[i]).top - tester.getRect(items[i - 1]).bottom,
+      ];
+      expect(gaps.first, inInclusiveRange(8, 16));
+      for (final gap in gaps) {
+        expect(gap, closeTo(gaps.first, .01), reason: '同作者、跨时间与工作组边界应共享条目间距');
+      }
+      await tester.tap(items[2]);
+      await tester.pumpAndSettle();
+      final rows = find.byType(TimelineActivityRow);
+      final members = find.descendant(
+        of: find.byType(TimelineChildrenView),
+        matching: rows,
+      );
+      expect(members, findsNWidgets(3));
+      final rects = [
+        for (final element in members.evaluate())
+          tester.getRect(find.byWidget(element.widget)),
+      ];
+      for (var i = 1; i < rects.length; i++) {
+        expect(rects[i].left, rects.first.left);
+        expect(
+          rects[i].top,
+          closeTo(rects[i - 1].bottom, .01),
+          reason: '活动行已有自然行高，成员外壳不能再叠加消息间距',
+        );
+      }
+      final rail = tester.getRect(find.byType(TimelineChildrenView));
+      expect(rects.first.left, closeTo(rail.left, .01));
+      expect(rects.first.right, closeTo(rail.right, .01));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
   testWidgets('Plan workspace 工况仅装配生产展示组件，短窗与大字可达', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(() {
@@ -159,7 +219,7 @@ void main() {
     }
   });
 
-  testWidgets('Plan 正文局部排版同时用于详情和回执，普通 Markdown 保留原主题', (tester) async {
+  testWidgets('Plan 正文局部排版同时用于详情和回执，普通正文保留时间线排版', (tester) async {
     const document = '# 阅读标题\n\n## 实施范围\n\n### 步骤\n\n正文内容。';
     Widget markdown(String id) => TimelineMarkdown(
       key: ValueKey(id),
@@ -208,18 +268,18 @@ void main() {
       matching: find.byType(GptMarkdown),
     );
     final outside = renderer('ordinary-body');
-    final base = GptMarkdownTheme.of(tester.element(outside));
-    final surrounding = GptMarkdownTheme.of(
+    final base = GptMarkdownTheme.of(
       tester.element(find.byKey(const ValueKey('ordinary-body'))),
     );
-    expect(
-      (base.h1?.fontSize, base.h2?.fontSize, base.h3?.fontSize),
-      (20, 17, 14),
-    );
+    final ordinary = GptMarkdownTheme.of(tester.element(outside));
+    expect(ordinary.h1?.fontSize, 20);
+    expect(ordinary.h1?.height, 1.48);
+    expect(ordinary.h2?.fontSize, 17);
+    expect(ordinary.h3?.fontSize, 14);
     expect(
       find.descendant(of: outside, matching: find.byType(CustomDivider)),
       findsNothing,
-      reason: 'Plan 外继续使用普通 Markdown 的紧凑标题，不额外插入 h1 分隔线',
+      reason: '普通正文保留主线的紧凑标题排版，不添加 h1 分隔线',
     );
     for (final id in ['plan-detail-body', 'plan-receipt-body']) {
       final rendered = renderer(id);
@@ -233,11 +293,11 @@ void main() {
       expect(scoped.h2?.fontSize, 18);
       expect(scoped.h3?.fontSize, 16);
       expect(scoped.h1?.fontWeight, FontWeight.w600);
-      expect(scoped.h1?.fontFamily, surrounding.h1?.fontFamily);
-      expect(scoped.h1?.color, surrounding.h1?.color);
-      expect(scoped.linkColor, surrounding.linkColor);
-      expect(scoped.inlineCode, same(surrounding.inlineCode));
-      expect(scoped.styleSheet, same(surrounding.styleSheet));
+      expect(scoped.h1?.fontFamily, base.h1?.fontFamily);
+      expect(scoped.h1?.color, base.h1?.color);
+      expect(scoped.linkColor, base.linkColor);
+      expect(scoped.inlineCode, same(base.inlineCode));
+      expect(scoped.styleSheet, same(base.styleSheet));
       expect(
         find.descendant(of: rendered, matching: find.byType(CustomDivider)),
         findsNothing,
@@ -245,7 +305,7 @@ void main() {
       );
       expect(
         scoped.h1?.fontSize,
-        isNot(base.h1!.fontSize!),
+        lessThan(base.h1!.fontSize!),
         reason: 'Plan 排版必须局部生效，不改变普通 Markdown 的标题层级',
       );
     }

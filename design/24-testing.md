@@ -8,22 +8,24 @@
 | --- | --- |
 | 独立工具接口与作者特性 | 分别编译/运行无默认特性、typed、typed+macros 及宏诊断，独立下游验证纯消费方与重命名依赖；workspace 特性合并不证明独立性。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
 | Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
-| Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试，Windows/macOS 也执行各自宿主的 clippy 和 workspace SQLite 测试；fmt 与无数据库 core 检查不跨平台重复 |
+| Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 构建输入 | 工程工具与双架构 helper 在同一准备作业复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
 | Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；每个 runner 内顺序复用 acceptance 与对应配置的 bridge，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
-| Windows/macOS 应用检查 | Rust 生产输入改动同时选择两个宿主的 Rust clippy、测试和生产 Flutter 编译；明确的独立 Rust 集成测试源码改动仍运行三平台 Rust 检查，但不选择生产 Flutter 编译。两种职责在各平台同一作业内显式区分，测试所需 helper 输入保持提供；仅平台 runner 等非 Rust 改动只选择相应编译。两个宿主均不重复运行 Flutter UI、desktop smoke、native lifecycle 或发布打包验收 |
+| Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui` 两类检查，复用现有路径分类分别选择。Rust 生产输入改动选择两者；明确的独立 Rust 集成测试源码改动只选择 clippy；仅平台 runner 等非 Rust 改动只选择相应编译。helper 与 Flutter 工具链只在生产 GUI 编译时恢复，不运行 Rust、Flutter UI、desktop 或 native 测试，不追加标签触发的界面验收或独立成品检查 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
-Linux 的公共证据不代替 Windows/macOS Rust 测试，宿主相关 Rust 行为由各自测试提供证据。Windows/macOS Flutter 编译成功只证明当前源码可生成对应宿主程序，不证明原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属 GUI 测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
+Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 clippy 与 GUI 编译成功只证明当前源码通过对应宿主的静态检查并可生成程序，不证明该宿主的 Rust 运行行为、原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
 
-纯 Rust 集成测试路径只包括普通 `code/pl-*/tests/` 下的 `.rs` 文件，不包括 `support/` 共享装配、fixture crate、工程工具、验收工具或构建配置。共享测试装配、高影响输入与未知路径仍保守选择完整适用检查；混合生产改动恢复生产编译职责，不因同时包含测试而缩减覆盖。平台作业是否需要运行，与其中是否需要生产 GUI 编译分别由分类结果决定；显式请求的 Windows 原生观察仍准备 Flutter 工具链。
+纯 Rust 集成测试路径只包括普通 `code/pl-*/tests/` 下的 `.rs` 文件，不包括 `support/` 共享装配、fixture crate、工程工具、验收工具或构建配置。共享测试装配、高影响输入与未知路径仍保守选择完整适用检查；混合生产改动恢复生产编译职责，不因同时包含测试而缩减覆盖。平台作业是否需要运行，与其中是否需要生产 GUI 编译分别由分类结果决定。
 
 集成分片沿用同一发现、full/smoke 与显式启用规则，按稳定排序后的序号分配；所有分片无重叠且完整覆盖未分片的选择集合，不维护第二份场景名单。分片索引从零开始，必须与正数分片总数成对提供；索引越界、空分片或与单场景选择混用均失败，列举与执行消费同一选择结果。各分片的失败、取消与缺失均阻止 gate 通过，各自保留报告与日志，但不归档隔离配置、home 或数据库。
 
+Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，避免构建缓存恢复的旧目录阻止新测试启动。报告与日志从同一本次输出归档，旧目录不作为通过证据，也不通过删除共享缓存解决路径冲突。
+
 一次 desktop 套件运行在执行场景前准备一次原生环境、锁定的 Flutter 依赖、debug bridge 与 helper；仅复用不可变构建输入，不复用场景 home、fixture、报告或进程。跨 harness 子命令的准备回执位于 `target/test-project-preparation/` 下的本次临时目录，由父运行持有独占文件锁并在退出时释放和清理。子命令须核对活跃租约、规范工作区、Git 源码状态、宿主/构建配置及构件摘要；缺失、过期或不匹配直接失败，不静默重建。回执仅通过本次子进程环境传递，不是持久依赖缓存、全局“已准备”开关或跨运行复用入口。单独运行场景仍自行完成准备；native 套件的不同入口和构建模式不消费 desktop 回执。
 
-Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。原生平台的测试临时根使用 runner 自有的真实目录，避免系统临时路径的符号链接干扰路径安全断言；生产符号链接拒绝语义不因此放宽。
+Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。
 
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；先完成编译缓存恢复，再校验和恢复本次工具。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 
@@ -95,7 +97,11 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
+`realtime-presentation` 原生用例的首字等待与正文可读观察复用严格对端的显式闸门：活动栏布局后才放出首个文本增量，原正文窗口读取并布局后才允许后续增量和完成。闸门只控制外部供应商，不提供产品状态；手动观察仍使用原有节奏，自动检查不依赖短暂流窗口或截图耗时。
+
 `timeline-history` 的流式分页观察以原选中会话、活动 Turn、source 和 live 展示项为准：沿原三十秒资格等待冻结同一 lease、current display、未完成文本与生产者非空 preview，再在原活动区观察的三十秒额度内核对同一 live 项的生产组件和真实正文布局。非空 live 项已经替代无内容活动条时，不再要求旧活动条 key 同时挂载，也不为满足测试给生产界面补回旧组件。加载历史页前后仍核对原 Turn、display、live 项、正文引用及已接纳前缀；完成 Main、旧会话、未布局组件或仅有内存 preview 不能替代流式可见证据，不延长 provider pacing 或等待期限。
+
+正文自动跟随后，可见证据核对同一已接纳正文首部或尾部的真实字形，并逐层计算生产滚动视图的实际裁剪；不要求首字始终停留在屏幕内。完整消费的 SDK 读取等待原消费者就绪，直接消费已接纳数据，不为正常成员接纳额外推进布局。保留原期限、正文总量、运行期读取、原作用域关闭和零待处理查询断言，不重新打开 Main；资源关闭与失败重试继续由原所有者负责。
 
 [#272 A01–A34](https://github.com/ZR233/anywork/issues/272) 分层证明：Rust Studio 投影负责 item 类别、可靠边界、成员归属/顺序、空正文、纯附件、读图归属、逆序终态、后台交错、多 current 片段与同批退役；存储/读取证明同事务、原事实独立、来源输入依据、具名内容迁移及失败重开、已迁移损坏拒绝、版本、旧库和 RAM/SQLite 交接。运行中热维护组合场景已由初始化迁移、真实容量压力、普通积压排空及 close/cancel 独立证明替代，不能仅删除旧场景而漏掉原队列责任。Dart 只验机械映射、一条 item 一条 Message、成员窗口及局部 UI/资源资格；纯 Flutter 验布局与交互，少量官方原生集成穿过真实跨层、持久化、credit 与重开。不在 Dart 重测分组算法，不以截图或旧派生缓存代证完整源事实重建。
 
@@ -194,7 +200,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
-PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 xtask 的 `test-project` 两类 suite 并行执行，桌面功能使用完整集合的确定性分片；Windows/macOS 不重复运行这两类 GUI 套件，但 Rust 受影响时执行各自的 Rust 检查与测试，并编译生产应用。显式本地验证仍可在目标宿主使用 `cargo xtask test-project`；标签专属 `native-acceptance.yml` 路径已退役；PR 显式添加 `native-acceptance` 标签后，在下一次运行的 Windows 作业追加单个 `question_history` 官方集成用例与 Flutter PNG，用于目标平台呈现复核，不重跑完整 GUI 套件。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
+PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 xtask 的 `test-project` 两类 suite 并行执行，桌面功能使用完整集合的确定性分片；Windows/macOS 仅按分类执行 clippy 与生产应用编译。目标宿主的运行行为可通过显式本地 `cargo xtask test-project` 验证，PR 标签不追加平台测试或截图采集。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 
 Linux 自动桌面与原生作业除 Xvfb 外，还须显式提供可初始化的系统凭据服务：在作业自有隔离目录内使用独立 D-Bus session、仅启用 secrets 组件的 GNOME Keyring 及私有 XDG 数据、配置和运行目录，不访问操作者已有凭据库。复用官方 `dbus-run-session` 管理 bus 生命周期，等待 `org.freedesktop.secrets` 注册后再运行原 xtask；服务名就绪不替代产品实际初始化和业务验收。精确 Linux 镜像声明相应命令依赖，不依赖宿主恰好已有桌面登录会话。
 
@@ -203,6 +209,8 @@ Linux 自动桌面与原生作业除 Xvfb 外，还须显式提供可初始化�
 独立 bus 结束不等于其私有运行目录内的 FUSE 挂载已经消失。退出清理先核对本次新建根目录的身份和所属用户，使用 util-linux `findmnt` 的结构化挂载信息，只对该目录内精确的 `runtime/doc`（`fuse.portal`）和 `runtime/gvfs`（`fuse.gvfsd-fuse`）、且 `user_id` 属于当前用户的挂载调用一次官方 `fusermount3 -u`。挂载已自然消失则不卸载；未知挂载、身份变化、普通卸载失败或复核仍有挂载时保留目录并明确失败，不使用强制／懒卸载、不操作用户会话挂载、不跨挂载递归删除。只有该私有根目录内已无挂载，才删除本次自有目录。清理失败不覆盖原命令的非零退出码；原命令成功而清理失败时，包装命令必须失败，不能把业务与资源收束合并成成功。
 
 实时工具的运行态观察不依赖测试在有限命令结束前碰巧展开成员窗口。并行命令与 host-cwd 命令复用严格环回 fixture 的既有 observer gate：对端先交付一个已完成的 reasoning 前缀，测试通过原 UI 打开并稳定布局该 Turn 的唯一工作组，冻结原 Main、成员窗口和正文 scope 身份后才释放原工具调用。放行后仍须在这些原观察对象上证明精确 exec 的 Active、typed `running` 和实际布局，不以同组 wait-call 或完成收据替代；原命令、cwd、时长、预算、收据交付及后续正文读取与 UI 关闭门槛保持不变。gate 只控制模拟对端的事件交付，不写产品状态、不新建产品 reader／owner，也不通过延长命令或观察期限制造通过。
+
+实时工具的最终回执从原工作组成员读取。前台交接成员只建立 call 与 task 身份关联，后台最终结果必须来自同一 Turn、call 和 task 对应的独立来源工作组；交接不等于成功。正文读取绑定原 Main 工作组、成员引用、正文窗口及实际挂载行，同时保持原 Main 滚动实例与成员内部滚动实例的身份，继续验证成功退出、完整正文和关闭后的资源撤销。回执诊断随 Linux 场景报告归档，不以诊断数据替代真实界面读取。
 
 完成答案的验证区分 Main 已接纳目标与目标已在当前视口布局：先按原 Turn、文本种类、最终答案渠道及完成终态资格确定唯一 Main item，再复用既有原 UI 揭示路径和 canonical 行身份检查，要求该行的真实答案正文可见；不能把屏幕当前未挂载当作历史中不存在，也不能以别的 Turn、缓存副本或后台工具正文代替。保留原生产“返回最新”交互，目标资格、揭示和正文检查共用原两分钟答案期限，揭示还受既有六十秒上限约束，不为每一步重置或叠加等待预算。只传播剩余期限，不增加 reader、读取旁路、直接滚动坐标或失败后的替代路径。
 

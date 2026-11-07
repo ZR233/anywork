@@ -449,9 +449,9 @@ final class TimelineSessionOwner {
     return result;
   }
 
-  void select(String? threadId, {ResourceBudgetExceeded? admissionFailure}) {
+  void select(String? threadId) {
     if (_closed) return;
-    final session = threadId == null || admissionFailure != null
+    final session = threadId == null
         ? null
         : client.conversations.existingSession(threadId);
     if (_observedThread == threadId &&
@@ -493,10 +493,7 @@ final class TimelineSessionOwner {
         threadId: threadId,
         generation: 0,
         mode: TimelineDisplayMode.live,
-        connection: admissionFailure == null
-            ? TimelineConnectionPhase.idle
-            : TimelineConnectionPhase.failed,
-        connectionError: admissionFailure,
+        connection: TimelineConnectionPhase.idle,
       ),
     );
     if (session == null || !_selected(selection, session)) return;

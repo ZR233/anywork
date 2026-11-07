@@ -14,6 +14,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
@@ -24,7 +25,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -207,7 +208,12 @@ final class _Harness {
   }
 
   Widget host({
-    ConversationActivityView? view,
+    ConversationActivityView? view = const ConversationActivityView(
+      identity: 'active',
+      kind: ConversationActivityKind.thinking,
+      summary: '思考中',
+      expandable: true,
+    ),
     Widget? dock,
     double? currentHeight,
   }) {
@@ -218,14 +224,7 @@ final class _Harness {
       key: ObjectKey(content),
       current: current,
       content: content,
-      view:
-          view ??
-          const ConversationActivityView(
-            identity: 'active',
-            kind: ConversationActivityKind.thinking,
-            summary: '思考中',
-            expandable: true,
-          ),
+      view: view,
       units: presentation.live,
       images: images,
       readAttachment: (_) async => Uint8List(0),
@@ -797,12 +796,17 @@ void main() {
         scope.requests.map((request) => request.$1).toSet(),
         references.toSet(),
       );
-      final scroll = find.byType(SingleChildScrollView);
-      final position = tester
-          .state<ScrollableState>(
-            find.descendant(of: scroll, matching: find.byType(Scrollable)),
-          )
-          .position;
+      final body = find.byWidgetPredicate(
+        (widget) =>
+            widget is ConversationCurrentWindowView && widget.text == longBody,
+      );
+      expect(body, findsOneWidget);
+      final scrollable = Scrollable.of(
+        tester.element(body),
+        axis: Axis.vertical,
+      );
+      final scroll = find.byWidget(scrollable.widget);
+      final position = scrollable.position;
       expect(position.viewportDimension, closeTo(35.1, 0.1));
       expect(position.maxScrollExtent, greaterThan(0));
       expect(find.textContaining('窗口末尾可达'), findsOneWidget);
@@ -964,6 +968,17 @@ void main() {
       await tester.pump();
       expect(find.text('旧文档'), findsOneWidget);
       final borrowed = h.display!.windows.single;
+      final display = h.display;
+      await tester.pumpWidget(h.host(view: null));
+      expect(h.display, same(display));
+      expect(h.display!.windows.single, same(borrowed));
+      expect(h.content.scopes, [old]);
+      expect(old.active, isTrue);
+      expect(old.watches, hasLength(1));
+      expect(find.byType(ConversationActivityBar), findsOneWidget);
+      expect(find.byType(ConversationResponseView), findsOneWidget);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(find.text('旧文档'), findsOneWidget);
       await h.accept([_textItem()]);
       await tester.pumpWidget(h.host());
       expect(h.content.scopes, [old]);
@@ -993,6 +1008,11 @@ void main() {
       await tester.idle();
       await tester.pump();
       expect(find.textContaining('真实读取失败'), findsOneWidget);
+      await h.accept([]);
+      await tester.pumpWidget(h.host(view: null));
+      expect(h.display, same(display));
+      expect(h.display!.windows, isEmpty);
+      expect(find.byType(ConversationActivityBar), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(h.content.scopes.every((scope) => scope.closed), isTrue);

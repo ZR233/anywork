@@ -16,8 +16,7 @@ void main() {
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final budget = ResourceBudget();
-    final store = ThreadDirectoryStore(feed: feed, budget: budget);
+    final store = ThreadDirectoryStore(feed: feed);
     var changes = 0;
     final owner = SidebarDirectoryOwner(
       observeThreads: store.observeThreads,
@@ -96,15 +95,13 @@ void main() {
     expect(report.complete, isTrue);
     expect(firstA.closeCalled, isTrue);
     expect(secondA.closeCalled, isTrue);
-    expect(budget.usage, isEmpty);
   });
 
   testWidgets('refresh preserves an expanded window beyond the first page', (
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final budget = ResourceBudget();
-    final store = ThreadDirectoryStore(feed: feed, budget: budget);
+    final store = ThreadDirectoryStore(feed: feed);
     final owner = SidebarDirectoryOwner(
       observeThreads: store.observeThreads,
       onChanged: () {},
@@ -198,15 +195,13 @@ void main() {
     expect(initial.closeCalled, isTrue);
     expect(expanded.closeCalled, isTrue);
     expect(refreshed.closeCalled, isTrue);
-    expect(budget.usage, isEmpty);
   });
 
   testWidgets('pinned and ordinary demands stay complete and independent', (
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final budget = ResourceBudget();
-    final store = ThreadDirectoryStore(feed: feed, budget: budget);
+    final store = ThreadDirectoryStore(feed: feed);
     final owner = SidebarDirectoryOwner(
       observeThreads: store.observeThreads,
       onChanged: () {},
@@ -369,7 +364,6 @@ void main() {
     ]) {
       expect(handle.closeCalled, isTrue);
     }
-    expect(budget.usage, isEmpty);
   });
 }
 

@@ -202,20 +202,14 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   void _parentRetired() {
     if (!(_parentRetirement?.value ?? false) || _retired) return;
-    _retired = true;
-    _images.retire();
-    _consumer?.cancel();
-    _connection?.cancel();
-    _retireQueries();
-    unawaited(_closeOwned());
+    _retireOwner();
   }
 
   @override
   void didUpdateWidget(covariant TimelineChildrenConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!_parentActive) {
-      _unregister();
-      _queries?.retire();
+      _retireOwner();
     }
   }
 
@@ -246,12 +240,13 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             )
           : await widget.openMembers!(reference, _demand);
       _content = content;
-      if (_retired || !_parentActive) return;
+      if (_retired || !_parentActive) {
+        _retireOwner();
+        return;
+      }
       _connection = content.state.watch((state) {
-        if (_retired ||
-            !mounted ||
-            !_parentActive ||
-            !identical(_content, content)) {
+        if (!_parentActive) _retireOwner();
+        if (_retired || !mounted || !identical(_content, content)) {
           return;
         }
         setState(() {
@@ -274,11 +269,16 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   @override
   Future<void> applyBatch(ChatBatch batch) async {
-    if (_retired || !_parentActive) return;
+    if (_retired || !_parentActive) {
+      _retireOwner();
+      throw const StaleConversationScope();
+    }
     final content = _content;
     final controller = _controller;
     final adapter = _adapter;
-    if (content == null || controller == null || adapter == null) return;
+    if (content == null || controller == null || adapter == null) {
+      throw StateError('Children consumer has no active display resources');
+    }
     _synchronizeAttempt(content);
     if (batch.placement == ChatPlacement.set) {
       _retireQueries();
@@ -291,7 +291,8 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     try {
       await adapter.applyBatch(batch);
       if (!_eligibleDisplay(content, controller, attempt, generation)) {
-        return;
+        if (!_parentActive) _retireOwner();
+        throw const StaleConversationScope();
       }
       setState(() {
         if (batch.placement != ChatPlacement.append) _before = batch.before;
@@ -378,6 +379,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   @override
   Widget build(BuildContext context) {
+    if (_retired) return const SizedBox.shrink();
     final controller = _controller;
     final content = _content;
     final attempt = _attempt;
@@ -481,13 +483,19 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   @override
   void dispose() {
     _parentRetirement?.removeListener(_parentRetired);
+    _retireOwner();
+    super.dispose();
+  }
+
+  void _retireOwner() {
+    if (_retired) return;
     _retired = true;
+    _images.retire();
     _consumer?.cancel();
     _connection?.cancel();
     _retireQueries();
     _releaseController();
     unawaited(_closeOwned());
-    super.dispose();
   }
 
   Future<void> _closeOwned() =>

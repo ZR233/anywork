@@ -84,22 +84,28 @@ final class TimelineObservation {
   TimelineDisplayUnit unit(String id) =>
       [...main, ...live].singleWhere((unit) => unit.id == id);
 
-  Finder groupRow(String id) => find.byWidgetPredicate(
-    (widget) => widget is TimelineDisplayUnitView && widget.unit.id == id,
-  );
+  Finder groupRow(String id, {bool skipOffstage = true}) =>
+      find.byWidgetPredicate(
+        (widget) => widget is TimelineDisplayUnitView && widget.unit.id == id,
+        skipOffstage: skipOffstage,
+      );
   Finder itemRow(String id) => find.byWidgetPredicate(
     (widget) => widget is ChatItemView && widget.item.id == id,
   );
   Finder memberRow(String id) => find.byWidgetPredicate(
     (widget) => widget is ChatItemView && widget.item.atom?.id == id,
   );
-  Finder groupHeader(String id) => find.descendant(
-    of: groupRow(id),
-    matching: find.byKey(ValueKey('source-unit-header:$id')),
+  Finder groupHeader(String id, {bool skipOffstage = true}) => find.descendant(
+    of: groupRow(id, skipOffstage: skipOffstage),
+    matching: find.byKey(
+      ValueKey('source-unit-header:$id'),
+      skipOffstage: skipOffstage,
+    ),
+    skipOffstage: skipOffstage,
   );
 
-  Finder _groupTitle(String id) {
-    final header = groupHeader(id);
+  Finder _groupTitle(String id, {bool skipOffstage = true}) {
+    final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
     // The header's Align/Row can have its centre in a Spacer, outside its
     // children's hit path. Target the real title inside this exact unit, not
@@ -110,7 +116,9 @@ final class TimelineObservation {
         (widget) =>
             widget is Text &&
             widget.data == tester.widget<TimelineActivityRow>(header).label,
+        skipOffstage: skipOffstage,
       ),
+      skipOffstage: skipOffstage,
     );
   }
 
@@ -125,10 +133,16 @@ final class TimelineObservation {
     }
   }
 
-  Future<void> tap(Finder target, {double scrollAlignment = 0}) async {
+  Future<void> tap(
+    Finder target, {
+    double scrollAlignment = 0,
+    bool Function()? isActive,
+  }) async {
+    if (isActive?.call() == false) return;
     expect(target, findsOneWidget);
     final clock = Stopwatch()..start();
     while (true) {
+      if (isActive?.call() == false) return;
       if (clock.elapsed > const Duration(seconds: 60)) {
         fail('Timed out waiting for hittable production control');
       }
@@ -140,6 +154,7 @@ final class TimelineObservation {
       );
       await tester.pump();
       expect(tester.takeException(), isNull);
+      if (isActive?.call() == false) return;
       if (target.hitTestable().evaluate().length == 1) break;
       await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
@@ -474,9 +489,29 @@ final class TimelineObservation {
     while (true) {
       requireOriginal();
       if (clock.elapsed > deadline) {
-        stop('Main did not mount the requested canonical row');
+        stop('Main did not reveal the requested canonical row');
       }
-      if (canonical.evaluate().isNotEmpty) break;
+      if (canonical.evaluate().isNotEmpty) {
+        await demand(
+          'ensure canonical visible',
+          () => tester.ensureVisible(canonical),
+        );
+        requireOriginal();
+        final wanted = originalController.messages.indexWhere(
+          (message) => message.id == unitId,
+        );
+        if (_mainRevealIndices(
+          originalController,
+          originalScrollable!,
+          visibleOnly: true,
+        ).contains(wanted)) {
+          break;
+        }
+        // Measuring cached rows can correct the reversed list's scroll offset
+        // after ensureVisible. Reveal the same original row in the next layout,
+        // retaining its owner, metadata and the original deadline.
+        continue;
+      }
       final wanted = originalController.messages.indexWhere(
         (item) => item.id == unitId,
       );
@@ -514,21 +549,6 @@ final class TimelineObservation {
       );
       requireOriginal();
     }
-    await demand(
-      'ensure canonical visible',
-      () => tester.ensureVisible(canonical),
-    );
-    requireOriginal();
-    final wanted = originalController.messages.indexWhere(
-      (message) => message.id == unitId,
-    );
-    if (!_mainRevealIndices(
-      originalController,
-      originalScrollable!,
-      visibleOnly: true,
-    ).contains(wanted)) {
-      stop('Main canonical row did not become visible after ensureVisible');
-    }
     final fragmentElement = requireTarget();
     if (originalUnit!.item.kind == TimelineItemKind.workGroup) {
       final headers = groupHeader(unitId).evaluate().toList();
@@ -542,15 +562,17 @@ final class TimelineObservation {
         interaction = _groupTitle(unitId);
       }
     }
-    requireInteraction();
-    await demand(
-      interactionHeader == null
-          ? 'ensure original fragment visible'
-          : 'ensure original group title visible',
-      () => tester.ensureVisible(interaction),
-    );
-    requireOriginal();
-    requireInteraction();
+    do {
+      requireInteraction();
+      await demand(
+        interactionHeader == null
+            ? 'ensure original fragment visible'
+            : 'ensure original group title visible',
+        () => tester.ensureVisible(interaction),
+      );
+      requireOriginal();
+      requireInteraction();
+    } while (interaction.hitTestable().evaluate().length != 1);
     final fragment = target.evaluate().single.findRenderObject();
     if (fragment is! RenderBox || !fragment.attached || !fragment.hasSize) {
       stop('Main original fragment has no attached sized RenderBox');
@@ -888,8 +910,20 @@ final class TimelineObservation {
 
   Future<void> closeGroup(TimelineGroupDisplay display) async {
     if (display.isCurrent && display.expanded) {
-      await reveal(groupHeader(display.unitId), display.unitId);
-      await tap(_groupTitle(display.unitId));
+      // This original owner is mounted in current or the Main cache. Reveal
+      // its exact title directly, without navigating to a replacement row.
+      if (display.isCurrent && display.expanded) {
+        final title = tester.element(
+          _groupTitle(display.unitId, skipOffstage: false),
+        );
+        await tap(
+          find.byElementPredicate(
+            (element) => identical(element, title),
+            skipOffstage: false,
+          ),
+          isActive: () => display.isCurrent && display.expanded,
+        );
+      }
     }
     await until(
       () =>
@@ -898,7 +932,7 @@ final class TimelineObservation {
           !display.isCurrent &&
           display.before == null &&
           !display.loading,
-      'collapsed ordinary window revoked',
+      'collapsed member window revoked',
     );
     expect(display.error, isNull);
   }

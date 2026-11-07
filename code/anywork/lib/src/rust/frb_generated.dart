@@ -17041,16 +17041,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return BridgeTimelineGroupSummary(
-      memberCount: dco_decode_u_32(arr[0]),
-      activeCount: dco_decode_u_32(arr[1]),
-      failedCount: dco_decode_u_32(arr[2]),
-      cancelledCount: dco_decode_u_32(arr[3]),
-      categories: dco_decode_list_bridge_timeline_category_count(arr[4]),
-      startedAt: dco_decode_opt_box_autoadd_i_64(arr[5]),
-      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[6]),
+      latestThinkingSummary: dco_decode_opt_String(arr[0]),
+      memberCount: dco_decode_u_32(arr[1]),
+      activeCount: dco_decode_u_32(arr[2]),
+      failedCount: dco_decode_u_32(arr[3]),
+      cancelledCount: dco_decode_u_32(arr[4]),
+      categories: dco_decode_list_bridge_timeline_category_count(arr[5]),
+      startedAt: dco_decode_opt_box_autoadd_i_64(arr[6]),
+      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[7]),
     );
   }
 
@@ -31669,6 +31670,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_latestThinkingSummary = sse_decode_opt_String(deserializer);
     var var_memberCount = sse_decode_u_32(deserializer);
     var var_activeCount = sse_decode_u_32(deserializer);
     var var_failedCount = sse_decode_u_32(deserializer);
@@ -31679,6 +31681,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_startedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_finishedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     return BridgeTimelineGroupSummary(
+      latestThinkingSummary: var_latestThinkingSummary,
       memberCount: var_memberCount,
       activeCount: var_activeCount,
       failedCount: var_failedCount,
@@ -45788,6 +45791,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.latestThinkingSummary, serializer);
     sse_encode_u_32(self.memberCount, serializer);
     sse_encode_u_32(self.activeCount, serializer);
     sse_encode_u_32(self.failedCount, serializer);

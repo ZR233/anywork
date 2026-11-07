@@ -1,12 +1,7 @@
 import 'dart:async';
 
 import '../../../anywork_client.dart'
-    show
-        Observation,
-        OperationHandle,
-        OperationState,
-        ResourceKind,
-        ResourcePermit;
+    show Observation, OperationHandle, OperationState;
 import '../../../models.dart';
 import '../../../studio_ports.dart';
 import '../anywork_client.dart';
@@ -28,18 +23,10 @@ class BotsCommands {
     if (_client.isClosed) throw StateError('Client is closed');
     final key = (botId, chatId);
     if (text.isEmpty) {
-      _messageDrafts.remove(key)?.permit.release();
+      _messageDrafts.remove(key);
       return;
     }
-    final draft = _messageDrafts.putIfAbsent(
-      key,
-      () => _BotMessageDraft(
-        _client.budget.acquire(
-          ResourceKind.draft,
-          owner: 'bot-message:$botId:$chatId',
-        ),
-      ),
-    );
+    final draft = _messageDrafts.putIfAbsent(key, () => _BotMessageDraft());
     draft.text = text;
   }
 
@@ -356,9 +343,6 @@ class BotsCommands {
   Future<void> close() {
     _lane.seal();
     clearSecret();
-    for (final draft in _messageDrafts.values) {
-      draft.permit.release();
-    }
     _messageDrafts.clear();
     return _lane.join();
   }
@@ -367,8 +351,6 @@ class BotsCommands {
 }
 
 class _BotMessageDraft {
-  _BotMessageDraft(this.permit);
-  final ResourcePermit permit;
   String text = '';
 }
 

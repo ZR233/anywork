@@ -1,5 +1,4 @@
 import '../../../models.dart';
-import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
 
 /// Internal evidence only: no body, descriptor, feed demand or history mirror.
@@ -30,11 +29,9 @@ abstract interface class InputTurnFacts {
   });
 }
 
-/// Only explicitly registered inputs have extra observations, bounded by the
-/// existing observer budget. Registration never creates a session or feed.
+/// Only explicitly registered inputs have extra observations. Registration never creates a session or feed.
 final class InputFactRegistry implements InputTurnFacts {
-  InputFactRegistry(this.budget, {required this.seed});
-  final ResourceBudget budget;
+  InputFactRegistry({required this.seed});
   final void Function(String, void Function(InputTurnFact)) seed;
   final Map<String, Set<_FactObservation>> _inputs = {};
   bool get hasObservers => _inputs.isNotEmpty;
@@ -46,11 +43,7 @@ final class InputFactRegistry implements InputTurnFacts {
     String? expectedThreadId,
     required void Function(InputTurnFact) onFact,
   }) {
-    final permit = budget.acquire(
-      ResourceKind.observer,
-      owner: 'input:$inputId',
-    );
-    final observation = _FactObservation(this, inputId, permit, onFact);
+    final observation = _FactObservation(this, inputId, onFact);
     (_inputs[inputId] ??= {}).add(observation);
     try {
       // Do not filter by expectedThreadId here: the submission owner must see
@@ -73,10 +66,9 @@ final class InputFactRegistry implements InputTurnFacts {
 }
 
 final class _FactObservation implements Observation {
-  _FactObservation(this.registry, this.inputId, this.permit, this.callback);
+  _FactObservation(this.registry, this.inputId, this.callback);
   final InputFactRegistry registry;
   final String inputId;
-  final ResourcePermit permit;
   final void Function(InputTurnFact) callback;
   @override
   bool isCancelled = false;
@@ -97,6 +89,5 @@ final class _FactObservation implements Observation {
     final observers = registry._inputs[inputId];
     observers?.remove(this);
     if (observers?.isEmpty ?? false) registry._inputs.remove(inputId);
-    permit.release();
   }
 }

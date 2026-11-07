@@ -1014,6 +1014,7 @@ struct QueuedEffect {
 #[derive(Debug, Default)]
 struct Progress {
     stopped: bool,
+    deleting: bool,
     /// Highest effect sequence whose history/checkpoint transaction completed.
     durable: u64,
     /// Highest checkpoint revision already committed with its effect.
@@ -1220,6 +1221,7 @@ pub(crate) struct HistoryChannel {
     /// Registration and explicit stop share this gate, including cancellation during startup.
     workers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     worker_failure: Mutex<Option<Arc<tokio::task::JoinError>>>,
+    deletion_joined: std::sync::atomic::AtomicBool,
     pub(super) stopping: tokio_util::sync::CancellationToken,
     /// The process-wide reliable budget, shared by every Thread's channel.
     ///
@@ -1639,6 +1641,7 @@ impl HistoryChannel {
             step_lock: tokio::sync::Mutex::new(()),
             workers: tokio::sync::Mutex::new(Vec::new()),
             worker_failure: Mutex::new(None),
+            deletion_joined: std::sync::atomic::AtomicBool::new(false),
             stopping: tokio_util::sync::CancellationToken::new(),
             process_bytes,
             delivery_bytes,
@@ -2115,6 +2118,23 @@ impl HistoryChannel {
     /// Called only after the producer stopped and the observation's handoff became durable.
     /// Cancelling the waiter leaves the workers in this owner for a subsequent join.
     pub(crate) async fn stop_and_join(&self) -> Result<()> {
+        self.stop_and_join_with_purpose(crate::thread_assembler::ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn stop_and_join_for_deletion(&self) -> Result<()> {
+        self.stop_and_join_with_purpose(crate::thread_assembler::ClosePurpose::Delete)
+            .await
+    }
+
+    pub(crate) fn deletion_joined(&self) -> bool {
+        self.deletion_joined.load(Ordering::Acquire)
+    }
+
+    async fn stop_and_join_with_purpose(
+        &self,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<()> {
         let mut workers = self.workers.lock().await;
         {
             let mut progress = self
@@ -2122,10 +2142,12 @@ impl HistoryChannel {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             ensure!(
-                progress.effects.is_empty() && progress.error.is_none(),
+                purpose == crate::thread_assembler::ClosePurpose::Delete
+                    || (progress.effects.is_empty() && progress.error.is_none()),
                 "cannot stop a history writer with undurable facts"
             );
             progress.stopped = true;
+            progress.deleting = purpose == crate::thread_assembler::ClosePurpose::Delete;
         }
         self.stopping.cancel();
         self.changed.notify_waiters();
@@ -2147,8 +2169,45 @@ impl HistoryChannel {
         if let Some(error) = failure {
             return Err(error).context("history worker failed while stopping");
         }
+        if purpose == crate::thread_assembler::ClosePurpose::Delete {
+            let (released, discarded) = {
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let released = progress
+                    .effect_bytes
+                    .saturating_add(progress.queue_metadata_bytes)
+                    .saturating_add(
+                        progress
+                            .operation_output
+                            .values()
+                            .map(OperationOutput::retained)
+                            .sum::<u64>(),
+                    );
+                let discarded = (
+                    std::mem::take(&mut progress.effects),
+                    progress.in_flight.take(),
+                    progress.projection_pending.take(),
+                    progress.pending_accounting.take(),
+                );
+                progress.effect_bytes = 0;
+                progress.queue_metadata_bytes = 0;
+                progress.prepared_bytes = 0;
+                progress.projection_bytes = 0;
+                progress.in_flight_bytes = 0;
+                progress.pending_saved_at.clear();
+                progress.operation_output.clear();
+                self.report(&progress);
+                (released, discarded)
+            };
+            // Prepared material may release delivery guards that re-enter this channel.
+            drop(discarded);
+            self.release_process_bytes(released);
+            self.deletion_joined.store(true, Ordering::Release);
+        }
         ensure!(
-            self.is_clean(),
+            purpose == crate::thread_assembler::ClosePurpose::Delete || self.is_clean(),
             "history writer stopped with undurable facts"
         );
         Ok(())
@@ -2531,6 +2590,11 @@ impl ThreadStorageSink {
             // 连续可重试失败的起点；任何一次成功的推进都清零。只有持续超过窗口才升级上报。
             let mut retrying_since: Option<Instant> = None;
             loop {
+                // A deletion stop is published under progress before cancellation. Finish any
+                // current SQL step, then leave without retries or a final preservation write.
+                if inner.channel.stopping.is_cancelled() && lock_progress(&inner).deleting {
+                    return;
+                }
                 retry_accounting(&inner);
                 // The task keeps the persistence owner alive while it owes facts, even when the
                 // last Thread or GUI handle is dropped. The same owner finishes its bounded
@@ -7236,6 +7300,7 @@ pub(crate) mod storage_fault_tests {
                 + 128
                 + 256 * accounting_only.current.timeline.len() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
+                + accounting_only.current.operation_bytes()
                 + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
                     as u64
                 + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64,

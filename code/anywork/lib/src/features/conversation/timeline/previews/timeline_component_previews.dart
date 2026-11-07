@@ -672,8 +672,19 @@ Widget timelineNarrowScaledPreview() => _timelinePreviewHost(
 Widget timelineCombinedPreview() =>
     _timelinePreviewHost(const _TimelineCombinedPreview());
 
+@Preview(name: '间距 / 正文与工作组', group: 'Timeline · 组合视图', size: Size(1040, 680))
+Widget timelineSpacingPreview() =>
+    _timelinePreviewHost(const _TimelineCombinedPreview(spacing: true));
+
+@Preview(name: '间距 / 窄窗大字', group: 'Timeline · 组合视图', size: Size(390, 1040))
+Widget timelineSpacingNarrowPreview() => _timelinePreviewHost(
+  const _TimelineCombinedPreview(spacing: true),
+  textScale: 1.6,
+);
+
 class _TimelineCombinedPreview extends StatefulWidget {
-  const _TimelineCombinedPreview();
+  const _TimelineCombinedPreview({this.spacing = false});
+  final bool spacing;
 
   @override
   State<_TimelineCombinedPreview> createState() =>
@@ -681,11 +692,14 @@ class _TimelineCombinedPreview extends StatefulWidget {
 }
 
 class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
-  late final _PreviewTimelineControls controls = _PreviewTimelineControls();
+  late final _PreviewTimelineControls controls = _PreviewTimelineControls(
+    messages: widget.spacing ? TimelinePreviewFixtures.spacingMessages() : null,
+  );
 
   @override
   void dispose() {
     controls.dispose();
+    members.dispose();
     super.dispose();
   }
 
@@ -707,6 +721,12 @@ class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
     onLink: (_) {},
     isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
     remoteImageBuilder: (_, _) => const Text('外部图片需要显式加载'),
+    groupMembersBuilder: (_) => TimelineChildrenView(
+      controller: members,
+      generation: 1,
+      isDisplayActive: () => true,
+      contentRangeBuilder: (_, _, label, _, _) => Text(label),
+    ),
     contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
         TimelineContentRangeView(
           itemId: itemId,
@@ -724,12 +744,16 @@ class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
         ),
     attachmentBuilder: (item) => _previewAttachments(item.id, item.attachments),
   );
+
+  late final members = InMemoryChatController(
+    messages: TimelinePreviewFixtures.commandMessages(),
+  );
 }
 
 final class _PreviewTimelineControls implements TimelineUiControllers {
-  _PreviewTimelineControls()
+  _PreviewTimelineControls({List<Message>? messages})
     : controller = InMemoryChatController(
-        messages: TimelinePreviewFixtures.messages(),
+        messages: messages ?? TimelinePreviewFixtures.messages(),
       );
 
   @override
@@ -751,6 +775,9 @@ final class _PreviewTimelineControls implements TimelineUiControllers {
   Future<void> unbind() async {}
 
   void dispose() {
+    for (final message in controller.messages) {
+      chatItemPresentationOf(message)?.displayUnit?.expansion.dispose();
+    }
     controller.dispose();
     scrollController.dispose();
   }

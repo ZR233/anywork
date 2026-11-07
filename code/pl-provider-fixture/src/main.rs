@@ -255,7 +255,7 @@ async fn main() -> Result<()> {
             realtime_host_cwd = Some(directory);
             match timeline_concept.as_ref() {
                 Some(control) => control.realtime_script(&path),
-                None => gui_realtime_script(&path, None, None, None),
+                None => gui_realtime_script(&path, None),
             }
         }
         "history-lock" => gui_history_lock_script(),

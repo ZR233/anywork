@@ -1,5 +1,4 @@
 import '../contracts/stamps.dart';
-import '../lifecycle/resource_budget.dart';
 import '../observation/latest_value.dart';
 
 enum CommitDisposition { applied, noChange }
@@ -86,17 +85,15 @@ final class OperationState {
 final class MutationBoard {
   MutationBoard({
     required this.clientId,
-    ResourceBudget? budget,
     this.maxRetained = 128,
     this.maxObservedResources = 1024,
-  }) : budget = budget ?? ResourceBudget() {
+  }) {
     if (maxRetained < 1) throw ArgumentError.value(maxRetained, 'maxRetained');
     if (maxObservedResources < 1)
       throw ArgumentError.value(maxObservedResources, 'maxObservedResources');
   }
 
   final String clientId;
-  final ResourceBudget budget;
   final int maxRetained;
   final int maxObservedResources;
   final Map<OperationId, OperationHandle> _operations = {};
@@ -110,14 +107,9 @@ final class MutationBoard {
     OperationObservationOwner? observationOwner,
   }) {
     final id = OperationId('$clientId:${++_sequence}');
-    final permit = budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: id.value,
-    );
     final operation = OperationHandle._(
       this,
       OperationState(id: id, target: target, draft: draft),
-      permit,
       observationOwner,
     );
     _operations[id] = operation;
@@ -177,15 +169,10 @@ final class MutationBoard {
 }
 
 final class OperationHandle {
-  OperationHandle._(
-    this._board,
-    OperationState initial,
-    this._permit,
-    this._observationOwner,
-  ) : state = LatestValue(initial);
+  OperationHandle._(this._board, OperationState initial, this._observationOwner)
+    : state = LatestValue(initial);
 
   final MutationBoard _board;
-  final ResourcePermit _permit;
   final OperationObservationOwner? _observationOwner;
   final LatestValue<OperationState> state;
   OperationId get id => state.value.id;
@@ -312,7 +299,6 @@ final class OperationHandle {
 
   void _publish(OperationState next) {
     state.publish(next);
-    if (!next.isPending) _permit.release();
     _board._prune();
   }
 }

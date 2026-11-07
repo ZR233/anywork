@@ -7,6 +7,65 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::result::Result;
 use std::sync::OnceLock;
 
+pub(in crate::studio) const THINKING_SUMMARY_TAIL_BYTES: usize =
+    super::activity::ACTIVITY_SUMMARY_TAIL_BYTES;
+
+/// A byte range may begin in a UTF-8 character. Discard only that partial
+/// character; malformed accepted text is an error, not a replacement summary.
+pub(in crate::studio) fn thinking_summary_tail(
+    bytes: &[u8],
+) -> Result<Option<String>, ProjectionError> {
+    let start = bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| **byte & 0xc0 == 0x80)
+        .count();
+    let text = std::str::from_utf8(&bytes[start..])
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+    Ok(super::activity::thinking_summary_line(text))
+}
+
+pub(super) fn completed_thinking_summary(
+    atom: &ChatAtom,
+    contents: &pl_core::chat::ChatContents,
+) -> Result<Option<String>, ProjectionError> {
+    if atom.kind != ChatAtomKind::Reasoning {
+        return Ok(None);
+    }
+    for content in atom
+        .contents
+        .iter()
+        .rev()
+        .filter(|content| content.role == ChatContentRole::ReasoningSummary)
+    {
+        let ContentTarget::Body { owner, key } = &content.reference.target else {
+            return Err(ProjectionError::History(
+                "reasoning summary is not a body reference".into(),
+            ));
+        };
+        let key = pl_core::chat::ChatContentKey {
+            owner: crate::studio::conversation_identity::content_owner_key(owner)
+                .map_err(|error| ProjectionError::History(error.to_string()))?,
+            key: key.clone(),
+        };
+        let content = contents.get(&key).ok_or_else(|| {
+            ProjectionError::History("reasoning summary content is missing".into())
+        })?;
+        let offset = content
+            .data
+            .len()
+            .saturating_sub(THINKING_SUMMARY_TAIL_BYTES);
+        let bytes = content
+            .data
+            .range(offset as u64, THINKING_SUMMARY_TAIL_BYTES)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        if let Some(summary) = thinking_summary_tail(bytes.as_bytes())? {
+            return Ok(Some(summary));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct FactKey {
     effect: u64,
@@ -55,11 +114,13 @@ enum Class {
 fn classify(atom: &ChatAtom) -> Class {
     match atom.kind {
         ChatAtomKind::Input | ChatAtomKind::Text => Class::Text,
+        ChatAtomKind::ToolCall if matches!(atom.source, ChatSourceId::BackgroundResult { .. }) => {
+            Class::Work
+        }
         ChatAtomKind::Reasoning
         | ChatAtomKind::ToolCall
         | ChatAtomKind::FileChange
         | ChatAtomKind::Skill
-        | ChatAtomKind::Unknown
             if matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
                 && atom.delivery != ChatDeliveryKind::Independent =>
         {
@@ -214,9 +275,22 @@ struct LiveItem {
     active: u32,
     next_member: u64,
     last_source_order: Option<u64>,
+    latest_thinking_order: Option<u64>,
     empty: bool,
 }
 impl LiveItem {
+    fn observe_thinking_summary(&mut self, order: u64, summary: Option<String>) {
+        if let Some(text) = summary.filter(|text| !text.trim().is_empty())
+            && self
+                .latest_thinking_order
+                .is_none_or(|previous| order >= previous)
+            && let Some(summary) = &mut self.item.summary
+        {
+            self.latest_thinking_order = Some(order);
+            summary.latest_thinking_summary = Some(text);
+        }
+    }
+
     fn ready(&self) -> bool {
         self.active == 0
             && (self.item.kind != TimelineItemKind::WorkGroup || self.item.admission_closed)
@@ -249,6 +323,9 @@ fn serialize_live_items<S: serde::Serializer>(
 type SourceItems = BTreeMap<(bool, u64, FactKey), BTreeSet<u64>>;
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct TimelineProjection {
+    // Only the published TimelineItems migration selects the old rule. Runtime
+    // and later named content migrations always use typed-source semantics.
+    published_classification: bool,
     database_id: String,
     generation: String,
     next_position: u64,
@@ -269,6 +346,7 @@ pub(in crate::studio) enum TimelineInput {
     Atom {
         atom: Box<ChatAtom>,
         payload: Option<PayloadData>,
+        thinking_summary: Option<String>,
     },
     SourceEnd {
         source: ChatSourceState,
@@ -321,6 +399,7 @@ impl TimelineProjection {
         next_position: u64,
     ) -> Self {
         Self {
+            published_classification: false,
             database_id,
             generation,
             next_position,
@@ -336,6 +415,23 @@ impl TimelineProjection {
             retained_bytes: OnceLock::new(),
         }
     }
+    pub(in crate::studio) fn published_classification(&mut self) {
+        self.published_classification = true;
+    }
+    fn classify(&self, atom: &ChatAtom) -> Class {
+        if self.published_classification
+            && atom.kind == ChatAtomKind::Unknown
+            && matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
+            && atom.delivery != ChatDeliveryKind::Independent
+        {
+            Class::Work
+        } else {
+            classify(atom)
+        }
+    }
+    fn excluded(&self, atom: &ChatAtom) -> bool {
+        !self.published_classification && atom.kind == ChatAtomKind::Inference
+    }
     pub(in crate::studio) fn generation(&self) -> &str {
         &self.generation
     }
@@ -344,12 +440,16 @@ impl TimelineProjection {
         input: TimelineInput,
     ) -> Result<(), ProjectionError> {
         match input {
-            TimelineInput::Atom { atom, payload } => {
+            TimelineInput::Atom {
+                atom,
+                payload,
+                thinking_summary,
+            } => {
                 if outcome(&atom).is_some() {
                     let sequence = atom.completion_seq.unwrap_or(0);
-                    self.complete(*atom, sequence, payload)?;
+                    self.admit(*atom, Some(sequence), payload, thinking_summary)?;
                 } else {
-                    self.observe(&atom, None)?;
+                    self.observe_with_summary(&atom, None, thinking_summary)?;
                 }
             }
             TimelineInput::SourceEnd { source } => self.end_source(&source.source),
@@ -377,6 +477,11 @@ impl TimelineProjection {
                     summary.active_count != live.active
                         || u64::from(summary.member_count) != live.next_member
                         || summary.active_count > summary.member_count
+                        || summary.latest_thinking_summary.is_some()
+                            != live.latest_thinking_order.is_some()
+                        || live
+                            .latest_thinking_order
+                            .is_some_and(|order| order >= live.next_member)
                 }) || live.item.members.is_none()
                     || live.item.payload.is_some()
                     || !live.item.contents.is_empty()
@@ -438,12 +543,31 @@ impl TimelineProjection {
         atom: &ChatAtom,
         sequence: Option<u64>,
     ) -> Result<(), ProjectionError> {
+        self.observe_with_summary(atom, sequence, None)
+    }
+
+    fn observe_with_summary(
+        &mut self,
+        atom: &ChatAtom,
+        sequence: Option<u64>,
+        thinking_summary: Option<String>,
+    ) -> Result<(), ProjectionError> {
         // Current is a bounded preview, not a replay stream. Terminal facts enter
         // exactly once from the original completion publication.
-        if outcome(atom).is_some() || atom.kind == ChatAtomKind::TurnReceipt {
+        if outcome(atom).is_some() || atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom)
+        {
             return Ok(());
         }
         if let Some(member) = self.active.get_mut(&atom.id) {
+            if atom.kind == ChatAtomKind::Reasoning
+                && let Some(index) = self.item_ids.get(&member.item_id)
+            {
+                self.retained_bytes.take();
+                self.items
+                    .get_mut(index)
+                    .expect("indexed live item")
+                    .observe_thinking_summary(member.order, thinking_summary);
+            }
             let next = active_head(atom);
             if member.atom == next {
                 return Ok(());
@@ -472,15 +596,16 @@ impl TimelineProjection {
             }
             return Ok(());
         }
-        self.admit(atom.clone(), sequence, None)
+        self.admit(atom.clone(), sequence, None, thinking_summary)
     }
+    #[cfg(test)]
     pub(in crate::studio) fn complete(
         &mut self,
         atom: ChatAtom,
         sequence: u64,
         payload: Option<PayloadData>,
     ) -> Result<(), ProjectionError> {
-        self.admit(atom, Some(sequence), payload)
+        self.admit(atom, Some(sequence), payload, None)
     }
     /// Formal legacy normalization: a frozen source ordinal proves structural
     /// admission, not a historical start event. The stored input remains the
@@ -489,7 +614,7 @@ impl TimelineProjection {
         &mut self,
         atom: &ChatAtom,
     ) -> Result<(), ProjectionError> {
-        if atom.kind == ChatAtomKind::TurnReceipt {
+        if atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom) {
             return Ok(());
         }
         let mut header = lightweight(atom);
@@ -505,8 +630,8 @@ impl TimelineProjection {
         header.completion_item_id = None;
         header.completion_seq = None;
         header.content_present = None;
-        self.admit(header, atom.completion_seq, None)?;
-        if outcome(atom).is_some() && classify(atom) == Class::Work {
+        self.admit(header, atom.completion_seq, None, None)?;
+        if outcome(atom).is_some() && self.classify(atom) == Class::Work {
             // A legacy header is not a real active fact. Keep only the group's
             // unresolved count; its member association is already an incremental
             // SQLite row and is restored one at a time for the actual terminal.
@@ -547,20 +672,46 @@ impl TimelineProjection {
     pub(in crate::studio) fn refresh_current(
         &mut self,
         atom: &ChatAtom,
+        thinking_summary: Option<String>,
     ) -> Result<(), ProjectionError> {
+        if self.excluded(atom) {
+            return Ok(());
+        }
         if !self.active.contains_key(&atom.id) {
             return Err(ProjectionError::History(
                 "saved active atom has no canonical start at rebuild cut".into(),
             ));
         }
-        self.observe(atom, None)
+        self.observe_with_summary(atom, None, thinking_summary)
+    }
+
+    /// Streaming may enrich an already-admitted member, but cannot create a
+    /// structural start or a new commit point before the reliable handoff.
+    pub(super) fn refresh_thinking_summary(&mut self, id: &str, summary: String) {
+        let Some(member) = self.active.get(id) else {
+            return;
+        };
+        if member.atom.kind != ChatAtomKind::Reasoning {
+            return;
+        }
+        let index = self.item_ids[&member.item_id];
+        self.retained_bytes.take();
+        self.items
+            .get_mut(&index)
+            .expect("indexed live item")
+            .observe_thinking_summary(member.order, Some(summary));
     }
     fn admit(
         &mut self,
         atom: ChatAtom,
         sequence: Option<u64>,
         payload: Option<PayloadData>,
+        thinking_summary: Option<String>,
     ) -> Result<(), ProjectionError> {
+        if self.excluded(&atom) {
+            // Diagnostics cannot admit a member or close the current work segment.
+            return Ok(());
+        }
         self.retained_bytes.take();
         let terminal = outcome(&atom).is_some();
         if atom.kind == ChatAtomKind::TurnReceipt
@@ -579,7 +730,7 @@ impl TimelineProjection {
             })?;
             (index, member.order, false)
         } else {
-            let class = classify(&atom);
+            let class = self.classify(&atom);
             if class != Class::Work {
                 self.close_group_for(&atom.source, started);
             }
@@ -632,6 +783,7 @@ impl TimelineProjection {
                                 categories: Vec::new(),
                                 started_at: atom.started_at,
                                 finished_at: None,
+                                latest_thinking_summary: None,
                             }),
                             members: (class == Class::Work).then(|| TimelineMembersRef {
                                 database_id: self.database_id.clone(),
@@ -651,6 +803,7 @@ impl TimelineProjection {
                         active: 0,
                         next_member: 0,
                         last_source_order: None,
+                        latest_thinking_order: None,
                         empty: false,
                     })?
                 }
@@ -669,6 +822,9 @@ impl TimelineProjection {
         let old_ready = self.items[&index].ready_key;
         self.ready.remove(&(old_ready, index));
         let item = self.items.get_mut(&index).expect("indexed live item");
+        if atom.kind == ChatAtomKind::Reasoning {
+            item.observe_thinking_summary(order, thinking_summary);
+        }
         if fresh {
             add(&mut item.active)?;
             if let Some(summary) = &mut item.item.summary {
@@ -713,6 +869,11 @@ impl TimelineProjection {
                 Some(ChatTerminalOutcome::Failed) => add(&mut summary.failed_count)?,
                 Some(ChatTerminalOutcome::Cancelled) => add(&mut summary.cancelled_count)?,
                 _ => {}
+            }
+            // A background result is its own closed source segment. Its real
+            // terminal can commit independently of any foreground source prefix.
+            if terminal && matches!(atom.source, ChatSourceId::BackgroundResult { .. }) {
+                item.item.admission_closed = true;
             }
         } else {
             item.item.atom_kind = Some(atom.kind);

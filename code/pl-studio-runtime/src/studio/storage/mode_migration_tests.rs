@@ -2791,7 +2791,7 @@ async fn restore_pre_timeline_history_fixture(
 
 /// Recreate the published schema12 boundary without asking the current writer to accept v1.
 /// Only the ordinary checkpoint/context facts are seeded through that writer; the frozen old
-/// extension payloads are installed after removing the schema13/14/15 outputs and completion records.
+/// extension payloads are installed after removing later projection outputs and completion records.
 async fn persist_schema12_fixture(
     path: &std::path::Path,
     thread_id: &str,
@@ -2837,7 +2837,9 @@ async fn persist_schema12_fixture(
          DELETE FROM seaql_migrations
              WHERE version IN ('m20261101_000010_history_model_route_head',
                                'm20261102_000001_history_atom_metadata',
-                               'm20261103_000001_history_timeline_items');
+                               'm20261103_000001_history_timeline_items',
+                               'm20261108_000001_history_timeline_thinking_summary',
+                               'm20261108_000001_history_source_classification');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
     .await?;
@@ -2869,7 +2871,11 @@ async fn persist_schema12_fixture(
                  WHERE type='table' AND name IN ('timeline_items','timeline_item_members',
                        'timeline_projection_state','conversation_atom_facts')) AS timeline_tables,
                 (SELECT COUNT(*) FROM seaql_migrations
-                 WHERE version='m20261103_000001_history_timeline_items') AS timeline_completed
+                 WHERE version='m20261103_000001_history_timeline_items') AS timeline_completed,
+                (SELECT COUNT(*) FROM seaql_migrations
+                 WHERE version IN ('m20261108_000001_history_timeline_thinking_summary',
+                                   'm20261108_000001_history_source_classification'))
+                    AS later_projection_completed
              FROM history_meta WHERE id=1",
         ))
         .await?
@@ -2882,6 +2888,10 @@ async fn persist_schema12_fixture(
     assert_eq!(boundary.try_get::<i64>("", "metadata_completed")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "timeline_tables")?, 0);
     assert_eq!(boundary.try_get::<i64>("", "timeline_completed")?, 0);
+    assert_eq!(
+        boundary.try_get::<i64>("", "later_projection_completed")?,
+        0
+    );
     assert_eq!(saved_checkpoint_payload(&db).await?, payload);
     db.close().await?;
     Ok(checkpoint)

@@ -412,6 +412,7 @@ impl PreparedEffect {
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
             .saturating_add(self.current.pending_index_bytes())
+            .saturating_add(self.current.operation_bytes())
             .saturating_add(
                 serde_json::to_vec(self.current.source_changes.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1472,10 +1473,9 @@ impl LiveProjection {
         self.current
             .adopt_timeline_projection(current.frozen_projection(), &projection);
         Arc::make_mut(&mut prepared).replace_projection(projection.clone());
-        Ok((
-            prepared,
-            super::CurrentState::with_projection(current, projection),
-        ))
+        let current = super::CurrentState::with_projection(current, projection);
+        Arc::make_mut(&mut prepared).replay_current = Some(current.clone());
+        Ok((prepared, current))
     }
 
     /// Drains the items this fold step proved ready, in history order, together
@@ -1550,9 +1550,11 @@ impl LiveProjection {
                 .or_insert_with(|| atom.clone());
         }
         for atom in active.into_values() {
+            let thinking_summary = self.current_thinking_summary(&atom);
             let input = TimelineInput::Atom {
                 atom: Box::new(atom),
                 payload: None,
+                thinking_summary,
             };
             inputs.push((input.order(current.projection().source_effect_seq)?, input));
         }
@@ -1577,9 +1579,12 @@ impl LiveProjection {
             })?;
             atom.completion_seq = Some(record.header.append_seq);
             let payload = timeline_payload(&database_id, &atom, &record.payload);
+            let thinking_summary =
+                super::timeline::completed_thinking_summary(&atom, &record.contents)?;
             let input = TimelineInput::Atom {
                 atom: Box::new(atom),
                 payload: Some(payload),
+                thinking_summary,
             };
             inputs.push((input.order(current.projection().source_effect_seq)?, input));
         }
@@ -1593,10 +1598,26 @@ impl LiveProjection {
         // this is neither another start nor another commit point.
         for atom in &current.projection().atoms {
             if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt {
-                timeline.refresh_current(atom)?;
+                timeline.refresh_current(atom, self.current_thinking_summary(atom))?;
             }
         }
         Ok(Some(timeline))
+    }
+
+    fn current_thinking_summary(&self, atom: &pl_protocol::ChatAtom) -> Option<String> {
+        if atom.kind != pl_protocol::ChatAtomKind::Reasoning {
+            return None;
+        }
+        self.previews
+            .get(&atom.id)?
+            .fields
+            .iter()
+            .rev()
+            .find_map(|(key, block)| {
+                matches!(key, BodyKey::Part(PresentationPart::SummaryText(_)))
+                    .then(|| super::activity::thinking_summary_block(block))
+                    .flatten()
+            })
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -2420,6 +2441,7 @@ impl LiveProjection {
         if let Some(state) = prepared.current_state.take() {
             prepared.current_state = Some(super::CurrentState::with_projection(state, after));
         }
+        current_after.replay_current = prepared.current_state.clone();
         prepared.current = Arc::new(current_after);
         if let Some(history) = &self.execution_history {
             history.timeline_publish(prepared.current.clone());
@@ -2485,6 +2507,22 @@ impl LiveProjection {
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        if let Some(current) = self.current.snapshot() {
+            let summaries = current
+                .projection()
+                .atoms
+                .iter()
+                .filter_map(|atom| {
+                    self.current_thinking_summary(atom)
+                        .map(|summary| (atom.id.clone(), summary))
+                })
+                .collect::<Vec<_>>();
+            if let Some(timeline) = &mut self.timeline {
+                for (id, summary) in summaries {
+                    timeline.refresh_thinking_summary(&id, summary);
+                }
+            }
+        }
         self.sync_current_items();
         Ok(())
     }

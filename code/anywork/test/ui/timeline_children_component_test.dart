@@ -11,7 +11,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/conversation/data/conversation_repository_impl.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
 import 'package:flutter/material.dart';
@@ -28,10 +28,8 @@ import '../../../anywork_client/test/support/timeline_transport.dart'
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
-ThreadDirectoryStore _threadDirectory() => ThreadDirectoryStore(
-  feed: RecordingDemoTransport(),
-  budget: ResourceBudget(),
-);
+ThreadDirectoryStore _threadDirectory() =>
+    ThreadDirectoryStore(feed: RecordingDemoTransport());
 
 void main() {
   for (final lateFailure in [false, true]) {
@@ -196,7 +194,6 @@ void main() {
       final repository = ConversationRepositoryImpl(
         transport: transport,
         directory: _threadDirectory(),
-        budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
       final recorded = _RecordingRepository(repository);
@@ -382,9 +379,29 @@ void main() {
         identical(display.messages.single, controller.messages.single),
         isTrue,
       );
+      final originalFeed = transport.feeds.last;
+      final acknowledgedBeforeRetirement = List.of(
+        originalFeed.acknowledgements,
+      );
       parentActive = false;
       expect(displays.where((display) => display.isCurrent), isEmpty);
       expect(display.messages, isEmpty);
+      originalFeed.send(
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            entries: [ChatAtomEntry(memberMessage(id: 'unaccepted'))],
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        originalFeed.acknowledgements,
+        acknowledgedBeforeRetirement,
+        reason: 'An inactive parent must revoke its SDK consumer before ACK',
+      );
+      expect(originalFeed.closeStarted.isCompleted, isTrue);
       final afterReplacementIO = (transport.feeds.length, loads);
       await tester.pumpWidget(host());
       expect(displays, isEmpty);
@@ -415,7 +432,6 @@ void main() {
       final repository = ConversationRepositoryImpl(
         transport: transport,
         directory: _threadDirectory(),
-        budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
       await tester.pumpWidget(
@@ -487,6 +503,108 @@ void main() {
     },
   );
 
+  testWidgets(
+    'parent qualification loss rejects an active SDK lease without ACK and new owner gets a clean lease',
+    (tester) async {
+      final transport = _Transport();
+      final repository = ConversationRepositoryImpl(
+        transport: transport,
+        directory: _threadDirectory(),
+        onRevision: (_, _) {},
+      );
+      var parentActive = true;
+      Widget host(String parentId) => MaterialApp(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: TimelineChildrenConnector(
+            key: ValueKey(parentId),
+            repository: repository,
+            threadId: 'thread',
+            parentId: parentId,
+            isParentActive: () => parentActive,
+          ),
+        ),
+      );
+      await tester.pumpWidget(host('owner-A'));
+      await tester.pump();
+      final oldFeed = transport.feeds.single;
+      oldFeed.send(ConversationChatEvent(batch: memberSet()));
+      await pumpClientUntil(
+        tester,
+        () => oldFeed.acknowledgements.contains(1),
+        'initial Children Set ACK',
+      );
+      expect(
+        tester
+            .widget<Chat>(find.byType(Chat))
+            .chatController
+            .messages
+            .map((message) => message.id),
+        ['item'],
+      );
+
+      // This changes only the original parent qualification callback result:
+      // neither the widget nor the retirement notifier is rebuilt/signalled.
+      parentActive = false;
+      oldFeed.send(
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            entries: [ChatAtomEntry(memberMessage(id: 'must-not-apply'))],
+          ),
+        ),
+      );
+      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => oldFeed.closeStarted.isCompleted,
+        'retired original Children lease close',
+      );
+      expect(oldFeed.acknowledgements, [1]);
+      expect(oldFeed.closeCalls, greaterThan(0));
+
+      parentActive = true;
+      await tester.pumpWidget(host('owner-B'));
+      await pumpClientUntil(
+        tester,
+        () => transport.feeds.length == 2,
+        'new Children owner lease',
+      );
+      final newFeed = transport.feeds.last;
+      newFeed.send(
+        ConversationChatEvent(
+          batch: memberSet(messages: [memberMessage(id: 'new-owner')]),
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => newFeed.acknowledgements.contains(1),
+        'new Children owner Set ACK',
+      );
+      expect(
+        tester
+            .widget<Chat>(find.byType(Chat))
+            .chatController
+            .messages
+            .map((message) => message.id),
+        ['new-owner'],
+      );
+      expect(oldFeed.acknowledgements, [1]);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      await pumpClientFuture(
+        tester,
+        repository.close(),
+        'close Children repository',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final failBeforeReplacement in [false, true]) {
     testWidgets(
       'Children query follows replacement feed and rejects old completions (early failure: $failBeforeReplacement)',
@@ -495,7 +613,6 @@ void main() {
         final repository = ConversationRepositoryImpl(
           transport: transport,
           directory: _threadDirectory(),
-          budget: ResourceBudget(),
           onRevision: (_, _) {},
         );
         final recorded = _RecordingRepository(repository);

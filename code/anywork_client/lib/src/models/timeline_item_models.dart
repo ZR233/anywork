@@ -29,6 +29,7 @@ final class TimelineGroupSummary {
     required List<TimelineCategoryCount> categories,
     this.startedAt,
     this.finishedAt,
+    this.latestThinkingSummary,
   }) : categories = List.unmodifiable(categories);
 
   final int memberCount;
@@ -38,6 +39,7 @@ final class TimelineGroupSummary {
   final List<TimelineCategoryCount> categories;
   final int? startedAt;
   final int? finishedAt;
+  final String? latestThinkingSummary;
 }
 
 /// The original reader validates all four fields before opening a member scope.

@@ -13,8 +13,6 @@ import '../../../anywork_client.dart'
         OperationHandle,
         OperationState,
         Observation,
-        ResourceKind,
-        ResourcePermit,
         ValueObservation;
 import '../anywork_client.dart';
 import '../stores/domain_sync.dart';
@@ -777,7 +775,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     } catch (error) {
       // Never invoked and never observed: this is a definite local rejection,
       // so the frozen identity is released for a fresh explicit click. Every
-      // synchronous setup step shares this path: a budget-exceeded begin or a
+      // synchronous setup step shares this path: a failed begin or a
       // board registration failure must not leave the intent's shared join
       // dangling in the map for later clicks to await forever.
       final handle = intent.operation;
@@ -1686,7 +1684,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     );
   }
 
-  /// 注册一次有预算的 identity 观察。
+  /// 注册一次 identity 观察。
   ///
   /// [source] 是该操作真正的 canonical 镜像：主会话停止与继续看 Thread 状态，
   /// 成员行停止看智能体目录，子任务交互看主会话的工作区投影。注册与当前值读取
@@ -1700,11 +1698,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         _ObservationFailurePolicy.cancelOnFailure,
     BridgeTopicLease? topicLease,
   }) {
-    final permit = _client.budget.acquire(
-      ResourceKind.observer,
-      owner: 'command:${operation.id.value}',
-    );
-    final binding = _IdentityOperationObservation(permit, topicLease);
+    final binding = _IdentityOperationObservation(topicLease);
     var confirmed = false;
     void completeIfAccepted() {
       final current = operation.state.value;
@@ -1836,7 +1830,7 @@ int _stringMapHash(Map<String, String> values) => Object.hashAll(
 /// 一个 `(threadId, executionId)` 的停止登记。
 ///
 /// 结构上只有两段：当前在途尝试，以及至多一个排队的重试。任何时刻都不会出现第三个
-/// 请求，因此重复点击与超时重试都不会累积排队请求或 pending permit。
+/// 请求，因此重复点击与超时重试都不会累积排队请求。
 final class _StopFlight {
   _StopFlight({
     required this.threadId,
@@ -1883,8 +1877,7 @@ final class _ContinuationIntent {
 
 /// An identity predicate and its operation retention form one bounded observer.
 final class _IdentityOperationObservation implements Observation {
-  _IdentityOperationObservation(this.permit, [this.topicLease]);
-  final ResourcePermit permit;
+  _IdentityOperationObservation([this.topicLease]);
 
   /// 本次观察保留的主题份额；观察结算、失败或关闭时一并释放。
   /// 释放失败由订阅登记表保留原句柄与许可，这里只记录诊断。
@@ -1911,7 +1904,6 @@ final class _IdentityOperationObservation implements Observation {
     isCancelled = true;
     owner?.cancel();
     operation?.cancel();
-    permit.release();
     final lease = topicLease;
     if (lease != null) {
       unawaited(
