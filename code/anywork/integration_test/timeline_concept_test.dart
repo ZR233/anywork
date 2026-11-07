@@ -1416,7 +1416,14 @@ final class _ConceptScene {
     await _until(tester, () => !lease.hasOlder, 'empty conversation EOF');
     expect(lease.controller.messages, isEmpty);
     expect(live, isEmpty);
-    expect(find.byType(ConversationCurrentConnector), findsNothing);
+    // Keep the original current observer mounted across activity transitions,
+    // while an idle empty conversation must render no content or activity.
+    expect(find.byType(ConversationCurrentConnector), findsOneWidget);
+    expect(lease.currentDisplay!.isCurrent, isTrue);
+    expect(lease.currentDisplay!.windows, isEmpty);
+    expect(find.byType(ConversationActivityBar), findsNothing);
+    expect(find.byType(TimelineActivityRow), findsNothing);
+    expect(find.byType(TimelineDisplayUnitView), findsNothing);
     await capture('empty');
     final evidence = <String, Object?>{};
     report['conversationCredit'] = evidence;
