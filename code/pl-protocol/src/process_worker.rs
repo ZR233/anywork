@@ -75,6 +75,8 @@ pub struct UnknownProcessWorkerCommand {
 }
 
 /// Newline-delimited JSON events on the dedicated control socket, never stdout/stderr.
+/// After Exited, the worker half-closes event output and drains command input to EOF.
+/// The host closes its command half on event EOF, then awaits the supervisor's physical exit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "type",

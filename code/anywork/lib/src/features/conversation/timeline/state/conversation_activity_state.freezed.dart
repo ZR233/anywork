@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$ConversationActivityState {
 
- ConversationActivityView get view; CurrentProjection? get current;
+ ConversationActivityView? get view; CurrentProjection? get current;
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -51,7 +51,7 @@ abstract mixin class $ConversationActivityStateCopyWith<$Res>  {
   factory $ConversationActivityStateCopyWith(ConversationActivityState value, $Res Function(ConversationActivityState) _then) = _$ConversationActivityStateCopyWithImpl;
 @useResult
 $Res call({
- ConversationActivityView view, CurrentProjection? current
+ ConversationActivityView? view, CurrentProjection? current
 });
 
 
@@ -68,10 +68,10 @@ class _$ConversationActivityStateCopyWithImpl<$Res>
 
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? view = null,Object? current = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? view = freezed,Object? current = freezed,}) {
   return _then(ConversationActivityState(
-view: null == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
-as ConversationActivityView,current: freezed == current ? _self.current : current // ignore: cast_nullable_to_non_nullable
+view: freezed == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
+as ConversationActivityView?,current: freezed == current ? _self.current : current // ignore: cast_nullable_to_non_nullable
 as CurrentProjection?,
   ));
 }
@@ -157,7 +157,7 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ConversationActivityView view,  CurrentProjection? current)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ConversationActivityView? view,  CurrentProjection? current)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _ConversationActivityState() when $default != null:
 return $default(_that.view,_that.current);case _:
@@ -178,7 +178,7 @@ return $default(_that.view,_that.current);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ConversationActivityView view,  CurrentProjection? current)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ConversationActivityView? view,  CurrentProjection? current)  $default,) {final _that = this;
 switch (_that) {
 case _ConversationActivityState():
 return $default(_that.view,_that.current);case _:
@@ -198,7 +198,7 @@ return $default(_that.view,_that.current);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ConversationActivityView view,  CurrentProjection? current)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ConversationActivityView? view,  CurrentProjection? current)?  $default,) {final _that = this;
 switch (_that) {
 case _ConversationActivityState() when $default != null:
 return $default(_that.view,_that.current);case _:
@@ -216,7 +216,7 @@ class _ConversationActivityState implements ConversationActivityState {
   const _ConversationActivityState({required this.view, this.current});
 
 
-@override final  ConversationActivityView view;
+@override final  ConversationActivityView? view;
 @override final  CurrentProjection? current;
 
 /// Create a copy of ConversationActivityState
@@ -251,7 +251,7 @@ abstract mixin class _$ConversationActivityStateCopyWith<$Res> implements $Conve
   factory _$ConversationActivityStateCopyWith(_ConversationActivityState value, $Res Function(_ConversationActivityState) _then) = __$ConversationActivityStateCopyWithImpl;
 @override @useResult
 $Res call({
- ConversationActivityView view, CurrentProjection? current
+ ConversationActivityView? view, CurrentProjection? current
 });
 
 
@@ -268,10 +268,10 @@ class __$ConversationActivityStateCopyWithImpl<$Res>
 
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? view = null,Object? current = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? view = freezed,Object? current = freezed,}) {
   return _then(_ConversationActivityState(
-view: null == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
-as ConversationActivityView,current: freezed == current ? _self.current : current // ignore: cast_nullable_to_non_nullable
+view: freezed == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
+as ConversationActivityView?,current: freezed == current ? _self.current : current // ignore: cast_nullable_to_non_nullable
 as CurrentProjection?,
   ));
 }

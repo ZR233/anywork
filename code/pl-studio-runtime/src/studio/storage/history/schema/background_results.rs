@@ -39,7 +39,7 @@ enum PublishedTarget {
 async fn correct(db: &impl ConnectionTrait) -> Result<()> {
     let format = version(db).await?;
     ensure!(
-        matches!(format, 14 | 15 | 16),
+        matches!(format, 14..=16),
         "background result correction requires schema 14 through 16"
     );
     let mut after = 0_i64;

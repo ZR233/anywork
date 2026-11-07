@@ -54,16 +54,20 @@ class TimelineMarkdown extends StatelessWidget {
       fontWeight: FontWeight.w600,
       height: 1.48,
     );
+    final scopedTheme = context
+        .dependOnInheritedWidgetOfExactType<GptMarkdownTheme>();
     return GptMarkdownTheme(
-      gptThemeData: GptMarkdownTheme.of(context).copyWith(
-        h1: heading(20),
-        h2: heading(17),
-        h3: heading(14),
-        h4: heading(13),
-        h5: heading(12.5),
-        h6: heading(12.5),
-        autoAddDividerLineAfterH1: false,
-      ),
+      gptThemeData:
+          scopedTheme?.gptThemeData ??
+          GptMarkdownTheme.of(context).copyWith(
+            h1: heading(20),
+            h2: heading(17),
+            h3: heading(14),
+            h4: heading(13),
+            h5: heading(12.5),
+            h6: heading(12.5),
+            autoAddDividerLineAfterH1: false,
+          ),
       child: DefaultTextStyle.merge(
         softWrap: true,
         child: GptMarkdown(

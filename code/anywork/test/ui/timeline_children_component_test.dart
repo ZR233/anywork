@@ -379,9 +379,29 @@ void main() {
         identical(display.messages.single, controller.messages.single),
         isTrue,
       );
+      final originalFeed = transport.feeds.last;
+      final acknowledgedBeforeRetirement = List.of(
+        originalFeed.acknowledgements,
+      );
       parentActive = false;
       expect(displays.where((display) => display.isCurrent), isEmpty);
       expect(display.messages, isEmpty);
+      originalFeed.send(
+        ConversationChatEvent(
+          batch: ChatBatch(
+            placement: ChatPlacement.append,
+            entries: [ChatAtomEntry(memberMessage(id: 'unaccepted'))],
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        originalFeed.acknowledgements,
+        acknowledgedBeforeRetirement,
+        reason: 'An inactive parent must revoke its SDK consumer before ACK',
+      );
+      expect(originalFeed.closeStarted.isCompleted, isTrue);
       final afterReplacementIO = (transport.feeds.length, loads);
       await tester.pumpWidget(host());
       expect(displays, isEmpty);

@@ -91,7 +91,7 @@ void main() {
 
     expect(state, isNotNull);
     expect(state!.current, isNotNull);
-    expect(state.view.kind, ConversationActivityKind.thinking);
+    expect(state.view!.kind, ConversationActivityKind.thinking);
   });
 
   test('tool approval keeps the existing activity projection', () {
@@ -102,6 +102,6 @@ void main() {
 
     expect(state, isNotNull);
     expect(state!.current, isNotNull);
-    expect(state.view.kind, ConversationActivityKind.thinking);
+    expect(state.view!.kind, ConversationActivityKind.thinking);
   });
 }

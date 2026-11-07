@@ -141,8 +141,8 @@ final class TimelineOutputConsumption {
     StackTrace? failureStack;
     try {
       observation = content.attachConsumer(first, demand: demand);
-      final initial = await _within(first.batch.future);
       await _within(content.ready);
+      final initial = await _within(first.batch.future);
       final attempt = content.currentAttemptId;
       scope = content.openScope(generation: lease.generation);
       _memberScopes += 1;
@@ -255,7 +255,6 @@ final class TimelineOutputConsumption {
       }
       if (next != null) {
         await consume(next);
-        await _within(pump());
         continue;
       }
       if (lease.hasOlder) {
@@ -273,7 +272,13 @@ final class TimelineOutputConsumption {
           current.items.isEmpty) {
         break;
       }
-      await _within(pump());
+      // Drain already admitted bodies before requesting another layout. A
+      // Future timeout cannot cancel WidgetTester.pump, so always join that
+      // guarded operation before a deadline failure can start teardown.
+      if (_clock.elapsed >= const Duration(minutes: 6)) {
+        throw TimeoutException('Original timeline consumption deadline');
+      }
+      await pump();
     }
     expectSync(_outputs.length, expectedItems);
     expectSync(_bytes, expectedBytes);
