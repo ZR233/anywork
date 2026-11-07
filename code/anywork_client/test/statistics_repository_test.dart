@@ -2,8 +2,6 @@ import 'dart:async';
 
 import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/statistics_ports.dart';
-import 'package:anywork_client/studio_client.dart'
-    show ResourceBudget, ResourceKind, ResourcePhase;
 import 'package:test/test.dart';
 
 import 'support/statistics_test_feed.dart';
@@ -40,8 +38,7 @@ void main() {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: initial),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'materialize');
+        final repository = _repository(port, 'materialize');
         final demand = repository.acquireVisibleDemand();
         final connection = await port.waitForConnection(1);
 
@@ -161,7 +158,7 @@ void main() {
       final port = ControlledStatisticsFeedPort([
         StatisticsConnectionPlan(initial: initial),
       ]);
-      final repository = _repository(port, ResourceBudget(), 'last-good');
+      final repository = _repository(port, 'last-good');
       final demand = repository.acquireVisibleDemand();
       final connection = await port.waitForConnection(1);
       final ready = await _waitForState(
@@ -216,7 +213,7 @@ void main() {
           StatisticsConnectionPlan(initial: initial),
           StatisticsConnectionPlan(initial: reopened, openGate: openGate),
         ]);
-        final repository = _repository(port, ResourceBudget(), 'reopen');
+        final repository = _repository(port, 'reopen');
         final firstDemand = repository.acquireVisibleDemand();
         final oldConnection = await port.waitForConnection(1);
         final oldReady = await _waitForState(
@@ -274,16 +271,14 @@ void main() {
     );
 
     test(
-      'close waits for an admitted feed open before releasing its permit',
+      'close waits for an admitted feed open before releasing ownership',
       () async {
         final openGate = StatisticsTestGate();
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: _publication(), openGate: openGate),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'close-opening');
+        final repository = _repository(port, 'close-opening');
         final demand = repository.acquireVisibleDemand();
-        expect(budget.used(ResourceKind.observer), 1);
         await port.waitForOpenCall(1).timeout(const Duration(seconds: 5));
 
         final closing = repository.close(deadline: _deadline());
@@ -291,13 +286,11 @@ void main() {
           repository.state.connection.phase,
           StatisticsConnectionPhase.closing,
         );
-        expect(budget.used(ResourceKind.observer), 1);
         openGate.release.complete();
         final report = await closing;
         demand.release();
 
         expect(report.complete, isTrue);
-        expect(budget.used(ResourceKind.observer), 0);
         expect(repository.state.snapshot, isNull);
         expect(port.connections.single.isClosed, isTrue);
       },
@@ -309,16 +302,10 @@ void main() {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: _publication()),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(
-          port,
-          budget,
-          'connecting-close-reentry',
-        );
+        final repository = _repository(port, 'connecting-close-reentry');
         Future<CloseReport>? closing;
         var closeFinished = false;
         var finishedAtReentry = true;
-        var permitsAtReentry = 0;
         final observation = repository.observe((state) {
           if (state.connection.phase != StatisticsConnectionPhase.connecting ||
               closing != null) {
@@ -336,7 +323,6 @@ void main() {
             ),
           );
           finishedAtReentry = closeFinished;
-          permitsAtReentry = budget.used(ResourceKind.observer);
         });
 
         final demand = repository.acquireVisibleDemand();
@@ -345,11 +331,9 @@ void main() {
         observation.cancel();
 
         expect(finishedAtReentry, isFalse);
-        expect(permitsAtReentry, 1);
         expect(report.complete, isTrue);
         expect(port.openCalls, 0);
         expect(port.connections, isEmpty);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
@@ -359,12 +343,7 @@ void main() {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: _publication()),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(
-          port,
-          budget,
-          'connecting-retry-reentry',
-        );
+        final repository = _repository(port, 'connecting-retry-reentry');
         var retried = false;
         final observation = repository.observe((state) {
           if (state.connection.phase == StatisticsConnectionPhase.connecting &&
@@ -388,7 +367,6 @@ void main() {
         expect(retried, isTrue);
         expect(ready.snapshot, isNotNull);
         expect(port.openCalls, 1);
-        expect(budget.used(ResourceKind.observer), 1);
         expect(
           repository.state.connection.phase,
           StatisticsConnectionPhase.ready,
@@ -401,7 +379,6 @@ void main() {
         );
         observation.cancel();
         expect(connection.isClosed, isTrue);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
@@ -410,10 +387,8 @@ void main() {
       () async {
         late StatisticsRepository repository;
         Future<CloseReport>? closing;
-        final budget = ResourceBudget();
         final openEntered = Completer<void>();
         final closeRegistered = Completer<void>();
-        var permitsAtOpenReentry = 0;
         var closeFinished = false;
         var closeFinishedAtOpenReentry = true;
         final port = ControlledStatisticsFeedPort([
@@ -434,11 +409,10 @@ void main() {
               );
               if (!closeRegistered.isCompleted) closeRegistered.complete();
               closeFinishedAtOpenReentry = closeFinished;
-              permitsAtOpenReentry = budget.used(ResourceKind.observer);
             },
           ),
         ]);
-        repository = _repository(port, budget, 'open-callback-close-reentry');
+        repository = _repository(port, 'open-callback-close-reentry');
         final demand = repository.acquireVisibleDemand();
 
         await openEntered.future.timeout(const Duration(seconds: 5));
@@ -448,12 +422,10 @@ void main() {
         demand.release();
 
         expect(closeFinishedAtOpenReentry, isFalse);
-        expect(permitsAtOpenReentry, 1);
         expect(report.complete, isTrue);
         expect(port.openCalls, 1);
         expect(connection.closeCalls, 1);
         expect(connection.isClosed, isTrue);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
@@ -474,8 +446,7 @@ void main() {
             ),
           ),
         ]);
-        final budget = ResourceBudget(capacities: {ResourceKind.observer: 1});
-        final repository = _repository(port, budget, 'open-failure-reopen');
+        final repository = _repository(port, 'open-failure-reopen');
         final firstDemand = repository.acquireVisibleDemand();
         await port.waitForOpenCall(1);
         await openGate.entered.future.timeout(const Duration(seconds: 5));
@@ -498,7 +469,6 @@ void main() {
         expect(reopened.snapshot!.feedId, 'feed-after-reopen');
         expect(port.openCalls, 2);
         expect(port.connections, hasLength(1));
-        expect(budget.used(ResourceKind.observer), 1);
         expect(
           repository.state.connection.phase,
           isNot(StatisticsConnectionPhase.closing),
@@ -510,11 +480,10 @@ void main() {
           isTrue,
         );
         expect(identical(port.connections.single, reopenedConnection), isTrue);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
-    test('late open failure clears timeout unresolved state and releases its permit', () async {
+    test('late open failure clears timeout unresolved state and releases its owner', () async {
       final openGate = StatisticsTestGate();
       final port = ControlledStatisticsFeedPort([
         StatisticsConnectionPlan(
@@ -523,8 +492,7 @@ void main() {
           failOpen: true,
         ),
       ]);
-      final budget = ResourceBudget(capacities: {ResourceKind.observer: 1});
-      final repository = _repository(port, budget, 'late-open-failure');
+      final repository = _repository(port, 'late-open-failure');
       final demand = repository.acquireVisibleDemand();
       await port.waitForOpenCall(1);
       await openGate.entered.future.timeout(const Duration(seconds: 5));
@@ -532,7 +500,6 @@ void main() {
       final timedOut = await repository.close(deadline: DateTime.now());
       expect(timedOut.complete, isFalse);
       expect(timedOut.unresolved, hasLength(1));
-      expect(budget.used(ResourceKind.observer), 1);
       expect(port.openCalls, 1);
 
       openGate.release.complete();
@@ -547,7 +514,6 @@ void main() {
       );
       expect(port.openCalls, 1);
       expect(port.connections, isEmpty);
-      expect(budget.used(ResourceKind.observer), 0);
     });
 
     test(
@@ -563,8 +529,7 @@ void main() {
               closeAfterBaseline: true,
             ),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'finite-retry');
+        final repository = _repository(port, 'finite-retry');
         final demand = repository.acquireVisibleDemand();
 
         final failed = await _waitForState(
@@ -596,7 +561,6 @@ void main() {
           (await repository.close(deadline: _deadline())).complete,
           isTrue,
         );
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
@@ -608,14 +572,12 @@ void main() {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: publication),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'close-ack');
+        final repository = _repository(port, 'close-ack');
         final demand = repository.acquireVisibleDemand();
         final connection = await port.waitForConnection(1);
         await ackGate.entered.future.timeout(const Duration(seconds: 5));
 
         final closing = repository.close(deadline: _deadline());
-        expect(budget.used(ResourceKind.observer), 1);
         ackGate.release.complete();
         final report = await closing;
         demand.release();
@@ -623,40 +585,31 @@ void main() {
         expect(report.complete, isTrue);
         expect(connection.acknowledgedSequences, [1]);
         expect(repository.state.snapshot, isNull);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
-    test(
-      'close joins an in-flight page before releasing its observer permit',
-      () async {
-        final pageGate = StatisticsTestGate();
-        final port = ControlledStatisticsFeedPort([
-          StatisticsConnectionPlan(
-            initial: _publication(historyGate: pageGate),
-          ),
-        ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'close-page');
-        final demand = repository.acquireVisibleDemand();
-        await port.waitForConnection(1);
-        await pageGate.entered.future.timeout(const Duration(seconds: 5));
+    test('close joins an in-flight page before releasing ownership', () async {
+      final pageGate = StatisticsTestGate();
+      final port = ControlledStatisticsFeedPort([
+        StatisticsConnectionPlan(initial: _publication(historyGate: pageGate)),
+      ]);
+      final repository = _repository(port, 'close-page');
+      final demand = repository.acquireVisibleDemand();
+      await port.waitForConnection(1);
+      await pageGate.entered.future.timeout(const Duration(seconds: 5));
 
-        final closing = repository.close(deadline: _deadline());
-        expect(budget.used(ResourceKind.observer), 1);
-        expect(
-          repository.state.connection.phase,
-          StatisticsConnectionPhase.closing,
-        );
-        pageGate.release.complete();
-        final report = await closing;
-        demand.release();
+      final closing = repository.close(deadline: _deadline());
+      expect(
+        repository.state.connection.phase,
+        StatisticsConnectionPhase.closing,
+      );
+      pageGate.release.complete();
+      final report = await closing;
+      demand.release();
 
-        expect(report.complete, isTrue);
-        expect(budget.used(ResourceKind.observer), 0);
-        expect(repository.state.snapshot, isNull);
-      },
-    );
+      expect(report.complete, isTrue);
+      expect(repository.state.snapshot, isNull);
+    });
 
     test('visibility leases are shared per instance but repositories stay isolated', () async {
       final portA = ControlledStatisticsFeedPort([
@@ -669,10 +622,8 @@ void main() {
           initial: _publication(feedId: 'feed-b', ownerEpoch: 'owner-b'),
         ),
       ]);
-      final budgetA = ResourceBudget();
-      final budgetB = ResourceBudget();
-      final first = _repository(portA, budgetA, 'graph-a');
-      final second = _repository(portB, budgetB, 'graph-b');
+      final first = _repository(portA, 'graph-a');
+      final second = _repository(portB, 'graph-b');
       final firstDemand = first.acquireVisibleDemand();
       final secondDemand = first.acquireVisibleDemand();
       final otherGraphDemand = second.acquireVisibleDemand();
@@ -696,22 +647,18 @@ void main() {
 
       firstDemand.release();
       expect(connectionA.closeRequested, isFalse);
-      expect(budgetA.used(ResourceKind.observer), 1);
       secondDemand.release();
       await _waitForState(
         first,
         (state) => state.connection.phase == StatisticsConnectionPhase.idle,
       );
       expect(connectionA.isClosed, isTrue);
-      expect(budgetA.used(ResourceKind.observer), 0);
       expect(second.state.connection.phase, StatisticsConnectionPhase.ready);
       expect(connectionB.closeRequested, isFalse);
-      expect(budgetB.used(ResourceKind.observer), 1);
 
       otherGraphDemand.release();
       expect((await first.close(deadline: _deadline())).complete, isTrue);
       expect((await second.close(deadline: _deadline())).complete, isTrue);
-      expect(budgetB.used(ResourceKind.observer), 0);
     });
 
     test(
@@ -720,8 +667,7 @@ void main() {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: _publication(), closeFailures: 1),
         ]);
-        final budget = ResourceBudget();
-        final repository = _repository(port, budget, 'retry-close');
+        final repository = _repository(port, 'retry-close');
         final demand = repository.acquireVisibleDemand();
         final connection = await port.waitForConnection(1);
         await _waitForState(
@@ -737,8 +683,6 @@ void main() {
         final typedCleanupFailure = cleanupFailure as StatisticsFailure;
         expect(typedCleanupFailure.category, StatisticsFailureCategory.cleanup);
         expect(typedCleanupFailure.cause, isA<StateError>());
-        expect(budget.used(ResourceKind.observer), 1);
-        expect(budget.usage.single.phase, ResourcePhase.unresolved);
         expect(connection.closeCalls, 1);
 
         final retried = await repository.retryCleanup(deadline: _deadline());
@@ -747,7 +691,6 @@ void main() {
         expect(port.openCalls, 1);
         expect(identical(port.connections.single, connection), isTrue);
         expect(connection.closeCalls, 2);
-        expect(budget.used(ResourceKind.observer), 0);
       },
     );
 
@@ -755,8 +698,7 @@ void main() {
       final port = ControlledStatisticsFeedPort([
         StatisticsConnectionPlan(initial: _publication(), closeFailures: 3),
       ]);
-      final budget = ResourceBudget();
-      final repository = _repository(port, budget, 'retry-supervision');
+      final repository = _repository(port, 'retry-supervision');
       final demand = repository.acquireVisibleDemand();
       final connection = await port.waitForConnection(1);
       await _waitForState(
@@ -776,7 +718,6 @@ void main() {
       );
       expect(connection.closeCalls, 1);
       expect(port.openCalls, 1);
-      expect(budget.used(ResourceKind.observer), 1);
 
       repository.retry();
       final secondFailure = await _waitForState(
@@ -791,7 +732,6 @@ void main() {
       expect(secondFailure.connection.failure, isNotNull);
       expect(connection.closeCalls, 2);
       expect(port.openCalls, 1);
-      expect(budget.used(ResourceKind.observer), 1);
 
       final closing = await repository.close(deadline: _deadline());
       expect(closing.complete, isFalse);
@@ -802,15 +742,13 @@ void main() {
       expect(port.openCalls, 1);
       expect(identical(port.connections.single, connection), isTrue);
       expect(connection.closeCalls, 4);
-      expect(budget.used(ResourceKind.observer), 0);
     });
 
     test('hide and reopen supervises repeated close failure without replacing the owner', () async {
       final port = ControlledStatisticsFeedPort([
         StatisticsConnectionPlan(initial: _publication(), closeFailures: 8),
       ]);
-      final budget = ResourceBudget();
-      final repository = _repository(port, budget, 'hide-reopen-supervision');
+      final repository = _repository(port, 'hide-reopen-supervision');
       final firstDemand = repository.acquireVisibleDemand();
       final connection = await port.waitForConnection(1);
       await _waitForState(
@@ -823,7 +761,6 @@ void main() {
         deadline: _deadline(),
       );
       expect(hiddenCleanup.complete, isFalse);
-      expect(budget.used(ResourceKind.observer), 1);
 
       final reopenedDemand = repository.acquireVisibleDemand();
       final reopenedFailure = await _waitForState(
@@ -836,7 +773,6 @@ void main() {
       expect(reopenedFailure.snapshot, isNotNull);
       expect(connection.closeCalls, greaterThanOrEqualTo(2));
       expect(port.openCalls, 1);
-      expect(budget.used(ResourceKind.observer), 1);
 
       final closing = await repository.close(deadline: _deadline());
       expect(closing.complete, isFalse);
@@ -849,16 +785,12 @@ void main() {
       expect(port.openCalls, 1);
       expect(identical(port.connections.single, connection), isTrue);
       expect(connection.closeCalls, closeCallsBeforeCleanup + 1);
-      expect(budget.used(ResourceKind.observer), 0);
     });
   });
 }
 
-StatisticsRepository _repository(
-  StatisticsFeedPort feed,
-  ResourceBudget budget,
-  String owner,
-) => createStatisticsRepository(feed: feed, budget: budget, owner: owner);
+StatisticsRepository _repository(StatisticsFeedPort feed, String owner) =>
+    createStatisticsRepository(feed: feed, owner: owner);
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 

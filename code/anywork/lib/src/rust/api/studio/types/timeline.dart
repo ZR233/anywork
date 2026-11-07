@@ -43,6 +43,7 @@ class BridgeTimelineCategoryCount {
 }
 
 class BridgeTimelineGroupSummary {
+  final String? latestThinkingSummary;
   final int memberCount;
   final int activeCount;
   final int failedCount;
@@ -52,6 +53,7 @@ class BridgeTimelineGroupSummary {
   final PlatformInt64? finishedAt;
 
   const BridgeTimelineGroupSummary({
+    this.latestThinkingSummary,
     required this.memberCount,
     required this.activeCount,
     required this.failedCount,
@@ -63,6 +65,7 @@ class BridgeTimelineGroupSummary {
 
   @override
   int get hashCode =>
+      latestThinkingSummary.hashCode ^
       memberCount.hashCode ^
       activeCount.hashCode ^
       failedCount.hashCode ^
@@ -76,6 +79,7 @@ class BridgeTimelineGroupSummary {
       identical(this, other) ||
       other is BridgeTimelineGroupSummary &&
           runtimeType == other.runtimeType &&
+          latestThinkingSummary == other.latestThinkingSummary &&
           memberCount == other.memberCount &&
           activeCount == other.activeCount &&
           failedCount == other.failedCount &&

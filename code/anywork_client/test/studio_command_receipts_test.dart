@@ -1204,11 +1204,6 @@ void main() {
           expect(after.receipt!.disposition, CommitDisposition.applied);
           expect(after.effective, isTrue);
           expect(after.durable, isTrue);
-          expect(
-            client.budget.used(ResourceKind.pendingOperation),
-            1,
-            reason: 'A failed observation is not an early permit release',
-          );
           final report = await client.close();
           expect(report.complete, isFalse);
           expect(
@@ -2422,13 +2417,9 @@ void main() {
           hasLength(1),
           reason: 'Retired observation cannot replay even a known conflict',
         );
-        final retiring = client.budget.usage
-            .where((resource) => resource.owner.startsWith('thread:'))
-            .toList();
-        expect(retiring, isNotEmpty);
         expect(
-          retiring.map((resource) => resource.phase),
-          everyElement(ResourcePhase.retiring),
+          client.conversations.session("thread").content.ownedAttemptCount,
+          greaterThan(0),
         );
         if (!closeClient) {
           final report = await closing;
@@ -2444,12 +2435,6 @@ void main() {
         } else {
           expect((await client.conversations.retryCleanup()).complete, isTrue);
         }
-        expect(
-          client.budget.usage.where(
-            (resource) => resource.owner.startsWith('thread:'),
-          ),
-          isEmpty,
-        );
       },
     );
   }
@@ -2489,13 +2474,9 @@ void main() {
       final closing = client.close();
       await rejected;
       expect(transport.attempts, hasLength(1));
-      final retiring = client.budget.usage
-          .where((resource) => resource.owner.startsWith('thread:'))
-          .toList();
-      expect(retiring, isNotEmpty);
       expect(
-        retiring.map((resource) => resource.phase),
-        everyElement(ResourcePhase.retiring),
+        client.conversations.session("thread").content.ownedAttemptCount,
+        greaterThan(0),
       );
       cleanup.complete();
       expect((await closing).complete, isTrue);
@@ -2503,12 +2484,6 @@ void main() {
         transport.bindings,
         hasLength(2),
         reason: 'close prevents any further replacement',
-      );
-      expect(
-        client.budget.usage.where(
-          (resource) => resource.owner.startsWith('thread:'),
-        ),
-        isEmpty,
       );
     },
   );
@@ -2569,16 +2544,15 @@ void main() {
               .deliverWorkspace(
                 _workspace(activeTurn: _turn(), execution: _execution()),
               );
+          final observedSource =
+              client.conversations.session('thread').source
+                  as LatestValue<ThreadSessionState>;
+          final baselineObservers = observedSource.observerCount;
           final entered = transport.stops.stream.first;
           final stopping = client.threadCommands.stop('thread');
           final operation = client.mutations.latest('stop:thread')!;
-          int commandObservers() => client.budget.usage
-              .where(
-                (resource) =>
-                    resource.kind == ResourceKind.observer &&
-                    resource.owner == 'command:${operation.id.value}',
-              )
-              .length;
+          int commandObservers() =>
+              observedSource.observerCount - baselineObservers;
           expect(
             operation.state.value.receipt,
             isNull,
@@ -2688,7 +2662,7 @@ void main() {
           expect(
             commandObservers(),
             0,
-            reason: 'Only this operation owns its command observer permit; selection changes topic permits independently',
+            reason: 'Only this operation owns its command observer; selection changes topic observations independently',
           );
         },
       );
@@ -3532,7 +3506,7 @@ void main() {
           (value) => value.target == 'stop:thread',
         ),
         hasLength(1),
-        reason: 'Queueing creates no operation and no pending permit',
+        reason: 'Queueing creates no operation and no pending operation',
       );
       call.reply.complete(
         StopThreadCommandReply(
@@ -4257,44 +4231,6 @@ void main() {
     expect(operation.state.value.failurePhase, isNull);
   });
 
-  test(
-    'a budget-exceeded continue begin fails closed without dangling joins',
-    () async {
-      final budget = ResourceBudget(
-        capacities: {
-          ...ResourceBudget().capacities,
-          ResourceKind.pendingOperation: 0,
-        },
-      );
-      final transport = _Transport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'budget-join',
-        budget: budget,
-      );
-      addTearDown(client.close);
-      // The first click gets the explicit typed rejection through its shared
-      // join instead of a dangling future that later clicks await forever.
-      final first = client.threadCommands.continueThread(
-        'thread',
-        _continuation(),
-        expectedModelRouteRevision: 1,
-      );
-      await expectLater(first, throwsA(isA<ResourceBudgetExceeded>()));
-      // The same intent re-clicks: the failed setup released the frozen
-      // identity, so a retry walks the fresh path and fails equally closed.
-      final second = client.threadCommands.continueThread(
-        'thread',
-        _continuation(),
-        expectedModelRouteRevision: 1,
-      );
-      await expectLater(second, throwsA(isA<ResourceBudgetExceeded>()));
-      expect(client.mutations.latest('continue:thread'), isNull);
-      expect(budget.used(ResourceKind.pendingOperation), 0);
-      expect(transport.continueCalls, 0);
-    },
-  );
-
   test('a determined rejection after NotFound resends nothing and keeps the identity', () async {
     final transport = _Transport();
     final client = await _client(transport);
@@ -4512,17 +4448,14 @@ void main() {
     call.reply.completeError(StateError('lost before observation'));
     await expectLater(first, throwsA(isA<StateError>()));
     expect(operation.state.value.phase, OperationPhase.unknownOutcome);
-    int observers() => client.budget.usage
-        .where(
-          (resource) =>
-              resource.kind == ResourceKind.observer &&
-              resource.owner == 'command:${operation.id.value}',
-        )
-        .length;
-    expect(observers(), 1, reason: 'unknown 期间保留原 identity 观察');
+    final observedSource =
+        client.conversations.session('thread').source
+            as LatestValue<ThreadSessionState>;
+    final observersBeforeClose = observedSource.observerCount;
+    expect(observersBeforeClose, greaterThan(0));
     await client.close();
     expect(
-      observers(),
+      observedSource.observerCount,
       0,
       reason: 'client.close 精确取消 retained binding，无第二个观察泄漏',
     );

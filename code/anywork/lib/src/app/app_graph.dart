@@ -37,8 +37,7 @@ class AppGraph {
     final staged = <String, StagedClipboardImage>{};
     final stager = clipboardImageStager ?? const SystemClipboardImageStager();
     final instanceId = clientId ?? 'app-${identityHashCode(this)}';
-    final budget = ResourceBudget();
-    final mutations = MutationBoard(clientId: instanceId, budget: budget);
+    final mutations = MutationBoard(clientId: instanceId);
     final settingsWrites = SettingsWriteCoordinator();
     accountDomains = AccountDomainResources(
       feed: accountFeed ?? transport as AccountFeedPort,
@@ -49,13 +48,11 @@ class AppGraph {
       acpPort: acpPort ?? transport as AcpPort,
       coordinator: settingsWrites,
       mutations: mutations,
-      budget: budget,
       owner: instanceId,
     );
     client = AnyworkClient(
       transport: transport,
       clientId: instanceId,
-      budget: budget,
       mutationBoard: mutations,
       settingsWrites: settingsWrites,
       accountDomains: accountDomains,
@@ -81,7 +78,6 @@ class AppGraph {
     );
     statisticsRepository = createStatisticsRepository(
       feed: statisticsFeed,
-      budget: client.budget,
       owner: client.clientId,
     );
     client.updates.attach();
@@ -131,7 +127,6 @@ class AppGraph {
   Observation? _selectionObservation;
   Observation? _conversationObservation;
   Observation? _workspaceObservation;
-  Observation? _admissionObservation;
   bool _conversationPageVisible = false;
   String? _routeThreadId;
   bool _hostVisible = true;
@@ -185,8 +180,6 @@ class AppGraph {
 
   void _syncVisibleConversation() {
     if (_closed) return;
-    _admissionObservation?.cancel();
-    _admissionObservation = null;
     final target = _conversationTarget;
     timeline.noteVisibleSelection(target);
     final conversations = client.conversations;
@@ -198,24 +191,11 @@ class AppGraph {
       return;
     }
     if (target != _conversationTarget) return;
-    try {
-      // A valid destination borrows its logical draft across route changes.
-      // An unknown ID first loads canonical identity, without a provisional draft.
-      if (conversations.existingSession(target)?.state.workspace != null) {
-        client.drafts.composer(target);
-      }
-      if (target == _conversationTarget) conversations.setVisibleThread(target);
-    } on ResourceBudgetExceeded catch (error) {
-      if (target != _conversationTarget) return;
-      conversations.setVisibleThread(null);
-      if (target != _conversationTarget) return;
-      // Register before publishing: a reentrant observer can release capacity.
-      _admissionObservation = client.budget.watchAvailability(
-        error.kind,
-        _syncVisibleConversation,
-      );
-      timeline.select(target, admissionFailure: error);
+    // A valid destination borrows its logical draft across route changes.
+    if (conversations.existingSession(target)?.state.workspace != null) {
+      client.drafts.composer(target);
     }
+    if (target == _conversationTarget) conversations.setVisibleThread(target);
   }
 
   Future<CloseReport> close({required DateTime deadline}) {
@@ -240,8 +220,6 @@ class AppGraph {
     _conversationObservation = null;
     _workspaceObservation?.cancel();
     _workspaceObservation = null;
-    _admissionObservation?.cancel();
-    _admissionObservation = null;
     final clientClose = client.close(deadline: deadline);
     final timelineClose = timeline.close(deadline: deadline);
     final statisticsClose = statisticsRepository.close(deadline: deadline);

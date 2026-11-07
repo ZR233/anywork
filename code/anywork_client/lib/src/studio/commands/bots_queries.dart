@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../../../anywork_client.dart' show ReadModel, ResourceKind;
+import '../../../anywork_client.dart' show ReadModel;
 import '../../../models.dart';
 import '../../../studio_ports.dart';
 import '../anywork_client.dart';
@@ -15,7 +15,6 @@ class BotsQueries extends ReadModel<BotsQueryState> {
   _ConversationQuery? _conversations;
   _MessageQuery? _messages;
   final CommandLane _lane = CommandLane();
-  int _requestSequence = 0;
   bool _closed = false;
 
   StudioTransport get _api => _client.transport;
@@ -33,10 +32,6 @@ class BotsQueries extends ReadModel<BotsQueryState> {
     if (existing != null && existing.identity == identity) {
       return existing.future;
     }
-    final permit = _client.budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'bots-conversations:${++_requestSequence}',
-    );
     final generation = (existing?.generation ?? 0) + 1;
     existing?.invalidate();
     final operation = _ConversationQuery(
@@ -46,18 +41,14 @@ class BotsQueries extends ReadModel<BotsQueryState> {
     _conversations = operation;
     operation.completeWith(
       _lane.run(() async {
-        try {
-          _publishConversations(
-            botId: botId,
-            loading: true,
-            error: null,
-            keepPage: state.selectedConversationBotId == botId,
-          );
-          if (_closed) return;
-          await _runConversations(operation, limit: limit);
-        } finally {
-          permit.release();
-        }
+        _publishConversations(
+          botId: botId,
+          loading: true,
+          error: null,
+          keepPage: state.selectedConversationBotId == botId,
+        );
+        if (_closed) return;
+        await _runConversations(operation, limit: limit);
       }),
     );
     return operation.future;
@@ -86,35 +77,27 @@ class BotsQueries extends ReadModel<BotsQueryState> {
     if (existing != null && existing.identity == identity) {
       return existing.future;
     }
-    final permit = _client.budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'bots-messages:${++_requestSequence}',
-    );
     final generation = (existing?.generation ?? 0) + 1;
     existing?.invalidate();
     final operation = _MessageQuery(identity: identity, generation: generation);
     _messages = operation;
     operation.completeWith(
       _lane.run(() async {
-        try {
-          _publishMessages(
-            botId: botId,
-            chatId: chatId,
-            startTime: startTime,
-            endTime: endTime,
-            loading: true,
-            error: null,
-            keepPage:
-                state.selectedMessageBotId == botId &&
-                state.selectedChatId == chatId &&
-                state.selectedStartTime == startTime &&
-                state.selectedEndTime == endTime,
-          );
-          if (_closed) return;
-          await _runMessages(operation, limit: limit);
-        } finally {
-          permit.release();
-        }
+        _publishMessages(
+          botId: botId,
+          chatId: chatId,
+          startTime: startTime,
+          endTime: endTime,
+          loading: true,
+          error: null,
+          keepPage:
+              state.selectedMessageBotId == botId &&
+              state.selectedChatId == chatId &&
+              state.selectedStartTime == startTime &&
+              state.selectedEndTime == endTime,
+        );
+        if (_closed) return;
+        await _runMessages(operation, limit: limit);
       }),
     );
     return operation.future;

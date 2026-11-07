@@ -617,11 +617,8 @@ fn latest_thinking_summary(
         if part.is_empty() || observed_stream(part) != Some(ObservedStream::Summary) {
             continue;
         }
-        if let Some(line) = observed_tail_line(part) {
-            let text = bounded(&line.text).0;
-            if !text.is_empty() {
-                return Some(text);
-            }
+        if let Some(text) = thinking_summary_block(part.content()) {
+            return Some(text);
         }
     }
     None
@@ -631,7 +628,19 @@ fn latest_thinking_summary(
 ///
 /// 摘要是“当前执行行”，因此只需要末尾有界字节：读取它的代价与已经流出的正文长度无关。窗口大于摘要
 /// 上限若干倍，足以在不物化整段正文的前提下取到最新非空逻辑行。
-const ACTIVITY_SUMMARY_TAIL_BYTES: usize = 4096;
+pub(super) const ACTIVITY_SUMMARY_TAIL_BYTES: usize = 4096;
+
+/// Shared by activity and timeline: summary facts only, never raw reasoning.
+pub(super) fn thinking_summary_block(block: &pl_core::model::ContentBlock) -> Option<String> {
+    let window = block_tail(block)?;
+    thinking_summary_line(&window.text)
+}
+
+pub(in crate::studio) fn thinking_summary_line(tail: &str) -> Option<String> {
+    last_logical_line(tail)
+        .map(|line| bounded(line).0)
+        .filter(|line| !line.is_empty())
+}
 
 /// 有界尾部：文本片段，以及该片段是否可能截掉了最后一行（或正文）的开头。
 struct TailWindow {
@@ -694,6 +703,10 @@ fn observed_tail_line(part: &ObservedPart) -> Option<TailLine> {
 /// 共享内容块的有界尾部：只物化末尾有界字节，不复制已观察的整段正文。
 fn observed_tail(part: &ObservedPart) -> Option<TailWindow> {
     let block = part.content();
+    block_tail(block)
+}
+
+fn block_tail(block: &pl_core::model::ContentBlock) -> Option<TailWindow> {
     let len = block.len();
     if len == 0 {
         return None;

@@ -268,7 +268,6 @@ void main() {
     expect(state.observed, isTrue);
     expect(state.isPending, isFalse);
     expect(state.phase, OperationPhase.effective);
-    expect(client.budget.used(ResourceKind.pendingOperation), 0);
 
     final report = await client.close();
     expect(report.unresolved, isEmpty);
@@ -322,7 +321,6 @@ void main() {
     final cancelState = _operation(client).state.value;
     expect(cancelState.observed, isTrue);
     expect(cancelState.isPending, isFalse);
-    expect(client.budget.used(ResourceKind.pendingOperation), 0);
     expect((await client.close()).unresolved, isEmpty);
   });
 
@@ -436,7 +434,6 @@ void main() {
     final state = _operation(client).state.value;
     expect(state.observed, isTrue);
     expect(state.isPending, isFalse);
-    expect(client.budget.used(ResourceKind.pendingOperation), 0);
     expect((await client.close()).unresolved, isEmpty);
   });
 }

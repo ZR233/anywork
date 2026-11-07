@@ -483,14 +483,11 @@ class TestConversationTransport extends StudioTransport
 }
 
 class ConversationFixture {
-  ConversationFixture({
-    ResourceBudget? budget,
-    TestConversationTransport? transport,
-  }) : transport = transport ?? TestConversationTransport() {
+  ConversationFixture({TestConversationTransport? transport})
+    : transport = transport ?? TestConversationTransport() {
     client = AnyworkClient(
       transport: this.transport,
       clientId: 'conversation-test',
-      budget: budget,
     );
   }
   final TestConversationTransport transport;

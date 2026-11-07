@@ -9,9 +9,6 @@ import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart'
     show
         MutationBoard,
-        ResourceBudget,
-        ResourceBudgetExceeded,
-        ResourceKind,
         OperationId,
         OperationState,
         OperationPhase,
@@ -290,7 +287,7 @@ final class _Port
 
 final class _Fixture {
   _Fixture({String owner = 'client'}) {
-    board = MutationBoard(clientId: owner, budget: budget);
+    board = MutationBoard(clientId: owner);
     resources = AccountDomainResources(
       feed: port,
       configuration: port,
@@ -299,7 +296,6 @@ final class _Fixture {
       acpPort: port,
       coordinator: coordinator,
       mutations: board,
-      budget: budget,
       owner: owner,
     );
     resources.adoptOwnerEpoch('owner');
@@ -308,7 +304,6 @@ final class _Fixture {
     );
   }
   final port = _Port();
-  final budget = ResourceBudget();
   final coordinator = SettingsWriteCoordinator();
   late final MutationBoard board;
   late final AccountDomainResources resources;
@@ -322,7 +317,6 @@ final class _Fixture {
       isTrue,
       reason: '${report.unresolved.map((item) => item.reason)}',
     );
-    expect(budget.used(ResourceKind.observer), 0);
   }
 }
 
@@ -465,53 +459,6 @@ void main() {
   }
 
   test(
-    'observer budget failure after begin returns rejected without dispatch',
-    () async {
-      final fixture = _Fixture();
-      addTearDown(fixture.close);
-      final permits = [
-        for (
-          var i = 0;
-          i < fixture.budget.capacities[ResourceKind.observer]!;
-          i++
-        )
-          fixture.budget.acquire(ResourceKind.observer, owner: 'occupied:$i'),
-      ];
-      addTearDown(() {
-        for (final permit in permits) {
-          permit.release();
-        }
-      });
-      var requests = 0;
-      fixture.port.compact = (_, _, _) async {
-        requests++;
-        throw StateError('Must not dispatch');
-      };
-      const draft = DraftStamp(draftId: 'budget', revision: 1);
-      final result = await fixture.resources.models.setAutoCompact(
-        _model,
-        AutoCompactIntent.set(123),
-        draft: draft,
-      );
-      expect(result, same(fixture.board.operations.single));
-      expect(result.draft, draft);
-      expect(result.failurePhase, OperationPhase.rejected);
-      expect(
-        result.error,
-        isA<ResourceBudgetExceeded>().having(
-          (error) => error.kind,
-          'kind',
-          ResourceKind.observer,
-        ),
-      );
-      expect(result.receipt, isNull);
-      expect(requests, 0);
-      expect(fixture.port.opens, isEmpty);
-      expect(fixture.budget.used(ResourceKind.pendingOperation), 0);
-    },
-  );
-
-  test(
     'synchronous close during observation admission returns rejected and joins',
     () async {
       final fixture = _Fixture();
@@ -536,7 +483,6 @@ void main() {
       expect(result.error, isA<StateError>());
       expect(result.receipt, isNull);
       expect(requests, 0);
-      expect(fixture.budget.used(ResourceKind.pendingOperation), 0);
     },
   );
 
@@ -555,7 +501,6 @@ void main() {
           final client = AnyworkClient(
             transport: fixture.port,
             clientId: fixture.board.clientId,
-            budget: fixture.budget,
             settingsWrites: fixture.coordinator,
             mutationBoard: fixture.board,
             accountDomains: fixture.resources,
@@ -778,10 +723,6 @@ void main() {
             ),
             boundary != 'healthy',
           );
-          expect(
-            fixture.budget.used(ResourceKind.pendingOperation),
-            boundary == 'healthy' ? 0 : 1,
-          );
         },
       );
     }
@@ -857,7 +798,6 @@ void main() {
         final state = fixture.board.operations.single;
         expect(state.failurePhase, OperationPhase.rejected);
         expect(state.receipt, isNull);
-        expect(fixture.budget.used(ResourceKind.pendingOperation), 0);
       },
     );
   }
@@ -1664,7 +1604,6 @@ void main() {
       isFalse,
       reason: 'An old idle baseline is not this operation terminal',
     );
-    expect(fixture.budget.used(ResourceKind.observer), greaterThan(0));
   });
 
   test('ACP old auth terminal before start admission cannot release its operation observation', () async {
@@ -1731,7 +1670,6 @@ void main() {
       isFalse,
       reason: 'A previous verified baseline cannot conclude the pending check',
     );
-    expect(fixture.budget.used(ResourceKind.observer), greaterThan(0));
   });
 
   test('model sync admissions do not merge across a changed canonical query generation', () async {
@@ -2258,29 +2196,29 @@ void main() {
     expect(queries, [(_native, 3), (added, 1), (missing, 1), (added, 2)]);
   });
 
-  test('late open and failed native close keep the exact owner and permit for retry', () async {
-    final fixture = _Fixture();
-    fixture.port.lateOpen = Completer<AccountDomainObservation>();
-    final demand = fixture.resources.accounts.observeDetails(_native);
-    final releasing = demand.release();
-    final releaseFailure = expectLater(releasing, throwsStateError);
-    final early = await fixture.resources.close(deadline: DateTime.now());
-    expect(early.complete, isFalse);
-    expect(fixture.budget.used(ResourceKind.observer), 1);
-    final handle = _Handle()..closeFailures = 1;
-    fixture.port.lateOpen!.complete(handle);
-    await releaseFailure;
-    expect(handle.requested.isCompleted, isTrue);
-    expect(fixture.budget.used(ResourceKind.observer), 1);
-    final retried = await fixture.resources.close(
-      deadline: DateTime.now().add(const Duration(seconds: 1)),
-    );
-    expect(retried.complete, isTrue);
-    expect(handle.closeCalls, 2);
-    expect(fixture.port.opens, [const AccountDetailTarget(_native)]);
-    expect(fixture.budget.used(ResourceKind.observer), 0);
-    await fixture.coordinator.close();
-  });
+  test(
+    'late open and failed native close keep the exact owner for retry',
+    () async {
+      final fixture = _Fixture();
+      fixture.port.lateOpen = Completer<AccountDomainObservation>();
+      final demand = fixture.resources.accounts.observeDetails(_native);
+      final releasing = demand.release();
+      final releaseFailure = expectLater(releasing, throwsStateError);
+      final early = await fixture.resources.close(deadline: DateTime.now());
+      expect(early.complete, isFalse);
+      final handle = _Handle()..closeFailures = 1;
+      fixture.port.lateOpen!.complete(handle);
+      await releaseFailure;
+      expect(handle.requested.isCompleted, isTrue);
+      final retried = await fixture.resources.close(
+        deadline: DateTime.now().add(const Duration(seconds: 1)),
+      );
+      expect(retried.complete, isTrue);
+      expect(handle.closeCalls, 2);
+      expect(fixture.port.opens, [const AccountDetailTarget(_native)]);
+      await fixture.coordinator.close();
+    },
+  );
 
   test(
     'ACP cancellation reaches its lane while start admission is still pending',
@@ -2415,18 +2353,8 @@ void main() {
       isFalse,
       reason: 'Same operation string is insufficient without the frozen query generation',
     );
-    final drained = Completer<void>();
-    final availability = fixture.budget.watchAvailability(
-      ResourceKind.observer,
-      () {
-        if (fixture.budget.used(ResourceKind.observer) == 0 &&
-            !drained.isCompleted)
-          drained.complete();
-      },
-    );
     fixture.resources.acceptFrame(terminal(9, 5));
-    await drained.future;
-    availability.cancel();
+    await handle.requested.future;
     expect(
       fixture
           .resources

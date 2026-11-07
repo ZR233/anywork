@@ -201,6 +201,7 @@ fn timeline_item(value: protocol::TimelineItem) -> BridgeTimelineItem {
         started_at: value.started_at,
         finished_at: value.finished_at,
         summary: value.summary.map(|summary| BridgeTimelineGroupSummary {
+            latest_thinking_summary: summary.latest_thinking_summary,
             member_count: summary.member_count,
             active_count: summary.active_count,
             failed_count: summary.failed_count,
@@ -481,6 +482,7 @@ mod tests {
             started_at: Some(100),
             finished_at: None,
             summary: Some(protocol::TimelineGroupSummary {
+                latest_thinking_summary: Some("Reviewing updates".into()),
                 member_count: 11,
                 active_count: 2,
                 failed_count: 1,
@@ -518,6 +520,10 @@ mod tests {
         assert!(item.payload.is_none() && item.contents.is_empty());
         assert!(item.outcome.is_none());
         let summary = item.summary.as_ref().unwrap();
+        assert_eq!(
+            summary.latest_thinking_summary.as_deref(),
+            Some("Reviewing updates")
+        );
         assert_eq!(
             (
                 summary.member_count,

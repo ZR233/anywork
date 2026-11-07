@@ -13,7 +13,6 @@ enum StatisticsFailureCategory {
   cancelled,
   acknowledgement,
   cleanup,
-  resourceBudget,
   unexpected,
 }
 
@@ -153,8 +152,6 @@ String _safeMessage(StatisticsFailureCategory category) => switch (category) {
     'Statistics delivery acknowledgement failed',
   StatisticsFailureCategory.cleanup =>
     'Statistics resource cleanup is unresolved',
-  StatisticsFailureCategory.resourceBudget =>
-    'Statistics observer capacity is exhausted',
   StatisticsFailureCategory.unexpected => 'Statistics operation failed',
 };
 
@@ -169,7 +166,6 @@ StudioFailureCode _defaultCode(StatisticsFailureCategory category) =>
       StatisticsFailureCategory.cancelled => StudioFailureCode.cancelled,
       StatisticsFailureCategory.acknowledgement => StudioFailureCode.protocol,
       StatisticsFailureCategory.cleanup => StudioFailureCode.unavailable,
-      StatisticsFailureCategory.resourceBudget => StudioFailureCode.overloaded,
       StatisticsFailureCategory.unexpected => StudioFailureCode.internal,
     };
 
@@ -181,7 +177,6 @@ bool _defaultRetryable(StatisticsFailureCategory category) =>
       StatisticsFailureCategory.busy ||
       StatisticsFailureCategory.acknowledgement ||
       StatisticsFailureCategory.cleanup ||
-      StatisticsFailureCategory.resourceBudget ||
       StatisticsFailureCategory.unexpected => true,
       StatisticsFailureCategory.closed ||
       StatisticsFailureCategory.protocol ||

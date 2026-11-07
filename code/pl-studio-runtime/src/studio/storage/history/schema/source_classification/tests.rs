@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 const THREAD: &str = "source-classification-upgrade";
 
-struct Published15;
-impl MigratorTraitSelf for Published15 {
+struct Published16;
+impl MigratorTraitSelf for Published16 {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         Migrator {
             thread_id: THREAD.into(),
@@ -91,12 +91,12 @@ async fn fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("history.sqlite");
     let db = connect(&path, SqliteFileMode::Create).await?;
-    let steps = Published15
+    let steps = Published16
         .migrations()
         .iter()
         .take_while(|step| !is_lifecycle_migration(step.name()))
         .count();
-    Published15.up(&db, Some(u32::try_from(steps)?)).await?;
+    Published16.up(&db, Some(u32::try_from(steps)?)).await?;
     let database = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -110,7 +110,7 @@ async fn fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     for seq in 1..=133u64 {
         let state = match seq {
             1 | 3 | 5 => ThreadItemState::Thinking(ThreadThinkingItem::new(
-                vec![],
+                vec![format!("摘要 {seq}")],
                 vec!["工作原文 🦀".into()],
                 ThreadContentLifecycle::completed(2),
             )),
@@ -263,6 +263,17 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
     let db = open(&path).await?;
     let original = originals(&db).await?;
     let old_ledger = ledger(&db).await?;
+    assert_eq!(version(&db).await?, 16);
+    assert!(
+        old_ledger
+            .iter()
+            .any(|record| record.contains(TIMELINE_THINKING_SUMMARY))
+    );
+    assert!(
+        old_ledger
+            .iter()
+            .all(|record| !record.contains(SOURCE_CLASSIFICATION))
+    );
     let generation = timeline::generation(&db).await?;
     db.close().await?;
     let store = HistoryStore::open(&path, THREAD).await?;
@@ -284,6 +295,15 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         )
         .await?,
         ["atom-1", "atom-3", "atom-5"]
+    );
+    assert_eq!(
+        rows(
+            db,
+            "SELECT json_extract(metadata,'$.summary.latestThinkingSummary') AS value
+             FROM timeline_items WHERE kind='workGroup' ORDER BY position"
+        )
+        .await?,
+        ["摘要 1", "摘要 5"]
     );
     let current = conversation::current::read(db).await?;
     assert_eq!(current.atoms[0].kind, ChatAtomKind::Agent);

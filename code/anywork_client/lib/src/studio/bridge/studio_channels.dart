@@ -3,14 +3,13 @@ import '../../../studio_ports.dart';
 import '../anywork_client.dart';
 import '../stores/domain_sync.dart';
 import '../stores/canonical_clock.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import 'product_topic_registry.dart';
 
 class StudioChannels {
   StudioChannels(this._client, StudioTransport api) {
     _topics = BridgeTopicRegistry(
       api,
-      budget: _client.budget,
       onFrame: _onTopicFrame,
       onTopicConnection: _onTopicConnection,
     );

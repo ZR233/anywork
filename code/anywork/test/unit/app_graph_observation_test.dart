@@ -11,7 +11,7 @@ import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
 import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart'
-    show CloseReport, DomainSyncPhase, FailedComposerThreadState, ResourceKind;
+    show CloseReport, DomainSyncPhase, FailedComposerThreadState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -59,7 +59,6 @@ void main() {
         await graph.timeline.close(deadline: _deadline());
         await graph.client.retryCleanup(deadline: _deadline());
       }
-      expect(graph.client.budget.used(ResourceKind.chatHandle), 0);
     },
   );
 
@@ -72,9 +71,6 @@ void main() {
     );
     addTearDown(() => graph.close(deadline: _deadline()));
     final client = graph.client;
-    final readModels = client.budget.used(ResourceKind.readModel);
-    final drafts = client.budget.used(ResourceKind.draft);
-    final observers = client.budget.used(ResourceKind.observer);
     final container = _container(graph);
     final session = container.listen(
       threadSessionStoreProvider('unselected-thread'),
@@ -102,13 +98,7 @@ void main() {
       expect(composer.read(), isA<FailedComposerThreadState>());
       expect(skills.read().loaded, isFalse);
       expect(costs.read().loaded, isFalse);
-      expect(client.budget.used(ResourceKind.readModel), readModels);
-      expect(client.budget.used(ResourceKind.draft), drafts);
       // 未加载会话只观察 visibleThreadId；其他三个缺失 owner 各观察 selection 与 failure。
-      expect(
-        client.budget.used(ResourceKind.observer),
-        observers + 1 + 2 + 2 + 2,
-      );
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
       expect(transport.feeds, isEmpty);
     } finally {
@@ -118,7 +108,6 @@ void main() {
       costs.close();
       container.dispose();
     }
-    expect(client.budget.used(ResourceKind.observer), observers);
   });
 
   test(
@@ -152,9 +141,6 @@ void main() {
       )!;
       expect(graph.client.existingSkills(workspaceId), isNotNull);
       expect(graph.client.existingSessionCosts('thread-main'), isNotNull);
-      final observerBudgetBefore = graph.client.budget.used(
-        ResourceKind.observer,
-      );
 
       final first = _container(graph);
       final sessionObserver = first.listen(
@@ -185,12 +171,6 @@ void main() {
       await first.pump();
       first.dispose();
 
-      expect(
-        graph.client.budget.used(ResourceKind.observer),
-        observerBudgetBefore,
-        reason:
-            'a disposed ProviderScope must release all its observer permits',
-      );
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
       expect(session.content.currentAttemptId?.value, attemptId);

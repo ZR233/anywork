@@ -276,6 +276,116 @@ async fn read_all_timeline(
 }
 
 #[tokio::test]
+async fn streamed_reasoning_summary_advances_current_group_without_a_new_effect() -> Result<()> {
+    use pl_core::model::{ActiveModelProgress, ModelProgress, ObservedPart};
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let mut h = Harness::new(&env).await?;
+    let mut member = start("summary-stream", true);
+    let ObservedPartIdentity::Provider(identity) = &mut member.identity else {
+        unreachable!()
+    };
+    identity.part = ObservedPartKind::SummaryText;
+    h.effect(vec![member.clone()], vec![]).await?;
+    let attempt = serde_json::from_value(serde_json::json!({
+        "turnId": "atomic-turn", "attemptId": "atomic-attempt",
+        "retryOf": null, "inputRevision": 0, "status": {"kind": "running"}
+    }))?;
+    let mut state = CoreSnapshot {
+        commit_sequence: 1,
+        turns: vec![TurnRecord {
+            turn_id: "atomic-turn".into(),
+            input_id: None,
+            state: CoreTurnState::Running,
+            model_steps: 1,
+            elapsed_ms: None,
+        }]
+        .into(),
+        attempts: vec![attempt].into(),
+        ..Default::default()
+    };
+    let mut part = ObservedPart::new(member.identity).appended("旧摘要");
+    let mut group_id = None;
+    for (suffix, expected) in [("", "旧摘要"), ("\r\n流式新摘要", "流式新摘要")] {
+        if !suffix.is_empty() {
+            part = part.appended(suffix);
+        }
+        state.model_progress = Some(ActiveModelProgress {
+            attempt_id: "atomic-attempt".into(),
+            progress: ModelProgress::new(0, vec![part.clone()]),
+        });
+        h.projection
+            .stream(&h.session, &h.thread, &state, 1)
+            .await?;
+        let current = h.projection.current_state().context("streamed current")?;
+        let group = &current.projection().items[0];
+        if let Some(id) = &group_id {
+            assert_eq!(&group.id, id);
+        } else {
+            group_id = Some(group.id.clone());
+        }
+        assert_eq!(
+            group
+                .summary
+                .as_ref()
+                .context("group summary")?
+                .latest_thinking_summary
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(current.projection().source_effect_seq, 1);
+        assert!(group.position.is_none());
+    }
+    let receipt = ModelMemberReceipt {
+        item: CompletionPresentationItem {
+            provider_item_id: "summary-stream".into(),
+            output_index: None,
+            kind: CompletionPresentationItemKind::Reasoning,
+            parts: vec![CompletionPresentationPart {
+                content_index: 0,
+                provider_part_id: None,
+                text: "旧摘要\r\n流式新摘要".into(),
+                kind: CompletionPresentationPartKind::SummaryText,
+            }],
+        },
+        state: ModelMemberState::Completed,
+    };
+    let completed = ModelCompletedMember {
+        turn_id: "atomic-turn".into(),
+        attempt_id: "atomic-attempt".into(),
+        generation: 0,
+        member_id: "summary-stream".into(),
+        payload: OpaquePayload::new(
+            "pl.model.completed-member",
+            1,
+            serde_json::to_string(&receipt)?,
+        )?,
+    };
+    h.effect(vec![], vec![completed]).await?;
+    let prepared = h
+        .effect(
+            vec![start("summary-boundary", false)],
+            vec![finish("summary-boundary", false, "正文")?],
+        )
+        .await?;
+    let group = prepared
+        .timeline
+        .iter()
+        .find(|item| item.id == group_id.as_ref().unwrap().as_str())
+        .context("same group at completion handoff")?;
+    assert_eq!(
+        group
+            .summary
+            .as_ref()
+            .unwrap()
+            .latest_thinking_summary
+            .as_deref(),
+        Some("流式新摘要")
+    );
+    assert!(group.position.is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn progress_cannot_skip_a_work_group_handoff_at_the_same_completion_head() -> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
     let mut h = Harness::new(&env).await?;
@@ -1282,7 +1392,7 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
                 assert_eq!(reobserved,&original_u,"B's effect restamped a sealed old Turn");
             }
             assert_eq!(prepared.timeline.iter().map(|item|item.kind).collect::<Vec<_>>(),
-                vec![TimelineItemKind::WorkGroup,TimelineItemKind::Status,TimelineItemKind::Status]);
+                vec![TimelineItemKind::WorkGroup,TimelineItemKind::WorkGroup,TimelineItemKind::Status]);
             assert!(matches!(prepared.timeline[1].source,ChatSourceId::BackgroundResult {..}));
             assert_eq!(prepared.timeline[2].outcome,Some(ChatTerminalOutcome::Cancelled));
             let terminals=prepared.completions.iter().filter(|record|record.header.query_class=="conversation")
@@ -1364,9 +1474,16 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
             .open_conversation_feed(&thread.id, ChatScope::Main, one)
             .await?;
         let set = chat(&mut feed).await?;
-        let b = completed_items(&set)
+        let b = set.entries.iter().filter_map(|entry| match entry {
+            ChatEntry::Item(item) if item.position.is_some() => Some(item.as_ref()),
+            _ => None,
+        })
             .find(|atom| matches!(atom.source, ChatSourceId::BackgroundResult { .. }))
             .context("independent B result in Set")?;
+        assert_eq!(b.kind, TimelineItemKind::WorkGroup);
+        assert!(b.payload.is_none());
+        assert_eq!(b.summary.as_ref().context("B summary")?.member_count, 1);
+        assert!(b.members.is_some());
         assert_eq!(
             b.source,
             ChatSourceId::BackgroundResult {
@@ -1439,7 +1556,12 @@ async fn background_order_case(recovered: bool, committed: bool) -> Result<()> {
         let latest=chat(&mut reopened).await?;
         assert_eq!(completed_items(&latest).next().context("latest T")?.id,t.id);
         let older=reopened.reader().load_older(latest.before.as_deref().context("older B cursor")?,one).await?;
-        assert_eq!(completed_items(&older).next().context("preceding B")?.source,b.source);
+        let preceding = older.entries.iter().find_map(|entry| match entry {
+            ChatEntry::Item(item) if item.position.is_some() => Some(item.as_ref()),
+            _ => None,
+        }).context("preceding B")?;
+        assert_eq!(preceding.source,b.source);
+        assert_eq!(preceding.kind,TimelineItemKind::WorkGroup);
         feed.close().await?;feed.reader().close().await?;
         reopened.close().await?;reopened.reader().close().await?;
         env.runtime.thread_observations.observation_slot(&thread.id).retire(&source);

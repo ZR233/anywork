@@ -44,7 +44,6 @@ class AnyworkClient {
   AnyworkClient({
     required this.transport,
     required this.clientId,
-    ResourceBudget? budget,
     SettingsWriteCoordinator? settingsWrites,
     MutationBoard? mutationBoard,
     AccountDomainResources? accountDomains,
@@ -53,14 +52,11 @@ class AnyworkClient {
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
     int Function()? threadCommandsClock,
-  }) : budget = budget ?? ResourceBudget(),
-       settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
+  }) : settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
        _accountDomains = accountDomains {
-    mutations =
-        mutationBoard ?? MutationBoard(clientId: clientId, budget: this.budget);
+    mutations = mutationBoard ?? MutationBoard(clientId: clientId);
     threadDirectory = ThreadDirectoryStore(
       feed: transport,
-      budget: this.budget,
       onStamp: (stamp) => mutations.observe(stamp),
       onCleanupFailure: resourceFailure.publish,
     );
@@ -76,7 +72,6 @@ class AnyworkClient {
     final conversationOwner = ConversationRepositoryImpl(
       transport: transport,
       directory: threadDirectory,
-      budget: this.budget,
       onRevision: observeResource,
     );
     conversations = conversationOwner;
@@ -85,7 +80,6 @@ class AnyworkClient {
     );
     drafts = DraftsRepositoryImpl(
       DraftsDependencies(
-        budget: this.budget,
         mutations: mutations,
         conversations: conversations,
         inputFacts: conversationOwner,
@@ -104,7 +98,6 @@ class AnyworkClient {
       api: updateApi ?? const _DisabledUpdateApi(),
       updater: updater,
       enabled: updatesEnabled,
-      budget: this.budget,
     );
     _selectionObservation = selection.source.watch(_selectionChanged);
     _canonicalObservations.addAll([
@@ -128,7 +121,6 @@ class AnyworkClient {
 
   final StudioTransport transport;
   final String clientId;
-  final ResourceBudget budget;
   final SettingsWriteCoordinator settingsWrites;
   final AccountDomainResources? _accountDomains;
   bool modelCatalogLoaded = false;
@@ -237,9 +229,7 @@ class AnyworkClient {
   final Map<String, Future<void>> _pendingJoins = {};
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
 
-  final Map<String, ResourcePermit> _mirrorPermits = {};
   final CommandLane _queries = CommandLane();
-  int _querySequence = 0;
   final List<Observation> _canonicalObservations = [];
   String? _runtimeOwnerEpoch;
   late final Observation _selectionObservation;
@@ -288,34 +278,25 @@ class AnyworkClient {
 
   McpStore mcpCatalog(McpScope scope) => scope is HostMcpScope
       ? mcp
-      : _mcpCatalogs.putIfAbsent(
-          scope,
-          () => _mirror('mcp:${scope.key}', () => McpStore(scope)),
-        );
+      : _mcpCatalogs.putIfAbsent(scope, () => _mirror(() => McpStore(scope)));
   ThreadMcpStore threadMcp(String threadId) => _threadMcp.putIfAbsent(
     threadId,
-    () => _mirror('thread-mcp:$threadId', () => ThreadMcpStore(threadId)),
+    () => _mirror(() => ThreadMcpStore(threadId)),
   );
 
   SkillsStore skills(String workspaceId) => _skills.putIfAbsent(
     workspaceId,
-    () => _mirror('skills:$workspaceId', () => SkillsStore(workspaceId)),
+    () => _mirror(() => SkillsStore(workspaceId)),
   );
   SessionCostsStore sessionCosts(String rootThreadId) =>
       _sessionCosts.putIfAbsent(
         rootThreadId,
-        () => _mirror(
-          'costs:$rootThreadId',
-          () => SessionCostsStore(rootThreadId),
-        ),
+        () => _mirror(() => SessionCostsStore(rootThreadId)),
       );
   ChildInteractionStore childInteractions(String hostThreadId) =>
       _childInteractions.putIfAbsent(
         hostThreadId,
-        () => _mirror(
-          'child-interactions:$hostThreadId',
-          () => ChildInteractionStore(hostThreadId),
-        ),
+        () => _mirror(() => ChildInteractionStore(hostThreadId)),
       );
 
   // ---- 根可见子任务待决交互的页面主题需求 ----
@@ -374,7 +355,7 @@ class AnyworkClient {
     final lease = _threadMcpPageLease;
     _threadMcpPageLease = null;
     if (lease == null) return;
-    // The registry retains the exact handle and permit if cancel fails.
+    // The registry retains the exact handle if cancel fails.
     unawaited(
       lease.release().catchError((Object error) {
         resourceFailure.publish(
@@ -462,7 +443,7 @@ class AnyworkClient {
     final lease = _childInteractionPageLease;
     _childInteractionPageLease = null;
     if (lease == null) return;
-    // The registry retains the exact handle and permit if cancel fails.
+    // The registry retains the exact handle if cancel fails.
     unawaited(
       lease.release().catchError((Object error) {
         resourceFailure.publish(
@@ -492,17 +473,9 @@ class AnyworkClient {
     );
   }
 
-  T _mirror<T>(String owner, T Function() create) {
+  T _mirror<T>(T Function() create) {
     _ensureOpen();
-    final permit = budget.acquire(ResourceKind.readModel, owner: owner);
-    try {
-      final value = create();
-      _mirrorPermits[owner] = permit;
-      return value;
-    } catch (_) {
-      permit.release();
-      rethrow;
-    }
+    return create();
   }
 
   void retryResource(ProductTopic topic) {
@@ -533,22 +506,11 @@ class AnyworkClient {
   }
 
   Future<Uint8List> readAttachmentBytes(String threadId, String attachmentId) =>
-      _query(
-        'attachment:$threadId:$attachmentId',
-        () => transport.readThreadAttachment(threadId, attachmentId),
-      );
+      _query(() => transport.readThreadAttachment(threadId, attachmentId));
 
-  Future<T> _query<T>(String target, Future<T> Function() read) async {
+  Future<T> _query<T>(Future<T> Function() read) async {
     _ensureOpen();
-    final permit = budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'query:${++_querySequence}:$target',
-    );
-    try {
-      return await _queries.run(read);
-    } finally {
-      permit.release();
-    }
+    return _queries.run(read);
   }
 
   /// Bootstrap has a separate, one-shot capability. Successful commands never
@@ -679,7 +641,7 @@ class AnyworkClient {
       _selectionTopics = null;
       _selectionTopicKey = null;
       if (previous != null) {
-        // The registry retains the exact handle and permit if cancel fails.
+        // The registry retains the exact handle if cancel fails.
         unawaited(
           previous.release().catchError((Object error) {
             resourceFailure.publish(
@@ -878,10 +840,6 @@ class AnyworkClient {
 
   void _releaseMirrorsIfResolved() {
     if (!_closed || unresolvedResources.isNotEmpty) return;
-    for (final permit in _mirrorPermits.values) {
-      permit.release();
-    }
-    _mirrorPermits.clear();
   }
 
   void _ensureOpen() {

@@ -28,7 +28,10 @@ impl MigratorTraitSelf for Published13 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                BACKGROUND_RESULTS | MEMBER_READ_METADATA | SOURCE_CLASSIFICATION
+                BACKGROUND_RESULTS
+                    | MEMBER_READ_METADATA
+                    | TIMELINE_THINKING_SUMMARY
+                    | SOURCE_CLASSIFICATION
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -49,7 +52,10 @@ impl MigratorTraitSelf for Published14 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                BACKGROUND_RESULTS | MEMBER_READ_METADATA | SOURCE_CLASSIFICATION
+                BACKGROUND_RESULTS
+                    | MEMBER_READ_METADATA
+                    | TIMELINE_THINKING_SUMMARY
+                    | SOURCE_CLASSIFICATION
             )
         })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -867,19 +873,30 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 2,
-        "content preparation records TimelineItems and SourceClassification, not lifecycle migrations"
+        original_ledger.len() + 3,
+        "content preparation records TimelineItems, TimelineThinkingSummary and SourceClassification, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?) ORDER BY version",
-            vec![TIMELINE_ITEMS.into(), SOURCE_CLASSIFICATION.into()],
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?) ORDER BY version",
+            vec![
+                TIMELINE_ITEMS.into(),
+                TIMELINE_THINKING_SUMMARY.into(),
+                SOURCE_CLASSIFICATION.into(),
+            ],
         ))
         .await?
         .into_iter()
         .map(|row| row.try_get::<String>("", "version"))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    assert_eq!(new_steps, [TIMELINE_ITEMS, SOURCE_CLASSIFICATION]);
+    assert_eq!(
+        new_steps,
+        [
+            TIMELINE_ITEMS,
+            SOURCE_CLASSIFICATION,
+            TIMELINE_THINKING_SUMMARY
+        ]
+    );
     for record in &original_ledger {
         assert!(
             applied_ledger.contains(record),
@@ -934,6 +951,7 @@ async fn formal_migration_round_trip() -> Result<()> {
     restored.apply_input(TimelineInput::Atom {
         atom: Box::new(terminal),
         payload: None,
+        thinking_summary: None,
     })?;
     assert_eq!(
         restored.current_items()[0]

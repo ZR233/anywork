@@ -3,7 +3,6 @@ import 'dart:developer' show log;
 import 'dart:typed_data';
 
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
 import '../../observation/read_model.dart';
 import '../../../models.dart';
 import 'attachment_ledger.dart';
@@ -25,7 +24,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     this._dependencies, {
     this.clipboardImageStager,
     this.clipboardImageCleanup,
-  }) : _ownership = AttachmentDraftStore(budget: _dependencies.budget),
+  }) : _ownership = AttachmentDraftStore(),
        super(const AttachmentDraftBoard());
 
   final DraftsDependencies _dependencies;
@@ -251,35 +250,13 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           !targetCurrent())
         return null;
       final generation = binding.generation();
-      final reservations = <ResourcePermit>[];
       final admission = ++_admissionSequence;
-      var dispatched = false;
       final List<AttachmentDraftView> drafts;
       try {
-        // Native admission creates exactly one draft per source. Reserve its
-        // budget before dispatch, including time spent opening and retiring.
-        for (var index = 0; index < sources.length; index += 1) {
-          reservations.add(
-            _dependencies.budget.acquire(
-              ResourceKind.attachment,
-              owner: 'admission:$admission:$index',
-              phase: ResourcePhase.opening,
-            ),
-          );
-        }
-        dispatched = true;
         drafts = await _api.admitAttachmentDrafts(context, sources);
       } catch (error) {
-        if (!dispatched || _knownAdmissionRejection(error)) {
-          for (final permit in reservations) {
-            permit.release();
-          }
-        } else {
-          // No receipt means these native IDs are unknown. Keep the original
-          // opening permits instead of claiming the backend allocated nothing.
-          for (final permit in reservations) {
-            permit.mark(ResourcePhase.unresolved);
-          }
+        if (!_knownAdmissionRejection(error)) {
+          // No receipt means native attachment identities remain unknown.
           _unresolvedAdmissions['admission:$admission'] = error;
         }
         if (_closed ||
@@ -293,10 +270,6 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         }
         binding.write(current.reportFailure(error));
         return null;
-      }
-      // No await separates the reservation handoff and the actual draft IDs.
-      for (final permit in reservations) {
-        permit.release();
       }
       if (drafts.isEmpty) return null;
       if (_closed ||
@@ -487,7 +460,6 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       return;
     }
     String? path;
-    ResourcePermit? stagingPermit;
     var stagingDispatched = false;
     var stagingReturned = false;
     final stagingOwner = 'clipboard-staging:${++_admissionSequence}';
@@ -495,18 +467,12 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       final stage = clipboardImageStager;
       if (stage == null)
         throw StateError('Clipboard image staging is unavailable.');
-      stagingPermit = _dependencies.budget.acquire(
-        ResourceKind.attachment,
-        owner: stagingOwner,
-        phase: ResourcePhase.opening,
-      );
       stagingDispatched = true;
       path = await stage(Uint8List.fromList(pngBytes));
       stagingReturned = true;
       if (path == null || path.isEmpty) {
         throw StateError('Clipboard image staging did not return a file.');
       }
-      stagingPermit.mark(ResourcePhase.active);
       await _admit(
         targetKey: targetKey,
         context: context,
@@ -517,12 +483,10 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         targetCurrent: targetCurrent,
       );
     } catch (error) {
-      if (stagingDispatched && !stagingReturned && stagingPermit != null) {
+      if (stagingDispatched && !stagingReturned) {
         // The callback did not return an identity, so a created staging file
         // cannot be disproved or silently accounted as already reclaimed.
-        stagingPermit.mark(ResourcePhase.unresolved);
         _unresolvedAdmissions[stagingOwner] = error;
-        stagingPermit = null;
       }
       await _lane(targetKey).enqueue(() async {
         if (!binding.mounted() || !targetCurrent()) return;
@@ -535,25 +499,17 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           if (cleanup == null)
             throw StateError('Clipboard staging cleanup is unavailable.');
           await cleanup(path);
-          stagingPermit?.release();
         } catch (error, stack) {
-          final permit = stagingPermit;
-          if (permit != null) {
-            permit.mark(ResourcePhase.unresolved);
-            _unresolvedStaging[stagingOwner] = _StagingCleanupFailure(
-              path,
-              permit,
-              error,
-            );
-          }
+          _unresolvedStaging[stagingOwner] = _StagingCleanupFailure(
+            path,
+            error,
+          );
           log(
             'clipboard staging cleanup failed',
             error: error,
             stackTrace: stack,
           );
         }
-      } else {
-        stagingPermit?.release();
       }
     }
   }
@@ -565,7 +521,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   }) async {
     final candidates = draftIds.toSet();
     if (candidates.isEmpty) return;
-    // Cleanup itself retains ownership and budget until native deletion really
+    // Cleanup itself retains ownership until native deletion really
     // succeeds. No Map clear can stand in for that acknowledgement.
     _ownership.adopt(_cleanupOwner, candidates);
     final failures = <String, Object>{};
@@ -791,11 +747,9 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
           throw StateError('Clipboard staging cleanup is unavailable.');
         await cleanup(entry.value.path);
         _unresolvedStaging.remove(entry.key);
-        entry.value.permit.release();
       } catch (error) {
         _unresolvedStaging[entry.key] = _StagingCleanupFailure(
           entry.value.path,
-          entry.value.permit,
           error,
         );
       }
@@ -889,9 +843,8 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
 const _cleanupOwner = '<native-cleanup>';
 
 final class _StagingCleanupFailure {
-  const _StagingCleanupFailure(this.path, this.permit, this.error);
+  const _StagingCleanupFailure(this.path, this.error);
   final String path;
-  final ResourcePermit permit;
   final Object error;
 }
 

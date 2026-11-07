@@ -3,6 +3,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,7 +24,7 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 
 void main() {
   for (final executing in [true, false]) {
-    testWidgets('实时组首次展开遵循执行资格 ($executing)', (tester) async {
+    testWidgets('实时组默认折叠且仅由用户展开 ($executing)', (tester) async {
       final unit = TimelineDisplayUnit(
         item: workItem('initial', closed: false, active: 1),
         live: true,
@@ -41,10 +42,16 @@ void main() {
           ),
         ),
       );
-      expect(unit.expansion.bodyActive, executing);
-      expect(unit.expansion.expanded, executing);
-      expect(builds > 0, executing);
-      expect(find.text('原成员正文'), executing ? findsOneWidget : findsNothing);
+      expect(unit.expansion.bodyActive, isFalse);
+      expect(unit.expansion.expanded, isFalse);
+      expect(builds, 0);
+      expect(find.text('原成员正文'), findsNothing);
+      await tester.tap(
+        find.byKey(const ValueKey('source-unit-header:initial')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(unit.expansion.bodyActive, isTrue);
+      expect(find.text('原成员正文'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(unit.expansion.bodyActive, isFalse);
     });
@@ -54,7 +61,7 @@ void main() {
     'folded huge group never invokes its member builder; fold revokes before animation',
     (tester) async {
       final unit = TimelineDisplayUnit(
-        item: workItem('huge', count: 100000),
+        item: workItem('huge', count: 100000, latestThinkingSummary: '折叠组摘要'),
         live: false,
       );
       var builds = 0;
@@ -72,6 +79,7 @@ void main() {
       );
       expect(builds, 0);
       expect(find.text('实际成员'), findsNothing);
+      expect(find.text('折叠组摘要'), findsOneWidget);
       expect(find.text('100000 项'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('source-unit-header:huge')));
       await tester.pump(const Duration(milliseconds: 300));
@@ -87,6 +95,165 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets(
+    'latest thinking summary streams into active and completed headers without tool activity replacing it',
+    (tester) async {
+      TimelineDisplayUnit activeUnit(
+        String? latestThinkingSummary, {
+        TimelineExpansionIntent? expansion,
+      }) => TimelineDisplayUnit(
+        item: workItem(
+          'streaming-summary',
+          closed: false,
+          active: 1,
+          count: 4,
+          latestThinkingSummary: latestThinkingSummary,
+        ),
+        live: true,
+        expansion: expansion,
+      );
+
+      var unit = activeUnit('整理已有信息');
+      unit.expansion.expanded = false;
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            key: const ValueKey('streaming-summary'),
+            unit: unit,
+            executionPresent: true,
+            childBuilder: (_) => const Text('成员正文'),
+          ),
+        ),
+      );
+      expect(find.text('整理已有信息'), findsOneWidget);
+      expect(find.text('工作中'), findsNothing);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .active,
+        isTrue,
+      );
+
+      unit = activeUnit(
+        'Waiting before reviewing updates',
+        expansion: unit.expansion,
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            key: const ValueKey('streaming-summary'),
+            unit: unit,
+            executionPresent: true,
+            childBuilder: (_) => const Text('成员正文'),
+          ),
+        ),
+      );
+      expect(find.text('Waiting before reviewing updates'), findsOneWidget);
+
+      // A later tool activity updates the category summary but does not
+      // replace the explicitly projected latest thinking text.
+      unit = TimelineDisplayUnit(
+        item: TimelineItem(
+          id: 'streaming-summary',
+          kind: TimelineItemKind.workGroup,
+          source: unit.item.source,
+          delivery: unit.item.delivery,
+          admissionClosed: false,
+          contents: const [],
+          members: unit.item.members!,
+          summary: TimelineGroupSummary(
+            memberCount: 5,
+            activeCount: 1,
+            failedCount: 0,
+            cancelledCount: 0,
+            latestThinkingSummary: 'Waiting before reviewing updates',
+            categories: const [
+              TimelineCategoryCount(
+                category: TimelineCategory.thinking,
+                count: 2,
+              ),
+              TimelineCategoryCount(
+                category: TimelineCategory.command,
+                count: 3,
+              ),
+            ],
+          ),
+        ),
+        live: true,
+        expansion: unit.expansion,
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            key: const ValueKey('streaming-summary'),
+            unit: unit,
+            executionPresent: true,
+            childBuilder: (_) => const Text('成员正文'),
+          ),
+        ),
+      );
+      expect(find.text('Waiting before reviewing updates'), findsOneWidget);
+      expect(find.text('4 完成 · 1 进行中'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .active,
+        isTrue,
+      );
+
+      final completed = TimelineDisplayUnit(
+        item: workItem(
+          'completed-summary',
+          latestThinkingSummary: 'Completed review notes',
+        ),
+        live: false,
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            unit: completed,
+            executionPresent: false,
+            childBuilder: (_) => const Text('已完成成员'),
+          ),
+        ),
+      );
+      expect(find.text('Completed review notes'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .active,
+        isFalse,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets('missing and whitespace thinking summaries retain status label', (
+    tester,
+  ) async {
+    for (final latestThinkingSummary in [null, ' \n\t ']) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      final unit = TimelineDisplayUnit(
+        item: workItem(
+          'summary-fallback',
+          latestThinkingSummary: latestThinkingSummary,
+        ),
+        live: false,
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineDisplayUnitView(
+            unit: unit,
+            executionPresent: false,
+            childBuilder: (_) => const Text('成员'),
+          ),
+        ),
+      );
+      expect(find.text('工作记录'), findsOneWidget);
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets(
     'summary totals and failure counts do not become loaded-window totals',

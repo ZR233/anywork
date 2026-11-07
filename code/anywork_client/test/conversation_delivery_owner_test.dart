@@ -189,7 +189,6 @@ void main() {
     expect(content.currentAttemptId, attempt);
     expect(feed.requestCloseCalls, 0);
     expect((await scope.close()).complete, isTrue);
-    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
     expect((await fixture.close()).complete, isTrue);
   });
 
@@ -266,12 +265,10 @@ void main() {
         await feed.requestCloseStarted.future;
         final closing = fixture.close(deadline: DateTime.now());
         expect((await closing).complete, isFalse);
-        expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
         gate.complete();
         expect((await fixture.client.retryCleanup()).complete, isTrue);
         expect(fixture.session().current.value, isNull);
         expect(feed.acknowledgements, isEmpty);
-        expect(fixture.client.budget.usage, isEmpty);
       },
     );
   }
@@ -367,12 +364,10 @@ void main() {
     );
     expect(feed.acknowledgements, [1]);
     expect((await fixture.close()).complete, isFalse);
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
     feed.closeFailure = null;
     expect((await fixture.client.retryCleanup()).complete, isTrue);
     expect(feed.closeCalls, 2);
     expect(fixture.transport.opens, hasLength(1));
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test('private reader close failure retains original facade responsibility for retry', () async {
@@ -388,13 +383,11 @@ void main() {
     );
     expect(feed.closeCompleted.isCompleted, isFalse);
     expect(feed.reader.closeCalls, 1);
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
     feed.reader.closeFailure = null;
     expect((await fixture.client.retryCleanup()).complete, isTrue);
     expect(feed.reader.closeCalls, 2);
     expect(feed.closeCompleted.isCompleted, isTrue);
     expect(fixture.transport.opens, hasLength(1));
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test('cleanup retries retired facade but excludes healthy active feed and reader', () async {

@@ -410,7 +410,9 @@ impl Fixture {
                 finished_at: None,
                 content_present: Some(true),
                 contents: vec![ChatAtomContent {
-                    role: ChatContentRole::ReasoningSummary,
+                    // Deliberately opaque bytes are a body, not a textual
+                    // reasoning-summary fact. Even migration must not read it.
+                    role: ChatContentRole::Body,
                     reference: body_reference(&database, &id),
                 }],
                 payload: None,
@@ -758,7 +760,7 @@ fn check_members(
         assert_eq!(
             atom.contents,
             vec![ChatAtomContent {
-                role: ChatContentRole::ReasoningSummary,
+                role: ChatContentRole::Body,
                 reference: body_reference(&reference.database_id, &atom.id),
             }]
         );

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
 import '../../observation/read_model.dart';
 import '../../../models.dart';
@@ -17,7 +16,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   StartSessionDraftImpl(this._dependencies) : super(const StartSessionDraft());
 
   final DraftsDependencies _dependencies;
-  final Map<String, ResourcePermit> _permits = {};
   final List<Observation> _observations = [];
   final Map<String, (DraftStamp, DraftStamp)> _unknown = {};
   Future<bool>? _pending;
@@ -68,7 +66,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   void _editProject(String workspaceId, StartSessionProjectDraft project) {
     if (_closed) return;
-    _reserve(workspaceId);
     state = state.copyWith(
       projects: {...state.projects, workspaceId: project},
       revision: state.revision + 1,
@@ -154,7 +151,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     if (project.text.trim().isEmpty && composer.attachments.isEmpty) {
       throw StateError('Cannot submit an empty draft');
     }
-    _reserve(workspaceId);
     final stamp = DraftStamp(
       draftId: 'start:$workspaceId',
       revision: state.revision,
@@ -362,7 +358,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
             projects: {...state.projects}..remove(frozen.workspaceId),
             revision: state.revision + 1,
           );
-          _permits.remove(frozen.workspaceId)?.release();
         }
       }
       await _dependencies.attachments.completeFrozen(
@@ -539,14 +534,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     );
   }
 
-  void _reserve(String workspaceId) => _permits.putIfAbsent(
-    workspaceId,
-    () => _dependencies.budget.acquire(
-      ResourceKind.draft,
-      owner: 'start:$workspaceId',
-    ),
-  );
-
   Future<void> discardProject(String workspaceId) async {
     if (_closed) return;
     state = state.copyWith(
@@ -554,7 +541,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       preparations: {...state.preparations}..remove(workspaceId),
       revision: state.revision + 1,
     );
-    _permits.remove(workspaceId)?.release();
     await _dependencies.attachments.discardProject(workspaceId);
   }
 
@@ -567,10 +553,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       observation.cancel();
     }
     _observations.clear();
-    for (final permit in _permits.values) {
-      permit.release();
-    }
-    _permits.clear();
   }
 }
 

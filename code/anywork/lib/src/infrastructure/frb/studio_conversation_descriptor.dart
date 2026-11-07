@@ -35,6 +35,7 @@ TimelineItem _timelineItemFromFrb(
   summary: value.summary == null
       ? null
       : TimelineGroupSummary(
+          latestThinkingSummary: value.summary!.latestThinkingSummary,
           memberCount: value.summary!.memberCount,
           activeCount: value.summary!.activeCount,
           failedCount: value.summary!.failedCount,

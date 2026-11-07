@@ -115,6 +115,7 @@ Map<String, Object?> timelineItemToJson(TimelineItem item) => {
       'activeCount': summary.activeCount,
       'failedCount': summary.failedCount,
       'cancelledCount': summary.cancelledCount,
+      'latestThinkingSummary': summary.latestThinkingSummary,
       'categories': [
         for (final category in summary.categories)
           {'category': category.category.name, 'count': category.count},

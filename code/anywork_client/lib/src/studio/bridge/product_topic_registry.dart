@@ -7,7 +7,7 @@ import 'dart:developer' show log;
 import '../../../models.dart';
 import '../../../studio_ports.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 
 /// Shell 常驻产品 topics：导航目录、公共配置与诊断 summary。
 ///
@@ -90,13 +90,13 @@ final class BridgeTopicCleanupBlocked implements Exception {
 }
 
 final class _TopicSubscription {
-  _TopicSubscription(this.topic, this.registry, this.id, this.permit);
+  _TopicSubscription(this.topic, this.registry, this.id);
 
   final ProductTopic topic;
   final BridgeTopicRegistry registry;
   final int id;
-  final ResourcePermit permit;
   int refs = 0;
+  bool _settled = false;
   // This owner serializes and joins cancel; failures keep this exact handle.
   // ignore: cancel_subscriptions
   StreamSubscription<ProductTopicFrame>? _underlying;
@@ -148,7 +148,6 @@ final class _TopicSubscription {
       throw StateError('The prior topic subscription has not joined');
     }
     final epoch = ++_sourceEpoch;
-    permit.mark(ResourcePhase.opening);
     _setConnection(
       const ProductTopicConnectionStateView(
         phase: ProductTopicConnectionPhase.connecting,
@@ -167,7 +166,6 @@ final class _TopicSubscription {
             cancelOnError: false,
           );
       if (!isActive || epoch != _sourceEpoch) return;
-      permit.mark(ResourcePhase.active);
       _armStabilityWindow(epoch);
     } catch (error) {
       if (!isActive || epoch != _sourceEpoch) return;
@@ -282,7 +280,7 @@ final class _TopicSubscription {
   }
 
   Future<void> retryNow() async {
-    if (registry._disposed || refs == 0 || permit.isReleased) return;
+    if (registry._disposed || refs == 0 || _settled) return;
     _reconnectAttempts = 0;
     _exhausted = false;
     _retryTimer?.cancel();
@@ -290,7 +288,7 @@ final class _TopicSubscription {
     _stabilityTimer?.cancel();
     _stabilityTimer = null;
     if (_retiring) {
-      // A failed cancel is retried on the same strong owner and permit.
+      // A failed cancel is retried on the same strong owner.
       await close();
     } else {
       await _recreate();
@@ -322,7 +320,6 @@ final class _TopicSubscription {
     ++_sourceEpoch;
     _stabilityTimer?.cancel();
     _stabilityTimer = null;
-    permit.mark(ResourcePhase.retiring);
     final old = _underlying;
     try {
       await old?.cancel();
@@ -334,7 +331,6 @@ final class _TopicSubscription {
       _retiring = true;
       _retryTimer?.cancel();
       _retryTimer = null;
-      permit.mark(ResourcePhase.unresolved);
       final blocked = BridgeTopicCleanupBlocked(topic, error);
       _setConnection(
         ProductTopicConnectionStateView(
@@ -353,9 +349,8 @@ final class _TopicSubscription {
   }
 
   Future<void> close() {
-    if (permit.isReleased) return Future.value();
+    if (_settled) return Future.value();
     _retiring = true;
-    permit.mark(ResourcePhase.retiring);
     ++_sourceEpoch;
     _retryTimer?.cancel();
     _retryTimer = null;
@@ -366,7 +361,7 @@ final class _TopicSubscription {
         // The running close may already have adopted a replacement source for
         // reacquired demand. A release at that await boundary retires the new
         // epoch too; joining only the previous cancellation would leak it.
-        if (!permit.isReleased && _retiring) return close();
+        if (!_settled && _retiring) return close();
       });
     }
     late final Future<void> task;
@@ -379,7 +374,7 @@ final class _TopicSubscription {
             _retiring = false;
             await _establish();
           } else {
-            permit.release();
+            _settled = true;
             registry._forget(this);
           }
         }).whenComplete(() {
@@ -397,11 +392,9 @@ class BridgeTopicRegistry {
     this._api, {
     required this.onFrame,
     required this.onTopicConnection,
-    ResourceBudget? budget,
-  }) : budget = budget ?? ResourceBudget();
+  });
 
   final StudioTransport _api;
-  final ResourceBudget budget;
   final void Function(ProductTopicFrame) onFrame;
   final void Function(ProductTopic, ProductTopicConnectionStateView?)
   onTopicConnection;
@@ -431,12 +424,7 @@ class BridgeTopicRegistry {
     if (_disposed) throw StateError('BridgeTopicRegistry is disposed');
     var entry = _entries[topic];
     if (entry == null) {
-      final permit = budget.acquire(
-        ResourceKind.observer,
-        owner: 'topic:${describeBridgeProductTopic(topic)}:${_sequence + 1}',
-        phase: ResourcePhase.opening,
-      );
-      entry = _TopicSubscription(topic, this, ++_sequence, permit);
+      entry = _TopicSubscription(topic, this, ++_sequence);
       _entries[topic] = entry;
       entry.refs = 1;
       _observeBackground(entry.start());
@@ -468,7 +456,7 @@ class BridgeTopicRegistry {
       operation.then<void>(
         (_) {},
         onError: (Object error, StackTrace stack) {
-          // Entry ownership, the exact subscription and permit already retain any
+          // Entry ownership, the exact subscription already retain any
           // cleanup failure. The detached caller only records its diagnostic.
           log(
             'product_topic_background_failed error=$error',
@@ -514,7 +502,7 @@ class BridgeTopicRegistry {
       try {
         await pending.timeout(remaining);
       } on TimeoutException {
-        // The same entry/task/permit remains strongly owned beyond the deadline.
+        // The same entry/task remains strongly owned beyond the deadline.
       }
     }
     return CloseReport(unresolved: unresolvedResources);

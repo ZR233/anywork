@@ -465,47 +465,41 @@ void main() {
     expect(report.complete, isTrue);
   });
 
-  test(
-    'replaced queries retain real ownership and budget through close',
-    () async {
-      final transport = _BotsTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'bots-retired',
+  test('replaced queries retain real ownership through close', () async {
+    final transport = _BotsTransport();
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'bots-retired',
+    );
+    final gate = Completer<BotConversationPage>();
+    transport.conversationsGate = gate;
+    try {
+      final first = client.botsQueries.listConversations('bot-a');
+      transport.conversationsGate = null;
+      await client.botsQueries.listConversations('bot-b');
+      await first; // Display cancellation is not transport completion.
+      final report = await client.close(deadline: DateTime.now());
+      expect(report.complete, isFalse);
+      var queryOwnerClosed = false;
+      final queryOwnerClose = client.botsQueries.close().then((_) {
+        queryOwnerClosed = true;
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(queryOwnerClosed, isFalse);
+      gate.complete(
+        const BotConversationPage(botId: 'bot-a', conversations: []),
       );
-      final gate = Completer<BotConversationPage>();
-      transport.conversationsGate = gate;
-      try {
-        final first = client.botsQueries.listConversations('bot-a');
-        transport.conversationsGate = null;
-        await client.botsQueries.listConversations('bot-b');
-        await first; // Display cancellation is not transport completion.
-        expect(client.budget.used(ResourceKind.pendingOperation), 1);
-        final report = await client.close(deadline: DateTime.now());
-        expect(report.complete, isFalse);
-        expect(client.budget.used(ResourceKind.pendingOperation), 1);
-        var queryOwnerClosed = false;
-        final queryOwnerClose = client.botsQueries.close().then((_) {
-          queryOwnerClosed = true;
-        });
-        await Future<void>.delayed(Duration.zero);
-        expect(queryOwnerClosed, isFalse);
+      await queryOwnerClose;
+      expect(client.botsQueries.state.conversationPage?.botId, 'bot-b');
+    } finally {
+      if (!gate.isCompleted) {
         gate.complete(
           const BotConversationPage(botId: 'bot-a', conversations: []),
         );
-        await queryOwnerClose;
-        expect(client.budget.used(ResourceKind.pendingOperation), 0);
-        expect(client.botsQueries.state.conversationPage?.botId, 'bot-b');
-      } finally {
-        if (!gate.isCompleted) {
-          gate.complete(
-            const BotConversationPage(botId: 'bot-a', conversations: []),
-          );
-        }
-        await client.close();
       }
-    },
-  );
+      await client.close();
+    }
+  });
 
   test(
     'foreign conversation responses fail without publishing another bot',

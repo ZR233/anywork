@@ -21,8 +21,8 @@ impl MigrationTrait for SourceClassification {
         async {
             let db = manager.get_connection();
             ensure!(
-                version(db).await? == 15,
-                "source classification requires schema 15"
+                version(db).await? == 16,
+                "source classification requires schema 16"
             );
             // Applied-but-missing structures/heads are corruption, not upgrade inputs.
             validate_current_structure(db).await?;

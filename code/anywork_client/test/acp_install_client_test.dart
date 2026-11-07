@@ -131,7 +131,6 @@ void main() {
       expect(operation.target, 'acp-install:antigravity');
       expect(operation.observed, isTrue);
       expect(operation.isPending, isFalse);
-      expect(client.budget.used(ResourceKind.pendingOperation), 0);
     },
   );
   test('a matching event before admission still satisfies the same operation receipt', () async {

@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 15;
+const HISTORY_SCHEMA_VERSION: i64 = 16;
 
 pub(in crate::studio) mod conversation;
 
@@ -3187,7 +3187,8 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
                            'm20261101_000010_history_model_route_head',
                            'm20261102_000001_history_atom_metadata',
                            'm20261103_000001_history_timeline_items',
-                           'm20261108_000001_history_source_classification')",
+                           'm20261108_000001_history_source_classification',
+                           'm20261108_000001_history_timeline_thinking_summary')",
     )
     .await?;
     Ok(())

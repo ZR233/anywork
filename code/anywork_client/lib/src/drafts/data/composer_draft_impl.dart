@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
 import '../../observation/latest_value.dart';
 import '../../observation/read_model.dart';
 import '../../../models.dart';
@@ -16,15 +15,10 @@ import 'submission_observation.dart';
 final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     implements ComposerDraftOwner {
   ComposerDraftImpl(this._dependencies, this.threadId)
-    : _permit = _dependencies.budget.acquire(
-        ResourceKind.draft,
-        owner: 'composer:$threadId',
-      ),
-      super(const ComposerThreadState.idle());
+    : super(const ComposerThreadState.idle());
 
   final DraftsDependencies _dependencies;
   final String threadId;
-  final ResourcePermit _permit;
   final List<Observation> _observations = [];
   int _revision = 0;
   int _generation = 0;
@@ -177,7 +171,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     pending = completion.future.whenComplete(() {
       if (identical(_pending, pending)) _pending = null;
     });
-    // Includes synchronous freeze/budget/mutation notifications, not only RPC.
+    // Includes synchronous freeze/mutation notifications, not only RPC.
     _pending = pending;
     unawaited(
       _prepareAndSubmit(beforeSubmit)
@@ -377,7 +371,6 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       observation.cancel();
     }
     _observations.clear();
-    _permit.release();
   }
 
   String? get _workspaceId => _dependencies.conversations

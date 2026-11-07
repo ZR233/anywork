@@ -1,6 +1,6 @@
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart' show CloseReport;
+import '../../lifecycle/close_report.dart' show CloseReport;
 import '../../observation/latest_value.dart';
 import 'content_state.dart';
 import 'conversation_state.dart';

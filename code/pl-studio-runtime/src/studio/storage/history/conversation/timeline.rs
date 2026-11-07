@@ -1,4 +1,5 @@
-//! Rebuildable, metadata-only display index, written by the original effect transaction.
+//! Rebuildable display index, written by the original effect transaction.
+//! Migration replay reads only the bounded tails of explicit reasoning-summary bodies.
 #[cfg(test)]
 #[path = "timeline/read_work_tests.rs"]
 mod read_work_tests;
@@ -9,7 +10,10 @@ use super::current::{PreparedCurrent, PreparedTimelineItem};
 use super::*;
 use crate::studio::thread_projection::{
     TimelineProjection,
-    timeline::{TimelineUpdate, lightweight},
+    timeline::{
+        THINKING_SUMMARY_TAIL_BYTES, TimelineInput, TimelineUpdate, lightweight,
+        thinking_summary_tail,
+    },
 };
 use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
@@ -556,6 +560,50 @@ pub(in crate::studio) async fn rebuild(
 ) -> Result<String> {
     rebuild_batched(db, database, 128).await
 }
+
+/// Only called while rebuilding derived data at the formal migration boundary.
+async fn rebuild_thinking_summary(
+    db: &impl ConnectionTrait,
+    atom: &ChatAtom,
+) -> Result<Option<String>> {
+    if atom.kind != ChatAtomKind::Reasoning {
+        return Ok(None);
+    }
+    for content in atom
+        .contents
+        .iter()
+        .rev()
+        .filter(|content| content.role == pl_protocol::ChatContentRole::ReasoningSummary)
+    {
+        let ContentTarget::Body { owner, key } = &content.reference.target else {
+            anyhow::bail!("reasoning summary is not a body reference");
+        };
+        let key = pl_core::chat::ChatContentKey {
+            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            key: key.clone(),
+        };
+        let row = db
+            .query_one_raw(statement(
+                "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+                vec![key.owner.as_str().into(), key.key.clone().into()],
+            ))
+            .await?
+            .context("reasoning summary content is missing during rebuild")?;
+        let manifest = super::content::manifest(&row.try_get::<Vec<u8>>("", "payload")?)?;
+        let length = usize::try_from(manifest.byte_length.min(THINKING_SUMMARY_TAIL_BYTES as u64))?;
+        if length == 0 {
+            continue;
+        }
+        let bytes =
+            super::content::read_body_bytes(db, &key, manifest.byte_length - length as u64, length)
+                .await?;
+        if let Some(summary) = thinking_summary_tail(&bytes)? {
+            return Ok(Some(summary));
+        }
+    }
+    Ok(None)
+}
+
 pub(in crate::studio) async fn rebuild_batched(
     db: &impl ConnectionTrait,
     database: &str,
@@ -618,7 +666,6 @@ async fn rebuild_with_classification(
                 } else if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
                     projection.observe(&atom, None)?;
                 } else {
-                    let seq = atom.completion_seq.unwrap_or(0);
                     if matches!(atom.lifecycle,ChatAtomLifecycle::Terminal {started:None,..})
                         && let Some(member)=db.query_one_raw(statement(
                             "SELECT item_id,member_order FROM timeline_item_members WHERE member_id=? AND completion_item_id IS NULL LIMIT 1",
@@ -642,7 +689,12 @@ async fn rebuild_with_classification(
                         None
                     };
                     atom.payload = None;
-                    projection.complete(atom, seq, payload)?;
+                    let thinking_summary = rebuild_thinking_summary(db, &atom).await?;
+                    projection.apply_input(TimelineInput::Atom {
+                        atom: Box::new(atom),
+                        payload,
+                        thinking_summary,
+                    })?;
                 }
             }
             drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
@@ -653,7 +705,7 @@ async fn rebuild_with_classification(
     }
     for atom in &current.atoms {
         if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
-            projection.refresh_current(atom)?;
+            projection.refresh_current(atom, rebuild_thinking_summary(db, atom).await?)?;
         }
     }
     drain_rebuild(db, database, &mut projection, current.source_effect_seq).await?;
