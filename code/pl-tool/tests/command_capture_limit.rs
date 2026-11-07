@@ -178,6 +178,7 @@ async fn exec_input_contract() -> anyhow::Result<()> {
             Arc::new(backend),
             archive.clone(),
             CommandAccess::WorkspaceOnly,
+            pl_tool::exec::exec_definition(),
         );
         let thread = pl_core::thread::ThreadHandle::start(
             "exec-input-contract".into(),
@@ -187,9 +188,17 @@ async fn exec_input_contract() -> anyhow::Result<()> {
             )),
         )?;
         thread
-            .register_tools(
-                tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
-            )
+            .register_tools(tool.registrations(
+                pl_core::tool::opaque::Registration::prepare(
+                    "exec".into(),
+                    OpaquePayload::text("exec"),
+                )?,
+                pl_core::tool::opaque::Registration::prepare(
+                    "write_stdin".into(),
+                    OpaquePayload::text("stdin"),
+                )?,
+                pl_tool::exec::write_stdin_definition(),
+            ))
             .await?;
         thread
             .run_turn(pl_core::thread::TurnInput {
@@ -243,6 +252,7 @@ async fn exec_input_contract() -> anyhow::Result<()> {
         Arc::new(backend),
         archive.clone(),
         CommandAccess::WorkspaceOnly,
+        pl_tool::exec::exec_definition(),
     );
     let thread = pl_core::thread::ThreadHandle::start(
         "exec-large-error-metadata".into(),
@@ -255,9 +265,17 @@ async fn exec_input_contract() -> anyhow::Result<()> {
         )),
     )?;
     thread
-        .register_tools(
-            tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
-        )
+        .register_tools(tool.registrations(
+            pl_core::tool::opaque::Registration::prepare(
+                "exec".into(),
+                OpaquePayload::text("exec"),
+            )?,
+            pl_core::tool::opaque::Registration::prepare(
+                "write_stdin".into(),
+                OpaquePayload::text("stdin"),
+            )?,
+            pl_tool::exec::write_stdin_definition(),
+        ))
         .await?;
     thread
         .run_turn(pl_core::thread::TurnInput {
@@ -755,6 +773,7 @@ async fn model_body_budget_preserves_metadata() -> anyhow::Result<()> {
                 Arc::new(backend),
                 Arc::new(FixedArchive::default()),
                 CommandAccess::WorkspaceOnly,
+                pl_tool::exec::exec_definition(),
             );
             let thread = pl_core::thread::ThreadHandle::start(
                 "exec-serialized-budget".into(),
@@ -765,9 +784,17 @@ async fn model_body_budget_preserves_metadata() -> anyhow::Result<()> {
                 )),
             )?;
             thread
-                .register_tools(
-                    tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?,
-                )
+                .register_tools(tool.registrations(
+                    pl_core::tool::opaque::Registration::prepare(
+                        "exec".into(),
+                        OpaquePayload::text("exec"),
+                    )?,
+                    pl_core::tool::opaque::Registration::prepare(
+                        "write_stdin".into(),
+                        OpaquePayload::text("stdin"),
+                    )?,
+                    pl_tool::exec::write_stdin_definition(),
+                ))
                 .await?;
             thread
                 .run_turn(pl_core::thread::TurnInput {
@@ -904,6 +931,7 @@ async fn backpressured_stdin_cancellation() -> anyhow::Result<()> {
         Arc::new(backend),
         Arc::new(FixedArchive::default()),
         CommandAccess::WorkspaceOnly,
+        pl_tool::exec::exec_definition(),
     );
     let calls = [
         (
@@ -937,11 +965,26 @@ async fn backpressured_stdin_cancellation() -> anyhow::Result<()> {
         "backpressure-scheduling".into(),
         pl_core::model::DynModelSession::new(ScriptedToolCalls { calls }),
     )?;
-    let mut registrations =
-        tool.registrations(OpaquePayload::text("exec"), OpaquePayload::text("stdin"))?;
+    let mut registrations = tool.registrations(
+        pl_core::tool::opaque::Registration::prepare("exec".into(), OpaquePayload::text("exec"))?,
+        pl_core::tool::opaque::Registration::prepare(
+            "write_stdin".into(),
+            OpaquePayload::text("stdin"),
+        )?,
+        pl_tool::exec::write_stdin_definition(),
+    );
     registrations.push(
-        pl_tool::task_control::TaskControlTool::new(pl_tool::task_control::TaskControlKind::Cancel)
-            .registration(OpaquePayload::text("cancel"))?,
+        pl_tool::task_control::TaskControlTool::new(
+            pl_tool::task_control::TaskControlKind::Cancel,
+            pl_tool::thread_catalog::ThreadBuiltin::Task(
+                pl_tool::task_control::TaskControlKind::Cancel,
+            )
+            .declaration(),
+        )
+        .registration(pl_core::tool::opaque::Registration::prepare(
+            "cancel_tool_task".into(),
+            OpaquePayload::text("cancel"),
+        )?),
     );
     thread.register_tools(registrations).await?;
     let run = tokio::time::timeout(
@@ -1730,7 +1773,12 @@ async fn run_exec_tool_with_budget<B: CommandBackend + 'static>(
     archive: Arc<FixedArchive>,
     budget: Option<usize>,
 ) -> Result<pl_core::tool::ToolOutput, ToolError> {
-    let tool = ThreadExecTool::new(Arc::new(backend), archive, CommandAccess::WorkspaceOnly);
+    let tool = ThreadExecTool::new(
+        Arc::new(backend),
+        archive,
+        CommandAccess::WorkspaceOnly,
+        pl_tool::exec::exec_definition(),
+    );
     let input = ExecInput {
         command: "while :; do printf '0123456789abcdef'; done".to_string(),
         cwd: None,
@@ -1756,7 +1804,7 @@ async fn run_exec_tool_with_budget<B: CommandBackend + 'static>(
     // 超时仅用于将不收敛的实现判为失败；成功由终态、实际回执与存储事实断言决定。
     tokio::time::timeout(
         Duration::from_secs(90),
-        pl_core::tool::opaque::Tool::execute(&tool, payload, call),
+        pl_agent_tool::Tool::execute(&tool, payload, call),
     )
     .await
     .map_err(|_elapsed| {

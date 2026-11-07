@@ -1,5 +1,5 @@
 mod stat;
-pub use stat::ThreadStatPathTool;
+pub use stat::{ThreadStatPathTool, thread_stat_path_tool_definition};
 mod thread;
 pub use thread::ThreadWorkspaceFileTool;
 
@@ -24,4 +24,4 @@ pub use patch::apply_patch_to_backend;
 pub use schema::*;
 
 mod write;
-pub use write::ThreadWriteFileTool;
+pub use write::{ThreadWriteFileTool, thread_write_file_tool_definition};

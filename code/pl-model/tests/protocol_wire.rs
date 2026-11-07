@@ -8,7 +8,7 @@ use pl_model::{
         AttachmentInput, AttachmentModality, AttachmentSource, CompletionPresentationItemKind,
         CompletionPresentationPartKind, CompletionRequest, CompletionTraceContext, ContentPart,
         HostedWebSearchOptions, Message, MessageContent, MessageRole, ModelContextItem,
-        ReasoningConfig, ReasoningSummary, ToolCallKind, ToolSpec, programmatic_tool_declaration,
+        ReasoningConfig, ReasoningSummary, ToolCallKind, ToolSpec,
     },
     config::builtin_account_catalog,
     model::{ModelInfo, ModelTransportProfile, default_models},
@@ -78,10 +78,10 @@ fn selectable_models_still_reject_unsupported_tools_before_io() {
     assert!(runtime.prepare_request(request).is_ok());
     let request = CompletionRequest::builder()
         .messages(vec![user("hello")])
-        .tools(vec![ToolSpec::function(
-            "lookup",
-            "Lookup",
-            json!({"type":"object"}),
+        .tools(vec![pl_model::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::json("lookup", "Lookup", json!({"type":"object"}))
+                .unwrap(),
+            pl_model::completion::ToolCallPolicy::DirectOnly,
         )])
         .build();
     assert!(
@@ -172,11 +172,17 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
         tools: vec![ModelToolDeclaration {
             presentation_contract: None,
             tool_id: "edit".into(),
-            declaration: pl_model::runtime::thread_tool_declaration(&ToolSpec::function(
-                "edit",
-                "Edit a document",
-                json!({"type":"object"}),
-            ))
+            declaration: pl_model::runtime::thread_tool_declaration(
+                &pl_model::completion::tool_definition_to_spec(
+                    &pl_agent_tool::ToolDefinition::json(
+                        "edit",
+                        "Edit a document",
+                        json!({"type":"object"}),
+                    )
+                    .unwrap(),
+                    pl_model::completion::ToolCallPolicy::DirectOnly,
+                ),
+            )
             .unwrap(),
         }]
         .into(),
@@ -250,12 +256,12 @@ fn custom_tool_model() -> ModelInfo {
 }
 
 fn apply_patch_declaration() -> ToolSpec {
-    ToolSpec::custom_grammar(
+    pl_model::completion::tool_definition_to_spec(&pl_agent_tool::ToolDefinition::grammar(
         "apply_patch",
         "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
         "lark",
         r#"start: "*** Begin Patch\n" "*** Add File: notes.txt\n" "+hello\n" "*** End Patch""#,
-    )
+    ).unwrap(), pl_model::completion::ToolCallPolicy::DirectOnly)
 }
 
 /// Reconstruct the pre-migration (HEAD) native checkpoint binding from the frozen current one.
@@ -1043,9 +1049,21 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
 }
 
 #[derive(Debug)]
-struct ReplayTool(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct ReplayTool {
+    count: Arc<std::sync::atomic::AtomicUsize>,
+    definition: pl_agent_tool::ToolDefinition,
+}
 
-impl pl_core::tool::opaque::Tool for ReplayTool {
+impl pl_agent_tool::Tool for ReplayTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: pl_core::context::OpaquePayload,
@@ -1055,7 +1073,8 @@ impl pl_core::tool::opaque::Tool for ReplayTool {
             input.content(),
             pl_provider_fixture::replay_tool_arguments()
         );
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(pl_core::tool::ToolOutput::new(
             pl_core::context::OpaquePayload::text("replay-tool-marker"),
             vec![ContextContent::Text {
@@ -1068,17 +1087,25 @@ impl pl_core::tool::opaque::Tool for ReplayTool {
 fn replay_registration(
     count: &Arc<std::sync::atomic::AtomicUsize>,
 ) -> pl_core::tool::opaque::Registration {
-    let spec = ToolSpec::function(
+    let definition = pl_agent_tool::ToolDefinition::json(
         "exec",
         "Return a recorded marker",
         json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+    )
+    .unwrap();
+    let spec = pl_model::completion::tool_definition_to_spec(
+        &definition,
+        pl_model::completion::ToolCallPolicy::DirectOnly,
     );
-    pl_core::tool::opaque::Registration::new(
+    pl_core::tool::opaque::Registration::prepare(
         "exec".into(),
         pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
-        ReplayTool(count.clone()),
     )
     .unwrap()
+    .attach(pl_agent_tool::ToolHandle::new(ReplayTool {
+        count: count.clone(),
+        definition,
+    }))
     .foreground_coexisting()
 }
 
@@ -1163,23 +1190,41 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         .unwrap();
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread = ThreadHandle::start("unknown-tool".into(), session).unwrap();
-        let spec = ToolSpec::function("exec", "Execute", json!({"type":"object"}));
-        let hidden = ToolSpec::function("hidden-wire", "Hidden", json!({"type":"object"}));
+        let definition =
+            pl_agent_tool::ToolDefinition::json("exec", "Execute", json!({"type":"object"}))
+                .unwrap();
+        let hidden_definition =
+            pl_agent_tool::ToolDefinition::json("hidden-wire", "Hidden", json!({"type":"object"}))
+                .unwrap();
+        let spec = pl_model::completion::tool_definition_to_spec(
+            &definition,
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        );
+        let hidden = pl_model::completion::tool_definition_to_spec(
+            &hidden_definition,
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        );
         thread
             .register_tools(vec![
-                pl_core::tool::opaque::Registration::new(
+                pl_core::tool::opaque::Registration::prepare(
                     "internal-exec".into(),
                     pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
-                    ReplayTool(count.clone()),
                 )
                 .unwrap()
+                .attach(pl_agent_tool::ToolHandle::new(ReplayTool {
+                    count: count.clone(),
+                    definition,
+                }))
                 .foreground_coexisting(),
-                pl_core::tool::opaque::Registration::new(
+                pl_core::tool::opaque::Registration::prepare(
                     "hidden-internal".into(),
                     pl_model::runtime::thread_tool_declaration(&hidden).unwrap(),
-                    ReplayTool(count.clone()),
                 )
                 .unwrap()
+                .attach(pl_agent_tool::ToolHandle::new(ReplayTool {
+                    count: count.clone(),
+                    definition: hidden_definition,
+                }))
                 .foreground_coexisting(),
             ])
             .await
@@ -1474,15 +1519,24 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
         .unwrap();
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread = ThreadHandle::start("invalid-custom".into(), session).unwrap();
-        let spec = ToolSpec::custom_grammar("apply_patch", "Patch", "lark", "start: WORD");
+        let definition =
+            pl_agent_tool::ToolDefinition::grammar("apply_patch", "Patch", "lark", "start: WORD")
+                .unwrap();
+        let spec = pl_model::completion::tool_definition_to_spec(
+            &definition,
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        );
         thread
             .register_tools(vec![
-                pl_core::tool::opaque::Registration::new(
+                pl_core::tool::opaque::Registration::prepare(
                     "stable-patch".into(),
                     pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
-                    ReplayTool(count.clone()),
                 )
                 .unwrap()
+                .attach(pl_agent_tool::ToolHandle::new(ReplayTool {
+                    count: count.clone(),
+                    definition,
+                }))
                 .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                     "builtin.apply_patch@1",
                 ))
@@ -3230,10 +3284,14 @@ async fn responses_function_call_has_stable_item_and_call_id() {
         model("tools-fixture", ModelTransportProfile::responses_http()),
         CompletionRequest::builder()
             .messages(vec![user("find it")])
-            .tools(vec![ToolSpec::function(
-                "lookup",
-                "Look up term",
-                json!({"type":"object","properties":{"term":{"type":"string"}}}),
+            .tools(vec![pl_model::completion::tool_definition_to_spec(
+                &pl_agent_tool::ToolDefinition::json(
+                    "lookup",
+                    "Look up term",
+                    json!({"type":"object","properties":{"term":{"type":"string"}}}),
+                )
+                .unwrap(),
+                pl_model::completion::ToolCallPolicy::DirectOnly,
             )])
             .build(),
         ModelSession::default(),
@@ -3403,15 +3461,45 @@ async fn apply_patch_falls_back_to_function_without_freeform_tool_type() {
     endpoint.apply_patch_tool_type = None;
     let runtime =
         ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
-    let lookup_schema = json!({"type":"object","properties":{"name":{"type":"string"}}});
+    let lookup_schema = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Lookup by name or id",
+        "anyOf": [
+            {
+                "type":"object",
+                "properties":{"name":{"type":"string"}},
+                "additionalProperties":true
+            },
+            {
+                "type":"object",
+                "properties":{"id":{"type":"integer"}},
+                "additionalProperties":false
+            }
+        ]
+    });
+    let lookup_definition =
+        pl_agent_tool::ToolDefinition::json("lookup", "Look up a symbol", lookup_schema.clone())
+            .unwrap();
     runtime
         .complete(
             CompletionRequest::builder()
                 .messages(vec![user("patch fallback")])
                 .tools(vec![
                     apply_patch_declaration(),
-                    ToolSpec::custom_grammar("query", "Query", "lark", "start: WORD"),
-                    ToolSpec::function("lookup", "Look up a symbol", lookup_schema.clone()),
+                    pl_model::completion::tool_definition_to_spec(
+                        &pl_agent_tool::ToolDefinition::grammar(
+                            "query",
+                            "Query",
+                            "lark",
+                            "start: WORD",
+                        )
+                        .unwrap(),
+                        pl_model::completion::ToolCallPolicy::DirectOnly,
+                    ),
+                    pl_model::completion::tool_definition_to_spec(
+                        &lookup_definition,
+                        pl_model::completion::ToolCallPolicy::DirectOnly,
+                    ),
                 ])
                 .build(),
             ModelInvocationContext::default(),
@@ -3442,7 +3530,15 @@ async fn apply_patch_falls_back_to_function_without_freeform_tool_type() {
     assert_eq!(query["format"]["type"], "grammar");
     let lookup = tools.iter().find(|tool| tool["name"] == "lookup").unwrap();
     assert_eq!(lookup["type"], "function");
-    assert_eq!(lookup["parameters"], lookup_schema);
+    assert_eq!(lookup["parameters"]["type"], "object");
+    assert_eq!(lookup["parameters"]["anyOf"], lookup_schema["anyOf"]);
+    assert!(lookup["parameters"].get("title").is_none());
+    assert!(lookup["parameters"].get("$schema").is_none());
+    assert!(lookup["parameters"].get("additionalProperties").is_none());
+    assert_eq!(
+        lookup_definition.input(),
+        &pl_agent_tool::InputFormat::JsonSchema(lookup_schema)
+    );
 }
 
 #[tokio::test]
@@ -3558,12 +3654,25 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
             CompletionRequest::builder()
                 .messages(vec![user("review the change")])
                 .tools(vec![
-                    ToolSpec::function(
-                        "lookup",
-                        "Look up a symbol",
-                        json!({"type":"object","properties":{"name":{"type":"string"}}}),
+                    pl_model::completion::tool_definition_to_spec(
+                        &pl_agent_tool::ToolDefinition::json(
+                            "lookup",
+                            "Look up a symbol",
+                            json!({"type":"object","properties":{"name":{"type":"string"}}}),
+                        )
+                        .unwrap(),
+                        pl_model::completion::ToolCallPolicy::DirectOnly,
                     ),
-                    ToolSpec::custom_grammar("apply_patch", "Apply patch", "lark", "start: WORD"),
+                    pl_model::completion::tool_definition_to_spec(
+                        &pl_agent_tool::ToolDefinition::grammar(
+                            "apply_patch",
+                            "Apply patch",
+                            "lark",
+                            "start: WORD",
+                        )
+                        .unwrap(),
+                        pl_model::completion::ToolCallPolicy::DirectOnly,
+                    ),
                 ])
                 .reasoning(Some(ReasoningConfig {
                     effort: Some("high".into()),
@@ -3658,10 +3767,10 @@ async fn chat_tool_result_replays_the_provider_item_id_on_the_next_step() {
         model("chat-tools", ModelTransportProfile::chat_completions_http()),
     )
     .unwrap();
-    let tools = vec![ToolSpec::function(
-        "lookup",
-        "Look up term",
-        json!({"type":"object"}),
+    let tools = vec![pl_model::completion::tool_definition_to_spec(
+        &pl_agent_tool::ToolDefinition::json("lookup", "Look up term", json!({"type":"object"}))
+            .unwrap(),
+        pl_model::completion::ToolCallPolicy::DirectOnly,
     )];
     let first = runtime
         .complete(
@@ -4037,13 +4146,22 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
                 search_content_types: None,
             },
         },
-        ToolSpec::custom_grammar("apply_patch", "Patch source", "lark", "start: WORD"),
+        pl_model::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::grammar(
+                "apply_patch",
+                "Patch source",
+                "lark",
+                "start: WORD",
+            )
+            .unwrap(),
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        ),
         ToolSpec::ProgrammaticToolCalling,
-        programmatic_tool_declaration(ToolSpec::function(
-            "lookup",
-            "Look up",
-            json!({"type":"object"}),
-        )),
+        pl_model::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::json("lookup", "Look up", json!({"type":"object"}))
+                .unwrap(),
+            pl_model::completion::ToolCallPolicy::DirectAndProgrammatic,
+        ),
     ];
     let result = runtime
         .complete(
@@ -4494,7 +4612,11 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
         .messages(vec![user("compact")])
         .tools(vec![
             apply_patch_declaration(),
-            ToolSpec::custom_grammar("query", "Query", "lark", "start: WORD"),
+            pl_model::completion::tool_definition_to_spec(
+                &pl_agent_tool::ToolDefinition::grammar("query", "Query", "lark", "start: WORD")
+                    .unwrap(),
+                pl_model::completion::ToolCallPolicy::DirectOnly,
+            ),
         ])
         .build();
     runtime
@@ -5602,11 +5724,11 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         .register_tools(vec![replay_registration(&count)])
         .await
         .unwrap();
-    let spec = ToolSpec::function(
+    let spec = pl_model::completion::tool_definition_to_spec(&pl_agent_tool::ToolDefinition::json(
         "exec",
         "Return a recorded marker",
         json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
-    );
+    ).unwrap(), pl_model::completion::ToolCallPolicy::DirectOnly);
     thread
         .replace_context(ReplaceContext {
             expected_revision: 0,

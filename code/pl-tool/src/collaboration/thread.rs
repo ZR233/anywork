@@ -1,13 +1,14 @@
 //! Agent control tool frontends; directory ownership and access decisions belong to the product host.
+pub use pl_agent_tool::ToolDefinition;
 use pl_core::{
     context::OpaquePayload,
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 pub use pl_protocol::studio::NewThreadModelRoute;
-pub use pl_protocol::{AgentWorkspaceMode, DelegationMode, ToolSpec};
+pub use pl_protocol::{AgentWorkspaceMode, DelegationMode};
 pub use serde_json::Error as SchemaEncodingError;
 use std::sync::Arc;
 
@@ -211,29 +212,29 @@ impl AgentControlKind {
         self,
         profiles: &[AgentSpawnProfile],
         mode: DelegationMode,
-    ) -> Result<Option<ToolSpec>, AgentSpawnSchemaError> {
+    ) -> Result<Option<ToolDefinition>, AgentSpawnSchemaError> {
         Ok(Some(match self {
             Self::Spawn => return super::spawn_schema::declaration(profiles, mode),
-            Self::Send => pl_protocol::ToolSpec::function(
+            Self::Send => pl_agent_tool::ToolDefinition::json(
                 "send_message",
                 "Send a prompt to a direct child. Interrupt its active turn and continue with this message after tool cleanup; start it if idle. The receipt confirms acceptance, not completion.",
-                schemars::schema_for!(SendInput).to_value(),
-            ),
-            Self::List => pl_protocol::ToolSpec::function(
+                pl_agent_tool::typed::input_schema_for::<SendInput>(),
+            ).expect("valid tool definition"),
+            Self::List => pl_agent_tool::ToolDefinition::json(
                 "list_agents",
                 "List agents visible within the caller's thread tree.",
-                schemars::schema_for!(Empty).to_value(),
-            ),
-            Self::Interrupt => pl_protocol::ToolSpec::function(
+                pl_agent_tool::typed::input_schema_for::<Empty>(),
+            ).expect("valid tool definition"),
+            Self::Interrupt => pl_agent_tool::ToolDefinition::json(
                 "interrupt_agent",
                 "Pause queued execution and interrupt a descendant agent's active turn.",
-                schemars::schema_for!(Target).to_value(),
-            ),
-            Self::Close => pl_protocol::ToolSpec::function(
+                pl_agent_tool::typed::input_schema_for::<Target>(),
+            ).expect("valid tool definition"),
+            Self::Close => pl_agent_tool::ToolDefinition::json(
                 "close_agent",
                 "Permanently close a descendant and its descendants: stop and join execution, tools and processes, await existing save acknowledgements, and remove only each child's own existing bound Git worktree. Full history, checkpoints, reliable attachments, reports, statistics, evaluations, independent session files and branch refs are retained. Finish review and integration first; otherwise keep it idle or interrupt it. By default dirty/untracked changes or a child HEAD not contained in the actual root delivery HEAD block worktree cleanup. force=true permits discarding only that content, never bypassing ownership, Git identity or locks, active borrowers, process exit or save acknowledgements. The result reports executionClosed and worktreeCleanup per agent; partial failure retains all member facts and may be retried only against the original binding.",
-                schemars::schema_for!(CloseInput).to_value(),
-            ),
+                pl_agent_tool::typed::input_schema_for::<CloseInput>(),
+            ).expect("valid tool definition"),
         }))
     }
 }
@@ -241,51 +242,60 @@ impl AgentControlKind {
 /// One Thread's frontend over a shared product coordination service.
 #[derive(Debug)]
 pub struct ThreadAgentControl<H> {
+    definition: ToolDefinition,
     host: Arc<H>,
     kind: AgentControlKind,
 }
 
 impl<H: AgentControlHost> ThreadAgentControl<H> {
     /// Associates an operation with its product-owned coordinator.
-    pub fn new(host: Arc<H>, kind: AgentControlKind) -> Self {
-        Self { host, kind }
+    pub fn new(host: Arc<H>, kind: AgentControlKind, definition: ToolDefinition) -> Self {
+        Self {
+            host,
+            kind,
+            definition,
+        }
     }
 
     /// Transfers an executor; product coordination remains behind the host port.
     ///
-    /// # Errors
-    /// Returns invalid registry identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        let name = match self.kind {
-            AgentControlKind::Spawn => "spawn_agent",
-            AgentControlKind::Send => "send_message",
-            AgentControlKind::List => "list_agents",
-            AgentControlKind::Interrupt => "interrupt_agent",
-            AgentControlKind::Close => "close_agent",
-        };
+    /// The supplied preparation has already validated the registration identity.
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let kind = self.kind;
         let contract = match kind {
             AgentControlKind::Spawn => Some("builtin.spawn_agent@1"),
             AgentControlKind::Send => Some("builtin.send_message@1"),
             AgentControlKind::List | AgentControlKind::Interrupt | AgentControlKind::Close => None,
         };
-        let mut registration = Registration::new(name.into(), declaration, self)?;
+        let mut registration = prepared.attach(pl_agent_tool::ToolHandle::new(self));
         if let Some(contract) = contract {
             registration = registration.with_presentation_contract(
                 pl_core::model::ToolPresentationContract::new(contract),
             );
         }
-        Ok(match kind {
+        match kind {
             AgentControlKind::List => registration,
             AgentControlKind::Spawn
             | AgentControlKind::Send
             | AgentControlKind::Interrupt
             | AgentControlKind::Close => registration.foreground(),
-        })
+        }
     }
 }
 
-impl<H: AgentControlHost> Tool for ThreadAgentControl<H> {
+impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -302,12 +312,12 @@ impl<H: AgentControlHost> Tool for ThreadAgentControl<H> {
         match self.kind {
             AgentControlKind::Spawn => {
                 let request: AgentSpawn =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 self.host.spawn(context, request).await
             }
             AgentControlKind::Send => {
                 let input: SendInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 self.host
                     .send(
                         &context.thread_id,
@@ -325,19 +335,20 @@ impl<H: AgentControlHost> Tool for ThreadAgentControl<H> {
                     .await
             }
             AgentControlKind::List => {
-                let _: Empty = serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                let _: Empty =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 self.host.list(&context.thread_id).await
             }
             AgentControlKind::Interrupt => {
                 let target: Target =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 self.host
                     .interrupt(&context.thread_id, &target.target)
                     .await
             }
             AgentControlKind::Close => {
                 let target: CloseInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 self.host
                     .close(
                         &context.thread_id,

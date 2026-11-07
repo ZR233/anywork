@@ -10,7 +10,6 @@ use super::schema::{
     GitBranchAction, GitBranchInput, GitCommitInput, GitDiffInput, GitFetchInput, GitPushInput,
     GitSyncDefaultBranchInput,
 };
-use crate::deserialize_tool_input;
 use crate::execution::ExecutionBackend;
 use crate::tool_error;
 
@@ -19,8 +18,7 @@ where
     B: ExecutionBackend + 'static,
     P: GitCredentialProvider + 'static,
 {
-    pub(super) async fn run_diff(&self, arguments: Value) -> Result<GitToolOutcome, PureError> {
-        let input: GitDiffInput = deserialize_tool_input(self.name(), arguments)?;
+    pub(super) async fn run_diff(&self, input: GitDiffInput) -> Result<GitToolOutcome, PureError> {
         let path = non_empty(input.path);
         if let Some(path) = path.as_deref() {
             self.config.policy.validate_path(path)?;
@@ -33,8 +31,10 @@ where
         }
     }
 
-    pub(super) async fn run_branch(&self, arguments: Value) -> Result<GitToolOutcome, PureError> {
-        let input: GitBranchInput = deserialize_tool_input(self.name(), arguments)?;
+    pub(super) async fn run_branch(
+        &self,
+        input: GitBranchInput,
+    ) -> Result<GitToolOutcome, PureError> {
         match input.action.unwrap_or(GitBranchAction::List) {
             GitBranchAction::List => self.run_plain(vec!["branch", "--list", "--all"]).await,
             GitBranchAction::Switch => {
@@ -56,8 +56,10 @@ where
         }
     }
 
-    pub(super) async fn run_fetch(&self, arguments: Value) -> Result<GitToolOutcome, PureError> {
-        let input: GitFetchInput = deserialize_tool_input(self.name(), arguments)?;
+    pub(super) async fn run_fetch(
+        &self,
+        input: GitFetchInput,
+    ) -> Result<GitToolOutcome, PureError> {
         let remote = non_empty(input.remote()).unwrap_or_else(|| "origin".to_string());
         self.config.policy.validate_remote(&remote)?;
         let refspec = non_empty(input.refspec);
@@ -76,8 +78,10 @@ where
             .await
     }
 
-    pub(super) async fn run_commit(&self, arguments: Value) -> Result<GitToolOutcome, PureError> {
-        let input: GitCommitInput = deserialize_tool_input(self.name(), arguments)?;
+    pub(super) async fn run_commit(
+        &self,
+        input: GitCommitInput,
+    ) -> Result<GitToolOutcome, PureError> {
         let message = required_text(self.name(), Some(input.message), "message")?;
         if input.all {
             self.run_plain(vec!["commit", "--no-verify", "-am", &message])
@@ -88,8 +92,7 @@ where
         }
     }
 
-    pub(super) async fn run_push(&self, arguments: Value) -> Result<GitToolOutcome, PureError> {
-        let input: GitPushInput = deserialize_tool_input(self.name(), arguments)?;
+    pub(super) async fn run_push(&self, input: GitPushInput) -> Result<GitToolOutcome, PureError> {
         let remote = non_empty(input.remote()).unwrap_or_else(|| "origin".to_string());
         self.config.policy.validate_remote(&remote)?;
         let branch = non_empty(input.branch)
@@ -119,9 +122,8 @@ where
 
     pub(super) async fn run_sync_default_branch(
         &self,
-        arguments: Value,
+        input: GitSyncDefaultBranchInput,
     ) -> Result<GitToolOutcome, PureError> {
-        let input: GitSyncDefaultBranchInput = deserialize_tool_input(self.name(), arguments)?;
         if input.force && input.preserve_changes {
             return Err(tool_error(
                 self.name(),

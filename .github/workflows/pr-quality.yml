@@ -244,6 +244,13 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo fmt --all --check
+            # These isolated selections must run before workspace feature unification.
+            cargo check --locked -p pl-agent-tool --no-default-features --all-targets
+            cargo test --locked -p pl-agent-tool --no-default-features
+            cargo test --locked -p pl-agent-tool --no-default-features --features typed
+            cargo test --locked -p pl-agent-tool --no-default-features --features typed,macros
+            cargo test --locked -p pl-agent-tool-macros
+            cargo test --locked --manifest-path code/pl-agent-tool/fixtures/downstream/Cargo.toml --target-dir target/tool-downstream
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
             # Library tests run outside the Flutter bundle and need the
@@ -403,7 +410,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
-      DESKTOP_TEST_OUTPUT: target/ci-desktop-linux/${{ github.run_id }}-${{ github.run_attempt }}
+      DESKTOP_TEST_OUTPUT: output/ci-desktop-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -418,6 +425,14 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -434,13 +449,6 @@ jobs:
           artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
           sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
           source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
-          save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
       # A shard owns its checkout, display and fixtures. Cases inside it stay
       # sequential so no two Flutter processes rewrite the same build inputs.
       - name: Record disk usage before desktop build
@@ -459,7 +467,7 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            bash .github/scripts/linux-desktop-session.sh target/ci-desktop-secret-service \
+            bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
               --shard-index "$2" --shard-count 3 --output "$3"
@@ -511,7 +519,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
-      NATIVE_TEST_OUTPUT: target/ci-native-linux/${{ github.run_id }}-${{ github.run_attempt }}
+      NATIVE_TEST_OUTPUT: output/ci-native-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -526,6 +534,14 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -542,13 +558,6 @@ jobs:
           artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
           sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
           source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
       - name: Record disk usage before native build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
@@ -563,7 +572,7 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
-            bash .github/scripts/linux-desktop-session.sh target/ci-native-secret-service \
+            bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite native --set full --output "$2"
           ' -- "$PR_QUALITY_XTASK" "$NATIVE_TEST_OUTPUT"

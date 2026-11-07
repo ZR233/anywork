@@ -9,12 +9,15 @@ pl-studio-bridge / pl-studio-server → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-model → pl-core
 pl-tool → pl-core / pl-model
+pl-core / pl-model / pl-tool / pl-studio-runtime → pl-agent-tool
+pl-agent-tool（macros 特性）→ pl-agent-tool-macros
 pl-lsp → pl-remote-helper
 pl-trace → pl-core
 ```
 
 核心依赖约束如下：
 - `pl-model` 不依赖 `pl-tool`；`pl-tool` 消费 `pl-model` 已解析的账号能力与模型路由。
+- `pl-agent-tool` 拥有供应商无关的可执行工具声明与消费接口，基础特性不依赖其他 Anywork crate、RMCP、Tokio 或网络运行时；可选 `typed` 特性增加 Serde/Schemars 作者适配，可选 `macros` 特性增加薄过程宏。`pl-agent-tool-macros` 不反向依赖接口库。core 与 model 只启用基础消费契约，原生作者所在的 tool 与 Studio 显式启用作者特性。
 - `pl-core` 不依赖 `pl-protocol`、`pl-model`、`pl-tool`、`pl-trace`、`pl-output` 或 Studio 层组件（含测试依赖）。新增概念须先甄别是否属于通用的会话线程编排；账号、工具和产品专属概念分别归入对应适配层，不得通过 `pl-core` 门面镜像导出。
 - 工作区完整成员清单以根目录 `Cargo.toml` 为准；Flutter 应用目录本身不是 Cargo 工作区成员，其 Rust 桥接库 `pl-studio-bridge` 单独纳入工作区。
 - 厂商协议的 HTTP 客户端（模型目录发现、文件上传与图像生成）归属 `pl-model`，与账号配置、协议端点、模型目录及凭据解析保持同源，并由 `pl-model` 公开 API 的集成测试覆盖；`pl-tool` 仅负责参数校验、结果编排与媒体文件归档，不维护第二套协议或凭据逻辑。
@@ -27,7 +30,9 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 
 | Crate | 核心职责与所有权边界 |
 | --- | --- |
-| `pl-core` | 上下文、模型、工具与会话线程的通用契约，内存线程所有者、当前状态检查点、不可变效果（effect），以及产品无关的 `Session` 原子完成集合、发布顺序、pending、统一分页与冻结详情读取 |
+| `pl-agent-tool` | 独立工具声明、拥有型且返回 Send future 的消费契约、唯一动态擦除句柄，以及可选的 typed 参数、schema 与原始错误保留适配；不持有注册表、调度、授权或资源退休状态机 |
+| `pl-agent-tool-macros` | 参数派生与 typed 工具转发薄宏；复用接口库的作者适配，不生成调度、授权、任务或关闭机制 |
+| `pl-core` | 上下文、模型与会话线程的通用契约，Anywork 工具上下文与结果特化、注册/冻结/授权/退休治理，内存线程所有者、当前状态检查点、不可变效果（effect），以及产品无关的 `Session` 原子完成集合、发布顺序、pending、统一分页与冻结详情读取 |
 | `pl-model` | 账号配置、厂商协议与传输层、模型目录、配置值对象、路由解析、厂商图像 API、媒体编码、提示缓存、用量计量及核心模型会话适配 |
 | `pl-acp` | 外部智能体的 ACP 协商与认证协议、类型化请求结果及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |

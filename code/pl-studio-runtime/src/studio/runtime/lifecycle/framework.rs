@@ -110,7 +110,9 @@ impl StudioRuntime {
                 || self.agent_facility.worktrees.get(&thread_id).is_some_and(|lease| lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned) {
                 continue;
             }
-            match self.threads.evict_idle(&thread_id).await {
+            // Eviction retains the full resource/storage close state. Keep that state out of
+            // activation's ancestry future without detaching this caller's cancellation or join.
+            match Box::pin(self.threads.evict_idle(&thread_id)).await {
                 Ok(true) => {
                     self.residency.remove(&thread_id).await;
                 }

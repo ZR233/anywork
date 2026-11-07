@@ -1,10 +1,8 @@
 //! Explicit public-tool observation, outside the automated test gate.
 //! Run with an owned scratch directory: cargo run -p pl-tool --example skill_discovery_observe -- SCRATCH
 use anyhow::{Context, ensure};
-use pl_core::{
-    context::OpaquePayload,
-    tool::opaque::{CallContext, Tool},
-};
+use pl_agent_tool::Tool;
+use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
 use pl_tool::skill::{
     FileSystemSkillProvider, SkillDirectorySource, SkillProviderRegistration, SkillProviderRequest,
     SkillRegistry, SkillSourceKind, SkillsConfig, ThreadSkillKind, ThreadSkillManageTool,
@@ -55,8 +53,16 @@ async fn main() -> anyhow::Result<()> {
         "{}",
         json!({"step": "preparation", "catalog": catalog.snapshot()})
     );
-    let list = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::List);
-    let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
+    let list = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
+    let view = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::View,
+        ThreadSkillKind::View.declaration(),
+    );
     let before = invoke(&list, "before", json!({})).await?;
     ensure!(
         before["count"] == 3,
@@ -137,8 +143,16 @@ async fn observe_configured_provider(root: &Path) -> anyhow::Result<()> {
             ..request(root)
         })
         .await?;
-    let list = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::List);
-    let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
+    let list = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
+    let view = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::View,
+        ThreadSkillKind::View.declaration(),
+    );
     write_skill(&user, "new-user")?;
     write_skill(&system, "new-system")?;
     write_skill(&root.join("other-user"), "not-in-fixed-config")?;
@@ -240,8 +254,16 @@ async fn observe_fixed_sources(root: &Path) -> anyhow::Result<()> {
             cancellation: preparation_cancellation.clone(),
         })
         .await?;
-    let list = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::List);
-    let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
+    let list = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
+    let view = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::View,
+        ThreadSkillKind::View.declaration(),
+    );
     let late = root.join("later-provider");
     prepare_source(&late)?;
     write_skill(&late, "not-authorized")?;
@@ -353,8 +375,16 @@ async fn observe_policy_and_paths(root: &Path) -> anyhow::Result<()> {
     let registry = SkillRegistry::new();
     let _registration = register(&registry, "policies", &skills, SkillSourceKind::Project)?;
     let catalog = registry.discover(request(root)).await?;
-    let list = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::List);
-    let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
+    let list = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
+    let view = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::View,
+        ThreadSkillKind::View.declaration(),
+    );
     write_document(
         &skills,
         "policy",
@@ -458,10 +488,19 @@ async fn observe_management(root: &Path) -> anyhow::Result<()> {
         SkillSourceKind::Project,
     )?;
     let catalog = Arc::new(registry.discover(request(root)).await?);
-    let list = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::List);
-    let view = ThreadSkillTool::new(catalog.discovery_sources(), ThreadSkillKind::View);
+    let list = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::List,
+        ThreadSkillKind::List.declaration(),
+    );
+    let view = ThreadSkillTool::new(
+        catalog.discovery_sources(),
+        ThreadSkillKind::View,
+        ThreadSkillKind::View.declaration(),
+    );
     let workspace = ToolWorkspace::new(AgentWorkspace::local(root));
-    let manage = ThreadSkillManageTool::new(catalog.clone(), workspace);
+    let manage = pl_tool::binding::prepare_native_tool::<ThreadSkillManageTool>()?
+        .attach(ThreadSkillManageTool::new(catalog.clone(), workspace));
     invoke(&manage, "manage-create", json!({"action": "create", "name": "created", "content": document("created", "", "created through skill_manage")})).await?;
     let created = invoke(
         &view,
@@ -491,7 +530,9 @@ async fn observe_management(root: &Path) -> anyhow::Result<()> {
             == ["created"]
     );
     let readonly = AgentWorkspace::directory(root, Some(Vec::new()));
-    let readonly_manage = ThreadSkillManageTool::new(catalog, ToolWorkspace::new(readonly));
+    let readonly_manage = pl_tool::binding::prepare_native_tool::<ThreadSkillManageTool>()?.attach(
+        ThreadSkillManageTool::new(catalog, ToolWorkspace::new(readonly)),
+    );
     reject(&readonly_manage, "manage-write-boundary", json!({"action": "create", "name": "denied", "content": document("denied", "", "must not be written")}), "writable").await?;
     ensure!(!skills.join("denied").exists());
     Ok(())
@@ -552,7 +593,17 @@ fn skill_names(value: &Value) -> anyhow::Result<Vec<&str>> {
         .collect()
 }
 
-async fn reject(tool: &impl Tool, label: &str, input: Value, expected: &str) -> anyhow::Result<()> {
+async fn reject(
+    tool: &impl Tool<
+        Input = OpaquePayload,
+        Context = CallContext,
+        Output = pl_core::tool::ToolOutput,
+        Error = pl_core::tool::opaque::ToolError,
+    >,
+    label: &str,
+    input: Value,
+    expected: &str,
+) -> anyhow::Result<()> {
     let error = invoke(tool, label, input)
         .await
         .err()
@@ -564,12 +615,26 @@ async fn reject(tool: &impl Tool, label: &str, input: Value, expected: &str) -> 
     Ok(())
 }
 
-async fn invoke(tool: &impl Tool, label: &str, input: Value) -> anyhow::Result<Value> {
+async fn invoke(
+    tool: &impl Tool<
+        Input = OpaquePayload,
+        Context = CallContext,
+        Output = pl_core::tool::ToolOutput,
+        Error = pl_core::tool::opaque::ToolError,
+    >,
+    label: &str,
+    input: Value,
+) -> anyhow::Result<Value> {
     invoke_with_cancellation(tool, label, input, CancellationToken::new()).await
 }
 
 async fn invoke_with_cancellation(
-    tool: &impl Tool,
+    tool: &impl Tool<
+        Input = OpaquePayload,
+        Context = CallContext,
+        Output = pl_core::tool::ToolOutput,
+        Error = pl_core::tool::opaque::ToolError,
+    >,
     label: &str,
     input: Value,
     cancellation: CancellationToken,

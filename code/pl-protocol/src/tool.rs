@@ -1,4 +1,4 @@
-//! Provider-neutral tool definitions shared by the model and core runtimes.
+//! Provider-neutral model wire DTOs. Executable author declarations belong to pl-agent-tool.
 
 use serde::{Deserialize, Serialize};
 
@@ -91,61 +91,6 @@ impl std::str::FromStr for HostedWebSearchDialect {
 }
 
 impl ToolSpec {
-    /// Builds a function tool specification.
-    pub fn function(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        input_schema: serde_json::Value,
-    ) -> Self {
-        Self::Function {
-            name: name.into(),
-            description: description.into(),
-            input_schema,
-            allowed_callers: Vec::new(),
-            output_schema: None,
-        }
-    }
-
-    /// Allows direct and provider-hosted programmatic callers.
-    pub fn allow_programmatic(mut self, output_schema: serde_json::Value) -> Self {
-        match &mut self {
-            Self::Function {
-                allowed_callers,
-                output_schema: schema,
-                ..
-            }
-            | Self::Custom {
-                allowed_callers,
-                output_schema: schema,
-                ..
-            } => {
-                *allowed_callers = vec![ToolCallerMode::Direct, ToolCallerMode::Programmatic];
-                *schema = Some(output_schema);
-            }
-            Self::ProgrammaticToolCalling | Self::WebSearch { .. } => {}
-        }
-        self
-    }
-
-    /// Builds a custom tool backed by a grammar definition.
-    pub fn custom_grammar(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        syntax: impl Into<String>,
-        definition: impl Into<String>,
-    ) -> Self {
-        Self::Custom {
-            name: name.into(),
-            description: description.into(),
-            format: ToolFormat::Grammar {
-                syntax: syntax.into(),
-                definition: definition.into(),
-            },
-            allowed_callers: Vec::new(),
-            output_schema: None,
-        }
-    }
-
     /// Returns the stable model-visible name.
     pub fn name(&self) -> &str {
         match self {

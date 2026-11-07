@@ -96,8 +96,14 @@ fn siwc_additional_tools_preserve_declarations_history_and_call_pairing() {
     let mut request = request();
     let schema = json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"],"additionalProperties":false});
     request.tools = vec![
-        ToolSpec::function("lookup", "lookup", schema.clone()),
-        ToolSpec::custom_grammar("edit", "edit", "lark", "start: WORD"),
+        crate::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::json("lookup", "lookup", schema.clone()).unwrap(),
+            crate::completion::ToolCallPolicy::DirectOnly,
+        ),
+        crate::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::grammar("edit", "edit", "lark", "start: WORD").unwrap(),
+            crate::completion::ToolCallPolicy::DirectOnly,
+        ),
     ];
     let mut assistant = message(MessageRole::Assistant, "");
     assistant.tool_calls = Some(vec![pl_protocol::ToolCallRecord {
@@ -300,11 +306,9 @@ fn siwc_rejects_unsupported_tools_without_downgrading_callers_or_native_history(
     unsupported_custom.model.capabilities.tools.custom_tools = false;
     unsupported_custom.model.capabilities.tools.freeform_tools = false;
     let mut selected = request();
-    selected.tools = vec![ToolSpec::custom_grammar(
-        "edit",
-        "edit",
-        "lark",
-        "start: WORD",
+    selected.tools = vec![crate::completion::tool_definition_to_spec(
+        &pl_agent_tool::ToolDefinition::grammar("edit", "edit", "lark", "start: WORD").unwrap(),
+        crate::completion::ToolCallPolicy::DirectOnly,
     )];
     assert!(
         unsupported_custom
@@ -340,10 +344,10 @@ fn siwc_rejects_unsupported_tools_without_downgrading_callers_or_native_history(
         .hosted_responses = false;
     assert!(search.prepare_request_body(search_request, None).is_err());
     let mut function_patch = request();
-    function_patch.tools = vec![ToolSpec::function(
-        "apply_patch",
-        "frozen",
-        json!({"type":"object"}),
+    function_patch.tools = vec![crate::completion::tool_definition_to_spec(
+        &pl_agent_tool::ToolDefinition::json("apply_patch", "frozen", json!({"type":"object"}))
+            .unwrap(),
+        crate::completion::ToolCallPolicy::DirectOnly,
     )];
     let encoded = body(&runner, function_patch);
     assert_eq!(encoded["input"][1]["tools"][0]["type"], "function");
@@ -351,7 +355,10 @@ fn siwc_rejects_unsupported_tools_without_downgrading_callers_or_native_history(
         encoded["input"][1]["tools"][0]["parameters"],
         json!({"type":"object"})
     );
-    let mut only_programmatic = ToolSpec::function("p", "p", json!({"type":"object"}));
+    let mut only_programmatic = crate::completion::tool_definition_to_spec(
+        &pl_agent_tool::ToolDefinition::json("p", "p", json!({"type":"object"})).unwrap(),
+        crate::completion::ToolCallPolicy::DirectOnly,
+    );
     if let ToolSpec::Function {
         allowed_callers, ..
     } = &mut only_programmatic
@@ -363,7 +370,10 @@ fn siwc_rejects_unsupported_tools_without_downgrading_callers_or_native_history(
         selected.tools = vec![tool];
         assert!(runner.prepare_request_body(selected, None).is_err());
     }
-    let mut mixed = ToolSpec::function("mixed", "mixed", json!({"type":"object"}));
+    let mut mixed = crate::completion::tool_definition_to_spec(
+        &pl_agent_tool::ToolDefinition::json("mixed", "mixed", json!({"type":"object"})).unwrap(),
+        crate::completion::ToolCallPolicy::DirectOnly,
+    );
     if let ToolSpec::Function {
         allowed_callers, ..
     } = &mut mixed

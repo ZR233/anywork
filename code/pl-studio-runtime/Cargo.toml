@@ -13,6 +13,7 @@ benchmarks = ["dep:criterion"]
 pl-provider-fixture = { workspace = true }
 
 [dependencies]
+pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
 criterion = { workspace = true, optional = true }
 pl-remote-helper = { workspace = true }
 pl-acp = { workspace = true }

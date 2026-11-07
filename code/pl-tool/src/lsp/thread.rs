@@ -5,7 +5,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use pl_lsp::{query::LspQuery, runtime::LspRuntimeRegistry};
@@ -75,26 +75,26 @@ pub enum LspToolKind {
 
 impl LspToolKind {
     /// Stable model declaration for this operation.
-    pub fn declaration(self) -> pl_protocol::ToolSpec {
-        let spec = match self {
-            Self::Capabilities => pl_protocol::ToolSpec::function(
+    pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
+        match self {
+            Self::Capabilities => pl_agent_tool::ToolDefinition::json(
                 "lsp_capabilities",
                 "List language IDs, query operations and readiness for this workspace.",
-                schemars::schema_for!(LspCapabilitiesInput).to_value(),
-            ),
-            Self::Query => pl_protocol::ToolSpec::function(
+                pl_agent_tool::typed::input_schema_for::<LspCapabilitiesInput>(),
+            ).expect("valid tool definition"),
+            Self::Query => pl_agent_tool::ToolDefinition::json(
                 "lsp_query",
                 "Query workspace language services for definitions, references, hover, symbols, call hierarchy or diagnostics. Discover supported languages with lsp_capabilities.",
-                schemars::schema_for!(LspQueryInput).to_value(),
-            ),
-        };
-        spec.allow_programmatic(serde_json::json!({"type":"object", "additionalProperties":true}))
+                pl_agent_tool::typed::input_schema_for::<LspQueryInput>(),
+            ).expect("valid tool definition"),
+        }
     }
 }
 
 /// A Thread-owned tool instance over an explicitly shared language-service registry.
 #[derive(Debug)]
 pub struct ThreadLspTool {
+    definition: pl_agent_tool::ToolDefinition,
     registry: LspRuntimeRegistry,
     paths: LspPathBinding,
     kind: LspToolKind,
@@ -102,8 +102,14 @@ pub struct ThreadLspTool {
 
 impl ThreadLspTool {
     /// Binds service lookup and path validation to the same workspace.
-    pub fn new(registry: LspRuntimeRegistry, paths: LspPathBinding, kind: LspToolKind) -> Self {
+    pub fn new(
+        registry: LspRuntimeRegistry,
+        paths: LspPathBinding,
+        kind: LspToolKind,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
         Self {
+            definition,
             registry,
             paths,
             kind,
@@ -112,26 +118,34 @@ impl ThreadLspTool {
 
     /// Transfers an instance as a deferred tool with no framework control permissions.
     ///
-    /// # Errors
-    /// Returns invalid registration identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
+    /// The supplied preparation has already validated the registration identity.
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let contract = match self.kind {
             LspToolKind::Capabilities => "builtin.lsp_capabilities@1",
             LspToolKind::Query => "builtin.lsp_query@1",
         };
-        let name = match self.kind {
-            LspToolKind::Capabilities => "lsp_capabilities",
-            LspToolKind::Query => "lsp_query",
-        };
         let authorization = self.paths.workspace().authorization();
-        Ok(Registration::new(name.into(), declaration, self)?
+        prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
             .with_presentation_contract(pl_core::model::ToolPresentationContract::new(contract))
             .deferred()
-            .with_authorization(authorization))
+            .with_authorization(authorization)
     }
 }
 
-impl Tool for ThreadLspTool {
+impl pl_agent_tool::Tool for ThreadLspTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -149,7 +163,7 @@ impl Tool for ThreadLspTool {
         let encoded = match self.kind {
             LspToolKind::Capabilities => {
                 let _: LspCapabilitiesInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 let result = self
                     .registry
                     .capabilities_for_workspace(self.paths.workspace().root())
@@ -158,7 +172,7 @@ impl Tool for ThreadLspTool {
             }
             LspToolKind::Query => {
                 let input: LspQueryInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 let language = input.language_id.clone();
                 let query = self
                     .paths

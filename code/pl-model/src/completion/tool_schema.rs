@@ -1,6 +1,7 @@
 //! Provider compatibility projection for canonical tool specifications.
 
-use pl_protocol::ToolSpec;
+use pl_agent_tool::{InputFormat, ToolDefinition};
+use pl_protocol::{ToolCallerMode, ToolFormat, ToolSpec};
 
 use crate::model::ModelCapabilities;
 use crate::protocol::ProtocolEndpoint;
@@ -9,18 +10,56 @@ const APPLY_PATCH_FUNCTION_DESCRIPTION: &str = "Apply a Codex-style patch to wor
 
 const APPLY_PATCH_FUNCTION_FALLBACK_DESCRIPTION: &str = "Complete Codex-style apply_patch text beginning with *** Begin Patch and ending with *** End Patch. Each file operation must use one of these hunk headers: *** Add File: <path>, *** Delete File: <path>, or *** Update File: <path>. Do not use ---/+++ unified diff, *** File: metadata, or natural-language edit instructions such as Insert after. If a previous patch failed, read the target file again and retry with a smaller patch based on current content; do not repeat the same failed patch. Minimal update example:\n*** Begin Patch\n*** Update File: notes.txt\n@@\n-old line\n+new line\n*** End Patch";
 
-/// Projects an explicitly eligible local declaration for a hosted coordinator.
-/// The host validates the executor's side effects before requesting this projection.
-pub fn programmatic_tool_declaration(spec: ToolSpec) -> ToolSpec {
-    let output_schema = match &spec {
-        ToolSpec::Function { output_schema, .. } | ToolSpec::Custom { output_schema, .. } => {
-            output_schema.clone().unwrap_or_else(
+/// Host-selected model calling eligibility, independent of execution authorization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolCallPolicy {
+    #[default]
+    DirectOnly,
+    DirectAndProgrammatic,
+}
+
+/// Projects an author's complete declaration into the existing model wire DTO.
+///
+/// This is the only author-to-model projection. It does not enforce provider-specific
+/// schema restrictions or infer execution permissions from a declaration.
+pub fn tool_definition_to_spec(definition: &ToolDefinition, policy: ToolCallPolicy) -> ToolSpec {
+    let (allowed_callers, output_schema) = match policy {
+        ToolCallPolicy::DirectOnly => (Vec::new(), definition.output_schema().cloned()),
+        ToolCallPolicy::DirectAndProgrammatic => (
+            vec![ToolCallerMode::Direct, ToolCallerMode::Programmatic],
+            Some(definition.output_schema().cloned().unwrap_or_else(
                 || serde_json::json!({"type":"object", "additionalProperties":true}),
-            )
-        }
-        ToolSpec::ProgrammaticToolCalling | ToolSpec::WebSearch { .. } => return spec,
+            )),
+        ),
     };
-    spec.allow_programmatic(output_schema)
+    let name = definition.name().to_owned();
+    let description = definition.description().to_owned();
+    match definition.input() {
+        InputFormat::JsonSchema(schema) => ToolSpec::Function {
+            name,
+            description,
+            input_schema: schema.clone(),
+            allowed_callers,
+            output_schema,
+        },
+        InputFormat::Text => ToolSpec::Custom {
+            name,
+            description,
+            format: ToolFormat::Text,
+            allowed_callers,
+            output_schema,
+        },
+        InputFormat::Grammar { syntax, definition } => ToolSpec::Custom {
+            name,
+            description,
+            format: ToolFormat::Grammar {
+                syntax: syntax.clone(),
+                definition: definition.clone(),
+            },
+            allowed_callers,
+            output_schema,
+        },
+    }
 }
 
 /// Custom 工具与 apply_patch 在目标 wire 上的投影策略。
@@ -50,7 +89,10 @@ impl ToolProjection {
     }
 }
 
-pub(crate) fn provider_compatible_tool(tool: ToolSpec, projection: ToolProjection) -> ToolSpec {
+pub(crate) fn provider_compatible_tool(mut tool: ToolSpec, projection: ToolProjection) -> ToolSpec {
+    if let ToolSpec::Function { input_schema, .. } = &mut tool {
+        project_function_schema(input_schema);
+    }
     if let ToolProjection::Native {
         apply_patch_freeform,
     } = projection
@@ -103,5 +145,32 @@ pub(crate) fn provider_compatible_tool(tool: ToolSpec, projection: ToolProjectio
             output_schema,
         },
         tool => tool,
+    }
+}
+
+/// Function argument providers require an object root even for a union of objects.
+/// Adapt only the request copy: the frozen author declaration remains intact.
+fn project_function_schema(schema: &mut serde_json::Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.remove("$schema");
+    object.remove("title");
+    let object_union = ["oneOf", "anyOf"].iter().any(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|variants| {
+                !variants.is_empty()
+                    && variants.iter().all(|variant| {
+                        variant.get("type").and_then(serde_json::Value::as_str) == Some("object")
+                            || variant.get("properties").is_some()
+                    })
+            })
+    });
+    if object.contains_key("properties") || object_union {
+        object
+            .entry("type")
+            .or_insert_with(|| serde_json::Value::String("object".into()));
     }
 }

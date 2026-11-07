@@ -337,7 +337,7 @@ pub(super) struct ReadInput {
     close_read_scope: bool,
 }
 pub(super) fn read_schema() -> serde_json::Value {
-    let mut schema = schemars::schema_for!(ReadInput).to_value();
+    let mut schema = pl_agent_tool::typed::input_schema_for::<ReadInput>();
     schema["properties"]["demand"] = serde_json::json!({"anyOf":[{"type":"object","required":["maxItems","maxBytes"],"additionalProperties":false,"properties":{
         "maxItems":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_READ_MAX_ITEMS},
         "maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});

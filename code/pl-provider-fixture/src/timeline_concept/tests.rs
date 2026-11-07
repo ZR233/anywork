@@ -576,7 +576,12 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
     let parallel = control
         .realtime_script("fixture-host-cwd")
         .into_iter()
-        .find(|step| matches!(&step.reply, Reply::GatedSse { .. }))
+        .find(|step| {
+            matches!(
+                &step.request,
+                RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_PARALLEL_PROMPT
+            )
+        })
         .expect("realtime observation must have its explicit gate");
     let step = Step::prompt(
         Protocol::ResponsesHttp,
@@ -618,9 +623,59 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
 }
 
 #[tokio::test]
-async fn realtime_observer_gate_precedes_original_host_cwd_call() {
+async fn realtime_first_reply_holds_waiting_and_live_text_phases() {
     let control = Control::realtime();
+    let first = control
+        .realtime_script("fixture-host-cwd")
+        .into_iter()
+        .find(|step| {
+            matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_DELAYED_PROMPT)
+        })
+        .expect("first realtime prompt must exist");
+    let Reply::SegmentedSse { segments, .. } = &first.reply else {
+        panic!("first realtime response must hold both observation phases");
+    };
+    assert!(!segments[0].is_empty());
+    assert!(segments[0].iter().all(|event| {
+        event["type"] != "response.output_item.added"
+            && event["type"] != "response.output_text.delta"
+    }));
+    let first_text = segments[1].last().unwrap();
+    assert_eq!(first_text["type"], "response.output_text.delta");
+    assert!(!first_text["delta"].as_str().unwrap().is_empty());
+    let prefix_events = [segments[0].len(), segments[0].len() + segments[1].len()];
+    let observer = Control {
+        names: control.names[..2].to_vec(),
+        stages: control.stages[..2].to_vec(),
+    };
+    let step = Step::prompt(
+        Protocol::ResponsesHttp,
+        GUI_REALTIME_DELAYED_PROMPT,
+        0,
+        first.reply,
+    );
+    let observed = observe(observer, step, GUI_REALTIME_DELAYED_PROMPT, &prefix_events).await;
+    assert!(
+        observed
+            .iter()
+            .any(|event| event["type"] == "response.completed"),
+        "release must deliver the original terminal event"
+    );
+    assert_eq!(
+        control.names,
+        [
+            "realtime-first-token",
+            "realtime-text-readable",
+            "realtime-parallel-observer",
+            "realtime-host-cwd-observer"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn realtime_observer_gate_precedes_original_host_cwd_call() {
     let host_cwd = "fixture-host-cwd";
+    let control = Control::realtime();
     let host = control
         .realtime_script(host_cwd)
         .into_iter()

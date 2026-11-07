@@ -4,7 +4,7 @@ use pl_core::{
     thread::{TaskAccess, ThreadError},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 use schemars::JsonSchema;
@@ -23,28 +23,26 @@ pub enum TaskControlKind {
 
 #[derive(Debug)]
 pub struct TaskControlTool {
+    definition: pl_agent_tool::ToolDefinition,
     kind: TaskControlKind,
 }
 
 impl TaskControlTool {
     /// Selects the task-control operation without creating runtime resources.
-    pub fn new(kind: TaskControlKind) -> Self {
-        Self { kind }
+    pub fn new(kind: TaskControlKind, definition: pl_agent_tool::ToolDefinition) -> Self {
+        Self { definition, kind }
     }
 
     /// Registers only the permissions needed by this control.
     ///
-    /// # Errors
-    /// Returns invalid registration identity.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
+    /// The supplied preparation has already validated the registration identity.
+    pub fn registration(
+        self,
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let kind = self.kind;
-        let id = match kind {
-            TaskControlKind::Wait => "wait",
-            TaskControlKind::Query => "get_tool_task",
-            TaskControlKind::Cancel => "cancel_tool_task",
-        };
-        let registration = Registration::new(id.into(), declaration, self)?;
-        Ok(match kind {
+        let registration = prepared.attach(pl_agent_tool::ToolHandle::new(self));
+        match kind {
             TaskControlKind::Wait => registration
                 .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                     "builtin.wait@1",
@@ -52,7 +50,7 @@ impl TaskControlTool {
                 .with_task_waiting(),
             TaskControlKind::Cancel => registration.with_task_cancellation(),
             TaskControlKind::Query => registration,
-        })
+        }
     }
 }
 
@@ -132,7 +130,16 @@ impl From<&TaskRecord> for TaskStatusView {
     }
 }
 
-impl Tool for TaskControlTool {
+impl pl_agent_tool::Tool for TaskControlTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -145,7 +152,7 @@ impl Tool for TaskControlTool {
         match self.kind {
             TaskControlKind::Wait => {
                 let input: WaitTasksInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 let timeout = input.timeout_ms.unwrap_or(60_000);
                 if !(1..=300_000).contains(&timeout) {
                     return Err(ToolError::new(ControlError::Timeout));
@@ -172,12 +179,12 @@ impl Tool for TaskControlTool {
             }
             TaskControlKind::Query => {
                 let input: QueryTaskInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 query(access, input).await
             }
             TaskControlKind::Cancel => {
                 let input: CancelTaskInput =
-                    serde_json::from_str(input.content()).map_err(ToolError::new)?;
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
                 let receipt = access
                     .cancel(input.task_id.clone())
                     .await
@@ -288,34 +295,24 @@ pub struct ListTasksTool;
 
 impl ListTasksTool {
     /// Stable declaration for recovering task identities after a model context change.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            "list_tool_tasks",
-            "List tasks owned by this Thread without consuming results; use get_tool_task for complete-result pages.",
-            schemars::schema_for!(ListTasksInput).to_value(),
-        )
-    }
-
-    /// Registers the read-only task view without waiting or cancellation authority.
-    ///
-    /// # Errors
-    /// Returns an invalid registration identity.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new("list_tool_tasks".into(), declaration, self)
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        list_tasks_tool_definition()
     }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ListTasksInput {}
+pub struct ListTasksInput {}
 
-impl Tool for ListTasksTool {
-    async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        let _: ListTasksInput = serde_json::from_str(input.content()).map_err(ToolError::new)?;
+impl pl_agent_tool::typed::TypedTool for ListTasksTool {
+    const NAME: &'static str = LIST_TASKS_TOOL_NAME;
+    const DESCRIPTION: &'static str = LIST_TASKS_TOOL_DESCRIPTION;
+    type Args = ListTasksInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    async fn execute(&self, _: Self::Args, context: CallContext) -> Result<ToolOutput, ToolError> {
         let access = context
             .tasks
             .as_ref()
@@ -324,4 +321,31 @@ impl Tool for ListTasksTool {
         let view = tasks.iter().map(TaskStatusView::from).collect::<Vec<_>>();
         output("pl.tool.list-tasks", &tasks, &view)
     }
+}
+
+pub fn list_tasks_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        LIST_TASKS_TOOL_NAME,
+        LIST_TASKS_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<ListTasksInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const LIST_TASKS_TOOL_NAME: &str = "list_tool_tasks";
+const LIST_TASKS_TOOL_DESCRIPTION: &str = "List tasks owned by this Thread without consuming results; use get_tool_task for complete-result pages.";
+
+pub fn wait_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json("wait",
+                "Call wait ALONE in a model response. Observe exact receipt taskIds (including sleep timers): {\"taskIds\":[\"task:call-id\"]}. Any selected terminal task OR new Thread message returns first, not all tasks; already-ready events return immediately. Empty taskIds wait only for messages, including child reports: {\"taskIds\":[],\"timeoutMs\":300000}. Returns readiness without consuming results; full background results and child Turn reports arrive in your next model context. Match childId, turn and input identity before accepting child work. Never put agentId or bare callId in taskIds. Timeout or cancelling wait does not cancel the selected tasks.", pl_agent_tool::typed::input_schema_for::<crate::task_control::WaitTasksInput>()).expect("static tool definition")
+}
+
+pub fn query_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json("get_tool_task",
+                "Read this Thread receipt taskId without consuming events. resultCursor=0 starts UTF-8 byte pages of the immutable payload; follow nextCursor. This cursor does not page raw stdout/stderr files. Finished results remain queryable after resident eviction; never rerun commands to recover output.", pl_agent_tool::typed::input_schema_for::<crate::task_control::QueryTaskInput>()).expect("static tool definition")
+}
+
+pub fn cancel_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json("cancel_tool_task",
+                "Request cancellation of one task. The acknowledgement is not proof of process exit; use wait to observe its terminal result.", pl_agent_tool::typed::input_schema_for::<crate::task_control::CancelTaskInput>()).expect("static tool definition")
 }

@@ -8,7 +8,7 @@ use pl_core::model::{
 use pl_core::thread::{ThreadHandle, TurnInput};
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, Tool, ToolError},
+    opaque::{CallContext, Registration, ToolError},
 };
 use std::{num::NonZeroU32, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -54,8 +54,19 @@ impl ModelSession for DemonstrationModel {
 }
 
 #[derive(Debug)]
-struct Echo;
-impl Tool for Echo {
+struct Echo {
+    definition: pl_agent_tool::ToolDefinition,
+}
+impl pl_agent_tool::Tool for Echo {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         let context = vec![ContextContent::Text {
             text: Arc::from(input.content()),
@@ -67,12 +78,15 @@ impl Tool for Echo {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let thread = ThreadHandle::start("example".into(), DynModelSession::new(DemonstrationModel))?;
+    let definition = pl_agent_tool::ToolDefinition::text("echo", "Echo arbitrary UTF-8 text")?;
+    let prepared = Registration::prepare(
+        "echo".into(),
+        OpaquePayload::new("example.tool-declaration", 1, definition.description())?,
+    )?;
     thread
-        .register_tools(vec![Registration::new(
-            "echo".into(),
-            OpaquePayload::new("example.tool-declaration", 1, "Echo arbitrary UTF-8 text")?,
-            Echo,
-        )?])
+        .register_tools(vec![
+            prepared.attach(pl_core::tool::opaque::RuntimeTool::new(Echo { definition })),
+        ])
         .await?;
     let completed = thread
         .run_turn(TurnInput {

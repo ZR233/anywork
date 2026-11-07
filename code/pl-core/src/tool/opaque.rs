@@ -4,8 +4,7 @@ use crate::{
     context::OpaquePayload,
     model::{ModelToolDeclaration, ToolPresentationContract},
 };
-use futures::future::BoxFuture;
-use std::{collections::BTreeMap, fmt, future::Future, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 mod retirement;
 use retirement::{ExecutorLease, Executors};
@@ -55,21 +54,9 @@ pub fn interaction_tool_call_id(interaction_id: &str) -> Option<&str> {
         .filter(|call_id| !call_id.is_empty())
 }
 
-/// Minimal tool implementation. Parsing and model-visible projection belong to the producer.
-pub trait Tool: Send + Sync + fmt::Debug + 'static {
-    /// Executes dynamic input through a Thread-frozen executor.
-    fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> impl Future<Output = Result<ToolOutput, ToolError>> + Send;
-
-    /// Stops owned resources. Shared underlying services must only release this tool's lease.
-    /// A failed close retains the instance for retry; implementations must make retries safe.
-    fn close(&self) -> impl Future<Output = Result<(), ToolError>> + Send {
-        async { Ok(()) }
-    }
-}
+/// The single erased tool handle consumed by an Anywork Thread.
+/// Parsing and model-visible declaration projection belong to the producer.
+pub type RuntimeTool = pl_agent_tool::ToolHandle<OpaquePayload, CallContext, ToolOutput, ToolError>;
 
 /// Tool-specific failure retained with its original source.
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
@@ -103,24 +90,37 @@ impl ToolError {
     }
 }
 
-trait Executor: Send + Sync + fmt::Debug {
-    fn close(&self) -> BoxFuture<'_, Result<(), ToolError>>;
-    fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> BoxFuture<'_, Result<ToolOutput, ToolError>>;
+/// Validated registration materials that do not own a tool instance.
+#[derive(Debug)]
+pub struct PreparedRegistration {
+    id: String,
+    declaration: OpaquePayload,
 }
-impl<T: Tool> Executor for T {
-    fn close(&self) -> BoxFuture<'_, Result<(), ToolError>> {
-        Box::pin(Tool::close(self))
-    }
-    fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
-        Box::pin(Tool::execute(self, input, context))
+
+impl PreparedRegistration {
+    /// Transfers one already erased instance into the Thread registration.
+    #[must_use]
+    pub fn attach(self, tool: RuntimeTool) -> Registration {
+        Registration {
+            binding: FrozenTool {
+                execution_policy: None,
+                authorization: None,
+                declaration: ModelToolDeclaration {
+                    tool_id: self.id,
+                    declaration: self.declaration,
+                    presentation_contract: Some(ToolPresentationContract::generic()),
+                },
+                executor: ExecutorLease::new(tool),
+                deferred: false,
+                may_end_turn: false,
+                may_update_extensions: false,
+                may_reveal_tools: false,
+                may_request_interaction: false,
+                may_wait_tasks: false,
+                may_cancel_tasks: false,
+                scheduling: ToolScheduling::Task,
+            },
+        }
     }
 }
 
@@ -391,38 +391,18 @@ impl Registration {
         self
     }
 
-    /// Registers an open payload format without schema decoding.
+    /// Prepares an open payload format before transferring any tool resources.
     ///
     /// # Errors
     /// Rejects empty stable tool identities.
-    pub fn new(
+    pub fn prepare(
         id: String,
         declaration: OpaquePayload,
-        tool: impl Tool,
-    ) -> Result<Self, RegistryError> {
+    ) -> Result<PreparedRegistration, RegistryError> {
         if id.is_empty() {
             return Err(RegistryError::EmptyIdentity);
         }
-        Ok(Self {
-            binding: FrozenTool {
-                execution_policy: None,
-                authorization: None,
-                declaration: ModelToolDeclaration {
-                    tool_id: id,
-                    declaration,
-                    presentation_contract: Some(ToolPresentationContract::generic()),
-                },
-                executor: ExecutorLease::new(tool),
-                deferred: false,
-                may_end_turn: false,
-                may_update_extensions: false,
-                may_reveal_tools: false,
-                may_request_interaction: false,
-                may_wait_tasks: false,
-                may_cancel_tasks: false,
-                scheduling: ToolScheduling::Task,
-            },
-        })
+        Ok(PreparedRegistration { id, declaration })
     }
 
     /// Freezes the current presentation contract independently of execution authority.

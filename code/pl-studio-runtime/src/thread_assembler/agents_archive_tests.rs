@@ -369,7 +369,21 @@ struct FailClosedFlush {
 #[derive(Debug, Default, Clone)]
 struct RejectFirstDeletionResourceClose(Arc<std::sync::atomic::AtomicUsize>);
 
-impl pl_core::tool::opaque::Tool for RejectFirstDeletionResourceClose {
+impl pl_agent_tool::Tool for RejectFirstDeletionResourceClose {
+    type Input = OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("close-probe", "Deletion resource close probe")
+                    .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: OpaquePayload,
@@ -410,13 +424,13 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
         protocol.root_thread_id = protocol.id.clone();
         register_test_thread(&store, &protocol).await?;
         let owner = StudioThreadAssembler::default();
+        let registration =
+            Registration::prepare("close-probe".into(), OpaquePayload::text("probe"))?;
         let resource = RejectFirstDeletionResourceClose::default();
         let mut prepared = spec(protocol.id.clone(), None, temp.path());
-        prepared.tools.push(Registration::new(
-            "close-probe".into(),
-            OpaquePayload::text("probe"),
-            resource.clone(),
-        )?);
+        prepared
+            .tools
+            .push(registration.attach(pl_agent_tool::ToolHandle::new(resource.clone())));
         let thread = owner.assemble(prepared).await?;
         let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
         let binding = Arc::new(sink.binding());

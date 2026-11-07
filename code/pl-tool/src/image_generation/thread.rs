@@ -7,7 +7,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use pl_model::protocol::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
@@ -81,39 +81,24 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
     }
 
     /// Stable declaration, independent of conversation state and observed results.
-    pub fn declaration() -> pl_protocol::ToolSpec {
-        pl_protocol::ToolSpec::function(
-            TOOL_IMAGE_GENERATION,
-            DESCRIPTION,
-            schemars::schema_for!(ImageGenerationInput).to_value(),
-        )
-    }
-
-    /// Transfers an executor that runs as a Thread background task and grants no control.
-    ///
-    /// A service request outlives the batch that accepted it: the call returns a running
-    /// receipt, its terminal output (archived media and receipt payload) is delivered through
-    /// the Thread inbox later, and cancellation uses an independent task token. Background
-    /// scheduling adds no control permission to the accepted call.
-    ///
-    /// # Errors
-    /// Returns invalid registry identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        Registration::new(TOOL_IMAGE_GENERATION.into(), declaration, self)
+    pub fn declaration() -> pl_agent_tool::ToolDefinition {
+        thread_image_generation_tool_definition()
     }
 }
 
-impl<H: ToolMediaHost> Tool for ThreadImageGenerationTool<H> {
+impl<H: ToolMediaHost> pl_agent_tool::typed::TypedTool for ThreadImageGenerationTool<H> {
+    const NAME: &'static str = THREAD_IMAGE_GENERATION_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION;
+    type Args = ImageGenerationInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(failure("unsupported image generation argument encoding"));
-        }
-        let input: ImageGenerationInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         let prompt = input.prompt.trim().to_owned();
         if prompt.is_empty() {
             return Err(failure("image generation prompt must not be empty"));
@@ -213,3 +198,15 @@ impl<H: ToolMediaHost> Tool for ThreadImageGenerationTool<H> {
 fn failure(message: &str) -> ToolError {
     ToolError::new(crate::tool_error(TOOL_IMAGE_GENERATION, message))
 }
+
+pub fn thread_image_generation_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_IMAGE_GENERATION_TOOL_NAME,
+        THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<ImageGenerationInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_IMAGE_GENERATION_TOOL_NAME: &str = TOOL_IMAGE_GENERATION;
+const THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION: &str = DESCRIPTION;

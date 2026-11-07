@@ -3531,6 +3531,7 @@ fn cold_error(message: &str) -> ColdStoreError {
 #[cfg(test)]
 pub(crate) mod storage_fault_tests {
     use super::*;
+    use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
     use pl_core::{
         context::{ContextContent, OpaquePayload},
         model::{
@@ -3546,7 +3547,7 @@ pub(crate) mod storage_fault_tests {
         },
         tool::{
             ToolOutput,
-            opaque::{CallContext, Registration, Tool, ToolError},
+            opaque::{CallContext, Registration, ToolError},
         },
     };
     use sea_orm::{ConnectionTrait, Database};
@@ -3593,12 +3594,22 @@ pub(crate) mod storage_fault_tests {
 
     #[derive(Debug)]
     struct ConcurrentTool {
+        definition: ToolDefinition,
         started: mpsc::UnboundedSender<String>,
         release: Arc<Notify>,
         executions: Arc<Mutex<Vec<String>>>,
     }
 
     impl Tool for ConcurrentTool {
+        type Input = OpaquePayload;
+        type Context = CallContext;
+        type Output = ToolOutput;
+        type Error = ToolError;
+
+        fn definition(&self) -> &ToolDefinition {
+            &self.definition
+        }
+
         async fn execute(
             &self,
             input: OpaquePayload,
@@ -9190,17 +9201,18 @@ pub(crate) mod storage_fault_tests {
                     .into_iter()
                     .zip(releases.iter())
                     .map(|(id, release)| {
-                        Registration::new(
+                        Ok(Registration::prepare(
                             id.into(),
                             OpaquePayload::text(format!("Tool {id}")),
-                            ConcurrentTool {
-                                started: started.clone(),
-                                release: release.clone(),
-                                executions: executions.clone(),
-                            },
-                        )
+                        )?
+                        .attach(ToolHandle::new(ConcurrentTool {
+                            definition: ToolDefinition::text(id, format!("Tool {id}"))?,
+                            started: started.clone(),
+                            release: release.clone(),
+                            executions: executions.clone(),
+                        })))
                     })
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<Vec<_>>>()?,
             )
             .await?;
         thread
@@ -10259,6 +10271,7 @@ pub(crate) mod storage_fault_tests {
     /// A command whose capture append really failed, so its archive still owes the accepted bytes.
     #[derive(Debug)]
     struct FailedAppendCaptureTool {
+        definition: ToolDefinition,
         backend: pl_tool::command::LocalCommandBackend,
         archive: crate::resource_store::FileResourceStore,
         capture_file: std::path::PathBuf,
@@ -10269,6 +10282,15 @@ pub(crate) mod storage_fault_tests {
     }
 
     impl Tool for FailedAppendCaptureTool {
+        type Input = OpaquePayload;
+        type Context = CallContext;
+        type Output = ToolOutput;
+        type Error = ToolError;
+
+        fn definition(&self) -> &ToolDefinition {
+            &self.definition
+        }
+
         async fn execute(
             &self,
             input: OpaquePayload,
@@ -10462,19 +10484,19 @@ pub(crate) mod storage_fault_tests {
         let thread =
             ThreadHandle::start("archive-repair".into(), DynModelSession::new(CaptureModel))?;
         thread
-            .register_tools(vec![Registration::new(
-                "capture".into(),
-                OpaquePayload::text("Tool capture"),
-                FailedAppendCaptureTool {
-                    backend,
-                    archive: archive.clone(),
-                    capture_file: capture_file.clone(),
-                    committed_len: committed.len() as u64,
-                    pending: pending.clone(),
-                    retries: retries.clone(),
-                    created: created.clone(),
-                },
-            )?])
+            .register_tools(vec![
+                Registration::prepare("capture".into(), OpaquePayload::text("Tool capture"))?
+                    .attach(ToolHandle::new(FailedAppendCaptureTool {
+                        definition: ToolDefinition::text("capture", "Tool capture")?,
+                        backend,
+                        archive: archive.clone(),
+                        capture_file: capture_file.clone(),
+                        committed_len: committed.len() as u64,
+                        pending: pending.clone(),
+                        retries: retries.clone(),
+                        created: created.clone(),
+                    })),
+            ])
             .await?;
         thread
             .attach_storage(ColdStoreHandle::new(sink.clone()))

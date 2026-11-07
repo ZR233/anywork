@@ -9,6 +9,7 @@ default = []
 live-tests = []
 
 [dependencies]
+pl-agent-tool = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 pl-core = { workspace = true }

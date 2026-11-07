@@ -510,6 +510,19 @@ impl ConversationFeed {
         self.current = None;
     }
     fn notification(&mut self, notification: ThreadNotification) -> Result<()> {
+        if let ThreadNotification::ThreadRuntimeUpdated { runtime, .. } = &notification
+            && let Some(ThreadSubscriptionUpdate::Notification { notification: last }) =
+                self.pending.back_mut()
+            && matches!(
+                &last.notification,
+                ThreadNotification::ThreadRuntimeUpdated { runtime: old, .. }
+                    if super::thread_stream::same_live_runtime_identity(runtime, old)
+            )
+        {
+            last.notification = notification;
+            last.emitted_at = crate::studio::unix_seconds();
+            return self.check_state_budget();
+        }
         let next = self.state_revision.checked_add(1).ok_or_else(resync)?;
         self.pending
             .push_back(ThreadSubscriptionUpdate::Notification {
@@ -693,17 +706,21 @@ impl ConversationFeed {
             }
             if self.state_turn {
                 self.state_turn = false;
-                if let Some(state) = self.state.as_mut() {
-                    match state.try_recv() {
-                        Ok(event) => {
-                            self.state_event(event)?;
-                            if let Some(update) = self.pending.pop_front() {
-                                return Ok(Some(ConversationEvent::State {
-                                    update: Box::new(update),
-                                }));
-                            }
-                        }
-                        Err(broadcast::error::TryRecvError::Empty) => {}
+                // Scan the captured prefix before delivery so adjacent live Runtime observations
+                // can replace the pending tail. Never chase events published after this check began.
+                let queued = self
+                    .state
+                    .as_ref()
+                    .map_or(0, super::thread_observation::StateReceiver::len);
+                for _ in 0..queued {
+                    match self
+                        .state
+                        .as_mut()
+                        .expect("queued State receiver")
+                        .try_recv()
+                    {
+                        Ok(event) => self.state_event(event)?,
+                        Err(broadcast::error::TryRecvError::Empty) => break,
                         Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                             return Err(resync().context(format!(
                                 "conversation state try_recv lagged: skipped={skipped}, state_effect_floor={}",
@@ -713,7 +730,15 @@ impl ConversationFeed {
                         Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
                     }
                 }
+                if let Some(update) = self.pending.pop_front() {
+                    return Ok(Some(ConversationEvent::State {
+                        update: Box::new(update),
+                    }));
+                }
             }
+            // A Chat processing opportunity, even one with no visible change, restores
+            // State eligibility before any cut/progress path can continue the loop.
+            self.state_turn = true;
             if let Some(cut) = self.cut.clone() {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;

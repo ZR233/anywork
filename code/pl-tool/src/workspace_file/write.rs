@@ -5,7 +5,7 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, ToolError},
     },
 };
 use std::sync::Arc;
@@ -23,20 +23,6 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
     pub fn new(backend: Arc<B>, workspace: ToolWorkspace) -> Self {
         Self { backend, workspace }
     }
-
-    /// Transfers a foreground writer into the Thread's manager.
-    ///
-    /// # Errors
-    /// Returns invalid tool registration identity errors.
-    pub fn registration(self, declaration: OpaquePayload) -> Result<Registration, RegistryError> {
-        let authorization = self.workspace.authorization();
-        Ok(Registration::new("write_file".into(), declaration, self)?
-            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                "builtin.write_file@1",
-            ))
-            .foreground_coexisting()
-            .with_authorization(authorization))
-    }
 }
 
 #[derive(serde::Serialize)]
@@ -47,20 +33,19 @@ struct Receipt {
     bytes_written: usize,
 }
 
-impl<B: WorkspaceFileBackend + 'static> Tool for ThreadWriteFileTool<B> {
+impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadWriteFileTool<B> {
+    const NAME: &'static str = THREAD_WRITE_FILE_TOOL_NAME;
+    const DESCRIPTION: &'static str = THREAD_WRITE_FILE_TOOL_DESCRIPTION;
+    type Args = WriteFileInput;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
     async fn execute(
         &self,
-        input: OpaquePayload,
+        input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(crate::tool_error(
-                "write_file",
-                "unsupported argument encoding",
-            )));
-        }
-        let input: WriteFileInput =
-            serde_json::from_str(input.content()).map_err(ToolError::new)?;
         self.workspace
             .ensure_workspace_writable()
             .map_err(ToolError::new)?;
@@ -105,3 +90,16 @@ impl<B: WorkspaceFileBackend + 'static> Tool for ThreadWriteFileTool<B> {
         ))
     }
 }
+
+pub fn thread_write_file_tool_definition() -> pl_agent_tool::ToolDefinition {
+    pl_agent_tool::ToolDefinition::json(
+        THREAD_WRITE_FILE_TOOL_NAME,
+        THREAD_WRITE_FILE_TOOL_DESCRIPTION,
+        pl_agent_tool::typed::input_schema_for::<WriteFileInput>(),
+    )
+    .expect("static tool definition")
+}
+
+const THREAD_WRITE_FILE_TOOL_NAME: &str = "write_file";
+const THREAD_WRITE_FILE_TOOL_DESCRIPTION: &str =
+    "Write exact UTF-8 text to a workspace file using create, overwrite, or append mode.";

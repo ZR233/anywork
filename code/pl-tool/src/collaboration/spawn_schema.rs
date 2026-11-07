@@ -1,7 +1,7 @@
 //! Profile-specific argument declarations; Studio owns catalog selection and generation.
 use super::thread::{
     AgentSpawn, AgentSpawnProfile, AgentSpawnSchemaError, AgentWorkspaceMode, DelegationMode,
-    NewThreadModelRoute, ToolSpec,
+    NewThreadModelRoute, ToolDefinition,
 };
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::Value;
@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn declaration(
     profiles: &[AgentSpawnProfile],
     mode: DelegationMode,
-) -> Result<Option<ToolSpec>, AgentSpawnSchemaError> {
+) -> Result<Option<ToolDefinition>, AgentSpawnSchemaError> {
     if profiles.is_empty() {
         return Ok(None);
     }
@@ -38,11 +38,10 @@ pub(super) fn declaration(
         "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters after whitespace normalization) shown in the child list, and message: the complete self-contained instructions without an application length limit. Top-level properties list the available parameters; select the matching oneOf branch for the chosen profileId. Automatic mode requires modelSelection from a current model query; fixed Profile mode forbids overrides. If the selected model declares effort candidates, modelSelection.effort must explicitly select one; omit it or use null only when the model has no effort parameter. Omission does not inherit a root/Profile effort or select a model default. writablePaths is optional only for directory Profiles: omit it for the whole workspace, or use [] for business read-only access (Thread scratch/artifacts remain writable). reviewTargetAgentId is required only for review Profiles and must be the reviewed direct child's agentId; the host adopts its frozen workspace. The host independently validates permissions, current availability and limits. Open-agent capacity covers the root plus every open and preparing child in the tree; when a spawn is rejected for capacity, close finished agents with close_agent before spawning more. Profile workspace modes: {}.",
         serde_json::to_string(&modes)?
     );
-    Ok(Some(ToolSpec::function(
-        "spawn_agent",
-        description,
-        input_schema,
-    )))
+    Ok(Some(
+        ToolDefinition::json("spawn_agent", description, input_schema)
+            .expect("valid tool definition"),
+    ))
 }
 
 /// Expose only consequences of the unchanged branches. Their oneOf remains authoritative:

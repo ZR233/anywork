@@ -5,13 +5,14 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
 
 /// One workspace operation; backend policy and resource leases are supplied by the host.
 #[derive(Debug)]
 pub struct ThreadWorkspaceFileTool<B: WorkspaceFileBackend> {
+    definition: pl_agent_tool::ToolDefinition,
     kind: WorkspaceFileToolKind,
     backend: Arc<B>,
     workspace: ToolWorkspace,
@@ -19,8 +20,14 @@ pub struct ThreadWorkspaceFileTool<B: WorkspaceFileBackend> {
 
 impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
     /// Creates a fresh operation instance over the host-selected backend lease.
-    pub fn new(kind: WorkspaceFileToolKind, backend: Arc<B>, workspace: ToolWorkspace) -> Self {
+    pub fn new(
+        kind: WorkspaceFileToolKind,
+        backend: Arc<B>,
+        workspace: ToolWorkspace,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
         Self {
+            definition,
             kind,
             backend,
             workspace,
@@ -29,23 +36,32 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
 
     /// Transfers this tool with deterministic host-encoded declaration material.
     ///
-    /// # Errors
-    /// Returns invalid registration identity.
+    /// The supplied preparation has already validated the registration identity.
     pub fn registration(
         self,
-        declaration: OpaquePayload,
-    ) -> std::result::Result<Registration, RegistryError> {
+        prepared: pl_core::tool::opaque::PreparedRegistration,
+    ) -> Registration {
         let authorization = self.workspace.authorization();
-        let registration = Registration::new(self.kind.name().into(), declaration, self)?
+        let registration = prepared
+            .attach(pl_agent_tool::ToolHandle::new(self))
             .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                 "builtin.apply_patch@1",
             ))
             .with_authorization(authorization);
-        Ok(registration.foreground_coexisting())
+        registration.foreground_coexisting()
     }
 }
 
-impl<B: WorkspaceFileBackend + 'static> Tool for ThreadWorkspaceFileTool<B> {
+impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceFileTool<B> {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+
     async fn execute(
         &self,
         input: OpaquePayload,

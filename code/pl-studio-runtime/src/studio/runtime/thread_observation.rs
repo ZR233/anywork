@@ -110,6 +110,11 @@ impl StateReceiver {
         Self { receiver, closed }
     }
 
+    /// Captures the queued observation prefix without consuming it or reserving capacity.
+    pub(super) fn len(&self) -> usize {
+        self.receiver.len()
+    }
+
     pub(super) async fn recv(&mut self) -> Result<ThreadLiveEvent, broadcast::error::RecvError> {
         // The owner can retain the Sender while draining storage. Revocation must wake a parked
         // reader and win over buffered frames so neither consumer delivers after owner closure.

@@ -24,6 +24,10 @@ impl<T: Clone> DeliveryReceiver<T> {
             closed,
         }
     }
+    /// Captures the raw queued prefix without consuming events or releasing capacity.
+    pub(in crate::studio::runtime) fn len(&self) -> usize {
+        self.receiver.as_ref().expect("live receiver").len()
+    }
     pub(crate) async fn recv(&mut self) -> Result<T, broadcast::error::RecvError> {
         let result = tokio::select! { biased;
             _ = self.closed.cancelled() => Err(broadcast::error::RecvError::Closed),

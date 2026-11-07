@@ -12,11 +12,12 @@ use crate::{
     },
     tool::{
         ToolOutput,
-        opaque::{CallContext, Registration, Tool, ToolError},
+        opaque::{CallContext, Registration, ToolError},
     },
 };
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use std::sync::{
-    Arc,
+    Arc, LazyLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio_util::sync::CancellationToken;
@@ -69,23 +70,38 @@ struct HeldTool {
     close_attempts: AtomicUsize,
 }
 
-impl Tool for Arc<HeldTool> {
+struct HeldToolInstance(Arc<HeldTool>);
+
+impl Tool for HeldToolInstance {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        static DEFINITION: LazyLock<ToolDefinition> = LazyLock::new(|| {
+            ToolDefinition::text("held", "Text tool for thread close tests")
+                .expect("valid definition")
+        });
+        &DEFINITION
+    }
+
     async fn execute(
         &self,
         _: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        self.started.cancel();
+        self.0.started.cancel();
         context.cancellation.cancelled().await;
-        self.cancelled.cancel();
-        self.release.cancelled().await;
-        self.joined.store(true, Ordering::SeqCst);
+        self.0.cancelled.cancel();
+        self.0.release.cancelled().await;
+        self.0.joined.store(true, Ordering::SeqCst);
         Err(ToolError::new(ThreadError::Cancelled))
     }
 
     async fn close(&self) -> Result<(), ToolError> {
-        assert!(self.joined.load(Ordering::SeqCst));
-        if self.close_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+        assert!(self.0.joined.load(Ordering::SeqCst));
+        if self.0.close_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(ToolError::new(std::io::Error::other(
                 "resource close failed once",
             )));
@@ -160,10 +176,11 @@ async fn exercise_close(purpose: ClosePurpose) {
         .attach_storage(ColdStoreHandle::new(store.clone()))
         .await
         .unwrap();
+    let registration = Registration::prepare("held".into(), OpaquePayload::text("held")).unwrap();
     let tool = Arc::new(HeldTool::default());
     thread
         .register_tools(vec![
-            Registration::new("held".into(), OpaquePayload::text("held"), tool.clone()).unwrap(),
+            registration.attach(ToolHandle::new(HeldToolInstance(tool.clone()))),
         ])
         .await
         .unwrap();

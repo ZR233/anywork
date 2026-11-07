@@ -22,3 +22,5 @@ pub struct ImageOutputLimits {
     pub max_height: Option<u32>,
     pub media_types: Vec<String>,
 }
+
+pub use thread::thread_view_image_tool_definition;

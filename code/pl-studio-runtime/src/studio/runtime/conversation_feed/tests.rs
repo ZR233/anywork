@@ -1,14 +1,536 @@
 use super::*;
 use anyhow::{Context, Result, bail};
+use pl_core::chat::ChatKey;
 use pl_provider_fixture::{Protocol, Reply, ReplyStage, RequestMatch, Step};
 use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 mod allocation;
 mod atoms;
+mod coalescing;
 mod cut_cost;
 mod payload;
 mod qualification;
+mod scheduling;
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EchoArgs {
+    message: String,
+}
+
+#[derive(Clone, Default)]
+struct BindingCounts {
+    echo: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    serialized: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+// Deliberately Serialize-only: history must not need today's Rust output type.
+struct EchoOutput {
+    text: String,
+    serialized: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl serde::Serialize for EchoOutput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        self.serialized
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut output = serializer.serialize_struct("EchoOutput", 1)?;
+        output.serialize_field("text", &self.text)?;
+        output.end()
+    }
+}
+
+struct JsonEchoTool(BindingCounts);
+
+impl pl_agent_tool::typed::TypedTool for JsonEchoTool {
+    const NAME: &'static str = "json_echo";
+    const DESCRIPTION: &'static str = "Echo a message as a typed JSON result.";
+    type Args = EchoArgs;
+    type Context = ();
+    type Output = EchoOutput;
+    type Error = std::convert::Infallible;
+
+    async fn execute(&self, args: EchoArgs, (): ()) -> Result<EchoOutput, Self::Error> {
+        self.0
+            .echo
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(EchoOutput {
+            text: args.message,
+            serialized: self.0.serialized.clone(),
+        })
+    }
+}
+
+struct FailSerializeOutput(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl serde::Serialize for FailSerializeOutput {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(serde::ser::Error::custom(
+            "fixture output serializer failed",
+        ))
+    }
+}
+
+struct FailSerializeTool(BindingCounts);
+
+impl pl_agent_tool::typed::TypedTool for FailSerializeTool {
+    const NAME: &'static str = "fail_serialize";
+    const DESCRIPTION: &'static str = "Complete a side effect, then fail output encoding.";
+    type Args = EchoArgs;
+    type Context = ();
+    type Output = FailSerializeOutput;
+    type Error = std::convert::Infallible;
+
+    async fn execute(&self, _args: EchoArgs, (): ()) -> Result<FailSerializeOutput, Self::Error> {
+        self.0
+            .fail
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(FailSerializeOutput(self.0.serialized.clone()))
+    }
+}
+
+fn json_binding_registrations(
+    counts: &BindingCounts,
+) -> Result<Vec<pl_core::tool::opaque::Registration>> {
+    use pl_agent_tool::ToolHandle;
+    use pl_core::tool::opaque::ToolError;
+    use pl_tool::binding::{ToolCallPolicy, prepare_json_tool, prepare_registration};
+
+    let echo = prepare_json_tool::<JsonEchoTool>(|_| (), ToolError::new)?;
+    let echo_registration = prepare_registration(
+        "fixture.echo",
+        echo.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    let fail = prepare_json_tool::<FailSerializeTool>(|_| (), ToolError::new)?;
+    let fail_registration = prepare_registration(
+        "fixture.fail",
+        fail.definition(),
+        ToolCallPolicy::DirectOnly,
+    )?;
+    Ok(vec![
+        echo_registration.attach(ToolHandle::new(echo.attach(JsonEchoTool(counts.clone())))),
+        fail_registration.attach(ToolHandle::new(
+            fail.attach(FailSerializeTool(counts.clone())),
+        )),
+    ])
+}
+
+async fn binding_content(
+    reader: &ConversationReader,
+    reference: &ContentRef,
+    length: u64,
+) -> Result<Vec<u8>> {
+    anyhow::ensure!(length <= 1024 * 1024, "fixture content exceeded its bound");
+    let mut bytes = Vec::new();
+    while (bytes.len() as u64) < length {
+        let offset = bytes.len() as u64;
+        let window = reader
+            .read_content(
+                reference,
+                ContentRange {
+                    offset,
+                    max_bytes: (length - offset).min(1024) as u32,
+                },
+            )
+            .await?;
+        assert_eq!(window.offset, offset);
+        assert!(window.sealed && !window.bytes.is_empty());
+        assert_eq!(window.available_through, length);
+        bytes.extend(window.bytes);
+    }
+    assert_eq!(bytes.len() as u64, length);
+    Ok(bytes)
+}
+
+async fn binding_tool_payloads(
+    feed: &mut ConversationFeed,
+) -> Result<HashMap<String, serde_json::Value>> {
+    let mut batch = chat(feed).await?;
+    let mut tools = HashMap::new();
+    loop {
+        for entry in batch.entries {
+            let ChatEntry::Atom(atom) = entry else {
+                continue;
+            };
+            let bytes = match atom.payload.context("completed activity payload")? {
+                PayloadData::Inline { bytes } => bytes,
+                PayloadData::Deferred {
+                    reference,
+                    byte_length,
+                } => binding_content(feed.reader(), &reference, byte_length).await?,
+            };
+            let payload: serde_json::Value = serde_json::from_slice(&bytes)?;
+            if payload["type"] == "tool" {
+                assert_eq!(payload["contract"], "anywork.chat/1");
+                let call = payload["data"]["invocation"]["callId"]
+                    .as_str()
+                    .context("tool call ID")?
+                    .to_owned();
+                assert!(tools.insert(call, payload).is_none());
+            }
+        }
+        let Some(before) = batch.before else { break };
+        batch = feed.reader().load_older(&before, demand()).await?;
+    }
+    Ok(tools)
+}
+
+async fn binding_body(
+    reader: &ConversationReader,
+    payload: &serde_json::Value,
+    key: &str,
+) -> Result<Vec<u8>> {
+    let body = payload["bodies"]
+        .as_array()
+        .context("tool bodies")?
+        .iter()
+        .find(|body| body["key"] == key)
+        .with_context(|| format!("missing {key}"))?;
+    if let Some(inline) = body.get("inline") {
+        return Ok(serde_json::from_value(inline.clone())?);
+    }
+    let reference = serde_json::from_value(body["reference"].clone())?;
+    binding_content(
+        reader,
+        &reference,
+        body["byteLength"].as_u64().context("body byte length")?,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn json_echo_binding_survives_cold_read() -> Result<()> {
+    use pl_core::{
+        context::ContextContent,
+        thread::{ModelStepLimit, ToolOutcome, TurnInput},
+    };
+    use pl_provider_fixture::RealtimeToolCall;
+    use std::sync::{Arc, atomic::Ordering};
+
+    let message = "原样保存中文正文📖".repeat(1600);
+    let arguments = format!(" {{ \"message\" : {} }} ", serde_json::to_string(&message)?);
+    let expected = serde_json::json!({"text": message}).to_string();
+    let prompt = "binding-echo";
+    let call = "binding-echo-call";
+    let mut env = support::Environment::new(
+        vec![
+            support::prompt_step(
+                "binding-warmup",
+                0,
+                support::text_reply("ready", "binding-ready"),
+            ),
+            support::prompt_step(
+                prompt,
+                1,
+                Reply::Sse(pl_provider_fixture::responses_tool_calls(
+                    call,
+                    support::MODEL,
+                    &[RealtimeToolCall {
+                        item_id: call,
+                        call_id: call,
+                        name: "json_echo",
+                        arguments: arguments.clone(),
+                    }],
+                )),
+            ),
+            support::prompt_step(
+                prompt,
+                2,
+                support::text_reply("echo delivered", "binding-done"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let counts = BindingCounts::default();
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "binding-warmup")
+            .await?;
+        let id = &thread.thread.id;
+        support::completed_prompt(&env.runtime, id, "binding-warmup").await?;
+        // The test owns the replacement catalog, not the production catalog refresher.
+        // Join its workers before installing the binding so a pending warmup refresh cannot
+        // revoke the frozen fixture tools while the real provider request is running.
+        env.runtime.stop_tool_refresh().await?;
+        let handle = env
+            .runtime
+            .threads
+            .thread(id)
+            .context("real Thread owner")?;
+        handle
+            .register_tools(json_binding_registrations(&counts)?)
+            .await?;
+        handle
+            .run_turn(TurnInput {
+                turn_id: "binding-echo-turn".into(),
+                attempt_prefix: "binding-echo-attempt".into(),
+                content: vec![ContextContent::Text {
+                    text: Arc::from(prompt),
+                }],
+                max_model_steps: ModelStepLimit::Unlimited,
+                cancellation: Default::default(),
+            })
+            .await?;
+        assert_eq!(
+            support::tool_output(&env.root_provider, call)?.as_bytes(),
+            expected.as_bytes()
+        );
+        env.runtime.threads.close(id).await?;
+        drop(handle);
+        env.restart().await?;
+        assert!(env.runtime.threads.observed_thread(id).is_none());
+        let durable = env
+            .runtime
+            .store
+            .history(id)
+            .await?
+            .tool_task(&format!("task:{call}"))
+            .await?
+            .context("durable echo")?;
+        let delivery = durable.delivery.context("complete echo delivery")?;
+        assert!(matches!(delivery.outcome, ToolOutcome::Succeeded));
+        assert_eq!(delivery.tool_id, "fixture.echo");
+        assert_eq!(delivery.output.payload().format(), "application/json");
+        assert_eq!(delivery.output.payload().version(), 1);
+        assert_eq!(
+            delivery.output.payload().content().as_bytes(),
+            expected.as_bytes()
+        );
+        assert_eq!(
+            delivery.delivered_context,
+            vec![ContextContent::Text {
+                text: Arc::from(expected.clone())
+            }]
+        );
+        assert_eq!(delivery.output.context(), delivery.delivered_context);
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(
+                id,
+                ChatScope::Children {
+                    parent_id: ChatKey::new("turn", "binding-echo-turn")?.as_str().into(),
+                },
+                demand(),
+            )
+            .await?;
+        let tools = binding_tool_payloads(&mut feed).await?;
+        let payload = tools.get(call).context("cold tool activity")?;
+        assert_eq!(
+            payload["data"]["invocation"]["presentationContract"],
+            "generic@1"
+        );
+        assert_eq!(
+            binding_body(feed.reader(), payload, "tool.arguments").await?,
+            arguments.as_bytes()
+        );
+        assert_eq!(
+            binding_body(feed.reader(), payload, "tool.result").await?,
+            expected.as_bytes()
+        );
+        for key in ["tool.arguments", "tool.result"] {
+            assert!(
+                payload["bodies"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body["key"] == key && body.get("reference").is_some())
+            );
+        }
+        feed.close().await?;
+        feed.reader().close().await?;
+        assert!(
+            env.runtime.threads.observed_thread(id).is_none(),
+            "cold read activated owner"
+        );
+        assert_eq!(counts.echo.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.fail.load(Ordering::SeqCst), 0);
+        assert_eq!(counts.serialized.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
+    use pl_core::{
+        context::ContextContent,
+        thread::{ModelStepLimit, ToolOutcome, TurnInput},
+    };
+    use pl_provider_fixture::RealtimeToolCall;
+    use std::sync::{Arc, atomic::Ordering};
+
+    let invalid = " { \"message\" : 7 } ";
+    let valid = " { \"message\" : \"执行一次后编码失败\" } ";
+    let prompt = "binding-failures";
+    let mut env = support::Environment::new(
+        vec![
+            support::prompt_step(
+                "binding-failure-warmup",
+                0,
+                support::text_reply("ready", "failure-ready"),
+            ),
+            support::prompt_step(
+                prompt,
+                1,
+                Reply::Sse(pl_provider_fixture::responses_tool_calls(
+                    "binding-failures",
+                    support::MODEL,
+                    &[
+                        RealtimeToolCall {
+                            item_id: "bad-args",
+                            call_id: "bad-args",
+                            name: "json_echo",
+                            arguments: invalid.into(),
+                        },
+                        RealtimeToolCall {
+                            item_id: "bad-output",
+                            call_id: "bad-output",
+                            name: "fail_serialize",
+                            arguments: valid.into(),
+                        },
+                    ],
+                )),
+            ),
+            support::prompt_step(
+                prompt,
+                2,
+                support::text_reply("failures delivered", "failure-done"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let counts = BindingCounts::default();
+    let result = async {
+        let thread = env
+            .start(ThreadWorkspaceMode::Local, "binding-failure-warmup")
+            .await?;
+        let id = &thread.thread.id;
+        support::completed_prompt(&env.runtime, id, "binding-failure-warmup").await?;
+        // Quiesce the competing catalog writer, retaining the real Thread/storage owners.
+        env.runtime.stop_tool_refresh().await?;
+        let handle = env
+            .runtime
+            .threads
+            .thread(id)
+            .context("real Thread owner")?;
+        handle
+            .register_tools(json_binding_registrations(&counts)?)
+            .await?;
+        handle
+            .run_turn(TurnInput {
+                turn_id: "binding-failure-turn".into(),
+                attempt_prefix: "binding-failure-attempt".into(),
+                content: vec![ContextContent::Text {
+                    text: Arc::from(prompt),
+                }],
+                max_model_steps: ModelStepLimit::Unlimited,
+                cancellation: Default::default(),
+            })
+            .await?;
+        env.runtime.threads.close(id).await?;
+        drop(handle);
+        env.restart().await?;
+        assert!(env.runtime.threads.observed_thread(id).is_none());
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(
+                id,
+                ChatScope::Children {
+                    parent_id: ChatKey::new("turn", "binding-failure-turn")?
+                        .as_str()
+                        .into(),
+                },
+                demand(),
+            )
+            .await?;
+        let tools = binding_tool_payloads(&mut feed).await?;
+        for (call, arguments) in [("bad-args", invalid), ("bad-output", valid)] {
+            let durable = env
+                .runtime
+                .store
+                .history(id)
+                .await?
+                .tool_task(&format!("task:{call}"))
+                .await?
+                .context("durable failure")?;
+            assert_eq!(
+                durable.task.status,
+                pl_core::thread::task::TaskStatus::Failed
+            );
+            let delivery = durable.delivery.context("failed delivery")?;
+            let ToolOutcome::Failed(error) = &delivery.outcome else {
+                bail!("expected Failed")
+            };
+            let text = error.to_string();
+            if call == "bad-output" {
+                assert!(
+                    text.contains("returned successfully")
+                        && text.contains("side effects may have occurred")
+                        && text.contains("did not retry")
+                );
+                assert!(text.contains("output JSON encoding failed"));
+                let mut source = std::error::Error::source(error.as_ref());
+                let mut found = false;
+                while let Some(error) = source {
+                    found |= error
+                        .to_string()
+                        .contains("fixture output serializer failed");
+                    source = error.source();
+                }
+                assert!(found, "serializer source was not saved");
+            } else {
+                assert!(
+                    text.contains("message") && text.contains("string"),
+                    "{text}"
+                );
+            }
+            let projected = delivery
+                .delivered_context
+                .iter()
+                .filter_map(|content| {
+                    if let ContextContent::Text { text } = content {
+                        Some(text.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            assert_eq!(support::tool_output(&env.root_provider, call)?, projected);
+            assert!(projected.contains(if call == "bad-output" {
+                "side effects may have occurred"
+            } else {
+                "string"
+            }));
+            let payload = tools.get(call).context("cold failed activity")?;
+            assert_eq!(
+                payload["data"]["invocation"]["presentationContract"],
+                "generic@1"
+            );
+            assert_eq!(payload["data"]["state"]["kind"], "failed");
+            assert_eq!(
+                binding_body(feed.reader(), payload, "tool.arguments").await?,
+                arguments.as_bytes()
+            );
+        }
+        feed.close().await?;
+        feed.reader().close().await?;
+        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert_eq!(counts.echo.load(Ordering::SeqCst), 0);
+        assert_eq!(counts.fail.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.serialized.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
 
 fn completed_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
     batch.entries.iter().filter_map(|entry| match entry {
