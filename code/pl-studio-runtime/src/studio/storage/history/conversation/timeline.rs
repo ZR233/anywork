@@ -82,10 +82,22 @@ CREATE TABLE timeline_projection_state (
 CREATE INDEX timeline_members_by_member ON timeline_item_members(member_id);
 ";
 pub(in super::super) async fn validate_tables(db: &impl ConnectionTrait) -> Result<()> {
+    validate_base_tables(db).await?;
+    db.query_all_raw(statement(
+        "SELECT updated_effect,payload_bytes FROM timeline_item_members LIMIT 0",
+        vec![],
+    ))
+    .await
+    .context("timeline member read metadata is invalid; original facts preserved")?;
+    Ok(())
+}
+
+/// The published TimelineItems layout, before the separate member metadata step.
+pub(in super::super) async fn validate_base_tables(db: &impl ConnectionTrait) -> Result<()> {
     for sql in [
         "SELECT effect_seq,suborder,atom_id,phase,fact_order,metadata FROM conversation_atom_facts LIMIT 0",
         "SELECT item_id,kind,location,position,commit_seq,metadata,projection_version FROM timeline_items LIMIT 0",
-        "SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,updated_effect,payload_bytes,metadata FROM timeline_item_members LIMIT 0",
+        "SELECT item_id,member_order,member_id,completion_item_id,admitted_effect,metadata FROM timeline_item_members LIMIT 0",
         "SELECT projection_version,next_position,source_effect_seq,projection_generation,recovery FROM timeline_projection_state LIMIT 0",
     ] {
         db.query_all_raw(statement(sql, vec![]))
