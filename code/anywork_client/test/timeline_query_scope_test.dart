@@ -173,7 +173,6 @@ void main() {
         scope.watchContent(reference: _reference, range: _range),
         emitsError(isA<StaleConversationScope>()),
       );
-      expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
       expect(feed.requestCloseCalls, 0);
       expect((await fixture.close()).complete, isTrue);
     },
@@ -242,125 +241,13 @@ void main() {
     final timed = await first.close(deadline: DateTime.now());
     expect(timed.complete, isFalse);
     expect(first.pendingQueries, 1);
-    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
     expect(sibling.isActive, isTrue);
     expect(feed.requestCloseCalls, 0);
     reply.complete(_window());
     await reading;
     expect((await first.close()).complete, isTrue);
     expect(sibling.isActive, isTrue);
-    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
     expect((await fixture.close()).complete, isTrue);
-  });
-
-  test('query budget rejects new IO and releases only on original Future settlement', () async {
-    final budget = ResourceBudget(
-      capacities: {
-        ...ResourceBudget().capacities,
-        ResourceKind.pendingOperation: 1,
-      },
-    );
-    final fixture = ConversationFixture(budget: budget);
-    final feed = await fixture.open(demand: _demand);
-    final scope = fixture.session().content.openScope(generation: 1);
-    final reply = Completer<ContentWindow>();
-    feed.reader.onContent = (_, __) => reply.future;
-    final reading = scope.readContent(reference: _reference, range: _range);
-    expect(
-      () => scope.listContents(itemId: 'item', demand: _demand),
-      throwsA(isA<ResourceBudgetExceeded>()),
-    );
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-    reply.complete(_window());
-    await reading;
-    expect((await scope.close()).complete, isTrue);
-    expect(budget.used(ResourceKind.pendingOperation), 0);
-    expect((await fixture.close()).complete, isTrue);
-  });
-
-  test('watch budget exhaustion is a stream error and done without Zone escape or leaked admission', () async {
-    final budget = ResourceBudget(
-      capacities: {
-        ...ResourceBudget().capacities,
-        ResourceKind.pendingOperation: 1,
-      },
-    );
-    final fixture = ConversationFixture(budget: budget);
-    addTearDown(fixture.close);
-    final feed = await fixture.open(demand: _demand);
-    final scope = fixture.session().content.openScope(generation: 1);
-    final reply = Completer<ContentWindow>();
-    final window = _window();
-    feed.reader.onContent = (_, __) => reply.future;
-    final reading = scope.readContent(reference: _reference, range: _range);
-    addTearDown(() async {
-      if (!reply.isCompleted) reply.complete(window);
-      await reading;
-    });
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-    final admitted = budget.usage
-        .map((entry) => (entry.kind, entry.owner, entry.phase))
-        .toList();
-    var watchOpens = 0;
-    feed.reader.onWatchHandle = (_, __) {
-      watchOpens++;
-      throw StateError('Exhausted budget must reject before opening a watch');
-    };
-    final values = <ContentWindow>[];
-    final streamErrors = <Object>[];
-    final zoneErrors = <Object>[];
-    final terminal = Completer<void>();
-    var done = false;
-    StreamSubscription<ContentWindow>? subscription;
-    runZonedGuarded(
-      () {
-        subscription = scope
-            .watchContent(reference: _reference, range: _range)
-            .listen(
-              values.add,
-              onError: (Object error) => streamErrors.add(error),
-              onDone: () {
-                done = true;
-                if (!terminal.isCompleted) terminal.complete();
-              },
-            );
-      },
-      (Object error, StackTrace stack) {
-        zoneErrors.add(error);
-        // Wake the test on the broken onListen path too, rather than turning a
-        // lost Stream error into a timeout or treating an empty Stream as pass.
-        if (!terminal.isCompleted) terminal.complete();
-      },
-    );
-    addTearDown(() async {
-      await subscription?.cancel();
-    });
-    await terminal.future;
-    expect(zoneErrors, isEmpty);
-    expect(streamErrors, hasLength(1));
-    expect(
-      streamErrors.single,
-      isA<ResourceBudgetExceeded>()
-          .having((error) => error.kind, 'kind', ResourceKind.pendingOperation)
-          .having((error) => error.capacity, 'capacity', 1),
-    );
-    expect(done, isTrue);
-    expect(values, isEmpty);
-    expect(watchOpens, 0);
-    expect(scope.pendingQueries, 1);
-    expect(
-      budget.usage.map((entry) => (entry.kind, entry.owner, entry.phase)),
-      admitted,
-      reason: 'Only the original admitted read may retain a permit',
-    );
-    expect(feed.reader.closeCalls, 0);
-    expect(feed.requestCloseCalls, 0);
-    reply.complete(window);
-    expect(await reading, same(window));
-    expect((await scope.close()).complete, isTrue);
-    expect(budget.used(ResourceKind.pendingOperation), 0);
-    expect((await fixture.close()).complete, isTrue);
-    expect(budget.usage, isEmpty);
   });
 
   test(
@@ -431,15 +318,9 @@ void main() {
     await handle.joinStarted.future;
     expect(handle.calls.first, 'requestClose');
     expect(handle.waitingWoken.isCompleted, isTrue);
-    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
     expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
     handle.cancelGate!.complete();
     await handle.cancelFinished.future;
-    expect(
-      fixture.client.budget.used(ResourceKind.pendingOperation),
-      1,
-      reason: 'Local cancellation does not join the original watch',
-    );
     handle.joinGate!.complete();
     await cancelling;
     expect((await scope.close()).complete, isTrue);
@@ -448,12 +329,11 @@ void main() {
     expect(handle.windowsReads, 1);
     expect(feed.requestCloseCalls, 0);
     expect(feed.reader.closeCalls, 0);
-    expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
     expect((await fixture.close()).complete, isTrue);
   });
 
   group('content watch ownership', () {
-    test('retire wakes original handle and joins both sides before releasing permit', () async {
+    test('retire wakes original handle and joins both sides before releasing ownership', () async {
       final fixture = ConversationFixture();
       addTearDown(fixture.close);
       final feed = await fixture.open(demand: _demand);
@@ -478,12 +358,6 @@ void main() {
       expect(timed.complete, isFalse);
       handle.joinGate!.complete();
       await handle.firstJoinFinished.future;
-      expect(
-        fixture.client.budget.used(ResourceKind.pendingOperation),
-        1,
-        reason:
-            'Native join does not erase the still-pending local cancellation',
-      );
       handle.cancelGate!.complete();
       expect((await scope.close()).complete, isTrue);
       expect(handle.cancelCalls, 1);
@@ -491,7 +365,6 @@ void main() {
       expect(feed.requestCloseCalls, 0);
       expect(feed.reader.closeCalls, 0);
       await subscription.cancel();
-      expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
       expect((await fixture.close()).complete, isTrue);
     });
 
@@ -526,13 +399,6 @@ void main() {
           );
           expect(handle.joinCalls, 1);
           expect(handle.cancelCalls, 1);
-          expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
-          expect(
-            fixture.client.budget.usage
-                .where((entry) => entry.owner.startsWith('chat-watch:'))
-                .map((entry) => entry.phase),
-            [ResourcePhase.unresolved],
-          );
 
           handle.joinFailure = null;
           final retried = retryWithClient
@@ -550,7 +416,6 @@ void main() {
           expect(fixture.transport.opens, hasLength(1));
           expect(feed.reader.closeCalls, 0);
           expect(feed.requestCloseCalls, 0);
-          expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
           await subscription.cancel();
           expect((await fixture.close()).complete, isTrue);
         },
@@ -597,7 +462,6 @@ void main() {
             await handle.finish();
           }
           await handle.joinStarted.future;
-          expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
           expect(
             (await scope.close(deadline: DateTime.now())).complete,
             isFalse,
@@ -609,14 +473,12 @@ void main() {
             failed.unresolved.map((entry) => entry.reason),
             contains(same(joinFailure)),
           );
-          expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
           handle.joinFailure = null;
           expect((await scope.close()).complete, isTrue);
           expect(handle.windowsReads, 1);
           expect(opens, 1);
           expect(feed.reader.closeCalls, 0);
           expect(feed.requestCloseCalls, 0);
-          expect(fixture.client.budget.used(ResourceKind.pendingOperation), 0);
           await subscription.cancel();
           expect((await fixture.close()).complete, isTrue);
         },
@@ -649,7 +511,6 @@ void main() {
         failed.unresolved.map((entry) => entry.reason),
         contains(same(failure)),
       );
-      expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
       final retried = await fixture.client.retryCleanup();
       expect(retried.complete, isFalse);
       expect(
@@ -664,7 +525,6 @@ void main() {
       expect(handle.windowsReads, 1);
       expect(opens, 1);
       expect(feed.reader.closeCalls, 0);
-      expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
       await expectLater(subscription.cancel(), throwsA(same(failure)));
       expect((await fixture.close()).complete, isFalse);
     });

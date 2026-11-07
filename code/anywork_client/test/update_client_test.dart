@@ -102,22 +102,13 @@ final class _UpdateOperation implements StudioUpdateOperation {
   }
 }
 
-StudioUpdateClient _client(
-  _UpdateApi api,
-  UpdaterStore store, {
-  ResourceBudget? budget,
-}) =>
-    StudioUpdateClient(api: api, updater: store, enabled: true, budget: budget);
+StudioUpdateClient _client(_UpdateApi api, UpdaterStore store) =>
+    StudioUpdateClient(api: api, updater: store, enabled: true);
 
 void main() {
   test('a confirmed pre-admission rejection can be retried without leaking an owner', () async {
     final api = _UpdateApi();
-    final budget = ResourceBudget();
-    final client = _client(
-      api,
-      UpdaterStore()..apply(_available(7)),
-      budget: budget,
-    );
+    final client = _client(api, UpdaterStore()..apply(_available(7)));
     final rejected = client.install();
     final failure = expectLater(
       rejected,
@@ -127,7 +118,6 @@ void main() {
       const StudioUpdatePreparationRejected('Update state changed'),
     );
     await failure;
-    expect(budget.usage, isEmpty);
     expect(client.unresolvedResources, isEmpty);
     api.opened = Completer();
     final retry = client.install();
@@ -224,12 +214,7 @@ void main() {
     'download failure ends preparation without an exit and releases resources',
     () async {
       final api = _UpdateApi();
-      final budget = ResourceBudget();
-      final client = _client(
-        api,
-        UpdaterStore()..apply(_available(7)),
-        budget: budget,
-      );
+      final client = _client(api, UpdaterStore()..apply(_available(7)));
       final install = client.install();
       final operation = _UpdateOperation();
       api.opened.complete(operation);
@@ -252,7 +237,6 @@ void main() {
       expect((await install).readyVersion, isNull);
       expect(client.request.value.phase, StudioUpdateRequestPhase.failed);
       expect(client.state, isA<InstallFailedUpdaterStateSnapshot>());
-      expect(budget.usage, isEmpty);
       expect((await client.close()).complete, isTrue);
     },
   );
@@ -289,43 +273,35 @@ void main() {
     expect((await client.close()).complete, isTrue);
   });
 
-  test(
-    'close joins a coalesced check failure and releases its RPC budget',
-    () async {
-      final api = _UpdateApi()..checkReply = Completer();
-      final budget = ResourceBudget();
-      final client = _client(api, UpdaterStore(), budget: budget);
-      final check = client.check();
-      expect(identical(client.check(), check), isTrue);
-      expect(api.checkCalls, 1);
-      expect(budget.used(ResourceKind.pendingOperation), 1);
-      final failure = expectLater(check, throwsStateError);
-      var closeFinished = false;
-      final closing = client.close().then((report) {
-        closeFinished = true;
-        return report;
-      });
-      expect(closeFinished, isFalse);
-      expect(budget.used(ResourceKind.pendingOperation), 1);
-      api.checkReply!.completeError(StateError('check rejected'));
-      await failure;
-      expect(
-        (await closing).complete,
-        isTrue,
-        reason:
-            'a completed business failure leaves no native cleanup obligation',
-      );
-      expect(budget.used(ResourceKind.pendingOperation), 0);
-      expect(client.unresolvedResources, isEmpty);
-      expect((await client.retryCleanup()).complete, isTrue);
-      expect(api.checkCalls, 1, reason: 'cleanup must never replay the check');
-    },
-  );
-
-  test('a check past the close deadline retains budget until its real terminal reply', () async {
+  test('close joins a coalesced check failure and joins its RPC', () async {
     final api = _UpdateApi()..checkReply = Completer();
-    final budget = ResourceBudget();
-    final client = _client(api, UpdaterStore(), budget: budget);
+    final client = _client(api, UpdaterStore());
+    final check = client.check();
+    expect(identical(client.check(), check), isTrue);
+    expect(api.checkCalls, 1);
+    final failure = expectLater(check, throwsStateError);
+    var closeFinished = false;
+    final closing = client.close().then((report) {
+      closeFinished = true;
+      return report;
+    });
+    expect(closeFinished, isFalse);
+    api.checkReply!.completeError(StateError('check rejected'));
+    await failure;
+    expect(
+      (await closing).complete,
+      isTrue,
+      reason:
+          'a completed business failure leaves no native cleanup obligation',
+    );
+    expect(client.unresolvedResources, isEmpty);
+    expect((await client.retryCleanup()).complete, isTrue);
+    expect(api.checkCalls, 1, reason: 'cleanup must never replay the check');
+  });
+
+  test('a check past the close deadline retains its RPC until its real terminal reply', () async {
+    final api = _UpdateApi()..checkReply = Completer();
+    final client = _client(api, UpdaterStore());
     final check = client.check();
     final failure = expectLater(check, throwsStateError);
     final closing = client.close(deadline: DateTime.utc(2000));
@@ -339,30 +315,12 @@ void main() {
       report.unresolved.any((entry) => entry.owner == 'update-rpc:check'),
       isTrue,
     );
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-    expect(budget.usage.single.phase, ResourcePhase.unresolved);
     api.checkReply!.completeError(StateError('late check rejected'));
     await failure;
     expect((await client.retryCleanup()).complete, isTrue);
     expect(client.unresolvedResources, isEmpty);
-    expect(budget.used(ResourceKind.pendingOperation), 0);
     expect(api.checkCalls, 1);
   });
-
-  test(
-    'a check cannot enter transport without a pending-operation permit',
-    () async {
-      final api = _UpdateApi();
-      final budget = ResourceBudget(
-        capacities: {ResourceKind.pendingOperation: 0},
-      );
-      final client = _client(api, UpdaterStore(), budget: budget);
-      await expectLater(client.check(), throwsA(isA<ResourceBudgetExceeded>()));
-      expect(api.checkCalls, 0);
-      expect((await client.close()).complete, isTrue);
-      expect(budget.usage, isEmpty);
-    },
-  );
 
   test(
     'automatic startup belongs to the Client and waits for canonical readiness',
@@ -384,33 +342,27 @@ void main() {
     },
   );
 
-  test('automatic cleanup failure retains its owner until a real cancel ACK', () async {
-    final api = _UpdateApi()
-      ..automaticCancelFailure = StateError('cancel failed');
-    final store = UpdaterStore()..apply(_available(7));
-    final budget = ResourceBudget();
-    final client = _client(api, store, budget: budget);
-    client.attach();
-    expect((await client.close()).complete, isFalse);
-    expect(api.automaticStarts, 1);
-    expect(api.automaticCancels, 1);
-    expect(
-      budget.used(ResourceKind.pendingOperation),
-      0,
-      reason:
-          'the cancel RPC ended, while its native producer still owns a permit',
-    );
-    expect(budget.used(ResourceKind.observer), 1);
-    api.automaticCancelFailure = null;
-    expect((await client.retryCleanup()).complete, isTrue);
-    expect(
-      api.automaticStarts,
-      1,
-      reason: 'retrying cleanup never repeats startup',
-    );
-    expect(api.automaticCancels, 2);
-    expect(budget.usage, isEmpty);
-  });
+  test(
+    'automatic cleanup failure retains its owner until a real cancel ACK',
+    () async {
+      final api = _UpdateApi()
+        ..automaticCancelFailure = StateError('cancel failed');
+      final store = UpdaterStore()..apply(_available(7));
+      final client = _client(api, store);
+      client.attach();
+      expect((await client.close()).complete, isFalse);
+      expect(api.automaticStarts, 1);
+      expect(api.automaticCancels, 1);
+      api.automaticCancelFailure = null;
+      expect((await client.retryCleanup()).complete, isTrue);
+      expect(
+        api.automaticStarts,
+        1,
+        reason: 'retrying cleanup never repeats startup',
+      );
+      expect(api.automaticCancels, 2);
+    },
+  );
 
   test(
     'route observation ends without dropping the operation or its handoff ACK',
@@ -448,8 +400,7 @@ void main() {
   test('late install handle is cancelled by its original owner after close deadline', () async {
     final api = _UpdateApi();
     final store = UpdaterStore()..apply(_available(7));
-    final budget = ResourceBudget();
-    final client = _client(api, store, budget: budget);
+    final client = _client(api, store);
     final install = client.install();
     final closing = client.close(deadline: DateTime.utc(2000));
     expect(
@@ -457,57 +408,54 @@ void main() {
       isTrue,
     );
     expect((await closing).complete, isFalse);
-    expect(budget.used(ResourceKind.pendingOperation), 1);
     final operation = _UpdateOperation();
     api.opened.complete(operation);
     await operation.disposed.future;
     expect((await install).readyVersion, isNull);
     expect(operation.cancelCalls, 1);
     expect(operation.disposeCalls, 1);
-    expect(budget.used(ResourceKind.pendingOperation), 0);
   });
 
-  test('failed handoff keeps the strong handle and budget until cleanup is confirmed', () async {
-    final api = _UpdateApi();
-    final store = UpdaterStore()..apply(_available(7));
-    final budget = ResourceBudget();
-    final client = _client(api, store, budget: budget);
-    final install = client.install();
-    final operation = _UpdateOperation(
-      cancelFailure: StateError('native close failed'),
-    );
-    api.opened.complete(operation);
-    await operation.listened.future;
-    final failure = expectLater(install, throwsStateError);
-    operation.frames.add(
-      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
-    );
-    await operation.frames.close();
-    await operation.handoffRequested.future;
-    operation.handoff.completeError(StateError('native handoff failed'));
-    await failure;
-    expect(operation.disposeCalls, 0);
-    expect(budget.used(ResourceKind.pendingOperation), 1);
-    final report = await client.close();
-    expect(report.complete, isFalse);
-    expect(report.unresolved.single.owner, 'update:1');
-    expect(operation.disposeCalls, 0);
-  });
+  test(
+    'failed handoff keeps the strong handle until cleanup is confirmed',
+    () async {
+      final api = _UpdateApi();
+      final store = UpdaterStore()..apply(_available(7));
+      final client = _client(api, store);
+      final install = client.install();
+      final operation = _UpdateOperation(
+        cancelFailure: StateError('native close failed'),
+      );
+      api.opened.complete(operation);
+      await operation.listened.future;
+      final failure = expectLater(install, throwsStateError);
+      operation.frames.add(
+        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      );
+      await operation.frames.close();
+      await operation.handoffRequested.future;
+      operation.handoff.completeError(StateError('native handoff failed'));
+      await failure;
+      expect(operation.disposeCalls, 0);
+      final report = await client.close();
+      expect(report.complete, isFalse);
+      expect(report.unresolved.single.owner, 'update:1');
+      expect(operation.disposeCalls, 0);
+    },
+  );
 
   test(
     'unknown install reply is retained and never automatically replayed',
     () async {
       final api = _UpdateApi();
       final store = UpdaterStore()..apply(_available(7));
-      final budget = ResourceBudget();
-      final client = _client(api, store, budget: budget);
+      final client = _client(api, store);
       final install = client.install();
       final failure = expectLater(install, throwsStateError);
       api.opened.completeError(StateError('reply lost'));
       await failure;
       await expectLater(client.install(), throwsStateError);
       expect(api.installCalls, 1);
-      expect(budget.used(ResourceKind.pendingOperation), 1);
       expect((await client.close()).complete, isFalse);
     },
   );

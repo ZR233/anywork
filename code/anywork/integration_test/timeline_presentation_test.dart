@@ -138,10 +138,11 @@ void main() {
       try {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _until(
-          tester,
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'timeline read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       } finally {
         tester.testTextInput.unregister();
@@ -951,20 +952,5 @@ final class _TimelineScene {
       'fresh timeline display after route return',
     );
     expect(before.isReleased, isTrue);
-  }
-}
-
-Future<void> _until(
-  WidgetTester tester,
-  bool Function() ready,
-  String description,
-) async {
-  final clock = Stopwatch()..start();
-  while (!ready()) {
-    if (clock.elapsed >= const Duration(seconds: 60)) {
-      fail('Timed out waiting for $description');
-    }
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.takeException(), isNull);
   }
 }

@@ -1,13 +1,8 @@
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
 
 /// Logical draft and submitted payloads each retain their own attachment owner.
 /// An old ACK can release only its submission's ownership, never a newer draft's.
 final class AttachmentDraftStore {
-  AttachmentDraftStore({ResourceBudget? budget})
-    : budget = budget ?? ResourceBudget();
-
-  final ResourceBudget budget;
   final Map<String, _AttachmentEntry> _entries = {};
 
   int get retainedCount => _entries.length;
@@ -23,25 +18,8 @@ final class AttachmentDraftStore {
     if (ids.any((id) => id.isEmpty)) {
       throw ArgumentError('Attachment identities cannot be empty');
     }
-    final acquired = <String, ResourcePermit>{};
-    try {
-      for (final id in ids) {
-        if (!_entries.containsKey(id)) {
-          acquired[id] = budget.acquire(ResourceKind.attachment, owner: id);
-        }
-      }
-    } catch (_) {
-      // Roll back only this synchronous reservation; no ownership was changed.
-      for (final permit in acquired.values) {
-        permit.release();
-      }
-      rethrow;
-    }
     for (final id in ids) {
-      final entry = _entries.putIfAbsent(
-        id,
-        () => _AttachmentEntry(acquired[id]!),
-      );
+      final entry = _entries.putIfAbsent(id, () => _AttachmentEntry());
       entry.owners.add(owner);
     }
   }
@@ -62,7 +40,6 @@ final class AttachmentDraftStore {
       if (entry == null || !entry.owners.remove(owner)) continue;
       if (entry.owners.isEmpty) {
         _entries.remove(id);
-        entry.permit.release();
         released.add(id);
       }
     }
@@ -71,7 +48,5 @@ final class AttachmentDraftStore {
 }
 
 final class _AttachmentEntry {
-  _AttachmentEntry(this.permit);
-  final ResourcePermit permit;
   final Set<String> owners = {};
 }

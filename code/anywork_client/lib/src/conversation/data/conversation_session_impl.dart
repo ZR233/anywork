@@ -4,7 +4,7 @@ import '../../../models.dart';
 import '../../../conversation_ports.dart';
 import '../../../directory_ports.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../studio/stores/domain_sync.dart';
@@ -22,14 +22,12 @@ final class ConversationSessionImpl implements ConversationSession {
     this.threadId, {
     required ConversationTransport transport,
     required this.directory,
-    required ResourceBudget budget,
     required InputFactRegistry inputFacts,
   }) : _inputFacts = inputFacts,
        _source = LatestValue(ThreadSessionState(threadId: threadId)) {
     _content = ConversationContentImpl(
       threadId: threadId,
       transport: transport,
-      budget: budget,
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,

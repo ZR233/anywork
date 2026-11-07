@@ -50,7 +50,6 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   /// 自己的在途表，目录刷新与命令板变化都按同一事实收敛。
   Map<String, CommandStatus> _stopCommands = const {};
   LatestWatch<ThreadCommandBoard>? _stopWatch;
-  ResourcePermit? _stopPermit;
 
   /// 只为「跨过未确认阈值」触发一次重建（threadId 维度）。
   final Map<String, Timer> _stopTimers = {};
@@ -249,9 +248,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     _stopUnconfirmedFired.clear();
     _queuedStopStartedAt.clear();
     _stopWatch?.observation.cancel();
-    _stopPermit?.release();
     _stopWatch = null;
-    _stopPermit = null;
     super.dispose();
   }
 
@@ -268,14 +265,10 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   /// 订阅 Client 命令板：行内停止的在途与失败都随它收敛。
   ///
   /// 菜单在任意位置重建（打开/关闭、切换会话、上层刷新）都不会丢失在途事实，因为
-  /// 事实只在命令板里；这里只持有一个只读观察与它的预算 permit。
+  /// 事实只在命令板里；这里只持有一个只读观察。
   void _attachStopCommands() {
     final client = ref.read(anyworkClientProvider);
     final commands = client.threadCommands;
-    _stopPermit ??= client.budget.acquire(
-      ResourceKind.observer,
-      owner: 'presentation:agent-switcher-stop:$hashCode',
-    );
     final watch = commands.source.watchLatest((next) {
       if (!mounted) return;
       final stops = _stopsByThread(next.commands);

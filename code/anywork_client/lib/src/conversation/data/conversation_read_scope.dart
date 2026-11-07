@@ -3,7 +3,7 @@ import 'dart:async';
 import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/conversation_repository.dart';
 
@@ -14,11 +14,9 @@ final class ConversationReadScope implements ConversationQueryScope {
     required this.threadId,
     required this.generation,
     required ConversationReader reader,
-    required ResourceBudget budget,
     required bool Function() isEligible,
     required Future<void> Function(ChatBatch) applyOlder,
   }) : _reader = reader,
-       _budget = budget,
        _isEligible = isEligible,
        _applyOlder = applyOlder;
 
@@ -27,13 +25,11 @@ final class ConversationReadScope implements ConversationQueryScope {
   @override
   final int generation;
   final ConversationReader _reader;
-  final ResourceBudget _budget;
   final bool Function() _isEligible;
   final Future<void> Function(ChatBatch) _applyOlder;
   final Set<Future<void>> _pending = {};
   final Set<_ContentWatch> _watches = {};
   bool _retired = false;
-  int _sequence = 0;
   Future<ChatBatch>? _older;
 
   @override
@@ -105,17 +101,12 @@ final class ConversationReadScope implements ConversationQueryScope {
 
   Future<T> _run<T>(Future<T> Function() operation) {
     if (!isActive) return Future.error(const StaleConversationScope());
-    final permit = _budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'chat-query:$threadId:$generation:${++_sequence}',
-    );
     final completion = Completer<T>();
     late final Future<void> joined;
     joined = completion.future
         .then<void>((_) {}, onError: (Object _, StackTrace __) {})
         .whenComplete(() {
           _pending.remove(joined);
-          permit.release();
         });
     _pending.add(joined);
     completion.complete(
@@ -148,12 +139,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           return;
         }
         try {
-          final owned = _ContentWatch(
-            _budget.acquire(
-              ResourceKind.pendingOperation,
-              owner: 'chat-watch:$threadId:$generation:${++_sequence}',
-            ),
-          );
+          final owned = _ContentWatch();
           watch = owned;
           _watches.add(owned);
           owned.handle = _reader.watchContent(
@@ -181,7 +167,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           output.addError(error, stack);
           final owned = watch;
           if (owned == null) {
-            // Admission failed before a permit/handle existed. Keep the
+            // Opening failed before a handle existed. Keep the
             // original error on this Stream, not its listener's uncaught Zone.
             unawaited(output.close());
           } else {
@@ -216,7 +202,6 @@ final class ConversationReadScope implements ConversationQueryScope {
 
   void _releaseWatch(_ContentWatch watch) {
     watch.released = true;
-    watch.permit.release();
     _watches.remove(watch);
   }
 
@@ -246,7 +231,6 @@ final class ConversationReadScope implements ConversationQueryScope {
       watch.requestError = null;
     } catch (error, stack) {
       watch.requestError = (error, stack);
-      watch.permit.mark(ResourcePhase.unresolved);
     }
   }
 
@@ -287,9 +271,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           await Future.wait([cancelled, joined]);
           if (watch.errors.isEmpty) {
             _releaseWatch(watch);
-          } else {
-            watch.permit.mark(ResourcePhase.unresolved);
-          }
+          } else {}
         } finally {
           watch.cancelling = null;
         }
@@ -323,7 +305,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           try {
             await Future.wait(pending).timeout(remaining);
           } on TimeoutException {
-            /* Original operations retain their permits. */
+            /* Original operations retain their cleanup responsibility. */
           }
         }
       }
@@ -352,8 +334,7 @@ final class ConversationReadScope implements ConversationQueryScope {
 }
 
 final class _ContentWatch {
-  _ContentWatch(this.permit);
-  final ResourcePermit permit;
+  _ContentWatch();
   final listening = Completer<void>();
   ConversationContentWatch? handle;
   // Owned until both subscription cancellation and original watch join settle.

@@ -1,5 +1,5 @@
 /// Cleanup has not joined all actual native drafts, admissions or staging files.
-/// Ownership and permits remain held until explicit cleanup succeeds.
+/// Ownership remains until explicit cleanup succeeds.
 final class AttachmentCleanupUnresolved implements Exception {
   AttachmentCleanupUnresolved(
     Iterable<String> draftIds, {

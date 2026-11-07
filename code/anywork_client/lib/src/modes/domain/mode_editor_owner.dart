@@ -1,7 +1,6 @@
 import 'dart:convert';
 
-import '../../../anywork_client.dart'
-    show ReadModel, ResourceKind, ResourcePermit;
+import '../../../anywork_client.dart' show ReadModel;
 import '../../../models.dart';
 import '../../studio/anywork_client.dart';
 import '../../studio/commands/command_lane.dart';
@@ -82,7 +81,6 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
   ModeEditorOwner(this._client) : super(const ModeEditorState());
 
   final AnyworkClient _client;
-  ResourcePermit? _permit;
   final CommandLane _lane = CommandLane();
   final List<_ModeEditorSnapshot> _undo = [];
   final List<_ModeEditorSnapshot> _redo = [];
@@ -111,8 +109,6 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
       try {
         await _lane.join();
       } finally {
-        _permit?.release();
-        _permit = null;
         _undo.clear();
         _redo.clear();
         _savedDocument = null;
@@ -735,10 +731,6 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     if (_closed || _client.isClosed) {
       throw StateError('The Mode editor is closed');
     }
-    _permit ??= _client.budget.acquire(
-      ResourceKind.draft,
-      owner: 'mode-editor',
-    );
   }
 }
 

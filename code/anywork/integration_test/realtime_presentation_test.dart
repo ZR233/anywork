@@ -150,10 +150,11 @@ void main() {
         try {
           graph.setConversationPageVisible(false);
           await tester.pumpWidget(const SizedBox());
-          await _until(
-            tester,
-            () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-            'realtime-presentation read handles joined',
+          expect(
+            (await graph.client.conversations.retryCleanup(
+              deadline: DateTime.now().add(const Duration(seconds: 5)),
+            )).complete,
+            isTrue,
           );
         } finally {
           tester.testTextInput.unregister();
@@ -447,9 +448,11 @@ final class _RealtimeScene {
     await observed.closeSource(
       ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
     );
-    await until(
-      () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
-      'collapsed realtime member handles joined before the next turn',
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
     );
   }
 
@@ -720,7 +723,7 @@ final class _RealtimeScene {
         : null;
     final reason =
         'Known small realtime fixture requires Inline/current business '
-        'presentation within the original frame budget: id=${item.id}, '
+        'presentation within the original frame =${item.id}, '
         'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload is InlinePayload, isTrue, reason: reason);
@@ -2385,7 +2388,6 @@ final class _RealtimeScene {
         'Realtime tool observation failure: ${jsonEncode({
           'turnId': _submittedTurnId,
           'liveIds': observed.live.map((unit) => unit.id).toList(),
-          'chatHandles': graph.client.budget.used(ResourceKind.chatHandle),
           'groups': lease.groupDisplays.map((display) => {
             'id': display.unitId,
             'current': display.isCurrent,
@@ -2481,20 +2483,5 @@ Future<void> _revealTextFragment(
       }
       ancestor = ancestor.parent;
     }
-  }
-}
-
-Future<void> _until(
-  WidgetTester tester,
-  bool Function() ready,
-  String description,
-) async {
-  final clock = Stopwatch()..start();
-  while (!ready()) {
-    if (clock.elapsed >= const Duration(seconds: 60)) {
-      fail('Timed out waiting for $description');
-    }
-    await tester.pump(const Duration(milliseconds: 16));
-    expect(tester.takeException(), isNull);
   }
 }

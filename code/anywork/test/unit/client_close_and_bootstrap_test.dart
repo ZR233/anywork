@@ -69,7 +69,6 @@ void main() {
     );
     expect(client.drafts.existingComposer('thread-main')?.state, isNull);
     expect(composer.state.draft, isEmpty);
-    expect(client.budget.used(ResourceKind.draft), 0);
     expect((await client.close()).complete, isTrue);
   });
 
@@ -127,7 +126,6 @@ void main() {
       expect(client.applicationTopics, isEmpty);
       expect(client.settings.state.configLoaded, isFalse);
       expect((await client.retryCleanup()).complete, isTrue);
-      expect(client.budget.usage, isEmpty);
     },
   );
 }

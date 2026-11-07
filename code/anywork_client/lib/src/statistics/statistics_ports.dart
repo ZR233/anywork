@@ -1,4 +1,3 @@
-import '../lifecycle/resource_budget.dart';
 import 'data/statistics_repository_impl.dart';
 import 'domain/statistics_failure.dart';
 import 'domain/statistics_models.dart';
@@ -133,6 +132,5 @@ final class StatisticsPage<T> {
 /// AppGraph composition entry: one SDK-only repository per application instance.
 StatisticsRepository createStatisticsRepository({
   required StatisticsFeedPort feed,
-  required ResourceBudget budget,
   required String owner,
-}) => StatisticsRepositoryImpl(feed: feed, budget: budget, owner: owner);
+}) => StatisticsRepositoryImpl(feed: feed, owner: owner);

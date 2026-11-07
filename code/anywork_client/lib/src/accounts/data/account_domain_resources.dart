@@ -9,7 +9,7 @@ import '../../../model_directory.dart';
 import '../../acp/data/acp_service_impl.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../models/command_receipts.dart';
 import '../../models/studio_state_snapshots.dart';
 import '../../models_domain/data/models_repository_impl.dart';
@@ -29,12 +29,10 @@ final class AccountDomainResources {
     required AcpPort acpPort,
     required this.coordinator,
     required this.mutations,
-    required ResourceBudget budget,
     required String owner,
   }) {
     _observations = AccountObservations(
       feed: feed,
-      budget: budget,
       owner: owner,
       consume: _consume,
       failed: _failed,

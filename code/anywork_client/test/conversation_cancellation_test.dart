@@ -69,7 +69,6 @@ void main() {
     expect(feed.nativeCloseEntered.isCompleted, isTrue);
     expect(feed.cancelCalls, 1);
     expect(feed.closeCalls, 2);
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test('close deadline retains delegated native join and releases only after actual cancellation', () async {
@@ -80,11 +79,9 @@ void main() {
     expect(report.complete, isFalse);
     await feed.nativeCloseEntered.future;
     expect(feed.cancelCalls, 0);
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
     feed.closeGate!.complete();
     expect((await fixture.client.retryCleanup()).complete, isTrue);
     expect(feed.cancelCalls, 1);
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test('independent Dart cancellation failure remains unresolved after successful native close', () async {
@@ -107,6 +104,5 @@ void main() {
       1,
       reason: 'The original failed cancellation still owns its result',
     );
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
   });
 }

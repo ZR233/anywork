@@ -178,7 +178,7 @@ final class TestAccountObservation implements AccountDomainObservation {
 
 final class AccountsTestRuntime {
   AccountsTestRuntime(this.transport, {String clientId = 'test'}) {
-    board = MutationBoard(clientId: clientId, budget: budget);
+    board = MutationBoard(clientId: clientId);
     domains = AccountDomainResources(
       feed: transport,
       configuration: transport,
@@ -187,13 +187,11 @@ final class AccountsTestRuntime {
       acpPort: transport,
       coordinator: coordinator,
       mutations: board,
-      budget: budget,
       owner: clientId,
     );
     client = AnyworkClient(
       transport: transport,
       clientId: clientId,
-      budget: budget,
       settingsWrites: coordinator,
       mutationBoard: board,
       accountDomains: domains,
@@ -206,7 +204,6 @@ final class AccountsTestRuntime {
     domains.adoptOwnerEpoch(transport.epoch);
   }
   final AccountsTestTransport transport;
-  final ResourceBudget budget = ResourceBudget();
   final SettingsWriteCoordinator coordinator = SettingsWriteCoordinator();
   late final MutationBoard board;
   late final AccountDomainResources domains;

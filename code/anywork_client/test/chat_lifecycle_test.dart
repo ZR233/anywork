@@ -13,6 +13,47 @@ ChatBatch _appendMessage(String id) => ChatBatch(
 );
 
 void main() {
+  test('Main and multiple independently expanded details read and close concurrently', () async {
+    final fixture = ConversationFixture();
+    final main = await fixture.open(demand: _demand);
+    final details = <ConversationContent>[];
+    final feeds = <TestConversationFeed>[];
+    for (var index = 0; index < 4; index++) {
+      final content = await fixture.repository.openChildren(
+        threadId: 'thread',
+        parentId: 'parent-$index',
+        demand: _demand,
+      );
+      details.add(content);
+      content.attachConsumer(TestCompletionConsumer(), demand: _demand);
+      await fixture.transport.opened(index + 1);
+      final opening = fixture.transport.opens[index + 1];
+      final feed = TestConversationFeed(
+        threadId: 'thread',
+        subscriptionId: 'detail-$index',
+      );
+      feeds.add(feed);
+      opening.result.complete(feed);
+      await feed.deliver(ConversationChatEvent(batch: chatSet(messages: [])));
+      expect(content.state.value, isA<ChatReady<bool>>());
+    }
+    expect(main.eventConsumers, 1);
+    expect(feeds.every((feed) => feed.eventConsumers == 1), isTrue);
+    feeds.first.closeGate = Completer<void>();
+    final closing = details.first.close();
+    await feeds.first.closeStarted.future;
+    expect(details.first.ownedAttemptCount, 1);
+    expect(feeds.first.closeCompleted.isCompleted, isFalse);
+    expect(details.last.state.value, isA<ChatReady<bool>>());
+    feeds.first.closeGate!.complete();
+    expect((await closing).complete, isTrue);
+    expect(details.first.ownedAttemptCount, 0);
+    expect(main.eventConsumers, 1);
+    expect((await fixture.close()).complete, isTrue);
+    expect(main.closeCompleted.isCompleted, isTrue);
+    expect(feeds.every((feed) => feed.closeCompleted.isCompleted), isTrue);
+    expect(details.every((content) => content.ownedAttemptCount == 0), isTrue);
+  });
   test('repository retryCleanup honors expired absolute deadline and preserves original native join', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
@@ -26,7 +67,6 @@ void main() {
       first.unresolved.map((entry) => entry.owner),
       contains('conversation:thread'),
     );
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
     expect(feed.closeCompleted.isCompleted, isFalse);
     expect(feed.closeCalls, 1);
     final again = await fixture.repository.retryCleanup(deadline: expired);
@@ -38,7 +78,6 @@ void main() {
     );
     feed.closeGate!.complete();
     expect((await fixture.repository.retryCleanup()).complete, isTrue);
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 0);
     expect(fixture.transport.opens, hasLength(1));
     await fixture.close();
   });
@@ -67,7 +106,6 @@ void main() {
       onTimeout: () => throw StateError('native close did not start'),
     );
     expect(completed, isFalse);
-    expect(fixture.client.budget.used(ResourceKind.chatHandle), 1);
     expect(feed.ackGate!.isCompleted, isFalse);
     feed.closeGate!.complete();
     await feed.closeCompleted.future.timeout(
@@ -84,7 +122,6 @@ void main() {
           onTimeout: () => throw StateError('ACK did not settle'),
         );
     expect((await closing).complete, isTrue);
-    expect(fixture.client.budget.usage, isEmpty);
     expect(content.state.value, isA<ChatClosed<bool>>());
   });
 
@@ -129,29 +166,30 @@ void main() {
         );
         expect(content.state.value, isA<ChatReady<bool>>());
         await fixture.close();
-        expect(fixture.client.budget.usage, isEmpty);
       }, zoneSpecification: timers.specification);
     },
   );
 
   test(
-    'default two-handle budget waits for actual old close before opening new A',
+    'new A opens while original A and B remain owned until their actual close',
     () async {
-      final budget = ResourceBudget();
-      final fixture = ConversationFixture(budget: budget);
+      final fixture = ConversationFixture();
       fixture.attach('A', demand: _demand);
       fixture.attach('B', demand: _demand);
       fixture.repository.setVisibleThread('A');
       fixture.repository.setVisibleThread('B');
       fixture.repository.setVisibleThread('A');
-      expect(fixture.transport.opens.map((open) => open.threadId), ['A', 'B']);
+      expect(fixture.transport.opens.map((open) => open.threadId), [
+        'A',
+        'B',
+        'A',
+      ]);
       final oldA = TestConversationFeed(threadId: 'A')
         ..closeGate = Completer<void>();
       fixture.transport.opens[0].result.complete(oldA);
       await oldA.closeStarted.future;
-      expect(fixture.transport.opens, hasLength(2));
-      expect(budget.used(ResourceKind.chatHandle), 2);
-      oldA.closeGate!.complete();
+      expect(fixture.transport.opens, hasLength(3));
+      expect(oldA.closeCompleted.isCompleted, isFalse);
       await fixture.transport.opened(2);
       expect(fixture.transport.opens[2].threadId, 'A');
       final current = TestConversationFeed(
@@ -162,6 +200,8 @@ void main() {
       await current.deliver(
         ConversationChatEvent(batch: chatSet(messages: [chatMessage()])),
       );
+      expect(oldA.closeCompleted.isCompleted, isFalse);
+      oldA.closeGate!.complete();
       final oldB = TestConversationFeed(threadId: 'B');
       fixture.transport.opens[1].result.complete(oldB);
       await oldB.closeCompleted.future;
@@ -169,7 +209,6 @@ void main() {
       expect(oldB.eventConsumers, 0);
       expect(fixture.session('A').content.state.value, isA<ChatReady<bool>>());
       await fixture.close();
-      expect(budget.usage, isEmpty);
     },
   );
 
@@ -193,20 +232,11 @@ void main() {
         expect((await closing!).complete, isTrue);
         if (owner == 'repository') {
           // Closing the conversation repository cannot release the Client's MCP mirror.
-          expect(
-            fixture.client.budget.usage.map(
-              (usage) => (usage.kind, usage.owner),
-            ),
-            [(ResourceKind.readModel, 'thread-mcp:A')],
-          );
-        } else {
-          expect(fixture.client.budget.usage, isEmpty);
-        }
+        } else {}
         expect(session.content.state.value, isA<ChatClosed<bool>>());
         observation.cancel();
         // No retryCleanup is necessary, and the original close result stays clean.
         expect((await fixture.close()).complete, isTrue);
-        expect(fixture.client.budget.usage, isEmpty);
       },
     );
   }
@@ -278,7 +308,6 @@ void main() {
     expect(targets, ['A', null, 'B', null, 'A', null]);
     expect((await closing).complete, isTrue);
     observation.cancel();
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test('close inside visible mirror signal prevents activation and later ready publication', () async {
@@ -308,33 +337,6 @@ void main() {
     expect(secondTargets, [null, null]);
     observation.cancel();
     second.cancel();
-    expect(fixture.client.budget.usage, isEmpty);
-  });
-
-  test('mirror admission failure withdraws visibility without signaling a missing owner', () async {
-    final fixture = ConversationFixture(
-      budget: ResourceBudget(
-        // The visible Conversation and its independent metadata each own one
-        // read model. A missing Conversation must still fail mirror admission.
-        capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 2},
-      ),
-    );
-    final feed = await fixture.open(demand: _demand);
-    expect(fixture.client.budget.used(ResourceKind.readModel), 2);
-    final targets = <String?>[];
-    final observation = fixture.repository.visibleThreadId.watch(targets.add);
-    expect(
-      () => fixture.repository.setVisibleThread('missing'),
-      throwsA(isA<ResourceBudgetExceeded>()),
-    );
-    expect(targets, [null]);
-    expect(fixture.repository.visibleThreadId.value, isNull);
-    expect(fixture.repository.existingSession('missing'), isNull);
-    expect(feed.requestCloseStarted.isCompleted, isTrue);
-    expect(fixture.transport.opens, hasLength(1));
-    expect((await fixture.close()).complete, isTrue);
-    observation.cancel();
-    expect(fixture.client.budget.usage, isEmpty);
   });
 
   test(
@@ -371,93 +373,8 @@ void main() {
         0,
       );
       expect((await fixture.close()).complete, isTrue);
-      expect(fixture.client.budget.usage, isEmpty);
     },
   );
-
-  test(
-    'rejected visible Thread MCP demand creates no implicit mirror owner',
-    () async {
-      final fixture = ConversationFixture(
-        budget: ResourceBudget(
-          capacities: {
-            ...ResourceBudget().capacities,
-            ResourceKind.readModel: 2,
-          },
-        ),
-      );
-      await fixture.open(threadId: 'A', demand: _demand);
-      expect(fixture.repository.visibleThreadId.value, 'A');
-      expect(fixture.client.existingThreadMcp('A'), isNull);
-      expect(fixture.client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(fixture.client.resourceFailure.value?.owner, 'thread-mcp-page:A');
-      expect((await fixture.close()).complete, isTrue);
-      expect(fixture.client.budget.usage, isEmpty);
-    },
-  );
-
-  test('visible Thread MCP retries observer admission and keeps its mirror owner', () async {
-    final budget = ResourceBudget(
-      capacities: {
-        ...ResourceBudget().capacities,
-        // The directory observation owns one permit; reserve the other so only
-        // the later Thread MCP topic admission is rejected.
-        ResourceKind.observer: 2,
-        ResourceKind.readModel: 3,
-      },
-    );
-    final fixture = ConversationFixture(budget: budget);
-    final reservedObserver = budget.acquire(
-      ResourceKind.observer,
-      owner: 'test-observer-reservation',
-    );
-    await fixture.open(threadId: 'A', demand: _demand);
-
-    final owner = fixture.client.existingThreadMcp('A');
-    expect(owner, isNotNull);
-    expect(budget.used(ResourceKind.readModel), 3);
-    final admissionFailure = fixture.client.resourceFailure.value;
-    expect(admissionFailure?.owner, 'thread-mcp-page:A');
-    expect(admissionFailure?.reason, isA<ResourceBudgetExceeded>());
-    expect(
-      (admissionFailure!.reason as ResourceBudgetExceeded).kind,
-      ResourceKind.observer,
-    );
-    expect(fixture.client.channels.activeTopicRefCountViews(), isEmpty);
-
-    final observed = Completer<void>();
-    final observation = owner!.source.watch((state) {
-      if (state.value?.generation == 7 && !observed.isCompleted) {
-        observed.complete();
-      }
-    });
-    reservedObserver.release();
-    const topic = ThreadMcpTopic(threadId: 'A');
-    fixture.client.retryResource(topic);
-    await fixture.transport.productTopicOpened(topic);
-
-    expect(fixture.client.existingThreadMcp('A'), same(owner));
-    expect(
-      fixture.client.channels.activeTopicRefCountViews()['threadMcp:A'],
-      1,
-    );
-    expect(fixture.client.resourceFailure.value, isNull);
-    fixture.transport.emitProductTopicFrame(
-      const ProductTopicBaselineFrame(
-        topic: topic,
-        revision: 7,
-        state: ThreadMcpBaseline(
-          ThreadMcpStateSnapshot(threadId: 'A', generation: 7),
-        ),
-      ),
-    );
-    await observed.future;
-    expect(owner.state.value?.generation, 7);
-
-    observation.cancel();
-    expect((await fixture.close()).complete, isTrue);
-    expect(budget.usage, isEmpty);
-  });
 
   test(
     'child visibility reentry retires old A before returning to a fresh A feed',
@@ -525,7 +442,6 @@ void main() {
       });
       await newA.closeCompleted.future;
       expect(closed, isFalse);
-      expect(fixture.client.budget.used(ResourceKind.pendingOperation), 1);
       oldA.closeGate!.complete();
       await oldA.closeCompleted.future;
       expect(scope.pendingQueries, 1);
@@ -539,7 +455,6 @@ void main() {
       );
       await reading;
       expect((await closing).complete, isTrue);
-      expect(fixture.client.budget.usage, isEmpty);
     },
   );
 
@@ -565,7 +480,6 @@ void main() {
       observation.cancel();
       expect(closing, isNotNull);
       expect((await closing!).complete, isTrue);
-      expect(fixture.client.budget.usage, isEmpty);
     },
   );
 
@@ -573,14 +487,7 @@ void main() {
     test(
       'navigation from $boundary publication drains without recursive activation',
       () async {
-        final fixture = ConversationFixture(
-          budget: ResourceBudget(
-            capacities: {
-              ...ResourceBudget().capacities,
-              ResourceKind.chatHandle: 3,
-            },
-          ),
-        );
+        final fixture = ConversationFixture();
         final oldA = await fixture.open(
           threadId: 'A',
           initial: chatSet(messages: [chatMessage()]),
@@ -630,7 +537,6 @@ void main() {
         expect(current.requestCloseCalls, 0);
         observation.cancel();
         expect((await fixture.close()).complete, isTrue);
-        expect(fixture.client.budget.usage, isEmpty);
       },
     );
   }
@@ -638,13 +544,7 @@ void main() {
   test(
     'A -> B -> A invalidates synchronously and closes exact late feeds',
     () async {
-      final budget = ResourceBudget(
-        capacities: {
-          ...ResourceBudget().capacities,
-          ResourceKind.chatHandle: 3,
-        },
-      );
-      final fixture = ConversationFixture(budget: budget);
+      final fixture = ConversationFixture();
       final consumer = fixture.attach('A', demand: _demand);
       fixture.attach('B', demand: _demand);
       fixture.repository.setVisibleThread('A');
@@ -676,18 +576,11 @@ void main() {
       );
       expect(newA.requestCloseCalls, 0);
       expect((await fixture.close()).complete, isTrue);
-      expect(budget.usage, isEmpty);
     },
   );
 
   test('a pending native close of an older attempt never blocks retiring a fresh attempt of the same owner', () async {
-    final budget = ResourceBudget(
-      // The gated close of the first A holds its permit until the end;
-      // B1/A2 cleanups release asynchronously, so transient demand peaks
-      // above four live attempts even though only one is truly pending.
-      capacities: {...ResourceBudget().capacities, ResourceKind.chatHandle: 8},
-    );
-    final fixture = ConversationFixture(budget: budget);
+    final fixture = ConversationFixture();
     fixture.attach('A', demand: _demand);
     fixture.attach('B', demand: _demand);
     // A opens first; its native close stays gated to simulate a slow worker.
@@ -745,16 +638,10 @@ void main() {
     oldA.closeGate!.complete();
     await oldA.closeCompleted.future;
     expect((await fixture.close()).complete, isTrue);
-    expect(budget.usage, isEmpty);
   });
 
   test('A -> B -> A synchronous cascade mints a new attempt id for the returning A', () async {
-    final budget = ResourceBudget(
-      // The cascade runs without awaiting cleanups: both retired permits are
-      // still held when the returning A mints its fresh attempt.
-      capacities: {...ResourceBudget().capacities, ResourceKind.chatHandle: 4},
-    );
-    final fixture = ConversationFixture(budget: budget);
+    final fixture = ConversationFixture();
     final attemptsPerThread = <String, List<Object?>>{};
     void record(String id) {
       final owner = fixture.repository.existingSession(id);
@@ -795,7 +682,6 @@ void main() {
       TestConversationFeed(threadId: 'A', subscriptionId: 'a-2'),
     );
     expect((await fixture.close()).complete, isTrue);
-    expect(budget.usage, isEmpty);
   });
 
   test(
@@ -894,49 +780,36 @@ void main() {
   test(
     'close deadline keeps pending open and native close ownership until join',
     () async {
-      final budget = ResourceBudget();
-      final fixture = ConversationFixture(budget: budget);
+      final fixture = ConversationFixture();
       fixture.attach('thread', demand: _demand);
       fixture.repository.setVisibleThread('thread');
       final closing = fixture.close(deadline: DateTime.now());
       final report = await closing;
       expect(report.complete, isFalse);
-      expect(budget.usage, isNotEmpty);
       final feed = TestConversationFeed()..closeGate = Completer<void>();
       fixture.transport.opens.single.result.complete(feed);
       await feed.closeStarted.future;
-      expect(budget.usage, isNotEmpty);
       feed.closeGate!.complete();
       await feed.closeCompleted.future;
       expect((await fixture.client.retryCleanup()).complete, isTrue);
-      expect(budget.usage, isEmpty);
     },
   );
 
-  test('failed native close retains permit and explicit cleanup retries same owner', () async {
-    final budget = ResourceBudget();
-    final fixture = ConversationFixture(budget: budget);
+  test('failed native close retains ownership and explicit cleanup retries same owner', () async {
+    final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     feed.closeFailure = StateError('native join failed');
     expect((await fixture.close()).complete, isFalse);
-    expect(budget.usage, isNotEmpty);
     feed.closeFailure = null;
     expect((await fixture.client.retryCleanup()).complete, isTrue);
     expect(feed.closeCalls, 2);
     expect(fixture.transport.opens, hasLength(1));
-    expect(budget.usage, isEmpty);
   });
 
   test(
     'late A1 retirement cannot erase A2 unresolved close ownership',
     () async {
-      final budget = ResourceBudget(
-        capacities: {
-          ...ResourceBudget().capacities,
-          ResourceKind.chatHandle: 3,
-        },
-      );
-      final fixture = ConversationFixture(budget: budget);
+      final fixture = ConversationFixture();
       fixture.attach('thread-main', demand: _demand);
       fixture.attach('thread-alt', demand: _demand);
 
@@ -986,7 +859,6 @@ void main() {
 
       final retired = await fixture.client.retryCleanup();
       expect(retired.complete, isFalse);
-      expect(budget.used(ResourceKind.chatHandle), 1);
       expect(
         fixture.client.unresolvedResources.any(
           (entry) =>
@@ -1001,7 +873,6 @@ void main() {
       second.closeFailure = null;
       final recovered = await fixture.client.retryCleanup();
       expect(recovered.complete, isTrue);
-      expect(budget.used(ResourceKind.chatHandle), 0);
       expect(
         fixture.transport.opens.where((open) => open.threadId == 'thread-main'),
         hasLength(2),

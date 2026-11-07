@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../../conversation_ports.dart';
@@ -16,15 +16,12 @@ final class ConversationRepositoryImpl
   ConversationRepositoryImpl({
     required this.transport,
     required this.directory,
-    required this.budget,
     required this.onRevision,
   });
   final ConversationTransport transport;
   final ThreadDirectoryStore directory;
-  final ResourceBudget budget;
   final void Function(String key, int revision) onRevision;
   final Map<String, ConversationSessionImpl> _sessions = {};
-  final Map<String, ResourcePermit> _permits = {};
   final Map<String, Observation> _observations = {};
   // Every exact retirement Future remains owned, including A -> B -> A.
   final Set<Future<CloseReport>> _retiring = {};
@@ -42,7 +39,6 @@ final class ConversationRepositoryImpl
   bool _closed = false;
   Future<CloseReport>? _closing;
   late final InputFactRegistry _inputFacts = InputFactRegistry(
-    budget,
     seed: (inputId, onFact) {
       for (final session in List.of(_sessions.values)) {
         session.seedInputFacts(inputId, onFact);
@@ -86,7 +82,6 @@ final class ConversationRepositoryImpl
       scope: scope,
       initialDemand: demand,
       transport: transport,
-      budget: budget,
       // Member windows have independent qualification and never publish Main state.
       onState: (_, _) {},
       onAttempt: (_) {},
@@ -118,31 +113,20 @@ final class ConversationRepositoryImpl
     final existing = _sessions[threadId];
     if (existing != null) return existing;
     if (_closed) throw StateError('Conversation repository is closed');
-    final permit = budget.acquire(
-      ResourceKind.readModel,
-      owner: 'conversation:$threadId',
+    final owner = ConversationSessionImpl(
+      threadId,
+      transport: transport,
+      directory: directory,
+      inputFacts: _inputFacts,
     );
-    try {
-      final owner = ConversationSessionImpl(
-        threadId,
-        transport: transport,
-        directory: directory,
-        budget: budget,
-        inputFacts: _inputFacts,
-      );
-      _sessions[threadId] = owner;
-      _permits[threadId] = permit;
-      _observations[threadId] = owner.source.watch((value) {
-        if (value.hasSnapshot)
-          onRevision('thread-state:$threadId', value.revision);
-        final route = value.modelRoute;
-        if (route != null) onRevision('thread-route:$threadId', route.revision);
-      });
-      return owner;
-    } catch (_) {
-      permit.release();
-      rethrow;
-    }
+    _sessions[threadId] = owner;
+    _observations[threadId] = owner.source.watch((value) {
+      if (value.hasSnapshot)
+        onRevision('thread-state:$threadId', value.revision);
+      final route = value.modelRoute;
+      if (route != null) onRevision('thread-route:$threadId', route.revision);
+    });
+    return owner;
   }
 
   @override
@@ -271,7 +255,7 @@ final class ConversationRepositoryImpl
           _retiring.remove(task);
         },
         onError: (Object _, StackTrace _) {
-          // The session still owns the failed native cleanup and its permit.
+          // The session still owns the failed native cleanup.
           _retiring.remove(task);
         },
       ),
@@ -334,7 +318,6 @@ final class ConversationRepositoryImpl
     for (final id in _sessions.keys) {
       if (_reports[id]?.unresolved.isNotEmpty ?? true) continue;
       _observations.remove(id)?.cancel();
-      _permits.remove(id)?.release();
     }
   }
 }

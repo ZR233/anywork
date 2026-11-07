@@ -192,10 +192,11 @@ void main() {
       try {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _until(
-          tester,
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'all concept read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       } finally {
         tester.testTextInput.unregister();
@@ -661,10 +662,11 @@ final class _ConceptScene {
       );
       await before.released;
       expect(before.queryCleanupError, isNull);
-      await _until(
-        tester,
-        () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-        'warm selection original read handles joined',
+      expect(
+        (await graph.client.conversations.retryCleanup(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        )).complete,
+        isTrue,
       );
       final navigationStartedAtUtc = DateTime.now().toUtc().toIso8601String();
       await tap(find.byKey(StudioDriverKeys.settingsBack));
@@ -767,10 +769,11 @@ final class _ConceptScene {
     expect(originalCurrent.windows, isEmpty);
     expect(originalMembers.isCurrent, isFalse);
     expect(originalMembers.atoms, isEmpty);
-    await _until(
-      tester,
-      () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-      'no previous conversation read handle remains outside its page',
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
     );
 
     await tap(find.byKey(StudioDriverKeys.settingsBack));
@@ -995,14 +998,6 @@ final class _ConceptScene {
       'stage': stage,
       'itemId': id,
       'mainLeaseGeneration': lease.generation,
-      'chatHandleCapacity':
-          graph.client.budget.capacities[ResourceKind.chatHandle],
-      'chatHandleUsed': graph.client.budget.used(ResourceKind.chatHandle),
-      'chatHandles': [
-        for (final usage in graph.client.budget.usage)
-          if (usage.kind == ResourceKind.chatHandle)
-            {'owner': usage.owner, 'phase': usage.phase.name},
-      ],
       'groupDisplays': lease.groupDisplays.map(display).toList(),
       'memberWindows': windows,
       if (original != null) 'originalDisplay': display(original),
@@ -1545,6 +1540,13 @@ final class _ConceptScene {
     expect(live.single.item.summary!.activeCount, 1);
     expect(main.where((unit) => unit.id == g1), isEmpty);
     expect(unitFinder(g1), findsOneWidget);
+    expect(live.single.expansion.expanded, isFalse);
+    expect(
+      lease.groupDisplays.where((display) => display.unitId == g1),
+      isEmpty,
+      reason: '首次呈现的实时工作组默认折叠，不创建成员读取',
+    );
+    report['initialWorkgroupCollapsed'] = true;
     await capture('workgroup');
     // The projection owns stable item identity across owner replacement.
     g1 = (await reopenActiveWorkgroup()).id;
@@ -1589,7 +1591,8 @@ final class _ConceptScene {
             find.byKey(ValueKey('source-unit-header:$g1')),
           )
           .label,
-      '等待后继边界',
+      '思考中',
+      reason: '成员已终态但执行仍在继续时，标题沿用现有用户文案',
     );
     expect(main.where((unit) => unit.id == g1), isEmpty);
     expect(
@@ -2051,7 +2054,8 @@ final class _ConceptScene {
         of: currentConnector,
         matching: find.byType(ConversationActivityBar),
       ),
-      findsNothing,
+      findsOneWidget,
+      reason: '压缩沿用唯一的实时状态栏，不创建第二个面板',
     );
     final rowFinder = currentRows(unit);
     expect(rowFinder, findsOneWidget);
@@ -2361,14 +2365,12 @@ final class _ConceptScene {
         'outcome': (terminalMember.lifecycle as TerminalChatAtom).outcome.name,
       };
       _recordMemberInventory('a07-before-close', work, original: current);
-      expect(graph.client.budget.used(ResourceKind.chatHandle), 2);
       await observed.closeGroup(current);
-      await _until(
-        tester,
-        () =>
-            current.windows.isEmpty &&
-            graph.client.budget.used(ResourceKind.chatHandle) == 1,
-        'the handed-off A07 scope revokes its body and releases its read handle',
+      expect(
+        (await graph.client.conversations.retryCleanup(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        )).complete,
+        isTrue,
       );
       expect(lease, same(originalLease));
       expect(lease.controller, same(originalController));
@@ -2565,7 +2567,6 @@ final class _ConceptScene {
       return tester.widget<TimelineActivityRow>(header).expanded;
     }
 
-    final handlesBefore = graph.client.budget.used(ResourceKind.chatHandle);
     if (!expanded()) await observed.tap(title);
     expect(expanded(), isTrue);
     // Reuse this call's original media/error wait allowance for its actual body,
@@ -2769,7 +2770,6 @@ final class _ConceptScene {
     expect(windows.every((window) => window.window == null), isTrue);
     expect(images, findsNothing);
     expect(bodyConnectors, findsNothing);
-    expect(graph.client.budget.used(ResourceKind.chatHandle), handlesBefore);
     final observations =
         (report['imageResultUi'] ??= <Map<String, Object?>>[])
             as List<Map<String, Object?>>;
@@ -2787,7 +2787,6 @@ final class _ConceptScene {
       'originalBodyWindowCount': windows.length,
       'originalBodyWindowsRevoked': true,
       'titleExpandedAfterClose': false,
-      'chatHandlesBeforeAndAfter': handlesBefore,
     });
   }
 
@@ -2881,7 +2880,6 @@ final class _ConceptScene {
       lease.groupDisplays.singleWhere((value) => value.unitId == imageGroup.id),
       same(display),
     );
-    final openHandles = graph.client.budget.used(ResourceKind.chatHandle);
     _recordMemberInventory(
       'media-before-close',
       imageGroup.id,
@@ -2893,10 +2891,11 @@ final class _ConceptScene {
     expect(display.before, isNull);
     expect(imageGroup.expansion.bodyActive, isFalse);
     final joinedWait = Stopwatch()..start();
-    await _until(
-      tester,
-      () => graph.client.budget.used(ResourceKind.chatHandle) < openHandles,
-      'collapsed image member scope and media/body owners joined',
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
     );
     final joinedRemaining = const Duration(seconds: 60) - joinedWait.elapsed;
     expect(joinedRemaining > Duration.zero, isTrue);
@@ -2922,11 +2921,9 @@ final class _ConceptScene {
     expect(display.windows, isEmpty);
     // Independent results keep their own Main rows and resource owners. Close
     // the original member scope first; it cannot close these cards for us.
-    final mainHandles = graph.client.budget.used(ResourceKind.chatHandle);
     for (final result in results.where((result) => result.finalUnit != null)) {
       await _verifyImageResult(result, missing: missing);
     }
-    expect(graph.client.budget.used(ResourceKind.chatHandle), mainHandles);
     expect(items.map((item) => item.id), orderedEquals(mainIds));
     final afterFinals = observed.unit(imageWorkItemId).item.summary!;
     expect(afterFinals.memberCount, summary.memberCount);

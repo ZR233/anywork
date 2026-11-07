@@ -24,7 +24,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';

@@ -11,7 +11,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/conversation/data/conversation_repository_impl.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
+import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
 import 'package:flutter/material.dart';
@@ -28,10 +28,8 @@ import '../../../anywork_client/test/support/timeline_transport.dart'
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
-ThreadDirectoryStore _threadDirectory() => ThreadDirectoryStore(
-  feed: RecordingDemoTransport(),
-  budget: ResourceBudget(),
-);
+ThreadDirectoryStore _threadDirectory() =>
+    ThreadDirectoryStore(feed: RecordingDemoTransport());
 
 void main() {
   for (final lateFailure in [false, true]) {
@@ -196,7 +194,6 @@ void main() {
       final repository = ConversationRepositoryImpl(
         transport: transport,
         directory: _threadDirectory(),
-        budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
       final recorded = _RecordingRepository(repository);
@@ -415,7 +412,6 @@ void main() {
       final repository = ConversationRepositoryImpl(
         transport: transport,
         directory: _threadDirectory(),
-        budget: ResourceBudget(),
         onRevision: (_, _) {},
       );
       await tester.pumpWidget(
@@ -495,7 +491,6 @@ void main() {
         final repository = ConversationRepositoryImpl(
           transport: transport,
           directory: _threadDirectory(),
-          budget: ResourceBudget(),
           onRevision: (_, _) {},
         );
         final recorded = _RecordingRepository(repository);
