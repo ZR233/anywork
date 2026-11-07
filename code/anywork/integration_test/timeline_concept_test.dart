@@ -1614,8 +1614,8 @@ final class _ConceptScene {
     final quietRow = tester.widget<TimelineActivityRow>(quietHeader);
     expect(
       quietRow.label,
-      AppLocalizations.of(tester.element(quietHeader)).timelineReasoningActive,
-      reason: '成员已终态但执行仍在继续时，标题沿用现有用户文案',
+      '梳理会话共享组件与锁定边界',
+      reason: '成员已终态但执行仍在继续时，工作组标题保留原思考摘要',
     );
     expect(quietRow.active, isFalse);
     expect(quietRow.expanded, isTrue);

@@ -7225,6 +7225,7 @@ pub(crate) mod storage_fault_tests {
                 + 128
                 + 256 * accounting_only.current.timeline.len() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
+                + accounting_only.current.operation_bytes()
                 + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
                     as u64
                 + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64,

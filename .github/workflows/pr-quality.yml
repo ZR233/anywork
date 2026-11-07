@@ -484,6 +484,7 @@ jobs:
             ${{ env.DESKTOP_TEST_OUTPUT }}/report.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/report.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-live-text-*.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-exec-receipts-*.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-live.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-restart.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept.json
