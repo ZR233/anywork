@@ -120,6 +120,85 @@ async fn persist(
 }
 
 #[tokio::test]
+async fn background_tool_group_members_remain_readable_and_rebuild_at_real_completion() -> Result<()>
+{
+    let (_directory, db) = super::super::tests::fixture().await?;
+    db.execute_unprepared(CREATE_SCHEMA).await?;
+    db.execute_unprepared(CREATE_DERIVED_SCHEMA).await?;
+    let mut projection = TimelineProjection::new("db".into(), "live".into(), 0);
+    let mut atom = active("background-tool", ChatAtomKind::ToolCall, 2);
+    atom.source = ChatSourceId::BackgroundResult {
+        message_id: "message".into(),
+    };
+    atom.delivery = ChatDeliveryKind::Independent;
+    atom.lifecycle = ChatAtomLifecycle::Terminal {
+        started: Some(at(2)),
+        ended: Some(at(2)),
+        outcome: ChatTerminalOutcome::Completed,
+    };
+    atom.finished_at = Some(2);
+    atom.completion_item_id = Some(atom.id.clone());
+    atom.completion_seq = Some(1);
+    db.execute_raw(statement(
+        "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,metadata,payload) VALUES(1,?,'conversation',NULL,?,?)",
+        vec![atom.id.clone().into(), serde_json::to_vec(&atom)?.into(), b"original result".to_vec().into()],
+    )).await?;
+    projection.apply_input(
+        crate::studio::thread_projection::timeline::TimelineInput::Atom {
+            atom: Box::new(atom.clone()),
+            payload: Some(PayloadData::Inline {
+                bytes: b"original result".to_vec(),
+            }),
+            thinking_summary: None,
+        },
+    )?;
+    // apply_input already committed the independent result; persist transfers it.
+    persist(&db, &mut projection, 2).await?;
+    let read = |reference| ChatScope::GroupMembers { reference };
+    let items = page_rows(&db, &ChatScope::Main, None, 100, 2, 8, &[]).await?;
+    let ChatEntry::Item(group) = &items[0].1 else {
+        panic!("background group")
+    };
+    let members = page_rows(
+        &db,
+        &read(group.members.clone().unwrap()),
+        None,
+        100,
+        2,
+        8,
+        &[],
+    )
+    .await?;
+    assert_eq!(members.len(), 1);
+    assert!(
+        matches!(&members[0].1, ChatEntry::Atom(member) if member.id == atom.id && member.source == atom.source)
+    );
+    assert!(
+        matches!(&items[0].1, ChatEntry::Item(item) if item.kind == TimelineItemKind::WorkGroup && item.position == Some(0))
+    );
+    rebuild(&db, "db").await?;
+    let items = page_rows(&db, &ChatScope::Main, None, 100, 2, 8, &[]).await?;
+    let ChatEntry::Item(group) = &items[0].1 else {
+        panic!("rebuilt group")
+    };
+    assert_eq!(group.kind, TimelineItemKind::WorkGroup);
+    assert_eq!(group.position, Some(0));
+    assert_eq!(group.source, atom.source);
+    let members = page_rows(
+        &db,
+        &read(group.members.clone().unwrap()),
+        None,
+        100,
+        2,
+        8,
+        &[],
+    )
+    .await?;
+    assert!(matches!(&members[0].1, ChatEntry::Atom(member) if member.id == atom.id));
+    Ok(())
+}
+
+#[tokio::test]
 async fn text_start_commits_group_without_new_atom_and_source_facts_rebuild_the_same_cut()
 -> Result<()> {
     let (_directory, db) = super::super::tests::fixture().await?;

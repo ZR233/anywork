@@ -71,6 +71,7 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
         running: active,
         builder: (context, elapsed) {
           final l10n = context.l10n;
+          final thinkingSummary = summary?.latestThinkingSummary?.trim();
           final label = active
               ? l10n.timelineGroupWorking
               : widget.live && (summary?.activeCount ?? 0) > 0
@@ -118,7 +119,9 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
                 borderRadius: BorderRadius.circular(8),
                 child: TimelineActivityRow(
                   key: ValueKey('source-unit-header:${widget.id}'),
-                  label: label,
+                  label: thinkingSummary == null || thinkingSummary.isEmpty
+                      ? label
+                      : thinkingSummary,
                   meta: meta.isEmpty ? null : meta,
                   header: true,
                   emphasized: widget.live,

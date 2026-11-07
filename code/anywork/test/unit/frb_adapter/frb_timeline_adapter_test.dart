@@ -44,6 +44,7 @@ void main() {
                       itemId: 'work-item',
                     ),
                     summary: timeline.BridgeTimelineGroupSummary(
+                      latestThinkingSummary: '等待审查更新',
                       memberCount: 82,
                       activeCount: 0,
                       failedCount: 2,
@@ -91,6 +92,7 @@ void main() {
         expect(work.members!.projectionGeneration, generation);
         expect(work.members!.itemId, work.id);
         expect(work.summary!.memberCount, 82);
+        expect(work.summary!.latestThinkingSummary, '等待审查更新');
         expect(work.summary!.failedCount, 2);
         expect(work.summary!.cancelledCount, 1);
         expect((work.summary!.startedAt, work.summary!.finishedAt), (12, 20));

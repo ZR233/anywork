@@ -25,7 +25,12 @@ impl MigratorTraitSelf for Published {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                BACKGROUND_RESULTS | MEMBER_READ_METADATA | TIMELINE_THINKING_SUMMARY
+            )
+        })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)
         .filter(|step| match self.0 {
             10 => !matches!(
@@ -195,7 +200,7 @@ async fn background_results_migrate_from_636_and_interrupted_13_14_without_losin
         store.prepare_conversation_read().await?;
         store.close_for_deletion().await?;
         let db = connect(&path, SqliteFileMode::ReadWrite).await?;
-        assert_eq!(version(&db).await?, 15);
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         assert!(!needs_content_preparation(&db, THREAD).await?);
         let result = metadata(&db, &order::tool_id(CALL)).await?;
         assert_eq!(result.id, order::message_id(MESSAGE));
@@ -218,7 +223,7 @@ async fn background_results_migrate_from_636_and_interrupted_13_14_without_losin
         }
         assert_eq!(originals(&db, format >= 13).await?, before);
         let rows = db.query_one_raw(statement(
-            "SELECT COUNT(*) AS n FROM timeline_items WHERE kind='status' AND json_extract(metadata,'$.source.kind')='backgroundResult'",
+            "SELECT COUNT(*) AS n FROM timeline_items WHERE kind='workGroup' AND json_extract(metadata,'$.source.kind')='backgroundResult'",
             vec![],
         )).await?.unwrap();
         assert_eq!(rows.try_get::<i64>("", "n")?, 1);

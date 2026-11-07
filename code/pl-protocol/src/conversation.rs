@@ -519,6 +519,7 @@ mod tests {
             finished_at: None,
             outcome: None,
             summary: Some(TimelineGroupSummary {
+                latest_thinking_summary: Some("Reviewing updates".into()),
                 member_count: 12_000,
                 active_count: 0,
                 failed_count: 1,
