@@ -25,13 +25,6 @@ pub(crate) struct CurrentEntryWrite {
 }
 #[derive(Debug, Clone)]
 pub(crate) enum CurrentEntryChange {
-    Clear {
-        collection: String,
-    },
-    Remove {
-        collection: String,
-        entry_id: String,
-    },
     Put(CurrentEntryWrite),
 }
 #[derive(Debug, Clone)]
@@ -147,15 +140,6 @@ pub(in super::super) async fn apply_changes(
     );
     for change in current.changes.iter() {
         match change {
-            CurrentEntryChange::Clear { collection } => {
-                remove_entries(db, collection, None).await?;
-            }
-            CurrentEntryChange::Remove {
-                collection,
-                entry_id,
-            } => {
-                remove_entries(db, collection, Some(entry_id)).await?;
-            }
             CurrentEntryChange::Put(entry) => {
                 ensure!(
                     !entry.collection.is_empty() && !entry.entry_id.is_empty(),
@@ -315,55 +299,4 @@ async fn retire_owner(db: &impl ConnectionTrait, owner: &str) -> Result<()> {
     ))
     .await?;
     Ok(())
-}
-
-async fn remove_entries(
-    db: &impl ConnectionTrait,
-    collection: &str,
-    id: Option<&str>,
-) -> Result<()> {
-    loop {
-        let mut sql = String::from(
-            "SELECT entry_id,payload FROM conversation_view_entries WHERE collection=?",
-        );
-        let mut values = vec![collection.into()];
-        if let Some(id) = id {
-            sql.push_str(" AND entry_id=?");
-            values.push(id.into());
-        }
-        sql.push_str(" ORDER BY position LIMIT 64");
-        let rows = db.query_all_raw(statement(&sql, values)).await?;
-        if rows.is_empty() {
-            return Ok(());
-        }
-        for row in rows {
-            let entry: EntryPayload =
-                serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
-            retire_owner(db, &entry.owner).await?;
-            db.execute_raw(statement(
-                "DELETE FROM conversation_view_entries WHERE collection=? AND entry_id=?",
-                vec![
-                    collection.into(),
-                    row.try_get::<String>("", "entry_id")?.into(),
-                ],
-            ))
-            .await?;
-        }
-    }
-}
-
-#[cfg(test)]
-pub(in super::super) async fn read_head(
-    db: &impl ConnectionTrait,
-) -> Result<Option<CurrentProjection>> {
-    db.query_one_raw(statement(
-        "SELECT payload FROM conversation_view_state WHERE singleton_id=1",
-        vec![],
-    ))
-    .await?
-    .map(|row| {
-        let bytes: Vec<u8> = row.try_get("", "payload")?;
-        Ok(serde_json::from_slice(&bytes)?)
-    })
-    .transpose()
 }

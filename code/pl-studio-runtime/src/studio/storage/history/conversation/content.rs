@@ -22,23 +22,6 @@ pub(in crate::studio::storage::history) struct Manifest {
     pub sealed: bool,
 }
 
-pub(in crate::studio::storage::history) async fn read_manifest(
-    db: &impl ConnectionTrait,
-    key: &ChatContentKey,
-) -> Result<Option<(Manifest, Vec<u8>)>> {
-    let row = db
-        .query_one_raw(statement(
-            "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
-            vec![key.owner.as_str().into(), key.key.clone().into()],
-        ))
-        .await?;
-    row.map(|row| {
-        let bytes: Vec<u8> = row.try_get("", "payload")?;
-        Ok((manifest(&bytes)?, bytes))
-    })
-    .transpose()
-}
-
 pub(in crate::studio::storage::history) fn descriptor(
     owner: &str,
     key: String,

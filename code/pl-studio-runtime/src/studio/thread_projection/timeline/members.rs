@@ -46,10 +46,10 @@ impl Members {
             }
             let members = self.groups.entry(change.item_id.clone()).or_default();
             let added = member_bytes(change);
-            if let Some(previous) = members.insert(change.member_order, change.clone()) {
-                if self.bytes != u64::MAX {
-                    self.bytes = self.bytes.saturating_sub(member_bytes(&previous));
-                }
+            if let Some(previous) = members.insert(change.member_order, change.clone())
+                && self.bytes != u64::MAX
+            {
+                self.bytes = self.bytes.saturating_sub(member_bytes(&previous));
             }
             self.bytes = self.bytes.saturating_add(added);
         }

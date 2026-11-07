@@ -11,6 +11,7 @@ pub(in crate::studio) struct Frontier {
 }
 
 impl TimelineProjection {
+    #[cfg(test)]
     pub(in crate::studio) fn next_position(&self) -> u64 {
         self.next_position
     }

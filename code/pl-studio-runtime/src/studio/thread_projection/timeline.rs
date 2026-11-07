@@ -251,6 +251,7 @@ impl TimelineUpdate {
     pub fn current(&self) -> &[TimelineItem] {
         &self.current
     }
+    #[cfg(test)]
     pub fn recovery(&self) -> &[u8] {
         &self.recovery
     }
@@ -573,6 +574,7 @@ impl TimelineProjection {
         self.active = state.active;
         Ok(())
     }
+    #[cfg(test)]
     pub(in crate::studio) fn observe(
         &mut self,
         atom: &ChatAtom,

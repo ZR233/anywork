@@ -176,13 +176,12 @@ impl CurrentOwner {
         let contents = snapshot
             .contents
             .iter()
-            .filter_map(|(key, content)| {
-                (plan_revision != self.frozen_plan_revision && plan_key.as_ref() == Some(key)).then(
-                    || CurrentContentWrite {
-                        content: content.content(),
-                        sealed: true,
-                    },
-                )
+            .filter(|(key, _)| {
+                plan_revision != self.frozen_plan_revision && plan_key.as_ref() == Some(*key)
+            })
+            .map(|(_, content)| CurrentContentWrite {
+                content: content.content(),
+                sealed: true,
             })
             .collect::<Vec<_>>();
         let prepared = PreparedCurrent::new(snapshot.projection.clone(), contents.into());

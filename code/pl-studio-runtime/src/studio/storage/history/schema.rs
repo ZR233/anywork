@@ -18,6 +18,7 @@ use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
     migrate_unconsumed_input_bindings,
 };
+#[cfg(test)]
 pub(super) use demand_conversation::seed_current;
 use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
 

@@ -463,13 +463,12 @@ async fn cancelling_named_step_transaction_restores_original_keys_and_ddl() -> R
             let tx = db.begin().await?;
             CompletionBoundary.up(&SchemaManager::new(&tx)).await?;
             assert!(
-                rows(
+                !rows(
                     &tx,
                     "SELECT owner_key AS value FROM completion_boundary_archive_contents"
                 )
                 .await?
-                .len()
-                    > 0
+                .is_empty()
             );
             reached
                 .send(())

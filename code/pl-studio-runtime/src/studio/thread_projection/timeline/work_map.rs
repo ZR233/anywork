@@ -16,7 +16,7 @@ pub(super) struct LiveItems {
 
 fn visit(counter: &AtomicUsize) {
     counter
-        .fetch_update(Relaxed, Relaxed, |previous| previous.checked_add(1))
+        .try_update(Relaxed, Relaxed, |previous| previous.checked_add(1))
         .expect("live item test access counter overflowed");
 }
 

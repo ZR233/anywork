@@ -4424,6 +4424,8 @@ mod storage_fault_tests {
         let snapshot = handle.snapshot();
         let (progress, owner_progress) = watch::channel(Progress::default());
         let state = Arc::new(WorkerState {
+            deletion: Default::default(),
+            join_failure: Default::default(),
             terminal_transfer: Default::default(),
             progress,
             retry: Notify::new(),
@@ -4644,11 +4646,13 @@ mod storage_fault_tests {
             let (_, mut write) = terminal_turn_write(&thread, "state-pending-turn")?;
             let mut pending = qa_record(call_id, 1, InteractionState::Pending)?;
             pending.request.turn_id = "state-pending-turn".into();
-            let interaction_id = pending.request.id.clone();
+            let local_interaction_id = pending.request.id.clone();
+            let interaction_id =
+                crate::thread_assembler::encode_interaction_key(&thread.id, &local_interaction_id);
             let effect = Arc::make_mut(&mut write.effect);
             effect.committed_at = 11;
             effect.interactions = Arc::from([pending.clone()]);
-            write.checkpoint.state.interactions.insert(interaction_id.clone(), pending);
+            write.checkpoint.state.interactions.insert(local_interaction_id, pending);
             sink.admit(&thread.id, write)?;
             let admitted = channel.next_unprojected().context("admitted question")?;
             assert!(!feed.has_subscribers());
