@@ -42,7 +42,7 @@ class ConversationCurrentConnector extends StatefulWidget {
   });
   final CurrentProjection current;
   final ConversationContent content;
-  final ConversationActivityView view;
+  final ConversationActivityView? view;
   final ValueListenable<List<TimelineDisplayUnit>> units;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String) readAttachment;
@@ -120,12 +120,15 @@ class _CurrentState extends State<ConversationCurrentConnector>
     final units = isCurrent
         ? widget.units.value
         : const <TimelineDisplayUnit>[];
+    final view = widget.view;
+    if (units.isEmpty && view == null) return const SizedBox.shrink();
     return ConversationActivityBar(
       children: [
-        if (units.isEmpty ||
-            widget.view.kind == ConversationActivityKind.storageBlocked ||
-            widget.view.kind == ConversationActivityKind.stopping)
-          ConversationActivityStatus(view: widget.view),
+        if (view != null &&
+            (units.isEmpty ||
+                view.kind == ConversationActivityKind.storageBlocked ||
+                view.kind == ConversationActivityKind.stopping))
+          ConversationActivityStatus(view: view),
         for (final unit in units)
           KeyedSubtree(
             key: ValueKey(unit.id),

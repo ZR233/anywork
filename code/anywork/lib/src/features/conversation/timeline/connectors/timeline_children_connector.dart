@@ -240,12 +240,13 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             )
           : await widget.openMembers!(reference, _demand);
       _content = content;
-      if (_retired || !_parentActive) return;
+      if (_retired || !_parentActive) {
+        _retireOwner();
+        return;
+      }
       _connection = content.state.watch((state) {
-        if (_retired ||
-            !mounted ||
-            !_parentActive ||
-            !identical(_content, content)) {
+        if (!_parentActive) _retireOwner();
+        if (_retired || !mounted || !identical(_content, content)) {
           return;
         }
         setState(() {
@@ -378,6 +379,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   @override
   Widget build(BuildContext context) {
+    if (_retired) return const SizedBox.shrink();
     final controller = _controller;
     final content = _content;
     final attempt = _attempt;

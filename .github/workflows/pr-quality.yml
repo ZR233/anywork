@@ -403,6 +403,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      DESKTOP_TEST_OUTPUT: target/ci-desktop-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -461,8 +462,8 @@ jobs:
             bash .github/scripts/linux-desktop-session.sh target/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
-              --shard-index "$2" --shard-count 3 --output target/ci-desktop-linux
-          ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX"
+              --shard-index "$2" --shard-count 3 --output "$3"
+          ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX" "$DESKTOP_TEST_OUTPUT"
       - name: Record disk usage after desktop build
         if: always()
         run: |
@@ -480,19 +481,21 @@ jobs:
         with:
           name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/ci-desktop-linux/report.json
-            target/ci-desktop-linux/cases/**/report.json
-            target/ci-desktop-linux/cases/**/realtime-live-text-*.json
-            target/ci-desktop-linux/cases/**/timeline-concept.json
-            target/ci-desktop-linux/cases/**/timeline-concept-reopen.json
-            target/ci-desktop-linux/cases/**/timeline-concept-media-missing.json
-            target/ci-desktop-linux/cases/**/sidebar-shutdown.json
-            target/ci-desktop-linux/cases/**/sidebar-mutations-before-shutdown.json
-            target/ci-desktop-linux/cases/**/sidebar-fixture-cleanup.jsonl
-            target/ci-desktop-linux/cases/**/gui.log
-            target/ci-desktop-linux/cases/**/*-integration.log
-            target/ci-desktop-linux/cases/**/*-driver.log
-            target/ci-desktop-linux/cases/**/*-errors.txt
+            ${{ env.DESKTOP_TEST_OUTPUT }}/report.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/report.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-live-text-*.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-live.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-restart.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-reopen.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-media-missing.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-shutdown.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-mutations-before-shutdown.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-fixture-cleanup.jsonl
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/gui.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-integration.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-driver.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-errors.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -507,6 +510,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      NATIVE_TEST_OUTPUT: target/ci-native-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -560,8 +564,8 @@ jobs:
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh target/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
-              "$1" test-project --suite native --set full --output target/ci-native-linux
-          ' -- "$PR_QUALITY_XTASK"
+              "$1" test-project --suite native --set full --output "$2"
+          ' -- "$PR_QUALITY_XTASK" "$NATIVE_TEST_OUTPUT"
       - name: Record disk usage after native build
         if: always()
         run: |
@@ -579,15 +583,15 @@ jobs:
         with:
           name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            target/ci-native-linux/report.json
-            target/ci-native-linux/cases/**/report.json
-            target/ci-native-linux/cases/**/shutdown-*-gui.log
-            target/ci-native-linux/cases/**/shutdown-launch-*.json
-            target/ci-native-linux/cases/**/shutdown-native-exit-*.json
-            target/ci-native-linux/cases/**/shutdown-assembly-*.jsonl
-            target/ci-native-linux/cases/**/shutdown-stage*
-            target/ci-native-linux/cases/**/diagnostics.json
-            target/ci-native-linux/cases/**/diagnostics/**/anywork-exit-diagnostics.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/report.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/report.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-*-gui.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-launch-*.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-native-exit-*.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-assembly-*.jsonl
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-stage*
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics/**/anywork-exit-diagnostics.log
           if-no-files-found: warn
           retention-days: 7
 

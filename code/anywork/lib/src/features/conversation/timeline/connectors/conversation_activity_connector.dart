@@ -23,38 +23,36 @@ class ConversationActivityConnector extends ConsumerWidget {
     final current = state.current;
     final conversations = ref.read(anyworkClientProvider).conversations;
     final content = conversations.existingSession(threadId)?.content;
-    if (current == null || content == null) {
-      // A genuine header-only state uses the same production component. It
-      // cannot invent body content or expansion eligibility from other domains.
-      return ConversationActivityBar(
-        children: [ConversationActivityStatus(view: state.view)],
-      );
+    if (current != null && content != null) {
+      // The activity header may disappear between model and tool phases. Its
+      // absence does not retire the original current display or its scopes.
+      ref.watch(timelineViewModelProvider(threadId));
+      final timeline = ref.read(timelineSessionOwnerProvider);
+      final lease = timeline.lease(threadId);
+      if (lease != null && identical(lease.content, content)) {
+        return ConversationCurrentConnector(
+          key: ValueKey((threadId, content, lease.generation)),
+          current: current,
+          content: content,
+          view: state.view,
+          onExpandedChanged: StudioDriverState.publishActivityExpanded,
+          registerDisplay: lease.registerCurrentDisplay,
+          units: lease.liveUnits,
+          images: lease.imageResources,
+          readAttachment: (id) =>
+              ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+          isDisplayActive: () =>
+              !lease.retirement.value &&
+              identical(timeline.lease(threadId), lease) &&
+              identical(lease.content, content),
+        );
+      }
     }
-
-    // This observes an existing display lease, without admitting another reader.
-    ref.watch(timelineViewModelProvider(threadId));
-    final timeline = ref.read(timelineSessionOwnerProvider);
-    final lease = timeline.lease(threadId);
-    if (lease == null || !identical(lease.content, content)) {
-      return ConversationActivityBar(
-        children: [ConversationActivityStatus(view: state.view)],
-      );
-    }
-    return ConversationCurrentConnector(
-      key: ValueKey((threadId, content, lease.generation)),
-      current: current,
-      content: content,
-      view: state.view,
-      onExpandedChanged: StudioDriverState.publishActivityExpanded,
-      registerDisplay: lease.registerCurrentDisplay,
-      units: lease.liveUnits,
-      images: lease.imageResources,
-      readAttachment: (id) =>
-          ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
-      isDisplayActive: () =>
-          !lease.retirement.value &&
-          identical(timeline.lease(threadId), lease) &&
-          identical(lease.content, content),
-    );
+    final view = state.view;
+    return view == null
+        ? const SizedBox.shrink()
+        : ConversationActivityBar(
+            children: [ConversationActivityStatus(view: view)],
+          );
   }
 }
