@@ -15,6 +15,7 @@ impl MigratorTraitSelf for PublishedV11 {
         }
         .migrations()
         .into_iter()
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
         .filter(|migration| {
             !matches!(
                 migration.name(),
@@ -41,6 +42,7 @@ impl MigratorTraitSelf for PublishedV9 {
         }
         .migrations()
         .into_iter()
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
         .filter(|migration| {
             !matches!(
                 migration.name(),
@@ -72,6 +74,7 @@ impl MigratorTraitSelf for PublishedV10 {
         }
         .migrations()
         .into_iter()
+        .filter(|step| !matches!(step.name(), BACKGROUND_RESULTS | MEMBER_READ_METADATA))
         .filter(|migration| {
             migration.name() != COMBINED_CONTENT
                 && migration.name() != DEMAND_CONVERSATION
