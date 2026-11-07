@@ -9,6 +9,23 @@ import '../state/conversation_activity_state.dart';
 
 part 'conversation_activity_view_model.g.dart';
 
+ConversationActivityState? projectConversationActivityState({
+  required CurrentProjection? current,
+  required ThreadStorageStateView? storage,
+  required List<PendingInteraction> interactions,
+}) {
+  final interaction = activePendingInteraction(interactions);
+  if (interaction?.kind == InteractionKind.userInput) return null;
+  final view = projectConversationActivity(
+    current: current,
+    storage: storage,
+    interaction: interaction,
+  );
+  return view == null
+      ? null
+      : ConversationActivityState(view: view, current: current);
+}
+
 /// Observes only the activity component's current owner. Visibility and the
 /// conversation reader remain owned by the committed page selection.
 @riverpod
@@ -26,12 +43,9 @@ ConversationActivityState? conversationActivityViewModel(
   if (session.workspace == null && !session.hasSnapshot && current == null) {
     return null;
   }
-  final view = projectConversationActivity(
+  return projectConversationActivityState(
     current: current,
     storage: session.storage,
-    interaction: activePendingInteraction(session.interactions),
+    interactions: session.interactions,
   );
-  return view == null
-      ? null
-      : ConversationActivityState(view: view, current: current);
 }
