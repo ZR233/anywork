@@ -2,28 +2,24 @@ import 'dart:async';
 
 import '../../../accounts_ports.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../models/failure_models.dart';
-import '../../observation/latest_value.dart' show Observation;
 import '../domain/accounts_repository.dart';
 
 /// Owns exact open/next/consumer/close lifetimes. It stores clocks, not content.
 final class AccountObservations {
   AccountObservations({
     required this.feed,
-    required this.budget,
     required this.owner,
     required this.consume,
     required this.failed,
   });
   final AccountFeedPort feed;
-  final ResourceBudget budget;
   final String owner;
   final void Function(AccountDomainFrame) consume;
   final void Function(AccountObservationTarget, StudioFailure) failed;
   final Map<AccountObservationTarget, _AccountObservationSlot> _slots = {};
   final Set<_AccountObservationSlot> _retiring = {};
-  final Map<AccountObservationTarget, Observation> _budgetWaiters = {};
   final Map<AccountObservationTarget, int> _demand = {};
   final Map<AccountObservationTarget, ResourceStamp> _observed = {};
   final Set<void Function()> _listeners = {};
@@ -75,7 +71,7 @@ final class AccountObservations {
         }
         for (final target in targets) {
           if (generation != _generation) return;
-          _ensure(target, waitForBudget: true);
+          _ensure(target);
         }
       },
     );
@@ -138,7 +134,7 @@ final class AccountObservations {
     return _AccountDemand(() => _release(target));
   }
 
-  void _ensure(AccountObservationTarget target, {bool waitForBudget = false}) {
+  void _ensure(AccountObservationTarget target) {
     if (_sealed || (_demand[target] ?? 0) == 0) return;
     final existing = _slots[target];
     if (existing != null) {
@@ -150,30 +146,10 @@ final class AccountObservations {
         );
       return;
     }
-    ResourcePermit permit;
-    try {
-      permit = budget.acquire(
-        ResourceKind.observer,
-        owner: '$owner:account:${target.key}',
-        phase: ResourcePhase.opening,
-      );
-    } on ResourceBudgetExceeded {
-      if (!waitForBudget) rethrow;
-      _budgetWaiters.putIfAbsent(
-        target,
-        () => budget.watchAvailability(ResourceKind.observer, () {
-          _budgetWaiters.remove(target)?.cancel();
-          _ensure(target, waitForBudget: true);
-        }),
-      );
-      return;
-    }
-    _budgetWaiters.remove(target)?.cancel();
     final slot = _AccountObservationSlot(
       target: target,
       owner: this,
       generation: _generation,
-      permit: permit,
     );
     _slots[target] = slot;
     slot.start();
@@ -183,7 +159,6 @@ final class AccountObservations {
     final count = _demand[target] ?? 0;
     if (count <= 1) {
       _demand.remove(target);
-      _budgetWaiters.remove(target)?.cancel();
       final slot = _slots[target];
       if (slot != null) await slot.retire();
     } else {
@@ -194,7 +169,6 @@ final class AccountObservations {
   void _settled(_AccountObservationSlot slot) {
     if (identical(_slots[slot.target], slot)) _slots.remove(slot.target);
     _retiring.remove(slot);
-    slot.permit.release();
     if (!slot.failed) _ensure(slot.target);
   }
 
@@ -212,10 +186,6 @@ final class AccountObservations {
   Future<CloseReport> close({required DateTime deadline}) async {
     _sealed = true;
     _demand.clear();
-    for (final waiter in _budgetWaiters.values) {
-      waiter.cancel();
-    }
-    _budgetWaiters.clear();
     final slots = [..._slots.values, ..._retiring];
     // Broadcast before waiting for any individual late open or native read.
     for (final slot in slots) {
@@ -233,7 +203,6 @@ final class AccountObservations {
                   : const Duration(microseconds: 1),
             );
           } catch (error) {
-            slot.permit.mark(ResourcePhase.unresolved);
             unresolved.add(
               UnresolvedResource(
                 owner: '$owner:account:${slot.target.key}',
@@ -260,12 +229,10 @@ final class _AccountObservationSlot {
   _AccountObservationSlot({
     required this.target,
     required this.owner,
-    required this.permit,
     required this.generation,
   });
   final AccountObservationTarget target;
   final AccountObservations owner;
-  final ResourcePermit permit;
   final int generation;
   AccountDomainObservation? _handle;
   final Completer<void> _consumer = Completer<void>();
@@ -312,7 +279,6 @@ final class _AccountObservationSlot {
       handle.requestClose();
       return;
     }
-    permit.mark(ResourcePhase.active);
     while (!_stop) {
       final frame = await handle.next();
       if (frame == null) {
@@ -329,7 +295,6 @@ final class _AccountObservationSlot {
 
   void requestClose() {
     _stop = true;
-    if (!_settled) permit.mark(ResourcePhase.retiring);
     _handle?.requestClose();
   }
 
@@ -350,9 +315,8 @@ final class _AccountObservationSlot {
       result.then<void>(
         (_) {},
         onError: (Object _, StackTrace _) {
-          // Retain the exact handle and budget; the next close retries that owner.
+          // Retain the exact handle and cleanup responsibility; the next close retries that owner.
           _closing = null;
-          permit.mark(ResourcePhase.unresolved);
         },
       ),
     );

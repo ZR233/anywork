@@ -29,8 +29,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
   @override
   void initState() {
     super.initState();
-    widget.unit.expansion.expanded ??=
-        widget.unit.live && widget.executionPresent;
+    widget.unit.expansion.expanded ??= false;
     widget.unit.expansion.addListener(_changed);
     widget.unit.expansion.setBodyVisible(
       _visibility,

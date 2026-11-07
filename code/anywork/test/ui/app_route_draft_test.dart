@@ -13,7 +13,6 @@ import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -425,115 +424,11 @@ void main() {
               'route directory release',
             );
           });
-          // A bound route owns its target, independently of the hidden studio.
-          final budget = graph.client.budget;
-          final heldReadModels = <ResourcePermit>[
-            for (
-              var slot = budget.used(ResourceKind.readModel);
-              slot < budget.capacities[ResourceKind.readModel]!;
-              slot++
-            )
-              budget.acquire(
-                ResourceKind.readModel,
-                owner: 'route-admission-fixture',
-              ),
-          ];
-          addTearDown(() {
-            for (final permit in heldReadModels) {
-              permit.release();
-            }
-          });
-          final feedsBeforeAdmission = transport.feeds.length;
-          await tester.tap(
-            find.byKey(StudioDriverKeys.botsConversation('route-chat')),
-          );
-          await pumpClientUntil(
-            tester,
-            () =>
-                graph.timeline.source.value?.connection ==
-                    TimelineConnectionPhase.failed &&
-                find.byKey(StudioDriverKeys.botsChatBack).evaluate().isNotEmpty,
-            'route admission rejected',
-          );
-          expect(
-            graph.timeline.source.value?.connection,
-            TimelineConnectionPhase.failed,
-          );
-          expect(
-            graph.timeline.source.value?.connectionError,
-            isA<ResourceBudgetExceeded>(),
-          );
-          expect(graph.client.conversations.visibleThreadId.value, isNull);
-          expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
-          expect(graph.client.existingThreadMcp('thread-alt'), isNull);
-          expect(tester.takeException(), isNull);
-          final failedFacts = queryStudioDriverFacts(
-            graph.client,
-            timeline: graph.timeline,
-            accountsRepository: graph.accounts,
-            modelsRepository: graph.models,
-            usageRepository: graph.accountUsage,
-            acpService: graph.acp,
-          );
-          expect(failedFacts.selectedThreadId, 'thread-main');
-          expect(failedFacts.presentationThreadId, 'thread-alt');
-          expect(failedFacts.visibleThreadId, isNull);
-          expect(failedFacts.timeline!.threadId, 'thread-alt');
-          // S1：工作区视图由 typed 目录行驱动（目录观察不占 read-model 预算），
-          // 预算耗尽时仍显示会话工作区身份，但 Native 会话事实保持未装载。
-          expect(failedFacts.workspace, isNotNull);
-          expect(failedFacts.workspace!.row.threadId, 'thread-alt');
-          expect(failedFacts.workspace!.turn, isNull);
-          expect(failedFacts.workspace!.runtime.activeSkills, isEmpty);
-          // A released permit must not resurrect a route that has already left.
-          await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
-          await tester.pumpAndSettle();
-          heldReadModels.removeLast().release();
-          await tester.pumpAndSettle();
-          expect(graph.timeline.source.value, isNull);
-          expect(transport.feeds.length, feedsBeforeAdmission);
-          expect(graph.client.drafts.existingComposer('thread-alt'), isNull);
+          // The bound route opens directly, independently of the hidden Studio page.
           graph.client.selection.beginNewThread();
-          heldReadModels.add(
-            budget.acquire(
-              ResourceKind.readModel,
-              owner: 'route-admission-fixture',
-            ),
-          );
           await tester.tap(
             find.byKey(StudioDriverKeys.botsConversation('route-chat')),
           );
-          await pumpClientUntil(
-            tester,
-            () =>
-                graph.timeline.source.value?.connection ==
-                    TimelineConnectionPhase.failed &&
-                find.byKey(StudioDriverKeys.botsChatBack).evaluate().isNotEmpty,
-            'second route admission rejected',
-          );
-          expect(
-            graph.timeline.source.value?.connectionError,
-            isA<ResourceBudgetExceeded>(),
-          );
-          final refused = jsonDecode(
-            StudioDriverState.snapshotJson(
-              observed: queryStudioDriverFacts(
-                graph.client,
-                timeline: graph.timeline,
-                accountsRepository: graph.accounts,
-                modelsRepository: graph.models,
-                usageRepository: graph.accountUsage,
-                acpService: graph.acp,
-              ),
-            ),
-          ) as Map;
-          expect(refused['navigation']['selectedThreadId'], isNull);
-          expect(refused['navigation']['presentationThreadId'], 'thread-alt');
-          expect(refused['navigation']['isStartPage'], isFalse);
-          // Real capacity release resumes the current target without route retry state.
-          for (final permit in heldReadModels) {
-            permit.release();
-          }
           await pumpClientUntil(
             tester,
             () =>
@@ -713,7 +608,6 @@ void main() {
       expect(connection.joined.isCompleted, isTrue);
       expect(newConnection.joined.isCompleted, isTrue);
       expect(transport.feeds.every((feed) => feed.joined.isCompleted), isTrue);
-      expect(graph.client.budget.usage, isEmpty);
       expect(tester.takeException(), isNull);
     },
     timeout: const Timeout(Duration(seconds: 60)),

@@ -4,7 +4,6 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/conversation/data/conversation_content_impl.dart';
-import 'package:anywork_client/src/lifecycle/resource_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
@@ -146,7 +145,6 @@ void main() {
         expect((await close).complete, isTrue);
         expect(h.consumer.batches, hasLength(1));
         expect(feed.acks, [1]);
-        expect(h.budget.used(ResourceKind.pendingOperation), 0);
         expect((await h.owner.close()).complete, isTrue);
       },
     );
@@ -216,52 +214,6 @@ void main() {
     expect((await h.owner.close()).complete, isTrue);
   });
 
-  test('watch budget rejection reaches the original stream and completes without a handle', () async {
-    final h = _Harness()..attach();
-    final feed = await h.opened();
-    final permits = [
-      for (
-        var i = 0;
-        i < h.budget.capacities[ResourceKind.pendingOperation]!;
-        i++
-      )
-        h.budget.acquire(ResourceKind.pendingOperation, owner: 'saturated:$i'),
-    ];
-    var opened = false;
-    feed.reader.watchFactory = () {
-      opened = true;
-      return _Watch(const Stream.empty());
-    };
-    final scope = h.owner.openScope(generation: 1);
-    final errors = <Object>[];
-    final zoneErrors = <Object>[];
-    final done = Completer<void>();
-    late StreamSubscription<ContentWindow> subscription;
-    await runZonedGuarded(() async {
-      subscription = scope
-          .watchContent(
-            reference: const ContentRef(
-              databaseId: 'db',
-              target: ItemPayloadTarget(itemId: 'item'),
-            ),
-            range: const ContentRange(offset: 0, maxBytes: 32),
-          )
-          .listen((_) {}, onError: errors.add, onDone: done.complete);
-      await Future<void>.delayed(Duration.zero);
-    }, (error, _) => zoneErrors.add(error));
-    expect(zoneErrors, isEmpty);
-    expect(errors.single, isA<ResourceBudgetExceeded>());
-    expect(done.isCompleted, isTrue);
-    expect(opened, isFalse);
-    expect(h.budget.used(ResourceKind.pendingOperation), permits.length);
-    await subscription.cancel();
-    expect((await scope.close()).complete, isTrue);
-    for (final permit in permits) {
-      permit.release();
-    }
-    expect((await h.owner.close()).complete, isTrue);
-  });
-
   test(
     'query IO bypasses blocked flow; page Future joins original applyBatch',
     () async {
@@ -304,7 +256,6 @@ void main() {
       expect(h.owner.current.value!.sourceEffectSeq, 1);
       expect(feed.acks, [1]); // A query is not another transport delivery.
       expect((await h.owner.close()).complete, isTrue);
-      expect(h.budget.used(ResourceKind.pendingOperation), 0);
     },
   );
 
@@ -425,12 +376,10 @@ void main() {
       final report = await h.owner.close();
       expect(report.complete, isFalse);
       expect(h.owner.ownedAttemptCount, 1);
-      expect(h.budget.used(ResourceKind.chatHandle), 1);
       feed.closeFailure = null;
       expect((await h.owner.retryCleanup()).complete, isTrue);
       expect(h.transport.feeds, [feed]);
       expect(feed.closes, 2);
-      expect(h.budget.used(ResourceKind.chatHandle), 0);
     },
   );
 
@@ -447,7 +396,6 @@ void main() {
       );
       scope.retire();
       expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
-      expect(h.budget.used(ResourceKind.pendingOperation), 1);
       feed.reader.page.completeError(StateError('old database failed'));
       await assertion;
       expect((await scope.close()).complete, isTrue);
@@ -491,7 +439,6 @@ void main() {
       scope.retire();
       expect(nativeWatch.requests, greaterThan(0)); // Synchronous native wake.
       expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
-      expect(h.budget.used(ResourceKind.pendingOperation), 1);
       cancelled.complete();
       expect((await scope.close()).complete, isTrue);
       expect(closes, 1);
@@ -519,7 +466,6 @@ void main() {
         .listen((_) {});
     await expectLater(subscription.cancel(), throwsStateError);
     expect(native.closes, 1);
-    expect(h.budget.used(ResourceKind.pendingOperation), 1);
     native.failure = null;
     expect((await scope.close()).complete, isTrue);
     expect(
@@ -527,7 +473,6 @@ void main() {
       2,
       reason: 'Retry joins the same native handle, not the cached Dart cancellation',
     );
-    expect(h.budget.used(ResourceKind.pendingOperation), 0);
     expect((await h.owner.close()).complete, isTrue);
   });
 
@@ -553,7 +498,6 @@ void main() {
       await windows.close();
       await Future<void>.delayed(Duration.zero);
       expect((await scope.close()).complete, isFalse);
-      expect(h.budget.used(ResourceKind.pendingOperation), 1);
       native.failure = null;
       expect((await scope.close()).complete, isTrue);
       await subscription.cancel();
@@ -598,7 +542,6 @@ void main() {
       report.unresolved.map((resource) => resource.reason),
       contains(same(cancellationFailure)),
     );
-    expect(h.budget.used(ResourceKind.pendingOperation), 1);
     expect((await h.owner.close()).complete, isFalse);
   });
 }
@@ -608,7 +551,6 @@ final class _Harness {
     owner = ConversationContentImpl(
       threadId: 'thread',
       transport: transport,
-      budget: budget,
       scope: scope,
       onState: (_, _) {},
       onAttempt: (_) {},
@@ -618,7 +560,6 @@ final class _Harness {
       },
     );
   }
-  final budget = ResourceBudget();
   final transport = _Transport();
   final consumer = _Consumer();
   final failures = <Object>[];

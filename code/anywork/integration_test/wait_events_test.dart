@@ -85,9 +85,11 @@ void main() {
       try {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _Scene(tester, graph).until(
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'retired scene read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       } finally {
         tester.testTextInput.unregister();
@@ -397,7 +399,7 @@ final class _Scene {
         : null;
     final reason =
         'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame budget: id=${receipt.id}, '
+        'presentation within the original frame =${receipt.id}, '
         'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload is InlinePayload, isTrue, reason: reason);
@@ -454,7 +456,7 @@ final class _Scene {
     // must fail as delivery/presentation, not be filtered into "no member".
     final reason =
         'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame budget: id=${atom.id}, '
+        'presentation within the original frame =${atom.id}, '
         'completion=${atom.completionItemId}/${atom.completionSeq}, '
         'call=${atom.tool!.callId}, payloadType=${payload?.runtimeType}, '
         'byteLength=$byteLength. '
@@ -493,9 +495,11 @@ final class _Scene {
 
   Future<void> closeTurn(StudioTurnView turn) async {
     await observed.closeSource(ForegroundTurnChatSource(turnId: turn.turnId));
-    await until(
-      () => graph.client.budget.used(ResourceKind.chatHandle) == 1,
-      'ordinary group scopes released; only original Main handle remains',
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
     );
   }
 

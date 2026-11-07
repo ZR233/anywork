@@ -5,4 +5,4 @@ export 'src/statistics/domain/statistics_models.dart';
 export 'src/statistics/domain/statistics_failure.dart';
 export 'src/statistics/domain/statistics_repository.dart';
 export 'src/models/failure_models.dart' show StudioFailure, StudioFailureCode;
-export 'src/lifecycle/resource_budget.dart' show CloseReport;
+export 'src/lifecycle/close_report.dart' show CloseReport;

@@ -23,7 +23,7 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 
 void main() {
   for (final executing in [true, false]) {
-    testWidgets('实时组首次展开遵循执行资格 ($executing)', (tester) async {
+    testWidgets('实时组默认折叠且仅由用户展开 ($executing)', (tester) async {
       final unit = TimelineDisplayUnit(
         item: workItem('initial', closed: false, active: 1),
         live: true,
@@ -41,10 +41,16 @@ void main() {
           ),
         ),
       );
-      expect(unit.expansion.bodyActive, executing);
-      expect(unit.expansion.expanded, executing);
-      expect(builds > 0, executing);
-      expect(find.text('原成员正文'), executing ? findsOneWidget : findsNothing);
+      expect(unit.expansion.bodyActive, isFalse);
+      expect(unit.expansion.expanded, isFalse);
+      expect(builds, 0);
+      expect(find.text('原成员正文'), findsNothing);
+      await tester.tap(
+        find.byKey(const ValueKey('source-unit-header:initial')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(unit.expansion.bodyActive, isTrue);
+      expect(find.text('原成员正文'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(unit.expansion.bodyActive, isFalse);
     });

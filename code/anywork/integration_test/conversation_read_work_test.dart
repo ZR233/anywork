@@ -93,10 +93,11 @@ void main() {
       addTearDown(() async {
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
-        await _until(
-          tester,
-          () => graph.client.budget.used(ResourceKind.chatHandle) == 0,
-          'all read handles joined',
+        expect(
+          (await graph.client.conversations.retryCleanup(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
         );
       });
       await binding.traceAction(

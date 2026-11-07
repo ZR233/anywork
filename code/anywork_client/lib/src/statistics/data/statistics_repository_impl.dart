@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../models/failure_models.dart' show StudioFailureCode;
 import '../../observation/latest_value.dart';
 import '../domain/statistics_failure.dart';
@@ -19,15 +19,12 @@ const _stableConnectionWindow = Duration(seconds: 10);
 final class StatisticsRepositoryImpl implements StatisticsRepository {
   StatisticsRepositoryImpl({
     required StatisticsFeedPort feed,
-    required ResourceBudget budget,
     required String owner,
   }) : _feed = feed,
-       _budget = budget,
        _owner = owner,
        _state = LatestValue(const StatisticsRepositoryState());
 
   final StatisticsFeedPort _feed;
-  final ResourceBudget _budget;
   final String _owner;
   final LatestValue<StatisticsRepositoryState> _state;
   final Map<int, _StatisticsAttempt> _attempts = {};
@@ -150,38 +147,7 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     if (_closed || _visibleDemands == 0 || _current != null) return;
     final attemptId = ++_nextAttemptId;
     final generation = ++_generation;
-    final ResourcePermit permit;
-    try {
-      permit = _budget.acquire(
-        ResourceKind.observer,
-        owner: 'statistics:$_owner',
-        phase: ResourcePhase.opening,
-      );
-    } on ResourceBudgetExceeded catch (error) {
-      _publishConnection(
-        StatisticsConnectionPhase.failed,
-        failure: StatisticsFailure.fromObject(
-          error,
-          category: StatisticsFailureCategory.resourceBudget,
-        ),
-      );
-      return;
-    } on Object catch (error) {
-      _publishConnection(
-        StatisticsConnectionPhase.failed,
-        failure: StatisticsFailure.fromObject(
-          error,
-          category: StatisticsFailureCategory.connection,
-        ),
-      );
-      return;
-    }
-
-    final attempt = _StatisticsAttempt(
-      id: attemptId,
-      generation: generation,
-      permit: permit,
-    );
+    final attempt = _StatisticsAttempt(id: attemptId, generation: generation);
     _attempts[attemptId] = attempt;
     _current = attempt;
     attempt.opening = Future<void>.microtask(() async {
@@ -209,11 +175,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     }
 
     // Once open succeeds, keep the handle attached until retirement confirms close. A late
-    // generation must not release the permit as if opening had failed.
+    // generation must retain the exact returned handle for cleanup.
     attempt.connection = connection;
     if (_mustRetire(attempt)) return;
     try {
-      attempt.permit.mark(ResourcePhase.active);
       attempt.pump = _runPump(attempt);
       unawaited(attempt.pump!.then<void>((_) => _pumpFinished(attempt)));
     } on Object catch (error) {
@@ -452,9 +417,6 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
         category: StatisticsFailureCategory.cleanup,
       );
       attempt.failure = failure;
-      if (!attempt.permit.isReleased) {
-        attempt.permit.mark(ResourcePhase.unresolved);
-      }
       _retainUnresolved(attempt, failure);
       if (!_closed && _visibleDemands > 0 && identical(_current, attempt)) {
         _publishConnection(StatisticsConnectionPhase.failed, failure: failure);
@@ -493,8 +455,7 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   void _settleAttempt(_StatisticsAttempt attempt) {
     if (attempt.settled) return;
     // This terminal path is reached only after native close/join, or after open failed before a
-    // connection handle existed. In either case the original permit and unresolved record settle.
-    attempt.permit.release();
+    // connection handle existed. Only then can its unresolved record settle.
     attempt.settled = true;
     _attempts.remove(attempt.id);
     _unresolved.remove(_resourceOwner(attempt));
@@ -615,15 +576,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
 }
 
 final class _StatisticsAttempt {
-  _StatisticsAttempt({
-    required this.id,
-    required this.generation,
-    required this.permit,
-  });
+  _StatisticsAttempt({required this.id, required this.generation});
 
   final int id;
   final int generation;
-  final ResourcePermit permit;
   StatisticsFeedConnection? connection;
   Future<void>? opening;
   Future<void>? pump;

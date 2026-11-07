@@ -4,7 +4,7 @@ import 'dart:developer' as developer;
 import '../../../models.dart';
 import '../../../conversation_ports.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/resource_budget.dart';
+import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/content_state.dart';
@@ -16,7 +16,6 @@ final class ConversationContentImpl implements ConversationContent {
   ConversationContentImpl({
     required this.threadId,
     required ConversationTransport transport,
-    required this.budget,
     required this.onState,
     required this.onFailure,
     required this.onAttempt,
@@ -27,7 +26,6 @@ final class ConversationContentImpl implements ConversationContent {
   @override
   final String threadId;
   final ConversationTransport _transport;
-  final ResourceBudget budget;
   final void Function(AttemptId, ThreadStreamFrame) onState;
   final void Function(AttemptId, Object, bool) onFailure;
   final void Function(AttemptId) onAttempt;
@@ -51,7 +49,6 @@ final class ConversationContentImpl implements ConversationContent {
   int _retries = 0;
   Timer? _retryTimer;
   Future<CloseReport>? _closing;
-  Observation? _availability;
   @override
   bool get hasDemand => _demand;
   @override
@@ -99,8 +96,6 @@ final class ConversationContentImpl implements ConversationContent {
     _demandVersion++;
     _retryTimer?.cancel();
     _retryTimer = null;
-    _availability?.cancel();
-    _availability = null;
     final current = _current;
     if (current != null) _retire(current);
     if (!_closed && _consumer == null && _current == null) {
@@ -116,8 +111,6 @@ final class ConversationContentImpl implements ConversationContent {
     _retryTimer?.cancel();
     _retryTimer = null;
     if (!value) {
-      _availability?.cancel();
-      _availability = null;
       final current = _current;
       if (current != null) _retire(current);
       _state.publish(ChatIdle<bool>(threadId));
@@ -155,7 +148,6 @@ final class ConversationContentImpl implements ConversationContent {
       threadId: threadId,
       generation: generation,
       reader: attempt.feed!.reader,
-      budget: budget,
       isEligible: () => _eligible(attempt, lease),
       applyOlder: (batch) => _enqueue(attempt, () async {
         if (!scope.isActive || !_eligible(attempt, lease)) {
@@ -180,23 +172,7 @@ final class ConversationContentImpl implements ConversationContent {
   void _open() {
     if (_closed || !_demand || _current != null || _consumer == null) return;
     final id = AttemptId(++_nextAttempt);
-    final ResourcePermit permit;
-    try {
-      permit = budget.acquire(
-        ResourceKind.chatHandle,
-        owner: '$threadId:${id.value}',
-        phase: ResourcePhase.opening,
-      );
-    } on ResourceBudgetExceeded catch (error) {
-      _availability ??= budget.watchAvailability(ResourceKind.chatHandle, () {
-        _availability?.cancel();
-        _availability = null;
-        _open();
-      });
-      _state.publish(ChatFailed<bool>(threadId, error: error));
-      return;
-    }
-    final a = _Attempt(id, permit, _demandVersion, _consumer!);
+    final a = _Attempt(id, _demandVersion, _consumer!);
     _attempts[id] = a;
     _current = a;
     final done = Completer<void>();
@@ -219,7 +195,6 @@ final class ConversationContentImpl implements ConversationContent {
       if (!_live(a)) return;
       if (feed.threadId != threadId || feed.subscriptionId.isEmpty)
         throw const ConversationContinuityError('feed identity mismatch');
-      a.permit.mark(ResourcePhase.active);
       a.subscription = feed.events.listen(
         (frame) => _receive(a, frame),
         onError: (Object error, StackTrace stack) => _failAttempt(a, error),
@@ -246,7 +221,7 @@ final class ConversationContentImpl implements ConversationContent {
           _demand &&
           a.demandVersion == _demandVersion &&
           _current == null &&
-          a.permit.isReleased) {
+          !_attempts.containsKey(a.id)) {
         _scheduleRetry();
       }
     }
@@ -416,7 +391,6 @@ final class ConversationContentImpl implements ConversationContent {
     if (a.retired) return;
     a.retired = true;
     if (identical(_current, a)) _current = null;
-    a.permit.mark(ResourcePhase.retiring);
     for (final scope in a.scopes) {
       scope.retire();
     }
@@ -433,7 +407,6 @@ final class ConversationContentImpl implements ConversationContent {
 
   Future<void> _cleanup(_Attempt a) async {
     a.cleanupFinished = false;
-    a.permit.mark(ResourcePhase.retiring);
     Object? error;
     try {
       a.feed?.requestClose();
@@ -471,11 +444,9 @@ final class ConversationContentImpl implements ConversationContent {
     if (error != null) {
       a.error = error;
       a.cleanupFinished = true;
-      a.permit.mark(ResourcePhase.unresolved);
       return;
     }
     a.cleanupFinished = true;
-    a.permit.release();
     _attempts.remove(a.id);
   }
 
@@ -500,7 +471,7 @@ final class ConversationContentImpl implements ConversationContent {
           try {
             await Future.wait(pending).timeout(remaining);
           } on TimeoutException {
-            // Only this wait expires; the attempt retains its task and permit.
+            // Only this wait expires; the attempt retains its task.
           }
         }
       }
@@ -508,7 +479,7 @@ final class ConversationContentImpl implements ConversationContent {
     return CloseReport(
       unresolved: [
         for (final a in selected)
-          if (!a.permit.isReleased)
+          if (_attempts.containsKey(a.id))
             UnresolvedResource(
               owner: 'conversation:$threadId',
               attemptId: a.id,
@@ -528,7 +499,6 @@ final class ConversationContentImpl implements ConversationContent {
     _demand = false;
     _demandVersion++;
     _retryTimer?.cancel();
-    _availability?.cancel();
     _consumer?.cancel();
     for (final a in List.of(_attempts.values)) {
       _retire(a);
@@ -565,9 +535,8 @@ final class ConversationContentImpl implements ConversationContent {
 }
 
 final class _Attempt {
-  _Attempt(this.id, this.permit, this.demandVersion, this.consumer);
+  _Attempt(this.id, this.demandVersion, this.consumer);
   final AttemptId id;
-  final ResourcePermit permit;
   final int demandVersion;
   final _ConsumerLease consumer;
   final Set<ConversationReadScope> scopes = {};

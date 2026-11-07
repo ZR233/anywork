@@ -181,7 +181,7 @@ void main() {
     'reload',
   ]) {
     test(
-      'Client close joins admitted Mode $operation before releasing its permit',
+      'Client close joins admitted Mode $operation before releasing ownership',
       () async {
         final document = _document();
         transport.snapshot = ModeDefinitionSnapshot(
@@ -233,7 +233,6 @@ void main() {
             isFalse,
             reason: 'The real query has not returned',
           );
-          expect(client.budget.used(ResourceKind.draft), 1);
         } finally {
           barrier.complete();
           await request;
@@ -249,7 +248,6 @@ void main() {
           same(frozen),
           reason: 'No late state publication',
         );
-        expect(client.budget.used(ResourceKind.draft), 0);
       },
     );
   }

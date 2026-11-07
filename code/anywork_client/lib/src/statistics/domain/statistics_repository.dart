@@ -1,4 +1,4 @@
-import '../../lifecycle/resource_budget.dart' show CloseReport;
+import '../../lifecycle/close_report.dart' show CloseReport;
 import 'statistics_failure.dart';
 import 'statistics_models.dart';
 

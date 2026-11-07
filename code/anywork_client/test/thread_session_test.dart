@@ -605,8 +605,7 @@ void main() {
   test(
     'ChatOpening listener withdrawing demand never opens the feed',
     () async {
-      final budget = ResourceBudget();
-      final fixture = ConversationFixture(budget: budget);
+      final fixture = ConversationFixture();
       final session = fixture.repository.session('thread');
       fixture.attach('thread', demand: _demand);
       final observation = session.content.state.watch((state) {
@@ -621,14 +620,12 @@ void main() {
       expect(session.isActive, isFalse);
       expect(session.isActive, isFalse);
       await fixture.close();
-      expect(budget.usage, isEmpty);
       observation.cancel();
     },
   );
 
   test('ChatOpening listener closing the client synchronously never opens the feed', () async {
-    final budget = ResourceBudget();
-    final fixture = ConversationFixture(budget: budget);
+    final fixture = ConversationFixture();
     final session = fixture.repository.session('thread');
     fixture.attach('thread', demand: _demand);
     final observation = session.content.state.watch((state) {
@@ -639,13 +636,11 @@ void main() {
     fixture.repository.setVisibleThread('thread');
     await fixture.close();
     expect(fixture.transport.opens, isEmpty);
-    expect(budget.usage, isEmpty);
     observation.cancel();
   });
 
   test('synchronous A to B to A during ChatOpening withdraws old demand and recovers once', () async {
-    final budget = ResourceBudget();
-    final fixture = ConversationFixture(budget: budget);
+    final fixture = ConversationFixture();
     final session = fixture.repository.session('thread');
     final consumer = TestCompletionConsumer();
     session.content.attachConsumer(consumer, demand: _demand);
@@ -683,7 +678,6 @@ void main() {
     );
     observation.cancel();
     await fixture.close();
-    expect(budget.usage, isEmpty);
   });
 
   test('synchronous same-target reentry during ChatOpening does not retire or reopen', () async {

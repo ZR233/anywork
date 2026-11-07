@@ -118,7 +118,7 @@ void main() {
     'same demand shares one owner and A to B to A retires exact slots',
     () async {
       final feed = _Feed();
-      final store = ThreadDirectoryStore(feed: feed, budget: ResourceBudget());
+      final store = ThreadDirectoryStore(feed: feed);
       const a = DirectoryQuery(search: 'a');
       const b = DirectoryQuery(search: 'b');
       final window = DirectoryWindow();
@@ -180,7 +180,7 @@ void main() {
     'refresh reopens the exact non-first window after old close joins',
     () async {
       final feed = _Feed();
-      final store = ThreadDirectoryStore(feed: feed, budget: ResourceBudget());
+      final store = ThreadDirectoryStore(feed: feed);
       const query = DirectoryQuery(workspaceId: 'workspace');
       final window = DirectoryWindow(before: 'cursor-20', limit: 20);
       final observation = store.observeThreads(query, window);
@@ -261,10 +261,8 @@ void main() {
 
       final failures = <UnresolvedResource>[];
       final feed = _Feed();
-      final budget = ResourceBudget();
       final store = ThreadDirectoryStore(
         feed: feed,
-        budget: budget,
         onCleanupFailure: failures.add,
       );
       final window = DirectoryWindow();
@@ -285,7 +283,6 @@ void main() {
       await expectLater(secondBorrow.refresh(), throwsStateError);
       expect(firstHandle.closeCalls, 1);
       expect(failures.single.reason, same(closeFailure));
-      expect(budget.usage, hasLength(2));
 
       const replacementQuery = DirectoryQuery(search: 'replacement');
       final replacement = store.observeThreads(replacementQuery, window);
@@ -306,23 +303,19 @@ void main() {
       expect(firstHandle.closeCalls, 2);
       firstHandle.allowClose.complete();
       expect((await retrying).complete, isTrue);
-      expect(budget.usage, hasLength(2), reason: 'replacement remains owned');
 
       final closingReplacement = replacement.release();
       await replacementHandle.closeEntered.future;
       replacementHandle.allowClose.complete();
       await closingReplacement;
-      expect(budget.usage, isEmpty);
     },
   );
 
   test('client retryCleanup settles the failed directory owner', () async {
     final transport = TestConversationTransport();
-    final budget = ResourceBudget();
     final client = AnyworkClient(
       transport: transport,
       clientId: 'directory-cleanup',
-      budget: budget,
     );
     final observation = client.threadDirectory.observeThreads(
       const DirectoryQuery(search: 'client'),
@@ -335,19 +328,16 @@ void main() {
     await expectLater(observation.release(), throwsA(same(closeFailure)));
     expect(client.resourceFailure.value?.reason, same(closeFailure));
     expect(transport.directoryCloseCalls, 1);
-    expect(budget.usage, isNotEmpty);
 
     final retried = await client.retryCleanup();
     expect(retried.complete, isTrue);
     expect(transport.directoryCloseCalls, 2);
-    expect(budget.usage, isEmpty);
     expect((await client.close()).complete, isTrue);
   });
 
   test('last release joins an in-flight open and the native close', () async {
     final feed = _Feed();
-    final budget = ResourceBudget();
-    final store = ThreadDirectoryStore(feed: feed, budget: budget);
+    final store = ThreadDirectoryStore(feed: feed);
     final observation = store.observeThreads(
       const DirectoryQuery(),
       DirectoryWindow(),
@@ -368,6 +358,5 @@ void main() {
     expect(completed, isFalse);
     handle.allowClose.complete();
     await closing;
-    expect(budget.usage, isEmpty);
   });
 }

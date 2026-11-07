@@ -129,7 +129,7 @@ SDK feed owner 唯一发送 ACK：Chat 在 applyBatch 完成并复核原 lease �
 
 `requestCloseContentWatch(watchId)` 同步封闭并取消该 watch，`closeContentWatch(watchId)` 等待在途领取和原生观察真实结束后才移除；失败保留原身份供重试。SDK `watchContent` 将这一能力映射为单消费者 Stream，暂停时停止领取，取消／折叠／原显示租约退役时先请求取消再 join。facade 显式关闭覆盖所有自有 watch 及 feed/read 两侧，但单独关闭 watch 不关闭原 read lease 或共享执行。每个 watch 只保留一个待取最新来源及一个在途窗口，range 与实际传输编码受内容窗口上限约束，活跃 watch 数受有界资源准入。
 
-传输端 `ConversationReader.watchContent` 返回显式 `ConversationContentWatch`，只提供 `windows` 单消费者 Stream、同步 `requestClose()` 与可重试 `close()`；SDK read scope 持有这个原观察句柄，页面侧 `ConversationQueryScope.watchContent` 仍只暴露 Stream。它复用现有显式观察资源模式，不增加内容来源或缓存。窗口流的取消先停止交付并请求取消，原生 join 由句柄的 `close()` 负责；SDK 收束订阅和原句柄两侧，任一失败仍尝试另一侧。不能用重复 `StreamSubscription.cancel()` 代替重试原 watch 的 join，也不能仅因 Stream done、取消 Future 结束或 facade 的其他侧成功就释放该观察预算。EOF、错误和退役均须收束原句柄；失败保留原身份与未决责任，后续明确重试 `close()`，不重开观察来冒充回收。
+传输端 `ConversationReader.watchContent` 返回显式 `ConversationContentWatch`，只提供 `windows` 单消费者 Stream、同步 `requestClose()` 与可重试 `close()`；SDK read scope 持有这个原观察句柄，页面侧 `ConversationQueryScope.watchContent` 仍只暴露 Stream。它复用现有显式观察资源模式，不增加内容来源或缓存。窗口流的取消先停止交付并请求取消，原生 join 由句柄的 `close()` 负责；SDK 收束订阅和原句柄两侧，任一失败仍尝试另一侧。不能用重复 `StreamSubscription.cancel()` 代替重试原 watch 的 join，也不能仅因 Stream done、取消 Future 结束或 facade 的其他侧成功就认定观察资源已经释放。EOF、错误和退役均须收束原句柄；失败保留原身份与未决责任，后续明确重试 `close()`，不重开观察来冒充回收。
 
 页面销毁只解除自己的观察租约；最后观察退出才由领域 owner 收束共享 feed，不停止 Session、Turn、writer、后台任务或其他消费者。presentation detach 取消未接纳交付并退出对应观察，不提前 ACK。应用退出仍由唯一协调器负责，机器人发送确认遵循 [27](./27-bots.md)。
 

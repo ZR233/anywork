@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'client_provider.dart';
 
-/// An observation failed to attach; no observer permit remains owned by Ref.
+/// An observation failed to attach; no observation remains owned by Ref.
 final class ClientObservationFailure implements Exception {
   const ClientObservationFailure(this.cause);
 
@@ -14,31 +14,22 @@ final class ClientObservationFailure implements Exception {
 }
 
 /// Registers a read-only observer and reads its current snapshot synchronously.
-/// Ref owns only this observer and its budget permit, never the Client resource.
+/// Ref owns only this observer, never the Client resource.
 T observeClient<T>(
   Ref ref,
   ValueObservation<T> source,
   void Function(T) onUpdate,
 ) {
-  final permit = ref
-      .read(anyworkClientProvider)
-      .budget
-      .acquire(
-        ResourceKind.observer,
-        owner: 'presentation:${source.runtimeType}',
-      );
   LatestWatch<T>? watched;
   try {
     watched = source.watchLatest(onUpdate);
     final observation = watched.observation;
     ref.onDispose(() {
       observation.cancel();
-      permit.release();
     });
     return watched.value;
   } catch (error, stack) {
     watched?.observation.cancel();
-    permit.release();
     Error.throwWithStackTrace(ClientObservationFailure(error), stack);
   }
 }

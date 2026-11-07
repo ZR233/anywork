@@ -3,7 +3,7 @@ import 'dart:async';
 import '../../models.dart';
 import '../../studio_ports.dart';
 import '../contracts/stamps.dart';
-import '../lifecycle/resource_budget.dart';
+import '../lifecycle/close_report.dart';
 import '../observation/latest_value.dart';
 import 'stores/canonical_clock.dart';
 import 'stores/updater_store.dart';
@@ -42,14 +42,12 @@ final class StudioUpdateClient {
     required this.api,
     required this.updater,
     required this.enabled,
-    ResourceBudget? budget,
     this.onBackgroundError,
-  }) : budget = budget ?? ResourceBudget();
+  });
 
   final StudioUpdateApi api;
   final UpdaterStore updater;
   final bool enabled;
-  final ResourceBudget budget;
   final void Function(Object, StackTrace)? onBackgroundError;
   final request = LatestValue<StudioUpdateRequest>(
     const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
@@ -58,8 +56,7 @@ final class StudioUpdateClient {
   final Map<int, _UpdateRpc> _rpcs = {};
   final Map<String, Object> _cleanupFailures = {};
   Observation? _observation;
-  ResourcePermit? _observationPermit;
-  ResourcePermit? _automaticPermit;
+  bool _automaticJoined = true;
   Future<void>? _automaticTask;
   Future<void>? _automaticStopTask;
   Future<void>? _checkTask;
@@ -102,10 +99,6 @@ final class StudioUpdateClient {
       _attached = true;
       return;
     }
-    _observationPermit = budget.acquire(
-      ResourceKind.observer,
-      owner: 'updater',
-    );
     final registration = source.watchLatest((_) => _startAutomaticOnce());
     _observation = registration.observation;
     _attached = true;
@@ -119,18 +112,12 @@ final class StudioUpdateClient {
         updater.state.value == null) {
       return;
     }
-    ResourcePermit? permit;
     Completer<void>? completed;
     try {
-      // The producer outlives its start RPC. Its permit remains held until a
+      // The producer outlives its start RPC. Retain its ownership until a
       // real cancellation ACK, including an unknown startup outcome.
-      permit = budget.acquire(
-        ResourceKind.observer,
-        owner: 'automatic-update',
-        phase: ResourcePhase.opening,
-      );
-      _automaticPermit = permit;
       _automaticStarted = true;
+      _automaticJoined = false;
       completed = Completer<void>();
       _automaticTask = completed.future;
       final rpc = _rpc('automatic-start', api.startAutomaticUpdate);
@@ -138,8 +125,7 @@ final class StudioUpdateClient {
     } catch (error, stack) {
       // Admission failed before a transport call; there is no producer to stop.
       _automaticStarted = false;
-      _automaticPermit = null;
-      permit?.release();
+      _automaticJoined = true;
       completed?.complete();
       onBackgroundError?.call(error, stack);
     }
@@ -151,11 +137,9 @@ final class StudioUpdateClient {
   ) async {
     try {
       await rpc;
-      if (!_closed) _automaticPermit?.mark(ResourcePhase.active);
     } catch (error, stack) {
       // A lost reply does not prove that the producer never started. Do not
       // replay startup; shutdown must still obtain its cancellation ACK.
-      _automaticPermit?.mark(ResourcePhase.unresolved);
       onBackgroundError?.call(error, stack);
     } finally {
       completed.complete();
@@ -164,11 +148,7 @@ final class StudioUpdateClient {
 
   Future<T> _rpc<T>(String name, Future<T> Function() action) {
     final id = ++_rpcSequence;
-    final permit = budget.acquire(
-      ResourceKind.pendingOperation,
-      owner: 'update-rpc:$name:$id',
-    );
-    final rpc = _UpdateRpc(id, name, permit);
+    final rpc = _UpdateRpc(id, name);
     _rpcs[id] = rpc;
     return _runRpc(rpc, action);
   }
@@ -177,7 +157,6 @@ final class StudioUpdateClient {
     try {
       return await action();
     } finally {
-      rpc.permit.release();
       _rpcs.remove(rpc.id);
       // Joining completion is separate from the business result. An ended
       // query failure is reported to its caller and owns no remaining resource.
@@ -231,19 +210,9 @@ final class StudioUpdateClient {
         StateError('A prior update operation still needs cleanup'),
       );
     }
-    final ResourcePermit permit;
-    try {
-      permit = budget.acquire(
-        ResourceKind.pendingOperation,
-        owner: 'update:${_sequence + 1}',
-        phase: ResourcePhase.opening,
-      );
-    } catch (error, stack) {
-      return Future.error(error, stack);
-    }
     // Install ownership exists before the first transport await. A late native
     // operation always belongs to this attempt, even after application close.
-    final attempt = _UpdateAttempt(++_sequence, permit);
+    final attempt = _UpdateAttempt(++_sequence);
     _attempts[attempt.id] = attempt;
     _active = attempt;
     final completed = Completer<StudioUpdateInstallResult>();
@@ -288,7 +257,6 @@ final class StudioUpdateClient {
         await _cancelAttempt(attempt);
         return const StudioUpdateInstallResult();
       }
-      attempt.permit.mark(ResourcePhase.active);
       await for (final snapshot in operation.events) {
         if (!_closed) updater.apply(snapshot);
       }
@@ -339,13 +307,11 @@ final class StudioUpdateClient {
       if ((attempt.operation == null && attempt.cleanupFailure == null) ||
           attempt.joined) {
         attempt.operation?.dispose();
-        attempt.permit.release();
         _attempts.remove(attempt.id);
       } else {
         attempt.cleanupFailure ??= StateError(
           'Update completion was not confirmed',
         );
-        attempt.permit.mark(ResourcePhase.unresolved);
       }
       if (!_closed && attempt.cancelRequested && attempt.joined) {
         request.publish(
@@ -366,14 +332,12 @@ final class StudioUpdateClient {
       if (attempt.cleanupFailure case final error?) throw error;
       return;
     }
-    attempt.permit.mark(ResourcePhase.retiring);
     try {
       await operation.cancel();
       attempt.joined = true;
       attempt.cleanupFailure = null;
     } catch (error) {
       attempt.cleanupFailure = error;
-      attempt.permit.mark(ResourcePhase.unresolved);
       rethrow;
     }
   }
@@ -421,7 +385,7 @@ final class StudioUpdateClient {
     for (final attempt in _attempts.values) {
       attempt.cancelTask = null;
     }
-    if (!_automaticStopRunning && _automaticPermit != null) {
+    if (!_automaticStopRunning && !_automaticJoined) {
       _automaticStopTask = null;
     }
     return _close(deadline);
@@ -430,10 +394,6 @@ final class StudioUpdateClient {
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
     _observation?.cancel();
-    _observationPermit?.release();
-    for (final rpc in _rpcs.values) {
-      rpc.permit.mark(ResourcePhase.retiring);
-    }
     final work = _joinOwners();
     try {
       final remaining = deadline?.difference(DateTime.now());
@@ -444,12 +404,6 @@ final class StudioUpdateClient {
       }
     } catch (error) {
       _cleanupFailures['update-close'] = error;
-      for (final attempt in _attempts.values) {
-        attempt.permit.mark(ResourcePhase.unresolved);
-      }
-      for (final rpc in _rpcs.values) {
-        rpc.permit.mark(ResourcePhase.unresolved);
-      }
     }
     return _report();
   }
@@ -474,7 +428,7 @@ final class StudioUpdateClient {
   }
 
   Future<void> _stopAutomatic() {
-    if (!_automaticStarted || _automaticPermit == null) return Future.value();
+    if (!_automaticStarted || _automaticJoined) return Future.value();
     if (_automaticStopTask case final pending?) return pending;
     _automaticStopRunning = true;
     return _automaticStopTask = _joinAutomaticStop();
@@ -484,12 +438,10 @@ final class StudioUpdateClient {
     try {
       await _automaticTask;
       await _rpc('automatic-close', api.cancelAutomaticUpdate);
-      _automaticPermit?.release();
-      _automaticPermit = null;
+      _automaticJoined = true;
       _cleanupFailures.remove('automatic-update');
     } catch (error) {
       _cleanupFailures['automatic-update'] = error;
-      _automaticPermit?.mark(ResourcePhase.unresolved);
     } finally {
       _automaticStopRunning = false;
     }
@@ -508,19 +460,16 @@ final class StudioUpdateClient {
       }
       if (attempt.joined && _attempts.containsKey(attempt.id)) {
         attempt.operation?.dispose();
-        attempt.permit.release();
         _attempts.remove(attempt.id);
       }
     } catch (error) {
       attempt.cleanupFailure = error;
-      if (!attempt.permit.isReleased)
-        attempt.permit.mark(ResourcePhase.unresolved);
     }
   }
 
   CloseReport _report() => CloseReport(
     unresolved: [
-      if (_closed && _automaticPermit != null)
+      if (_closed && !_automaticJoined)
         UnresolvedResource(
           owner: 'automatic-update',
           attemptId: const AttemptId(0),
@@ -544,7 +493,7 @@ final class StudioUpdateClient {
               StateError('Update owner is still joining'),
         ),
       for (final entry in _cleanupFailures.entries)
-        if (entry.key != 'automatic-update' || _automaticPermit == null)
+        if (entry.key != 'automatic-update' || _automaticJoined)
           UnresolvedResource(
             owner: entry.key,
             attemptId: const AttemptId(0),
@@ -555,17 +504,15 @@ final class StudioUpdateClient {
 }
 
 final class _UpdateRpc {
-  _UpdateRpc(this.id, this.name, this.permit);
+  _UpdateRpc(this.id, this.name);
   final int id;
   final String name;
-  final ResourcePermit permit;
   final Completer<void> done = Completer();
 }
 
 final class _UpdateAttempt {
-  _UpdateAttempt(this.id, this.permit);
+  _UpdateAttempt(this.id);
   final int id;
-  final ResourcePermit permit;
   final Completer<StudioUpdateOperation?> opened = Completer();
   StudioUpdateOperation? operation;
   Future<StudioUpdateInstallResult>? task;

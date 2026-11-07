@@ -5,10 +5,6 @@ import '../../../anywork_client.dart'
         CloseReport,
         AttemptId,
         LatestValue,
-        ResourceBudget,
-        ResourceKind,
-        ResourcePermit,
-        ResourcePhase,
         UnresolvedResource,
         ValueObservation;
 import '../../../directory_ports.dart';
@@ -28,16 +24,13 @@ StudioFailure _protocolFailure(String message) => StudioFailure(
 final class ThreadDirectoryStore {
   ThreadDirectoryStore({
     required DirectoryFeedPort feed,
-    required ResourceBudget budget,
     void Function(ResourceStamp stamp)? onStamp,
     void Function(UnresolvedResource failure)? onCleanupFailure,
   }) : _feed = feed,
-       _budget = budget,
        _onStamp = onStamp,
        _onCleanupFailure = onCleanupFailure;
 
   final DirectoryFeedPort _feed;
-  final ResourceBudget _budget;
   final void Function(ResourceStamp stamp)? _onStamp;
   final void Function(UnresolvedResource failure)? _onCleanupFailure;
   final Map<_ThreadsDemand, _DirectorySlot<ThreadDirectoryFrame>> _threads = {};
@@ -67,7 +60,6 @@ final class ThreadDirectoryStore {
     final slot = _threads.putIfAbsent(demand, () {
       return _DirectorySlot<ThreadDirectoryFrame>(
         owner: this,
-        budget: _budget,
         label: 'threads:$query:$window',
         open: () async {
           final handle = await _feed.openThreadsObservation(query, window);
@@ -100,7 +92,6 @@ final class ThreadDirectoryStore {
     final slot = _metadata.putIfAbsent(threadId, () {
       return _DirectorySlot<ThreadMetadataFrame>(
         owner: this,
-        budget: _budget,
         label: 'thread:$threadId',
         open: () async {
           final handle = await _feed.openThreadObservation(threadId);
@@ -182,35 +173,17 @@ final class _ThreadsDemand {
 final class _DirectorySlot<T> {
   _DirectorySlot({
     required this.owner,
-    required ResourceBudget budget,
     required this.label,
     required this.open,
     required this.validate,
     required this.onAccept,
-  }) {
-    observerPermit = budget.acquire(
-      ResourceKind.observer,
-      owner: 'directory-observer:$label',
-      phase: ResourcePhase.opening,
-    );
-    try {
-      readModelPermit = budget.acquire(
-        ResourceKind.readModel,
-        owner: 'directory-read-model:$label',
-      );
-    } catch (_) {
-      observerPermit.release();
-      rethrow;
-    }
-  }
+  });
 
   final ThreadDirectoryStore owner;
   final String label;
   final _Open<T> open;
   final _Validate<T> validate;
   final _Accept<T> onAccept;
-  late final ResourcePermit observerPermit;
-  late final ResourcePermit readModelPermit;
   final LatestValue<DirectoryObservationState<T>> source = LatestValue(
     const DirectoryObservationState(),
   );
@@ -273,7 +246,6 @@ final class _DirectorySlot<T> {
     final transition = () async {
       if (previous != null) await previous.close();
       if (_retiring) return;
-      observerPermit.mark(ResourcePhase.opening);
       _attempt = _DirectoryAttempt(this, ++_generation)..start();
     }();
     _transition = transition;
@@ -282,7 +254,6 @@ final class _DirectorySlot<T> {
         (_) => _transition = null,
         onError: (Object error, StackTrace _) {
           _transition = null;
-          observerPermit.mark(ResourcePhase.unresolved);
           failed(_generation, error);
         },
       ),
@@ -300,7 +271,6 @@ final class _DirectorySlot<T> {
     if (_retiring) return;
     _retiring = true;
     owner._beginRetire(this as _DirectorySlot<Object?>);
-    if (!_settled) observerPermit.mark(ResourcePhase.retiring);
     _attempt?.requestClose();
   }
 
@@ -322,15 +292,12 @@ final class _DirectorySlot<T> {
           closed: true,
         ),
       );
-      observerPermit.release();
-      readModelPermit.release();
       owner._settled(this as _DirectorySlot<Object?>);
     }();
     final tracked = operation.then<void>(
       (_) {},
       onError: (Object error, StackTrace stack) {
         _closing = null;
-        observerPermit.mark(ResourcePhase.unresolved);
         owner._cleanupFailed(unresolved(error));
         Error.throwWithStackTrace(error, stack);
       },
@@ -410,7 +377,6 @@ final class _DirectoryAttempt<T> {
       handle.requestClose();
       return;
     }
-    slot.observerPermit.mark(ResourcePhase.active);
     while (!_stop) {
       final frame = await handle.next();
       if (frame == null) {
