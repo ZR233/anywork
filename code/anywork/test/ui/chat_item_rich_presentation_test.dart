@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_payload_re
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
@@ -260,7 +261,7 @@ void main() {
   );
 
   testWidgets(
-    'collapsed history processes keep the compact row height and grow with text scale',
+    'history disclosures keep their intended density and grow with text scale',
     (tester) async {
       final cases = [
         (_item('compact-thinking', 'thinking', {}), 28.0),
@@ -271,10 +272,12 @@ void main() {
             'decision': 'approved',
             'documentVersion': 3,
           }),
-          28.0,
+          // Plan now uses the standard Material ExpansionTile hit target.
+          null,
         ),
       ];
       for (final (item, compactHeight) in cases) {
+        double? standardHeight;
         for (final scale in [1.0, 2.5]) {
           await tester.pumpWidget(
             _host(
@@ -291,13 +294,22 @@ void main() {
           final height = tester
               .getSize(find.byKey(ValueKey('chat-item:${item.id}')))
               .height;
-          expect(
-            height,
-            scale == 1
-                ? closeTo(compactHeight, .01)
-                : greaterThan(compactHeight),
-            reason: '${item.type} at text scale $scale',
-          );
+          if (compactHeight != null) {
+            expect(
+              height,
+              scale == 1
+                  ? closeTo(compactHeight, .01)
+                  : greaterThan(compactHeight),
+              reason: '${item.type} at text scale $scale',
+            );
+          } else {
+            expect(height, greaterThanOrEqualTo(kMinInteractiveDimension));
+            if (scale == 1) {
+              standardHeight = height;
+            } else {
+              expect(height, greaterThan(standardHeight!));
+            }
+          }
           expect(tester.takeException(), isNull);
         }
       }
@@ -536,21 +548,38 @@ void main() {
         expect(find.text('公开原始记录'), findsOneWidget);
         expect(tester.takeException(), isNull, reason: type);
       }
-      await _show(
-        tester,
-        _item(
-          'plan',
-          'plan',
-          {'decision': 'approved'},
-          bodies: [_body('plan.document', 'plan proof')],
-        ),
-      );
-      expect(find.byType(Card), findsNothing);
-      expect(find.text('计划已批准'), findsOneWidget);
-      expect(find.text('plan proof'), findsNothing);
-      await tester.tap(find.text('计划已批准'));
-      await tester.pumpAndSettle();
-      expect(find.text('plan proof'), findsOneWidget);
+      for (final (decision, label, icon) in [
+        ('approved', '计划已批准', Icons.check),
+        ('revisionRequested', '已请求修改计划', Icons.edit_outlined),
+        ('cancelled', '计划确认已取消', Icons.close),
+        ('resolved', '计划确认已回答', Icons.description_outlined),
+      ]) {
+        await _show(
+          tester,
+          _item(
+            'plan:$decision',
+            'plan',
+            {'decision': decision, 'documentVersion': 7},
+            bodies: [_body('plan.document', 'plan proof')],
+          ),
+        );
+        expect(find.byType(Card), findsNothing);
+        final receipt = tester.widget<PlanReceiptView>(
+          find.byType(PlanReceiptView),
+        );
+        expect(receipt.icon, icon);
+        expect(receipt.documentVersion, 7);
+        expect(find.text(label), findsOneWidget);
+        expect(find.text('v7'), findsOneWidget);
+        expect(find.text('plan proof'), findsNothing);
+        await tester.tap(find.text(label));
+        await tester.pumpAndSettle();
+        expect(find.text('plan proof'), findsOneWidget);
+        expect(find.text('公开原始记录'), findsOneWidget);
+        expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
+        expect(find.byKey(StudioDriverKeys.planSubmitRevision), findsNothing);
+        expect(find.byType(TextField), findsNothing);
+      }
     },
   );
 

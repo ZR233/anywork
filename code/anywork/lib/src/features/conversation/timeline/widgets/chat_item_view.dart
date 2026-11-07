@@ -11,6 +11,7 @@ import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/timeline_display_unit.dart';
+import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
@@ -384,16 +385,21 @@ class _ChatItemViewState extends State<ChatItemView> {
       'revisionRequested' => context.l10n.planReceiptRevisionRequested,
       'cancelled' => context.l10n.planReceiptCancelled,
       'resolved' => context.l10n.planReceiptAnswered,
-      _ => '计划 · $decision',
+      _ => '${context.l10n.statusPlanEntry} · $decision',
+    };
+    final icon = switch (decision) {
+      'approved' => Icons.check,
+      'revisionRequested' => Icons.edit_outlined,
+      'cancelled' => Icons.close,
+      _ => Icons.description_outlined,
     };
     final version = item.data['documentVersion'];
-    final summary = version is int ? '$label · v$version' : label;
-    return KeyedSubtree(
+    return PlanReceiptView(
       key: StudioDriverKeys.timelinePlanReceipt(item.id),
-      child: _disclosure(Icons.checklist_rtl, summary, [
-        for (final body in item.bodies) _body(body),
-        _rawRecord(),
-      ]),
+      label: label,
+      icon: icon,
+      documentVersion: version is int ? version : null,
+      children: [for (final body in item.bodies) _body(body), _rawRecord()],
     );
   }
 

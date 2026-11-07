@@ -169,9 +169,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
       builder: (context, constraints) {
         final todo = workspace.todo;
         final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final runtimePlan = _runtimeDocumentPresentation(
-          workspace.runtime.plan,
-        );
+        final runtimePlan = _runtimePlanPresentation(workspace.runtime.plan);
         // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
         // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
         final presentedPlan = pendingPlan != null
@@ -272,6 +270,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                   footer: _AdaptiveFooter(
                     threadId: threadId,
                     maxHeight: footerMaxHeight,
+                    scrollPlan: pendingPlan != null,
                     showTodo: !planOpen && todo != null,
                     todoExpanded: !planOpen && todoExpanded,
                     onToggleTodo: planOpen || todo == null
@@ -403,14 +402,13 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     });
   }
 
-  static _WorkspacePlanPresentation? _runtimeDocumentPresentation(
+  static _WorkspacePlanPresentation? _runtimePlanPresentation(
     PlanRuntimeView? plan,
   ) {
-    final document = plan?.document;
-    if (plan == null || document == null) {
+    if (plan == null) {
       return null;
     }
-    return _WorkspacePlanPresentation.fromDocument(plan, document);
+    return _WorkspacePlanPresentation.fromRuntime(plan);
   }
 
   /// footer 可用高度上限：先给时间线留下最小可视高度，剩余高度交给 footer。
@@ -457,19 +455,19 @@ class _WorkspacePlanPresentation {
     );
   }
 
-  factory _WorkspacePlanPresentation.fromDocument(
-    PlanRuntimeView plan,
-    PlanDocumentView document,
-  ) {
+  factory _WorkspacePlanPresentation.fromRuntime(PlanRuntimeView plan) {
+    final document = plan.document;
     return _WorkspacePlanPresentation(
-      identity: 'document:${document.version}',
-      markdown: document.markdown,
+      identity: document == null
+          ? 'plan:${plan.revision}'
+          : 'document:${document.version}',
+      markdown: document?.markdown,
       status: planDetailStatusFromRuntime(plan.state),
     );
   }
 
   final String identity;
-  final String markdown;
+  final String? markdown;
   final PlanDetailStatus status;
 }
 
@@ -745,19 +743,13 @@ class _ResetPlanWidthIntent extends Intent {
 /// 把省下的高度让给展开详情，同时避免矮窗口 `RenderFlex` 溢出。
 const _compactFooterBudget = 400.0;
 
-/// 在窗口较矮时把可伸缩的活动条压进剩余空间，而不是让整条 footer 滚动。
-///
-/// 整条 footer 放进滚动容器会把「装不下」变成「输入区被裁到窗口外」：容器只保证
-/// `maxHeight` 内的内容可见，超出的部分（正好是底部的输入区与发送/停止按钮）被静默
-/// 裁掉。这里只给出高度上限，footer 内部把唯一可伸缩的活动条压到剩余高度里（见
-/// [_Footer]），因此输入区始终完整可见，活动条详情在自身范围内滚动。
-///
-/// footer 的总高度上限由 [AgentWorkspacePane] 按「窗口高度 − 时间线最小可视高度」给出；
-/// 这里仅据该预算决定是否进入紧凑布局（唯一所有者，不在别处重复读窗口尺寸）。
+/// 使用 workspace 的高度预算。常规 composer 保持输入区完整可见、只压缩活动条；
+/// Plan 的完整确认表单允许区内滚动，让短窗和大字下的两项决定仍可到达。
 class _AdaptiveFooter extends StatelessWidget {
   const _AdaptiveFooter({
     required this.threadId,
     required this.maxHeight,
+    required this.scrollPlan,
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
@@ -767,6 +759,7 @@ class _AdaptiveFooter extends StatelessWidget {
 
   final String threadId;
   final double? maxHeight;
+  final bool scrollPlan;
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
@@ -792,17 +785,25 @@ class _AdaptiveFooter extends StatelessWidget {
       child: LayoutBuilder(
         // ConstrainedBox 已把窗口预算收成有界 maxHeight，这里据此决定紧凑与否，避免在
         // composer 里再读一次窗口尺寸形成第二套事实源。
-        builder: (context, constraints) => _Footer(
-          threadId: threadId,
-          showTodo: showTodo,
-          todoExpanded: todoExpanded,
-          onToggleTodo: onToggleTodo,
-          showPlanEntry: showPlanEntry,
-          onOpenPlan: onOpenPlan,
-          compact: constraints.maxHeight < _compactFooterBudget,
-          // footer 区域的可定位句柄：内容不再整体滚动，但保持同一 key，便于驱动按区域定位。
-          contentKey: StudioDriverKeys.workspaceFooterScroll,
-        ),
+        builder: (context, constraints) {
+          final footer = _Footer(
+            threadId: threadId,
+            showTodo: showTodo,
+            todoExpanded: todoExpanded,
+            onToggleTodo: onToggleTodo,
+            showPlanEntry: showPlanEntry,
+            onOpenPlan: onOpenPlan,
+            compact: constraints.maxHeight < _compactFooterBudget,
+            contentKey: StudioDriverKeys.workspaceFooterScroll,
+          );
+          return scrollPlan
+              ? SingleChildScrollView(
+                  key: const ValueKey('plan-workspace-footer-scroll'),
+                  primary: false,
+                  child: footer,
+                )
+              : footer;
+        },
       ),
     );
   }
