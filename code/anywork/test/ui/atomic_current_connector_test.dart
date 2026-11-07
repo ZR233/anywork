@@ -15,6 +15,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
@@ -205,6 +206,9 @@ final class _Harness {
   }
 
   Widget host({ConversationActivityView? view, Widget? dock}) {
+    for (final unit in presentation.live.value) {
+      unit.expansion.expanded ??= false;
+    }
     final currentView = ConversationCurrentConnector(
       key: ObjectKey(content),
       current: current,
@@ -530,6 +534,15 @@ void main() {
           ),
         );
         await tester.pump();
+        expect(members.scopes, isEmpty);
+        await _flush(tester);
+        await tester.tap(
+          find.descendant(
+            of: find.byType(TimelineReasoningView),
+            matching: find.byType(TimelineActivityRow),
+          ),
+        );
+        await tester.pump();
         members.scopes.single.watches.single.add(_window('已保存的思考片段'));
         await tester.idle();
         await tester.pump();
@@ -624,7 +637,7 @@ void main() {
       expect(active.icon, Icons.compress_outlined);
       expect(active.active, isTrue);
       expect(active.expandable, isFalse);
-      expect(find.byType(ConversationActivityBar), findsNothing);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
       expect(h.content.scopes, isEmpty);
       expect(h.controller.messages, isEmpty);
 
@@ -644,7 +657,7 @@ void main() {
       expect(completed.label, l10n.timelineContextCompacted);
       expect(completed.active, isFalse);
       expect(completed.expandable, isFalse);
-      expect(find.byType(ConversationActivityBar), findsNothing);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
       expect(h.content.scopes, isEmpty);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
@@ -714,13 +727,100 @@ void main() {
         await tester.pumpWidget(h.host());
         expect(find.text('内容状态未知'), findsOneWidget);
         expect(find.byType(TimelineActivityRow), findsNothing);
-        expect(find.byType(ConversationActivityBar), findsNothing);
+        expect(find.byType(ConversationActivityStatus), findsNothing);
         expect(h.content.scopes, isEmpty);
         await tester.pumpWidget(const SizedBox());
         await _flush(tester);
       },
     );
   }
+
+  testWidgets(
+    'real group members share the outer reading viewport and remain reachable when height shrinks',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final members = _MemberContent();
+      await h.accept([
+        workItem('long-members', count: 30, active: 0, closed: false),
+      ]);
+      final unit = h.presentation.live.value.single;
+      unit.expansion.expanded = true;
+      unit.expansion.openMembers = (_, _) async => members;
+      await tester.binding.setSurfaceSize(const Size(760, 210));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      await members.consumer!.applyBatch(
+        ChatBatch(
+          placement: ChatPlacement.set,
+          entries: [
+            for (var index = 0; index < 30; index++)
+              ChatAtomEntry(
+                chatEnvelope(
+                  'member-$index',
+                  type: 'tool',
+                  data: {
+                    'invocation': {
+                      'toolCallId': 'call-$index',
+                      'name': 'stat_path',
+                      'presentationContract': 'builtin.stat_path@1',
+                    },
+                    'state': {
+                      'kind': 'succeeded',
+                      'completedAt': 1,
+                      'output': {'attachments': []},
+                    },
+                  },
+                  bodies: [
+                    inlineBody(
+                      'tool.arguments',
+                      jsonEncode({'path': '文件-$index.txt'}),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+      await _flush(tester);
+      expect(tester.takeException(), isNull);
+      final scrolls = tester.stateList<ScrollableState>(
+        find.byType(Scrollable),
+      );
+      expect(
+        scrolls.where((scroll) => scroll.position.maxScrollExtent > 0),
+        hasLength(1),
+        reason: 'Only the outer group body scrolls',
+      );
+      final body = find.byType(SingleChildScrollView).first;
+      final position = tester
+          .state<ScrollableState>(
+            find.descendant(of: body, matching: find.byType(Scrollable)).first,
+          )
+          .position;
+      expect(position.maxScrollExtent, greaterThan(320));
+      await tester.drag(body, const Offset(0, -5000));
+      await _flush(tester);
+      final last = find.textContaining('文件-29.txt');
+      expect(last.hitTestable(), findsOneWidget);
+      await tester.binding.setSurfaceSize(const Size(760, 130));
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      await tester.drag(body, const Offset(0, -5000));
+      await _flush(tester);
+      expect(tester.takeException(), isNull);
+      expect(last.hitTestable(), findsOneWidget);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('conversation-activity')))
+            .height,
+        lessThanOrEqualTo(130),
+      );
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+    },
+  );
 
   testWidgets(
     'an unfinished group does not hide a later response; folded group opens no body or member resource',
@@ -909,6 +1009,225 @@ void main() {
       expect(old.closed, isTrue);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
+    },
+  );
+
+  testWidgets(
+    'reasoning reads only its summary while folded and revokes the body before the closing animation',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      const summaryRef = ContentRef(
+        databaseId: 'database',
+        target: BodyContentTarget(
+          owner: CurrentContentOwner(
+            domain: 'execution',
+            id: 'reasoning',
+            revision: 1,
+          ),
+          key: 'part.summaryText.0',
+        ),
+      );
+      TimelineMemberDisplay? display;
+      Widget scene({bool withBody = true}) => _host(
+        TimelineMemberAtom(
+          key: const ValueKey('reasoning-member'),
+          atom: ChatAtom(
+            id: 'reasoning-member',
+            source: _source,
+            sourceOrder: 1,
+            kind: ChatAtomKind.reasoning,
+            delivery: ChatDeliveryKind.foreground,
+            lifecycle: const ActiveChatAtom(
+              started: null,
+              status: ChatActiveStatus.running,
+            ),
+            contents: [
+              const ChatAtomContent(
+                role: ChatContentRole.reasoningSummary,
+                reference: summaryRef,
+              ),
+              if (withBody)
+                ChatAtomContent(role: ChatContentRole.body, reference: _ref()),
+            ],
+          ),
+          content: content,
+          isActive: () => true,
+          images: images,
+          readAttachment: null,
+          registerDisplay: (value) {
+            display = value;
+            return () => display = null;
+          },
+        ),
+      );
+      await tester.pumpWidget(scene());
+      final original = content.scopes.single;
+      expect(original.requests.single.$1, same(summaryRef));
+      original.watches.single.add(_window('持续更新的思考概要'));
+      await tester.idle();
+      await tester.pump();
+      expect(
+        find.textContaining('持续更新的思考概要', findRichText: true),
+        findsOneWidget,
+      );
+      expect(display!.windows, hasLength(1));
+      final row = find.descendant(
+        of: find.byType(TimelineReasoningView),
+        matching: find.byType(TimelineActivityRow),
+      );
+      await tester.tap(row);
+      await tester.pump();
+      expect(original.requests, hasLength(2));
+      original.watches.last.add(_window('按需读取的思考正文'));
+      await tester.idle();
+      await _flush(tester);
+      expect(find.text('按需读取的思考正文'), findsOneWidget);
+      original.cancelGate = Completer<void>();
+      await tester.tap(row);
+      expect(original.active, isFalse);
+      expect(display!.windows, isEmpty);
+      original.watches.last.add(_window('折叠后迟到正文'));
+      await tester.idle();
+      await tester.pump();
+      expect(display!.windows, isEmpty);
+      original.cancelGate!.complete();
+      await _flush(tester);
+      expect(content.scopes, hasLength(2));
+      final fresh = content.scopes.last;
+      expect(fresh.requests.single.$1, same(summaryRef));
+      fresh.watches.single.add(_window('折叠后仍可更新概要'));
+      await tester.idle();
+      await _flush(tester);
+      expect(
+        find.textContaining('折叠后仍可更新概要', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.text('折叠后迟到正文'), findsNothing);
+      expect(find.text('按需读取的思考正文'), findsNothing);
+      await tester.pumpWidget(scene(withBody: false));
+      expect(find.byType(ExpansionTile), findsNothing);
+      expect(tester.widget<TimelineActivityRow>(row).expandable, isFalse);
+      expect(fresh.requests, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(content.scopes.every((scope) => scope.closed), isTrue);
+    },
+  );
+
+  testWidgets(
+    'sealed reasoning revokes pending body reads immediately while retaining its summary',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      final pendingBody = Completer<ContentWindow>();
+      content.onRead = (reference, _) =>
+          (reference.target as BodyContentTarget).key.contains('summaryText')
+          ? Future.value(_window('已保存的思考概要'))
+          : pendingBody.future;
+      Map<String, Object?> manifest(String key) => {
+        'key': key,
+        'byteLength': 100,
+        'reference': {
+          'databaseId': 'database',
+          'target': {
+            'kind': 'body',
+            'owner': {'kind': 'item', 'itemId': 'sealed-reasoning'},
+            'key': key,
+          },
+        },
+      };
+      TimelineMemberDisplay? display;
+      await tester.pumpWidget(
+        _host(
+          TimelineMemberAtom(
+            atom: ChatAtom(
+              id: 'sealed-reasoning',
+              source: _source,
+              sourceOrder: 1,
+              kind: ChatAtomKind.reasoning,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const TerminalChatAtom(
+                started: null,
+                ended: null,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              contents: const [],
+              payload: InlinePayload(
+                bytes: utf8.encode(
+                  jsonEncode({
+                    'contract': 'anywork.chat/1',
+                    'type': 'thinking',
+                    'data': <String, Object?>{},
+                    'bodies': [
+                      manifest('part.summaryText.0'),
+                      manifest('part.reasoningText.0'),
+                    ],
+                  }),
+                ),
+              ),
+            ),
+            content: content,
+            isActive: () => true,
+            images: images,
+            readAttachment: null,
+            registerDisplay: (value) {
+              display = value;
+              return () => display = null;
+            },
+          ),
+        ),
+      );
+      await _flush(tester);
+      expect(content.scopes.single.reads, hasLength(1));
+      expect(
+        find.textContaining('已保存的思考概要', findRichText: true),
+        findsOneWidget,
+      );
+      final row = find.descendant(
+        of: find.byType(TimelineReasoningView),
+        matching: find.byType(TimelineActivityRow),
+      );
+      await tester.tap(row);
+      await _flush(tester);
+      final original = content.scopes.single;
+      expect(original.reads, hasLength(2));
+      expect(
+        find.byType(ExpansionTile),
+        findsOneWidget,
+        reason: 'Opening the member is the only body disclosure',
+      );
+      final bodyConnector = tester
+          .widgetList<TimelineContentRangeConnector>(
+            find.byType(TimelineContentRangeConnector),
+          )
+          .singleWhere((view) => view.contentKey == 'part.reasoningText.0');
+      expect(bodyConnector.isDisplayActive!(), isTrue);
+      await tester.tap(row);
+      expect(original.active, isFalse);
+      expect(bodyConnector.isDisplayActive!(), isFalse);
+      expect(display!.windows, isEmpty);
+      await expectLater(
+        bodyConnector.readContent!(
+          bodyConnector.reference,
+          const ContentRange(offset: 0, maxBytes: 20),
+        ),
+        throwsA(isA<StaleConversationScope>()),
+      );
+      expect(original.reads, hasLength(2));
+      pendingBody.complete(_window('已经折叠的迟到思考正文'));
+      await _flush(tester);
+      expect(find.text('已经折叠的迟到思考正文'), findsNothing);
+      expect(
+        find.textContaining('已保存的思考概要', findRichText: true),
+        findsOneWidget,
+      );
+      expect(content.scopes.last.reads, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(content.scopes.every((scope) => scope.closed), isTrue);
     },
   );
 

@@ -9,6 +9,7 @@ import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../widgets/timeline_content_range_view.dart';
+import '../widgets/timeline_reasoning_view.dart';
 
 typedef ChatContentRead = Future<ContentWindow> Function(
   ContentRef reference,
@@ -229,20 +230,37 @@ class _TimelineContentRangeConnectorState
   }
 
   @override
-  Widget build(BuildContext context) => TimelineContentRangeView(
-    key: ValueKey(contentReferenceIdentity(widget.reference)),
-    itemId: widget.itemId,
-    contentKey: widget.contentKey,
-    label: widget.label,
-    initiallyExpanded: _immediate,
-    loading: _loading,
-    active: widget.isDisplayActive?.call() ?? true,
-    canRead: widget.readContent != null,
-    window: _window,
-    error: _error,
-    onExpansionChanged: _onExpansionChanged,
-    onNext: _next,
-    onCopy: _copy,
-    witness: widget.witness,
-  );
+  Widget build(BuildContext context) {
+    if (TimelineBodyReadIntent.summaryOf(context)) {
+      return widget.witness(
+        _window == null
+            ? ''
+            : utf8.decode(_window!.bytes, allowMalformed: true),
+        TimelineReasoningSummary(
+          text:
+              _error?.toString() ??
+              (_window == null
+                  ? ''
+                  : utf8.decode(_window!.bytes, allowMalformed: true)),
+        ),
+      );
+    }
+    return TimelineContentRangeView(
+      key: ValueKey(contentReferenceIdentity(widget.reference)),
+      itemId: widget.itemId,
+      contentKey: widget.contentKey,
+      label: widget.label,
+      initiallyExpanded: _immediate,
+      disclosed: _immediate,
+      loading: _loading,
+      active: widget.isDisplayActive?.call() ?? true,
+      canRead: widget.readContent != null,
+      window: _window,
+      error: _error,
+      onExpansionChanged: _onExpansionChanged,
+      onNext: _next,
+      onCopy: _copy,
+      witness: widget.witness,
+    );
+  }
 }

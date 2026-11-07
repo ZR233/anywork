@@ -458,6 +458,71 @@ void main() {
     },
   );
 
+  for (final hasSummary in [true, false]) {
+    for (final hasBody in [true, false]) {
+      testWidgets(
+        'reasoning summary=$hasSummary body=$hasBody has exactly one conditional disclosure',
+        (tester) async {
+          final value = _item(
+            'reasoning-combination',
+            'thinking',
+            const {},
+            bodies: [
+              _body(
+                'part.summaryText.0',
+                hasSummary ? '**只有概要的一行标题**' : ' \n ',
+              ),
+              _body('part.reasoningText.0', hasBody ? '展开后显示的原始思考正文' : ' \n '),
+            ],
+          );
+          final atom = ChatAtom(
+            id: value.id,
+            source: const ForegroundTurnChatSource(turnId: 'T'),
+            sourceOrder: 1,
+            kind: ChatAtomKind.reasoning,
+            delivery: ChatDeliveryKind.foreground,
+            lifecycle: const TerminalChatAtom(
+              started: null,
+              ended: null,
+              outcome: ChatTerminalOutcome.completed,
+            ),
+            startedAt: 100,
+            finishedAt: 225,
+            contents: const [],
+            payload: InlinePayload(bytes: utf8.encode(value.raw!)),
+          );
+          await _show(tester, ChatItemPresentation.decode(atom));
+          final row = tester.widget<TimelineActivityRow>(
+            find.byType(TimelineActivityRow),
+          );
+          expect(row.expandable, hasBody);
+          expect(
+            find.byType(ExpansionTile),
+            hasBody ? findsOneWidget : findsNothing,
+          );
+          expect(find.text('展开后显示的原始思考正文'), findsNothing);
+          if (hasSummary) {
+            expect(
+              find.textContaining('只有概要的一行标题', findRichText: true),
+              findsOneWidget,
+            );
+            expect(find.text('思考了 2 分 5 秒'), findsNothing);
+          } else {
+            expect(find.text('思考了 2 分 5 秒'), findsOneWidget);
+          }
+          if (hasBody) {
+            await tester.tap(_rowTap);
+            await tester.pumpAndSettle();
+            expect(find.text('展开后显示的原始思考正文'), findsOneWidget);
+            await tester.tap(_rowTap);
+            await tester.pumpAndSettle();
+            expect(find.text('展开后显示的原始思考正文'), findsNothing);
+          }
+        },
+      );
+    }
+  }
+
   testWidgets(
     'thinking summary, plan receipt and every non-tool kind retain semantic presentation without item grouping',
     (tester) async {
@@ -481,15 +546,21 @@ void main() {
             .label,
         isNotEmpty,
       );
-      expect(find.textContaining('bounded summary'), findsOneWidget);
-      expect(find.text('reasoning proof'), findsOneWidget);
+      expect(
+        find.textContaining('bounded summary', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.text('reasoning proof'), findsNothing);
       expect(
         tester
             .widget<TimelineActivityRow>(find.byType(TimelineActivityRow).first)
             .expandable,
-        isFalse,
-        reason: 'Opening the parent group already exposes the thinking content',
+        isTrue,
+        reason: 'Only the reasoning body grants member expansion',
       );
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(find.text('reasoning proof'), findsOneWidget);
       final cases = <(String, Map<String, Object?>, IconData)>[
         (
           'skill',

@@ -27,8 +27,7 @@ class ConversationActivityConnector extends ConsumerWidget {
       // A genuine header-only state uses the same production component. It
       // cannot invent body content or expansion eligibility from other domains.
       return ConversationActivityBar(
-        view: state.view,
-        onExpandedChanged: StudioDriverState.publishActivityExpanded,
+        children: [ConversationActivityStatus(view: state.view)],
       );
     }
 
@@ -38,8 +37,7 @@ class ConversationActivityConnector extends ConsumerWidget {
     final lease = timeline.lease(threadId);
     if (lease == null || !identical(lease.content, content)) {
       return ConversationActivityBar(
-        view: state.view,
-        onExpandedChanged: StudioDriverState.publishActivityExpanded,
+        children: [ConversationActivityStatus(view: state.view)],
       );
     }
     return ConversationCurrentConnector(

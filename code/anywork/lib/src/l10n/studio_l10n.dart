@@ -97,11 +97,12 @@ extension StudioLocalizationsX on BuildContext {
       ConversationActivityKind.compacting =>
         l10n.conversationActivityCompacting,
       ConversationActivityKind.thinking => l10n.timelineReasoningActive,
-      ConversationActivityKind.responding => l10n.statusTurnResponding,
+      ConversationActivityKind.responding =>
+        l10n.conversationActivityResponding,
       ConversationActivityKind.planning => l10n.statusTurnPlanning,
       ConversationActivityKind.runningTool =>
         view.wait == null
-            ? l10n.conversationActivityRunningTool
+            ? l10n.timelineGroupWorking
             : switch (view.wait!.intent) {
                 ThreadWaitEventsIntentView(:final targets) =>
                   targets.isEmpty

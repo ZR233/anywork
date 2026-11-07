@@ -29,6 +29,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.meta,
     this.metaKey,
     this.emphasized = false,
+    this.header = false,
     super.key,
   });
 
@@ -81,110 +82,161 @@ class TimelineActivityRow extends StatelessWidget {
   final Key? metaKey;
   final bool emphasized;
 
+  /// 状态与组标题保持全文；摘要可省略，统计在不足时换行。
+  final bool header;
+
   @override
   Widget build(BuildContext context) {
     final color = context.colors.onSurfaceVariant;
-    final resolvedIconColor =
-        iconColor ??
-        (isIssue
-            ? context.colors.error
-            : active
-            ? context.statusColors.activeIndicator
-            : color.withValues(alpha: .78));
+    final textStyle = context.text.bodySmall!.copyWith(
+      color: header && active ? context.colors.onSurface : color,
+      fontSize: header ? 12 : null,
+      fontWeight: emphasized ? FontWeight.w500 : FontWeight.w400,
+      height: 1.5,
+    );
+    final metaStyle = context.text.labelSmall!.copyWith(
+      color: color.withValues(alpha: .78),
+      fontSize: 10.5,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
     final showLeading = leading != null || icon != null || isIssue || active;
-    Widget row = Align(
-      alignment: AlignmentDirectional.centerStart,
-      heightFactor: 1,
-      child: SelectionContainer.disabled(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 28),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (showLeading) ...[
-                  SizedBox(
-                    width: iconColumnWidth,
-                    child: Center(
-                      heightFactor: 1,
-                      child:
-                          leading ??
-                          TimelineActivityIndicator(
-                            icon: isIssue ? Icons.error_outline : icon,
-                            active: active && !isIssue,
-                            color: resolvedIconColor,
-                          ),
-                    ),
-                  ),
-                  const SizedBox(width: gap),
-                ],
-                Flexible(
-                  child:
-                      labelWidget ??
-                      Text(
-                        label,
-                        key: labelKey,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        softWrap: false,
-                        style: context.text.bodySmall?.copyWith(
-                          color: color,
-                          fontWeight: emphasized
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                          height: 1.25,
-                        ),
-                      ),
+    final leadingWidth = header ? 14.0 : iconColumnWidth;
+    final labelView =
+        labelWidget ??
+        Text(
+          label,
+          key: labelKey,
+          maxLines: header ? null : 1,
+          overflow: header ? TextOverflow.visible : TextOverflow.ellipsis,
+          softWrap: header,
+          style: textStyle,
+        );
+    final detail =
+        summaryWidget ??
+        (summary == null
+            ? null
+            : Text(
+                summary!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textStyle.copyWith(
+                  color: color,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w400,
                 ),
-                if (summaryWidget != null || summary != null) ...[
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child:
-                        summaryWidget ??
-                        Text(
-                          summary!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.text.bodySmall?.copyWith(
-                            color: color,
-                            height: 1.25,
+              ));
+    final mark = Icon(
+      expanded
+          ? Icons.keyboard_arrow_down_rounded
+          : Icons.chevron_right_rounded,
+      size: 15,
+      color: color.withValues(alpha: .72),
+    );
+    final symbol = showLeading
+        ? SizedBox(
+            width: leadingWidth,
+            child: Center(
+              heightFactor: 1,
+              child:
+                  leading ??
+                  TimelineActivityIndicator(
+                    icon: isIssue ? Icons.error_outline : icon,
+                    active: active && !isIssue,
+                    color:
+                        iconColor ??
+                        (isIssue
+                            ? context.colors.error
+                            : active
+                            ? context.statusColors.activeIndicator
+                            : color.withValues(alpha: .78)),
+                  ),
+            ),
+          )
+        : null;
+    Widget row = SelectionContainer.disabled(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          double measure(String value, TextStyle style) {
+            final painter = TextPainter(
+              text: TextSpan(text: value, style: style),
+              textDirection: Directionality.of(context),
+              textScaler: MediaQuery.textScalerOf(context),
+            )..layout();
+            final width = painter.width;
+            painter.dispose();
+            return width;
+          }
+
+          final stacked =
+              meta != null &&
+              measure(label, textStyle) +
+                      measure(meta!, metaStyle) +
+                      (showLeading ? leadingWidth + gap : 0) +
+                      (expandable ? 19 : 0) +
+                      16 >
+                  constraints.maxWidth;
+          final content = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (symbol != null) ...[symbol, const SizedBox(width: gap)],
+              Flexible(child: labelView),
+              if (!stacked && detail != null) ...[
+                const SizedBox(width: 8),
+                Flexible(child: detail),
+              ],
+              if (!header && expandable) ...[const SizedBox(width: 4), mark],
+            ],
+          );
+          final title = (!stacked && meta != null) || (header && expandable)
+              ? Row(
+                  children: [
+                    Expanded(child: content),
+                    if (!stacked && meta != null) ...[
+                      const SizedBox(width: 8),
+                      Text(meta!, key: metaKey, style: metaStyle),
+                    ],
+                    if (header && expandable) ...[
+                      const SizedBox(width: 4),
+                      mark,
+                    ],
+                  ],
+                )
+              : content;
+          return ConstrainedBox(
+            constraints: BoxConstraints(minHeight: header ? 25 : 28),
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: header ? 2 : 4),
+              child: stacked
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        title,
+                        Padding(
+                          padding: EdgeInsetsDirectional.only(
+                            start: showLeading ? leadingWidth + gap : 0,
+                            top: 2,
+                          ),
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 3,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              ?detail,
+                              Text(meta!, key: metaKey, style: metaStyle),
+                            ],
                           ),
                         ),
-                  ),
-                ],
-                if (expandable) const SizedBox(width: 4),
-                if (expandable)
-                  Icon(
-                    expanded
-                        ? Icons.keyboard_arrow_down_rounded
-                        : Icons.chevron_right_rounded,
-                    size: 15,
-                    color: color.withValues(alpha: 0.72),
-                  ),
-                if (meta != null) ...[
-                  const Spacer(),
-                  const SizedBox(width: 8),
-                  Text(
-                    meta!,
-                    key: metaKey,
-                    style: context.text.labelSmall?.copyWith(
-                      color: color.withValues(alpha: .78),
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                ],
-              ],
+                      ],
+                    )
+                  : title,
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
-    final tooltip = this.tooltip;
-    if (tooltip != null) {
-      row = Tooltip(message: tooltip, child: row);
-    }
-    return row;
+    if (tooltip != null) row = Tooltip(message: tooltip!, child: row);
+    return ColoredBox(color: Colors.transparent, child: row);
   }
 }
 
@@ -317,13 +369,21 @@ class _TimelineActivityDisclosureState
 
 /// A shared reading axis, without content or resource ownership.
 class TimelineActivityRail extends StatelessWidget {
-  const TimelineActivityRail({required this.child, super.key});
+  const TimelineActivityRail({
+    required this.child,
+    this.inset = 10,
+    this.contentInset = 17,
+    super.key,
+  });
+
+  final double inset;
+  final double contentInset;
 
   final Widget child;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsetsDirectional.only(start: 10),
+    padding: EdgeInsetsDirectional.only(start: inset),
     child: DecoratedBox(
       decoration: BoxDecoration(
         border: BorderDirectional(
@@ -333,7 +393,7 @@ class TimelineActivityRail extends StatelessWidget {
         ),
       ),
       child: Padding(
-        padding: const EdgeInsetsDirectional.only(start: 17),
+        padding: EdgeInsetsDirectional.only(start: contentInset),
         child: child,
       ),
     ),

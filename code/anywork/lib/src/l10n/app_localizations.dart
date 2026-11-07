@@ -10853,6 +10853,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Managed server and connection'**
   String get acpServiceInfoSectionTitle;
+
+  /// No description provided for @conversationActivityResponding.
+  ///
+  /// In en, this message translates to:
+  /// **'Generating response'**
+  String get conversationActivityResponding;
+
+  /// No description provided for @conversationActivityFollowOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow output'**
+  String get conversationActivityFollowOutput;
+
+  /// No description provided for @timelineGroupWorking.
+  ///
+  /// In en, this message translates to:
+  /// **'Working'**
+  String get timelineGroupWorking;
+
+  /// No description provided for @timelineGroupUnfinished.
+  ///
+  /// In en, this message translates to:
+  /// **'Work unfinished'**
+  String get timelineGroupUnfinished;
+
+  /// No description provided for @timelineGroupRecord.
+  ///
+  /// In en, this message translates to:
+  /// **'Work record'**
+  String get timelineGroupRecord;
+
+  /// No description provided for @timelineGroupMemberCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} items'**
+  String timelineGroupMemberCount(int count);
+
+  /// No description provided for @timelineGroupFailedCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} failed'**
+  String timelineGroupFailedCount(int count);
+
+  /// No description provided for @timelineGroupStoppedCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} stopped'**
+  String timelineGroupStoppedCount(int count);
+
+  /// No description provided for @timelineGroupCompletedCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} completed'**
+  String timelineGroupCompletedCount(int count);
+
+  /// No description provided for @timelineGroupActiveCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} running'**
+  String timelineGroupActiveCount(int count);
 }
 
 class _AppLocalizationsDelegate

@@ -58,7 +58,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Timeline Markdown 标题保留主题字号层级，不退化为正文', (tester) async {
+  testWidgets('Timeline Markdown 标题遵循会话设计稿层级且完整可读', (tester) async {
     late TextTheme textTheme;
     await tester.pumpWidget(
       host(
@@ -80,10 +80,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    for (final (label, style) in [
-      ('一级标题', textTheme.headlineLarge!),
-      ('二级标题', textTheme.headlineMedium!),
-      ('三级标题', textTheme.headlineSmall!),
+    for (final (label, size) in [
+      ('一级标题', 20.0),
+      ('二级标题', 17.0),
+      ('三级标题', 14.0),
     ]) {
       final heading = tester.renderObject<RenderParagraph>(
         find.byWidgetPredicate(
@@ -94,7 +94,7 @@ void main() {
       final span = heading.text.getSpanForPosition(
         const TextPosition(offset: 0),
       )!;
-      expect(span.style?.fontSize, style.fontSize, reason: '$label 必须使用标题字号');
+      expect(span.style?.fontSize, size, reason: '$label 必须使用会话标题字号');
       expect(heading.size.height, greaterThan(textTheme.bodyMedium!.fontSize!));
       expect(heading.didExceedMaxLines, isFalse);
     }

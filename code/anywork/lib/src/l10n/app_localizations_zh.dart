@@ -5772,4 +5772,44 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpServiceInfoSectionTitle => '受管服务与连接信息';
+
+  @override
+  String get conversationActivityResponding => '正在输出';
+
+  @override
+  String get conversationActivityFollowOutput => '跟随输出';
+
+  @override
+  String get timelineGroupWorking => '工作中';
+
+  @override
+  String get timelineGroupUnfinished => '工作未完成';
+
+  @override
+  String get timelineGroupRecord => '工作记录';
+
+  @override
+  String timelineGroupMemberCount(int count) {
+    return '$count 项';
+  }
+
+  @override
+  String timelineGroupFailedCount(int count) {
+    return '$count 项执行失败';
+  }
+
+  @override
+  String timelineGroupStoppedCount(int count) {
+    return '$count 项已停止';
+  }
+
+  @override
+  String timelineGroupCompletedCount(int count) {
+    return '$count 完成';
+  }
+
+  @override
+  String timelineGroupActiveCount(int count) {
+    return '$count 进行中';
+  }
 }

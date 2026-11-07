@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart' show ConversationActivityView;
+import 'package:anywork_client/models.dart'
+    show ConversationActivityView, ConversationActivityKind;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
@@ -18,6 +18,8 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_activity_clock.dart';
+import '../widgets/timeline_activity_section.dart';
 import '../widgets/timeline_display_unit_view.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_group_members_connector.dart';
@@ -115,64 +117,42 @@ class _CurrentState extends State<ConversationCurrentConnector>
 
   @override
   Widget build(BuildContext context) {
-    if (!isCurrent || widget.units.value.isEmpty) {
-      return ConversationActivityBar(
-        view: widget.view,
-        onExpandedChanged: widget.onExpandedChanged,
-      );
-    }
-    return LayoutBuilder(
-      builder: (context, constraints) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: math.min(
-            220,
-            constraints.hasBoundedHeight
-                ? constraints.maxHeight
-                : MediaQuery.sizeOf(context).height * .45,
-          ),
-        ),
-        child: SingleChildScrollView(
-          primary: false,
-          child: SelectionArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final unit in widget.units.value)
-                    KeyedSubtree(
-                      key: ValueKey(unit.id),
-                      child: unit.item.kind == TimelineItemKind.workGroup
-                          ? TimelineDisplayUnitView(
-                              key: ObjectKey(unit.expansion),
-                              unit: unit,
-                              executionPresent: widget.current.executionPresent,
-                              onExpandedChanged: widget.onExpandedChanged,
-                              childBuilder: (_) =>
-                                  TimelineGroupMembersConnector(
-                                    unit: unit,
-                                    threadId: widget.images.threadId,
-                                    readAttachment: widget.readAttachment,
-                                  ),
-                            )
-                          : _CurrentItem(
-                              key: ObjectKey(unit.expansion),
-                              unit: unit,
-                              content: widget.content,
-                              executionPresent: widget.current.executionPresent,
-                              isActive: widget.isDisplayActive,
-                              images: widget.images,
-                              readAttachment: widget.readAttachment,
-                              mountedItems: _items,
-                            ),
+    final units = isCurrent
+        ? widget.units.value
+        : const <TimelineDisplayUnit>[];
+    return ConversationActivityBar(
+      children: [
+        if (units.isEmpty ||
+            widget.view.kind == ConversationActivityKind.storageBlocked ||
+            widget.view.kind == ConversationActivityKind.stopping)
+          ConversationActivityStatus(view: widget.view),
+        for (final unit in units)
+          KeyedSubtree(
+            key: ValueKey(unit.id),
+            child: unit.item.kind == TimelineItemKind.workGroup
+                ? TimelineDisplayUnitView(
+                    key: ObjectKey(unit.expansion),
+                    unit: unit,
+                    executionPresent: widget.current.executionPresent,
+                    onExpandedChanged: widget.onExpandedChanged,
+                    childBuilder: (_) => TimelineGroupMembersConnector(
+                      unit: unit,
+                      threadId: widget.images.threadId,
+                      readAttachment: widget.readAttachment,
                     ),
-                ],
-              ),
-            ),
+                  )
+                : _CurrentItem(
+                    key: ObjectKey(unit.expansion),
+                    unit: unit,
+                    content: widget.content,
+                    executionPresent: widget.current.executionPresent,
+                    isActive: widget.isDisplayActive,
+                    images: widget.images,
+                    readAttachment: widget.readAttachment,
+                    mountedItems: _items,
+                  ),
           ),
-        ),
-      ),
+      ],
     );
   }
 }
@@ -295,6 +275,19 @@ class _CurrentItemState extends State<_CurrentItem> {
 
   @override
   Widget build(BuildContext context) {
+    final item = widget.unit.item;
+    if (item.kind == TimelineItemKind.text) {
+      return ConversationResponseView(
+        startedAt: item.startedAt,
+        finishedAt: item.finishedAt,
+        active: widget.executionPresent && item.outcome == null,
+        child: _buildContent(context),
+      );
+    }
+    return _buildContent(context);
+  }
+
+  Widget _buildContent(BuildContext context) {
     final generation = _bodyGeneration;
     bool bodyActive() => active && identical(generation, _bodyGeneration);
     if (widget.unit.item.payload != null) {
@@ -338,11 +331,21 @@ class _CurrentItemState extends State<_CurrentItem> {
         item.kind == TimelineItemKind.status &&
         item.atomKind == ChatAtomKind.compaction &&
         item.outcome == null) {
-      return TimelineActivityRow(
-        label: context.l10n.conversationActivityCompacting,
-        icon: Icons.compress_outlined,
-        active: true,
-        expandable: false,
+      return TimelineActivitySection(
+        header: TimelineActivityClock(
+          startedAt: item.startedAt,
+          running: true,
+          builder: (context, seconds) => TimelineActivityRow(
+            label: context.l10n.conversationActivityCompacting,
+            icon: Icons.compress_outlined,
+            active: true,
+            expandable: false,
+            header: true,
+            meta: seconds == null
+                ? null
+                : activityDurationLabel(context, seconds),
+          ),
+        ),
       );
     }
     final body = owner;

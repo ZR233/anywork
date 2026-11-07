@@ -493,7 +493,7 @@
   function members(id, terminal) {
     const status = terminal ? 'completed' : 'running';
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 3,
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 3,
         content: '已完成的成员**留在状态栏的当前工作组**；同时核对运行期 `SessionModeSelector` 与 `ModelRoleSelector` 的就地锁定提示。' },
       { id: id + '-read', kind: 'read', title: '读取文件', target: 'composer_dock_connector.dart', status: 'completed', elapsed: 1,
         path: 'code/anywork/lib/src/features/conversation/composer/connectors/composer_dock_connector.dart',
@@ -532,7 +532,7 @@
 
   function followUpMembers(id) {
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '确认收尾检查', status: 'running', elapsed: 0,
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '确认收尾检查', status: 'running', elapsed: 0,
         content: '正文已经结束，这是新的工作组：先在状态栏插入成员，等下一段正文出现时再整组进入时间线。' },
       { id: id + '-command', kind: 'command', title: '执行命令', target: 'cargo flutter analyze', status: 'running', elapsed: 0,
         cwd: '~/work/anywork', exitCode: null, output: 'Analyzing anywork...' }
@@ -876,6 +876,19 @@
       at: 'workgroup',
       label: '状态栏 · 工作组进行中',
       hint: '当前工作组位于状态栏：成员逐个插入，已完成的切换为对应语义图标留在组内，运行中的继续计时。时间线不出现半成品。'
+    },
+    {
+      id: 'long-tool-output', group: 'timeline', stage: 'session', at: 'workgroup',
+      label: '状态栏 · 长工具输出',
+      hint: '展开的工具内容自然增高，统一使用工作组外层阅读区纵向滚动；检查最后一行是否仍可到达。'
+    },
+    {
+      id: 'reasoning-variants',
+      group: 'timeline',
+      stage: 'session',
+      at: 'workgroup',
+      label: '状态栏 · 思考概要与正文组合',
+      hint: '思考成员保持单行：概要优先；只有正文才可展开，没有正文时不显示箭头。仅有正文时使用真实耗时，未知时间不补造。'
     },
     {
       id: 'read-images',
