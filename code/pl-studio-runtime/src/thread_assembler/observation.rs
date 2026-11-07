@@ -2,10 +2,17 @@
 use super::*;
 
 type Observe = dyn Fn(String, ThreadHandle) + Send + Sync;
-type BeforeClose = dyn Fn(String, ThreadHandle) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+type BeforeClose = dyn Fn(
+        String,
+        ThreadHandle,
+        ClosePurpose,
+    ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
-type Drain = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+type Drain = dyn Fn(String, ClosePurpose) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+    + Send
+    + Sync;
+type Synchronize = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
 /// Durable record of one accepted message identity inside a Thread's history.
@@ -73,7 +80,7 @@ pub(super) struct AssemblyObservation(
     Arc<Drain>,
     Option<Arc<MessageIdentityLookup>>,
     Arc<BeforeClose>,
-    Arc<Drain>,
+    Arc<Synchronize>,
 );
 impl std::fmt::Debug for AssemblyObservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,7 +91,10 @@ impl StudioThreadAssembler {
     pub(crate) fn observe_assembly(
         &self,
         observe: impl Fn(String, ThreadHandle) + Send + Sync + 'static,
-        drain: impl Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        drain: impl Fn(
+            String,
+            ClosePurpose,
+        ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
         + Send
         + Sync
         + 'static,
@@ -92,6 +102,7 @@ impl StudioThreadAssembler {
         before_close: impl Fn(
             String,
             ThreadHandle,
+            ClosePurpose,
         )
             -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
         + Send
@@ -142,12 +153,21 @@ impl StudioThreadAssembler {
         }
     }
     pub(super) async fn drain_observation(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.drain_observation_for_purpose(id, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(super) async fn drain_observation_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         if self.execution_observation_was_not_installed(id) {
             return Ok(());
         }
         let observer = self.0.state().observation.clone();
         if let Some(observer) = observer {
-            let result = (observer.1)(id.to_owned()).await;
+            let result = (observer.1)(id.to_owned(), purpose).await;
             result?;
         }
         Ok(())
@@ -307,9 +327,32 @@ impl StudioThreadAssembler {
         id: &str,
         thread: &ThreadHandle,
     ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>> {
+        let purpose = if self
+            .0
+            .state()
+            .agent_services
+            .as_ref()
+            .is_some_and(|services| services.operations.is_deleting(id))
+        {
+            ClosePurpose::Delete
+        } else {
+            ClosePurpose::Preserve
+        };
+        self.prepare_close_for_purpose(id, thread, purpose)
+    }
+
+    pub(super) fn prepare_close_for_purpose(
+        &self,
+        id: &str,
+        thread: &ThreadHandle,
+        purpose: ClosePurpose,
+    ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>> {
+        if purpose == ClosePurpose::Delete {
+            thread.prepare_close_for_deletion();
+        }
         let observer = self.0.state().observation.clone();
         match observer {
-            Some(observer) => (observer.3)(id.to_owned(), thread.clone()),
+            Some(observer) => (observer.3)(id.to_owned(), thread.clone(), purpose),
             None => Box::pin(async { Ok(()) }),
         }
     }
@@ -650,7 +693,7 @@ mod storage_fault_tests {
                         },
                     );
                 },
-                move |id| {
+                move |id, _purpose| {
                     let owners = draining.clone();
                     let fault = drain_fault.clone();
                     let late_fault = late_drain_fault.clone();
@@ -683,7 +726,7 @@ mod storage_fault_tests {
                             }))
                     })
                 })),
-                |_, _| Box::pin(async { Ok(()) }),
+                |_, _, _| Box::pin(async { Ok(()) }),
                 move |id| {
                     let owners = syncing.clone();
                     let fault = sync_fault.clone();

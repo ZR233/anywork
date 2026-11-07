@@ -440,8 +440,34 @@ impl StudioThreadFactory {
         &self,
         record: &crate::studio::store::thread_preparation::ThreadPreparationRecord,
     ) -> Result<(), ThreadAssemblyError> {
+        self.retire_preparation(record, crate::thread_assembler::ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn retire_deleted_preparation(
+        &self,
+        record: &crate::studio::store::thread_preparation::ThreadPreparationRecord,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.services
+            .store
+            .require_preparation_deletion(record)
+            .await
+            .map_err(|error| resource_error("verify private deletion scope", error))?;
+        self.retire_preparation(record, crate::thread_assembler::ClosePurpose::Delete)
+            .await
+    }
+
+    async fn retire_preparation(
+        &self,
+        record: &crate::studio::store::thread_preparation::ThreadPreparationRecord,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
         use crate::studio::store::thread_preparation::{PreparationBinding, PreparationSave};
-        if !record.stopped || record.save == PreparationSave::Required || record.published {
+        if !record.stopped
+            || (purpose == crate::thread_assembler::ClosePurpose::Preserve
+                && record.save == PreparationSave::Required)
+            || record.published
+        {
             return Err(ThreadAssemblyError::Identity(
                 "private archive has no original stop/save ACK".into(),
             ));
@@ -456,7 +482,8 @@ impl StudioThreadFactory {
                 }
             }
         }
-        self.services
+        if purpose == crate::thread_assembler::ClosePurpose::Preserve {
+            self.services
             .store
             .set_preparation_disposition(
                 &record.identity.thread_id,
@@ -464,6 +491,7 @@ impl StudioThreadFactory {
             )
             .await
             .map_err(|error| resource_error("retain private archive temp responsibility", error))?;
+        }
         StudioChildResources::discard_unpublished(
             self,
             &record.identity.thread_id,

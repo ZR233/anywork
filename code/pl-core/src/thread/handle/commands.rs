@@ -84,7 +84,10 @@ pub(in crate::thread) enum Command {
         StepInput,
         oneshot::Sender<Result<ModelStepOutput, ThreadError>>,
     ),
-    Close(oneshot::Sender<Result<(), ThreadError>>),
+    Close(
+        crate::thread::owner::ClosePurpose,
+        oneshot::Sender<Result<(), ThreadError>>,
+    ),
 }
 
 impl Command {
@@ -112,7 +115,7 @@ impl Command {
             Self::CompactContext(_, _, reply) => closed(reply),
             Self::Execute(_, _, reply) => closed(reply),
             Self::Step(_, reply) => closed(reply),
-            Self::Close(reply) => closed(reply),
+            Self::Close(_, reply) => closed(reply),
         }
     }
 }

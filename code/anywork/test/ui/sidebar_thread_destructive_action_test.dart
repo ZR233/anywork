@@ -107,7 +107,9 @@ SidebarThreadRow _sidebarRow({
 );
 
 void main() {
-  testWidgets('active session menu submits the delete intent', (tester) async {
+  testWidgets('active session menu deletes with a text-only item', (
+    tester,
+  ) async {
     final actions = <SidebarThreadAction>[];
     final thread = _thread(id: 'active');
     await tester.pumpWidget(
@@ -123,6 +125,13 @@ void main() {
     expect(
       find.byKey(StudioDriverKeys.deleteThread(thread.threadId)),
       findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(StudioDriverKeys.deleteThread(thread.threadId)),
+        matching: find.byType(Icon),
+      ),
+      findsNothing,
     );
     expect(
       find.byKey(StudioDriverKeys.archiveThread(thread.threadId)),

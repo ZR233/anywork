@@ -3,7 +3,7 @@ use super::{StudioThreadAssembler, agent_services::ServiceError};
 use anyhow::{Context, Result, ensure};
 use futures::task::AtomicWaker;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::{Future, poll_fn},
     sync::{Arc, Mutex, MutexGuard, Weak},
     task::Poll,
@@ -20,6 +20,7 @@ struct Jobs {
     callers: BTreeMap<Id, OperationIdentity>,
     failure: BTreeMap<OperationIdentity, Arc<JoinError>>,
     background_failure: BTreeMap<OperationIdentity, Arc<ServiceError>>,
+    deleting: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,6 +64,26 @@ impl Drop for Shared {
 pub(super) struct AgentOperations(Arc<Shared>);
 
 impl AgentOperations {
+    pub(super) fn begin_deletion(&self, caller: &str) {
+        self.0.jobs().deleting.insert(caller.into());
+        self.0.changed.notify_waiters();
+    }
+
+    pub(super) fn is_deleting(&self, caller: &str) -> bool {
+        self.0.jobs().deleting.contains(caller)
+    }
+
+    pub(super) async fn deletion_requested(&self, caller: &str) {
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_deleting(caller) {
+                return;
+            }
+            changed.await;
+        }
+    }
     pub(super) fn terminal_blocked(&self, caller: &str, producer: &str) -> bool {
         self.0
             .jobs()
@@ -235,11 +256,12 @@ impl AgentOperations {
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
-                let jobs = self.0.jobs();
+                let mut jobs = self.0.jobs();
+                let deleting = jobs.deleting.contains(root);
                 if let Some(error) = jobs
                     .background_failure
                     .iter()
-                    .find(|(identity, _)| identity.caller == root)
+                    .find(|(identity, _)| !deleting && identity.caller == root)
                     .map(|(_, error)| error.clone())
                 {
                     return Err(anyhow::Error::new(error));
@@ -249,6 +271,15 @@ impl AgentOperations {
                     .values()
                     .any(|identity| identity.caller == root)
                 {
+                    if deleting {
+                        // Retire delivery diagnostics only after every real task was joined.
+                        jobs.background_failure
+                            .retain(|identity, _| identity.caller != root);
+                        jobs.failure.retain(|identity, _| {
+                            identity.caller != root
+                                || !matches!(identity.key, OperationKey::Review(_))
+                        });
+                    }
                     if let Some(error) = jobs
                         .background_failure
                         .iter()
@@ -341,6 +372,14 @@ async fn drive(owner: Weak<Shared>) {
 }
 
 impl StudioThreadAssembler {
+    pub(super) fn begin_operation_close(&self, id: &str, purpose: super::ClosePurpose) {
+        if purpose == super::ClosePurpose::Delete
+            && let Some(services) = self.0.state().agent_services.clone()
+        {
+            services.operations.begin_deletion(id);
+            self.0.changed.notify_waiters();
+        }
+    }
     pub(super) async fn join_root_operations(&self, root: &str) -> Result<()> {
         let services = self.0.state().agent_services.clone();
         if let Some(services) = services {

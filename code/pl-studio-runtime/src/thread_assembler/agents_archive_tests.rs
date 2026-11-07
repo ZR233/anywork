@@ -274,9 +274,9 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
                     observed_child.store(true, Ordering::SeqCst);
                 }
             },
-            |_| Box::pin(async { Ok(()) }),
-            None,
             |_, _| Box::pin(async { Ok(()) }),
+            None,
+            |_, _, _| Box::pin(async { Ok(()) }),
             |_| Box::pin(async { Ok(()) }),
         )
         .unwrap();
@@ -364,6 +364,155 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
 struct FailClosedFlush {
     sink: crate::studio::storage_fault_test_support::ThreadStorageSink,
     fail: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RejectFirstDeletionResourceClose(Arc<std::sync::atomic::AtomicUsize>);
+
+impl pl_core::tool::opaque::Tool for RejectFirstDeletionResourceClose {
+    async fn execute(
+        &self,
+        _: OpaquePayload,
+        _: pl_core::tool::opaque::CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::new(std::io::Error::other("unused fixture tool")))
+    }
+
+    async fn close(&self) -> Result<(), ToolError> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(ToolError::new(std::io::Error::other(
+                "retained deletion resource close failed once",
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_closed()
+-> anyhow::Result<()> {
+    use crate::{
+        studio::{
+            StudioStore,
+            storage_fault_test_support::{ThreadStorageSink, register_test_thread},
+            store::thread_preparation::PreparationIdentity,
+        },
+        thread_assembler::CloseStorage,
+    };
+    use futures::FutureExt;
+    use pl_core::thread::ThreadError;
+
+    for execution in [true, false] {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("home/data/studio.sqlite")).await?;
+        let mut protocol = pl_protocol::Thread::placeholder("sealed-attachment");
+        protocol.workspace_id = "workspace".into();
+        protocol.root_thread_id = protocol.id.clone();
+        register_test_thread(&store, &protocol).await?;
+        let owner = StudioThreadAssembler::default();
+        let resource = RejectFirstDeletionResourceClose::default();
+        let mut prepared = spec(protocol.id.clone(), None, temp.path());
+        prepared.tools.push(Registration::new(
+            "close-probe".into(),
+            OpaquePayload::text("probe"),
+            resource.clone(),
+        )?);
+        let thread = owner.assemble(prepared).await?;
+        let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
+        let binding = Arc::new(sink.binding());
+        drop(sink);
+        let completing_thread = thread.clone();
+        let storage = binding.storage.clone();
+        let completion = async move {
+            completing_thread
+                .attach_storage(storage)
+                .await
+                .map_err(Arc::new)
+        }
+        .boxed()
+        .shared();
+        owner
+            .0
+            .state()
+            .entries
+            .get_mut(&protocol.id)
+            .unwrap()
+            .close_storage = Some(if execution {
+            CloseStorage::Execution {
+                completion: completion.clone(),
+                binding: Some(binding.clone()),
+                preparation_storage: None,
+                observation_installed: false,
+                joined: false,
+            }
+        } else {
+            CloseStorage::Attaching {
+                binding: binding.clone(),
+                completion: completion.clone(),
+            }
+        });
+        // This current-thread test enqueues AttachCold without yielding to the serial core.
+        // The retained completion therefore exists before deletion seals admission.
+        let mut queued = completion.clone();
+        assert!(futures::poll!(&mut queued).is_pending());
+        owner.prepare_deletion(std::slice::from_ref(&protocol.id));
+        assert!(
+            matches!(queued.await, Err(error) if matches!(error.as_ref(), ThreadError::Closed))
+        );
+        assert!(!thread.snapshot().persistence.attached);
+        assert!(
+            owner.attach_close_storage(&protocol.id).await.is_err(),
+            "preserving close must still require successful attachment"
+        );
+        let members = [PreparationIdentity {
+            thread_id: protocol.id.clone(),
+            workspace_id: protocol.workspace_id.clone(),
+            parent_id: None,
+            root_id: protocol.id.clone(),
+        }];
+        let failure = owner
+            .close_tree_for_deletion(&protocol.id, &members)
+            .await
+            .expect_err("a true resource close failure must retain the owner");
+        assert!(
+            matches!(&failure, ThreadAssemblyError::Thread(ThreadError::Tool(_))),
+            "{failure:?}"
+        );
+        assert_eq!(resource.0.load(Ordering::SeqCst), 1);
+        assert!(owner.observed_thread(&protocol.id).is_some());
+        assert!(
+            !binding.channel.deletion_joined(),
+            "resource failure cannot count as a writer join"
+        );
+        assert!(
+            matches!(completion.peek(), Some(Err(error)) if matches!(error.as_ref(), ThreadError::Closed))
+        );
+        if !execution {
+            assert!(
+                matches!(
+                    owner.0.state().entries[&protocol.id].close_storage,
+                    Some(CloseStorage::Attaching { .. })
+                ),
+                "a rejected attachment must not become Attached"
+            );
+        }
+        owner
+            .close_tree_for_deletion(&protocol.id, &members)
+            .await?;
+        assert!(
+            binding.channel.deletion_joined(),
+            "the original writer must actually join"
+        );
+        assert!(owner.observed_thread(&protocol.id).is_none());
+        assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closed);
+        assert_eq!(resource.0.load(Ordering::SeqCst), 2);
+        assert!(!thread.snapshot().persistence.attached);
+        owner
+            .close_tree_for_deletion(&protocol.id, &members)
+            .await?;
+        store.close().await?;
+    }
+    Ok(())
 }
 impl pl_core::thread::cold::ColdStore for FailClosedFlush {
     fn pressure(&self, thread_id: &str) -> pl_core::thread::cold::StoragePressure {
