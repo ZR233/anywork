@@ -13,6 +13,28 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Finds the current title widget inside one exact group header.
+///
+/// A clock-driven header can replace its label widget during a pump, so read
+/// the row's current label on every evaluation of the returned Finder.
+Finder timelineGroupTitleFinder(
+  WidgetTester tester,
+  Finder header, {
+  bool skipOffstage = true,
+  VoidCallback? validateOwner,
+}) => find.descendant(
+  of: header,
+  matching: find.byWidgetPredicate((widget) {
+    validateOwner?.call();
+    final row = tester.widget<TimelineActivityRow>(header);
+    final labelWidget = row.labelWidget;
+    return labelWidget == null
+        ? widget is Text && widget.data == row.label
+        : identical(widget, labelWidget);
+  }, skipOffstage: skipOffstage),
+  skipOffstage: skipOffstage,
+);
+
 /// UI operations and synchronous borrows of the production presentation owner.
 /// No copied group/current list, payload fallback, query, or test-owned reducer.
 final class TimelineObservation {
@@ -107,29 +129,39 @@ final class TimelineObservation {
   Finder _groupTitle(String id, {bool skipOffstage = true}) {
     final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
-    final row = tester.widget<TimelineActivityRow>(header);
-    final labelWidget = row.labelWidget;
+    final originalLease = lease;
+    final originalController = originalLease.controller;
+    final originalGeneration = originalLease.generation;
     // The header's Align/Row can have its centre in a Spacer, outside its
     // children's hit path. Target the real title inside this exact unit, not
     // the disclosure's body or another group's identically labelled header.
-    final title = find.descendant(
-      of: header,
-      matching: find.byWidgetPredicate(
-        (widget) => labelWidget == null
-            ? widget is Text && widget.data == row.label
-            : identical(widget, labelWidget),
-        skipOffstage: skipOffstage,
-      ),
+    final title = timelineGroupTitleFinder(
+      tester,
+      header,
       skipOffstage: skipOffstage,
+      validateOwner: () {
+        if (!identical(lease, originalLease) ||
+            !identical(lease.controller, originalController) ||
+            lease.generation != originalGeneration) {
+          fail('Timeline owner changed while resolving group title $id');
+        }
+      },
     );
     expect(title, findsOneWidget);
     return title;
   }
 
-  Future<void> until(bool Function() ready, String description) async {
+  Future<void> until(
+    bool Function() ready,
+    String description, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Waiting for $description requires a positive deadline');
+    }
     final clock = Stopwatch()..start();
     while (!ready()) {
-      if (clock.elapsed > const Duration(seconds: 60)) {
+      if (clock.elapsed >= timeout) {
         fail('Timed out waiting for $description');
       }
       await tester.pump(const Duration(milliseconds: 16));
@@ -141,13 +173,17 @@ final class TimelineObservation {
     Finder target, {
     double scrollAlignment = 0,
     bool Function()? isActive,
+    Duration timeout = const Duration(seconds: 60),
   }) async {
     if (isActive?.call() == false) return;
+    if (timeout <= Duration.zero) {
+      fail('Tapping a production control requires a positive deadline');
+    }
     expect(target, findsOneWidget);
     final clock = Stopwatch()..start();
     while (true) {
       if (isActive?.call() == false) return;
-      if (clock.elapsed > const Duration(seconds: 60)) {
+      if (clock.elapsed >= timeout) {
         fail('Timed out waiting for hittable production control');
       }
       // A nested scroll can change the outer viewport's target geometry on the
@@ -776,7 +812,22 @@ final class TimelineObservation {
     return indices.toList()..sort();
   }
 
-  Future<TimelineGroupDisplay> openGroup(String id) async {
+  Future<TimelineGroupDisplay> openGroup(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Opening a timeline group requires a positive deadline');
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out opening timeline group $id');
+      }
+      return value;
+    }
+
     final originalLease = lease;
     final value = unit(id);
     final originalController = lease.controller;
@@ -786,32 +837,48 @@ final class TimelineObservation {
     expect(value.item.members, isNotNull);
     final header = groupHeader(id);
     if (value.live) {
-      await until(() => header.evaluate().isNotEmpty, 'live group $id');
+      await until(
+        () => header.evaluate().isNotEmpty,
+        'live group $id',
+        timeout: remaining(),
+      );
     } else {
-      await reveal(header, id);
+      await reveal(header, id, timeout: remaining());
     }
     expect(header, findsOneWidget);
     if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(_groupTitle(id));
+      await tap(_groupTitle(id), timeout: remaining());
     }
     TimelineGroupDisplay? display;
-    await until(() {
-      display = lease.groupDisplays
-          .where((display) => display.unitId == id)
-          .singleOrNull;
-      if (display?.error case final error?) throw StateError('$error');
-      // Main and GroupMembers are delivered independently. Keep the bound,
-      // but qualify both observed views before accepting this open.
-      return display?.isCurrent == true &&
-          display?.expanded == true &&
-          display!.atoms.isNotEmpty &&
-          display!.atoms.length <= unit(id).item.summary!.memberCount;
-    }, 'mounted original ordinary group $id');
+    await until(
+      () {
+        display = lease.groupDisplays
+            .where((display) => display.unitId == id)
+            .singleOrNull;
+        if (display?.error case final error?) throw StateError('$error');
+        // Main and GroupMembers are delivered independently. Keep the bound,
+        // but qualify both observed views before accepting this open.
+        return display?.isCurrent == true &&
+            display?.expanded == true &&
+            display!.atoms.isNotEmpty &&
+            display!.atoms.length <= unit(id).item.summary!.memberCount;
+      },
+      'mounted original ordinary group $id',
+      timeout: remaining(),
+    );
     expect(display!.atoms, isNotEmpty);
     expect(display!.membersRef, value.item.members);
-    expect(display!.atoms.map((atom) => atom.source).toSet(), {
-      value.item.source,
-    });
+    if (value.item.source is BackgroundResultChatSource) {
+      for (final atom in display!.atoms) {
+        expect(atom.source, isA<BackgroundResultChatSource>());
+        expect(atom.delivery, ChatDeliveryKind.independent);
+        expect(atom.lifecycle, isA<TerminalChatAtom>());
+      }
+    } else {
+      expect(display!.atoms.map((atom) => atom.source).toSet(), {
+        value.item.source,
+      });
+    }
     expect(
       display!.atoms.length,
       lessThanOrEqualTo(unit(id).item.summary!.memberCount),

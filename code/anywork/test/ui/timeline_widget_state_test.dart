@@ -5,12 +5,15 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../integration_test/support/timeline_observation.dart';
 
 final _png = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=',
@@ -50,6 +53,41 @@ TimelineToolPresentation _tool(String id, {required bool webSearch}) =>
     );
 
 void main() {
+  testWidgets('group-title finder follows a clock-rebuilt reasoning summary', (
+    tester,
+  ) async {
+    var taps = 0;
+    final header = find.byType(TimelineActivityRow);
+    await tester.pumpWidget(
+      _host(
+        InkWell(
+          onTap: () => taps++,
+          child: const TimelineReasoningView(
+            summary: 'stable reasoning summary',
+            startedAt: 0,
+            running: true,
+          ),
+        ),
+      ),
+    );
+    final title = timelineGroupTitleFinder(tester, header);
+    expect(title, findsOneWidget);
+    final before = tester.widget<TimelineActivityRow>(header).labelWidget;
+    expect(before, isA<TimelineReasoningSummary>());
+    expect(title.hitTestable(), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 1));
+    final after = tester.widget<TimelineActivityRow>(header).labelWidget;
+    expect(after, isA<TimelineReasoningSummary>());
+    expect(after, isNot(same(before)));
+    expect(title, findsOneWidget);
+    expect(title.hitTestable(), findsOneWidget);
+    await tester.tap(title);
+    await tester.pump();
+    expect(taps, 1);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'image view owns one mutable byte copy per source identity and shares its provider with the dialog',
     (tester) async {

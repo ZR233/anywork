@@ -236,9 +236,6 @@ void main() {
       await scene.completed(answer: 'realtime long command complete');
       await scene.closeLatestTurnGroups();
 
-      final priorParallelItems = scene.observed.items
-          .map((item) => item.id)
-          .toSet();
       await scene.submit('Realtime parallel tools');
       await fixtureGate(tester, provider, _parallelObserverStage);
       final parallelObserver = await scene.prepareToolObserver(
@@ -270,15 +267,12 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-parallel-running.png');
       await scene.completed(answer: 'realtime parallel tools complete');
-      await scene.verifyExecReceipts(priorParallelItems, const {
+      await scene.verifyExecReceipts(const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
       }, turnId: parallelObserver.turnId);
       await scene.closeLatestTurnGroups();
 
-      final priorHostCwdItems = scene.observed.items
-          .map((item) => item.id)
-          .toSet();
       await scene.submit('Realtime host cwd command');
       await fixtureGate(tester, provider, _hostCwdObserverStage);
       final hostObserver = await scene.prepareToolObserver(
@@ -298,7 +292,7 @@ void main() {
       final hostCwdTurnId = hostObserver.turnId;
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
-      await scene.verifyExecReceipts(priorHostCwdItems, const {
+      await scene.verifyExecReceipts(const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
       }, turnId: hostCwdTurnId);
       await scene.closeLatestTurnGroups();
@@ -908,7 +902,17 @@ final class _RealtimeScene {
       final member = group.atoms.singleWhere(
         (atom) => atom.id == presentationId,
       );
-      expect(member.source, metadata.item.source);
+      if (metadata.item.source is BackgroundResultChatSource) {
+        expect(member.source, isA<BackgroundResultChatSource>());
+        expect(member.delivery, ChatDeliveryKind.independent);
+        expect(member.lifecycle, isA<TerminalChatAtom>());
+        expect(
+          (member.lifecycle as TerminalChatAtom).outcome,
+          ChatTerminalOutcome.completed,
+        );
+      } else {
+        expect(member.source, metadata.item.source);
+      }
       expect(member.completionItemId, contentItemId);
       final declared = member.contents
           .where((content) => content.role == role)
@@ -1344,13 +1348,13 @@ final class _RealtimeScene {
   }
 
   Future<void> verifyExecReceipts(
-    Set<String> priorItemIds,
     Map<String, String> expected, {
     required String turnId,
   }) async {
     final source = ForegroundTurnChatSource(turnId: turnId);
     final associatedTasks = <String, String>{};
     final observations = <Map<String, Object?>>[];
+    final openedBackgroundGroups = <String>{};
     final clock = Stopwatch()..start();
     Map<String, Object?>? lastObservation;
     String? previousObservation;
@@ -1364,8 +1368,6 @@ final class _RealtimeScene {
 
     Iterable<TimelineDisplayUnit> backgroundGroups() => observed.main.where(
       (unit) =>
-          !priorItemIds.contains(unit.id) &&
-          unit.item.turnId == turnId &&
           unit.item.source is BackgroundResultChatSource &&
           unit.item.kind == TimelineItemKind.workGroup,
     );
@@ -1378,6 +1380,9 @@ final class _RealtimeScene {
         'turnId': turnId,
         'candidates': candidates,
         'finalCounts': counts,
+        'backgroundGroupCount': 0,
+        'backgroundGroupAnchors': <Map<String, Object?>>[],
+        'memberCallTaskMapping': <Map<String, Object?>>[],
         'complete': false,
       };
       lastObservation = {
@@ -1491,9 +1496,8 @@ final class _RealtimeScene {
             associatedTasks[tool.toolCallId] == tool.taskId;
         final finalResult =
             atom.kind == ChatAtomKind.toolCall &&
-            ((atom.source == source &&
-                    atom.delivery == ChatDeliveryKind.foreground) ||
-                (backgroundResult && taskAssociated)) &&
+            backgroundResult &&
+            taskAssociated &&
             terminal.outcome == ChatTerminalOutcome.completed &&
             tool.name == 'exec' &&
             tool.statusString == 'succeeded' &&
@@ -1507,6 +1511,36 @@ final class _RealtimeScene {
           counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
         }
       }
+      final groups = backgroundGroups().toList();
+      snapshot['backgroundGroupCount'] = groups.length;
+      snapshot['backgroundGroupAnchors'] = [
+        for (final group in groups)
+          {
+            'id': group.id,
+            'source': sourceFacts(group.item.source),
+            'turnId': group.item.turnId,
+            'memberCount': group.item.summary?.memberCount,
+            'opened': openedBackgroundGroups.contains(group.id),
+          },
+      ];
+      snapshot['memberCallTaskMapping'] = [
+        for (final candidate in candidates)
+          if (candidate.containsKey('callId'))
+            {
+              for (final key in const [
+                'callId',
+                'taskId',
+                'turnId',
+                'source',
+                'delivery',
+                'groupId',
+                'status',
+                'exitCode',
+                'finalResult',
+              ])
+                if (candidate.containsKey(key)) key: candidate[key],
+            },
+      ];
       snapshot['associatedTasks'] = Map<String, String>.of(associatedTasks);
       snapshot['complete'] = true;
       lastObservation = {
@@ -1524,27 +1558,70 @@ final class _RealtimeScene {
     var receipts = <_ExecReceipt>[];
     try {
       await observed.openSourceGroups(source);
-      await until(
-        () {
-          targets();
-          final terminalCalls = observed.mountedMembers
-              .where(
-                (atom) =>
-                    atom.source == source &&
-                    atom.turnId == turnId &&
-                    atom.lifecycle is TerminalChatAtom,
-              )
-              .map((atom) => atom.tool?.callId)
-              .toSet();
-          return terminalCalls.containsAll(expected.keys) &&
-              backgroundGroups().length >= associatedTasks.length;
-        },
-        'original exec terminals and independently admitted background groups',
-      );
-      for (final group in backgroundGroups().toList()) {
-        await observed.openGroup(group.id);
+      final receiptWaitClock = Stopwatch()..start();
+      var complete = false;
+      var terminalCalls = <String>{};
+      final timeout = const Duration(seconds: 60);
+      Duration remaining() {
+        final value = timeout - receiptWaitClock.elapsed;
+        if (value <= Duration.zero) {
+          fail('Timed out opening background exec receipt groups');
+        }
+        return value;
       }
-      receipts = targets();
+
+      while (receiptWaitClock.elapsed < timeout) {
+        targets();
+        for (final group in backgroundGroups().toList()) {
+          if (!openedBackgroundGroups.contains(group.id)) {
+            if (receiptWaitClock.elapsed >= timeout) break;
+            await observed.openGroup(group.id, timeout: remaining());
+            openedBackgroundGroups.add(group.id);
+          }
+        }
+        receipts = targets();
+        terminalCalls = observed.mountedMembers
+            .where(
+              (atom) =>
+                  atom.source == source &&
+                  atom.turnId == turnId &&
+                  atom.lifecycle is TerminalChatAtom,
+            )
+            .map((atom) => atom.tool?.callId)
+            .whereType<String>()
+            .toSet();
+        final finalCounts = {
+          for (final call in expected.keys)
+            call: receipts.where((receipt) {
+              final tool = (receipt.value.toolCard as DecodedToolCard).value;
+              return tool.toolCallId == call;
+            }).length,
+        };
+        final duplicates = finalCounts.entries
+            .where((entry) => entry.value > 1)
+            .map((entry) => entry.key)
+            .toList();
+        expect(
+          duplicates,
+          isEmpty,
+          reason: 'A background task produced duplicate final receipts',
+        );
+        complete =
+            terminalCalls.containsAll(expected.keys) &&
+            associatedTasks.keys.toSet().containsAll(expected.keys) &&
+            finalCounts.values.every((count) => count == 1);
+        if (complete) break;
+        if (receiptWaitClock.elapsed >= timeout) break;
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
+      expect(
+        complete,
+        isTrue,
+        reason:
+            'Timed out waiting for original exec terminals and each '
+            'independently sourced final result: ${jsonEncode(lastObservation)}',
+      );
     } finally {
       final output = Directory(
         Platform.environment['ANYWORK_REALTIME_OUTPUT']!,
