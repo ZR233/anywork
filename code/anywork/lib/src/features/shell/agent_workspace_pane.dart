@@ -165,16 +165,22 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     if (workspace == null) {
       return TimelineConnector(threadId: threadId);
     }
+    final planHead = widget.needsOpen
+        ? null
+        : ref.watch(
+            threadSessionStoreProvider(threadId)
+                .select((state) => state.businessRefs?.plan),
+          );
     return LayoutBuilder(
       builder: (context, constraints) {
         final todo = workspace.todo;
         final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final runtimePlan = _runtimePlanPresentation(workspace.runtime.plan);
+        final referencedPlan = _referencedPlanPresentation(planHead);
         // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
         // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
         final presentedPlan = pendingPlan != null
             ? _WorkspacePlanPresentation.fromPending(pendingPlan)
-            : runtimePlan;
+            : referencedPlan;
         final planIdentity = presentedPlan?.identity;
         if (_openedPlanByThread[threadId] != planIdentity) {
           _openedPlanByThread.remove(threadId);
@@ -285,10 +291,11 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                               );
                             }
                           },
-                    showPlanEntry: pendingPlan == null && runtimePlan != null,
-                    onOpenPlan: pendingPlan != null || runtimePlan == null
+                    showPlanEntry:
+                        pendingPlan == null && referencedPlan != null,
+                    onOpenPlan: pendingPlan != null || referencedPlan == null
                         ? null
-                        : () => _openPlan(threadId, runtimePlan.identity),
+                        : () => _openPlan(threadId, referencedPlan.identity),
                   ),
                   // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
                   todoPanel:
@@ -402,13 +409,13 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     });
   }
 
-  static _WorkspacePlanPresentation? _runtimePlanPresentation(
-    PlanRuntimeView? plan,
+  static _WorkspacePlanPresentation? _referencedPlanPresentation(
+    CurrentPlanHead? plan,
   ) {
     if (plan == null) {
       return null;
     }
-    return _WorkspacePlanPresentation.fromRuntime(plan);
+    return _WorkspacePlanPresentation.fromHead(plan);
   }
 
   /// footer 可用高度上限：先给时间线留下最小可视高度，剩余高度交给 footer。
@@ -428,8 +435,8 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     required bool sideBySideFeasible,
   }) {
     return PlanDetailConnector(
+      threadId: threadId,
       identity: presentation.identity,
-      markdown: presentation.markdown,
       status: presentation.status,
       fullWidth: fullWidth,
       onToggleReadingMode: sideBySideFeasible
@@ -443,31 +450,24 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 class _WorkspacePlanPresentation {
   const _WorkspacePlanPresentation({
     required this.identity,
-    required this.markdown,
     required this.status,
   });
 
   factory _WorkspacePlanPresentation.fromPending(PlanConfirmationView plan) {
     return _WorkspacePlanPresentation(
       identity: 'interaction:${plan.interactionId}',
-      markdown: plan.markdown,
       status: PlanDetailStatus.awaitingConfirmation,
     );
   }
 
-  factory _WorkspacePlanPresentation.fromRuntime(PlanRuntimeView plan) {
-    final document = plan.document;
+  factory _WorkspacePlanPresentation.fromHead(CurrentPlanHead plan) {
     return _WorkspacePlanPresentation(
-      identity: document == null
-          ? 'plan:${plan.revision}'
-          : 'document:${document.version}',
-      markdown: document?.markdown,
-      status: planDetailStatusFromRuntime(plan.state),
+      identity: 'plan:${plan.revision}',
+      status: planDetailStatusFromRuntime(plan.phase),
     );
   }
 
   final String identity;
-  final String? markdown;
   final PlanDetailStatus status;
 }
 

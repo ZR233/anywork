@@ -18,13 +18,15 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 17;
+const HISTORY_SCHEMA_VERSION: i64 = 18;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
 
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
+#[cfg(test)]
+mod business_refs_tests;
 #[cfg(test)]
 mod future_size_tests;
 #[cfg(test)]
@@ -80,14 +82,6 @@ impl std::fmt::Debug for HistoryStoreShare {
 
 struct HistoryStoreState {
     closed: std::sync::atomic::AtomicBool,
-    /// The prepared generation published by the shared initialization boundary.
-    ///
-    /// Normal operation never rotates it: rules that require a new generation are named content
-    /// migrations, completed before this connection is published.
-    timeline_generation: tokio::sync::watch::Sender<String>,
-    /// Read-side index of the original reliable queue's prepared allocations.
-    /// Removed only after that same writer transaction is durable.
-    timeline_pending: std::sync::Mutex<timeline_pending::TimelinePending>,
     path: PathBuf,
     thread_id: String,
     /// The single writer connection, opened on the first write.
@@ -126,21 +120,21 @@ struct HistoryStoreState {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    #[cfg(test)]
+    state_read_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
-
-#[path = "history/timeline_pending.rs"]
-mod timeline_pending;
-#[path = "history/timeline_read.rs"]
-mod timeline_read;
-pub(in crate::studio) use timeline_read::{TimelinePage, TimelineReadCut};
 
 /// Bounded singleton baselines owned only by one physical effect transaction.
 /// They are advanced locally; no second live projection or durable state is created.
 struct EffectTransaction {
     applied: i64,
     context: Option<checkpoint::ContextHead>,
-    completion: u64,
-    timeline: conversation::timeline::ProjectionState,
+    completion: pl_core::chat::ChatPublicationSeed,
 }
 
 impl EffectTransaction {
@@ -149,10 +143,7 @@ impl EffectTransaction {
         Ok(Self {
             applied: commit.applied_write_seq,
             context: commit.context,
-            completion: conversation::latest_append_seq(db).await?,
-            timeline: conversation::timeline::read_state(db)
-                .await?
-                .context("initialized history is missing its timeline recovery head")?,
+            completion: conversation::publication_seed(db).await?,
         })
     }
 }
@@ -264,8 +255,6 @@ pub(crate) struct CheckpointEffect<'a> {
 }
 
 pub(in crate::studio) struct ColdConversation {
-    pub projection_generation: String,
-    pub timeline: Option<TimelinePage>,
     pub database_id: String,
     pub head: u64,
     pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
@@ -300,8 +289,6 @@ impl HistoryStore {
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
                 closed: std::sync::atomic::AtomicBool::new(false),
-                timeline_generation: tokio::sync::watch::channel(String::new()).0,
-                timeline_pending: std::sync::Mutex::new(Default::default()),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
                 writer: tokio::sync::OnceCell::new(),
@@ -313,6 +300,8 @@ impl HistoryStore {
                 reader_before_init: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 completion_read_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                state_read_gate: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -368,57 +357,6 @@ impl HistoryStore {
     ///
     /// This is initialization state, not a runtime rebuild boundary. A completed content migration
     /// with missing or malformed derived state fails here and preserves the original database.
-    pub(in crate::studio) async fn timeline_snapshot(
-        &self,
-    ) -> Result<Option<crate::studio::thread_projection::TimelineProjection>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let head = conversation::timeline::read_state(&tx)
-            .await?
-            .context("initialized history is missing its timeline recovery cut")?;
-        let timeline =
-            conversation::timeline::complete::restore(&tx, &connection.database_id, &head).await?;
-        tx.commit().await?;
-        Ok(Some(timeline))
-    }
-
-    /// Generation qualification published by shared storage initialization.
-    ///
-    /// The sender is never rotated by normal reads or writes.
-    pub(crate) fn timeline_generation_changes(&self) -> tokio::sync::watch::Receiver<String> {
-        self.state.timeline_generation.subscribe()
-    }
-
-    /// Returns the prepared projection generation without creating a database.
-    pub(crate) async fn timeline_generation(&self) -> Result<String> {
-        {
-            let _initializing = self.state.init.read().await;
-            ensure!(
-                !self.state.closed.load(std::sync::atomic::Ordering::Acquire),
-                "history is permanently closed"
-            );
-            let cached = self.state.timeline_generation.borrow().clone();
-            if !cached.is_empty() {
-                return Ok(cached);
-            }
-        }
-        let Some(connection) = self.reader().await? else {
-            return Ok(String::new());
-        };
-        let generation = conversation::timeline::generation(&connection.db).await?;
-        self.state.timeline_generation.send_if_modified(|value| {
-            if value.is_empty() {
-                *value = generation.clone();
-                true
-            } else {
-                false
-            }
-        });
-        Ok(self.state.timeline_generation.borrow().clone())
-    }
-
     /// Explicit execution-writer preparation. Read/open paths must not call this creation boundary.
     pub(crate) async fn prepare_write(&self) -> Result<()> {
         self.writer().await?;
@@ -459,6 +397,19 @@ impl HistoryStore {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         *self.state.completion_read_gate.lock().await = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+
+    #[cfg(test)]
+    async fn arm_state_read_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.state.state_read_gate.lock().await = Some((entered_tx, release_rx));
         (entered_rx, release_tx)
     }
 
@@ -654,23 +605,6 @@ impl HistoryStore {
                     return Err(error);
                 }
             };
-        let generation = match conversation::timeline::generation(&db).await {
-            Ok(generation) => generation,
-            Err(error) => {
-                if let Err(cleanup) = db.close().await {
-                    return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
-                }
-                return Err(error);
-            }
-        };
-        self.state.timeline_generation.send_if_modified(|value| {
-            if *value == generation {
-                false
-            } else {
-                *value = generation;
-                true
-            }
-        });
         Ok(HistoryConnection {
             db,
             database_id,
@@ -727,7 +661,6 @@ impl HistoryStore {
         self.apply_effect(&tx, write_seq, commit, None, &mut heads, true)
             .await?;
         tx.commit().await?;
-        self.timeline_saved(write_seq);
         Ok(())
     }
 
@@ -781,9 +714,6 @@ impl HistoryStore {
             );
         }
         tx.commit().await?;
-        if let Some(last) = effects.last() {
-            self.timeline_saved(last.effect.sequence);
-        }
         Ok(results)
     }
 
@@ -835,7 +765,6 @@ impl HistoryStore {
             )
             .await?;
             conversation::completed::verify(tx, current_view).await?;
-            conversation::timeline::verify(tx, &database_id, current_view).await?;
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
             }
@@ -876,13 +805,6 @@ impl HistoryStore {
                 "model interruption is not bound to its real Core effect"
             );
         }
-        conversation::timeline::complete::apply(
-            tx,
-            &database_id,
-            current_view,
-            &mut heads.timeline,
-        )
-        .await?;
         let mut turn_ids = std::collections::BTreeSet::new();
         for item in items {
             if !item.turn_id.is_empty() {
@@ -992,12 +914,6 @@ impl HistoryStore {
             }
         }
         if last {
-            conversation::timeline::complete::save_head(
-                tx,
-                &current_view.timeline_update,
-                u64::try_from(write_seq)?,
-            )
-            .await?;
             tx.execute_raw(statement(
                 "UPDATE history_meta SET applied_write_seq=? WHERE id=1",
                 vec![write_seq.into()],
@@ -1599,16 +1515,6 @@ impl HistoryStore {
         Ok(item)
     }
 
-    async fn latest_append_seq(&self) -> Result<u64> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(0);
-        };
-        let tx = connection.db.begin().await?;
-        let head = conversation::latest_append_seq(&tx).await?;
-        tx.commit().await?;
-        Ok(head)
-    }
-
     /// One fresh short read transaction, opened after Session captured its completion ceiling.
     async fn chat_page(
         &self,
@@ -1657,6 +1563,117 @@ impl HistoryStore {
         Ok(Some(current))
     }
 
+    /// Same domain-head projection as State, from one fresh SQLite read transaction.
+    /// Missing history means this Thread has no established business read resources yet.
+    pub(in crate::studio) async fn read_business_refs(
+        &self,
+    ) -> Result<Option<pl_protocol::ThreadBusinessRefs>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let state = conversation::completed::cold(&tx).await?;
+        let references =
+            crate::studio::thread_projection::project_business_refs(state.projection());
+        tx.commit().await?;
+        Ok(Some(references))
+    }
+
+    /// Cold State and its business resources share one strictly read-only SQLite snapshot.
+    /// This validates the original state envelope without restoring execution context records.
+    pub(in crate::studio) async fn read_state_with_business_refs(
+        &self,
+    ) -> Result<
+        Option<(
+            pl_core::thread::ThreadSnapshot,
+            pl_protocol::ThreadBusinessRefs,
+        )>,
+    > {
+        let connection = {
+            let _initializing = self.state.init.read().await;
+            self.read_only_connection().await?
+        };
+        let Some(connection) = connection else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let (database, _) = validate_existing(&tx, &self.state.thread_id).await?;
+        ensure!(
+            database == connection.database_id,
+            "canonical history identity changed"
+        );
+        let result = if let Some(checkpoint) =
+            checkpoint::read_state_envelope(&tx, &self.state.thread_id).await?
+        {
+            #[cfg(test)]
+            {
+                let gate = self.state.state_read_gate.lock().await.take();
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.await;
+                }
+            }
+            let current = conversation::completed::cold_from_state(
+                &tx,
+                database,
+                self.state.thread_id.clone(),
+                checkpoint.history_fence,
+                &checkpoint.state,
+            )
+            .await?;
+            let references =
+                crate::studio::thread_projection::project_business_refs(current.projection());
+            Some((checkpoint.state, references))
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Execution recovery only: original accepted starts lacking a real terminal fact.
+    /// Pages are ordered by atom identity, include independent operations such as compaction,
+    /// and never restore a presentation group or read a payload/checkpoint.
+    pub(in crate::studio) async fn recovery_atom_starts(
+        &self,
+        after_atom_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<pl_protocol::ChatAtom>> {
+        ensure!(
+            (1..=128).contains(&limit),
+            "recovery start page limit must be 1..=128"
+        );
+        let Some(connection) = self.reader().await? else {
+            return Ok(Vec::new());
+        };
+        let tx = connection.db.begin().await?;
+        let rows = tx
+            .query_all_raw(statement(
+                "SELECT s.metadata FROM conversation_atom_facts s
+             WHERE s.phase='start' AND s.atom_id>?
+               AND NOT EXISTS(SELECT 1 FROM conversation_atom_facts t
+                              WHERE t.atom_id=s.atom_id AND t.phase='terminal')
+             ORDER BY s.atom_id LIMIT ?",
+                vec![after_atom_id.unwrap_or("").into(), integer(limit)?.into()],
+            ))
+            .await?;
+        let mut atoms = Vec::with_capacity(rows.len());
+        for row in rows {
+            let atom: pl_protocol::ChatAtom =
+                serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+            ensure!(
+                matches!(
+                    atom.lifecycle,
+                    pl_protocol::ChatAtomLifecycle::Active { .. }
+                ) && atom.payload.is_none(),
+                "invalid reliable recovery start"
+            );
+            atoms.push(atom);
+        }
+        tx.commit().await?;
+        Ok(atoms)
+    }
+
     pub(crate) async fn conversation_sources(
         &self,
         sources: &[pl_protocol::ChatSourceId],
@@ -1692,31 +1709,6 @@ impl HistoryStore {
         demand: pl_core::chat::ReadDemand,
         budget: &dyn ChatBudget,
     ) -> Result<Option<ColdConversation>> {
-        self.cold_conversation_in(query, None, demand, budget).await
-    }
-
-    pub(in crate::studio) async fn cold_timeline(
-        &self,
-        scope: &pl_protocol::ChatScope,
-        demand: pl_core::chat::ReadDemand,
-        budget: &dyn ChatBudget,
-    ) -> Result<Option<ColdConversation>> {
-        self.cold_conversation_in(
-            pl_core::chat::ChatQuery::new(scope.query_class(), None),
-            Some(scope),
-            demand,
-            budget,
-        )
-        .await
-    }
-
-    async fn cold_conversation_in(
-        &self,
-        query: pl_core::chat::ChatQuery,
-        scope: Option<&pl_protocol::ChatScope>,
-        demand: pl_core::chat::ReadDemand,
-        budget: &dyn ChatBudget,
-    ) -> Result<Option<ColdConversation>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
@@ -1728,26 +1720,11 @@ impl HistoryStore {
         let model_route = checkpoint::read_model_route_head(&tx).await?;
         let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
-        // Cold callers budget an envelope with current=None. Main replaces its JSON null with
-        // this projection; Children delivers no current. page consumes item-only demand and
-        // must receive the remaining bytes after this single fixed-envelope reservation.
         let include_current = query.parent_id.is_none()
-            && (matches!(scope, Some(pl_protocol::ChatScope::Main))
-                || (scope.is_none() && query.query_class == "conversation"));
-        let current_bytes = if include_current {
-            serde_json::to_vec(&current)?
-                .len()
-                .saturating_sub(b"null".len())
-        } else {
-            0
-        };
-        let fixed =
-            budget
-                .fixed_bytes()
-                .checked_add(current_bytes)
-                .context(ChatError::InvalidDemand(
-                    "cold envelope size overflow".into(),
-                ))?;
+            && query.query_class == "conversation"
+            && query.selection == pl_core::chat::ChatSelection::RunHeads;
+        // State and Activity own their budgets. A completion page reserves only its own shell.
+        let fixed = budget.fixed_bytes();
         let bytes = demand
             .max_bytes
             .checked_sub(fixed)
@@ -1762,119 +1739,15 @@ impl HistoryStore {
             ceiling: head,
             demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
         };
-        let projection_generation = conversation::timeline::generation(&tx).await?;
-        let (page, timeline) = if let Some(scope) = scope {
-            let memory_rows = if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
-                ensure!(
-                    reference.database_id == connection.database_id,
-                    ChatError::StaleContent
-                );
-                conversation::timeline::complete::open_member_rows(
-                    &tx,
-                    reference,
-                    None,
-                    i64::MAX as u64,
-                    current.source_effect_seq,
-                    demand.max_items,
-                )
-                .await?
-            } else {
-                None
-            };
-            let rows = if let Some(rows) = memory_rows {
-                rows
-            } else {
-                if let pl_protocol::ChatScope::GroupMembers { reference } = scope {
-                    conversation::timeline::validate_members_ref(
-                        &tx,
-                        &connection.database_id,
-                        &projection_generation,
-                        reference,
-                    )
-                    .await?;
-                }
-                conversation::timeline::page_rows(
-                    &tx,
-                    scope,
-                    None,
-                    i64::MAX as u64,
-                    current.source_effect_seq,
-                    demand.max_items + 1,
-                    &current.atoms,
-                )
-                .await?
-            };
-            let mut entries = Vec::new();
-            let mut size = fixed;
-            let mut before = None;
-            for (order, entry) in rows {
-                if let pl_protocol::ChatEntry::Item(item) = &entry {
-                    conversation::timeline::validate_item(
-                        item,
-                        &connection.database_id,
-                        &projection_generation,
-                    )?;
-                }
-                let length = conversation::timeline::delivery_entry_bytes(
-                    &entry,
-                    demand.max_bytes.saturating_sub(size),
-                )?;
-                if entries.len() == demand.max_items || size + length > demand.max_bytes {
-                    ensure!(
-                        !entries.is_empty(),
-                        ChatError::InvalidDemand("cold timeline envelope cannot fit demand".into())
-                    );
-                    before = entries.last().map(|(order, _)| *order);
-                    break;
-                }
-                size += length;
-                entries.push((order, entry));
-            }
-            let ceiling = entries.first().map_or(0, |(order, _)| order + 1);
-            entries.reverse();
-            (
-                ChatHistoryPage {
-                    items: Vec::new(),
-                    exhausted: true,
-                },
-                Some(TimelinePage {
-                    entries: entries.into_iter().map(|(_, entry)| entry).collect(),
-                    before,
-                    ceiling,
-                    generation: projection_generation.clone(),
-                }),
-            )
-        } else {
-            (
-                conversation::page(&tx, &request, budget, false).await?,
-                None,
-            )
-        };
+        let page = conversation::page(&tx, &request, budget, false).await?;
         ensure!(
             page.exhausted || !page.items.is_empty(),
             ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
         );
-        let mut sources =
+        let sources =
             conversation::sources::read_selected(&tx, &page, &current, include_current).await?;
-        if let Some(page) = &timeline {
-            let ids = page
-                .entries
-                .iter()
-                .filter_map(|entry| {
-                    if let pl_protocol::ChatEntry::Atom(atom) = entry {
-                        Some(atom.source.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            sources
-                .extend(conversation::sources::read(&tx, &ids, current.source_effect_seq).await?);
-        }
         tx.commit().await?;
         Ok(Some(ColdConversation {
-            projection_generation,
-            timeline,
             database_id: connection.database_id.clone(),
             head,
             current,
@@ -2276,10 +2149,24 @@ impl HistoryStore {
 }
 
 impl ChatHistory for HistoryStore {
-    async fn latest_append_seq(&self) -> std::result::Result<u64, ChatError> {
-        HistoryStore::latest_append_seq(self)
+    async fn publication_seed(
+        &self,
+    ) -> std::result::Result<pl_core::chat::ChatPublicationSeed, ChatError> {
+        let Some(connection) = self.reader().await.map_err(chat_history_error)? else {
+            return Ok(Default::default());
+        };
+        let tx = connection
+            .db
+            .begin()
             .await
-            .map_err(chat_history_error)
+            .map_err(|e| chat_history_error(e.into()))?;
+        let seed = conversation::publication_seed(&tx)
+            .await
+            .map_err(chat_history_error)?;
+        tx.commit()
+            .await
+            .map_err(|e| chat_history_error(e.into()))?;
+        Ok(seed)
     }
 
     async fn page(
@@ -2300,6 +2187,28 @@ impl ChatHistory for HistoryStore {
         self.chat_page(request, budget, true)
             .await
             .map_err(chat_history_error)
+    }
+
+    async fn read_item(
+        &self,
+        request: &pl_core::chat::ChatHistoryItemRequest,
+        budget: &dyn ChatBudget,
+    ) -> std::result::Result<Option<pl_core::chat::ChatPageItem>, ChatError> {
+        let Some(connection) = self.reader().await.map_err(chat_history_error)? else {
+            return Ok(None);
+        };
+        let tx = connection
+            .db
+            .begin()
+            .await
+            .map_err(|error| chat_history_error(error.into()))?;
+        let item = conversation::read_selected_item(&tx, request, budget)
+            .await
+            .map_err(chat_history_error)?;
+        tx.commit()
+            .await
+            .map_err(|error| chat_history_error(error.into()))?;
+        Ok(item)
     }
 
     async fn item(&self, item_id: &str) -> std::result::Result<Option<ChatItem>, ChatError> {
@@ -3175,6 +3084,29 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    if schema::version(db).await? == 18 {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS count FROM conversation_items",
+                vec![],
+            ))
+            .await?
+            .context("fixture immutable completion count")?;
+        ensure!(
+            row.try_get::<i64>("", "count")? == 0,
+            "legacy fixture must not discard immutable completion indexes for real facts"
+        );
+        // Test-only downgrade of an empty current fixture; production never repairs Applied.
+        db.execute_unprepared(
+            "DROP INDEX conversation_items_visible_seq;
+             DROP INDEX conversation_items_by_run_seq;
+             ALTER TABLE conversation_items DROP COLUMN display_run_ordinal;
+             ALTER TABLE conversation_items DROP COLUMN display_run_start;
+             DELETE FROM seaql_migrations
+             WHERE version='m20261110_000001_history_immutable_completion_runs';",
+        )
+        .await?;
+    }
     if schema::completion_boundary::applied(db).await? {
         // Current writers cannot seed the retired view layout. Restore only empty archived
         // material; a fixture must never erase unique pre-upgrade facts to fake an old boundary.
@@ -3235,9 +3167,9 @@ pub(crate) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
         ensure!(count == 0, "legacy fixture must not discard {table} facts");
     }
     db.execute_unprepared(
-        "DROP TABLE timeline_item_members;
-         DROP TABLE timeline_items;
-         DROP TABLE timeline_projection_state;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
          DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_sources;
          DROP TABLE IF EXISTS conversation_view_entries;
@@ -3491,7 +3423,13 @@ mod storage_fault_tests {
         history.prepare_write().await?;
         assert!(history.conversation_database_id().await?.is_some());
         assert!(!history.conversation_read_needs_preparation().await?);
-        assert!(!history.timeline_generation().await?.is_empty());
+        assert!(
+            !history
+                .conversation_database_id()
+                .await?
+                .context("prepared database")?
+                .is_empty()
+        );
         let writer = history.writer().await?.db.clone();
         let reader = history
             .reader()
@@ -3525,7 +3463,6 @@ mod storage_fault_tests {
                 .await
                 .is_err()
         );
-        assert!(retained.timeline_generation().await.is_err());
         assert!(retained.reader().await.is_err());
         assert!(retained.prepare_write().await.is_err());
         Ok(())
@@ -3664,7 +3601,7 @@ mod storage_fault_tests {
                 commit_sequence: 1,
                 ..Default::default()
             },
-        );
+        )?;
         let billing = crate::studio::thread_projection::AuxiliaryBillingReceipt {
             succeeded: true,
             billing: pl_protocol::InferenceBillingRecord {
@@ -3763,7 +3700,7 @@ mod storage_fault_tests {
                 .await
                 .is_err()
         );
-        assert_eq!(store.latest_append_seq().await?, 0);
+        assert_eq!(store.publication_seed().await?.head_seq, 0);
         assert_eq!(store.watermark().await?, 0);
         assert!(store.checkpoint().await?.is_none());
         assert!(store.item(&item.id).await?.is_none());
@@ -3795,7 +3732,7 @@ mod storage_fault_tests {
             .err()
             .context("accounting failure must roll back the complete effect")?;
         assert!(format!("{error:#}").contains("injected accounting failure"));
-        assert_eq!(store.latest_append_seq().await?, 0);
+        assert_eq!(store.publication_seed().await?.head_seq, 0);
         assert_eq!(store.watermark().await?, 0);
         assert!(store.checkpoint().await?.is_none());
         assert!(store.item(&item.id).await?.is_none());
@@ -3844,7 +3781,7 @@ mod storage_fault_tests {
             checkpoint.state.usage_summary
         );
         assert_eq!(store.latest_execution_ordinal().await?, 41);
-        assert_eq!(store.latest_append_seq().await?, 1);
+        assert_eq!(store.publication_seed().await?.head_seq, 1);
         assert_eq!(store.watermark().await?, 1);
         assert_eq!(
             store
@@ -3950,10 +3887,10 @@ mod storage_fault_tests {
                     )]),
                     ..Default::default()
                 },
-            );
+            )?;
             store.import_checkpoint(&checkpoint, &[]).await?;
             assert_eq!(
-                store.latest_append_seq().await?,
+                store.publication_seed().await?.head_seq,
                 0,
                 "the legacy fixture must not discard existing completion facts"
             );
@@ -4076,7 +4013,7 @@ mod storage_fault_tests {
                 context: ContextSnapshot::default(),
                 ..Default::default()
             },
-        );
+        )?;
         checkpoint.state.usage_summary.diagnostics.legacy_unknown = true;
         let effect = ThreadEffectBatch {
             thread_id: thread.into(),
@@ -4156,7 +4093,7 @@ mod storage_fault_tests {
             ))
             .await?;
         assert_eq!(
-            store.latest_append_seq().await?,
+            store.publication_seed().await?.head_seq,
             0,
             "the v8 fixture must start before immutable completions were populated"
         );
@@ -4255,7 +4192,7 @@ mod storage_fault_tests {
             1
         );
         assert_eq!(cold.latest_execution_ordinal().await?, 41);
-        assert_eq!(cold.latest_append_seq().await?, 1);
+        assert_eq!(cold.publication_seed().await?.head_seq, 1);
         assert!(
             cold.state.writer.get().is_none(),
             "cold page must remain read-only"
@@ -5035,7 +4972,7 @@ mod storage_fault_tests {
             2
         );
         assert_eq!(
-            store.latest_append_seq().await?,
+            store.publication_seed().await?.head_seq,
             0,
             "publication must not reserve SQLite sequence rows"
         );
@@ -5668,7 +5605,7 @@ mod storage_fault_tests {
         };
         state.usage_summary.totals.inference_count = 1;
         state.usage_summary.applied_sequence = 1;
-        let first = ThreadCheckpoint::capture("atomic".into(), 1, state.clone());
+        let first = ThreadCheckpoint::capture("atomic".into(), 1, state.clone())?;
         let effect = ThreadEffectBatch {
             thread_id: "atomic".into(),
             sequence: 1,
@@ -5703,7 +5640,7 @@ mod storage_fault_tests {
         state.usage_summary.applied_sequence = 2;
         state.context.revision = 2;
         state.context.records = vec![record("first")?, record("second")?].into();
-        let second = ThreadCheckpoint::capture("atomic".into(), 2, state);
+        let second = ThreadCheckpoint::capture("atomic".into(), 2, state)?;
         let effect = ThreadEffectBatch {
             thread_id: "atomic".into(),
             sequence: 2,
@@ -5852,7 +5789,7 @@ mod storage_fault_tests {
             state.context.records = records.into();
             state.context.revision = sequence;
             state.commit_sequence = sequence;
-            let checkpoint = ThreadCheckpoint::capture("atomic".into(), sequence, state.clone());
+            let checkpoint = ThreadCheckpoint::capture("atomic".into(), sequence, state.clone())?;
             let effect = ThreadEffectBatch {
                 thread_id: "atomic".into(),
                 sequence,
@@ -6059,7 +5996,7 @@ mod storage_fault_tests {
         };
         store
             .import_checkpoint(
-                &ThreadCheckpoint::capture("context-migration".into(), 1, state.clone()),
+                &ThreadCheckpoint::capture("context-migration".into(), 1, state.clone())?,
                 &[],
             )
             .await?;
@@ -6278,7 +6215,7 @@ mod storage_fault_tests {
             );
         }
         let frozen_billing = state.extensions.clone();
-        let checkpoint = pl_core::thread::ThreadCheckpoint::capture("costs".into(), 0, state);
+        let checkpoint = pl_core::thread::ThreadCheckpoint::capture("costs".into(), 0, state)?;
         let purposes = [("main", 2.0), ("title", 3.0), ("review", 4.0)]
             .into_iter()
             .map(
@@ -6417,7 +6354,7 @@ mod storage_fault_tests {
                     },
                 );
             }
-            let checkpoint = ThreadCheckpoint::capture("import".into(), 0, snapshot);
+            let checkpoint = ThreadCheckpoint::capture("import".into(), 0, snapshot)?;
             let (external, bodies) = if schema == 1 {
                 (checkpoint.clone(), Vec::new())
             } else {

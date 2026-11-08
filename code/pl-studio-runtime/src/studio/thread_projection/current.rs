@@ -17,7 +17,6 @@ use pl_core::{
 use pl_protocol::*;
 use std::{
     collections::BTreeMap,
-    ops::Bound::{Excluded, Unbounded},
     sync::{Arc, OnceLock},
 };
 
@@ -56,6 +55,7 @@ pub(in crate::studio) type CurrentPositionIndex =
 #[derive(Debug)]
 pub(in crate::studio) struct CurrentState {
     projection: Arc<FrozenCurrentProjection>,
+    activity_entries: Arc<[ActivityEntry]>,
     /// Bounded real source facts from this owner cut, including not-yet-saved ends.
     source_states: Arc<[ChatSourceState]>,
     contents: Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>>,
@@ -122,25 +122,6 @@ impl CurrentOwner {
     }
     pub(super) fn snapshot(&self) -> Option<Arc<CurrentState>> {
         self.state.clone()
-    }
-
-    /// Timeline alone replaces items. Preserve a newer streaming cut if it has
-    /// advanced since preparation; otherwise install the same frozen head.
-    pub(super) fn adopt_timeline_projection(
-        &mut self,
-        before: &Arc<FrozenCurrentProjection>,
-        after: &Arc<FrozenCurrentProjection>,
-    ) {
-        if let Some(state) = self.state.take() {
-            let projection = if Arc::ptr_eq(state.frozen_projection(), before) {
-                after.clone()
-            } else {
-                state
-                    .frozen_projection()
-                    .with_items(after.projection().items.clone())
-            };
-            self.state = Some(CurrentState::with_projection(state, projection));
-        }
     }
 
     pub(super) fn freeze(
@@ -285,9 +266,7 @@ impl CurrentOwner {
                 .ok_or_else(|| anyhow::anyhow!("current position exhausted"))?;
             Ok(next_position)
         };
-        type MemberBodies = (u64, Vec<(ContentRef, Arc<CurrentContent>)>);
-        let mut members: BTreeMap<String, MemberBodies> = BTreeMap::new();
-        for (id, position, block, ordinal, text_channel) in active {
+        for (id, position, block, _ordinal, text_channel) in active {
             let key = position.as_key();
             let owner = ContentOwner::Item {
                 item_id: id.clone(),
@@ -304,11 +283,6 @@ impl CurrentOwner {
                     key: key.clone(),
                 },
             };
-            members
-                .entry(id.clone())
-                .or_insert_with(|| (ordinal, Vec::new()))
-                .1
-                .push((reference.clone(), content.clone()));
             if projection.previews.len() < PREVIEW_COUNT {
                 let role = match position {
                     BodyKey::Part(
@@ -358,77 +332,6 @@ impl CurrentOwner {
                 });
             }
             contents.insert(content.descriptor.key.clone(), content);
-        }
-        for (id, (position, bodies)) in members {
-            let position = i64::try_from(position)?;
-            let previous_payload = match bodies.as_slice() {
-                [(_, content)] => self.state.as_ref().and_then(|previous| {
-                    let key = &content.descriptor.key;
-                    let old = previous.contents.get(key)?;
-                    if !Arc::ptr_eq(old, content) {
-                        return None;
-                    }
-                    // ChatContentKey orders by owner first, so only the two adjacent keys
-                    // can disqualify a previously single-body owner.
-                    let same_owner = |(neighbor, _): (&ChatContentKey, &Arc<CurrentContent>)| {
-                        neighbor.owner == key.owner
-                    };
-                    if previous
-                        .contents
-                        .range::<ChatContentKey, _>((Unbounded, Excluded(key)))
-                        .next_back()
-                        .is_some_and(same_owner)
-                        || previous
-                            .contents
-                            .range::<ChatContentKey, _>((Excluded(key), Unbounded))
-                            .next()
-                            .is_some_and(same_owner)
-                    {
-                        return None;
-                    }
-                    previous
-                        .entries
-                        .get(&("members".into(), id.clone()))
-                        .filter(|entry| entry.position == position)
-                        .map(|entry| entry.payload.clone())
-                }),
-                _ => None,
-            };
-            let payload = match previous_payload {
-                Some(payload) => payload,
-                None => {
-                    let bodies: Vec<_> = bodies
-                        .iter()
-                        .map(|(reference, content)| {
-                            serde_json::json!({
-                                "reference": reference,
-                                "byteLength": content.descriptor.byte_length,
-                                "generation": content.descriptor.generation,
-                            })
-                        })
-                        .collect();
-                    Arc::from(serde_json::to_vec(&bodies)?)
-                }
-            };
-            let entry = CurrentEntryWrite {
-                collection: "members".into(),
-                position,
-                entry_id: id,
-                payload,
-            };
-            entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
-        }
-        // Growing tool/member collections are owned here, not copied into the small head.
-        if let Some(activity) = activity.as_ref() {
-            for tool in &activity.tools.active {
-                let entry = CurrentEntryWrite {
-                    collection: "tools".into(),
-                    position: collection_position("tools", &tool.call_id)?,
-                    entry_id: tool.call_id.clone(),
-                    payload: Arc::from(serde_json::to_vec(tool)?),
-                };
-                entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
-            }
         }
         let mut interactions = Vec::new();
         for id in state.permissions.keys().chain(state.interactions.keys()) {
@@ -499,55 +402,13 @@ impl CurrentOwner {
                 document,
             });
         }
-        for collection in ["tools", "interactions", "members"] {
-            let changed = self.state.as_ref().is_none_or(|previous| {
-                let old: Vec<_> = previous
-                    .entries
-                    .iter()
-                    .filter(|((name, _), _)| name == collection)
-                    .collect();
-                let new: Vec<_> = entries
-                    .iter()
-                    .filter(|((name, _), _)| name == collection)
-                    .collect();
-                old.len() != new.len()
-                    || old.iter().zip(new.iter()).any(|((key, a), (next, b))| {
-                        key != next || a.position != b.position || a.payload != b.payload
-                    })
-            });
-            let previous_revision = self
-                .state
-                .as_ref()
-                .and_then(|state| {
-                    state
-                        .projection()
-                        .collections
-                        .iter()
-                        .find(|reference| reference.collection == collection)
-                })
-                .map(|reference| reference.revision);
-            let revision = if changed {
-                previous_revision.map_or(
-                    Ok(state.observation_revision.max(sequence)),
-                    |previous| {
-                        previous
-                            .checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("current collection revision exhausted"))
-                    },
-                )?
-            } else {
-                previous_revision.unwrap_or(sequence)
-            };
-            let reference = CurrentCollectionRef {
-                database_id: database_id.clone(),
-                collection: collection.into(),
-                revision,
-            };
-            if collection == "interactions" {
-                projection.interactions = Some(reference.clone());
-            }
-            projection.collections.push(reference);
-        }
+        projection.interactions = Some(CurrentCollectionRef {
+            database_id: database_id.clone(),
+            collection: "interactions".into(),
+            // The original Core owner versions both transfer and resident slices.
+            // Reopening or observing progress must never allocate a resource version.
+            revision: state.interaction_collection_revision,
+        });
         let entries = entries
             .into_iter()
             .map(|(key, entry)| {
@@ -574,8 +435,66 @@ impl CurrentOwner {
                 )
             })
             .collect();
+        let mut activity_entries = projection
+            .atoms
+            .iter()
+            .filter(|atom| matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }))
+            .filter_map(|atom| {
+                super::activity_identity(atom).map(|identity| ActivityEntry {
+                    identity,
+                    atom: atom.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        // A background-started receipt ends the foreground obligation, not the
+        // task. Its actual scheduler identity remains independently active.
+        for task in state.tasks.values().filter(|task| {
+            task.status == pl_core::thread::task::TaskStatus::Running
+                && task.acknowledgement.is_some()
+        }) {
+            let call_id = task.call_id.clone();
+            activity_entries.retain(|entry| {
+                !matches!(&entry.identity,
+                ActivityIdentity::ForegroundTool { call_id: foreground } if foreground == &call_id)
+            });
+            activity_entries.push(ActivityEntry {
+                identity: ActivityIdentity::BackgroundTool {
+                    call_id: call_id.clone(),
+                },
+                atom: ChatAtom {
+                    id: super::order::tool_id(&call_id),
+                    completion_item_id: None,
+                    completion_seq: None,
+                    source: ChatSourceId::ForegroundTurn {
+                        turn_id: task.turn_id.clone(),
+                    },
+                    source_state: None,
+                    source_order: task.started_sequence,
+                    kind: ChatAtomKind::ToolCall,
+                    delivery: ChatDeliveryKind::Independent,
+                    lifecycle: ChatAtomLifecycle::Active {
+                        started: None,
+                        status: ChatActiveStatus::Running,
+                    },
+                    turn_id: Some(task.turn_id.clone()),
+                    attempt_id: None,
+                    tool: Some(ChatToolIdentity {
+                        call_id,
+                        name: task.tool_id.clone(),
+                    }),
+                    wait: None,
+                    text_channel: None,
+                    started_at: None,
+                    finished_at: None,
+                    content_present: None,
+                    contents: Vec::new(),
+                    payload: None,
+                },
+            });
+        }
         let snapshot = Arc::new(CurrentState {
             projection: FrozenCurrentProjection::new(projection),
+            activity_entries: activity_entries.into(),
             source_states: self.sources.clone(),
             contents: Arc::new(contents),
             materialized: OnceLock::new(),
@@ -655,6 +574,83 @@ impl CurrentState {
     pub fn projection(&self) -> &CurrentProjection {
         self.projection.projection()
     }
+    pub fn business_refs(&self) -> ThreadBusinessRefs {
+        project_business_refs(self.projection())
+    }
+    /// Qualify references against the exact Core business slice used by a State
+    /// baseline. Unrelated execution/token revisions may differ; Plan content
+    /// and the full typed interaction list with its resource revision may not.
+    pub(in crate::studio) fn business_refs_at(
+        &self,
+        thread_id: &str,
+        state: &ThreadSnapshot,
+    ) -> Result<ThreadBusinessRefs> {
+        ensure!(
+            self.projection()
+                .interactions
+                .as_ref()
+                .is_some_and(|reference| {
+                    reference.revision == state.interaction_collection_revision
+                }),
+            pl_core::chat::ChatError::StaleContent
+        );
+        let interactions = state
+            .permissions
+            .keys()
+            .chain(state.interactions.keys())
+            .map(|id| crate::thread_assembler::project_thread_interaction(thread_id, id, state))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        ensure!(
+            interactions.as_slice() == self.interactions.as_ref(),
+            pl_core::chat::ChatError::StaleContent
+        );
+        let plan = state
+            .extensions
+            .get(crate::plan_tool::PLAN_EXTENSION)
+            .map(|record| crate::plan_tool::decode_plan_state(&record.payload))
+            .transpose()?;
+        match (plan, self.projection().plan.as_ref()) {
+            (None, None) => {}
+            (Some(plan), Some(head)) => {
+                ensure!(
+                    plan.revision == head.revision && plan.state == head.phase,
+                    pl_core::chat::ChatError::StaleContent
+                );
+                match (plan.document.as_ref(), head.document.as_ref()) {
+                    (None, None) => {}
+                    (Some(document), Some(reference)) => {
+                        let ContentTarget::Body { owner, key } = &reference.target else {
+                            anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+                        };
+                        let key = ChatContentKey {
+                            owner: content_owner_key(owner)?,
+                            key: key.clone(),
+                        };
+                        let content = self
+                            .contents
+                            .get(&key)
+                            .ok_or(pl_core::chat::ChatError::StaleContent)?;
+                        ensure!(
+                            ContentBlock::text_eq(
+                                &content.block,
+                                &ContentBlock::from_text(&document.markdown)
+                            ),
+                            pl_core::chat::ChatError::StaleContent
+                        );
+                    }
+                    _ => anyhow::bail!(pl_core::chat::ChatError::StaleContent),
+                }
+            }
+            _ => anyhow::bail!(pl_core::chat::ChatError::StaleContent),
+        }
+        Ok(self.business_refs())
+    }
+    pub fn activity_entries(&self) -> &Arc<[ActivityEntry]> {
+        &self.activity_entries
+    }
     pub fn frozen_projection(&self) -> &Arc<FrozenCurrentProjection> {
         &self.projection
     }
@@ -687,6 +683,7 @@ impl CurrentState {
         }
         Arc::new(Self {
             projection,
+            activity_entries: state.activity_entries.clone(),
             source_states: state.source_states.clone(),
             contents: state.contents.clone(),
             materialized: OnceLock::new(),
@@ -727,6 +724,10 @@ impl CurrentState {
                 .saturating_add(
                     serde_json::to_vec(self.source_states.as_ref())
                         .map_or(u64::MAX, |bytes| bytes.len() as u64),
+                )
+                .saturating_add(
+                    serde_json::to_vec(self.activity_entries.as_ref())
+                        .map_or(u64::MAX, |bytes| bytes.len() as u64),
                 );
             // An empty interaction slice owns no dynamic budget, exactly like every other empty
             // resident list: only a non-empty slice pays its fat-pointer shell here.
@@ -748,457 +749,6 @@ impl CurrentState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn assert_single_member_payload(state: &CurrentState, id: &str) -> Result<Arc<[u8]>> {
-        let owner = ContentOwner::Item { item_id: id.into() };
-        let owner_key = content_owner_key(&owner)?;
-        let mut bodies = state
-            .contents()
-            .values()
-            .filter(|content| content.descriptor.key.owner == owner_key);
-        let body = bodies.next().expect("single member body");
-        assert!(bodies.next().is_none());
-        let reference = ContentRef {
-            database_id: "database".into(),
-            target: ContentTarget::Body {
-                owner,
-                key: body.descriptor.key.key.clone(),
-            },
-        };
-        let expected = serde_json::to_vec(&vec![serde_json::json!({
-            "reference": reference,
-            "byteLength": body.descriptor.byte_length,
-            "generation": body.descriptor.generation,
-        })])?;
-        let payload = &state.entries()[&("members".into(), id.into())].payload;
-        assert_eq!(payload.as_ref(), expected.as_slice());
-        Ok(payload.clone())
-    }
-
-    fn retained_cut(
-        with_interaction: bool,
-    ) -> Result<(
-        Arc<PreparedCurrent>,
-        Arc<CurrentState>,
-        super::super::timeline::TimelineUpdate,
-    )> {
-        let mut owner = CurrentOwner::default();
-        owner.bind("database".into())?;
-        let thread = Thread::placeholder("thread");
-        let body = ContentBlock::from_text("retained body");
-        let item = ThreadItem::new(
-            "text".into(),
-            thread.id.clone(),
-            "turn".into(),
-            1,
-            1,
-            1,
-            2,
-            ThreadItemState::Text(ThreadTextItem::new(
-                ThreadTextChannel::Final,
-                body.text(),
-                Vec::new(),
-                ThreadContentLifecycle::streaming(),
-            )),
-        );
-        let mut atom = crate::studio::runtime::chat_item::atom(&item);
-        atom.lifecycle = ChatAtomLifecycle::Active {
-            started: Some(ChatFactPosition {
-                effect_seq: 1,
-                suborder: 0,
-            }),
-            status: ChatActiveStatus::Running,
-        };
-        let source = ChatSourceState {
-            source: atom.source.clone(),
-            lifecycle: ChatSourceLifecycle::Active,
-            started: Some(ChatFactPosition {
-                effect_seq: 1,
-                suborder: 0,
-            }),
-            ended: None,
-        };
-        owner.provenance(vec![source], vec![atom.clone()]);
-        let mut state = ThreadSnapshot::default();
-        if with_interaction {
-            use pl_core::thread::interactions::{
-                InteractionRecord, InteractionRequest as CoreInteractionRequest, InteractionState,
-            };
-            let id = pl_core::tool::opaque::tool_interaction_id("question");
-            state.interactions.insert(
-                id.clone(),
-                InteractionRecord {
-                    created_at: 1,
-                    updated_at: 1,
-                    continuation_id: None,
-                    request: CoreInteractionRequest {
-                        id,
-                        turn_id: "turn".into(),
-                        payload: pl_core::context::OpaquePayload::new(
-                            "pl.tool.user-input",
-                            1,
-                            serde_json::to_string(&vec![UserQuestion {
-                                id: "choice".into(),
-                                header: "Choice".into(),
-                                question: "Which choice?".into(),
-                                is_other: true,
-                                is_secret: false,
-                                options: None,
-                            }])?,
-                        )?,
-                    },
-                    revision: 1,
-                    state: InteractionState::Pending,
-                    extension_mutations: vec![],
-                },
-            );
-        }
-        let (prepared, snapshot) = owner.freeze(
-            &thread,
-            &state,
-            3,
-            [(
-                "text".into(),
-                BodyKey::Body,
-                body,
-                1,
-                Some(ThreadTextChannel::Final),
-            )],
-        )?;
-        let mut timeline =
-            super::super::TimelineProjection::new("database".into(), "generation".into(), 0);
-        timeline.observe(&atom, None)?;
-        let mut member = atom.clone();
-        member.id = "work".into();
-        member.source_order = Some(2);
-        member.kind = ChatAtomKind::Reasoning;
-        member.delivery = ChatDeliveryKind::Foreground;
-        member.text_channel = None;
-        member.started_at = Some(2);
-        member.contents.clear();
-        member.payload = None;
-        let started = ChatFactPosition {
-            effect_seq: 2,
-            suborder: 0,
-        };
-        member.lifecycle = ChatAtomLifecycle::Active {
-            started: Some(started),
-            status: ChatActiveStatus::Running,
-        };
-        timeline.observe(&member, None)?;
-        member.completion_item_id = Some(member.id.clone());
-        member.completion_seq = Some(1);
-        member.finished_at = Some(3);
-        member.lifecycle = ChatAtomLifecycle::Terminal {
-            started: Some(started),
-            ended: Some(ChatFactPosition {
-                effect_seq: 3,
-                suborder: 0,
-            }),
-            outcome: ChatTerminalOutcome::Completed,
-        };
-        timeline.complete(member, 1, None)?;
-        let update = timeline.take_update()?;
-        assert!(!update.current().is_empty() && !update.members().is_empty());
-        assert!(!snapshot.contents().is_empty() && !snapshot.source_states().is_empty());
-        Ok((prepared, snapshot, update))
-    }
-
-    #[test]
-    fn prepared_current_items_invalidate_measured_clone_only() -> Result<()> {
-        let (prepared, state, update) = retained_cut(false)?;
-        assert!(Arc::ptr_eq(
-            prepared.frozen_projection(),
-            state.frozen_projection()
-        ));
-        let canonical = serde_json::to_vec(prepared.projection())?;
-        let metadata =
-            std::mem::size_of::<OnceLock<u64>>() as u64 + 3 * std::mem::size_of::<usize>() as u64;
-        let before = canonical.len() as u64 + metadata;
-        assert_eq!(prepared.projection_retained_bytes(), before);
-        let mut changed = prepared.as_ref().clone();
-        assert!(Arc::ptr_eq(
-            changed.frozen_projection(),
-            prepared.frozen_projection()
-        ));
-        assert_eq!(changed.projection_retained_bytes(), before);
-        changed.replace_projection(
-            changed
-                .frozen_projection()
-                .with_items(update.current().to_vec()),
-        );
-        assert!(!Arc::ptr_eq(
-            changed.frozen_projection(),
-            prepared.frozen_projection()
-        ));
-        let changed_canonical = serde_json::to_vec(changed.projection())?;
-        let expected = changed_canonical.len() as u64 + metadata;
-        assert!(expected > before);
-        assert_eq!(changed.projection_retained_bytes(), expected);
-        assert_eq!(serde_json::to_vec(changed.projection())?, changed_canonical);
-        assert_eq!(prepared.projection_retained_bytes(), before);
-        assert_eq!(serde_json::to_vec(prepared.projection())?, canonical);
-        Ok(())
-    }
-
-    #[test]
-    fn frozen_heads_share_the_owner_cut_without_retaining_prior_bodies() -> Result<()> {
-        let mut owner = CurrentOwner::default();
-        owner.bind("database".into())?;
-        let thread = Thread::placeholder("thread");
-        let (mut prepared, state) = owner.freeze(
-            &thread,
-            &ThreadSnapshot::default(),
-            1,
-            [(
-                "body".into(),
-                BodyKey::Body,
-                ContentBlock::from_text("old body"),
-                1,
-                None,
-            )],
-        )?;
-        let (_, _, update) = retained_cut(false)?;
-        let before = state.frozen_projection().clone();
-        let after = before.with_items(update.current().to_vec());
-        Arc::make_mut(&mut prepared).replace_projection(after.clone());
-        let published = CurrentState::with_projection(state.clone(), after.clone());
-        owner.adopt_timeline_projection(&before, &after);
-        let handoff =
-            super::super::CurrentHandoff::new(0, before.clone(), after.clone(), Arc::from([]));
-        assert!(Arc::ptr_eq(
-            prepared.frozen_projection(),
-            published.frozen_projection()
-        ));
-        assert!(Arc::ptr_eq(handoff.after(), published.frozen_projection()));
-        assert!(Arc::ptr_eq(
-            owner.snapshot().unwrap().frozen_projection(),
-            handoff.after()
-        ));
-        assert!(
-            Arc::ptr_eq(&owner.snapshot().unwrap(), &owner.snapshot().unwrap(),),
-            "reading the latest current must not rebuild a decorated state"
-        );
-        let canonical = serde_json::to_vec(before.projection())?;
-        let prior_body = Arc::downgrade(state.contents().values().next().unwrap());
-        let newer = owner.observe(
-            &thread,
-            &ThreadSnapshot::default(),
-            2,
-            [(
-                "body".into(),
-                BodyKey::Body,
-                ContentBlock::from_text("old body plus new progress"),
-                1,
-                None,
-            )],
-        )?;
-        // A later progress cut keeps its own metadata and body even when an
-        // earlier prepared cut finishes its Timeline publication.
-        owner.adopt_timeline_projection(&before, &after);
-        let latest = owner.snapshot().unwrap();
-        assert_eq!(latest.projection().source_effect_seq, 2);
-        assert_eq!(latest.projection().items, after.projection().items);
-        assert!(Arc::ptr_eq(latest.contents(), newer.contents()));
-        assert!(!Arc::ptr_eq(latest.frozen_projection(), handoff.after()));
-        assert_eq!(serde_json::to_vec(before.projection())?, canonical);
-        assert_eq!(published.projection().source_effect_seq, 1);
-        drop(state);
-        drop(published);
-        drop(prepared);
-        assert!(
-            prior_body.upgrade().is_none(),
-            "transport-only current bodies must not survive their last reader"
-        );
-        owner.freeze(
-            &thread,
-            &ThreadSnapshot::default(),
-            2,
-            [(
-                "body".into(),
-                BodyKey::Body,
-                newer.contents().values().next().unwrap().block.clone(),
-                1,
-                None,
-            )],
-        )?;
-        assert!(
-            prior_body.upgrade().is_none(),
-            "handoff heads must not own prior current bodies"
-        );
-        assert_eq!(handoff.after().projection().source_effect_seq, 1);
-        Ok(())
-    }
-
-    fn original_metadata_bytes(state: &CurrentState) -> Result<u64> {
-        let entries: u64 = state
-            .entries()
-            .values()
-            .map(|entry| entry.payload.len() as u64 + entry.entry_id.len() as u64 + 128)
-            .sum();
-        let interactions = if state.interactions().is_empty() {
-            0
-        } else {
-            2 * std::mem::size_of::<usize>() as u64
-                + state
-                    .interactions()
-                    .iter()
-                    .map(|interaction| {
-                        std::mem::size_of::<InteractionRequest>() as u64
-                            + super::super::live::interaction_request_bytes(interaction)
-                    })
-                    .sum::<u64>()
-        };
-        Ok(entries
-            + state.contents().len() as u64 * 256
-            + serde_json::to_vec(state.projection())?.len() as u64
-            + serde_json::to_vec(state.source_states().as_ref())?.len() as u64
-            + interactions)
-    }
-
-    #[test]
-    fn current_state_items_reuse_or_remeasure_without_replacing_body_owners() -> Result<()> {
-        for with_interaction in [false, true] {
-            let (_, state, update) = retained_cut(with_interaction)?;
-            assert_eq!(!state.interactions().is_empty(), with_interaction);
-            let canonical = serde_json::to_vec(state.projection())?;
-            let cache = 2 * std::mem::size_of::<OnceLock<u64>>() as u64
-                + 3 * std::mem::size_of::<usize>() as u64;
-            let before = original_metadata_bytes(&state)? + cache;
-            assert_eq!(state.metadata_bytes(), before);
-            let same = CurrentState::with_projection(
-                state.clone(),
-                state
-                    .frozen_projection()
-                    .with_items(state.projection().items.clone()),
-            );
-            assert!(Arc::ptr_eq(&same, &state));
-            assert_eq!(same.metadata_bytes(), before);
-            let changed = CurrentState::with_projection(
-                state.clone(),
-                state
-                    .frozen_projection()
-                    .with_items(update.current().to_vec()),
-            );
-            assert!(!Arc::ptr_eq(&changed, &state));
-            let expected = original_metadata_bytes(&changed)? + cache;
-            assert!(expected > before);
-            assert_eq!(changed.metadata_bytes(), expected);
-            assert!(Arc::ptr_eq(changed.contents(), state.contents()));
-            assert!(Arc::ptr_eq(changed.entries(), state.entries()));
-            assert!(Arc::ptr_eq(changed.by_position(), state.by_position()));
-            let old_bodies = state.materialized_contents();
-            let new_bodies = changed.materialized_contents();
-            for (key, body) in old_bodies.iter() {
-                assert!(Arc::ptr_eq(body, &new_bodies[key]));
-                assert_eq!(body.data.range(0, 13)?.as_bytes(), b"retained body");
-            }
-            assert_eq!(state.metadata_bytes(), before);
-            assert_eq!(serde_json::to_vec(state.projection())?, canonical);
-        }
-        Ok(())
-    }
-
-    fn original_handoff_bytes(handoff: &super::super::CurrentHandoff) -> Result<u64> {
-        let previews: u64 = handoff
-            .before()
-            .projection()
-            .previews
-            .iter()
-            .map(|preview| preview.id.len() as u64 + 32)
-            .sum();
-        Ok(
-            serde_json::to_vec(handoff.before().projection())?.len() as u64
-                + serde_json::to_vec(handoff.after().projection())?.len() as u64
-                + serde_json::to_vec(&(
-                    handoff.entries().as_ref(),
-                    handoff.updates(),
-                    handoff.members().as_ref(),
-                    handoff.sources().as_ref(),
-                ))?
-                .len() as u64
-                + previews,
-        )
-    }
-
-    #[test]
-    fn measured_handoff_clone_publication_preserves_retirement_reserve() -> Result<()> {
-        let (_, state, update) = retained_cut(false)?;
-        let before = state.frozen_projection().clone();
-        assert!(!before.projection().previews.is_empty());
-        let entries: Arc<[ChatEntry]> = update
-            .current()
-            .iter()
-            .cloned()
-            .map(|item| ChatEntry::Item(Box::new(item)))
-            .collect::<Vec<_>>()
-            .into();
-        let handoff =
-            super::super::CurrentHandoff::new(1, before.clone(), before.clone(), entries.clone());
-        let canonical = serde_json::to_vec(before.projection())?;
-        let cache = 3 * std::mem::size_of::<OnceLock<u64>>() as u64
-            + 12 * std::mem::size_of::<usize>() as u64;
-        let original = original_handoff_bytes(&handoff)? + cache;
-        assert_eq!(handoff.retained_bytes(), original);
-        let published = handoff.clone().with_publication(
-            "generation".into(),
-            state.source_states().clone(),
-            update.members().to_vec().into(),
-            Arc::from([super::super::CurrentRetirement {
-                item_id: before.projection().previews[0].id.clone(),
-                through: 1,
-            }]),
-        );
-        let expected = original_handoff_bytes(&published)? + cache;
-        assert!(expected > original);
-        assert_eq!(published.retained_bytes(), expected);
-        assert_eq!(published.projection_generation(), "generation");
-        assert_eq!(published.main_through(), 1);
-        assert_eq!(published.retirements().len(), 1);
-        assert_eq!(
-            serde_json::to_vec(published.before().projection())?,
-            canonical
-        );
-        assert_eq!(
-            serde_json::to_vec(published.after().projection())?,
-            canonical
-        );
-        assert_eq!(
-            serde_json::to_vec(published.entries().as_ref())?,
-            serde_json::to_vec(entries.as_ref())?
-        );
-        let mut split = before.projection().clone();
-        split.items = update.current().to_vec();
-        assert_eq!(published.projection_after_items(0), split);
-        assert_eq!(
-            published.projection_after_items(entries.len()),
-            *before.projection()
-        );
-        let without_retirements = published.clone().with_publication(
-            published.projection_generation().to_owned(),
-            published.sources().clone(),
-            published.members().clone(),
-            Arc::from([]),
-        );
-        assert_eq!(
-            without_retirements.retained_bytes(),
-            expected,
-            "retirement reserve must not shrink to the filled retirement count"
-        );
-        let updated = published
-            .clone()
-            .with_updates(update.current().to_vec().into());
-        assert_eq!(
-            updated.retained_bytes(),
-            original_handoff_bytes(&updated)? + cache
-        );
-        assert!(updated.retained_bytes() > expected);
-        assert_eq!(published.retained_bytes(), expected);
-        assert_eq!(handoff.retained_bytes(), original);
-        assert!(handoff.projection_generation().is_empty());
-        assert!(handoff.sources().is_empty() && handoff.members().is_empty());
-        Ok(())
-    }
 
     #[test]
     fn text_channel_is_independent_of_display_role_and_body_generation() -> Result<()> {
@@ -1255,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_progress_defers_indexes_and_freeze_reuses_reader_index() -> Result<()> {
+    fn collapsed_progress_indexes_only_at_the_first_read_or_reliable_handoff() -> Result<()> {
         let mut owner = CurrentOwner::default();
         owner.bind("database".into())?;
         let thread = Thread::placeholder("thread");
@@ -1306,7 +856,7 @@ mod tests {
         )?;
         assert!(
             prepared.contents.is_empty(),
-            "active transport bodies must not enter the reliable SQLite domain"
+            "active progress became a durable document write"
         );
         assert!(Arc::ptr_eq(
             &accepted,
@@ -1338,139 +888,186 @@ mod tests {
         );
         Ok(())
     }
+}
+
+/// The same lightweight domain-head projection serves State and ordinary readers.
+pub(in crate::studio) fn project_business_refs(
+    projection: &CurrentProjection,
+) -> ThreadBusinessRefs {
+    ThreadBusinessRefs {
+        plan: projection.plan.clone(),
+        interactions: projection.interactions.clone(),
+    }
+}
+
+#[cfg(test)]
+mod business_tests {
+    use super::*;
+    fn state(version: u64, text: &str) -> Result<ThreadSnapshot> {
+        let plan = AgentSessionPlanState {
+            revision: version,
+            state: AgentSessionPlanPhase::Approved,
+            document: Some(AgentSessionPlanDocument {
+                version,
+                markdown: text.into(),
+                content_hash: crate::canonical_content_hash(text.as_bytes()),
+            }),
+            ..Default::default()
+        };
+        let mut state = ThreadSnapshot {
+            interaction_collection_revision: 17,
+            ..Default::default()
+        };
+        state.extensions.insert(
+            crate::plan_tool::PLAN_EXTENSION.into(),
+            pl_core::thread::extensions::ExtensionRecord {
+                revision: version,
+                payload: crate::plan_tool::encode_plan_state(&plan)?,
+            },
+        );
+        Ok(state)
+    }
+    #[test]
+    fn plan_changes_do_not_invalidate_interactions_and_tokens_do_not_change_business_refs()
+    -> Result<()> {
+        let mut owner = CurrentOwner::default();
+        owner.bind("business-db".into())?;
+        let thread = Thread::placeholder("business-thread");
+        let old = state(3, "# Original plan\n\nSteps")?;
+        let first = owner.observe(&thread, &old, 10, [])?;
+        let references = first.business_refs_at(&thread.id, &old)?;
+        assert_eq!(references.interactions.as_ref().unwrap().revision, 17);
+        let page = super::super::current_page(
+            &first,
+            references.interactions.as_ref().unwrap(),
+            None,
+            ReadDemand {
+                max_items: 1,
+                max_bytes: 4096,
+            },
+            Ok,
+        )?;
+        assert!(page.entries.is_empty());
+        let progress = owner.observe(
+            &thread,
+            &old,
+            10,
+            [(
+                "part".into(),
+                BodyKey::Body,
+                ContentBlock::from_text("token"),
+                1,
+                None,
+            )],
+        )?;
+        assert_eq!(progress.business_refs(), references);
+        assert!(progress.projection().collections.is_empty());
+        let new = state(4, "# New plan\n\nRevised steps")?;
+        let next = owner.observe(&thread, &new, 11, [])?;
+        assert_eq!(next.business_refs().interactions, references.interactions);
+        assert_ne!(next.business_refs().plan, references.plan);
+        assert!(
+            next.business_refs_at(&thread.id, &old).is_err(),
+            "mixed-cut State refs accepted"
+        );
+        let old_ref = references.plan.unwrap().document.unwrap();
+        let ContentTarget::Body {
+            owner: old_owner,
+            key,
+        } = old_ref.target
+        else {
+            panic!("plan body");
+        };
+        assert!(
+            !next.contents().contains_key(&ChatContentKey {
+                owner: content_owner_key(&old_owner)?,
+                key
+            }),
+            "retired live document unexpectedly reads the latest version"
+        );
+        Ok(())
+    }
 
     #[test]
-    fn member_payload_reuse_keeps_multiple_bodies_in_input_order() -> Result<()> {
-        let mut owner = CurrentOwner::default();
-        owner.bind("database".into())?;
-        let thread = Thread::placeholder("thread");
-        let state = ThreadSnapshot::default();
-        let first = ContentBlock::from_text("first body");
-        let second = ContentBlock::from_text("second body");
-        let first_key = BodyKey::Host("z-last".into());
-        let body_owner = ContentOwner::Item {
-            item_id: "shared".into(),
+    fn interaction_resources_use_core_revisions_across_deletion_and_reopen() -> Result<()> {
+        use pl_core::{
+            context::OpaquePayload,
+            thread::interactions::{InteractionRecord, InteractionRequest, InteractionState},
         };
-        let (_, single) = owner.freeze(
-            &thread,
-            &state,
-            1,
-            [("shared".into(), first_key.clone(), first.clone(), 1, None)],
-        )?;
-        let single_payload = assert_single_member_payload(&single, "shared")?;
-        let first_value = serde_json::json!({
-            "reference": ContentRef {
-                database_id: "database".into(),
-                target: ContentTarget::Body { owner: body_owner.clone(), key: first_key.as_key() },
-            },
-            "byteLength": first.len() as u64, "generation": 1,
-        });
-        let second_value = serde_json::json!({
-            "reference": ContentRef {
-                database_id: "database".into(),
-                target: ContentTarget::Body { owner: body_owner, key: BodyKey::Body.as_key() },
-            },
-            "byteLength": second.len() as u64, "generation": 1,
-        });
-        let (_, multiple) = owner.freeze(
-            &thread,
-            &state,
-            2,
-            [
-                ("shared".into(), first_key.clone(), first.clone(), 1, None),
-                ("shared".into(), BodyKey::Body, second.clone(), 1, None),
-            ],
-        )?;
-        let key = ("members".into(), "shared".into());
-        let payload = &multiple.entries()[&key].payload;
-        let expected = serde_json::to_vec(&vec![first_value.clone(), second_value.clone()])?;
-        assert_eq!(payload.as_ref(), expected.as_slice());
-        assert_ne!(payload.as_ref(), single_payload.as_ref());
-        let (_, reversed) = owner.freeze(
-            &thread,
-            &state,
-            3,
-            [
-                ("shared".into(), BodyKey::Body, second.clone(), 1, None),
-                ("shared".into(), first_key.clone(), first.clone(), 1, None),
-            ],
-        )?;
-        let reversed_expected = serde_json::to_vec(&vec![second_value, first_value])?;
-        assert_ne!(expected, reversed_expected);
+
+        let thread = Thread::placeholder("interaction-revisions");
+        let mut before = ThreadSnapshot {
+            interaction_collection_revision: 41,
+            ..Default::default()
+        };
+        for id in ["first", "second"] {
+            let id = pl_core::tool::opaque::tool_interaction_id(id);
+            before.interactions.insert(
+                id.clone(),
+                InteractionRecord {
+                    created_at: 1,
+                    updated_at: 1,
+                    continuation_id: None,
+                    revision: 1,
+                    state: InteractionState::Pending,
+                    extension_mutations: vec![],
+                    request: InteractionRequest {
+                        id,
+                        turn_id: "turn".into(),
+                        payload: OpaquePayload::new(
+                            "pl.tool.user-input",
+                            1,
+                            serde_json::to_string(&vec![UserQuestion {
+                                id: "question".into(),
+                                header: "Question".into(),
+                                question: "Continue?".into(),
+                                is_other: true,
+                                is_secret: false,
+                                options: None,
+                            }])?,
+                        )?,
+                    },
+                },
+            );
+        }
+        let mut owner = CurrentOwner::default();
+        owner.bind("interaction-db".into())?;
+        let first = owner.observe(&thread, &before, 3, [])?;
         assert_eq!(
-            reversed.entries()[&key].payload.as_ref(),
-            reversed_expected.as_slice()
+            first
+                .business_refs()
+                .interactions
+                .as_ref()
+                .unwrap()
+                .revision,
+            41
         );
+
+        let mut after = before.clone();
+        after
+            .interactions
+            .remove(&pl_core::tool::opaque::tool_interaction_id("first"));
+        after.interaction_collection_revision = 42;
+        let next = owner.observe(&thread, &after, 4, [])?;
+        let cold = CurrentState::cold("interaction-db".into(), thread.id.clone(), 4, &after)?;
+        assert_eq!(next.business_refs(), cold.business_refs());
         assert_eq!(
-            payload.as_ref(),
-            expected.as_slice(),
-            "old cut payload was changed"
+            next.business_refs_at(&thread.id, &after)?
+                .interactions
+                .unwrap()
+                .revision,
+            42
         );
-        let (_, single_again) = owner.freeze(
-            &thread,
-            &state,
-            4,
-            [("shared".into(), first_key.clone(), first.clone(), 1, None)],
-        )?;
-        let single_again_payload = assert_single_member_payload(&single_again, "shared")?;
-        assert!(
-            !Arc::ptr_eq(&single_payload, &single_again_payload,),
-            "the previous multi-body entry cannot qualify for single-body reuse"
-        );
-        let (_, unchanged) = owner.freeze(
-            &thread,
-            &state,
-            5,
-            [("shared".into(), first_key.clone(), first.clone(), 1, None)],
-        )?;
-        let unchanged_payload = assert_single_member_payload(&unchanged, "shared")?;
-        assert!(Arc::ptr_eq(&single_again_payload, &unchanged_payload,));
-        let (_, multiple_again) = owner.freeze(
-            &thread,
-            &state,
-            6,
-            [
-                ("shared".into(), first_key.clone(), first.clone(), 1, None),
-                ("shared".into(), BodyKey::Body, second.clone(), 1, None),
-            ],
-        )?;
-        // The lower key's forward neighbor must reject reuse, just as the upper key's
-        // backward neighbor did at the earlier multi -> single transition.
-        let (_, lower_key) = owner.freeze(
-            &thread,
-            &state,
-            7,
-            [("shared".into(), BodyKey::Body, second, 1, None)],
-        )?;
-        let lower_payload = assert_single_member_payload(&lower_key, "shared")?;
-        assert!(!Arc::ptr_eq(
-            &multiple_again.entries()[&key].payload,
-            &lower_payload
-        ));
-        let (_, changed_key) = owner.freeze(
-            &thread,
-            &state,
-            8,
-            [("shared".into(), first_key.clone(), first.clone(), 1, None)],
-        )?;
-        let changed_key_payload = assert_single_member_payload(&changed_key, "shared")?;
-        assert!(!Arc::ptr_eq(&lower_payload, &changed_key_payload));
-        let (_, changed_position) = owner.freeze(
-            &thread,
-            &state,
-            9,
-            [("shared".into(), first_key, first, 9, None)],
-        )?;
-        let changed_position_payload = assert_single_member_payload(&changed_position, "shared")?;
-        assert_eq!(
-            changed_position_payload.as_ref(),
-            changed_key_payload.as_ref()
-        );
-        assert!(!Arc::ptr_eq(
-            &changed_position_payload,
-            &changed_key_payload
-        ));
-        assert_eq!(changed_position.entries()[&key].position, 9);
+        assert!(next.business_refs_at(&thread.id, &before).is_err());
+
+        // A later A -> B -> A can have the same members but a different owner version.
+        let mut later = after.clone();
+        later.interaction_collection_revision = 44;
+        assert!(next.business_refs_at(&thread.id, &later).is_err());
+        // The full list remains an independent qualification, not just the numeric version.
+        let mut wrong_members = before;
+        wrong_members.interaction_collection_revision = 42;
+        assert!(next.business_refs_at(&thread.id, &wrong_members).is_err());
         Ok(())
     }
 }

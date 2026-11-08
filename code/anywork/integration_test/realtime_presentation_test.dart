@@ -8,6 +8,9 @@ import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
@@ -188,7 +191,7 @@ void main() {
       await scene.submit('Realtime delayed first token');
       await fixtureGate(tester, provider, _firstTokenObserverStage);
       await scene.untilKey(const ValueKey('conversation-activity'));
-      expect(scene.observed.live, isEmpty);
+      expect(scene.observed.activity, isEmpty);
       await capturePresentation(tester, 'realtime-thinking.png');
       await fixtureGate(
         tester,
@@ -211,16 +214,14 @@ void main() {
 
       await scene.submit('Realtime reasoning then answer');
       await scene.until(
-        () => [...scene.observed.main, ...scene.observed.live].any(
-          (unit) =>
-              unit.item.summary?.categories.any(
-                (count) =>
-                    count.category == TimelineCategory.thinking &&
-                    count.count > 0,
-              ) ==
-              true,
-        ),
-        'production work summary admits real reasoning',
+        () =>
+            scene.observed.activity.any(
+              (entry) => entry.atom.kind == ChatAtomKind.reasoning,
+            ) ||
+            scene.observed.entries.any(
+              (entry) => entry.atom.kind == ChatAtomKind.reasoning,
+            ),
+        'production Activity or completed history admits real reasoning',
       );
       await scene.completed(answer: 'realtime reasoning answer');
       await scene.openLatestTurnThinking();
@@ -335,7 +336,9 @@ void main() {
       await scene.tap(find.byKey(StudioDriverKeys.composerStop));
       await scene.terminal(StudioTurnStatus.cancelled);
       expect(
-        scene.observed.items.where((item) => item.id == cancelledText.id),
+        scene.observed.entries.where(
+          (item) => item.atom.id == cancelledText.id,
+        ),
         hasLength(1),
         reason: 'accepted partial text survives cancellation',
       );
@@ -389,7 +392,7 @@ typedef _PreparedToolObserver = ({
   int generation,
   int mainSets,
   TimelineGroupDisplay display,
-  TimelineMembersRef reference,
+  CompletionRunRef reference,
   Object expansion,
   Object bodyGeneration,
   String prefixId,
@@ -399,7 +402,7 @@ typedef _PreparedToolObserver = ({
 
 typedef _ExecReceipt = ({
   ChatAtom member,
-  TimelineMembersRef reference,
+  CompletionRunRef reference,
   ChatItemPresentation value,
 });
 
@@ -414,13 +417,14 @@ final class _RealtimeScene {
   String? _submittedTurnId;
   int _liveTextObservation = 0;
   int _execReceiptObservation = 0;
+  int _sourceCloseObservation = 0;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
 
   List<ChatItemPresentation> get items => observed.main
-      .where((unit) => unit.item.payload != null)
+      .where((unit) => unit.entry.atom.payload != null)
       .map(ChatItemPresentation.forUnit)
       .toList();
 
@@ -429,7 +433,7 @@ final class _RealtimeScene {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
-    await observed.openSourceGroups(source);
+    await observed.openSourceRuns(source);
     final reasoning = observed.mountedMembers
         .where(
           (atom) =>
@@ -438,7 +442,7 @@ final class _RealtimeScene {
         .toList();
     expect(reasoning, isNotEmpty);
     for (final atom in reasoning) {
-      final reference = observed.unitForMember(atom.id).item.members!;
+      final reference = observed.unitForMember(atom.id).run!.reference;
       final display = await observed.revealMember(atom, reference: reference);
       expect(
         display.atoms.where((member) => member.id == atom.id),
@@ -456,15 +460,27 @@ final class _RealtimeScene {
   }
 
   Future<void> closeLatestTurnGroups() async {
-    await observed.closeSource(
-      ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
-    );
-    expect(
-      (await graph.client.conversations.retryCleanup(
+    final turnId = _latestTurn()!.turnId;
+    final evidence = <String, Object?>{'turnId': turnId};
+    try {
+      await observed.closeSource(
+        ForegroundTurnChatSource(turnId: turnId),
+        diagnostics: evidence,
+      );
+      final cleanup = await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
-      )).complete,
-      isTrue,
-    );
+      );
+      evidence['scopeCleanupJoined'] = cleanup.complete;
+      expect(cleanup.complete, isTrue);
+    } finally {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri
+            .resolve('realtime-source-close-${++_sourceCloseObservation}.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+      );
+    }
   }
 
   Future<_PreparedToolObserver> prepareToolObserver({
@@ -497,11 +513,11 @@ final class _RealtimeScene {
     final controller = mainLease.controller;
     final generation = mainLease.generation;
     final mainSets = mainLease.appliedSets;
-    final reference = unit.item.members!;
+    final reference = unit.run!.reference;
     final expansion = unit.expansion;
     final bodyActiveBeforeOpen = expansion.bodyActive;
     final bodyGenerationBeforeOpen = expansion.bodyGeneration;
-    final display = await observed.openGroup(unit.id);
+    final display = await observed.openRun(unit.id);
     await until(() {
       final members = display.atoms.toList();
       expect(members.length, lessThanOrEqualTo(1));
@@ -519,7 +535,7 @@ final class _RealtimeScene {
           members.single.completionSeq != null;
     }, 'original $stage member window ready before exec admission');
     expect(display.error, isNull);
-    expect(display.membersRef, reference);
+    expect(display.runReference, reference);
     expect(display.atoms, hasLength(1));
     final reasoning = display.atoms.single;
     expect(reasoning.source, source);
@@ -620,18 +636,18 @@ final class _RealtimeScene {
     expect(lease.controller, same(prepared.controller));
     expect(lease.generation, prepared.generation);
     expect(lease.appliedSets, prepared.mainSets);
-    final unit = observed.unit(prepared.reference.itemId);
+    final unit = observed.unitForRun(prepared.reference);
     expect(unit.expansion, same(prepared.expansion));
     expect(unit.expansion.bodyGeneration, same(prepared.bodyGeneration));
-    expect(unit.item.members, prepared.reference);
+    expect(unit.run?.reference, prepared.reference);
     final displays = lease.groupDisplays
-        .where((display) => display.unitId == prepared.reference.itemId)
+        .where((display) => display.unitId == prepared.display.unitId)
         .toList();
     expect(displays, hasLength(1));
     expect(displays.single, same(prepared.display));
     expect(prepared.display.isCurrent && prepared.display.expanded, isTrue);
     expect(prepared.display.error, isNull);
-    expect(prepared.display.membersRef, prepared.reference);
+    expect(prepared.display.runReference, prepared.reference);
     if (prepared.display.loading) return false;
     final prefix = prepared.display.atoms
         .where((atom) => atom.id == prepared.prefixId)
@@ -652,7 +668,7 @@ final class _RealtimeScene {
     final loading = prepared.display.loading;
     return {
       'turnId': prepared.turnId,
-      'groupId': prepared.reference.itemId,
+      'groupId': prepared.display.unitId,
       'sameMainLease': identical(lease, prepared.lease),
       'sameMainCurrentDisplay': identical(
         lease.currentDisplay,
@@ -663,19 +679,19 @@ final class _RealtimeScene {
       'mainSets': lease.appliedSets,
       'sameGroupDisplay': identical(
         lease.groupDisplays.singleWhere(
-          (display) => display.unitId == prepared.reference.itemId,
+          (display) => display.unitId == prepared.display.unitId,
         ),
         prepared.display,
       ),
       'sameBodyGeneration': identical(
-        observed.unit(prepared.reference.itemId).expansion.bodyGeneration,
+        observed.unitForRun(prepared.reference).expansion.bodyGeneration,
         prepared.bodyGeneration,
       ),
-      'membersRef': {
+      'runReference': {
         'databaseId': prepared.reference.databaseId,
-        'projectionVersion': prepared.reference.projectionVersion,
-        'projectionGeneration': prepared.reference.projectionGeneration,
-        'itemId': prepared.reference.itemId,
+        'indexVersion': prepared.reference.indexVersion,
+        'startSeq': prepared.reference.startSeq,
+        'itemId': prepared.display.unitId,
       },
       'current': prepared.display.isCurrent,
       'expanded': prepared.display.expanded,
@@ -713,20 +729,22 @@ final class _RealtimeScene {
                       .item
                       .statusString,
                   'laidOut': _laidOut(currentToolCard(atom)),
+                  'finder': _toolFinderObservation(atom),
                 },
             ],
     };
   }
 
-  TimelineItem _turnReceipt(StudioTurnView turn) => observed.items.singleWhere(
-    (item) =>
-        item.kind == TimelineItemKind.status &&
-        item.atomKind == ChatAtomKind.turnReceipt &&
-        item.source == ForegroundTurnChatSource(turnId: turn.turnId),
-  );
+  CompletedEntry _turnReceipt(StudioTurnView turn) =>
+      observed.entries.singleWhere(
+        (item) =>
+            item.mainPresentation == MainPresentation.single &&
+            item.atom.kind == ChatAtomKind.turnReceipt &&
+            item.atom.source == ForegroundTurnChatSource(turnId: turn.turnId),
+      );
 
-  void _expectSmallTurnReceipt(TimelineItem item) {
-    final payload = item.payload;
+  void _expectSmallTurnReceipt(CompletedEntry item) {
+    final payload = item.atom.payload;
     final byteLength = payload is InlinePayload
         ? payload.bytes.length
         : payload is DeferredPayload
@@ -734,21 +752,21 @@ final class _RealtimeScene {
         : null;
     final reason =
         'Known small realtime fixture requires Inline/current business '
-        'presentation within the original frame =${item.id}, '
+        'presentation within the original frame =${item.recordId}, '
         'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload is InlinePayload, isTrue, reason: reason);
     expect(
-      ChatItemPresentation.forUnit(observed.unit(item.id)).compatibility,
+      ChatItemPresentation.forUnit(observed.unit(item.recordId)).compatibility,
       ChatItemCompatibility.current,
       reason: reason,
     );
   }
 
-  Finder _turnReceiptTitle(TimelineItem item) {
+  Finder _turnReceiptTitle(CompletedEntry item) {
     final disclosure = find.descendant(
-      of: observed.itemRow(item.id),
-      matching: find.byKey(ValueKey(('item-disclosure', item.id))),
+      of: observed.itemRow(item.recordId),
+      matching: find.byKey(ValueKey(('item-disclosure', item.recordId))),
     );
     expect(disclosure, findsOneWidget);
     final disclosureElement = tester.element(disclosure);
@@ -784,11 +802,11 @@ final class _RealtimeScene {
     required String expectedOutcome,
   }) async {
     final item = _turnReceipt(turn);
-    expect(item.kind, TimelineItemKind.status);
-    expect(item.atomKind, ChatAtomKind.turnReceipt);
+    expect(item.mainPresentation, MainPresentation.single);
+    expect(item.atom.kind, ChatAtomKind.turnReceipt);
     _expectSmallTurnReceipt(item);
     await observed.revealItem(item);
-    final row = observed.itemRow(item.id);
+    final row = observed.itemRow(item.recordId);
     final receipt = tester.widget<ChatItemView>(row).item;
     expect(receipt.type, 'turn');
     expect((receipt.data['outcome'] as Map)['kind'], expectedOutcome);
@@ -893,16 +911,16 @@ final class _RealtimeScene {
       if (metadata is! TimelineDisplayUnit) {
         fail('The original Main Message must own TimelineDisplayUnit metadata');
       }
-      expect(metadata.live, isFalse);
+      expect(metadata.entry.completionSeq, greaterThan(0));
       expect(metadata.id, group.unitId);
-      expect(metadata.item.id, group.unitId);
-      expect(metadata.item.kind, TimelineItemKind.workGroup);
-      expect(metadata.item.members, group.membersRef);
-      expect(metadata.item.position, isNotNull);
+      expect(metadata.entry.mainPresentation, isNot(MainPresentation.single));
+      expect(metadata.run?.reference, group.runReference);
+      expect(metadata.entry.completionSeq, isNotNull);
       final member = group.atoms.singleWhere(
         (atom) => atom.id == presentationId,
       );
-      if (metadata.item.source is BackgroundResultChatSource) {
+      if (metadata.entry.mainPresentation ==
+          MainPresentation.backgroundResults) {
         expect(member.source, isA<BackgroundResultChatSource>());
         expect(member.delivery, ChatDeliveryKind.independent);
         expect(member.lifecycle, isA<TerminalChatAtom>());
@@ -911,7 +929,7 @@ final class _RealtimeScene {
           ChatTerminalOutcome.completed,
         );
       } else {
-        expect(member.source, metadata.item.source);
+        expect(member.source, metadata.entry.atom.source);
       }
       expect(member.completionItemId, contentItemId);
       final declared = member.contents
@@ -1173,16 +1191,16 @@ final class _RealtimeScene {
           if (metadata is! TimelineDisplayUnit) {
             return {'type': metadata?.runtimeType.toString()};
           }
-          final declared = metadata.item.contents
+          final declared = metadata.entry.atom.contents
               .where((content) => content.role == role)
               .toList();
           return {
             'type': metadata.runtimeType.toString(),
-            'live': metadata.live,
+            'completed': true,
             'id': metadata.id,
-            'itemId': metadata.item.id,
-            'hasPosition': metadata.item.position != null,
-            'contentItemId': metadata.item.contentItemId,
+            'itemId': metadata.id,
+            'hasPosition': metadata.entry.completionSeq > 0,
+            'contentItemId': metadata.entry.recordId,
             'declaredRoleMatches': declared.length,
             'declaredReference': declared.length == 1
                 ? contentReferenceIdentity(declared.single.reference).toString()
@@ -1354,7 +1372,7 @@ final class _RealtimeScene {
     final source = ForegroundTurnChatSource(turnId: turnId);
     final associatedTasks = <String, String>{};
     final observations = <Map<String, Object?>>[];
-    final openedBackgroundGroups = <String>{};
+    final openedBackgroundRuns = <String>{};
     final clock = Stopwatch()..start();
     Map<String, Object?>? lastObservation;
     String? previousObservation;
@@ -1366,11 +1384,24 @@ final class _RealtimeScene {
         ? {'kind': 'backgroundResult', 'messageId': value.messageId}
         : {'kind': value.runtimeType.toString()};
 
-    Iterable<TimelineDisplayUnit> backgroundGroups() => observed.main.where(
+    Iterable<TimelineDisplayUnit> backgroundRuns() => observed.main.where(
       (unit) =>
-          unit.item.source is BackgroundResultChatSource &&
-          unit.item.kind == TimelineItemKind.workGroup,
+          unit.entry.mainPresentation == MainPresentation.backgroundResults,
     );
+
+    bool hasReadRun(TimelineDisplayUnit run) {
+      final display = lease.groupDisplays
+          .where((value) => value.unitId == run.id)
+          .singleOrNull;
+      if (display?.error case final error?) throw StateError('$error');
+      return openedBackgroundRuns.contains(run.id) &&
+          display?.isCurrent == true &&
+          display?.expanded == true &&
+          display?.runReference == run.run!.reference &&
+          display?.loading == false &&
+          display?.before == null &&
+          display?.atoms.length == run.entry.run!.ordinal;
+    }
 
     List<_ExecReceipt> targets() {
       final result = <_ExecReceipt>[];
@@ -1380,8 +1411,7 @@ final class _RealtimeScene {
         'turnId': turnId,
         'candidates': candidates,
         'finalCounts': counts,
-        'backgroundGroupCount': 0,
-        'backgroundGroupAnchors': <Map<String, Object?>>[],
+        'backgroundRunAnchors': <Map<String, Object?>>[],
         'memberCallTaskMapping': <Map<String, Object?>>[],
         'complete': false,
       };
@@ -1455,9 +1485,9 @@ final class _RealtimeScene {
           continue;
         }
         final terminal = atom.lifecycle as TerminalChatAtom;
-        final reference = observed.unitForMember(atom.id).item.members!;
+        final reference = observed.unitForMember(atom.id).run!.reference;
         final candidate = <String, Object?>{
-          'domain': 'GroupMembers',
+          'domain': 'Run',
           'id': atom.id,
           'kind': atom.kind.name,
           'source': sourceFacts(atom.source),
@@ -1465,7 +1495,7 @@ final class _RealtimeScene {
           'delivery': atom.delivery.name,
           'outcome': terminal.outcome.name,
           'completionItemId': atom.completionItemId,
-          'groupId': reference.itemId,
+          'groupId': observed.unitForRun(reference).id,
         };
         final value = read(
           atom.payload,
@@ -1491,6 +1521,14 @@ final class _RealtimeScene {
         final backgroundResult =
             atom.source is BackgroundResultChatSource &&
             atom.delivery == ChatDeliveryKind.independent;
+        if (atom.source is BackgroundResultChatSource) {
+          expect(atom.delivery, ChatDeliveryKind.independent);
+          expect(terminal.outcome, ChatTerminalOutcome.completed);
+          expect(
+            observed.unitForRun(reference).entry.mainPresentation,
+            MainPresentation.backgroundResults,
+          );
+        }
         final taskAssociated =
             tool.taskId != null &&
             associatedTasks[tool.toolCallId] == tool.taskId;
@@ -1511,16 +1549,15 @@ final class _RealtimeScene {
           counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
         }
       }
-      final groups = backgroundGroups().toList();
-      snapshot['backgroundGroupCount'] = groups.length;
-      snapshot['backgroundGroupAnchors'] = [
-        for (final group in groups)
+      snapshot['backgroundRunAnchors'] = [
+        for (final run in backgroundRuns())
           {
-            'id': group.id,
-            'source': sourceFacts(group.item.source),
-            'turnId': group.item.turnId,
-            'memberCount': group.item.summary?.memberCount,
-            'opened': openedBackgroundGroups.contains(group.id),
+            'id': run.id,
+            'databaseId': run.run!.reference.databaseId,
+            'indexVersion': run.run!.reference.indexVersion,
+            'startSeq': run.run!.reference.startSeq,
+            'ordinal': run.entry.run!.ordinal,
+            'opened': openedBackgroundRuns.contains(run.id),
           },
       ];
       snapshot['memberCallTaskMapping'] = [
@@ -1557,30 +1594,57 @@ final class _RealtimeScene {
 
     var receipts = <_ExecReceipt>[];
     try {
-      await observed.openSourceGroups(source);
-      final receiptWaitClock = Stopwatch()..start();
-      var complete = false;
-      var terminalCalls = <String>{};
-      final timeout = const Duration(seconds: 60);
       Duration remaining() {
-        final value = timeout - receiptWaitClock.elapsed;
+        final value = const Duration(seconds: 60) - clock.elapsed;
         if (value <= Duration.zero) {
-          fail('Timed out opening background exec receipt groups');
+          fail(
+            'Timed out waiting for original exec terminals and each '
+            'independently sourced final result: ${jsonEncode(lastObservation)}',
+          );
         }
         return value;
       }
 
-      while (receiptWaitClock.elapsed < timeout) {
+      Future<void> readRun(TimelineDisplayUnit unit) async {
+        final display = await observed.openRun(unit.id, timeout: remaining());
+        while (true) {
+          await observed.until(
+            () {
+              expect(display.isCurrent, isTrue);
+              expect(display.expanded, isTrue);
+              expect(display.runReference, unit.run!.reference);
+              if (display.error case final error?) throw StateError('$error');
+              return !display.loading;
+            },
+            'original receipt Run page is ready',
+            timeout: remaining(),
+          );
+          if (display.before == null) break;
+          await observed.loadOlderRunPage(display, timeout: remaining());
+        }
+        expect(display.atoms, hasLength(unit.entry.run!.ordinal));
+        expect(
+          display.atoms.map((atom) => atom.id).toSet(),
+          hasLength(display.atoms.length),
+        );
+      }
+
+      for (final run in observed.workFor(source).toList()) {
+        await readRun(run);
+      }
+      while (true) {
+        remaining();
         targets();
-        for (final group in backgroundGroups().toList()) {
-          if (!openedBackgroundGroups.contains(group.id)) {
-            if (receiptWaitClock.elapsed >= timeout) break;
-            await observed.openGroup(group.id, timeout: remaining());
-            openedBackgroundGroups.add(group.id);
+        // Main representatives do not qualify members. Discover new Runs on
+        // every pass and read their exact pages before counting final receipts.
+        for (final run in backgroundRuns().toList()) {
+          if (!hasReadRun(run)) {
+            await readRun(run);
+            openedBackgroundRuns.add(run.id);
           }
         }
         receipts = targets();
-        terminalCalls = observed.mountedMembers
+        final terminalCalls = observed.mountedMembers
             .where(
               (atom) =>
                   atom.source == source &&
@@ -1597,31 +1661,21 @@ final class _RealtimeScene {
               return tool.toolCallId == call;
             }).length,
         };
-        final duplicates = finalCounts.entries
-            .where((entry) => entry.value > 1)
-            .map((entry) => entry.key)
-            .toList();
         expect(
-          duplicates,
+          finalCounts.values.where((count) => count > 1),
           isEmpty,
-          reason: 'A background task produced duplicate final receipts',
+          reason: 'Each exact background task must produce one final receipt',
         );
-        complete =
-            terminalCalls.containsAll(expected.keys) &&
+        remaining();
+        if (terminalCalls.containsAll(expected.keys) &&
             associatedTasks.keys.toSet().containsAll(expected.keys) &&
-            finalCounts.values.every((count) => count == 1);
-        if (complete) break;
-        if (receiptWaitClock.elapsed >= timeout) break;
+            backgroundRuns().every(hasReadRun) &&
+            finalCounts.values.every((count) => count == 1)) {
+          break;
+        }
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(
-        complete,
-        isTrue,
-        reason:
-            'Timed out waiting for original exec terminals and each '
-            'independently sourced final result: ${jsonEncode(lastObservation)}',
-      );
     } finally {
       final output = Directory(
         Platform.environment['ANYWORK_REALTIME_OUTPUT']!,
@@ -1807,7 +1861,7 @@ final class _RealtimeScene {
           'realtime-${tool.toolCallId}-succeeded.png',
         );
         expect(expectDisclosure(), isTrue);
-        await observed.closeGroup(group);
+        await observed.closeRun(group);
         final closeClock = Stopwatch()..start();
         await until(
           () => outputBorrow.window == null,
@@ -2020,23 +2074,24 @@ final class _RealtimeScene {
       expect(_submittedTurnId, isNotNull);
       final turnId = _submittedTurnId!;
       final source = ForegroundTurnChatSource(turnId: turnId);
-      TimelineItem? admittedAnswer() {
-        final matches = observed.items
+      CompletedEntry? admittedAnswer() {
+        final matches = observed.entries
             .where(
               (item) =>
-                  item.source == source &&
-                  item.turnId == turnId &&
-                  item.kind == TimelineItemKind.text &&
-                  item.atomKind == ChatAtomKind.text &&
-                  item.textChannel == ThreadTextChannel.finalAnswer &&
-                  item.outcome == ChatTerminalOutcome.completed,
+                  item.atom.source == source &&
+                  item.atom.turnId == turnId &&
+                  item.mainPresentation == MainPresentation.single &&
+                  item.atom.kind == ChatAtomKind.text &&
+                  item.atom.textChannel == ThreadTextChannel.finalAnswer &&
+                  (item.atom.lifecycle as TerminalChatAtom).outcome ==
+                      ChatTerminalOutcome.completed,
             )
             .toList();
         expect(matches.length, lessThanOrEqualTo(1));
         return matches.singleOrNull;
       }
 
-      TimelineItem? target;
+      CompletedEntry? target;
       await until(
         () {
           remaining();
@@ -2048,10 +2103,10 @@ final class _RealtimeScene {
       );
       final item = target!;
       await observed.revealItem(item, timeout: remaining());
-      final unit = observed.unit(item.id);
-      expect(unit.item, same(item));
-      expect(unit.live, isFalse);
-      final row = observed.itemRow(item.id);
+      final unit = observed.unit(item.recordId);
+      expect(unit.entry, same(item));
+      expect(unit.entry.completionSeq, greaterThan(0));
+      final row = observed.itemRow(item.recordId);
       final originalScrollable = Scrollable.maybeOf(tester.element(row));
       final text = find
           .descendant(of: row, matching: find.textContaining(answer))
@@ -2060,7 +2115,7 @@ final class _RealtimeScene {
         () {
           remaining();
           expect(admittedAnswer(), same(item));
-          expect(observed.unit(item.id), same(unit));
+          expect(observed.unit(item.recordId), same(unit));
           if (!_laidOut(row)) return false;
           final rendered = tester.widget<ChatItemView>(row).item;
           expect(rendered.compatibility, ChatItemCompatibility.current);
@@ -2089,7 +2144,7 @@ final class _RealtimeScene {
   }
 
   Future<void> terminal(StudioTurnStatus kind) async {
-    TimelineItem? receipt;
+    CompletedEntry? receipt;
     await until(
       () {
         final turn = _latestTurn();
@@ -2104,8 +2159,8 @@ final class _RealtimeScene {
         final source = ForegroundTurnChatSource(turnId: turn.turnId);
         // State proves the outcome; Main admission remains independent and
         // uses the original wait budget, without a normal completion item.
-        if (!observed.items.any((item) => item.source == source) ||
-            observed.live.any((unit) => unit.item.source == source)) {
+        if (!observed.entries.any((item) => item.atom.source == source) ||
+            observed.activity.any((entry) => entry.atom.source == source)) {
           return false;
         }
         if (kind == StudioTurnStatus.failed ||
@@ -2113,17 +2168,18 @@ final class _RealtimeScene {
           final outcome = kind == StudioTurnStatus.failed
               ? ChatTerminalOutcome.failed
               : ChatTerminalOutcome.cancelled;
-          final matches = observed.items
+          final matches = observed.entries
               .where(
                 (item) =>
-                    item.source == source &&
-                    item.kind == TimelineItemKind.status &&
-                    item.atomKind == ChatAtomKind.turnReceipt,
+                    item.atom.source == source &&
+                    item.mainPresentation == MainPresentation.single &&
+                    item.atom.kind == ChatAtomKind.turnReceipt,
               )
               .toList();
           expect(matches.length, lessThanOrEqualTo(1));
           receipt = matches.singleOrNull;
-          return receipt?.outcome == outcome;
+          return (receipt?.atom.lifecycle as TerminalChatAtom?)?.outcome ==
+              outcome;
         }
         return true;
       },
@@ -2134,7 +2190,7 @@ final class _RealtimeScene {
       _expectSmallTurnReceipt(receipt!);
       await observed.revealItem(receipt!);
       final rendered = tester
-          .widget<ChatItemView>(observed.itemRow(receipt!.id))
+          .widget<ChatItemView>(observed.itemRow(receipt!.recordId))
           .item;
       expect(rendered.compatibility, ChatItemCompatibility.current);
       expect(rendered.type, 'turn');
@@ -2142,28 +2198,24 @@ final class _RealtimeScene {
     }
   }
 
-  Future<TimelineItem> untilReadableCurrentText({
-    required Duration timeout,
-  }) async {
+  Future<ChatAtom> untilReadableCurrentText({required Duration timeout}) async {
     final observationId = ++_liveTextObservation;
     final clock = Stopwatch()..start();
     final observations = <Map<String, Object?>>[];
     Map<String, Object?>? lastObservation;
     String? previousObservation;
     String? failure;
-    TimelineItem? accepted;
+    ChatAtom? accepted;
     try {
       await until(
         () {
           final turn = _latestTurn();
-          final live = observed.live.toList();
+          final live = observed.activity.map((entry) => entry.atom).toList();
           final candidates = live
-              .map((unit) => unit.item)
               .where(
                 (atom) =>
-                    atom.kind == TimelineItemKind.text &&
-                    atom.atomKind == ChatAtomKind.text &&
-                    atom.outcome == null,
+                    atom.kind == ChatAtomKind.text &&
+                    atom.lifecycle is ActiveChatAtom,
               )
               .toList();
           // These are fresh synchronous borrows for this predicate invocation,
@@ -2194,19 +2246,19 @@ final class _RealtimeScene {
               for (final unit in live)
                 {
                   'id': unit.id,
-                  'kind': unit.item.kind.name,
-                  'atomKind': unit.item.atomKind?.name,
-                  'outcome': unit.item.outcome?.name,
-                  'sourceType': unit.item.source.runtimeType.toString(),
-                  'sourceTurnId': unit.item.source is ForegroundTurnChatSource
-                      ? (unit.item.source as ForegroundTurnChatSource).turnId
+                  'kind': unit.kind.name,
+                  'atomKind': unit.kind.name,
+                  'outcome': unit.lifecycle.runtimeType.toString(),
+                  'sourceType': unit.source.runtimeType.toString(),
+                  'sourceTurnId': unit.source is ForegroundTurnChatSource
+                      ? (unit.source as ForegroundTurnChatSource).turnId
                       : null,
                   'matchesTurnSource':
                       turn != null &&
-                      unit.item.source ==
+                      unit.source ==
                           ForegroundTurnChatSource(turnId: turn.turnId),
                   'references': [
-                    for (final content in unit.item.contents)
+                    for (final content in unit.contents)
                       contentReferenceIdentity(content.reference).toString(),
                   ],
                 },
@@ -2303,7 +2355,7 @@ final class _RealtimeScene {
     }
   }
 
-  Finder currentToolCard(ChatAtom atom) {
+  Finder _unscopedToolCard(ChatAtom atom) {
     final reading = atom.payload == null
         ? null
         : ChatItemPresentation.decode(atom).toolCard;
@@ -2323,6 +2375,98 @@ final class _RealtimeScene {
                 widget.item.name == atom.tool?.name,
           );
   }
+
+  Finder currentToolCard(ChatAtom atom) {
+    final active = atom.lifecycle is ActiveChatAtom;
+    final runs = [
+      if (!active)
+        for (final display in lease.groupDisplays)
+          if (display.isCurrent &&
+              display.atoms.any(
+                (member) =>
+                    member.completionItemId == atom.completionItemId &&
+                    member.completionSeq == atom.completionSeq,
+              ))
+            display.runReference,
+    ];
+    final scope = find.byWidgetPredicate(
+      (widget) => active
+          ? widget is ConversationCurrentConnector &&
+                identical(widget.content, lease.content) &&
+                widget.isDisplayActive()
+          : widget is TimelineChildrenConnector &&
+                widget.threadId == lease.threadId &&
+                widget.runReference != null &&
+                runs.contains(widget.runReference) &&
+                widget.isParentActive?.call() == true,
+    );
+    final member = find.descendant(
+      of: scope,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is TimelineMemberAtom &&
+            widget.isActive() &&
+            widget.atom.id == atom.id &&
+            widget.atom.source == atom.source &&
+            (widget.atom.lifecycle is ActiveChatAtom) == active &&
+            widget.atom.completionItemId == atom.completionItemId &&
+            widget.atom.completionSeq == atom.completionSeq &&
+            (active
+                ? identical(widget.content, lease.content)
+                : atom.completionItemId != null &&
+                      atom.lifecycle is TerminalChatAtom),
+      ),
+    );
+    return find.descendant(of: member, matching: _unscopedToolCard(atom));
+  }
+
+  Map<String, Object?> _toolFinderObservation(ChatAtom atom) {
+    final all = _unscopedToolCard(atom).evaluate().toList();
+    return {
+      'unscopedCount': all.length,
+      'qualifiedCount': currentToolCard(atom).evaluate().length,
+      'matches': [
+        for (final element in all.take(6))
+          (() {
+            final match = <String, Object?>{
+              'widget': element.widget.runtimeType.toString(),
+            };
+            element.visitAncestorElements((ancestor) {
+              final widget = ancestor.widget;
+              if (widget is TimelineMemberAtom) {
+                match['member'] = {
+                  'id': widget.atom.id,
+                  'lifecycle': widget.atom.lifecycle.runtimeType.toString(),
+                  'completionItemId': widget.atom.completionItemId,
+                  'completionSeq': widget.atom.completionSeq,
+                  'contentIdentity': identityHashCode(widget.content),
+                  'sameMainContent': identical(widget.content, lease.content),
+                  'activeScope': widget.isActive(),
+                };
+              } else if (widget is ConversationCurrentConnector) {
+                match['scope'] = 'Activity';
+                match['scopeActive'] = widget.isDisplayActive();
+                match['sameMainContent'] = identical(
+                  widget.content,
+                  lease.content,
+                );
+              } else if (widget is TimelineChildrenConnector) {
+                match['scope'] = widget.runReference == null
+                    ? 'Children'
+                    : 'Run';
+                match['parentId'] = widget.parentId;
+                match['runStartSeq'] = widget.runReference?.startSeq;
+                match['scopeActive'] = widget.isParentActive?.call();
+              }
+              return true;
+            });
+            return match;
+          })(),
+      ],
+    };
+  }
+
+  int _toolObservationSequence = 0;
 
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
@@ -2345,9 +2489,8 @@ final class _RealtimeScene {
           _submittedTurnId ??= turn.turnId;
           expect(turn.turnId, _submittedTurnId);
         }
-        // Expansion can outlive the live-to-Main handoff of this exact group.
-        // Follow its original Turn source; the running assertions below still
-        // require the exact exec calls to be active and laid out.
+        // Running tools belong to Activity. The completed prefix keeps its
+        // independently opened Run and body qualification while tools execute.
         final units = [
           if (turn != null && turn.turnId == _submittedTurnId)
             ...observed.workFor(ForegroundTurnChatSource(turnId: turn.turnId)),
@@ -2355,7 +2498,7 @@ final class _RealtimeScene {
         final openingStartedMillis = clock.elapsedMilliseconds;
         if (preparedObserver == null) {
           for (final unit in units) {
-            await observed.openGroup(unit.id);
+            await observed.openRun(unit.id);
           }
         }
         // Keep every original identity/error assertion even while the same
@@ -2365,14 +2508,17 @@ final class _RealtimeScene {
             _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
         if (preparedObserver != null) {
-          expect(groupIds, {preparedObserver.reference.itemId});
+          expect(groupIds, {preparedObserver.display.unitId});
         }
         final tools = !observerReady
             ? null
-            : lease.groupDisplays
-                  .where((display) => groupIds.contains(display.unitId))
-                  .expand((display) => display.atoms)
-                  .where((atom) => atom.kind == ChatAtomKind.toolCall)
+            : observed.activity
+                  .map((entry) => entry.atom)
+                  .where(
+                    (atom) =>
+                        atom.turnId == _submittedTurnId &&
+                        atom.kind == ChatAtomKind.toolCall,
+                  )
                   .toList();
         final running = tools
             ?.where(
@@ -2394,7 +2540,7 @@ final class _RealtimeScene {
             .length;
         final observation = {
           'groupIds': groupIds.toList(),
-          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          'liveIds': observed.activity.map((entry) => entry.atom.id).toList(),
           if (preparedObserver != null)
             'observer': _preparedToolObserverSnapshot(preparedObserver),
           'membersAvailable': observerReady,
@@ -2405,6 +2551,7 @@ final class _RealtimeScene {
                   'callId': atom.tool?.callId,
                   'active': atom.lifecycle is ActiveChatAtom,
                   'laidOut': _laidOut(currentToolCard(atom)),
+                  'finder': _toolFinderObservation(atom),
                 },
               )
               .toList(),
@@ -2464,10 +2611,7 @@ final class _RealtimeScene {
               (atom) => atom.tool?.callId == call,
             );
             final widget = tester.widget<TimelineToolDetails>(
-              find.byWidgetPredicate(
-                (widget) =>
-                    widget is TimelineToolDetails && widget.item.id == atom.id,
-              ),
+              currentToolCard(atom),
             );
             expect(widget.item.statusString, 'running');
           }
@@ -2493,6 +2637,19 @@ final class _RealtimeScene {
                   ),
                 );
           }
+          final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+          await File.fromUri(
+            Directory(output).uri.resolve(
+              'realtime-tool-observation-${++_toolObservationSequence}.json',
+            ),
+          ).writeAsString(
+            '${const JsonEncoder.withIndent('  ').convert({
+              'turnId': _submittedTurnId,
+              'expectedCallIds': expectedCallIds.toList(),
+              'observations': observations,
+              'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
+            })}\n',
+          );
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
@@ -2516,7 +2673,7 @@ final class _RealtimeScene {
       debugPrintSynchronously(
         'Realtime tool observation failure: ${jsonEncode({
           'turnId': _submittedTurnId,
-          'liveIds': observed.live.map((unit) => unit.id).toList(),
+          'liveIds': observed.activity.map((entry) => entry.atom.id).toList(),
           'groups': lease.groupDisplays.map((display) => {
             'id': display.unitId,
             'current': display.isCurrent,

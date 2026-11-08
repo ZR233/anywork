@@ -6,6 +6,7 @@ import 'studio_enums.dart';
 import 'thread_activity_models.dart';
 import 'thread_directory_models.dart';
 import 'timeline_models.dart' show TimelineTodoListUpdate;
+import 'chat_models.dart' show ThreadBusinessRefs;
 import 'turn_models.dart';
 
 enum ThreadTextChannel { user, parentAgent, commentary, finalAnswer }
@@ -534,6 +535,7 @@ class ThreadWorkspace {
     required this.revision,
     required this.interactions,
     required this.runtime,
+    required this.businessRefs,
     this.modelRoute,
     this.activeTurn,
     this.latestTurn,
@@ -550,6 +552,7 @@ class ThreadWorkspace {
 
   final List<PendingInteraction> interactions;
   final ThreadRuntimeView runtime;
+  final ThreadBusinessRefs businessRefs;
 
   /// Original selector and extension revision; available even without a live execution owner.
   final ThreadModelRouteView? modelRoute;
@@ -576,6 +579,7 @@ class ThreadWorkspace {
     int? revision,
     List<PendingInteraction>? interactions,
     ThreadRuntimeView? runtime,
+    ThreadBusinessRefs? businessRefs,
     Object? modelRoute = _workspaceUnset,
     Object? activeTurn = _workspaceUnset,
     Object? latestTurn = _workspaceUnset,
@@ -588,6 +592,7 @@ class ThreadWorkspace {
       revision: revision ?? this.revision,
       interactions: interactions ?? this.interactions,
       runtime: runtime ?? this.runtime,
+      businessRefs: businessRefs ?? this.businessRefs,
       modelRoute: identical(modelRoute, _workspaceUnset)
           ? this.modelRoute
           : modelRoute as ThreadModelRouteView?,

@@ -37,6 +37,28 @@ void main() {
     expect(studioFailureReason(failure), StudioFailureReason.threadArchived);
   });
 
+  test(
+    'protocol version mismatch remains a typed reason under protocol code',
+    () {
+      final reason = StudioFailureReason.fromLabel('protocolVersionMismatch');
+      expect(reason, StudioFailureReason.protocolVersionMismatch);
+      final failure = StudioFailure(
+        code: StudioFailureCode.protocol,
+        message: 'Unsupported content protocol',
+        retryable: false,
+        correlationId: 'content-version',
+        detailsJson: '{"reason":"protocolVersionMismatch"}',
+        reason: reason,
+      );
+      expect(failure.code, StudioFailureCode.protocol);
+      expect(
+        studioFailureReason(failure),
+        StudioFailureReason.protocolVersionMismatch,
+      );
+      expect(reason!.label, 'protocolVersionMismatch');
+    },
+  );
+
   test('retired or unknown reason labels stay untyped', () {
     expect(StudioFailureReason.fromLabel(null), isNull);
     expect(StudioFailureReason.fromLabel(''), isNull);

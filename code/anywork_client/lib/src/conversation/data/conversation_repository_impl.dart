@@ -58,13 +58,13 @@ final class ConversationRepositoryImpl
   );
 
   @override
-  Future<ConversationContent> openGroupMembers({
+  Future<ConversationContent> openRun({
     required String threadId,
-    required TimelineMembersRef reference,
+    required CompletionRunRef reference,
     required ReadDemand demand,
   }) => _openMemberContent(
     threadId: threadId,
-    scope: GroupMembersChatScope(reference: reference),
+    scope: RunChatScope(reference: reference),
     demand: demand,
   );
 

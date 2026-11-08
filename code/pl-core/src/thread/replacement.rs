@@ -10,7 +10,7 @@ impl Owner {
             return Err(ThreadError::PendingTools);
         }
         let current = stage_replacement(&mut self.state, replacement)?;
-        self.publish();
+        self.publish()?;
         Ok(current)
     }
 }

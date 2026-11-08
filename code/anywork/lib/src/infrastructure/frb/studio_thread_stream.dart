@@ -4,8 +4,11 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
   frb.BridgeThreadSubscriptionUpdate value,
 ) {
   return value.when(
-    snapshot: (snapshot) =>
-        ThreadSnapshotFrame(workspace: _threadWorkspaceFromSnapshot(snapshot)),
+    snapshot: (completedHistoryVersion, snapshot) => ThreadSnapshotFrame(
+      workspace: _threadWorkspaceFromSnapshot(snapshot),
+      completedHistoryVersion: completedHistoryVersion,
+      schemaVersion: snapshot.schemaVersion,
+    ),
     notification: (envelope) {
       final threadId = envelope.threadId;
       final revision = _exactTimelineInt(envelope.revision, 'state counter');
@@ -77,6 +80,15 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
             storage: storage == null ? null : _threadStorageFromFrb(storage),
           ),
         ),
+        businessRefsChanged: (references) => ThreadNotificationFrame(
+          threadId: threadId,
+          revision: revision,
+          epoch: epoch,
+          baseRevision: baseRevision,
+          update: ThreadBusinessRefsUpdate(
+            references: _businessRefsFromFrb(references),
+          ),
+        ),
         lagged: (dropped) => ThreadResyncRequiredFrame(
           threadId: threadId,
           dropped: _exactTimelineInt(dropped, 'state counter'),
@@ -90,9 +102,17 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
 /// 订阅首帧只投影当前状态；条目正文由独立的 Timeline 内容尾部（一致小页基线 +
 /// 连续补丁）交付，因此这里不产生条目正文、Turn 摘要或回源锚点。
 ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
+  if (value.schemaVersion != threadSchemaVersion) {
+    throw ProtocolVersionMismatch(
+      received: value.schemaVersion,
+      supported: threadSchemaVersion,
+      field: 'threadSchemaVersion',
+    );
+  }
   return ThreadWorkspace(
     thread: _threadFromFrb(value.thread),
     revision: _exactTimelineInt(value.revision, 'state counter'),
+    businessRefs: _businessRefsFromFrb(value.businessRefs),
     interactions: value.interactions
         .where(_interactionIsPending)
         .map(_interactionFromFrb)

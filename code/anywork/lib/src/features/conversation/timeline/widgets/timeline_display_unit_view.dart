@@ -2,20 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../state/timeline_display_unit.dart';
-import 'timeline_work_group_view.dart';
+import 'completion_run_view.dart';
 
-/// The same summary-driven production header for current and history. The
-/// builder is invoked only on real expansion, not while constructing hidden UI.
+/// An immutable Main Run header with local disclosure. The builder is invoked
+/// only on real expansion, never while constructing hidden UI.
 class TimelineDisplayUnitView extends StatefulWidget {
   const TimelineDisplayUnitView({
     required this.unit,
-    required this.executionPresent,
     required this.childBuilder,
     this.onExpandedChanged,
     super.key,
   });
   final TimelineDisplayUnit unit;
-  final bool executionPresent;
   final WidgetBuilder childBuilder;
   final ValueChanged<bool>? onExpandedChanged;
   @override
@@ -69,12 +67,9 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
   @override
   Widget build(BuildContext context) {
     final unit = widget.unit;
-    return TimelineWorkGroupView(
+    return CompletionRunView(
       id: unit.id,
-      summary: unit.item.summary,
-      live: unit.live,
-      executionPresent: widget.executionPresent,
-      admissionClosed: unit.item.admissionClosed,
+      presentation: unit.run!,
       initiallyExpanded: unit.expansion.expanded!,
       onExpandedChanged: (expanded) {
         // 在关闭动画前同步撤销读取资格；纯视图不持有领域资源。

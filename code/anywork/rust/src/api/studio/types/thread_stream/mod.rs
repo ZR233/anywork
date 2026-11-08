@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
-    BridgeAgentExecution, BridgeDelegationMode, BridgeDelegationPreference,
-    BridgeNewThreadModelRoute, BridgeThreadActivity, BridgeThreadStorageState,
+    BridgeAgentExecution, BridgeCurrentCollectionRef, BridgeCurrentPlanHead, BridgeDelegationMode,
+    BridgeDelegationPreference, BridgeNewThreadModelRoute, BridgeThreadActivity,
+    BridgeThreadStorageState,
 };
 
 pub mod item;
@@ -18,6 +19,7 @@ pub use item::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeThreadSubscriptionUpdate {
     Snapshot {
+        completed_history_version: u32,
         snapshot: Box<BridgeThreadSnapshot>,
     },
     Notification {
@@ -51,6 +53,9 @@ pub enum BridgeThreadNotification {
     InteractionChanged {
         interaction: Box<BridgeInteractionRequest>,
     },
+    BusinessRefsChanged {
+        references: BridgeThreadBusinessRefs,
+    },
     ThreadRuntimeUpdated {
         runtime: Box<BridgeThreadRuntimeSnapshot>,
         model_route: Option<BridgeThreadModelRouteSnapshot>,
@@ -73,6 +78,7 @@ pub struct BridgeThreadSnapshot {
     pub schema_version: u32,
     pub revision: u64,
     pub thread: BridgeThread,
+    pub business_refs: BridgeThreadBusinessRefs,
     pub active_turn: Option<BridgeTurn>,
     pub interactions: Vec<BridgeInteractionRequest>,
     pub model_route: Option<BridgeThreadModelRouteSnapshot>,
@@ -82,6 +88,12 @@ pub struct BridgeThreadSnapshot {
     /// Thread 存储状态；`None` 表示没有可报告的存储事实（不是“健康”）。
     pub storage: Option<BridgeThreadStorageState>,
     pub runtime_availability: BridgeThreadRuntimeAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadBusinessRefs {
+    pub plan: Option<BridgeCurrentPlanHead>,
+    pub interactions: Option<BridgeCurrentCollectionRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

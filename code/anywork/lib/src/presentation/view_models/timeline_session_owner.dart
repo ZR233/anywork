@@ -1,8 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart'
-    show Key, ValueKey, ValueNotifier, ValueListenable;
+import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
 import 'package:flutter/widgets.dart' show ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
@@ -27,7 +26,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.content,
     this.selectionId,
     this.selectionStartedMicros,
-    required this.openMembers,
+    required this.openRun,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
@@ -44,16 +43,14 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ConversationContent content;
   final int? selectionId;
   final int? selectionStartedMicros;
-  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)
-  openMembers;
+  final Future<ConversationContent> Function(CompletionRunRef, ReadDemand)
+  openRun;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
     keepScrollOffset: false,
   );
   TimelineMessageController? _presentation;
-  ValueListenable<List<TimelineDisplayUnit>> get liveUnits =>
-      _presentation!.live;
   final Set<TimelineGroupDisplay> _groupDisplays = {};
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
@@ -132,11 +129,11 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openMembers = (reference, demand) {
+    intent.openRun = (reference, demand) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openMembers(reference, demand);
+      return openRun(reference, demand);
     };
   }
 
@@ -181,8 +178,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
         _appliedPrepends++;
       case ChatPlacement.append:
         _appliedAppends++;
-      case ChatPlacement.update:
-        break;
     }
   }
 
@@ -617,7 +612,7 @@ final class TimelineSessionOwner {
       generation: ++_generation,
       demand: _readDemand!,
       content: session.content,
-      openMembers: (reference, demand) => client.conversations.openGroupMembers(
+      openRun: (reference, demand) => client.conversations.openRun(
         threadId: session.threadId,
         reference: reference,
         demand: demand,
@@ -901,4 +896,16 @@ final class _TimelineConsumer implements ConversationBatchConsumer {
   @override
   Future<void> applyBatch(ChatBatch batch) =>
       owner._accept(selection, session, batch);
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) =>
+      owner._serialize(() async {
+        if (!owner._selected(selection, session)) return;
+        final display = owner._current;
+        if (display == null || display.isRetired) {
+          throw const StaleConversationScope();
+        }
+        await display._mutate(
+          () => display._presentation!.applyActivity(snapshot),
+        );
+      });
 }

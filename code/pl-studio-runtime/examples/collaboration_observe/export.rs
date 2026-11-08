@@ -2,8 +2,9 @@
 use super::super::evidence::{Evidence, MAX_ITEMS, Manifest, ThreadExport};
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatAtomKind, ChatAtomLifecycle, ChatEntry, ChatPlacement, ChatScope, ChatSourceId,
-    ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
+    COMPLETED_READ_INDEX_VERSION, ChatAtomKind, ChatAtomLifecycle, ChatPlacement, ChatScope,
+    ChatSourceId, CompletionRunRef, ContentRange, ContentRef, ContentTarget, MainPresentation,
+    PayloadData, ReadDemand,
 };
 use pl_studio_runtime::{ConversationEvent, ConversationReader, StudioRuntime};
 use std::{collections::HashSet, io::Write};
@@ -34,6 +35,8 @@ pub(super) async fn thread(
     manifest.thread_exports[export_index].snapshot_revision = Some(snapshot.revision);
     manifest.thread_exports[export_index].storage = snapshot.storage.clone();
     evidence.json(&format!("{prefix}/snapshot.json"), id, &snapshot)?;
+    let mut scopes = vec![ChatScope::Main];
+    let mut parents = HashSet::new();
     let mut cursor = None;
     let mut page_index = 0;
     loop {
@@ -46,6 +49,17 @@ pub(super) async fn thread(
                 page.turns.first().map(|history| history.turn.clone());
         }
         evidence.json(&format!("{prefix}/turns/{page_index:05}.json"), id, &page)?;
+        // Real Turn history supplies the business parent, including successful
+        // terminal receipts which are intentionally hidden from Main.
+        for history in &page.turns {
+            let parent = pl_core::chat::ChatKey::new("turn", &history.turn.id)?
+                .as_str()
+                .to_owned();
+            if parents.insert(parent.clone()) {
+                evidence.check_limit(scopes.len() < MAX_ITEMS, "children scope budget exceeded")?;
+                scopes.push(ChatScope::Children { parent_id: parent });
+            }
+        }
         manifest.thread_exports[export_index].turn_pages += 1;
         let next = page.next_cursor;
         ensure!(
@@ -60,10 +74,8 @@ pub(super) async fn thread(
         evidence.check_disk_budget()?;
     }
 
-    // Children parents come only from the public terminal-Turn envelope. Never
-    // synthesize a parent key or derive a Core position from an opaque cursor.
-    let mut scopes = vec![ChatScope::Main];
-    let mut parents = HashSet::new();
+    // Run references come only from validated Main entries. Never decode a
+    // continuation or reconstruct a group from a full atom scan.
     let mut scope_index = 0;
     while scope_index < scopes.len() {
         let scope = scopes[scope_index].clone();
@@ -82,7 +94,7 @@ pub(super) async fn thread(
                 }
             };
             ensure!(batch.placement == ChatPlacement::Set);
-            ensure!(matches!(scope, ChatScope::Main) == batch.current.is_some());
+            batch.validate_for(&scope)?;
             let mut page_index = 0;
             loop {
                 budget.check()?;
@@ -97,10 +109,27 @@ pub(super) async fn thread(
                 for (item_index, entry) in batch.entries.iter().enumerate() {
                     manifest.timeline_items += 1;
                     let item_prefix = format!("{page_prefix}-{item_index:03}");
-                    let ChatEntry::Atom(atom) = entry else {
-                        evidence.json(&format!("{item_prefix}.source.json"), id, entry)?;
+                    let atom = &entry.atom;
+                    if matches!(scope, ChatScope::Main)
+                        && matches!(
+                            entry.main_presentation,
+                            MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
+                        )
+                    {
+                        let run = entry.run.context("Main work record omitted run")?;
+                        let Some(PayloadData::Deferred { reference, .. }) = &atom.payload else {
+                            anyhow::bail!("collapsed Main work did not preserve Deferred payload");
+                        };
+                        evidence.check_limit(scopes.len() < MAX_ITEMS, "run scope budget exceeded")?;
+                        scopes.push(ChatScope::Run {
+                            reference: CompletionRunRef {
+                                database_id: reference.database_id.clone(),
+                                index_version: COMPLETED_READ_INDEX_VERSION,
+                                start_seq: run.start_seq,
+                            },
+                        });
                         continue;
-                    };
+                    }
                     let completion_id = atom.completion_item_id.as_deref();
                     if matches!(&atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
                         ensure!(
@@ -300,7 +329,8 @@ pub(super) async fn thread(
                     break;
                 };
                 batch = budget.read(reader.load_older(&before, DEMAND)).await?;
-                ensure!(batch.placement == ChatPlacement::Prepend && batch.current.is_none());
+                ensure!(batch.placement == ChatPlacement::Prepend);
+                batch.validate_for(&scope)?;
                 ensure!(
                     batch.before.as_ref() != Some(&before),
                     "chat continuation did not advance"

@@ -3,8 +3,9 @@
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatEntry, ChatSourceId, ContentOwner,
-    ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand, ThreadTextChannel, TurnState,
+    ActivitySnapshot, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatSourceId,
+    CompletedEntry, ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
+    ThreadTextChannel, TurnState,
 };
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -81,83 +82,33 @@ struct Envelope {
 /// permission to silently omit a possible Final. No private checkpoint fallback.
 pub(super) async fn decode_entry(
     reader: &ConversationReader,
-    entry: &ChatEntry,
+    entry: &CompletedEntry,
     turn_id: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    let (atom, id, payload) = match entry {
-        ChatEntry::Item(item) => {
-            if item.is_work_group() {
-                return Ok(None);
-            }
-            if item.position.is_none() {
-                return Ok(None);
-            }
-            let kind = item
-                .atom_kind
-                .ok_or_else(|| gap("reply item has no domain kind"))?;
-            let id = item
-                .content_item_id
-                .as_deref()
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| gap("reply item has no frozen content owner"))?;
-            let payload = item
-                .payload
-                .as_ref()
-                .ok_or_else(|| gap("reply item has no payload"))?;
-            // Display identity is not the original text/content identity. Final
-            // preview retirement follows the frozen text owner, never an ID prefix.
-            (
-                ReplyMetadata {
-                    id: id.to_owned(),
-                    source: item.source.clone(),
-                    turn_id: item.turn_id.clone(),
-                    kind,
-                    tool: None,
-                    text_channel: item.text_channel,
-                    contents: item.contents.clone(),
-                },
-                id,
-                payload,
-            )
-        }
-        ChatEntry::Atom(atom) => {
-            if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
-                return Ok(None);
-            }
-            let id = atom
-                .completion_item_id
-                .as_deref()
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| gap("terminal reply atom has no frozen completion identity"))?;
-            if atom.completion_seq.is_none_or(|seq| seq == 0) {
-                return Err(gap(
-                    "terminal reply atom has no completion publication position",
-                ));
-            }
-            let payload = atom
-                .payload
-                .as_ref()
-                .ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
-            (
-                ReplyMetadata {
-                    id: atom.id.clone(),
-                    source: atom.source.clone(),
-                    turn_id: atom.turn_id.clone(),
-                    kind: atom.kind,
-                    tool: atom.tool.clone(),
-                    text_channel: atom.text_channel,
-                    contents: atom.contents.clone(),
-                },
-                id,
-                payload,
-            )
-        }
-        ChatEntry::Source(source) => {
-            if source_identity(&source.source).is_empty() {
-                return Err(gap("reply source fact has no identity"));
-            }
-            return Ok(None);
-        }
+    let source = &entry.atom;
+    let id = entry.record_id.as_str();
+    if id.is_empty()
+        || entry.completion_seq == 0
+        || source.completion_item_id.as_deref() != Some(id)
+        || source.completion_seq != Some(entry.completion_seq)
+        || !matches!(source.lifecycle, ChatAtomLifecycle::Terminal { .. })
+    {
+        return Err(gap(
+            "reply completion identity or publication position conflict",
+        ));
+    }
+    let payload = source
+        .payload
+        .as_ref()
+        .ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
+    let atom = ReplyMetadata {
+        id: source.id.clone(),
+        source: source.source.clone(),
+        turn_id: source.turn_id.clone(),
+        kind: source.kind,
+        tool: source.tool.clone(),
+        text_channel: source.text_channel,
+        contents: source.contents.clone(),
     };
     if atom.id.is_empty() || source_identity(&atom.source).is_empty() {
         return Err(gap("reply item has no identity"));
@@ -166,6 +117,11 @@ pub(super) async fn decode_entry(
         && atom.turn_id.as_deref() != Some(turn_id)
     {
         return Err(gap("reply source and Turn identity conflict"));
+    }
+    // A received external message remains input data. Its claimed channel,
+    // outcome or payload cannot authorize a bot response or a Turn terminal.
+    if matches!(atom.source, ChatSourceId::InboxMessage { .. }) {
+        return Ok(None);
     }
     if let PayloadData::Deferred { reference, .. } = payload
         && (reference.database_id.is_empty()
@@ -198,10 +154,87 @@ pub(super) async fn decode_entry(
     decode_envelope(reader, &atom, id, &bytes, turn_id).await
 }
 
+/// Read only a bounded actual Final body. Activity carries references, never
+/// authorizes commentary by display role, and never proves Turn completion.
+pub(super) async fn decode_activity(
+    reader: &ConversationReader,
+    snapshot: &ActivitySnapshot,
+    turn_id: &str,
+    index: usize,
+) -> Result<Option<(String, String)>, FinalError> {
+    let atom = &snapshot.entries[index].atom;
+    if atom.turn_id.as_deref() != Some(turn_id)
+        || atom.kind != ChatAtomKind::Text
+        || atom.text_channel != Some(ThreadTextChannel::Final)
+        || !matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id: source } if source == turn_id)
+        || !matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+    {
+        return Ok(None);
+    }
+    let mut bodies = atom
+        .contents
+        .iter()
+        .filter(|content| content.role == ChatContentRole::Body);
+    let body = bodies
+        .next()
+        .ok_or_else(|| gap("active Final has no body reference"))?;
+    if bodies.next().is_some() || atom.id.is_empty() {
+        return Err(gap("active Final body identity conflict"));
+    }
+    if !matches!(&body.reference.target,
+        ContentTarget::Body { owner: ContentOwner::Item { item_id }, key }
+        if item_id == &atom.id && key == "body")
+    {
+        return Err(gap("active Final content ownership conflict"));
+    }
+    let window = reader
+        .read_content(
+            &body.reference,
+            ContentRange {
+                offset: 0,
+                max_bytes: WINDOW_BYTES,
+            },
+        )
+        .await
+        .map_err(|error| read_failure("active Final content range failed", error))?;
+    check_length(window.available_through)?;
+    if window.offset != 0
+        || window.bytes.len() > WINDOW_BYTES as usize
+        || window.bytes.len() as u64 > window.available_through
+        || window.generation.is_empty()
+        || window.bytes.is_empty() && window.available_through > 0
+    {
+        return Err(gap("active Final content range coverage conflict"));
+    }
+    let text = match String::from_utf8(window.bytes) {
+        Ok(text) => text,
+        Err(error)
+            if error.utf8_error().error_len().is_none()
+                && (error.as_bytes().len() as u64) < window.available_through =>
+        {
+            let through = error.utf8_error().valid_up_to();
+            String::from_utf8(error.into_bytes()[..through].to_vec())
+                .map_err(|_| gap("invalid active Final UTF-8 prefix"))?
+        }
+        Err(_) => return Err(gap("invalid active Final UTF-8")),
+    };
+    Ok(Some((atom.id.clone(), text)))
+}
+
 fn source_identity(source: &ChatSourceId) -> &str {
     match source {
         ChatSourceId::ForegroundTurn { turn_id } => turn_id,
         ChatSourceId::Input { input_id } => input_id,
+        ChatSourceId::InboxMessage {
+            source_id,
+            message_id,
+        } => {
+            if source_id.is_empty() {
+                ""
+            } else {
+                message_id
+            }
+        }
         ChatSourceId::BackgroundResult { message_id } => message_id,
         ChatSourceId::Operation { operation_id } => operation_id,
         ChatSourceId::Receipt { receipt_id } => receipt_id,
@@ -497,29 +530,19 @@ pub(super) async fn collect_complete_turn_text(
 #[derive(Default)]
 pub(super) struct Coverage {
     inspected: usize,
-    atoms: usize,
     pages: usize,
     cursors: BTreeSet<String>,
 }
 impl Coverage {
-    pub(super) fn page(&mut self, entries: &[ChatEntry]) -> Result<(), FinalError> {
+    pub(super) fn page(&mut self, entries: &[CompletedEntry]) -> Result<(), FinalError> {
         self.pages = self.pages.saturating_add(1);
         self.admit(entries)
     }
-    pub(super) fn admit(&mut self, entries: &[ChatEntry]) -> Result<(), FinalError> {
+    pub(super) fn admit(&mut self, entries: &[CompletedEntry]) -> Result<(), FinalError> {
         self.inspected = self.inspected.saturating_add(entries.len());
-        self.atoms = self.atoms.saturating_add(
-            entries
-                .iter()
-                .filter(|entry| matches!(entry, ChatEntry::Item(_)))
-                .count(),
-        );
-        if self.inspected > MAX_TURN_CONTENT_ITEMS
-            || self.atoms > MAX_TURN_CONTENT_ITEMS
-            || self.pages > MAX_TURN_CONTENT_ITEMS
-        {
+        if self.inspected > MAX_TURN_CONTENT_ITEMS || self.pages > MAX_TURN_CONTENT_ITEMS {
             return Err(FinalError::Attention(
-                "canonical turn coverage exceeded 16384 facts, atoms or pages".into(),
+                "canonical turn coverage exceeded 16384 completion records or pages".into(),
             ));
         }
         Ok(())

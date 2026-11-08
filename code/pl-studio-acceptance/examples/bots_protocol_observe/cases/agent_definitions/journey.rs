@@ -1,8 +1,7 @@
 use super::{Observation, config, http, saved, sqlite, wire};
-use crate::cases::replies::chat_turn_outcome;
 use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_atom_payload,
-    completed_timeline_payload, content_bytes, group_member_atoms,
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
+    completed_turn_from_children, completion_run_entries, content_bytes,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
@@ -11,9 +10,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{
-    ChatAtomKind, ChatEntry, ChatScope, ChatSourceId, ContentRef, ThreadStatus, TurnState,
-};
+use pl_protocol::{ChatAtomKind, ChatScope, ContentRef, MainPresentation, ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -427,24 +424,30 @@ impl Observation<'_> {
             cold_deadline,
         )
         .await?;
-        let cold_turns = cold_timeline
+        let cold_user_inputs = cold_timeline
             .iter()
             .filter(|payload| {
-                payload["type"] == "turn"
+                payload["type"] == "text"
+                    && payload["data"]["channel"] == "user"
                     && payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             })
             .collect::<Vec<_>>();
         ensure!(
-            cold_turns.len() == 1,
-            "original Feishu Thread has no unique completed Turn for current platform message"
+            cold_user_inputs.len() == 1,
+            "original Feishu Thread has no unique visible input for current platform message"
         );
-        ensure!(
-            matches!(chat_turn_outcome(cold_turns[0])?, TurnState::Completed(_)),
-            "current platform input Turn did not complete successfully"
-        );
-        let cold_turn = cold_turns[0]["turnId"]
+        let cold_turn = cold_user_inputs[0]["turnId"]
             .as_str()
-            .context("completed cold input Turn has no Turn identity")?;
+            .context("cold user input omitted its owning Turn identity")?;
+        completed_turn_from_children(
+            &cold_read,
+            cold_turn,
+            Some(&cold_input),
+            true,
+            &mut cold_remaining,
+            cold_deadline,
+        )
+        .await?;
         let mut user_marker = false;
         let mut final_marker = false;
         for payload in &cold_timeline {
@@ -568,72 +571,35 @@ impl Observation<'_> {
         tokio::time::timeout_at(deadline.into(), async {
             let input_id = input(phase).input_id;
             let mut remaining = CHAT_OBSERVATION_BYTES;
+            let (mut read, page) = self
+                .session
+                .http()?
+                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .await?;
+            charge_chat_batch(&page, &mut remaining)?;
             loop {
-                let (read, mut page) = self
-                    .session
-                    .http()?
-                    .open_chat(id, ChatScope::Main, CHAT_DEMAND)
-                    .await?;
-                let mut seen = std::collections::HashSet::new();
-                'pages: for _ in 0..256 {
-                    charge_chat_batch(&page, &mut remaining)?;
-                    for entry in &page.entries {
-                        let ChatEntry::Item(item) = entry else {
-                            bail!("Main returned a member atom/source instead of a Timeline item");
-                        };
-                        let item = item.as_ref();
-                        if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
-                            continue;
-                        }
-                        let Some(payload) =
-                            completed_timeline_payload(&read, item, &mut remaining, deadline)
-                                .await?
-                        else {
-                            continue;
-                        };
-                        if payload["type"] != "turn" {
-                            continue;
-                        }
-                        let outcome = chat_turn_outcome(&payload)?;
-                        let canonical_input = payload["data"]
-                            .get("inputId")
-                            .context("Turn omitted inputId")?;
-                        if canonical_input.as_str() != Some(input_id.as_str()) {
-                            continue;
-                        }
-                        let turn_id = payload["turnId"]
-                            .as_str()
-                            .context("Turn omitted identity")?;
-                        match outcome {
-                            TurnState::Completed(_) => {
-                                let snapshot = self.session.http()?.read_thread(id).await?;
-                                if snapshot.active_turn.is_none()
-                                    && snapshot.thread.status == ThreadStatus::Idle
-                                {
-                                    return Ok(());
-                                }
-                                break 'pages;
-                            }
-                            outcome => {
-                                bail!("Agent phase {phase:?} Turn {turn_id} failed: {outcome:?}")
-                            }
-                        }
-                    }
-                    let Some(before) = page.before.take() else {
-                        break;
-                    };
-                    ensure!(
-                        seen.insert(before.clone()),
-                        "Main continuation did not advance"
-                    );
-                    ensure!(seen.len() < 256, "Main Chat exceeded bounded page budget");
-                    page = read.load_older(&before, CHAT_DEMAND).await?;
+                let notification = read.next_notification(deadline).await?;
+                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                    notification.notification
+                else {
+                    continue;
+                };
+                if turn.input_id.as_deref() != Some(input_id.as_str()) {
+                    continue;
                 }
-                ensure!(
-                    Instant::now() < deadline,
-                    "no complete canonical Turn for {phase:?}"
-                );
-                tokio::time::sleep(http::POLL).await;
+                match turn.state {
+                    TurnState::Completed(_) => {
+                        let snapshot = self.session.http()?.read_thread(id).await?;
+                        ensure!(
+                            snapshot.thread.id == id
+                                && snapshot.active_turn.is_none()
+                                && snapshot.thread.status == ThreadStatus::Idle,
+                            "successful Turn State did not leave the target Thread idle"
+                        );
+                        return Ok(());
+                    }
+                    outcome => bail!("Agent phase {phase:?} Turn {} failed: {outcome:?}", turn.id),
+                }
             }
         })
         .await
@@ -971,74 +937,48 @@ impl Observation<'_> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
             let mut remaining = CHAT_OBSERVATION_BYTES;
-            let (read, mut page) = self
+            let (mut read, _) = self
                 .session
                 .http()?
                 .open_chat(id, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             let input_id = input(phase).input_id;
-            let mut seen = std::collections::HashSet::new();
-            let mut group_items = Vec::new();
-            let mut target_turn = None;
-            let mut target_segment_complete = false;
-            'main: for _ in 0..256 {
-                charge_chat_batch(&page, &mut remaining)?;
-                for entry in &page.entries {
-                    let ChatEntry::Item(item) = entry else {
-                        bail!("Main returned a member atom/source instead of a Timeline item");
-                    };
-                    let item = item.as_ref();
-                    if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
-                        group_items.push((*item).clone());
-                        continue;
-                    }
-                    if let Some(target_turn) = target_turn.as_deref()
-                        && item.atom_kind == Some(ChatAtomKind::TurnReceipt)
-                        && item.turn_id.as_deref() != Some(target_turn)
-                    {
-                        target_segment_complete = true;
-                        break 'main;
-                    }
-                    if target_turn.is_some() && item.atom_kind == Some(ChatAtomKind::TurnReceipt) {
-                        continue;
-                    }
-                    let Some(payload) =
-                        completed_timeline_payload(&read, item, &mut remaining, deadline).await?
-                    else {
-                        continue;
-                    };
-                    if payload["type"] == "turn"
-                        && payload["data"]["inputId"].as_str() == Some(input_id.as_str())
-                    {
-                        ensure!(
-                            item.atom_kind == Some(ChatAtomKind::TurnReceipt),
-                            "Turn item was not labeled as a TurnReceipt"
-                        );
-                        let turn_id = item
-                            .turn_id
-                            .as_deref()
-                            .context("TurnReceipt item omitted its real turn_id")?;
-                        ensure!(
-                            payload["turnId"].as_str() == Some(turn_id),
-                            "TurnReceipt item and payload turn identities disagree"
-                        );
-                        ensure!(
-                            matches!(
-                                &item.source,
-                                ChatSourceId::ForegroundTurn { turn_id: source_turn }
-                                    if source_turn == turn_id
-                            ),
-                            "TurnReceipt item source identity did not match its turn_id"
-                        );
-                        ensure!(
-                            matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),
-                            "refusal probe Turn did not complete"
-                        );
-                        target_turn = Some(turn_id.to_owned());
-                    }
+            let target_turn = loop {
+                let notification = read.next_notification(deadline).await?;
+                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                    notification.notification
+                else {
+                    continue;
+                };
+                if turn.input_id.as_deref() != Some(input_id.as_str()) {
+                    continue;
                 }
+                ensure!(
+                    matches!(turn.state, TurnState::Completed(_)),
+                    "refusal probe Turn did not complete: {:?}",
+                    turn.state
+                );
+                break turn.id;
+            };
+            let (main_read, mut page) = self
+                .session
+                .http()?
+                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .await?;
+            let mut seen = std::collections::HashSet::new();
+            let mut representatives = Vec::new();
+            for _ in 0..256 {
+                charge_chat_batch(&page, &mut remaining)?;
+                representatives.extend(
+                    page.entries
+                        .iter()
+                        .filter(|entry| {
+                            entry.main_presentation == MainPresentation::ForegroundWork
+                                && entry.atom.turn_id.as_deref() == Some(target_turn.as_str())
+                        })
+                        .cloned(),
+                );
                 let Some(before) = page.before.take() else {
-                    target_segment_complete = true;
                     break;
                 };
                 ensure!(
@@ -1046,21 +986,17 @@ impl Observation<'_> {
                     "Main continuation did not advance"
                 );
                 ensure!(seen.len() < 256, "Main Chat exceeded bounded page budget");
-                page = read.load_older(&before, CHAT_DEMAND).await?;
+                page = main_read.load_older(&before, CHAT_DEMAND).await?;
             }
-            ensure!(
-                target_segment_complete,
-                "Main exceeded bounded pages before the target Turn work-group segment was complete"
-            );
-            let target_turn = target_turn.context("refusal probe terminal Turn missing")?;
             let mut found_tool = false;
-            for group in group_items
-                .iter()
-                .filter(|item| item.turn_id.as_deref() == Some(target_turn.as_str()))
-            {
-                for atom in group_member_atoms(&read, group, &mut remaining, deadline).await? {
+            for representative in representatives {
+                let (run_read, entries) =
+                    completion_run_entries(&main_read, &representative, &mut remaining, deadline)
+                        .await?;
+                for entry in entries {
                     let Some(payload) =
-                        completed_atom_payload(&read, &atom, &mut remaining, deadline).await?
+                        completed_entry_payload(&run_read, &entry, &mut remaining, deadline)
+                            .await?
                     else {
                         continue;
                     };
@@ -1133,41 +1069,31 @@ async fn cold_main_chat(
         for _ in 0..256 {
             charge_chat_batch(&page, remaining)?;
             for entry in &page.entries {
-                match entry {
-                    ChatEntry::Item(item)
-                        if item.kind == pl_protocol::TimelineItemKind::WorkGroup =>
-                    {
-                        // This cold inventory proves input/Turn uniqueness and
-                        // reads only original text/status envelopes. It does not
-                        // assert complete tool history, so do not fan out into
-                        // every unrelated work group's member scope.
+                if entry.main_presentation != MainPresentation::Single {
+                    // Main work entries are only representatives. This cold
+                    // inventory asserts text facts, not complete work history.
+                    continue;
+                }
+                if let Some(payload) =
+                    completed_entry_payload(&read, entry, remaining, deadline).await?
+                {
+                    if payload["type"] == "text" {
+                        let turn_id = payload["turnId"]
+                            .as_str()
+                            .context("cold text payload omitted turn identity")?;
+                        let text_channel = entry
+                            .atom
+                            .text_channel
+                            .context("cold text omitted explicit text_channel")?;
+                        ensure!(
+                            entry.atom.kind == ChatAtomKind::Text
+                                && entry.atom.turn_id.as_deref() == Some(turn_id)
+                                && payload["data"]["channel"]
+                                    == serde_json::to_value(text_channel)?,
+                            "cold text completion identity/channel disagreed with original payload"
+                        );
                     }
-                    ChatEntry::Item(item) => {
-                        if let Some(payload) =
-                            completed_timeline_payload(&read, item, remaining, deadline).await?
-                        {
-                            if payload["type"] == "text" {
-                                let turn_id = payload["turnId"]
-                                    .as_str()
-                                    .context("cold text payload omitted turn identity")?;
-                                let text_channel = item
-                                    .text_channel
-                                    .context("cold Timeline text omitted explicit text_channel")?;
-                                ensure!(
-                                    item.kind == pl_protocol::TimelineItemKind::Text
-                                        && item.atom_kind == Some(ChatAtomKind::Text)
-                                        && item.turn_id.as_deref() == Some(turn_id)
-                                        && payload["data"]["channel"]
-                                            == serde_json::to_value(text_channel)?,
-                                    "cold Timeline text identity/channel disagreed with original payload"
-                                );
-                            }
-                            payloads.push(payload);
-                        }
-                    }
-                    ChatEntry::Atom(_) | ChatEntry::Source(_) => {
-                        bail!("Main returned a member atom/source instead of a Timeline item")
-                    }
+                    payloads.push(payload);
                 }
             }
             let Some(before) = page.before.take() else {

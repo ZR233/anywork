@@ -2,15 +2,14 @@
 //! parent wait → child terminal report. The same sequence resumes original IDs
 //! after the production process and future Profile configuration have changed.
 use super::{Observation, config, http, saved, wire};
-use crate::cases::replies::chat_turn_outcome;
 use crate::support::{
     CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes,
-    completed_timeline_payload, payload_bytes,
+    completed_turn_from_children,
 };
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    AgentProfileSnapshot, AgentWorkspaceMode, ChatEntry, ChatScope, ThreadActivityToolEntry,
-    ThreadStatus, ThreadWaitState, TurnState,
+    AgentProfileSnapshot, AgentWorkspaceMode, ChatAtomKind, ChatScope, ThreadStatus,
+    ThreadWaitState,
 };
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
@@ -224,37 +223,12 @@ impl Observation<'_> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
             let mut remaining = CHAT_OBSERVATION_BYTES;
-            let (read, page) = self
+            let (read, _) = self
                 .session
                 .http()?
                 .open_chat(child, ChatScope::Main, CHAT_DEMAND)
                 .await?;
-            charge_chat_batch(&page, &mut remaining)?;
-            for entry in &page.entries {
-                let ChatEntry::Item(item) = entry else {
-                    anyhow::bail!("Main returned a member atom/source instead of a Timeline item");
-                };
-                let item = item.as_ref();
-                if item.kind == pl_protocol::TimelineItemKind::WorkGroup {
-                    continue;
-                }
-                let Some(payload) =
-                    completed_timeline_payload(&read, item, &mut remaining, deadline).await?
-                else {
-                    continue;
-                };
-                if payload["type"] == "turn" && payload["turnId"].as_str() == Some(turn_id) {
-                    ensure!(
-                        matches!(chat_turn_outcome(&payload)?, TurnState::Completed(_)),
-                        "original child Turn {turn_id} did not complete successfully"
-                    );
-                    return Ok(());
-                }
-            }
-            anyhow::bail!(
-                "original child Turn {turn_id} missing from its Main cut; truncated={}",
-                page.before.is_some()
-            )
+            completed_turn_from_children(&read, turn_id, None, true, &mut remaining, deadline).await
         })
         .await
         .context("child completion observation exceeded its deadline")?
@@ -271,90 +245,49 @@ impl Observation<'_> {
                     snapshot.thread.status != ThreadStatus::Faulted,
                     "parent failed before its real child wait"
                 );
-                let (read, batch) = self
+                if snapshot.active_turn.as_ref().is_some_and(|turn| {
+                    snapshot.activity.as_ref().is_some_and(|activity| {
+                        activity.turn_id.as_deref() == Some(turn.id.as_str())
+                    })
+                }) && let Some(activity) = &snapshot.activity
+                    && activity.tools.active.iter().any(|tool| {
+                        tool.call_id == call_id
+                            && tool
+                                .wait
+                                .as_ref()
+                                .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
+                    })
+                {
+                    return Ok(());
+                }
+                let (mut read, batch) = self
                     .session
                     .http()?
                     .open_chat(parent, ChatScope::Main, CHAT_DEMAND)
                     .await?;
                 charge_chat_batch(&batch, &mut remaining)?;
-                let current = batch.current.context("parent Main Set omitted current")?;
-                ensure!(
-                    current.logical_status != ThreadStatus::Faulted,
-                    "parent failed before its real child wait"
-                );
-                if current.execution_present
-                    && current.active_turn.as_ref().is_some_and(|turn| {
-                        snapshot
-                            .active_turn
-                            .as_ref()
-                            .is_some_and(|active| active.id == turn.id)
-                    })
-                    && let Some(reference) = current
-                        .collections
-                        .iter()
-                        .find(|reference| reference.collection == "tools")
-                {
-                    // Only this revision's active tools can establish Waiting. A stale
-                    // collection restarts from a new Main cut, never an old cursor.
-                    let waiting = async {
-                        let mut continuation = None;
-                        let mut seen = std::collections::HashSet::new();
-                        for _ in 0..256 {
-                            let page = read
-                                .page_current(reference, continuation.as_deref(), CHAT_DEMAND)
-                                .await?;
-                            ensure!(
-                                page.revision == reference.revision,
-                                "current tools revision changed"
-                            );
-                            ensure!(
-                                page.entries.len() <= CHAT_DEMAND.max_items as usize,
-                                "current tools exceeded item demand"
-                            );
-                            let bytes = serde_json::to_vec(&page)?.len();
-                            ensure!(
-                                bytes <= CHAT_DEMAND.max_bytes as usize,
-                                "current tools exceeded byte demand"
-                            );
-                            charge_chat_bytes(bytes, &mut remaining)?;
-                            for entry in &page.entries {
-                                let bytes =
-                                    payload_bytes(&read, &entry.payload, &mut remaining, deadline)
-                                        .await?;
-                                let tool: ThreadActivityToolEntry = serde_json::from_slice(&bytes)
-                                    .context("invalid current tool entry")?;
-                                ensure!(
-                                    entry.id == tool.call_id,
-                                    "current tool entry identity mismatch"
-                                );
-                                if tool.call_id == call_id {
-                                    return Ok::<bool, anyhow::Error>(
-                                        tool.wait.as_ref().is_some_and(|wait| {
-                                            wait.state() == ThreadWaitState::Waiting
-                                        }),
-                                    );
-                                }
-                            }
-                            let Some(next) = page.continuation else {
-                                return Ok(false);
-                            };
-                            ensure!(
-                                seen.insert(next.clone()),
-                                "current tools continuation did not advance"
-                            );
-                            continuation = Some(next);
-                        }
-                        anyhow::bail!("current tools exceeded its bounded page budget")
-                    }
-                    .await;
-                    match waiting {
-                        Ok(true) => return Ok(()),
-                        Ok(false) => {}
-                        Err(error)
-                            if error.downcast_ref::<http::StudioHttpFailure>().is_some_and(
-                                |failure| failure.error.reason() == Some("staleContent"),
-                            ) => {}
-                        Err(error) => return Err(error),
+                for _ in 0..32 {
+                    let activity = read.next_activity(deadline).await?;
+                    // The ActivitySnapshot is delivered on the read lease bound
+                    // to `parent`; the protocol deliberately carries no Thread ID.
+                    charge_chat_bytes(serde_json::to_vec(&activity)?.len(), &mut remaining)?;
+                    if snapshot.active_turn.as_ref().is_some_and(|turn| {
+                        activity.entries.iter().any(|entry| {
+                            entry.atom.turn_id.as_deref() == Some(turn.id.as_str())
+                                && entry.atom.kind == ChatAtomKind::ToolCall
+                                && entry
+                                    .atom
+                                    .tool
+                                    .as_ref()
+                                    .is_some_and(|tool| tool.call_id == call_id)
+                                && entry
+                                    .atom
+                                    .wait
+                                    .as_ref()
+                                    .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
+                        })
+                    }) {
+                        return Ok(());
                     }
                 }
                 ensure!(

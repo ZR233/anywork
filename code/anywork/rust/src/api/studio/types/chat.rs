@@ -1,8 +1,6 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::{
-    BridgeError, BridgeThreadSubscriptionUpdate, BridgeTimelineItem, BridgeTimelineMembersRef,
-};
+use super::{BridgeActivitySnapshot, BridgeError, BridgeThreadSubscriptionUpdate};
 
 #[derive(Debug, Clone)]
 pub struct BridgeConversationFrame {
@@ -20,6 +18,9 @@ pub enum BridgeConversationEvent {
     Chat {
         batch: Box<BridgeChatBatch>,
     },
+    Activity {
+        snapshot: Box<BridgeActivitySnapshot>,
+    },
     Failure {
         error: BridgeError,
     },
@@ -35,8 +36,38 @@ pub struct BridgeReadDemand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatScope {
     Main,
-    GroupMembers { reference: BridgeTimelineMembersRef },
+    Run { reference: BridgeCompletionRunRef },
     Children { parent_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeCompletionRunPosition {
+    pub start_seq: u64,
+    pub ordinal: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeCompletionRunRef {
+    pub database_id: String,
+    pub index_version: u32,
+    pub start_seq: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeMainPresentation {
+    Hidden,
+    Single,
+    ForegroundWork,
+    BackgroundResults,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeCompletedEntry {
+    pub record_id: String,
+    pub completion_seq: u64,
+    pub run: Option<BridgeCompletionRunPosition>,
+    pub main_presentation: BridgeMainPresentation,
+    pub atom: BridgeChatAtom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +75,6 @@ pub enum BridgeChatPlacement {
     Set,
     Prepend,
     Append,
-    Update,
 }
 
 #[derive(Debug, Clone)]
@@ -62,16 +92,10 @@ pub enum BridgePayloadData {
 #[derive(Debug, Clone)]
 pub struct BridgeChatBatch {
     pub placement: BridgeChatPlacement,
-    pub entries: Vec<BridgeChatEntry>,
+    pub entries: Vec<BridgeCompletedEntry>,
     pub before: Option<String>,
-    pub current: Option<BridgeCurrentProjection>,
-}
-
-#[derive(Debug, Clone)]
-pub enum BridgeChatEntry {
-    Item(Box<BridgeTimelineItem>),
-    Atom(Box<BridgeChatAtom>),
-    Source(BridgeChatSourceState),
+    pub from_seq: Option<u64>,
+    pub through_seq: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -99,11 +123,25 @@ pub struct BridgeChatAtom {
 
 #[derive(Debug, Clone)]
 pub enum BridgeChatSourceId {
-    ForegroundTurn { turn_id: String },
-    Input { input_id: String },
-    BackgroundResult { message_id: String },
-    Operation { operation_id: String },
-    Receipt { receipt_id: String },
+    ForegroundTurn {
+        turn_id: String,
+    },
+    Input {
+        input_id: String,
+    },
+    InboxMessage {
+        source_id: String,
+        message_id: String,
+    },
+    BackgroundResult {
+        message_id: String,
+    },
+    Operation {
+        operation_id: String,
+    },
+    Receipt {
+        receipt_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,48 +267,7 @@ pub enum BridgeContentOwner {
     },
 }
 
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentProjection {
-    pub source_effect_seq: u64,
-    pub logical_status: super::BridgeThreadStatus,
-    pub execution_present: bool,
-    pub active: Option<BridgeCurrentActivityHead>,
-    pub active_turn: Option<BridgeCurrentTurnHead>,
-    pub sources: Vec<BridgeChatSourceState>,
-    pub items: Vec<BridgeTimelineItem>,
-    pub atoms: Vec<BridgeChatAtom>,
-    pub plan: Option<BridgeCurrentPlanHead>,
-    pub interactions: Option<BridgeCurrentCollectionRef>,
-    pub previews: Vec<BridgeCurrentContentPreview>,
-    pub collections: Vec<BridgeCurrentCollectionRef>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentActivityHead {
-    pub id: String,
-    pub kind: super::BridgeThreadActivityKind,
-    pub summary: String,
-    pub thinking_summary: Option<String>,
-    pub thinking_seconds: Option<u64>,
-    pub tool_count: u32,
-    pub background_tool_count: u32,
-    pub latest_tool: Option<BridgeCurrentToolHead>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentToolHead {
-    pub call_id: String,
-    pub name: String,
-    pub state: super::BridgeThreadActivityToolState,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentTurnHead {
-    pub id: String,
-    pub phase: super::BridgeTurnPhase,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeCurrentPlanHead {
     pub revision: u64,
     pub phase: super::BridgePlanPhase,
@@ -282,23 +279,6 @@ pub struct BridgeCurrentCollectionRef {
     pub database_id: String,
     pub collection: String,
     pub revision: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeCurrentContentRole {
-    Reasoning,
-    Response,
-    ToolArguments,
-    ToolOutput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentContentPreview {
-    pub id: String,
-    pub role: BridgeCurrentContentRole,
-    pub text_channel: Option<BridgeThreadTextChannel>,
-    pub text: String,
-    pub reference: BridgeContentRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -628,7 +628,14 @@ impl ThreadCheckpoint {
     ///
     /// This is the current recovery DTO, so it is the pruned form of
     /// [`Self::capture_transfer`].
-    pub fn capture(thread_id: String, history_fence: u64, state: ThreadSnapshot) -> Self {
+    ///
+    /// # Errors
+    /// Refuses pruning if its changed interaction/permission cut cannot allocate a revision.
+    pub fn capture(
+        thread_id: String,
+        history_fence: u64,
+        state: ThreadSnapshot,
+    ) -> Result<Self, ThreadError> {
         Self::capture_transfer(thread_id, history_fence, state).pruned()
     }
 
@@ -657,11 +664,15 @@ impl ThreadCheckpoint {
     }
 
     /// Returns the restart DTO: terminal facts and exported history dropped.
-    pub fn pruned(&self) -> Self {
+    ///
+    /// # Errors
+    /// Returns [`ThreadError::RevisionExhausted`] before pruning if the changed resource cut
+    /// cannot allocate its revision. The original checkpoint remains intact.
+    pub fn pruned(&self) -> Result<Self, ThreadError> {
         let mut pruned = self.clone();
+        pruned.state.retain_live_facts()?;
         pruned.state.clear_ephemeral();
-        pruned.state.retain_live_facts();
-        pruned
+        Ok(pruned)
     }
 
     /// The first body reference that still has to be materialized, in manifest order.

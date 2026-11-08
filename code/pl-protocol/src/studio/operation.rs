@@ -22,8 +22,6 @@ pub enum StudioOperation {
     SetThreadMode,
     SetThreadModelRoute,
     ListThreadTurns,
-    ListThreadTimeline,
-    ReadThreadTimelineItem,
     SubmitPrompt,
     ContinueThread,
     StopThread,
@@ -90,7 +88,7 @@ pub enum StudioOperation {
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 80] = [
+    pub const ALL: [Self; 78] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -106,8 +104,6 @@ impl StudioOperation {
         Self::SetThreadMode,
         Self::SetThreadModelRoute,
         Self::ListThreadTurns,
-        Self::ListThreadTimeline,
-        Self::ReadThreadTimelineItem,
         Self::SubmitPrompt,
         Self::ContinueThread,
         Self::StopThread,
@@ -190,8 +186,6 @@ impl StudioOperation {
             Self::SetThreadMode => "thread.setMode",
             Self::SetThreadModelRoute => "thread.setModelRoute",
             Self::ListThreadTurns => "thread.listTurns",
-            Self::ListThreadTimeline => "thread.listTimeline",
-            Self::ReadThreadTimelineItem => "thread.readTimelineItem",
             Self::SubmitPrompt => "prompt.submit",
             Self::ContinueThread => "thread.continue",
             Self::StopThread => "thread.stop",

@@ -1,7 +1,7 @@
 //! Schema 14 → 15: derived Timeline item/member rows and projection state.
 //! The rows are rebuilt by replaying the one Studio projection over preserved
 //! atomic facts and the saved current cut; no original fact is rewritten.
-use super::super::conversation::timeline;
+use super::legacy_timeline_store as timeline;
 use super::*;
 
 pub(super) struct TimelineItems;

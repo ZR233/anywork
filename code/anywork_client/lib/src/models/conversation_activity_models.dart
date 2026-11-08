@@ -267,22 +267,26 @@ bool _sameDetails(
 /// 只从 SDK 已提交的当前活动事件及各域当前事实派生显示值。
 /// 不读取历史，不发起详情 query，不用较早到达的摘要帧清除正文。
 ConversationActivityView? projectConversationActivity({
-  required CurrentProjection? current,
+  required ThreadActivityView? activity,
+  required ActivitySnapshot? snapshot,
+  ThreadBusinessRefs? businessRefs,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
 }) {
-  final activity = current?.active;
-  if (activity == null || current == null) {
+  if (activity == null) {
     if (interaction != null) return _interactionActivity(interaction);
     if (storage != null && storage.blocksContinuation) {
       return _storageActivity(storage);
     }
     return null;
   }
-  final hasActiveText = current.atoms.any(
-    (atom) =>
-        atom.kind == ChatAtomKind.text && atom.lifecycle is ActiveChatAtom,
-  );
+  final hasActiveText =
+      snapshot?.entries.any(
+        (entry) =>
+            entry.atom.kind == ChatAtomKind.text &&
+            entry.atom.lifecycle is ActiveChatAtom,
+      ) ??
+      false;
   final kind = switch (activity.kind) {
     ThreadActivityKind.preparing => ConversationActivityKind.preparing,
     ThreadActivityKind.compacting => ConversationActivityKind.compacting,
@@ -308,34 +312,19 @@ ConversationActivityView? projectConversationActivity({
       ? ''
       : _singleLine(activity.summary);
   return ConversationActivityView(
-    identity: activity.id,
+    identity: activity.identity,
     kind: kind,
-    turnId: current.activeTurn?.id,
+    turnId: activity.turnId,
     summary: summary.isEmpty ? null : summary,
     thinkingSummary: activity.thinkingSummary,
     thinkingSeconds: activity.thinkingSeconds,
-    // These are bounded producer previews, never locally accumulated deltas.
-    reasoningParts: [
-      for (final preview in current.previews)
-        if (preview.role == CurrentContentRole.reasoning)
-          ThreadActivityContentPart(
-            itemId: preview.id,
-            complete: false,
-            text: preview.text,
-          ),
-    ],
-    responseParts: [
-      for (final preview in current.previews)
-        if (preview.role == CurrentContentRole.response)
-          ThreadActivityContentPart(
-            itemId: preview.id,
-            complete: false,
-            text: preview.text,
-          ),
-    ],
-    activeToolCount: activity.toolCount,
-    backgroundToolCount: activity.backgroundToolCount,
-    expandable: current.previews.isNotEmpty || current.collections.isNotEmpty,
+    activeToolCount: activity.tools.count,
+    backgroundToolCount: activity.tools.background,
+    expandable:
+        (snapshot?.entries.any((entry) => entry.atom.contents.isNotEmpty) ??
+            false) ||
+        businessRefs?.plan?.document != null ||
+        businessRefs?.interactions != null,
   );
 }
 

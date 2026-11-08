@@ -76,7 +76,7 @@ async fn a_deferred_payload_is_read_only_through_requested_windows() {
 async fn missing_payload_and_body_are_not_empty_content_or_an_empty_manifest() {
     let item = with_body(draft("x", ""), "empty", ContentData::Bytes(Arc::from([])));
     let key = item.contents.keys().next().unwrap().clone();
-    let stored = Stored::with([ChatItem::complete(item, 1)]);
+    let stored = Stored::with([ChatItem::complete(item, 1, None)]);
     let session = Session::new(stored, epoch("run-1"));
     for reference in [
         ContentRef::ItemPayload("x".into()),

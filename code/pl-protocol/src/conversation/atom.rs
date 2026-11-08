@@ -1,5 +1,5 @@
-//! Lightweight atomic facts and actual source lifecycle. Work-group boundaries
-//! and display categorization belong to the Studio Timeline projection, not here.
+//! Lightweight atomic facts and actual source lifecycle. Native read classification
+//! belongs to the producer; these facts do not own presentation groups.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -13,11 +13,25 @@ use super::{ContentRef, PayloadData};
     rename_all_fields = "camelCase"
 )]
 pub enum ChatSourceId {
-    ForegroundTurn { turn_id: String },
-    Input { input_id: String },
-    BackgroundResult { message_id: String },
-    Operation { operation_id: String },
-    Receipt { receipt_id: String },
+    ForegroundTurn {
+        turn_id: String,
+    },
+    Input {
+        input_id: String,
+    },
+    InboxMessage {
+        source_id: String,
+        message_id: String,
+    },
+    BackgroundResult {
+        message_id: String,
+    },
+    Operation {
+        operation_id: String,
+    },
+    Receipt {
+        receipt_id: String,
+    },
 }
 
 /// Canonical effect and its stable intra-effect position, not transport delivery order.
@@ -133,8 +147,7 @@ pub struct ChatAtom {
     pub completion_seq: Option<u64>,
     pub source: ChatSourceId,
     /// Actual source state at this read cut, not frozen into completion metadata.
-    /// Member/child scopes may deliver reliable source changes independently.
-    /// Main delivers only Studio Timeline items and its same-cut current snapshot.
+    /// This does not change the immutable completion payload or define a group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_state: Option<ChatSourceState>,
     /// Stable actual source position, not a dense UI index. Legacy absence stays unknown.
@@ -153,8 +166,8 @@ pub struct ChatAtom {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     /// For a text/input fact, whether accepted text or attachments exist.
-    /// `Some(false)` proves a real empty part, which still separates work
-    /// segments. Legacy absence is unknown, not permission to discard content.
+    /// `Some(false)` proves an empty part: hidden from Main without separating runs.
+    /// Legacy absence is unknown, not permission to discard content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_present: Option<bool>,
     pub contents: Vec<ChatAtomContent>,
@@ -184,15 +197,4 @@ pub struct ChatSourceState {
     pub lifecycle: ChatSourceLifecycle,
     pub started: Option<ChatFactPosition>,
     pub ended: Option<ChatFactPosition>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-pub enum ChatEntry {
-    /// One self-contained Main Timeline display item; never a raw member atom.
-    Item(Box<super::TimelineItem>),
-    /// Member entry inside a work-group member scope or a real business child page.
-    Atom(Box<ChatAtom>),
-    /// A reliable lifecycle event, not an extra row of per-page source evidence.
-    Source(ChatSourceState),
 }

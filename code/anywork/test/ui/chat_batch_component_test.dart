@@ -337,7 +337,7 @@ void main() {
       });
       try {
         await controls.adapter.applyBatch(
-          sdk.ChatBatch(
+          _mainBatch(
             placement: sdk.ChatPlacement.set,
             entries: ([
               _text(
@@ -409,7 +409,7 @@ void main() {
       });
       try {
         await controls.adapter.applyBatch(
-          sdk.ChatBatch(
+          _mainBatch(
             placement: sdk.ChatPlacement.set,
             entries: ([
               _text(
@@ -504,7 +504,7 @@ void main() {
       final samples = <(String, int, int)>[];
       var clock = 500;
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([_unknown('placeholder')]).map(_mainEntry).toList(),
         ),
@@ -525,7 +525,7 @@ void main() {
       expect(samples, isEmpty);
       expect(clock, 500, reason: 'No witness surrounds a placeholder/title');
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.append,
           entries: ([
             _text('actual-body', '正文布局见证'),
@@ -650,7 +650,7 @@ void main() {
       final lateOld = Completer<sdk.ContentWindow>();
       final samples = <String>[];
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([message('old')]).map(_mainEntry).toList(),
         ),
@@ -722,7 +722,7 @@ void main() {
       await tester.pump();
       expect(reads.last, ('old', 2 + utf8.encode('第二段').length, 64 * 1024));
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([message('new')]).map(_mainEntry).toList(),
         ),
@@ -797,16 +797,19 @@ void main() {
           key: 'tool.result',
         ),
       );
-      final item = sdk.TimelineItem(
+      final item = sdk.ChatAtom(
         id: presentationId,
-        kind: sdk.TimelineItemKind.status,
+        completionItemId: presentationId,
+        sourceOrder: null,
         source: const sdk.BackgroundResultChatSource(messageId: 'result'),
-        atomKind: sdk.ChatAtomKind.toolCall,
+        kind: sdk.ChatAtomKind.toolCall,
         delivery: sdk.ChatDeliveryKind.independent,
-        outcome: sdk.ChatTerminalOutcome.completed,
+        lifecycle: const sdk.TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: sdk.ChatTerminalOutcome.completed,
+        ),
         turnId: 'original-turn',
-        contentItemId: contentItemId,
-        admissionClosed: true,
         contents: const [
           sdk.ChatAtomContent(
             role: sdk.ChatContentRole.toolArguments,
@@ -861,9 +864,9 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(1280, 420));
       try {
         await controls.adapter.applyBatch(
-          sdk.ChatBatch(
+          _mainBatch(
             placement: sdk.ChatPlacement.set,
-            entries: [sdk.ItemChatEntry(item)],
+            entries: [_mainEntry(item)],
           ),
         );
         await tester.pumpWidget(
@@ -1059,7 +1062,7 @@ void main() {
         operations.add,
       );
       await adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([
             _text('text', '正文'),
@@ -1092,13 +1095,13 @@ void main() {
       expect(unknown.createdAt, isNull);
 
       await adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.prepend,
           entries: ([_text('older', '旧页')]).map(_mainEntry).toList(),
         ),
       );
       await adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.append,
           entries: ([_text('new', '新内容')]).map(_mainEntry).toList(),
         ),
@@ -1121,7 +1124,11 @@ void main() {
       );
       expect(
         operations.where((o) => o.type == ChatOperationType.insertAll),
-        hasLength(2),
+        hasLength(1),
+      );
+      expect(
+        operations.where((o) => o.type == ChatOperationType.insert),
+        hasLength(1),
       );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
@@ -1141,7 +1148,7 @@ void main() {
         target: sdk.ItemPayloadTarget(itemId: 'deferred'),
       );
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([
             _unknown('unknown', marker: 'builtin.exec@1'),
@@ -1215,7 +1222,7 @@ void main() {
     (tester) async {
       final controls = _Controls();
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
@@ -1277,7 +1284,7 @@ void main() {
     (tester) async {
       final controls = _Controls();
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.set,
           entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
@@ -1304,7 +1311,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(loads, 1);
       await controls.adapter.applyBatch(
-        sdk.ChatBatch(
+        _mainBatch(
           placement: sdk.ChatPlacement.append,
           entries: ([for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')])
               .map(_mainEntry)
@@ -1431,15 +1438,45 @@ final class _Controls implements TimelineUiControllers {
 
 // Every envelope in these component stories is an explicitly independent Main
 // status/text item. This helper does not classify, join or reorder atoms.
-sdk.ItemChatEntry _mainEntry(sdk.ChatAtom atom) => sdk.ItemChatEntry(
-  sdk.TimelineItem(
-    id: atom.id,
-    kind: sdk.TimelineItemKind.status,
-    source: atom.source,
-    atomKind: atom.kind,
-    delivery: sdk.ChatDeliveryKind.independent,
-    contents: atom.contents,
-    payload: atom.payload,
-    admissionClosed: true,
-  ),
+sdk.CompletedEntry _mainEntry(sdk.ChatAtom atom) => sdk.CompletedEntry(
+  recordId: atom.completionItemId ?? atom.id,
+  completionSeq: 1,
+  run: const sdk.CompletionRunPosition(startSeq: 1, ordinal: 1),
+  mainPresentation: sdk.MainPresentation.single,
+  atom: atom,
 );
+
+// Explicit synthetic completion positions for these rendering stories. They
+// never classify/group payloads or create a second product reducer.
+sdk.ChatBatch _mainBatch({
+  required sdk.ChatPlacement placement,
+  required List<sdk.CompletedEntry> entries,
+  String? before,
+  int? startSeq,
+}) {
+  final start =
+      startSeq ??
+      switch (placement) {
+        sdk.ChatPlacement.set => 10000,
+        sdk.ChatPlacement.prepend => 100,
+        sdk.ChatPlacement.append => 20000,
+      };
+  return sdk.ChatBatch(
+    placement: placement,
+    before: before,
+    fromSeq: placement == sdk.ChatPlacement.append ? start - 1 : null,
+    throughSeq: placement == sdk.ChatPlacement.prepend
+        ? 10000
+        : start + entries.length,
+    entries: [
+      for (final (i, entry) in entries.indexed)
+        sdk.CompletedEntry(
+          recordId: entry.recordId,
+          completionSeq: start + i,
+          run: sdk.CompletionRunPosition(startSeq: start + i, ordinal: 1),
+          mainPresentation: sdk.MainPresentation.single,
+          atom: entry.atom,
+        ),
+    ],
+  );
+}

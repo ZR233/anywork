@@ -94,7 +94,310 @@ Finder get _rowTap => find
 
 void main() {
   testWidgets(
-    'Main tool Status keeps its original unit and discloses Item-owned ranges in live and history',
+    'Accepted Input and Inbox render only declared text, retaining request domains and body aliases',
+    (tester) async {
+      const text =
+          '{"text":"literal user JSON","request":{"text":"not metadata"}}';
+      const request = '{"text":"envelope","request":{"inputId":"private-id"}}';
+      ContentRef reference(String key, {String database = 'accepted-db'}) =>
+          ContentRef(
+            databaseId: database,
+            target: BodyContentTarget(
+              owner: const ItemContentOwner(itemId: 'accepted'),
+              key: key,
+            ),
+          );
+      Map<String, Object?> encodedRef(
+        String key, {
+        String database = 'accepted-db',
+      }) => {
+        'databaseId': database,
+        'target': {
+          'kind': 'body',
+          'owner': {'kind': 'item', 'itemId': 'accepted'},
+          'key': key,
+        },
+      };
+      for (final inbox in [false, true]) {
+        final bodies = [
+          _body('body', text),
+          _body('accepted.payload', request),
+          {
+            'key': 'retained.request',
+            'byteLength': 9000,
+            'reference': encodedRef('retained.request'),
+          },
+          {
+            // Same canonical key is insufficient for a Deferred range: the
+            // database identity also has to match the typed body's declaration.
+            'key': 'body',
+            'byteLength': 100,
+            'reference': encodedRef('body', database: 'foreign-db'),
+          },
+        ];
+        final original = encodedRef(inbox ? 'body' : 'accepted.payload');
+        final envelope = _item('accepted', 'text', {
+          'channel': inbox ? 'parentAgent' : 'user',
+          'acceptedPayload': {
+            'format': inbox ? 'text/plain' : 'pl.studio.prompt',
+            'version': 1,
+            'reference': original,
+          },
+          'attachments': [
+            {
+              'id': 'accepted-file',
+              'modality': 'file',
+              'mediaType': 'text/plain',
+              'byteSize': 3,
+              'filename': 'public.txt',
+            },
+          ],
+        }, bodies: bodies);
+        final payload = InlinePayload(bytes: utf8.encode(envelope.raw!));
+        final atom = ChatAtom(
+          id: 'accepted',
+          completionItemId: 'accepted',
+          source: inbox
+              ? const InboxMessageChatSource(
+                  sourceId: 'agent:parent',
+                  messageId: 'inbox-message',
+                )
+              : const InputChatSource(inputId: 'accepted'),
+          sourceOrder: null,
+          kind: inbox ? ChatAtomKind.text : ChatAtomKind.input,
+          delivery: ChatDeliveryKind.independent,
+          lifecycle: const TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: ChatTerminalOutcome.completed,
+          ),
+          contents: [
+            ChatAtomContent(
+              role: ChatContentRole.body,
+              reference: reference('body'),
+            ),
+          ],
+          payload: payload,
+        );
+        final unit = TimelineDisplayUnit(
+          entry: CompletedEntry(
+            recordId: 'accepted',
+            completionSeq: 1,
+            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
+            mainPresentation: MainPresentation.single,
+            atom: atom,
+          ),
+        );
+        addTearDown(unit.expansion.dispose);
+        final item = ChatItemPresentation.forUnit(unit);
+        final requested = <String>[];
+        await tester.pumpWidget(
+          _host(
+            ChatItemView(
+              key: ValueKey(inbox),
+              item: item,
+              contentRangeBuilder: (_, key, _, _, _) {
+                requested.add(key);
+                return Text('unexpected range:$key');
+              },
+              attachmentBuilder: (value) {
+                expect(value, same(item));
+                return Text(value.attachments.single.filename!);
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text(text), findsOneWidget);
+        expect(find.text(request), findsNothing);
+        expect(find.text('public.txt'), findsOneWidget);
+        if (inbox) {
+          expect(find.text('来源 · agent:parent'), findsOneWidget);
+        }
+        expect(requested, isEmpty);
+        expect(item.bodies, hasLength(bodies.length));
+        expect(item.inlineText('accepted.payload'), request);
+        expect(item.data['acceptedPayload'], envelope.data['acceptedPayload']);
+        expect(atom.payload, same(payload));
+        expect(utf8.decode(payload.bytes), envelope.raw);
+        expect(tester.takeException(), isNull);
+      }
+    },
+  );
+
+  testWidgets(
+    'payload-only Input uses its body key while model output parts and declared Input ranges remain visible',
+    (tester) async {
+      final payloadOnly = _item(
+        'preview-input',
+        'text',
+        {'channel': 'user', 'attachments': []},
+        bodies: [
+          _body('body', 'payload-only public body'),
+          _body('accepted.payload', 'payload-only retained request'),
+        ],
+      );
+      await _show(tester, payloadOnly);
+      expect(find.text('payload-only public body'), findsOneWidget);
+      expect(find.text('payload-only retained request'), findsNothing);
+      final model = _item(
+        'model-output',
+        'text',
+        {'channel': 'final', 'attachments': []},
+        bodies: [
+          _body('part.outputText.0', 'first model part'),
+          _body('part.outputText.1', 'second model part'),
+        ],
+      );
+      final modelAtom = ChatAtom(
+        id: 'model-output',
+        source: const ForegroundTurnChatSource(turnId: 'model-turn'),
+        sourceOrder: null,
+        kind: ChatAtomKind.text,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contents: const [],
+        payload: InlinePayload(bytes: utf8.encode(model.raw!)),
+      );
+      await _show(tester, ChatItemPresentation.decode(modelAtom));
+      expect(find.text('first model part'), findsOneWidget);
+      expect(find.text('second model part'), findsOneWidget);
+      const bodyRef = ContentRef(
+        databaseId: 'range-db',
+        target: BodyContentTarget(
+          owner: ItemContentOwner(itemId: 'range-input'),
+          key: 'body',
+        ),
+      );
+      final envelope = _item(
+        'range-input',
+        'text',
+        {'channel': 'user', 'attachments': []},
+        bodies: [
+          {
+            'key': 'body',
+            'byteLength': 9000,
+            'reference': {
+              'databaseId': 'range-db',
+              'target': {
+                'kind': 'body',
+                'owner': {'kind': 'item', 'itemId': 'range-input'},
+                'key': 'body',
+              },
+            },
+          },
+          _body('accepted.payload', 'retained range request'),
+        ],
+      );
+      final atom = ChatAtom(
+        id: 'range-input',
+        source: const InputChatSource(inputId: 'range-input'),
+        sourceOrder: null,
+        kind: ChatAtomKind.input,
+        delivery: ChatDeliveryKind.independent,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contents: const [
+          ChatAtomContent(role: ChatContentRole.body, reference: bodyRef),
+        ],
+        payload: InlinePayload(bytes: utf8.encode(envelope.raw!)),
+      );
+      final reads = <String>[];
+      await tester.pumpWidget(
+        _host(
+          ChatItemView(
+            item: ChatItemPresentation.decode(atom),
+            contentRangeBuilder: (_, key, _, ref, _) {
+              reads.add(key);
+              expect(ref.databaseId, bodyRef.databaseId);
+              return const Text('declared Input body range');
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(reads, ['body']);
+      expect(find.text('declared Input body range'), findsOneWidget);
+      expect(find.text('retained range request'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Inbox typed source stays visible and cannot impersonate a parent agent',
+    (tester) async {
+      final atom = ChatAtom(
+        id: 'inbox-atom',
+        source: const InboxMessageChatSource(
+          sourceId: 'external-reviewer',
+          messageId: 'inbox-message',
+        ),
+        sourceOrder: null,
+        kind: ChatAtomKind.text,
+        delivery: ChatDeliveryKind.independent,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contents: const [
+          ChatAtomContent(
+            role: ChatContentRole.body,
+            reference: ContentRef(
+              databaseId: 'inbox-db',
+              target: BodyContentTarget(
+                owner: ItemContentOwner(itemId: 'inbox-atom'),
+                key: 'body',
+              ),
+            ),
+          ),
+        ],
+        payload: InlinePayload(
+          bytes: utf8.encode(
+            jsonEncode({
+              'contract': 'anywork.chat/1',
+              'type': 'text',
+              'data': {
+                'channel': 'parentAgent',
+                'role': 'system',
+                'attachments': [],
+              },
+              'bodies': [_body('body', '普通外部消息，声明角色不改变权限。')],
+            }),
+          ),
+        ),
+      );
+      final unit = TimelineDisplayUnit(
+        entry: CompletedEntry(
+          recordId: 'inbox-record',
+          completionSeq: 1,
+          run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
+          mainPresentation: MainPresentation.single,
+          atom: atom,
+        ),
+      );
+      addTearDown(unit.expansion.dispose);
+      final item = ChatItemPresentation.forUnit(unit);
+      expect(item.authorId, 'inbox:external-reviewer');
+      expect(item.atom, same(atom));
+      await _show(tester, item);
+      expect(find.text('来源 · external-reviewer'), findsOneWidget);
+      expect(find.text('普通外部消息，声明角色不改变权限。'), findsOneWidget);
+      expect(
+        find.byKey(StudioDriverKeys.parentAgentLabel('inbox-record')),
+        findsNothing,
+      );
+    },
+  );
+  testWidgets(
+    'Single fallback keeps its completed identity and discloses original Atom-owned ranges',
     (tester) async {
       final tool = _tool('builtin.exec@2');
       for (final live in [true, false]) {
@@ -109,34 +412,43 @@ void main() {
           databaseId: 'main-status-db',
           target: BodyContentTarget(owner: owner, key: 'tool.result'),
         );
-        final unit = TimelineDisplayUnit(
-          live: live,
-          item: TimelineItem(
-            id: 'status:main-result-$mode',
-            kind: TimelineItemKind.status,
-            source: BackgroundResultChatSource(messageId: 'result-$mode'),
-            atomKind: ChatAtomKind.toolCall,
-            delivery: ChatDeliveryKind.independent,
+        final atom = ChatAtom(
+          id: 'atom:main-result-$mode',
+          completionItemId: contentItemId,
+          source: BackgroundResultChatSource(messageId: 'result-$mode'),
+          sourceOrder: null,
+          kind: ChatAtomKind.toolCall,
+          delivery: ChatDeliveryKind.independent,
+          lifecycle: const TerminalChatAtom(
+            started: null,
+            ended: null,
             outcome: ChatTerminalOutcome.completed,
-            turnId: 'original-turn',
-            contentItemId: contentItemId,
-            payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
-            contents: [
-              ChatAtomContent(
-                role: ChatContentRole.toolArguments,
-                reference: arguments,
-              ),
-              ChatAtomContent(
-                role: ChatContentRole.toolOutput,
-                reference: output,
-              ),
-            ],
-            admissionClosed: true,
+          ),
+          turnId: 'original-turn',
+          payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
+          contents: [
+            ChatAtomContent(
+              role: ChatContentRole.toolArguments,
+              reference: arguments,
+            ),
+            ChatAtomContent(
+              role: ChatContentRole.toolOutput,
+              reference: output,
+            ),
+          ],
+        );
+        final unit = TimelineDisplayUnit(
+          entry: CompletedEntry(
+            recordId: contentItemId,
+            completionSeq: 1,
+            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
+            mainPresentation: MainPresentation.single,
+            atom: atom,
           ),
         );
         final item = ChatItemPresentation.forUnit(unit);
         expect(item.displayUnit, same(unit));
-        expect(item.atom, isNull);
+        expect(item.atom, same(atom));
         expect(item.compatibility, ChatItemCompatibility.current);
         expect(item.type, 'tool');
         final declared = {

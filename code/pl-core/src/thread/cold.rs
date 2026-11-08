@@ -858,7 +858,7 @@ impl Owner {
         // readiness predicate is recomputed, so a reader that observes the released pause always sees
         // the repaired output too.
         if !repairs.is_empty() {
-            self.apply_output_repairs(repairs);
+            self.apply_output_repairs(repairs)?;
         }
         self.sync_output_obligation_state();
         if unsupported {
@@ -1074,7 +1074,7 @@ impl Owner {
     /// retry before the operation has finished: the reference is then kept pending instead of being
     /// dropped, and the commit that carries the result applies it. A repeated repair of the same call
     /// and reference never duplicates, so a retried obligation is idempotent.
-    fn apply_output_repairs(&mut self, repairs: Vec<OutputRepair>) {
+    fn apply_output_repairs(&mut self, repairs: Vec<OutputRepair>) -> Result<(), ThreadError> {
         for repair in repairs {
             let pending = self
                 .pending_output_repairs
@@ -1085,8 +1085,9 @@ impl Owner {
             }
         }
         if self.flush_pending_output_repairs() {
-            self.publish();
+            self.publish()?;
         }
+        Ok(())
     }
 
     /// Applies every pending repair whose committed result is now resident.

@@ -10938,6 +10938,90 @@ abstract class AppLocalizations {
   /// **'Follow output'**
   String get conversationActivityFollowOutput;
 
+  /// No description provided for @timelineBackgroundResults.
+  ///
+  /// In en, this message translates to:
+  /// **'Background results'**
+  String get timelineBackgroundResults;
+
+  /// No description provided for @planDocumentNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'The document reader is not ready yet.'**
+  String get planDocumentNotReady;
+
+  /// No description provided for @interactionDetailsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Interaction details'**
+  String get interactionDetailsTitle;
+
+  /// No description provided for @interactionDetailsNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next page of interaction details'**
+  String get interactionDetailsNextPage;
+
+  /// No description provided for @interactionDetailsOpenFull.
+  ///
+  /// In en, this message translates to:
+  /// **'View full interaction details'**
+  String get interactionDetailsOpenFull;
+
+  /// No description provided for @interactionDetailsQuestionDetailsReadOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Question details (read-only)'**
+  String get interactionDetailsQuestionDetailsReadOnly;
+
+  /// No description provided for @interactionDetailsApprovalDetailsReadOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Approval details (read-only)'**
+  String get interactionDetailsApprovalDetailsReadOnly;
+
+  /// No description provided for @interactionDetailsSecretQuestionHidden.
+  ///
+  /// In en, this message translates to:
+  /// **'Sensitive question content is hidden.'**
+  String get interactionDetailsSecretQuestionHidden;
+
+  /// No description provided for @interactionDetailsBudgetExceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'The details exceed the read budget.'**
+  String get interactionDetailsBudgetExceeded;
+
+  /// No description provided for @interactionDetailsInvalidLength.
+  ///
+  /// In en, this message translates to:
+  /// **'The details resource has an invalid length.'**
+  String get interactionDetailsInvalidLength;
+
+  /// No description provided for @interactionDetailsDiscontinuous.
+  ///
+  /// In en, this message translates to:
+  /// **'The details resource windows are not continuous.'**
+  String get interactionDetailsDiscontinuous;
+
+  /// No description provided for @interactionDetailsNoProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading the details resource made no progress.'**
+  String get interactionDetailsNoProgress;
+
+  /// No description provided for @interactionDetailsReadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to read the details resource.'**
+  String get interactionDetailsReadFailed;
+
+  /// No description provided for @interactionDetailsInvalidFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'The interaction details have an invalid format.'**
+  String get interactionDetailsInvalidFormat;
+
   /// No description provided for @timelineGroupWorking.
   ///
   /// In en, this message translates to:

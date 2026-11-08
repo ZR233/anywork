@@ -82,7 +82,7 @@ final class ConversationActivityViewModelProvider
 }
 
 String _$conversationActivityViewModelHash() =>
-    r'77200be47cf14c1786d7b025da4f57366e0924b3';
+    r'c5809596a5091e892454611ac035ab82f0e36a20';
 
 /// Observes only the activity component's current owner. Visibility and the
 /// conversation reader remain owned by the committed page selection.

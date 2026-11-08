@@ -6,7 +6,7 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatAtom, ChatBatch, ChatEntry, ChatPlacement, ChatScope, ContentRange, ContentRef,
+    ChatAtom, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentRange, ContentRef,
     PayloadData, ReadDemand, SkillActivationCause, ThreadSkillItem, ThreadWorkspaceMode, TurnState,
     studio::StopThreadRequest,
 };
@@ -33,7 +33,7 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
         loop {
             match feed.recv().await?.context("feed ended before Chat")? {
                 ConversationEvent::Chat { batch } => return Ok(*batch),
-                ConversationEvent::State { .. } => {}
+                ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
             }
         }
     })
@@ -41,14 +41,8 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     .context("public Chat did not arrive")?
 }
 
-fn atoms(entries: Vec<ChatEntry>) -> Vec<ChatAtom> {
-    entries
-        .into_iter()
-        .filter_map(|entry| match entry {
-            ChatEntry::Atom(atom) if atom.completion_seq.is_some() => Some(*atom),
-            _ => None,
-        })
-        .collect()
+fn atoms(entries: Vec<CompletedEntry>) -> Vec<ChatAtom> {
+    entries.into_iter().map(|entry| entry.atom).collect()
 }
 
 async fn frozen_payload(reader: &ConversationReader, message: &ChatAtom) -> Result<Value> {
@@ -104,7 +98,7 @@ async fn read_sealed(
 
 async fn original_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String, Value>> {
     let first = chat(feed).await?;
-    ensure!(first.placement == ChatPlacement::Set && first.current.is_none());
+    ensure!(first.placement == ChatPlacement::Set && first.from_seq.is_none());
     let mut messages = atoms(first.entries);
     let mut before = first.before;
     for _ in 0..8 {
@@ -120,7 +114,7 @@ async fn original_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String
             return Ok(result);
         };
         let page = feed.reader().load_older(&cursor, demand()).await?;
-        ensure!(page.placement == ChatPlacement::Prepend && page.current.is_none());
+        ensure!(page.placement == ChatPlacement::Prepend && page.from_seq.is_none());
         ensure!(
             page.before.as_ref() != Some(&cursor),
             "cursor did not advance"
@@ -141,7 +135,7 @@ async fn live_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String, Va
         }) || !members.values().any(|payload| payload["type"] == "skill")
         {
             let append = chat(feed).await?;
-            ensure!(append.placement == ChatPlacement::Append && append.current.is_none());
+            ensure!(append.placement == ChatPlacement::Append && append.from_seq.is_some());
             for message in atoms(append.entries) {
                 let payload = frozen_payload(feed.reader(), &message).await?;
                 ensure!(
@@ -206,22 +200,27 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
         let runtime = snapshot.runtime.as_ref().context("runtime projection")?;
         let execution_id = runtime.execution.as_ref().context("original execution")?.id().to_owned();
         ensure!(runtime.active_skills.iter().any(|name| name == SKILL));
-        // The public current head supplies the original typed parent. Consumers neither encode
-        // raw Turn ids nor wait for a terminal Main Turn item to discover its completed members.
+        // The State snapshot supplies the actual Turn independently of Activity
+        // and completion history. Successful Turn receipts are hidden from Main.
         let mut main = env.runtime.open_conversation_feed(thread_id, ChatScope::Main, demand())
             .await.context("open current Turn's public Main head")?;
         let parent_id = tokio::time::timeout(DEADLINE, async {
-            let mut first = true;
             loop {
-                let batch = chat(&mut main).await?;
-                ensure!(batch.placement == if first { ChatPlacement::Set } else { ChatPlacement::Append });
-                first = false;
-                if let Some(head) = batch.current.and_then(|current| current.active_turn)
-                    && head.id == turn_id
+                let event = main.recv().await?.context("Main ended before State")?;
+                if let ConversationEvent::State { update } = event
+                    && let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                        completed_history_version,
+                        snapshot,
+                    } = *update
                 {
-                    let parent = pl_core::chat::ChatKey::new("turn", &head.id)?.as_str().to_owned();
-                    ensure!(parent == pl_core::chat::ChatKey::new("turn", &turn_id)?.as_str());
-                    return Ok::<_, anyhow::Error>(parent);
+                    ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION);
+                    if let Some(head) = snapshot.active_turn
+                        && head.id == turn_id
+                    {
+                        let parent = pl_core::chat::ChatKey::new("turn", &head.id)?
+                            .as_str().to_owned();
+                        return Ok::<_, anyhow::Error>(parent);
+                    }
                 }
             }
         }).await.context("public active Turn head did not arrive");

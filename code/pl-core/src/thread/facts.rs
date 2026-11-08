@@ -63,7 +63,7 @@ impl Owner {
             return Err(ThreadError::PendingTools);
         }
         let context = stage_facts(&mut self.state, facts)?;
-        self.publish();
+        self.publish()?;
         Ok(context)
     }
 }

@@ -19,6 +19,7 @@ ThreadSessionState applyThreadSnapshotState(
     activeTurn: snapshot.activeTurn,
     interactions: snapshot.interactions,
     runtime: snapshot.runtime,
+    businessRefs: snapshot.businessRefs,
     modelRoute: snapshot.modelRoute,
     todo: snapshot.todo,
     activity: snapshot.activity,
@@ -75,6 +76,10 @@ ThreadSessionState applyThreadNotificationState(
     ThreadStorageUpdate(:final storage) => workspace.copyWith(
       revision: frame.revision,
       storage: storage,
+    ),
+    ThreadBusinessRefsUpdate(:final references) => workspace.copyWith(
+      revision: frame.revision,
+      businessRefs: references,
     ),
   };
   return current.copyWith(

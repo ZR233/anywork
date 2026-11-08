@@ -68,12 +68,9 @@ final class ConversationCreditObservation {
     };
     switch (event) {
       case ConversationChatEvent(:final batch):
-        final items = batch.items;
-        if (items.length != batch.entries.length) {
-          throw StateError('Credit Main delivered a non-item entry');
-        }
-        final ids = [for (final item in items) item.id];
-        final contentIds = [for (final item in items) ?item.contentItemId];
+        final items = batch.entries;
+        final ids = [for (final item in items) item.recordId];
+        final contentIds = [for (final item in items) item.recordId];
         if (sequence == 1) {
           if (batch.placement != ChatPlacement.set) {
             throw StateError('Credit first frame is not the original Set');
@@ -93,9 +90,22 @@ final class ConversationCreditObservation {
         if (sequence == 1) {
           throw StateError('Credit first frame is state rather than Set');
         }
+        if (frame is ThreadSnapshotFrame &&
+            (frame.schemaVersion != 17 || frame.completedHistoryVersion != 1)) {
+          throw StateError('Credit State lacks the completed handshake');
+        }
         observation.addAll({
           'event': 'state',
           'frameKind': frame.runtimeType.toString(),
+        });
+      case ConversationActivityEvent(:final snapshot):
+        if (sequence == 1) {
+          throw StateError('Credit first frame is Activity rather than Set');
+        }
+        observation.addAll({
+          'event': 'activity',
+          'revision': snapshot.revision,
+          'completedThrough': snapshot.completedThrough,
         });
       default:
         throw StateError('Credit observation received a nonordinary frame');
@@ -146,16 +156,17 @@ final class ConversationCreditObservation {
     await _rejectFuture(2);
   }
 
-  Future<void> queryCompletedText(TimelineItem item) async {
-    final itemId = item.contentItemId;
+  Future<void> queryCompletedText(CompletedEntry item) async {
+    final itemId = item.recordId;
+    final terminal = item.atom.lifecycle;
     if (_frames.length != 1 ||
         _acknowledged != 0 ||
-        item.kind != TimelineItemKind.text ||
-        item.atomKind != ChatAtomKind.text ||
-        item.position == null ||
-        item.outcome != ChatTerminalOutcome.completed ||
-        itemId == null ||
-        _setItemIds.contains(item.id) ||
+        item.mainPresentation != MainPresentation.single ||
+        item.atom.kind != ChatAtomKind.text ||
+        item.completionSeq <= 0 ||
+        terminal is! TerminalChatAtom ||
+        terminal.outcome != ChatTerminalOutcome.completed ||
+        _setItemIds.contains(item.recordId) ||
         _setContentItemIds.contains(itemId)) {
       throw StateError('Credit query requires a new, truly completed text');
     }
@@ -196,10 +207,10 @@ final class ConversationCreditObservation {
     }
     final query = <String, Object?>{
       'operation': 'query-completed-text',
-      'timelineItemId': item.id,
+      'recordId': item.recordId,
       'contentItemId': itemId,
-      'itemPosition': item.position,
-      'outcome': item.outcome!.name,
+      'completionSeq': item.completionSeq,
+      'outcome': terminal.outcome.name,
       'absentFromHeldSet': true,
       'readerSource': 'original-held-feed',
       'databaseId': body.reference.databaseId,

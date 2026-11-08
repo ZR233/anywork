@@ -722,28 +722,33 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
 }
 
 #[tokio::test]
-async fn a07_keeps_reasoning_active_until_after_readable_text_and_text_terminal() {
+async fn a07_completes_b_then_readable_text_then_the_earlier_a() {
     let control = control(OVERLAP_STAGES);
     let step = control.overlap_step(0);
-    let observed = observe(control, step, OVERLAP_PROMPT, &[3, 5, 6, 7, 8]).await;
-    assert_eq!(observed.len(), 9);
+    let observed = observe(control, step, OVERLAP_PROMPT, &[3, 6, 8, 9, 10, 11]).await;
+    assert_eq!(observed.len(), 12);
     assert_eq!(observed[1]["item"]["type"], "reasoning");
     assert_eq!(observed[3]["type"], "response.output_item.added");
-    assert_eq!(observed[3]["item"]["id"], "concept-a07-text");
-    assert_eq!(observed[4]["item_id"], "concept-a07-text");
-    assert_eq!(observed[5]["item_id"], "concept-a07-text");
+    assert_eq!(observed[3]["item"]["id"], "concept-a07-reason-b");
+    assert_eq!(
+        observed[5],
+        reasoning_done("concept-a07-reason-b", 1, OVERLAP_EARLY_REASONING)
+    );
+    assert_eq!(observed[6]["item"]["id"], "concept-a07-text");
+    assert_eq!(observed[7]["item_id"], "concept-a07-text");
+    assert_eq!(observed[8]["item_id"], "concept-a07-text");
     assert_eq!(
         format!(
             "{}{}",
-            observed[4]["delta"].as_str().unwrap(),
-            observed[5]["delta"].as_str().unwrap()
+            observed[7]["delta"].as_str().unwrap(),
+            observed[8]["delta"].as_str().unwrap()
         ),
         OVERLAP_TEXT
     );
-    assert_eq!(observed[6], text_done("concept-a07-text", 1, OVERLAP_TEXT));
-    assert_eq!(observed[7]["type"], "response.output_item.done");
-    assert_eq!(observed[7]["item"]["id"], "concept-a07-reason");
-    assert_eq!(observed[8]["type"], "response.completed");
+    assert_eq!(observed[9], text_done("concept-a07-text", 2, OVERLAP_TEXT));
+    assert_eq!(observed[10]["type"], "response.output_item.done");
+    assert_eq!(observed[10]["item"]["id"], "concept-a07-reason");
+    assert_eq!(observed[11]["type"], "response.completed");
 }
 
 #[tokio::test]

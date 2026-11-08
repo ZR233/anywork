@@ -120,3 +120,33 @@ impl From<pl_studio_runtime::StudioUpdateError> for BridgeError {
         Self::from(anyhow::Error::new(error))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_version_mismatch_reason_survives_bridge_conversion() {
+        let error = pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Protocol,
+            "unsupported completed-history version",
+            false,
+        )
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+            serde_json::Value::Null,
+        );
+        let bridge = BridgeError::from(error);
+        let details: serde_json::Value = serde_json::from_str(
+            bridge
+                .details_json
+                .as_deref()
+                .expect("reason is carried in details"),
+        )
+        .expect("details JSON remains valid");
+        assert_eq!(
+            details["reason"],
+            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch.label()
+        );
+    }
+}

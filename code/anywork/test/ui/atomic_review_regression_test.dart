@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_group_members_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -11,34 +11,42 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_chil
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart'
-    show ChatOperation, InMemoryChatController;
+import 'package:flutter_chat_core/flutter_chat_core.dart' show ChatOperation;
 
-import '../support/chat_fixtures.dart';
+import '../support/completion_fixtures.dart';
+
+import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
+
 import '../support/pump_client_future.dart';
+
+String _workTitle(WidgetTester tester, int count) {
+  final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+  return '${l10n.timelineGroupRecord} · ${l10n.timelineGroupMemberCount(count)}';
+}
 
 const _bodyRef = ContentRef(
   databaseId: 'database',
   target: BodyContentTarget(
-    owner: CurrentContentOwner(domain: 'reasoning', id: 'R', revision: 1),
+    owner: ItemContentOwner(itemId: 'R'),
     key: 'body',
   ),
 );
 ChatAtom _reasoning({PayloadData? payload}) => ChatAtom(
   id: 'R',
-  source: const ForegroundTurnChatSource(turnId: 'T'),
+  source: const ForegroundTurnChatSource(turnId: 'turn'),
   sourceOrder: 1,
   kind: ChatAtomKind.reasoning,
   delivery: ChatDeliveryKind.foreground,
-  lifecycle: const ActiveChatAtom(
+  completionItemId: 'R',
+  lifecycle: const TerminalChatAtom(
     started: null,
-    status: ChatActiveStatus.running,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
   ),
   contents: const [
     ChatAtomContent(role: ChatContentRole.body, reference: _bodyRef),
@@ -54,9 +62,8 @@ Widget _host(TimelineDisplayUnit unit) => MaterialApp(
     body: TimelineDisplayUnitView(
       key: ValueKey(unit.id),
       unit: unit,
-      executionPresent: false,
       childBuilder: (_) =>
-          TimelineGroupMembersConnector(unit: unit, threadId: 'thread'),
+          CompletionRunConnector(unit: unit, threadId: 'thread'),
     ),
   ),
 );
@@ -68,200 +75,58 @@ Future<void> _frames(WidgetTester tester) async {
 
 TimelineDisplayUnit _unit(
   String id,
-  Future<ConversationContent> Function(TimelineMembersRef, ReadDemand) open,
+  Future<ConversationContent> Function(CompletionRunRef, ReadDemand) open,
 ) {
-  final unit = TimelineDisplayUnit(item: workItem(id, count: 82), live: false);
+  final start = id == 'B' ? 1000 : 1;
+  final entry = completionEntry(id, start + 81, start: start, ordinal: 82);
+  final unit = TimelineDisplayUnit(
+    entry: entry,
+    run: CompletionRunPresentation.fromEntry(entry),
+  );
   unit.expansion.current = unit;
-  unit.expansion.openMembers = open;
+  unit.expansion.openRun = open;
   return unit;
 }
 
 void main() {
-  testWidgets(
-    'same item and projection version with a new opaque generation revoke the original member scope before layout',
-    (tester) async {
-      final opened = <_Content>[];
-      final references = <TimelineMembersRef>[];
-      TimelineGroupDisplay? display;
-      final controller = InMemoryChatController();
-      final mapper = TimelineMessageController(
-        controller,
-        generation: 1,
-        onUnitCreated: (unit) {
-          unit.expansion.expanded = true;
-          unit.expansion.openMembers = (reference, demand) async {
-            references.add(reference);
-            final content = _Content();
-            opened.add(content);
-            return content;
-          };
-          unit.expansion.registerDisplay = (value) {
-            display = value;
-            return () {
-              if (identical(display, value)) display = null;
-            };
-          };
-        },
-      );
-      addTearDown(() {
-        mapper.dispose();
-        controller.dispose();
-      });
-      CurrentProjection current(String generation) => CurrentProjection(
-        sourceEffectSeq: 1,
-        logicalStatus: ThreadStatusView.running,
-        executionPresent: true,
-        sources: const [],
-        atoms: const [],
-        items: [
-          workItem(
-            'same-group',
-            closed: false,
-            active: 1,
-            count: 82,
-            projectionGeneration: generation,
-          ),
-        ],
-        previews: const [],
-        collections: const [],
-      );
-      await mapper.applyBatch(
-        ChatBatch(
-          placement: ChatPlacement.set,
-          entries: const [],
-          current: current('opaque/rebuild:甲'),
-        ),
-      );
-      await tester.pumpWidget(
-        ValueListenableBuilder<List<TimelineDisplayUnit>>(
-          valueListenable: mapper.live,
-          builder: (_, units, _) => _host(units.single),
-        ),
-      );
-      await _frames(tester);
-      final original = opened.single;
-      await original.consumer!.applyBatch(
-        ChatBatch(
-          placement: ChatPlacement.set,
-          entries: [ChatAtomEntry(_reasoning())],
-        ),
-      );
-      await tester.pump();
-      await _frames(tester);
-      await tester.tap(
-        find.descendant(
-          of: find.byType(TimelineReasoningView),
-          matching: find.byType(TimelineActivityRow),
-        ),
-      );
-      await tester.pump();
-      final oldDisplay = display!;
-      final oldScope = original.scopes.single;
-      original.closeGate = Completer<void>();
-      await mapper.applyBatch(
-        ChatBatch(
-          placement: ChatPlacement.append,
-          entries: const [],
-          current: current('opaque/rebuild:乙'),
-        ),
-      );
-      expect(oldDisplay.isCurrent, isFalse);
-      expect(oldScope.isActive, isFalse);
-      expect(mapper.live.value.single.expansion.expanded, isTrue);
-      await _frames(tester);
-      expect(opened, hasLength(2));
-      expect(references.map((reference) => reference.projectionVersion), [
-        1,
-        1,
-      ]);
-      expect(references.map((reference) => reference.projectionGeneration), [
-        'opaque/rebuild:甲',
-        'opaque/rebuild:乙',
-      ]);
-      expect(original.closeCalls, 1);
-      expect(original.closed, isFalse);
-      await opened.last.consumer!.applyBatch(
-        ChatBatch(
-          placement: ChatPlacement.set,
-          entries: [ChatAtomEntry(_reasoning())],
-        ),
-      );
-      await tester.pump();
-      await _frames(tester);
-      await tester.tap(
-        find.descendant(
-          of: find.byType(TimelineReasoningView),
-          matching: find.byType(TimelineActivityRow),
-        ),
-      );
-      await tester.pump();
-      oldScope.watch.add(
-        ContentWindow(
-          bytes: utf8.encode('迟到旧代内容'),
-          offset: 0,
-          generation: 'old-body',
-          availableThrough: 18,
-          sealed: true,
-        ),
-      );
-      opened.last.scopes.single.watch.add(
-        ContentWindow(
-          bytes: utf8.encode('新代内容'),
-          offset: 0,
-          generation: 'new-body',
-          availableThrough: 12,
-          sealed: true,
-        ),
-      );
-      await tester.pump();
-      expect(find.text('迟到旧代内容'), findsNothing);
-      expect(find.text('新代内容'), findsOneWidget);
-      expect(display!.membersRef!.projectionGeneration, 'opaque/rebuild:乙');
-      original.closeGate!.complete();
-      await _frames(tester);
-      expect(original.closed, isTrue);
-      await tester.pumpWidget(const SizedBox());
-      await _frames(tester);
-    },
-  );
-
   testWidgets(
     'opening member failure stays local and explicit retry opens only the same typed scope',
     (tester) async {
       var opens = 0;
       final content = _Content();
       final unit = _unit('retry', (reference, demand) async {
-        expect(reference.itemId, 'retry');
+        expect(reference.startSeq, 1);
         if (opens++ == 0) throw StateError('成员读取失败');
         return content;
       })..expansion.expanded = true;
       await tester.pumpWidget(_host(unit));
       await _frames(tester);
       expect(find.textContaining('成员读取失败'), findsOneWidget);
-      expect(find.text('82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('timeline-members-retry')));
       await _frames(tester);
       expect(opens, 2);
       await content.consumer!.applyBatch(
         ChatBatch(
+          throughSeq: 82,
           placement: ChatPlacement.set,
-          entries: [ChatAtomEntry(chatAtomMessage('retried', body: '重试后的成员'))],
+          entries: [_completed(chatAtomMessage('retried', body: '重试后的成员'))],
         ),
       );
       await tester.pump();
       expect(find.text('重试后的成员'), findsOneWidget);
       expect(find.textContaining('成员读取失败'), findsNothing);
-      expect(find.text('82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       await _frames(tester);
     },
   );
 
   testWidgets(
-    'GroupMembers and reasoning bodies are lazy, folding revokes and joins original resources',
+    'Run and reasoning bodies are lazy, folding revokes and joins original resources',
     (tester) async {
       final opened = <_Content>[];
-      final references = <TimelineMembersRef>[];
+      final references = <CompletionRunRef>[];
       TimelineGroupDisplay? display;
       final unit = _unit('group', (reference, demand) async {
         references.add(reference);
@@ -276,14 +141,17 @@ void main() {
       };
       await tester.pumpWidget(_host(unit));
       expect(opened, isEmpty);
-      await tester.tap(find.byKey(const ValueKey('source-unit-header:group')));
+      await tester.tap(
+        find.byKey(ValueKey('completion-run-header:${unit.id}')),
+      );
       await _frames(tester);
       final old = opened.single;
-      expect(references.single, unit.item.members);
+      expect(references.single, unit.run!.reference);
       await old.consumer!.applyBatch(
         ChatBatch(
+          throughSeq: 82,
           placement: ChatPlacement.set,
-          entries: [ChatAtomEntry(_reasoning())],
+          entries: [_completed(_reasoning())],
           before: 'members-next',
         ),
       );
@@ -308,18 +176,22 @@ void main() {
       );
       await tester.pump();
       expect(find.text('展开直接可读'), findsOneWidget);
-      expect(find.text('82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       expect(display!.atoms.single.id, 'R');
       expect(display!.windows.single.window!.bytes, utf8.encode('展开直接可读'));
       old.closeGate = Completer<void>();
-      await tester.tap(find.byKey(const ValueKey('source-unit-header:group')));
+      await tester.tap(
+        find.byKey(ValueKey('completion-run-header:${unit.id}')),
+      );
       expect(display!.isCurrent, isFalse);
       expect(display!.windows, isEmpty);
       expect(old.scopes.single.isActive, isFalse);
       await _frames(tester);
       expect(old.closeCalls, 1);
       expect(old.closed, isFalse);
-      await tester.tap(find.byKey(const ValueKey('source-unit-header:group')));
+      await tester.tap(
+        find.byKey(ValueKey('completion-run-header:${unit.id}')),
+      );
       await _frames(tester);
       expect(opened, hasLength(2));
       old.closeGate!.complete();
@@ -332,11 +204,11 @@ void main() {
   );
 
   testWidgets(
-    'GroupMembers reports unadmitted Set as loading without replacing the original display',
+    'Run reports unadmitted Set as loading without replacing the original display',
     (tester) async {
       final content = _Content();
       final state = content.state as LatestValue<ChatUiState<bool>>;
-      final references = <TimelineMembersRef>[];
+      final references = <CompletionRunRef>[];
       TimelineGroupDisplay? display;
       var registrations = 0;
       final unit = _unit('set-admission', (reference, _) async {
@@ -353,9 +225,7 @@ void main() {
       try {
         await tester.pumpWidget(_host(unit));
         expect(references, isEmpty);
-        final header = find.byKey(
-          const ValueKey('source-unit-header:set-admission'),
-        );
+        final header = find.byKey(ValueKey('completion-run-header:${unit.id}'));
         await tester.tap(header);
         await _frames(tester);
         final consumer = content.consumer!;
@@ -364,11 +234,12 @@ void main() {
           tester,
           consumer.applyBatch(
             ChatBatch(
+              throughSeq: 82,
               placement: ChatPlacement.set,
-              entries: [ChatAtomEntry(prefix)],
+              entries: [_completed(prefix)],
             ),
           ),
-          'admit initial GroupMembers prefix',
+          'admit initial Run prefix',
         );
         await tester.pump();
         await _frames(tester);
@@ -398,7 +269,7 @@ void main() {
         final reference = references.single;
         final owner = unit.expansion;
         final bodyGeneration = owner.bodyGeneration;
-        final source = unit.item.source;
+        final source = unit.entry.atom.source;
         final prefixReference = prefix.contents.single.reference;
         final child = tester.state(
           find.byType(TimelineChildrenConnector),
@@ -434,8 +305,9 @@ void main() {
         var completed = false;
         final admission = consumer.applyBatch(
           ChatBatch(
+            throughSeq: 82,
             placement: ChatPlacement.set,
-            entries: [ChatAtomEntry(prefix), ChatAtomEntry(added)],
+            entries: [_completed(prefix), _completed(added, seq: 2)],
           ),
         );
         final completion = admission.then<void>((_) {
@@ -446,11 +318,11 @@ void main() {
         expect(completed, isFalse);
         expect(display, same(original));
         expect(original.isCurrent && original.expanded, isTrue);
-        expect(original.membersRef, same(reference));
+        expect(original.runReference, same(reference));
         expect(unit.expansion, same(owner));
         expect(owner.current, same(unit));
         expect(owner.bodyGeneration, same(bodyGeneration));
-        expect(unit.item.source, source);
+        expect(unit.entry.atom.source, source);
         expect(content.consumer, same(consumer));
         expect(child.ready || child.isCurrent, isFalse);
         expect(child.generation, greaterThan(generation));
@@ -462,7 +334,7 @@ void main() {
           same(prefix),
         );
         debugPrintSynchronously(
-          'GroupMembers pending Set: ${jsonEncode({'completed': completed, 'childReady': child.ready, 'controllerIds': controller.messages.map((message) => message.id).toList(), 'borrowedIds': original.atoms.map((atom) => atom.id).toList(), 'loading': loadingDuringSet})}',
+          'Run pending Set: ${jsonEncode({'completed': completed, 'childReady': child.ready, 'controllerIds': controller.messages.map((message) => message.id).toList(), 'borrowedIds': original.atoms.map((atom) => atom.id).toList(), 'loading': loadingDuringSet})}',
         );
         await pumpClientFuture(tester, admission, 'admit original member Set');
         await pumpClientFuture(
@@ -477,7 +349,7 @@ void main() {
         expect(child.ready && child.isCurrent, isTrue);
         expect(original.loading, isFalse);
         expect(original.error, isNull);
-        expect(original.membersRef, same(reference));
+        expect(original.runReference, same(reference));
         expect(owner.bodyGeneration, same(bodyGeneration));
         expect(original.atoms, orderedEquals([prefix, added]));
         expect(
@@ -505,10 +377,10 @@ void main() {
         expect(find.text('original member prefix'), findsOneWidget);
         expect(find.text('new member'), findsOneWidget);
         expect(tester.getSize(find.text('new member')).isEmpty, isFalse);
-        expect(references, [unit.item.members]);
+        expect(references, [unit.run!.reference]);
         expect(registrations, 1);
         debugPrintSynchronously(
-          'GroupMembers admitted Set: ${jsonEncode({'operations': operations, 'memberIds': original.atoms.map((atom) => atom.id).toList(), 'controllerIds': controller.messages.map((message) => message.id).toList()})}',
+          'Run admitted Set: ${jsonEncode({'operations': operations, 'memberIds': original.atoms.map((atom) => atom.id).toList(), 'controllerIds': controller.messages.map((message) => message.id).toList()})}',
         );
         content.closeGate = Completer<void>();
         await tester.tap(header);
@@ -526,7 +398,7 @@ void main() {
         expect(display, isNull);
         expect(references, hasLength(1));
         debugPrintSynchronously(
-          'GroupMembers original resources closed: ${jsonEncode({'opens': references.length, 'closes': content.closeCalls, 'closed': content.closed})}',
+          'Run original resources closed: ${jsonEncode({'opens': references.length, 'closes': content.closeCalls, 'closed': content.closed})}',
         );
         expect(tester.takeException(), isNull);
       } finally {
@@ -577,8 +449,9 @@ void main() {
         await _frames(tester);
         await current.consumer!.applyBatch(
           ChatBatch(
+            throughSeq: 82,
             placement: ChatPlacement.set,
-            entries: [ChatAtomEntry(chatAtomMessage('B-body', body: '当前组'))],
+            entries: [_completed(chatAtomMessage('B-body', body: '当前组'))],
           ),
         );
         await tester.pump();
@@ -618,9 +491,10 @@ void main() {
         unit.expansion.expanded = true;
         Future<void> deliver(_Content content) => content.consumer!.applyBatch(
           ChatBatch(
+            throughSeq: 82,
             placement: ChatPlacement.set,
             entries: [
-              ChatAtomEntry(
+              _completed(
                 _reasoning(
                   payload: const DeferredPayload(
                     reference: ContentRef(
@@ -643,11 +517,11 @@ void main() {
         await tester.pump();
         final old = opened.single.scopes.single;
         await tester.tap(
-          find.byKey(const ValueKey('source-unit-header:deferred')),
+          find.byKey(ValueKey('completion-run-header:${unit.id}')),
         );
         await _frames(tester);
         await tester.tap(
-          find.byKey(const ValueKey('source-unit-header:deferred')),
+          find.byKey(ValueKey('completion-run-header:${unit.id}')),
         );
         await _frames(tester);
         await deliver(opened.last);
@@ -772,3 +646,31 @@ final class _Scope extends Fake implements ConversationQueryScope {
     return CloseReport();
   }
 }
+
+CompletedEntry _completed(ChatAtom atom, {int seq = 1}) => CompletedEntry(
+  recordId: atom.completionItemId ?? atom.id,
+  completionSeq: seq,
+  run: CompletionRunPosition(startSeq: 1, ordinal: seq),
+  mainPresentation: MainPresentation.foregroundWork,
+  atom: atom,
+);
+ChatAtom chatAtomMessage(String id, {String body = '成员正文'}) => ChatAtom(
+  id: id,
+  completionItemId: id,
+  source: const ForegroundTurnChatSource(turnId: 'turn'),
+  sourceOrder: null,
+  kind: ChatAtomKind.text,
+  delivery: ChatDeliveryKind.foreground,
+  lifecycle: const TerminalChatAtom(
+    started: null,
+    ended: null,
+    outcome: ChatTerminalOutcome.completed,
+  ),
+  contents: const [],
+  payload: completionEntry(
+    id,
+    1,
+    presentation: MainPresentation.single,
+    text: body,
+  ).atom.payload,
+);

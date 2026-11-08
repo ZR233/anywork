@@ -34,6 +34,7 @@ impl MigratorTraitSelf for Published {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)
@@ -227,11 +228,15 @@ async fn background_results_migrate_from_636_and_interrupted_13_14_without_losin
             assert_eq!(handoff.delivery, ChatDeliveryKind::BackgroundHandoff);
         }
         assert_eq!(originals(&db, format >= 13).await?, before);
-        let rows = db.query_one_raw(statement(
-            "SELECT COUNT(*) AS n FROM timeline_items WHERE kind='workGroup' AND json_extract(metadata,'$.source.kind')='backgroundResult'",
-            vec![],
-        )).await?.unwrap();
-        assert_eq!(rows.try_get::<i64>("", "n")?, 1);
+        let run = db.query_one_raw(statement(
+            "SELECT seq,display_run_start,display_run_ordinal FROM conversation_items WHERE item_id=?",
+            vec![order::tool_id(CALL).into()],
+        )).await?.context("background completion")?;
+        assert_eq!(
+            run.try_get::<i64>("", "display_run_start")?,
+            run.try_get::<i64>("", "seq")?
+        );
+        assert_eq!(run.try_get::<i64>("", "display_run_ordinal")?, 1);
         db.close().await?;
     }
     Ok(())
@@ -251,6 +256,18 @@ async fn snapshot(db: &impl ConnectionTrait) -> Result<Vec<String>> {
     ] {
         let sql = if completed {
             sql.replace("kind,location,position", "kind,'history',position")
+                .replace(
+                    "FROM timeline_items ",
+                    "FROM completion_boundary_archive_timeline_items ",
+                )
+                .replace(
+                    "FROM timeline_item_members ",
+                    "FROM completion_boundary_archive_timeline_members ",
+                )
+                .replace(
+                    "FROM timeline_projection_state",
+                    "FROM completion_boundary_archive_projection_state",
+                )
                 .replace(
                     "FROM conversation_view_state",
                     "FROM completion_boundary_archive_view_state",
@@ -371,7 +388,7 @@ async fn existing_15_correction_preserves_live_facts_rolls_back_and_reopens_with
     db.execute_unprepared(
         "CREATE TRIGGER reject_repeat_metadata BEFORE UPDATE ON conversation_items BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
          CREATE TRIGGER reject_repeat_facts BEFORE UPDATE ON conversation_atom_facts BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
-         CREATE TRIGGER reject_repeat_rebuild BEFORE DELETE ON timeline_items BEGIN SELECT RAISE(ABORT,'repeat rebuild'); END;
+         CREATE TRIGGER reject_repeat_rebuild BEFORE DELETE ON completion_boundary_archive_timeline_items BEGIN SELECT RAISE(ABORT,'repeat rebuild'); END;
          CREATE TRIGGER reject_repeat_current BEFORE UPDATE ON completion_boundary_archive_view_state BEGIN SELECT RAISE(ABORT,'repeat current'); END;"
     ).await?;
     db.close().await?;

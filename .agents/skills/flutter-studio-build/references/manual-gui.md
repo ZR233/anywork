@@ -8,6 +8,9 @@
 - 从仓库根目录运行 `cargo xtask manual-gui --preset gui --inspect`，由 harness 创建隔离的 `ANYWORK_HOME`、
   本地模拟供应商和真实 bridge GUI，不修改用户配置或凭据。不要用 demo 证明持久化行为。
   xtask 仅按需编译并调用独立 `pl-studio-acceptance`，不链接该工具的重依赖。
+- Plan 的保存重开观察使用 `cargo xtask manual-gui --preset plan-recovery --inspect`，
+  复用已有三生命周期场景及隔离数据；每次重开重新连接官方 MCP，按实际 widget tree 操作。
+  该选项只增加 debug Driver 入口，原捕获、状态断言和退出清理仍须完成；不用于其他专用 preset。
 - 先明确要验证的交互、状态变化、异常路径及证据；通过 `code/pl-studio-acceptance/src/`
   核实当前 CLI 与 `--preset` 参数，不为绕过终端检查选择无关场景。
 - `cargo xtask verify-gui` 负责生成一致性、格式及静态分析，不包含 GUI 人工结论。

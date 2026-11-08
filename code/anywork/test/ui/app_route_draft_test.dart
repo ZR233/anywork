@@ -255,6 +255,13 @@ void main() {
             ),
           );
           expect(completed.state, isA<CompletedStudioTurnState>());
+          transport.seedTimelineItems('thread-main', [
+            chatMessage(
+              'settings-completed-body',
+              body: '隐藏期间完成的真实正文',
+              completionSeq: 100,
+            ),
+          ]);
           expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
           expect(connection.deliveredFrames, hiddenFrames);
@@ -314,8 +321,9 @@ void main() {
             )
             .where(
               (item) =>
-                  item.type == 'turn' &&
-                  (item.data['outcome'] as Map)['kind'] == 'completed',
+                  item.id == 'settings-completed-body' &&
+                  item.atom?.lifecycle is TerminalChatAtom &&
+                  item.displayUnit?.entry.completionSeq == 100,
             ),
         isNotEmpty,
         reason: '新内容基线包含隐藏期间真正提交的终态事实',
@@ -762,6 +770,13 @@ final class _RouteReader implements ConversationReader {
   final _RouteTurnTransport transport;
   @override
   String get threadId => inner.threadId;
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() => inner.readBusinessRefs();
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) => inner.readCompleted(recordId: recordId, demand: demand);
   @override
   Future<ChatBatch> loadOlder({
     required String before,

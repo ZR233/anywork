@@ -292,12 +292,11 @@ TimelineDisplayFacts? _timelineFacts(
         {
           'unitId': display.unitId,
           'expanded': display.expanded,
-          'membersRef': switch (display.membersRef) {
+          'runReference': switch (display.runReference) {
             final reference? => {
               'databaseId': reference.databaseId,
-              'projectionVersion': reference.projectionVersion,
-              'projectionGeneration': reference.projectionGeneration,
-              'itemId': reference.itemId,
+              'indexVersion': reference.indexVersion,
+              'startSeq': reference.startSeq,
             },
             null => null,
           },
@@ -437,22 +436,22 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-  if (unit?.item.kind == TimelineItemKind.workGroup) {
-    final projected = unit!.item;
+  if (unit?.run != null) {
+    final projected = unit!.entry;
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: projected.finishedAt,
+      sealedAt: projected.atom.finishedAt,
       compatibility: 'current',
       omittedBytes: null,
-      kind: 'workGroup',
-      status: unit.live ? 'current' : 'history',
+      kind: projected.mainPresentation.name,
+      status: 'history',
       text: '',
       channel: null,
       timeline: _timelineEnvelopeFacts(projected),
     );
   }
   final item = chatItemPresentationOf(message);
-  if (item != null) return _timelineItemFacts(item, timeline: unit?.item);
+  if (item != null) return _timelineItemFacts(item, timeline: unit?.entry);
   return TimelineItemFacts(
     id: message.id,
     sealedAt: null,
@@ -466,36 +465,18 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
   );
 }
 
-Map<String, Object?> _timelineEnvelopeFacts(TimelineItem item) => {
-  'kind': item.kind.name,
-  'source': _sourceFacts(item.source),
-  'position': item.position,
-  'contentItemId': item.contentItemId,
-  'admissionClosed': item.admissionClosed,
-  'outcome': item.outcome?.name,
-  'membersRef': switch (item.members) {
-    final reference? => {
-      'databaseId': reference.databaseId,
-      'projectionVersion': reference.projectionVersion,
-      'projectionGeneration': reference.projectionGeneration,
-      'itemId': reference.itemId,
-    },
+Map<String, Object?> _timelineEnvelopeFacts(CompletedEntry entry) => {
+  'recordId': entry.recordId,
+  'completionSeq': entry.completionSeq,
+  'mainPresentation': entry.mainPresentation.name,
+  'source': _sourceFacts(entry.atom.source),
+  'run': switch (entry.run) {
+    final run? => {'startSeq': run.startSeq, 'ordinal': run.ordinal},
     null => null,
   },
-  'summary': switch (item.summary) {
-    final summary? => {
-      'memberCount': summary.memberCount,
-      'activeCount': summary.activeCount,
-      'failedCount': summary.failedCount,
-      'cancelledCount': summary.cancelledCount,
-      'startedAt': summary.startedAt,
-      'finishedAt': summary.finishedAt,
-      'categories': [
-        for (final count in summary.categories)
-          {'category': count.category.name, 'count': count.count},
-      ],
-    },
-    null => null,
+  'outcome': switch (entry.atom.lifecycle) {
+    TerminalChatAtom(:final outcome) => outcome.name,
+    _ => null,
   },
 };
 
@@ -532,6 +513,11 @@ Map<String, Object?> _sourceFacts(ChatSourceId source) => switch (source) {
     'turnId': turnId,
   },
   InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
+  InboxMessageChatSource(:final sourceId, :final messageId) => {
+    'kind': 'inboxMessage',
+    'sourceId': sourceId,
+    'messageId': messageId,
+  },
   BackgroundResultChatSource(:final messageId) => {
     'kind': 'backgroundResult',
     'messageId': messageId,
@@ -576,7 +562,7 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
 
 TimelineItemFacts _timelineItemFacts(
   ChatItemPresentation item, {
-  TimelineItem? timeline,
+  CompletedEntry? timeline,
 }) {
   try {
     return _loadedItemFacts(item, timeline: timeline);
@@ -601,7 +587,7 @@ TimelineItemFacts _timelineItemFacts(
 
 TimelineItemFacts _loadedItemFacts(
   ChatItemPresentation item, {
-  TimelineItem? timeline,
+  CompletedEntry? timeline,
 }) {
   final data = item.data;
   final outcome = _diagnosticObject(data['outcome']);

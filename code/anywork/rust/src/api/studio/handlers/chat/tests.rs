@@ -140,7 +140,16 @@ impl Environment {
             loop {
                 let update = subscription.recv().await?.context("fixture stream ended")?;
                 let turn = match update {
-                    ThreadSubscriptionUpdate::Snapshot { snapshot } => snapshot.active_turn,
+                    ThreadSubscriptionUpdate::Snapshot {
+                        completed_history_version,
+                        snapshot,
+                    } => {
+                        ensure!(
+                            completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                            "snapshot advertised an unsupported completed-history version"
+                        );
+                        snapshot.active_turn
+                    }
                     ThreadSubscriptionUpdate::Notification { notification } => {
                         match notification.notification {
                             ThreadNotification::TurnCompleted { turn } => Some(turn),

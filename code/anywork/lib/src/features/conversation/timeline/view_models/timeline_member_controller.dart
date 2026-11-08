@@ -3,17 +3,19 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
 
-/// Member/real-Children adapter. Atom IDs update only this independently owned
-/// window; they never enter the Main item mapper or rewrite a group summary.
+/// Completed Run/Children records are immutable. No member update or activity
+/// state machine, and no write back to the Main representative's ordinal.
 final class TimelineMemberController implements ConversationBatchConsumer {
   TimelineMemberController(this.controller);
   final InMemoryChatController controller;
   bool _disposed = false;
+  int? _through;
 
-  Message _message(ChatAtom atom) {
+  Message _message(CompletedEntry entry) {
+    final atom = entry.atom;
     final presentation = atom.payload == null
         ? ChatItemPresentation(
-            id: atom.id,
+            id: entry.recordId,
             compatibility: ChatItemCompatibility.current,
             type: 'memberAtom',
             data: const {},
@@ -22,7 +24,7 @@ final class TimelineMemberController implements ConversationBatchConsumer {
           )
         : ChatItemPresentation.decode(atom);
     return Message.custom(
-      id: atom.id,
+      id: entry.recordId,
       authorId: presentation.authorId,
       createdAt: presentation.createdAt,
       metadata: {chatItemPresentationKey: presentation},
@@ -32,58 +34,55 @@ final class TimelineMemberController implements ConversationBatchConsumer {
   @override
   Future<void> applyBatch(ChatBatch batch) async {
     if (_disposed) throw const StaleConversationScope();
-    if (batch.placement == ChatPlacement.update) {
-      throw const ConversationContinuityError(
-        'Header updates belong only to Main',
-      );
+    if (batch.placement == ChatPlacement.append &&
+        (_through == null ||
+            batch.fromSeq == null ||
+            batch.fromSeq! < _through! ||
+            batch.throughSeq <= _through!)) {
+      throw const ConversationContinuityError('Invalid member completion cut');
     }
-    if (batch.current != null) {
-      throw const ConversationContinuityError(
-        'Member windows cannot contain current projections',
-      );
-    }
-    if (batch.entries.any((entry) => entry is ItemChatEntry)) {
-      throw const ConversationContinuityError(
-        'Member windows cannot contain Main items',
-      );
-    }
-    final atoms = batch.atoms.toList();
-    final messages = [for (final atom in atoms) _message(atom)];
-    if (batch.placement == ChatPlacement.set) {
-      await controller.setMessages(messages, animated: false);
-    } else if (messages.isNotEmpty) {
-      final inserted = <Message>[];
-      final loadedById = <String, Message>{};
-      for (final message in controller.messages) {
-        loadedById[message.id] = message;
+    var seq = batch.fromSeq ?? 0;
+    final ids = <String>{};
+    for (final entry in batch.entries) {
+      if (entry.atom.lifecycle is! TerminalChatAtom ||
+          entry.completionSeq <= seq ||
+          entry.completionSeq > batch.throughSeq ||
+          !ids.add(entry.recordId)) {
+        throw const ConversationContinuityError('Invalid completed member');
       }
-      final pendingIndexById = <String, int>{};
-      for (final message in messages) {
-        final previous = loadedById[message.id];
-        if (previous != null) {
-          await controller.updateMessage(previous, message);
-          loadedById[message.id] = message;
-          continue;
+      seq = entry.completionSeq;
+    }
+    if (batch.placement != ChatPlacement.set && batch.entries.isNotEmpty) {
+      final loaded = {for (final message in controller.messages) message.id};
+      if (ids.any(loaded.contains)) {
+        throw const ConversationContinuityError('Repeated completed member');
+      }
+    }
+    final messages = [for (final entry in batch.entries) _message(entry)];
+    switch (batch.placement) {
+      case ChatPlacement.set:
+        await controller.setMessages(messages, animated: false);
+      case ChatPlacement.prepend:
+      case ChatPlacement.append:
+        if (messages.isNotEmpty) {
+          await controller.insertAllMessages(
+            messages,
+            index: batch.placement == ChatPlacement.prepend
+                ? 0
+                : controller.messages.length,
+            animated: false,
+          );
         }
-        final pendingIndex = pendingIndexById[message.id];
-        if (pendingIndex != null) {
-          inserted[pendingIndex] = message;
-        } else {
-          pendingIndexById[message.id] = inserted.length;
-          inserted.add(message);
-        }
-      }
-      if (inserted.isNotEmpty) {
-        await controller.insertAllMessages(
-          inserted,
-          index: batch.placement == ChatPlacement.prepend
-              ? 0
-              : controller.messages.length,
-          animated: false,
-        );
-      }
     }
+    if (batch.placement != ChatPlacement.prepend) _through = batch.throughSeq;
   }
 
   void dispose() => _disposed = true;
+
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    if (_disposed) throw const StaleConversationScope();
+    // Every scope receives Activity barriers. This completed-member renderer
+    // accepts them without projecting live operations into its history.
+  }
 }

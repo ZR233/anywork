@@ -27,7 +27,22 @@ impl MigratorTraitSelf for Published16 {
         .migrations()
         .into_iter()
         .take_while(|step| !is_lifecycle_migration(step.name()))
-        .filter(|step| step.name() != COMPLETION_BOUNDARY)
+        .filter(|step| !matches!(step.name(), COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS))
+        .collect()
+    }
+}
+
+struct Published17;
+impl MigratorTraitSelf for Published17 {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        Migrator {
+            thread_id: THREAD.into(),
+            bot_root: None,
+            execution_identity: None,
+        }
+        .migrations()
+        .into_iter()
+        .take_while(|step| step.name() != IMMUTABLE_COMPLETION_RUNS)
         .collect()
     }
 }
@@ -74,8 +89,8 @@ async fn seed(db: &impl ConnectionTrait) -> Result<(String, ChatAtom)> {
     };
     a.completion_seq = Some(1);
     draft.metadata = serde_json::to_vec(&a)?.into();
-    let record = ChatItem::complete(draft, 1);
-    conversation::append_records(db, [&record], true).await?;
+    let record = ChatItem::complete(draft, 1, None);
+    timeline::append_fixture(db, &record).await?;
     let mut start = a.clone();
     start.lifecycle = ChatAtomLifecycle::Active {
         started: Some(at(1)),
@@ -160,7 +175,7 @@ async fn seed(db: &impl ConnectionTrait) -> Result<(String, ChatAtom)> {
             },
         },
     );
-    let checkpoint = ThreadCheckpoint::capture(THREAD.into(), 3, state);
+    let checkpoint = ThreadCheckpoint::capture(THREAD.into(), 3, state)?;
     checkpoint::write(db, &checkpoint, None, None).await?;
     db.execute_unprepared("UPDATE history_meta SET applied_write_seq=3 WHERE id=1")
         .await?;
@@ -193,7 +208,7 @@ async fn seed(db: &impl ConnectionTrait) -> Result<(String, ChatAtom)> {
         db,
         3,
         &LegacyCurrent::new(
-            crate::studio::thread_projection::FrozenCurrentProjection::new(current),
+            crate::studio::storage::history::schema::legacy_timeline_types::FrozenCurrentProjection::new(current),
             Arc::from([]),
             vec![CurrentContentWrite {
                 sealed: false,
@@ -214,7 +229,7 @@ async fn seed(db: &impl ConnectionTrait) -> Result<(String, ChatAtom)> {
         ),
     )
     .await?;
-    conversation::timeline::rebuild(db, &database).await?;
+    crate::studio::storage::history::schema::legacy_timeline_store::rebuild(db, &database).await?;
     Ok((database, a))
 }
 
@@ -310,7 +325,7 @@ async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals(
         vec![serde_json::to_vec(&a)?.into()],
     ))
     .await?;
-    prepare(&db, THREAD, Preparation::Schema, None).await?;
+    Published17.up(&db, None).await?;
     assert!(applied(&db).await?);
     assert_eq!(originals(&db).await?, before);
     assert_eq!(
@@ -328,11 +343,7 @@ async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals(
     let cut: serde_json::Value = serde_json::from_slice(&head.recovery)?;
     assert!(cut.is_array());
     assert!(!String::from_utf8(head.recovery.clone())?.contains("旧活动前缀"));
-    assert!(
-        timeline::complete::open_member_rows(&db, &old_reference, None, u64::MAX, 3, 10)
-            .await
-            .is_err()
-    );
+    assert_ne!(head.generation, old_reference.projection_generation);
     assert!(
         rows(&db, "SELECT item_id AS value FROM timeline_items")
             .await?
@@ -354,31 +365,21 @@ async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals(
             .and_then(|plan| plan.document.as_ref())
             .is_some()
     );
-    let summary = cold
-        .projection()
-        .items
-        .iter()
-        .find_map(|item| item.summary.as_ref())
-        .context("restored group")?;
-    assert_eq!(
-        (
-            summary.member_count,
-            summary.active_count,
-            summary.cancelled_count
-        ),
-        (2, 1, 0)
+    assert!(
+        cold.projection().atoms.is_empty(),
+        "cold browsing does not restore legacy work groups"
     );
     // Ordinary reopen must neither rotate generation nor populate an open group.
     db.close().await?;
     let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
     prepare(&db, THREAD, Preparation::Schema, None).await?;
     assert_eq!(
-        timeline::read_state(&db).await?.unwrap().generation,
-        head.generation
+        timeline::archived_generation(&db).await?,
+        old_head.generation
     );
     assert_eq!(originals(&db).await?, before);
     assert!(
-        rows(&db, "SELECT item_id AS value FROM timeline_items")
+        rows(&db, "SELECT name AS value FROM sqlite_schema WHERE name IN ('timeline_items','timeline_item_members','timeline_projection_state')")
             .await?
             .is_empty()
     );
@@ -386,7 +387,7 @@ async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals(
         database,
         rows(&db, "SELECT database_id AS value FROM history_meta").await?[0]
     );
-    db.execute_unprepared("DROP TABLE timeline_item_members")
+    db.execute_unprepared("DROP TABLE completion_boundary_archive_timeline_members")
         .await?;
     assert!(
         prepare(&db, THREAD, Preparation::Schema, None)
@@ -395,7 +396,7 @@ async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals(
     );
     assert!(
         db.query_one_raw(statement(
-            "SELECT 1 FROM sqlite_schema WHERE name='timeline_item_members'",
+            "SELECT 1 FROM sqlite_schema WHERE name='completion_boundary_archive_timeline_members'",
             vec![]
         ))
         .await?

@@ -50,7 +50,13 @@ use pl_protocol::studio::{
         version = "0.1.0",
         description = "Loopback adapter over the canonical StudioRuntime"
     ),
-    components(schemas(StudioError))
+    components(schemas(
+        StudioError,
+        pl_protocol::ActivitySnapshot,
+        pl_protocol::ActivityEntry,
+        pl_protocol::ActivityIdentity,
+        pl_protocol::ChatScope
+    ))
 )]
 struct StudioApi;
 
@@ -296,6 +302,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(conversation::older))
+        .routes(routes!(conversation::completed))
         .routes(routes!(conversation::manifest))
         .routes(routes!(conversation::read))
         .routes(routes!(conversation::current))

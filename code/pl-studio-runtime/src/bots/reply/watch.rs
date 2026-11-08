@@ -1,21 +1,30 @@
 //! One native feed, the same read lease, and one bounded target projection.
 
-use super::content::{Coverage, FinalError, ReplyItem, decode_entry, demand, read_failure};
+use super::content::{
+    Coverage, FinalError, ReplyItem, decode_activity, decode_entry, demand, read_failure,
+};
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationEvent, ConversationFeed, ConversationReader, StudioRuntime};
 use pl_protocol::{
-    ChatBatch, ChatPlacement, ChatScope, ThreadNotification, ThreadSubscriptionUpdate, Turn,
-    TurnState,
+    ActivitySnapshot, ChatBatch, ChatPlacement, ChatScope, ThreadNotification,
+    ThreadSubscriptionUpdate, Turn, TurnState,
 };
 use std::future::Future;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// A taken Chat frame remains owned here across cancellation of asynchronous body
-/// reads. Only a completely decoded batch can publish its completions/current.
+/// reads. Only a completely decoded batch can publish its completed prefix.
 struct PendingChat {
     batch: ChatBatch,
     next: usize,
     items: Vec<ReplyItem>,
+}
+
+struct PendingActivity {
+    snapshot: Arc<ActivitySnapshot>,
+    next: usize,
+    previews: Vec<(String, String)>,
 }
 
 pub(super) struct ReplyWatch {
@@ -24,6 +33,10 @@ pub(super) struct ReplyWatch {
     turn_id: Option<String>,
     projection: Option<ReplyProjection>,
     pending: Option<PendingChat>,
+    pending_activity: Option<PendingActivity>,
+    through_seq: Option<u64>,
+    ceiling_seq: Option<u64>,
+    activity_revision: Option<u64>,
     before: Option<String>,
     chat_ready: bool,
     coverage: Coverage,
@@ -45,6 +58,10 @@ impl ReplyWatch {
             turn_id: None,
             projection: None,
             pending: None,
+            pending_activity: None,
+            through_seq: None,
+            ceiling_seq: None,
+            activity_revision: None,
             before: None,
             chat_ready: false,
             coverage: Coverage::default(),
@@ -117,7 +134,6 @@ impl ReplyWatch {
         if let Some(projection) = &mut self.projection {
             projection.mark_covered();
         }
-        self.qualify_terminal_cut().await?;
         Ok(())
     }
 
@@ -125,13 +141,18 @@ impl ReplyWatch {
     /// No public Core position, parsed cursor or old projection proves continuity.
     pub(super) async fn reconnect(&mut self, runtime: &StudioRuntime) -> Result<(), FinalError> {
         self.close().await?;
+        let scope = self.scope()?;
         let feed = runtime
-            .open_conversation_feed(self.feed.thread_id(), ChatScope::Main, demand())
+            .open_conversation_feed(self.feed.thread_id(), scope, demand())
             .await
             .map_err(|error| read_failure("bot conversation feed reopen failed", error))?;
         self.feed = feed;
         self.projection = None;
         self.pending = None;
+        self.pending_activity = None;
+        self.through_seq = None;
+        self.ceiling_seq = None;
+        self.activity_revision = None;
         self.before = None;
         self.chat_ready = false;
         self.coverage = Coverage::default();
@@ -139,6 +160,16 @@ impl ReplyWatch {
         self.state_epoch = None;
         self.observed_turn = None;
         Ok(())
+    }
+
+    fn scope(&self) -> Result<ChatScope, FinalError> {
+        self.turn_id.as_ref().map_or(Ok(ChatScope::Main), |turn| {
+            let parent = pl_core::chat::ChatKey::new("turn", turn)
+                .map_err(|error| gap(&format!("invalid reply Turn parent: {error}")))?;
+            Ok(ChatScope::Children {
+                parent_id: parent.as_str().to_owned(),
+            })
+        })
     }
 
     /// Both futures remain task-owned; observation failure cancels new platform
@@ -168,7 +199,10 @@ impl ReplyWatch {
     pub(super) async fn receive(&mut self) -> Result<(), FinalError> {
         if self.pending.is_some() {
             self.finish_pending().await?;
-            return self.qualify_terminal_cut().await;
+            return Ok(());
+        }
+        if self.pending_activity.is_some() {
+            return self.finish_activity().await;
         }
         let event = self
             .feed
@@ -180,43 +214,78 @@ impl ReplyWatch {
             ConversationEvent::State { update } => self.state(*update),
             ConversationEvent::Chat { batch } => {
                 if (!self.chat_ready && batch.placement != ChatPlacement::Set)
-                    || (self.chat_ready
-                        && !matches!(
-                            batch.placement,
-                            ChatPlacement::Append | ChatPlacement::Update
-                        ))
+                    || (self.chat_ready && !matches!(batch.placement, ChatPlacement::Append))
                 {
-                    return Err(gap("reply feed expected first Set then Append or Update"));
+                    return Err(gap("reply feed expected first Set then Append"));
                 }
                 self.stage(*batch)?;
                 self.finish_pending().await
             }
-        }?;
-        self.qualify_terminal_cut().await
+            ConversationEvent::Activity { snapshot } => {
+                self.stage_activity(snapshot)?;
+                self.finish_activity().await
+            }
+        }
     }
 
-    async fn qualify_terminal_cut(&mut self) -> Result<(), FinalError> {
-        let Some(cut) = self
-            .projection
-            .as_ref()
-            .and_then(ReplyProjection::terminal_cut_to_qualify)
-        else {
-            return Ok(());
-        };
-        let source = pl_protocol::ChatSourceId::ForegroundTurn {
-            turn_id: self
-                .turn_id
-                .clone()
-                .ok_or_else(|| gap("terminal has no target"))?,
-        };
-        if self
-            .reader()
-            .source_ended_at(&source, cut)
-            .await
-            .map_err(|error| read_failure("terminal source cut qualification failed", error))?
-            && let Some(projection) = &mut self.projection
+    fn stage_activity(&mut self, snapshot: Arc<ActivitySnapshot>) -> Result<(), FinalError> {
+        if self.pending_activity.is_some()
+            || self.through_seq != Some(snapshot.completed_through)
+            || self
+                .activity_revision
+                .is_some_and(|revision| snapshot.revision < revision)
+            || snapshot.entries.len() > super::content::MAX_TURN_CONTENT_ITEMS
         {
-            projection.qualify_terminal_cut();
+            return Err(gap("reply activity prefix, revision or budget conflict"));
+        }
+        self.pending_activity = Some(PendingActivity {
+            snapshot,
+            next: 0,
+            previews: Vec::new(),
+        });
+        Ok(())
+    }
+
+    async fn finish_activity(&mut self) -> Result<(), FinalError> {
+        while let Some(pending) = &self.pending_activity {
+            if pending.next == pending.snapshot.entries.len() {
+                break;
+            }
+            let preview = if let Some(turn) = &self.turn_id {
+                decode_activity(self.feed.reader(), &pending.snapshot, turn, pending.next).await?
+            } else {
+                None
+            };
+            let pending = self
+                .pending_activity
+                .as_mut()
+                .expect("owned activity snapshot");
+            if let Some(preview) = preview {
+                let bytes = pending
+                    .previews
+                    .iter()
+                    .map(|(_, text)| text.len())
+                    .sum::<usize>()
+                    .saturating_add(preview.1.len());
+                if bytes > super::content::MAX_TURN_BODY_BYTES {
+                    return Err(gap("pending Final activity exceeded its body budget"));
+                }
+                pending.previews.push(preview);
+            }
+            pending.next += 1;
+        }
+        if let Some(pending) = self.pending_activity.take() {
+            if let Some(projection) = &mut self.projection {
+                let active = pending.snapshot.execution_present
+                    && pending
+                        .snapshot
+                        .entries
+                        .iter()
+                        .any(|entry| entry.atom.turn_id.as_deref() == self.turn_id.as_deref());
+                projection.set_activity(active, pending.previews)?;
+                projection.validate_budget()?;
+            }
+            self.activity_revision = Some(pending.snapshot.revision);
         }
         Ok(())
     }
@@ -228,10 +297,19 @@ impl ReplyWatch {
         if batch.entries.len() > demand().max_items as usize {
             return Err(gap("reply batch exceeded its entry budget"));
         }
+        batch
+            .validate_for(&self.scope()?)
+            .map_err(|error| gap(&format!("invalid reply completion batch: {error}")))?;
+        match batch.placement {
+            ChatPlacement::Set => {}
+            ChatPlacement::Append if batch.from_seq == self.through_seq => {}
+            ChatPlacement::Prepend if Some(batch.through_seq) == self.ceiling_seq => {}
+            _ => return Err(gap("reply completion prefix continuity lost")),
+        }
         if self.turn_id.is_some() {
             if batch.placement == ChatPlacement::Append {
                 self.coverage.admit(&batch.entries)?;
-            } else if batch.placement != ChatPlacement::Update {
+            } else {
                 self.coverage.page(&batch.entries)?;
             }
         }
@@ -282,9 +360,12 @@ impl ReplyWatch {
         let ChatBatch {
             placement,
             before,
-            current,
+            through_seq,
             ..
         } = pending.batch;
+        if placement != ChatPlacement::Prepend {
+            self.through_seq = Some(through_seq);
+        }
         if matches!(placement, ChatPlacement::Set | ChatPlacement::Prepend) {
             if let Some(token) = &before {
                 self.coverage.cursor(token)?;
@@ -292,15 +373,13 @@ impl ReplyWatch {
             self.before = before;
         }
         if placement == ChatPlacement::Set {
+            self.ceiling_seq = Some(through_seq);
             self.chat_ready = true;
-            self.projection = self.turn_id.as_deref().map(ReplyProjection::new);
+            self.projection = self.turn_id.as_ref().map(|_| ReplyProjection::new());
         }
         if let Some(projection) = &mut self.projection {
-            // Accept all completed members before retiring their current previews.
+            // Completion identities retire matching active part previews.
             projection.apply(placement, pending.items)?;
-            if let Some(current) = current {
-                projection.set_current(current)?;
-            }
             projection.validate_budget()?;
             if self.before.is_none() {
                 projection.mark_covered();
@@ -314,7 +393,20 @@ impl ReplyWatch {
 
     fn state(&mut self, update: ThreadSubscriptionUpdate) -> Result<(), FinalError> {
         match update {
-            ThreadSubscriptionUpdate::Snapshot { snapshot } => {
+            ThreadSubscriptionUpdate::Snapshot {
+                completed_history_version,
+                snapshot,
+            } => {
+                if completed_history_version != pl_protocol::COMPLETED_HISTORY_VERSION {
+                    return Err(FinalError::Attention(
+                        "protocolVersionMismatch: unsupported bot completed history version".into(),
+                    ));
+                }
+                if snapshot.schema_version != pl_protocol::THREAD_SCHEMA_VERSION {
+                    return Err(FinalError::Attention(
+                        "protocolVersionMismatch: unsupported bot State schema version".into(),
+                    ));
+                }
                 if snapshot.thread.id != self.feed.thread_id() || self.state_revision.is_some() {
                     return Err(gap("reply state baseline identity or continuity conflict"));
                 }
@@ -341,6 +433,7 @@ impl ReplyWatch {
                     | ThreadNotification::TurnUpdated { turn }
                     | ThreadNotification::TurnCompleted { turn } => self.observe_turn(turn)?,
                     ThreadNotification::InteractionChanged { .. }
+                    | ThreadNotification::BusinessRefsChanged { .. }
                     | ThreadNotification::ThreadRuntimeUpdated { .. }
                     | ThreadNotification::ActivityChanged { .. }
                     | ThreadNotification::StorageChanged { .. } => {}

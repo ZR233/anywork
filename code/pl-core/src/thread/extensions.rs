@@ -39,7 +39,7 @@ impl Owner {
         mutations: Vec<ExtensionMutation>,
     ) -> Result<BTreeMap<String, ExtensionRecord>, ThreadError> {
         let result = stage_extensions(&mut self.state, mutations)?;
-        self.publish();
+        self.publish()?;
         Ok(result)
     }
 
@@ -54,7 +54,7 @@ impl Owner {
         stage_extensions(&mut candidate, update.mutations)?;
         super::facts::stage_facts(&mut candidate, update.facts)?;
         self.state = candidate;
-        self.publish();
+        self.publish()?;
         Ok(self.state.clone())
     }
 }

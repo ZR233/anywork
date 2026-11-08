@@ -14,7 +14,13 @@ class RecordingDemoTransport extends DemoStudioTransport {
   /// 在当前实际 feed 投递状态事实，并等待 SDK 处理后的显式 ACK。
   Future<void> publishWorkspace(ThreadWorkspace workspace) async {
     final feed = await _activeFeed(workspace.thread.id);
-    await feed.emitStateAndWait(ThreadSnapshotFrame(workspace: workspace));
+    await feed.emitStateAndWait(
+      ThreadSnapshotFrame(
+        workspace: workspace,
+        completedHistoryVersion: feed.completedHistoryVersion,
+        schemaVersion: feed.schemaVersion,
+      ),
+    );
   }
 
   /// Waits for the actual visible-demand feed; it never opens or fabricates one.
@@ -88,6 +94,8 @@ class RecordingConversationFeed implements ConversationFeed {
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
+  int? completedHistoryVersion;
+  int? schemaVersion;
   int get deliveredFrames => _sequence;
   final Map<int, int> _nativeSequences = {};
   final Map<int, Completer<void>> _ackWaiters = {};
@@ -142,6 +150,15 @@ class RecordingConversationFeed implements ConversationFeed {
 
   Future<void> _forward(ConversationFrame frame) async {
     final event = frame.event;
+    if (event case ConversationStateEvent(
+      frame: ThreadSnapshotFrame(
+        completedHistoryVersion: final historyVersion,
+        schemaVersion: final stateVersion,
+      ),
+    )) {
+      completedHistoryVersion = historyVersion;
+      schemaVersion = stateVersion;
+    }
     if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
     if (event case ConversationChatEvent(
       batch: ChatBatch(placement: ChatPlacement.set),

@@ -18,7 +18,7 @@ use pl_model::{
     },
     runtime::{ModelMemberReceipt, ModelMemberState},
 };
-use pl_protocol::{ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome, TimelineItem};
+use pl_protocol::{ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
 use sea_orm::{ConnectionTrait, Database};
 
 fn started(id: &str) -> ModelStartedMember {
@@ -92,12 +92,10 @@ async fn progress_never_writes_prefix_and_real_restart_interrupt_preserves_compl
             assert!(prepared.current.contents.is_empty(), "progress prepared a body write");
             let row=sql.query_one_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
                 "SELECT (SELECT COUNT(*) FROM conversation_contents) AS bodies,
-                        (SELECT COUNT(*) FROM timeline_items) AS items,
-                        (SELECT COUNT(*) FROM timeline_item_members) AS members".to_owned()))
+                        (SELECT COUNT(*) FROM conversation_items) AS items".to_owned()))
                 .await?.context("counts")?;
             assert_eq!(row.try_get::<i64>("","bodies")?,0);
             assert_eq!(row.try_get::<i64>("","items")?,0);
-            assert_eq!(row.try_get::<i64>("","members")?,0);
         }
         let full = "完整思考".repeat(40_000);
         let receipt=ModelMemberReceipt { item:CompletionPresentationItem {
@@ -125,14 +123,10 @@ async fn progress_never_writes_prefix_and_real_restart_interrupt_preserves_compl
         assert!(window.sealed);
         assert_eq!(window.available_through,full.len() as u64);
         assert_eq!(window.bytes.as_bytes(),&full.as_bytes()[..64*1024]);
-        assert!(saved.timeline.is_empty(), "an open group was published as completed");
+        assert_eq!(record.header.append_seq, 1, "a completed member must publish immediately");
         let mut second=effect(7);
         second.model_member_starts=vec![started("B")].into();
         publish(&mut projection,&history,&chat,&thread,&state,&second).await?;
-        let generation=history.timeline_generation().await?;
-        let row=sql.query_one_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-            "SELECT COUNT(*) AS n FROM timeline_item_members".to_owned())).await?.context("members")?;
-        assert_eq!(row.try_get::<i64>("","n")?,0, "open member relationships were persisted");
         drop(projection);
         drop(chat);
         drop(channel);
@@ -140,11 +134,6 @@ async fn progress_never_writes_prefix_and_real_restart_interrupt_preserves_compl
         let current=history.conversation_current().await?.context("cold current")?;
         assert!(!current.execution_present);
         assert!(current.previews.is_empty());
-        let summary=current.items.iter().find_map(|item| item.summary.as_ref()).context("open group")?;
-        assert_eq!(summary.member_count,2);
-        assert_eq!(summary.active_count,1);
-        assert_eq!(summary.cancelled_count,0);
-        assert_eq!(history.timeline_generation().await?,generation);
         let restored_chat=Session::new(history.clone(),TimelineEpoch::new("after-restart")?);
         let restored_channel=HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let mut restored=LiveProjection::new();
@@ -166,31 +155,18 @@ async fn progress_never_writes_prefix_and_real_restart_interrupt_preserves_compl
         state.commit_sequence=8;
         let settled=publish(&mut restored,&history,&restored_chat,&thread,&state,&interrupted).await?;
         assert!(settled.completions.iter().all(|record| record.header.item_id!=a_id));
-        let group=settled.timeline.iter().find(|item| item.is_work_group()).context("completed group")?;
-        let summary=group.summary.as_ref().context("final summary")?;
-        assert_eq!((summary.member_count,summary.active_count,summary.cancelled_count),(2,0,1));
-        let row=sql.query_one_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-            "SELECT COUNT(*) AS n FROM timeline_items WHERE kind='workGroup'".to_owned())).await?.context("groups")?;
-        assert_eq!(row.try_get::<i64>("","n")?,1);
+        assert!(settled.current.projection().atoms.is_empty());
         let members=sql.query_all_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-            "SELECT metadata FROM timeline_item_members ORDER BY member_order".to_owned())).await?;
-        assert_eq!(members.len(),2);
-        let a:ChatAtom=serde_json::from_slice(&members[0].try_get::<Vec<u8>>("","metadata")?)?;
-        assert_eq!(a.completion_item_id.as_deref(),Some(a_id.as_str()));
-        let b:ChatAtom=serde_json::from_slice(&members[1].try_get::<Vec<u8>>("","metadata")?)?;
-        assert_eq!(b.kind,ChatAtomKind::Reasoning);
-        assert!(matches!(b.lifecycle,ChatAtomLifecycle::Terminal {outcome:ChatTerminalOutcome::Cancelled,
+            "SELECT atom_id,phase,metadata FROM conversation_atom_facts WHERE phase='terminal'".to_owned())).await?;
+        let metadata=members.iter().find_map(|row| {
+            let atom:ChatAtom=serde_json::from_slice(&row.try_get::<Vec<u8>>("","metadata").ok()?).ok()?;
+            (atom.id != a_id && atom.kind==ChatAtomKind::Reasoning).then_some(atom)
+        }).context("interrupted B fact")?;
+        assert!(matches!(metadata.lifecycle,ChatAtomLifecycle::Terminal {outcome:ChatTerminalOutcome::Cancelled,
             started:Some(_),ended:Some(at)} if at.effect_seq==8));
-        assert!(b.completion_item_id.is_none() && b.completion_seq.is_none()
-            && b.payload.is_none() && b.contents.is_empty() && b.content_present.is_none()
-            && b.finished_at.is_none());
-        let row=sql.query_one_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-            "SELECT metadata FROM timeline_items WHERE kind='workGroup'".to_owned())).await?.context("stored group")?;
-        let stored:TimelineItem=serde_json::from_slice(&row.try_get::<Vec<u8>>("","metadata")?)?;
-        assert_eq!(stored,*group);
-        let cold=history.timeline_snapshot().await?.context("reopened frontier")?;
-        assert!(cold.current_items().is_empty());
-        assert_eq!(cold.generation(),generation);
+        assert!(metadata.completion_item_id.is_none() && metadata.completion_seq.is_none()
+            && metadata.payload.is_none() && metadata.contents.is_empty());
+        assert!(history.recovery_atom_starts(None,128).await?.is_empty());
         Ok(())
     }.await;
     env.finish(result).await

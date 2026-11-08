@@ -1654,6 +1654,10 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
+          businessRefs: const ThreadBusinessRefs(
+            plan: null,
+            interactions: null,
+          ),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -1693,6 +1697,10 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
+          businessRefs: const ThreadBusinessRefs(
+            plan: null,
+            interactions: null,
+          ),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -1998,6 +2006,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     ]);
     return ThreadWorkspace(
+      businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -2058,6 +2067,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     ]);
     return ThreadWorkspace(
+      businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -4440,7 +4450,36 @@ class DemoStudioTransport extends StudioTransport
 
   /// Thread 首帧只暴露当前状态；历史正文由独立 reader 和完成尾部交付。
   ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {
-    return workspace.copyWith(latestTurn: null);
+    final history = _historyOf(workspace.thread.id);
+    history.prepareCurrent(workspace);
+    final plan = workspace.runtime.plan;
+    final references = ThreadBusinessRefs(
+      plan: plan == null
+          ? null
+          : CurrentPlanHead(
+              revision: plan.revision,
+              phase: plan.state,
+              document: plan.document == null
+                  ? null
+                  : ContentRef(
+                      databaseId: history.epoch,
+                      target: BodyContentTarget(
+                        owner: CurrentContentOwner(
+                          domain: 'plan',
+                          id: workspace.thread.id,
+                          revision: plan.revision,
+                        ),
+                        key: 'plan.document',
+                      ),
+                    ),
+            ),
+      interactions: CurrentCollectionRef(
+        databaseId: history.epoch,
+        collection: 'interactions',
+        revision: history.interactionRevision,
+      ),
+    );
+    return workspace.copyWith(latestTurn: null, businessRefs: references);
   }
 
   /// 完成尾部与当前活动共享有界交付；历史查询独立持有读取 scope。
@@ -4536,14 +4575,10 @@ class DemoStudioTransport extends StudioTransport
   @visibleForTesting
   String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
 
-  @visibleForTesting
-  String conversationProjectionGeneration(String threadId) =>
-      _historyOf(threadId).projectionGeneration;
-
   /// Explicit display fixtures and their already chosen member scopes. No atom
   /// grouping or payload-based membership inference is performed by Demo.
   @visibleForTesting
-  void seedTimelineItems(String threadId, Iterable<TimelineItem> items) {
+  void seedTimelineItems(String threadId, Iterable<CompletedEntry> items) {
     _ensureDemoRunning();
     _demoWorkspace(threadId);
     final history = _historyOf(threadId);
@@ -5644,8 +5679,7 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: now,
         content: (
           kind: _DemoContentKind.completed,
-          itemKind: TimelineItemKind.status,
-          category: null,
+          mainPresentation: MainPresentation.single,
           contentPresent: null,
           textChannel: null,
           descriptor: {
@@ -6750,6 +6784,10 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     final ThreadWorkspace updated = switch (update) {
+      ThreadBusinessRefsUpdate(:final references) => workspace.copyWith(
+        revision: revision,
+        businessRefs: references,
+      ),
       ThreadTurnUpdate(:final turn) => workspace.copyWith(
         revision: revision,
         activeTurn: turn.state.isBusy ? turn : null,
@@ -6793,8 +6831,8 @@ class DemoStudioTransport extends StudioTransport
       );
       _retirePendingItems(threadId);
       _workspaces[threadId] = updated.copyWith(activity: null);
-      // Capture completion and live exit together; a consumer sees the new
-      // activity only after accepting the completion attached to the same Chat batch.
+      // Completion and Activity are independent deliveries at the same cut;
+      // the feed orders completion admission before publishing the live exit.
       _publishContent(threadId);
     }
     final receivers = _conversationFeeds[threadId];
@@ -6826,6 +6864,19 @@ class DemoStudioTransport extends StudioTransport
           modelRoute: updated.modelRoute,
         ),
       );
+    }
+    // Business-reference changes are State facts too. Publish the replacement
+    // after its originating update, without refreshing Main or re-reading it.
+    // Use the latest workspace because the execution update above can reenter.
+    if (update is! ThreadBusinessRefsUpdate) {
+      final latest = _workspaces[threadId]!;
+      final references = _snapshotOf(latest).businessRefs;
+      if (references != latest.businessRefs) {
+        _emitThreadUpdate(
+          threadId,
+          ThreadBusinessRefsUpdate(references: references),
+        );
+      }
     }
   }
 

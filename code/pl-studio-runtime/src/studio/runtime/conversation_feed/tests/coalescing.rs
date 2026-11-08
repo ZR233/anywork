@@ -59,7 +59,7 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
     use ThreadRuntimeUsageState::{Authoritative, Live};
     let env = support::Environment::new(vec![], vec![]).await?;
     let result = async {
-        let mut harness = atoms::Harness::new(&env).await?;
+        let mut harness = completed_runs::Harness::new(&env).await?;
         harness.effect(vec![], vec![]).await?;
         let mut feed = env
             .runtime
@@ -67,6 +67,7 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
             .await?;
         assert_eq!(chat(&mut feed).await?.placement, ChatPlacement::Set);
         let snapshot = state_snapshot(&mut feed).await?;
+        completed_runs::activity(&mut feed).await?;
         let mut turn = snapshot.active_turn.context("running Turn baseline")?;
         let base_revision = feed.state_revision;
         let effect_floor = feed.state_effect_floor;
@@ -215,6 +216,7 @@ async fn bounded_scan_preserves_budget_and_raw_channel_failures() -> Result<()> 
                 .await?;
             let _set = chat(&mut feed).await?;
             let _snapshot = state_snapshot(&mut feed).await?;
+            completed_runs::activity(&mut feed).await?;
             let revision = feed.state_revision;
             let floor = feed.runtime_floor.0.max(feed.runtime_floor.1);
             let (events, state) = broadcast::channel(if case == "lagged" { 2 } else { 128 });

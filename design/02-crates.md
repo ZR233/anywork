@@ -42,13 +42,13 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |
 | `pl-remote-helper` | 跨端复用的进程监督、流式读写、输出捕获写入与资源计费组件；Linux 远端辅助进程仅持有物理句柄、偏移量回执、未确认输出及实例租约 |
-| `pl-studio-runtime` | TOML/SQLite 持久化与核心时间线存储适配、产品原子事实及真实来源生命周期投影、唯一 Timeline 展示投影（`text`／`workGroup`／`status` 展示 item、成员归属与 `item_order`）及其可重建派生读模型、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、外部机器人原生接入与会话映射、资源租约，以及根会话/子会话/冷恢复的统一线程装配 |
+| `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、机器人接入与会话映射、资源租约，以及根/子会话与冷恢复的统一线程装配 |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
 | `pl-studio-acceptance` | 隔离的 GUI 与产品 API 人工验收工具（`manual-gui --preset`）、规范配置构造、模拟账号与模拟平台协调、数据库故障注入观察与验收证据采集 |
 | `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
 
-Timeline 展示分组与交接由 Studio（Rust）唯一负责：`pl-studio-runtime` 的 Timeline 投影确定 `text`／`workGroup`／`status` 顶层展示 item、成员归属与 item 顺序，并写入可重建派生读模型；Flutter 只薄接纳每条 item 并渲染一条 `Message.custom`，不计算成员归属、不封组、不拼展示前缀。Core 保持产品无关，不解释展示分组；产品语义与派生读取契约见 [26](./26-timeline-content.md)，存储与迁移见 [17](./17-studio-storage.md)。
+Native 完成记录的读取分类由 Runtime 唯一确定，Core 只比较不透明 hint 并在原发布边界分配 seq/run；原 writer 保存不可变记录和两个段索引，不持久化展示组。Flutter 原 controller 按明确呈现类别与 run.start_seq 唯一组合代表卡，SDK 不组合，Widget 不重写分类；段详情沿 Run 独立读取。完整所有权与读取契约见 [26](./26-timeline-content.md)，存储迁移见 [17](./17-studio-storage.md)。
 
 ### 工程与测试工具边界
 

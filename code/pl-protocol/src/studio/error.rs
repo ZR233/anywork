@@ -92,6 +92,8 @@ pub enum StudioErrorReason {
     StaleContent,
     /// 原读取作用域已关闭或其来源资格失效。
     StaleReadScope,
+    /// Native completed-history peer uses a missing or unsupported protocol.
+    ProtocolVersionMismatch,
 }
 
 impl StudioErrorReason {
@@ -112,6 +114,7 @@ impl StudioErrorReason {
             Self::ConversationResyncRequired => "conversationResyncRequired",
             Self::StaleContent => "staleContent",
             Self::StaleReadScope => "staleReadScope",
+            Self::ProtocolVersionMismatch => "protocolVersionMismatch",
         }
     }
 }

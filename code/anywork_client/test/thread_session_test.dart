@@ -25,6 +25,7 @@ ThreadWorkspace _workspace({
     workspacePath: '/tmp/thread',
   );
   return ThreadWorkspace(
+    businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
     thread: thread,
     revision: revision,
     interactions: const [],
@@ -119,6 +120,8 @@ void main() {
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(revision: 1, modelRoute: _route(4)),
         ),
       ),
@@ -199,18 +202,16 @@ void main() {
       legacyUnknown: true,
       countsOverflowed: false,
     );
-    final mainCurrent = emptyCurrent();
     final feed = await fixture.open(
-      initial: chatSet(
-        messages: [chatMessage(id: 'item-100')],
-        current: mainCurrent,
-      ),
+      initial: chatSet(messages: [chatMessage(id: 'item-100')]),
       demand: _demand,
     );
     final session = fixture.session();
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(
             revision: 1,
             runtime: _approvedPlanRuntime(
@@ -260,23 +261,21 @@ void main() {
     );
     expect(session.state.streamEpoch, 7);
     expect(session.state.revision, 2);
-    expect(session.current.value, same(mainCurrent));
     expect(session.state.runtime!.plan!.document!.version, 4);
     expect(session.state.runtime!.usageDiagnostics, same(diagnostics));
     expect(session.state.runtime!.cacheUsage.sampleCount, 2);
     expect(session.state.runtime!.cacheUsage.legacySampleCountUnknown, isTrue);
     expect(
-      (fixture.consumers['thread']!.batches.single.entries.single
-              as ItemChatEntry)
-          .item
-          .id,
+      (fixture.consumers['thread']!.batches.single.entries.single).recordId,
       'item-100',
     );
     await feed.deliver(
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: [ItemChatEntry(chatMessage(id: 'next'))],
+          fromSeq: 1,
+          throughSeq: 2,
+          entries: [chatMessage(id: 'next', seq: 2)],
         ),
       ),
     );
@@ -309,7 +308,11 @@ void main() {
       final session = fixture.session();
       await feed.deliver(
         ConversationStateEvent(
-          frame: ThreadSnapshotFrame(workspace: _workspace(revision: 4)),
+          frame: ThreadSnapshotFrame(
+            schemaVersion: 17,
+            completedHistoryVersion: 1,
+            workspace: _workspace(revision: 4),
+          ),
         ),
       );
       final failed = session.source.waitFor(
@@ -344,7 +347,11 @@ void main() {
     final session = fixture.session();
     await first.deliver(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 40)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 40),
+        ),
       ),
     );
     final resync = session.resyncRuntime();
@@ -353,7 +360,11 @@ void main() {
     fixture.transport.opens[1].result.complete(second);
     await second.deliver(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 3)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 3),
+        ),
       ),
     );
     expect((await resync).revision, 3);
@@ -388,7 +399,11 @@ void main() {
     });
     first.send(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 4)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 4),
+        ),
       ),
     );
     await fixture.transport.opened(1);
@@ -402,7 +417,11 @@ void main() {
     fixture.transport.opens[1].result.complete(second);
     await second.deliver(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 3)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 3),
+        ),
       ),
     );
     expect((await resync!).revision, 3);
@@ -421,7 +440,11 @@ void main() {
     final session = fixture.session();
     await first.deliver(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 4)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 4),
+        ),
       ),
     );
     Future<ThreadWorkspace>? resync;
@@ -479,7 +502,11 @@ void main() {
     final session = fixture.session();
     await feed.deliver(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace(revision: 12)),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(revision: 12),
+        ),
       ),
     );
     final snapshotThread = session.state.workspace!.thread;
@@ -523,6 +550,8 @@ void main() {
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace().copyWith(latestTurn: terminal),
         ),
       ),
@@ -589,10 +618,7 @@ void main() {
       final session = fixture.session();
       await session.content.ready;
       expect(
-        (fixture.consumers['thread']!.batches.single.entries.single
-                as ItemChatEntry)
-            .item
-            .id,
+        (fixture.consumers['thread']!.batches.single.entries.single).recordId,
         'item-2',
       );
       expect(session.state.hasSnapshot, isFalse);
@@ -672,10 +698,7 @@ void main() {
         batch: chatSet(messages: [chatMessage(id: 'item-9')]),
       ),
     );
-    expect(
-      (consumer.batches.single.entries.single as ItemChatEntry).item.id,
-      'item-9',
-    );
+    expect((consumer.batches.single.entries.single).recordId, 'item-9');
     observation.cancel();
     await fixture.close();
   });
@@ -703,10 +726,7 @@ void main() {
         batch: chatSet(messages: [chatMessage(id: 'item-4')]),
       ),
     );
-    expect(
-      (consumer.batches.single.entries.single as ItemChatEntry).item.id,
-      'item-4',
-    );
+    expect((consumer.batches.single.entries.single).recordId, 'item-4');
     observation.cancel();
     await fixture.close();
   });
@@ -730,6 +750,8 @@ void main() {
       await feed.deliver(
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
+            schemaVersion: 17,
+            completedHistoryVersion: 1,
             workspace: _workspace(latestTurn: terminalA),
           ),
         ),
@@ -740,6 +762,8 @@ void main() {
       await feed.deliver(
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
+            schemaVersion: 17,
+            completedHistoryVersion: 1,
             workspace: _workspace(
               revision: 2,
               latestTurn: _turnView(turnId: 'turn-b', revision: 5),
@@ -753,6 +777,8 @@ void main() {
       await feed.deliver(
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
+            schemaVersion: 17,
+            completedHistoryVersion: 1,
             workspace: _workspace(
               revision: 3,
               latestTurn: _turnView(
@@ -776,6 +802,8 @@ void main() {
       await feed.deliver(
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
+            schemaVersion: 17,
+            completedHistoryVersion: 1,
             workspace: _workspace(
               revision: 4,
               latestTurn: _turnView(turnId: 'turn-b', revision: 9),
@@ -807,6 +835,8 @@ void main() {
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(latestTurn: terminalA),
         ),
       ),
@@ -815,6 +845,8 @@ void main() {
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(
             revision: 2,
             latestTurn: _turnView(turnId: 'turn-b', revision: 6),
@@ -840,6 +872,8 @@ void main() {
     await first.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(
             revision: 10,
             latestTurn: _turnView(
@@ -867,6 +901,8 @@ void main() {
     await second.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
           workspace: _workspace(
             revision: 3,
             latestTurn: _turnView(

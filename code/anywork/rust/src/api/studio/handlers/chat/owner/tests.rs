@@ -50,11 +50,14 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
                     owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                 }
                 BridgeConversationEvent::Chat { batch } => {
-                    ensure!(batch.current.is_some());
+                    ensure!(batch.placement == crate::api::studio::types::BridgeChatPlacement::Set);
                     break (
                         frame.delivery_sequence,
                         batch.before.context("fixture needs older items")?,
                     );
+                }
+                BridgeConversationEvent::Activity { .. } => {
+                    owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                 }
                 event => anyhow::bail!("unexpected initial event: {event:?}"),
             }
@@ -94,7 +97,6 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
             crate::api::studio::types::BridgeChatPlacement::Prepend
         ));
         ensure!(!page.entries.is_empty());
-        ensure!(page.current.is_none());
         ensure!(
             port.try_recv().is_err(),
             "query must neither ACK nor publish another stream frame"

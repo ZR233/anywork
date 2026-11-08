@@ -12,6 +12,7 @@ use std::future::Future;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Inventory {
+    pub project_id: Option<String>,
     pub thread_id: Option<String>,
     pub main_items: Option<usize>,
     batches: Vec<BatchReceipt>,
@@ -42,6 +43,7 @@ pub(super) fn run(
         for index in 0..2 {
             checkpoint(context.interrupt)?;
             let mut inventory = Inventory {
+                project_id: None,
                 thread_id: None,
                 main_items: None,
                 batches: Vec::with_capacity(GUI_TIMELINE_HISTORY_20K_SEED_BATCHES),
@@ -159,6 +161,7 @@ async fn seed_batches(
     inventory: &mut Inventory,
 ) -> Result<String> {
     let workspace = runtime.open_project(project).await?;
+    inventory.project_id = Some(workspace.id.clone());
     let input_id = |batch| format!("profile-read-{index}-{batch:02}");
     let created = runtime
         .create_thread_command(
@@ -190,9 +193,12 @@ async fn seed_batches(
             thread_id: id.clone(),
         })
         .await?;
+    // One State baseline belongs to this subscription, not to each seeded Turn.
+    let mut saw_snapshot = false;
     let mut revision = completed(
         runtime,
         &mut subscription,
+        &mut saw_snapshot,
         &id,
         &input_id(1),
         interrupt,
@@ -217,6 +223,7 @@ async fn seed_batches(
         revision = completed(
             runtime,
             &mut subscription,
+            &mut saw_snapshot,
             &id,
             &input_id(batch),
             interrupt,
@@ -230,6 +237,7 @@ async fn seed_batches(
 async fn completed(
     runtime: &StudioRuntime,
     subscription: &mut StudioThreadSubscription,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     input_id: &str,
     interrupt: &mpsc::Receiver<()>,
@@ -247,16 +255,37 @@ async fn completed(
             let Some(update) = update else {
                 bail!("seed Thread stream ended");
             };
-            if let ThreadSubscriptionUpdate::Notification { notification } = update
-                && let ThreadNotification::TurnCompleted { turn } = notification.notification
-                && turn.input_id.as_deref() == Some(input_id)
-            {
-                ensure!(
-                    matches!(turn.state, pl_protocol::TurnState::Completed(_)),
-                    "seed Turn failed: {:?}",
-                    turn.state
-                );
-                break turn.id;
+            match update {
+                ThreadSubscriptionUpdate::Snapshot {
+                    completed_history_version,
+                    ..
+                } => {
+                    ensure!(
+                        !*saw_snapshot,
+                        "seed subscription repeated its initial State snapshot"
+                    );
+                    ensure!(
+                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        "unsupported completed history version {completed_history_version}"
+                    );
+                    *saw_snapshot = true;
+                }
+                ThreadSubscriptionUpdate::Notification { notification } => {
+                    ensure!(
+                        *saw_snapshot,
+                        "seed notification arrived before State snapshot"
+                    );
+                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
+                        && turn.input_id.as_deref() == Some(input_id)
+                    {
+                        ensure!(
+                            matches!(turn.state, pl_protocol::TurnState::Completed(_)),
+                            "seed Turn failed: {:?}",
+                            turn.state
+                        );
+                        break turn.id;
+                    }
+                }
             }
         };
         // Retain the successful Turn even if the snapshot or save wait fails.
@@ -274,8 +303,10 @@ async fn completed(
         let (target_sequence, revision) = {
             let snapshot = runtime.thread_snapshot(thread_id).await?;
             ensure!(
-                snapshot.thread.id == thread_id,
-                "seed snapshot belongs to another Thread: {}",
+                snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                    && snapshot.thread.id == thread_id,
+                "seed snapshot schema/Thread identity mismatch: schema={} thread={}",
+                snapshot.schema_version,
                 snapshot.thread.id
             );
             ensure!(

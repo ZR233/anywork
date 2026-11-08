@@ -20,81 +20,83 @@ ChatAtom fixtureMember(String id) => ChatAtom(
   contents: const [],
 );
 
-TimelineItem fixtureItem({required String id, required PayloadData payload}) =>
-    TimelineItem(
-      id: id,
-      contentItemId: id,
-      source: ReceiptChatSource(receiptId: id),
-      kind: TimelineItemKind.status,
-      atomKind: ChatAtomKind.receipt,
-      delivery: ChatDeliveryKind.independent,
-      outcome: ChatTerminalOutcome.completed,
-      admissionClosed: true,
-      contents: const [],
-      payload: payload,
+CompletedEntry completedFixture(String id, {int seq = 1, ChatAtom? atom}) =>
+    CompletedEntry(
+      recordId: id,
+      completionSeq: seq,
+      run: CompletionRunPosition(startSeq: seq, ordinal: 1),
+      mainPresentation: MainPresentation.single,
+      atom: atom ?? fixtureMember(id),
     );
 
-TimelineItem chatMessage({
+CompletedEntry fixtureItem({
+  required String id,
+  required PayloadData payload,
+  int seq = 2,
+}) => completedFixture(
+  id,
+  seq: seq,
+  atom: ChatAtom(
+    id: id,
+    completionItemId: id,
+    source: ReceiptChatSource(receiptId: id),
+    sourceOrder: null,
+    kind: ChatAtomKind.receipt,
+    delivery: ChatDeliveryKind.independent,
+    lifecycle: const TerminalChatAtom(
+      started: null,
+      ended: null,
+      outcome: ChatTerminalOutcome.completed,
+    ),
+    contents: const [],
+    payload: payload,
+  ),
+);
+
+CompletedEntry chatMessage({
   String id = 'item',
   String body = 'body',
   String? turnId = 'turn',
   String channel = 'final',
-}) {
-  final inline = utf8.encode(body);
-  return TimelineItem(
-    id: id,
-    contentItemId: id,
-    source: ReceiptChatSource(receiptId: id),
-    kind: TimelineItemKind.text,
-    atomKind: ChatAtomKind.text,
-    delivery: ChatDeliveryKind.independent,
-    outcome: ChatTerminalOutcome.completed,
-    admissionClosed: true,
-    contents: const [],
-    payload: InlinePayload(
-      bytes: utf8.encode(
-        jsonEncode({
-          'contract': 'anywork.chat/1',
-          'type': 'text',
-          if (turnId != null) 'turnId': turnId,
-          'data': {
-            'channel': channel,
-            'attachments': <Object?>[],
-            'outcome': {
-              'kind': 'completed',
-              'data': {'completedAt': 0},
-            },
+  int seq = 1,
+}) => fixtureItem(
+  id: id,
+  seq: seq,
+  payload: InlinePayload(
+    bytes: utf8.encode(
+      jsonEncode({
+        'contract': 'anywork.chat/1',
+        'type': 'text',
+        if (turnId != null) 'turnId': turnId,
+        'data': {
+          'channel': channel,
+          'attachments': <Object?>[],
+          'outcome': {
+            'kind': 'completed',
+            'data': {'completedAt': 0},
           },
-          'bodies': [
-            {'key': 'body', 'byteLength': inline.length, 'inline': inline},
-          ],
-        }),
-      ),
+        },
+        'bodies': [
+          {
+            'key': 'body',
+            'byteLength': utf8.encode(body).length,
+            'inline': utf8.encode(body),
+          },
+        ],
+      }),
     ),
-  );
-}
-
-CurrentProjection emptyCurrent() => CurrentProjection(
-  sourceEffectSeq: 0,
-  logicalStatus: ThreadStatusView.idle,
-  executionPresent: false,
-  sources: const [],
-  items: const [],
-  atoms: const [],
-  previews: const [],
-  collections: const [],
+  ),
 );
 
-ChatBatch chatSet({
-  List<TimelineItem>? messages,
-  String? before,
-  CurrentProjection? current,
-}) => ChatBatch(
-  placement: ChatPlacement.set,
-  entries: (messages ?? [chatMessage()]).map(ItemChatEntry.new).toList(),
-  before: before,
-  current: current ?? emptyCurrent(),
-);
+ChatBatch chatSet({List<CompletedEntry>? messages, String? before}) =>
+    ChatBatch(
+      placement: ChatPlacement.set,
+      entries: messages ?? [chatMessage()],
+      before: before,
+      throughSeq: messages == null || messages.isEmpty
+          ? 1
+          : messages.last.completionSeq,
+    );
 
 /// A scripted external source, never an alternate reducer. It allows malformed
 /// envelopes for rejection tests. Normal producers wait for acknowledgement.
@@ -228,6 +230,9 @@ class TestConversationReader implements ConversationReader {
   TestConversationReader({this.threadId = 'thread'});
   @override
   final String threadId;
+  Future<ThreadBusinessRefs> Function()? onBusinessRefs;
+  Future<CompletedEntry> Function(String recordId, ReadDemand demand)?
+  onCompleted;
   Future<ChatBatch> Function(String before, ReadDemand demand)? onOlder;
   Future<ContentManifestPage> Function(
     String itemId,
@@ -252,6 +257,19 @@ class TestConversationReader implements ConversationReader {
   bool requested = false;
   Completer<void>? closeGate;
   Object? closeFailure;
+
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() =>
+      onBusinessRefs?.call() ??
+      Future.error(UnsupportedError('Unscripted readBusinessRefs'));
+
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) =>
+      onCompleted?.call(recordId, demand) ??
+      Future.error(UnsupportedError('Unscripted readCompleted'));
 
   @override
   Future<ChatBatch> loadOlder({
@@ -528,6 +546,12 @@ class ConversationFixture {
 }
 
 final class TestCompletionConsumer implements ConversationBatchConsumer {
+  final List<ActivitySnapshot> activities = [];
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    activities.add(snapshot);
+  }
+
   final List<ChatBatch> batches = [];
   final Map<int, Completer<void>> _waiters = {};
   Future<void> waitForCount(int count) => batches.length >= count

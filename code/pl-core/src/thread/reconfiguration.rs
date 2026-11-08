@@ -104,7 +104,7 @@ impl Owner {
             self.pending_model_update = pending_model_update;
         }
         self.retry_plan = None;
-        self.publish();
+        self.publish()?;
         Ok(self.state.clone())
     }
 }

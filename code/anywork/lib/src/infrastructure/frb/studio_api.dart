@@ -12,6 +12,7 @@ import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/conversation.dart' show ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -30,7 +31,6 @@ import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
-import '../../rust/api/studio/types/timeline.dart' as frb_timeline_types;
 import '../../rust/api/studio/types/command.dart' as frb_command;
 import '../../rust/api/studio/handlers/attachment.dart' as frb_attachment;
 import '../../rust/api/studio/handlers/ssh.dart' as frb_ssh;

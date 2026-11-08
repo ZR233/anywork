@@ -6,31 +6,31 @@ pub(crate) use billing::AuxiliaryBillingReceipt;
 #[cfg(test)]
 pub(in crate::studio) use billing::billing_facts;
 mod activity;
+mod completed_activity;
 pub(in crate::studio) use activity::project_activity;
+pub(in crate::studio) use completed_activity::activity_identity;
+#[cfg(test)]
+pub(in crate::studio) use completed_activity::completed_activity_identity;
 mod completions;
 pub(crate) use completions::committed_finish;
 mod content;
 mod current;
 mod current_page;
 pub(in crate::studio) use current_page::current_page;
-mod current_handoff;
 mod current_projection;
 pub(in crate::studio) use content::{
-    continuation_request_digest, input_presentation, prompt_request_digest,
-    referenced_attachment_ids, saved_prompt_request_digest,
+    ContentError, InputView, continuation_request_digest, input_presentation, input_view,
+    prompt_request_digest, referenced_attachment_ids, saved_prompt_request_digest,
 };
-pub(in crate::studio) use current::CurrentState;
-pub(in crate::studio) use current_handoff::{CurrentHandoff, CurrentRetirement};
+pub(in crate::studio) use current::{CurrentState, project_business_refs};
 pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
 mod live;
-pub(in crate::studio) mod timeline;
 pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
     seed_repaired_targets,
 };
-pub(in crate::studio) use timeline::TimelineProjection;
 // The free item estimate is only read outside its own module by the storage
 // fault test that asserts the budget covers real bodies, so it stays test-only.
 #[cfg(test)]

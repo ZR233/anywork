@@ -182,7 +182,7 @@ mod tests {
                 currency: "CNY".into(),
                 amount: 8.25,
             });
-        Ok(ThreadCheckpoint::capture("producer".into(), 0, state))
+        Ok(ThreadCheckpoint::capture("producer".into(), 0, state)?)
     }
 
     async fn raw(db: &impl ConnectionTrait) -> Result<(String, String, String, String)> {

@@ -9,7 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/chat_fixtures.dart';
 import '../support/test_statistics_feed.dart';
 
-// Main Chat.current and State facts traverse the real SDK and display owner.
+// Main Activity and State facts traverse the real SDK and display owner.
 // Empty-message Append must not touch the historical component collection. A
 // explicit producer-item Append below is the positive control for operation observation.
 void main() {
@@ -43,6 +43,7 @@ void main() {
     final session = graph.client.conversations.session(threadId);
     await session.source.waitFor((state) => state.hasSnapshot);
     await session.content.ready;
+    await session.activity.waitFor((snapshot) => snapshot != null);
 
     final lease = graph.timeline.lease(threadId)!;
     expect(lease.controller.messages, isNotEmpty);
@@ -81,52 +82,49 @@ void main() {
       );
     }
 
-    final current = CurrentProjection(
-      sources: const [],
-      atoms: const [],
-      items: const [],
-      sourceEffectSeq: 17,
-      logicalStatus: ThreadStatusView.running,
+    final activity = ActivitySnapshot(
+      revision: (session.activity.value?.revision ?? 0) + 1,
+      completedThrough: feed.completedThrough,
       executionPresent: true,
-      previews: const [
-        CurrentContentPreview(
-          id: 'live',
-          role: CurrentContentRole.response,
-          text: 'hello live!',
-          reference: ContentRef(
-            databaseId: 'database',
-            target: BodyContentTarget(
-              owner: CurrentContentOwner(
-                domain: 'response',
-                id: 'live',
-                revision: 1,
-              ),
-              key: 'body',
+      entries: [
+        ActivityEntry(
+          identity: const ModelPartActivityIdentity(atomId: 'live'),
+          atom: ChatAtom(
+            id: 'live',
+            source: const ForegroundTurnChatSource(turnId: 'turn-isolation'),
+            sourceOrder: 1,
+            kind: ChatAtomKind.text,
+            delivery: ChatDeliveryKind.foreground,
+            lifecycle: const ActiveChatAtom(
+              started: null,
+              status: ChatActiveStatus.running,
             ),
+            contents: const [],
+            payload: InlinePayload(bytes: [65]),
           ),
         ),
       ],
-      collections: const [],
     );
+    await feed.emitAndWait(ConversationActivityEvent(snapshot: activity));
+    expect(session.activity.value, same(activity));
+    expect(session.activity.value!.entries.single.atom.id, 'live');
+    expectRealtimeOnly('Activity snapshot');
     await feed.emitAndWait(
       ConversationChatEvent(
-        batch: chatBatch([], placement: ChatPlacement.append, current: current),
-      ),
-    );
-    expect(session.current.value, same(current));
-    expect(session.current.value!.previews.single.text, 'hello live!');
-    expectRealtimeOnly('current preview');
-    await feed.emitAndWait(
-      ConversationChatEvent(
-        batch: chatBatch([], placement: ChatPlacement.append),
+        batch: chatBatch(
+          [],
+          placement: ChatPlacement.append,
+          fromSeq: feed.completedThrough,
+          throughSeq: feed.completedThrough + 1,
+        ),
       ),
     );
     expect(
-      session.current.value,
-      same(current),
-      reason: 'None preserves Main.current',
+      session.activity.value,
+      same(activity),
+      reason: 'Empty Append cannot replace Activity',
     );
-    expectRealtimeOnly('None current');
+    expectRealtimeOnly('empty Append');
     // 2. typed runtime/token/usage/计时事实。
     final runtimeBefore = session.state.runtime!;
     final liveUsage = ThreadRuntimeLiveUsageView(
@@ -191,9 +189,9 @@ void main() {
       ),
     );
     expect(
-      session.current.value,
-      same(current),
-      reason: 'State turn cannot overwrite Chat.current',
+      session.activity.value,
+      same(activity),
+      reason: 'State turn cannot overwrite Activity',
     );
     await publish(
       ThreadActivityUpdate(
@@ -208,9 +206,9 @@ void main() {
       ),
     );
     expect(
-      session.current.value,
-      same(current),
-      reason: 'State activity cannot overwrite Chat.current',
+      session.activity.value,
+      same(activity),
+      reason: 'State activity cannot overwrite Activity',
     );
     expectRealtimeOnly('Turn/活动进度');
 
@@ -237,7 +235,10 @@ void main() {
     await feed.emitAndWait(
       ConversationChatEvent(
         batch: chatBatch([
-          chatMessage('isolation-completed'),
+          chatMessage(
+            'isolation-completed',
+            completionSeq: feed.completedThrough + 1,
+          ),
         ], placement: ChatPlacement.append),
       ),
     );
@@ -250,18 +251,20 @@ void main() {
     expect(lease.controller.messages.last.id, 'isolation-completed');
     expect(feed.reader.queries, 0);
     await feed.emitAndWait(
-      ConversationChatEvent(
-        batch: chatBatch(
-          [],
-          placement: ChatPlacement.append,
-          current: chatCurrent(sequence: 18),
+      ConversationActivityEvent(
+        snapshot: ActivitySnapshot(
+          revision: activity.revision + 1,
+          completedThrough: feed.completedThrough,
+          executionPresent: false,
+          entries: const [],
         ),
       ),
     );
     expect(
-      session.current.value!.previews,
+      session.activity.value!.entries,
       isEmpty,
-      reason: 'concrete empty projection clears current',
+      reason:
+          'An explicit empty Activity snapshot retires unfinished operations',
     );
   });
 }
@@ -293,6 +296,7 @@ final class _InjectingFeed implements ConversationFeed {
   final ConversationFeed inner;
   final acknowledgements = <int>[];
   int deliveredFrames = 0;
+  int completedThrough = 0;
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
@@ -330,6 +334,9 @@ final class _InjectingFeed implements ConversationFeed {
     _subscription = inner.events.listen(
       (frame) {
         if (_closed) return;
+        if (frame.event case ConversationChatEvent(:final batch)) {
+          completedThrough = batch.throughSeq;
+        }
         final terminal =
             frame.event is ConversationClosedEvent ||
             frame.event is ConversationFailureEvent;
@@ -357,6 +364,9 @@ final class _InjectingFeed implements ConversationFeed {
   /// 在传输输入边界发布一条显式 typed 事实，并等待 SDK 的真实 ACK。
   Future<void> emitAndWait(ConversationEvent event) {
     if (_closed) return Future.error(StateError('Injecting feed is closed'));
+    if (event case ConversationChatEvent(:final batch)) {
+      completedThrough = batch.throughSeq;
+    }
     final accepted = Completer<void>();
     final sequence = ++_sequence;
     deliveredFrames = _sequence;
@@ -421,6 +431,21 @@ final class _InjectingFeed implements ConversationFeed {
 
 // Count actual queries without retaining messages or implementing admission.
 final class _CountingReader implements ConversationReader {
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() {
+    queries++;
+    return inner.readBusinessRefs();
+  }
+
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) {
+    queries++;
+    return inner.readCompleted(recordId: recordId, demand: demand);
+  }
+
   _CountingReader(this.inner);
   final ConversationReader inner;
   int queries = 0;

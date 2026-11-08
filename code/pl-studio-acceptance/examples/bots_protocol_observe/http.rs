@@ -10,7 +10,7 @@ use pl_protocol::studio::{
     StartBotRegistrationRequest, StudioError,
 };
 use pl_protocol::{
-    ChatBatch, ChatPlacement, ChatScope, ContentRange, ContentRef, ContentWindow,
+    ChatBatch, ChatPlacement, ChatScope, CompletionRunRef, ContentRange, ContentRef, ContentWindow,
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
 };
 use pl_studio_runtime::StudioThreadDirectoryPage;
@@ -39,6 +39,7 @@ pub(crate) struct StudioHttp {
 pub(crate) struct ChatRead {
     http: StudioHttp,
     thread_id: String,
+    scope: ChatScope,
     capability: String,
     _stream: BoxStream<'static, Result<Event, EventStreamError<anyhow::Error>>>,
 }
@@ -64,15 +65,31 @@ impl std::fmt::Display for StudioHttpFailure {
 impl std::error::Error for StudioHttpFailure {}
 
 impl ChatRead {
-    pub async fn open_members(
+    pub async fn open_children(
         &self,
-        reference: &pl_protocol::TimelineMembersRef,
+        parent_id: &str,
         demand: ReadDemand,
     ) -> Result<(ChatRead, ChatBatch)> {
         self.http
             .open_chat(
                 &self.thread_id,
-                ChatScope::GroupMembers {
+                ChatScope::Children {
+                    parent_id: parent_id.to_owned(),
+                },
+                demand,
+            )
+            .await
+    }
+
+    pub async fn open_run(
+        &self,
+        reference: &CompletionRunRef,
+        demand: ReadDemand,
+    ) -> Result<(ChatRead, ChatBatch)> {
+        self.http
+            .open_chat(
+                &self.thread_id,
+                ChatScope::Run {
                     reference: reference.clone(),
                 },
                 demand,
@@ -88,15 +105,82 @@ impl ChatRead {
             )
             .await?;
         ensure!(
-            batch.placement == ChatPlacement::Prepend && batch.current.is_none(),
-            "older conversation response is not a current-free Prepend"
+            batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none(),
+            "older conversation response is not a valid Prepend"
         );
+        batch.validate_for(&self.scope)?;
         ensure!(
             batch.entries.len() <= demand.max_items as usize
                 && batch.encoded_len()? <= demand.max_bytes as usize,
             "older conversation response exceeded demand"
         );
         Ok(batch)
+    }
+
+    /// Observe the original feed's typed Thread State notifications after the
+    /// initial snapshot and Main Set; no synthetic completion is inferred from
+    /// a successful receipt in the Main projection.
+    pub async fn next_notification(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<pl_protocol::ThreadNotificationEnvelope> {
+        loop {
+            let event = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                self._stream.next(),
+            )
+            .await
+            .context("Thread notification read exceeded observation deadline")?
+            .context("conversation SSE ended before the required State notification")??;
+            match event.event.as_str() {
+                "notification" => {
+                    let update: pl_protocol::ThreadSubscriptionUpdate =
+                        serde_json::from_str(&event.data)?;
+                    let pl_protocol::ThreadSubscriptionUpdate::Notification { notification } =
+                        update
+                    else {
+                        bail!("conversation SSE notification frame carried a different update");
+                    };
+                    return Ok(*notification);
+                }
+                "activity" | "chat" => continue,
+                "lagged" => bail!("conversation SSE lagged before required State notification"),
+                "error" => {
+                    let error: StudioError = serde_json::from_str(&event.data)?;
+                    bail!("conversation SSE: {} ({:?})", error.message, error.code);
+                }
+                "closed" => bail!("conversation SSE closed before the required State notification"),
+                other => bail!("unexpected conversation SSE event {other}"),
+            }
+        }
+    }
+
+    /// Consume a separate ActivitySnapshot event from the original feed.
+    /// Activity is not a field on a completed Main record or ChatBatch.
+    pub async fn next_activity(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<pl_protocol::ActivitySnapshot> {
+        loop {
+            let event = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                self._stream.next(),
+            )
+            .await
+            .context("ActivitySnapshot read exceeded observation deadline")?
+            .context("conversation SSE ended before ActivitySnapshot")??;
+            match event.event.as_str() {
+                "activity" => return Ok(serde_json::from_str(&event.data)?),
+                "notification" | "chat" => continue,
+                "lagged" => bail!("conversation SSE lagged before ActivitySnapshot"),
+                "error" => {
+                    let error: StudioError = serde_json::from_str(&event.data)?;
+                    bail!("conversation SSE: {} ({:?})", error.message, error.code);
+                }
+                "closed" => bail!("conversation SSE closed before ActivitySnapshot"),
+                other => bail!("unexpected conversation SSE event {other}"),
+            }
+        }
     }
 
     pub async fn page_current(
@@ -333,7 +417,22 @@ impl StudioHttp {
 
     /// Canonical Thread snapshot (public projection, including the active Turn).
     pub async fn read_thread(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
-        self.get_json(&format!("/api/v1/threads/{thread_id}")).await
+        let snapshot: pl_protocol::ThreadSnapshot = self
+            .get_json(&format!("/api/v1/threads/{thread_id}"))
+            .await?;
+        ensure!(
+            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+            "Thread {} schema version {} is unsupported; expected {}",
+            snapshot.thread.id,
+            snapshot.schema_version,
+            pl_protocol::THREAD_SCHEMA_VERSION
+        );
+        ensure!(
+            snapshot.thread.id == thread_id,
+            "Thread State belonged to {} instead of {thread_id}",
+            snapshot.thread.id
+        );
+        Ok(snapshot)
     }
 
     /// Read the initial bounded Set and retain its *original* SSE/read lease.
@@ -363,18 +462,11 @@ impl StudioHttp {
                 ChatScope::Children { parent_id } => {
                     query.append_pair("parentId", parent_id);
                 }
-                ChatScope::GroupMembers { reference } => {
+                ChatScope::Run { reference } => {
                     query
-                        .append_pair("membersDatabaseId", &reference.database_id)
-                        .append_pair(
-                            "membersProjectionVersion",
-                            &reference.projection_version.to_string(),
-                        )
-                        .append_pair(
-                            "membersProjectionGeneration",
-                            &reference.projection_generation,
-                        )
-                        .append_pair("membersItemId", &reference.item_id);
+                        .append_pair("runDatabaseId", &reference.database_id)
+                        .append_pair("runIndexVersion", &reference.index_version.to_string())
+                        .append_pair("runStartSeq", &reference.start_seq.to_string());
                 }
             }
         }
@@ -426,6 +518,7 @@ impl StudioHttp {
             .boxed();
         let batch = tokio::time::timeout(PREDICATE_TIMEOUT, async {
             // State precedes Chat; only the bounded initial Chat is retained.
+            let mut saw_snapshot = false;
             for _ in 0..256 {
                 let event = stream
                     .next()
@@ -436,7 +529,32 @@ impl StudioHttp {
                     "conversation SSE event exceeded budget"
                 );
                 match event.event.as_str() {
+                    "snapshot" => {
+                        ensure!(!saw_snapshot, "conversation SSE sent multiple initial snapshots");
+                        let update: pl_protocol::ThreadSubscriptionUpdate =
+                            serde_json::from_str(&event.data)?;
+                        let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                            completed_history_version,
+                            snapshot,
+                            ..
+                        } = update
+                        else {
+                            bail!("conversation SSE snapshot frame carried a different update");
+                        };
+                        ensure!(
+                            completed_history_version
+                                == pl_protocol::COMPLETED_HISTORY_VERSION,
+                            "conversation SSE completed history version {completed_history_version} is unsupported"
+                        );
+                        ensure!(
+                            snapshot.thread.id == thread_id
+                                && snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+                            "conversation SSE State snapshot identity/schema did not match the current contract"
+                        );
+                        saw_snapshot = true;
+                    }
                     "chat" => {
+                        ensure!(saw_snapshot, "conversation SSE delivered Chat before State snapshot");
                         let batch: ChatBatch = serde_json::from_str(&event.data)?;
                         batch.validate_for(&scope)?;
                         ensure!(
@@ -444,6 +562,16 @@ impl StudioHttp {
                             "first Chat was not Set"
                         );
                         return Ok::<_, anyhow::Error>(batch);
+                    }
+                    "activity" => {}
+                    "notification" => {
+                        ensure!(saw_snapshot, "conversation SSE delivered notification before State snapshot");
+                        let update: pl_protocol::ThreadSubscriptionUpdate =
+                            serde_json::from_str(&event.data)?;
+                        ensure!(
+                            matches!(update, pl_protocol::ThreadSubscriptionUpdate::Notification { .. }),
+                            "conversation SSE notification frame carried a different update"
+                        );
                     }
                     "error" => {
                         let error: StudioError = serde_json::from_str(&event.data)?;
@@ -456,7 +584,6 @@ impl StudioHttp {
                             crate::env::redact(&event.data)
                         )
                     }
-                    "snapshot" | "notification" => {}
                     other => bail!("unexpected conversation SSE event {other}"),
                 }
             }
@@ -468,6 +595,7 @@ impl StudioHttp {
             ChatRead {
                 http: self.clone(),
                 thread_id: thread_id.to_owned(),
+                scope: scope.clone(),
                 capability,
                 _stream: stream,
             },

@@ -22,8 +22,9 @@ use std::{
 use tokio::sync::watch;
 
 use crate::chat::{
-    ChatContent, ChatContentKey, ChatDraft, ChatError, ChatHistory, ChatItem, ChatKey, ChatQuery,
-    TimelineEpoch, history::ErasedChatHistory, item::draft_matches_record,
+    ChatContent, ChatContentKey, ChatDraft, ChatError, ChatHistory, ChatItem, ChatKey,
+    ChatPublicationSeed, ChatQuery, ChatRunSeed, ChatSelection, TimelineEpoch,
+    history::ErasedChatHistory, item::draft_matches_record,
 };
 
 /// 会话的完成集合状态。所有字段只在短临界区内被读写。
@@ -35,6 +36,7 @@ pub(crate) struct TimelineState {
     pub(crate) head: u64,
     /// 连续持久化前缀 D：writer 已确认真实提交的最大 `append_seq`。
     pub(crate) durable: u64,
+    last_visible: Option<ChatRunSeed>,
     /// 按序 pending 的完整不可变记录，覆盖 `(durable, head]`。
     ///
     /// 每条记录与 writer 持有的是同一个 `Arc`：回收前读取只拿有界引用，不复制正文。pending 的
@@ -42,11 +44,19 @@ pub(crate) struct TimelineState {
     pending: BTreeMap<u64, Arc<ChatItem>>,
     pending_ids: BTreeMap<String, u64>,
     by_class: BTreeMap<String, BTreeMap<u64, Arc<ChatItem>>>,
+    visible_by_class: BTreeMap<String, BTreeMap<u64, Arc<ChatItem>>>,
+    by_run: BTreeMap<(String, u64), BTreeMap<u64, Arc<ChatItem>>>,
     by_parent_class: BTreeMap<(ChatKey, String), BTreeMap<u64, Arc<ChatItem>>>,
     pending_contents: BTreeMap<ChatContentKey, BTreeMap<u64, Arc<ChatContent>>>,
 }
 
 impl TimelineState {
+    /// Pending completion records and distinct content keys, not the number of Arc references
+    /// retained by the secondary indexes or external readers/writers.
+    pub(super) fn pending_counts(&self) -> (usize, usize) {
+        (self.pending.len(), self.pending_contents.len())
+    }
+
     /// Select membership before iteration; hidden pending entries are never visited.
     pub(crate) fn pending_index(
         &self,
@@ -57,10 +67,22 @@ impl TimelineState {
             Some(ChatQuery {
                 query_class,
                 parent_id: None,
+                selection: ChatSelection::Records,
             }) => self.by_class.get(query_class),
             Some(ChatQuery {
                 query_class,
+                selection: ChatSelection::RunHeads,
+                ..
+            }) => self.visible_by_class.get(query_class),
+            Some(ChatQuery {
+                query_class,
+                selection: ChatSelection::Run { start_seq },
+                ..
+            }) => self.by_run.get(&(query_class.clone(), *start_seq)),
+            Some(ChatQuery {
+                query_class,
                 parent_id: Some(parent),
+                ..
             }) => self
                 .by_parent_class
                 .get(&(parent.clone(), query_class.clone())),
@@ -88,6 +110,16 @@ impl TimelineState {
             .entry(header.query_class.clone())
             .or_default()
             .insert(header.append_seq, record.clone());
+        if let Some(run) = header.run {
+            self.visible_by_class
+                .entry(header.query_class.clone())
+                .or_default()
+                .insert(header.append_seq, record.clone());
+            self.by_run
+                .entry((header.query_class.clone(), run.start_seq))
+                .or_default()
+                .insert(header.append_seq, record.clone());
+        }
         if let Some(parent) = &header.parent_id {
             self.by_parent_class
                 .entry((parent.clone(), header.query_class.clone()))
@@ -106,6 +138,21 @@ impl TimelineState {
     fn remove_indexes(&mut self, record: &ChatItem) {
         let header = &record.header;
         self.pending_ids.remove(&header.item_id);
+        if let Some(run) = header.run {
+            if let Some(index) = self.visible_by_class.get_mut(&header.query_class) {
+                index.remove(&header.append_seq);
+                if index.is_empty() {
+                    self.visible_by_class.remove(&header.query_class);
+                }
+            }
+            let key = (header.query_class.clone(), run.start_seq);
+            if let Some(index) = self.by_run.get_mut(&key) {
+                index.remove(&header.append_seq);
+                if index.is_empty() {
+                    self.by_run.remove(&key);
+                }
+            }
+        }
         if let Some(index) = self.by_class.get_mut(&header.query_class) {
             index.remove(&header.append_seq);
             if index.is_empty() {
@@ -136,7 +183,7 @@ pub(crate) struct SessionInner {
     pub(crate) history: Arc<dyn ErasedChatHistory>,
     /// 宿主注入的运行代际；构造即固定，生命周期内不变。
     pub(crate) epoch: TimelineEpoch,
-    seq_seed: tokio::sync::OnceCell<u64>,
+    seq_seed: tokio::sync::OnceCell<ChatPublicationSeed>,
     pub(crate) timeline: Mutex<TimelineState>,
     /// 只承载完成上界的唤醒水位。保存确认不发内容事件；内容帧由读取方相对自己的交付位置计算。
     pub(crate) changed: watch::Sender<u64>,
@@ -230,15 +277,14 @@ impl Session {
         let seed = self
             .0
             .seq_seed
-            .get_or_try_init(|| self.0.history.latest_append_seq())
+            .get_or_try_init(|| self.0.history.publication_seed())
             .await?;
-        if *seed > i64::MAX as u64 {
-            return Err(ChatError::SeqExhausted);
-        }
+        seed.validate()?;
         let mut state = self.lock_timeline();
         if !state.initialized {
-            state.head = state.head.max(*seed);
-            state.durable = state.durable.max(*seed);
+            state.head = seed.head_seq;
+            state.durable = seed.head_seq;
+            state.last_visible = seed.last_visible.clone();
             state.initialized = true;
             self.0.changed.send_replace(state.head);
         }
@@ -283,6 +329,7 @@ impl Session {
             for draft in unresolved {
                 match self.0.history.item(&draft.item_id).await? {
                     Some(persisted) => {
+                        persisted.header.validate_run()?;
                         if !draft_matches_record(&draft, &persisted) {
                             return Err(ChatError::Conflict(draft.item_id));
                         }
@@ -351,21 +398,45 @@ impl Session {
                     }
                 }
             }
-            let mut seq = state.head;
+            // Allocate the entire batch privately. A later ordinal/arithmetic error cannot leave
+            // an earlier item or any secondary index published.
+            let mut seed = ChatPublicationSeed {
+                head_seq: state.head,
+                last_visible: state.last_visible.clone(),
+            };
+            let mut candidates = Vec::with_capacity(to_publish.len());
             for draft in to_publish {
-                seq += 1;
-                let record = Arc::new(ChatItem::complete(draft, seq));
+                let (seq, run) = seed.advance(&draft.read_hint)?;
+                candidates.push(Arc::new(ChatItem::complete(draft, seq, run)));
+            }
+            for record in candidates {
                 state.insert(record.clone());
                 records.push(record);
             }
-            if seq > state.head {
-                state.head = seq;
+            let published = seed.head_seq > state.head;
+            if published {
+                state.head = seed.head_seq;
+                state.last_visible = seed.last_visible;
                 // The wake carries the completion head only; the subscription computes its own content
                 // frame from its delivered position. send_replace never blocks, so the notification is
                 // part of the same atomic publication.
-                self.0.changed.send_replace(seq);
+                self.0.changed.send_replace(state.head);
             }
             records.sort_by_key(|record| record.header.append_seq);
+            let (head, durable) = (state.head, state.durable);
+            let (pending_completion_records, pending_content_keys) = state.pending_counts();
+            drop(state);
+            if published {
+                tracing::debug!(
+                    target: "conversation_work",
+                    head,
+                    durable,
+                    pending_completion_records,
+                    pending_content_keys,
+                    published_records = additions,
+                    "completion publication"
+                );
+            }
             return Ok(Arc::from(records));
         }
     }
@@ -412,6 +483,9 @@ impl Session {
         if through <= state.durable {
             return Ok(());
         }
+        let previous_durable = state.durable;
+        let (pending_completion_records_before, pending_content_keys_before) =
+            state.pending_counts();
         state.durable = through;
         let reclaimed: Vec<u64> = state
             .pending
@@ -423,6 +497,20 @@ impl Session {
                 state.remove_indexes(&record);
             }
         }
+        let (head, durable) = (state.head, state.durable);
+        let (pending_completion_records, pending_content_keys) = state.pending_counts();
+        drop(state);
+        tracing::debug!(
+            target: "conversation_work",
+            head,
+            durable,
+            previous_durable,
+            pending_completion_records_before,
+            pending_content_keys_before,
+            pending_completion_records,
+            pending_content_keys,
+            "durable confirmation"
+        );
         Ok(())
     }
 }
@@ -459,12 +547,13 @@ mod tests {
         let query = ChatQuery::new("activity", Some(parent.clone()));
         let mut chosen = ChatDraft::new("chosen", "activity", Arc::from([1]));
         chosen.parent_id = Some(parent);
-        let chosen = Arc::new(ChatItem::complete(chosen, 1));
+        let chosen = Arc::new(ChatItem::complete(chosen, 1, None));
         state.insert(chosen.clone());
         for seq in 2..=8193 {
             state.insert(Arc::new(ChatItem::complete(
                 ChatDraft::new(format!("hidden-{seq}"), "activity", Arc::from([2])),
                 seq,
+                None,
             )));
         }
         let index = state.pending_index(Some(&query)).unwrap();

@@ -1,11 +1,11 @@
 //! Actual lifecycle folded by the existing projection owner. No display ranges or group state.
 use super::*;
 use pl_protocol::{
-    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatEntry,
+    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 
-type Changes = (Vec<ChatEntry>, Vec<ChatSourceState>);
+type Changes = (Vec<ChatAtom>, Vec<ChatSourceState>);
 
 fn position(
     effect: &ThreadEffectBatch,
@@ -23,6 +23,7 @@ fn member_base(effect: &ThreadEffectBatch) -> usize {
     // Duplicate suppression or activation restore must never shift another fact's evidence.
     1_usize
         .saturating_add(effect.inputs.len())
+        .saturating_add(effect.inbox.len())
         .saturating_add(effect.context_compactions.len())
         .saturating_add(effect.model_member_starts.len())
 }
@@ -40,7 +41,6 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
-        self.ensure_timeline_position().await?;
         let history = self
             .execution_history
             .as_ref()
@@ -49,30 +49,47 @@ impl LiveProjection {
             .watermark()
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let mut sources = self
-            .timeline
-            .as_ref()
-            .map(|timeline| {
-                timeline
-                    .current_items()
-                    .into_iter()
-                    .map(|item| item.source)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        // A Turn can have a durable start without any display member. Include the bounded
-        // checkpoint and execution seed identities, not just sources visible in current items.
-        sources.extend(
-            state
-                .turns
-                .iter()
-                .map(|turn| &turn.turn_id)
-                .chain(self.facts.values().map(|fact| &fact.turn_id))
-                .filter(|turn_id| !turn_id.is_empty())
-                .map(|turn_id| ChatSourceId::ForegroundTurn {
-                    turn_id: turn_id.clone(),
-                }),
-        );
+        // Original accepted facts include independent operations which have no
+        // ThreadItem (e.g. compaction). Restore them without any presentation fold.
+        let mut after = None;
+        loop {
+            let atoms = history
+                .recovery_atom_starts(after.as_deref(), 128)
+                .await
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+            let count = atoms.len();
+            for atom in atoms {
+                after = Some(atom.id.clone());
+                self.atom_starts.insert(atom.id.clone(), atom);
+            }
+            if self.atom_starts.len() > LIVE_ITEM_WINDOW {
+                return Err(ProjectionError::History(
+                    "recovered activity exceeds retained window".into(),
+                ));
+            }
+            if count < 128 {
+                break;
+            }
+        }
+        let sources = self
+            .atom_starts
+            .values()
+            .map(|atom| atom.source.clone())
+            // A Turn can have a durable start without ever producing a body member.
+            // Cold seeding also retains Turns referenced only by a pending recovery
+            // effect, after Core has pruned them from its current snapshot.
+            .chain(
+                self.facts
+                    .values()
+                    .filter(|fact| !fact.turn_id.is_empty())
+                    .map(|fact| ChatSourceId::ForegroundTurn {
+                        turn_id: fact.turn_id.clone(),
+                    }),
+            )
+            .chain(state.turns.iter().map(|turn| ChatSourceId::ForegroundTurn {
+                turn_id: turn.turn_id.clone(),
+            }))
+            .collect::<BTreeSet<_>>();
         if !sources.is_empty() {
             for source in history
                 .conversation_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
@@ -82,20 +99,12 @@ impl LiveProjection {
                 self.source_states.insert(source.source.clone(), source);
             }
         }
-        // The restored fold contains reliable identities only. No preview, body,
-        // collection baseline or released execution item is resurrected here.
-        if let Some(timeline) = &self.timeline {
-            for atom in timeline.active_atoms() {
-                self.atom_starts.insert(atom.id.clone(), atom);
-            }
-        }
         self.provenance_restored = true;
         self.sync_provenance()?;
         let active = self.current_texts();
         self.current
             .observe(thread, state, sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.sync_current_items();
         Ok(())
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
@@ -160,7 +169,6 @@ impl LiveProjection {
             return Ok(());
         }
         self.source_states.insert(source, state.clone());
-        changes.0.push(ChatEntry::Source(state.clone()));
         changes.1.push(state);
         Ok(())
     }
@@ -229,6 +237,7 @@ impl LiveProjection {
                 effect,
                 1_usize
                     .saturating_add(effect.inputs.len())
+                    .saturating_add(effect.inbox.len())
                     .saturating_add(index),
             )?;
             self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut changes)?;
@@ -267,7 +276,7 @@ impl LiveProjection {
                     payload: None,
                 };
                 self.atom_starts.insert(item_id, atom.clone());
-                changes.0.push(ChatEntry::Atom(Box::new(atom)));
+                changes.0.push(atom);
             }
         }
         for (index, start) in effect.model_member_starts.iter().enumerate() {
@@ -318,13 +327,14 @@ impl LiveProjection {
                     effect,
                     1_usize
                         .saturating_add(effect.inputs.len())
+                        .saturating_add(effect.inbox.len())
                         .saturating_add(effect.context_compactions.len())
                         .saturating_add(index),
                 )?),
                 status: ChatActiveStatus::Running,
             };
             self.atom_starts.insert(id, atom.clone());
-            changes.0.push(ChatEntry::Atom(Box::new(atom)));
+            changes.0.push(atom);
         }
         if self.atom_starts.len() > LIVE_ITEM_WINDOW {
             return Err(ProjectionError::History(
@@ -431,8 +441,11 @@ impl LiveProjection {
             if old == Some(&atom) {
                 continue;
             }
+            let first_start = old.is_none();
             self.atom_starts.insert(atom.id.clone(), atom.clone());
-            changes.0.push(ChatEntry::Atom(Box::new(atom)));
+            if first_start {
+                changes.0.push(atom);
+            }
         }
         let draft_count = drafts.len();
         for (index, draft) in drafts.iter_mut().enumerate() {
@@ -448,6 +461,25 @@ impl LiveProjection {
                 return Err(ProjectionError::History(
                     "frozen provenance contains a read-time source state".into(),
                 ));
+            }
+            if matches!(
+                atom.source,
+                ChatSourceId::Input { .. } | ChatSourceId::InboxMessage { .. }
+            ) {
+                self.source_change(
+                    atom.source.clone(),
+                    Some(ChatTerminalOutcome::Completed),
+                    true,
+                    match atom.lifecycle {
+                        ChatAtomLifecycle::Terminal {
+                            ended: Some(at), ..
+                        } => at,
+                        _ => terminal_position,
+                    },
+                    changes,
+                )?;
+                changes.0.push(atom);
+                continue;
             }
             let item = items
                 .iter()
@@ -574,9 +606,51 @@ impl LiveProjection {
                     changes,
                 )?;
             }
+            changes.0.push(atom.clone());
             draft.metadata = serde_json::to_vec(&atom)
                 .map_err(|error| ProjectionError::History(error.to_string()))?
                 .into();
+            draft.read_hint =
+                crate::studio::runtime::chat_item::native_read_hint_v1(&draft.query_class, &atom);
+        }
+        if let Some(attempt) = &effect.attempt
+            && matches!(
+                attempt.outcome,
+                pl_core::thread::AttemptOutcome::Interrupted
+            )
+        {
+            let ids = self
+                .atom_starts
+                .values()
+                .filter(|atom| {
+                    atom.attempt_id.as_deref() == Some(attempt.attempt_id.as_str())
+                        && matches!(atom.kind, ChatAtomKind::Text | ChatAtomKind::Reasoning)
+                })
+                .map(|atom| atom.id.clone())
+                .collect::<Vec<_>>();
+            for id in ids {
+                let mut atom = self
+                    .atom_starts
+                    .remove(&id)
+                    .expect("captured active identity");
+                let ChatAtomLifecycle::Active { started, .. } = atom.lifecycle else {
+                    continue;
+                };
+                atom.lifecycle = ChatAtomLifecycle::Terminal {
+                    started,
+                    ended: Some(position(
+                        effect,
+                        member_base(effect)
+                            .saturating_add(items.len())
+                            .saturating_add(draft_count),
+                    )?),
+                    outcome: ChatTerminalOutcome::Cancelled,
+                };
+                atom.finished_at = Some(effect.committed_at);
+                atom.contents.clear();
+                self.release_preview(&id);
+                changes.0.push(atom);
+            }
         }
         // Only the original writer's durable acknowledgement may release unsaved source facts.
         if self.source_states.len() > LIVE_ITEM_WINDOW {

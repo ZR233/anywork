@@ -1055,7 +1055,7 @@ fn bot_checkpoint(
             extension_sequence: 9,
             ..Default::default()
         },
-    ))
+    )?)
 }
 
 async fn checkpoint_family(

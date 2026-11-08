@@ -52,6 +52,7 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
         match native.recv().await?.context("initial feed ended")? {
             pl_studio_runtime::ConversationEvent::Chat { batch } => break batch,
             pl_studio_runtime::ConversationEvent::State { .. } => {}
+            pl_studio_runtime::ConversationEvent::Activity { .. } => {}
         }
     };
     let owner = Arc::new(ConversationOwner::new(native, CancellationToken::new()));
@@ -64,12 +65,10 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
     let mut page = chat::batch(*initial);
     loop {
         for entry in page.entries {
-            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
+            if entry.atom.contents.is_empty() && entry.atom.payload.is_none() {
                 continue;
-            };
-            let Some(item_id) = item.content_item_id.as_deref() else {
-                continue;
-            };
+            }
+            let item_id = entry.record_id;
             let manifest = facade
                 .list_contents(item_id.to_owned(), None, demand)
                 .await?;

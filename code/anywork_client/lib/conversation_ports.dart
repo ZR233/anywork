@@ -15,6 +15,11 @@ abstract interface class ConversationTransport {
 /// The original feed's read lease; queries do not share its producer's receive/credit lock.
 abstract interface class ConversationReader {
   String get threadId;
+  Future<ThreadBusinessRefs> readBusinessRefs();
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  });
   Future<ChatBatch> loadOlder({
     required String before,
     required ReadDemand demand,
@@ -87,6 +92,11 @@ final class ConversationStateEvent extends ConversationEvent {
 final class ConversationChatEvent extends ConversationEvent {
   const ConversationChatEvent({required this.batch});
   final ChatBatch batch;
+}
+
+final class ConversationActivityEvent extends ConversationEvent {
+  const ConversationActivityEvent({required this.snapshot});
+  final ActivitySnapshot snapshot;
 }
 
 final class ConversationFailureEvent extends ConversationEvent {

@@ -6,6 +6,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/completion_run_presentation.dart';
 
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
@@ -56,7 +57,7 @@ abstract final class TimelinePreviewFixtures {
     'preview-user',
     'text',
     const {'channel': 'user', 'attachments': []},
-    bodies: [body('part.text.0', '请核对时间线的历史呈现，并保留窄窗口下的完整阅读能力。')],
+    bodies: [body('body', '请核对时间线的历史呈现，并保留窄窗口下的完整阅读能力。')],
   );
 
   static final assistant = item(
@@ -210,30 +211,6 @@ abstract final class TimelinePreviewFixtures {
     sealed: false,
   );
 
-  static final overlapReasoningGroup = TimelineItem(
-    id: 'preview-overlap-R',
-    kind: TimelineItemKind.workGroup,
-    source: groupSource,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    admissionClosed: true,
-    members: const TimelineMembersRef(
-      databaseId: 'preview',
-      projectionVersion: 1,
-      projectionGeneration: 'preview-projection-generation',
-      itemId: 'preview-overlap-R',
-    ),
-    summary: TimelineGroupSummary(
-      memberCount: 1,
-      activeCount: 1,
-      failedCount: 0,
-      cancelledCount: 0,
-      categories: const [
-        TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
-      ],
-    ),
-    contents: const [],
-  );
   static final overlapTextAtom = ChatAtom(
     id: 'preview-overlap-T',
     source: groupSource,
@@ -257,48 +234,29 @@ abstract final class TimelinePreviewFixtures {
       bodies: [
         body(
           'part.text.0',
-          'T 的正文已经完整结束，但仍在同一个 current 中。\n\nR 尚未结束不应隐藏这段回复，也不表示 T 已经移交历史。',
+          'T 的正文已经完整结束，但仍在同一个 current 中。\n\nR 尚未结束不应阻止这段回复进入历史。',
         ),
       ],
       sealedAt: 1735689602,
     ),
   );
-  static final overlapText = TimelineItem(
-    id: 'preview-overlap-T',
-    kind: TimelineItemKind.text,
-    source: groupSource,
-    atomKind: ChatAtomKind.text,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    outcome: ChatTerminalOutcome.completed,
-    textChannel: ThreadTextChannel.finalAnswer,
-    startedAt: 1735689601,
-    finishedAt: 1735689602,
-    admissionClosed: true,
-    contents: const [],
-    payload: overlapTextAtom.payload,
-    // No history position or fabricated completion prefix.
+  static final overlapText = CompletedEntry(
+    recordId: 'preview-overlap-T',
+    completionSeq: 1,
+    run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
+    mainPresentation: MainPresentation.single,
+    atom: overlapTextAtom,
   );
-  static final overlapCurrent = CurrentProjection(
-    sourceEffectSeq: 4,
-    logicalStatus: ThreadStatusView.running,
+  static final overlapActivity = ActivitySnapshot(
+    revision: 1,
+    completedThrough: 1,
     executionPresent: true,
-    activeTurn: const CurrentTurnHead(
-      id: 'preview-turn',
-      phase: StudioTurnActivity.thinking,
-    ),
-    sources: const [
-      ChatSourceState(
-        source: groupSource,
-        lifecycle: ActiveChatSource(),
-        started: ChatFactPosition(effectSeq: 1, suborder: 0),
-        ended: null,
+    entries: [
+      ActivityEntry(
+        identity: ModelPartActivityIdentity(atomId: activeReasoning.id),
+        atom: activeReasoning,
       ),
     ],
-    items: [overlapReasoningGroup, overlapText],
-    atoms: [activeReasoning],
-    previews: const [],
-    collections: const [],
   );
 
   static const mediaSource = ForegroundTurnChatSource(
@@ -431,33 +389,42 @@ abstract final class TimelinePreviewFixtures {
       sealedAt: 1735689606,
     ),
   );
-  static final mediaGroup = TimelineItem(
-    id: 'preview-media-group',
-    kind: TimelineItemKind.workGroup,
-    source: mediaSource,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-media-turn',
-    position: 1,
-    admissionClosed: true,
-    members: const TimelineMembersRef(
-      databaseId: 'preview',
-      projectionVersion: 1,
-      projectionGeneration: 'preview-projection-generation',
-      itemId: 'preview-media-group',
-    ),
-    summary: TimelineGroupSummary(
-      memberCount: 3,
-      activeCount: 0,
-      failedCount: 1,
-      cancelledCount: 0,
-      categories: const [
-        TimelineCategoryCount(category: TimelineCategory.image, count: 3),
-      ],
-      startedAt: 1735689600,
-      finishedAt: 1735689606,
-    ),
-    contents: const [],
-  );
+  static final mediaGroup = runEntry('preview-media-group', 3, count: 3);
+
+  static CompletedEntry runEntry(String id, int seq, {int count = 1}) =>
+      CompletedEntry(
+        recordId: id,
+        completionSeq: seq,
+        run: CompletionRunPosition(startSeq: seq - count + 1, ordinal: count),
+        mainPresentation: MainPresentation.foregroundWork,
+        atom: ChatAtom(
+          id: id,
+          completionItemId: id,
+          completionSeq: seq,
+          source: groupSource,
+          sourceOrder: null,
+          kind: ChatAtomKind.toolCall,
+          delivery: ChatDeliveryKind.foreground,
+          lifecycle: const TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: ChatTerminalOutcome.completed,
+          ),
+          contents: const [],
+          payload: DeferredPayload(
+            reference: ContentRef(
+              databaseId: 'preview',
+              target: ItemPayloadTarget(itemId: id),
+            ),
+            byteLength: 100,
+          ),
+        ),
+      );
+  static TimelineDisplayUnit runUnit(CompletedEntry entry) =>
+      TimelineDisplayUnit(
+        entry: entry,
+        run: CompletionRunPresentation.fromEntry(entry),
+      );
 
   static Map<String, Object?> _imageMetadata(String id) => {
     'id': id,
@@ -687,33 +654,7 @@ abstract final class TimelinePreviewFixtures {
     for (var index = 0; index < 2; index++) ...[
       _message(
         ChatItemPresentation.forUnit(
-          TimelineDisplayUnit(
-            live: false,
-            item: TimelineItem(
-              id: 'spacing-group-$index',
-              kind: TimelineItemKind.workGroup,
-              source: groupSource,
-              delivery: ChatDeliveryKind.foreground,
-              turnId: 'preview-turn',
-              position: index * 2 + 1,
-              admissionClosed: true,
-              contents: const [],
-              summary: TimelineGroupSummary(
-                memberCount: 3,
-                activeCount: 0,
-                failedCount: 0,
-                cancelledCount: 0,
-                categories: const [
-                  TimelineCategoryCount(
-                    category: TimelineCategory.command,
-                    count: 3,
-                  ),
-                ],
-                startedAt: groupStartedAt,
-                finishedAt: groupStartedAt + 27 + index * 60,
-              ),
-            ),
-          ),
+          runUnit(runEntry('spacing-group-$index', index * 4 + 3, count: 3)),
         ),
       ),
       _message(

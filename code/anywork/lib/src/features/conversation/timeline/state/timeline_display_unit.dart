@@ -2,6 +2,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'timeline_display_diagnostics.dart';
+import 'completion_run_presentation.dart';
 
 /// Only local disclosure intent and its synchronously revocable capabilities.
 /// No membership, completion ranges or source-order facts are retained here.
@@ -11,8 +12,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)?
-  openMembers;
+  Future<ConversationContent> Function(CompletionRunRef, ReadDemand)? openRun;
   final Set<Object> _bodyDisplays = {};
   bool _retired = false;
   Object bodyGeneration = Object();
@@ -75,18 +75,18 @@ class TimelineGroupBodyIntent extends InheritedWidget {
       !identical(intent, oldWidget.intent);
 }
 
-/// A wire item and a local disclosure capability. Rust owns all product facts.
+/// A completed entry and local disclosure capability. No member snapshots.
 final class TimelineDisplayUnit {
   TimelineDisplayUnit({
-    required this.item,
-    required this.live,
+    required this.entry,
+    this.run,
     TimelineExpansionIntent? expansion,
   }) : expansion = expansion ?? TimelineExpansionIntent();
 
-  final TimelineItem item;
-  final bool live;
+  final CompletedEntry entry;
+  final CompletionRunPresentation? run;
   final TimelineExpansionIntent expansion;
-  String get id => item.id;
+  String get id => run?.messageId ?? entry.recordId;
 }
 
 const timelineDisplayUnitKey = 'timelineDisplayUnit';

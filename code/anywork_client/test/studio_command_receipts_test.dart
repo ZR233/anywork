@@ -557,6 +557,7 @@ ThreadWorkspace _workspace({
   ThreadStorageStateView? storage,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
+  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
   thread: _thread(),
   revision: revision,
   interactions: interactions,

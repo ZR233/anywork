@@ -26,6 +26,22 @@ final class InputChatSource extends ChatSourceId {
   int get hashCode => Object.hash(InputChatSource, inputId);
 }
 
+final class InboxMessageChatSource extends ChatSourceId {
+  const InboxMessageChatSource({
+    required this.sourceId,
+    required this.messageId,
+  });
+  final String sourceId;
+  final String messageId;
+  @override
+  bool operator ==(Object other) =>
+      other is InboxMessageChatSource &&
+      sourceId == other.sourceId &&
+      messageId == other.messageId;
+  @override
+  int get hashCode => Object.hash(InboxMessageChatSource, sourceId, messageId);
+}
+
 final class BackgroundResultChatSource extends ChatSourceId {
   const BackgroundResultChatSource({required this.messageId});
   final String messageId;
@@ -201,23 +217,4 @@ final class ChatSourceState {
   final ChatSourceLifecycle lifecycle;
   final ChatFactPosition? started;
   final ChatFactPosition? ended;
-}
-
-sealed class ChatEntry {
-  const ChatEntry();
-}
-
-final class ItemChatEntry extends ChatEntry {
-  const ItemChatEntry(this.item);
-  final TimelineItem item;
-}
-
-final class ChatAtomEntry extends ChatEntry {
-  const ChatAtomEntry(this.atom);
-  final ChatAtom atom;
-}
-
-final class ChatSourceEntry extends ChatEntry {
-  const ChatSourceEntry(this.state);
-  final ChatSourceState state;
 }

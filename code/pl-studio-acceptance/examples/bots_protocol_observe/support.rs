@@ -1,8 +1,8 @@
 //! Shared bounded Chat observation and terminal-atom validation.
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatScope, ChatSourceId, ContentRange,
-    ContentRef, ContentTarget, PayloadData, ReadDemand, TimelineItem, TimelineItemKind, TurnState,
+    ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatScope, ChatSourceId, ContentRange, ContentRef,
+    ContentTarget, PayloadData, ReadDemand, TurnState,
 };
 use std::time::Instant;
 
@@ -157,241 +157,284 @@ pub(crate) async fn chat_payload(
     Ok(value)
 }
 
-/// Read a terminal Main text/status item's original payload, preserving the
-/// owning completion identity instead of manufacturing a member atom.
-pub(crate) async fn completed_timeline_payload(
+/// Read an immutable completion's original payload after validating its
+/// completion identity. Main work representatives may be Deferred; callers
+/// must open their referenced Run to inspect all members.
+pub(crate) async fn completed_entry_payload(
     read: &crate::http::ChatRead,
-    item: &TimelineItem,
+    entry: &pl_protocol::CompletedEntry,
     remaining: &mut usize,
     deadline: Instant,
 ) -> Result<Option<serde_json::Value>> {
     ensure!(
-        matches!(item.kind, TimelineItemKind::Text | TimelineItemKind::Status),
-        "only a text/status Timeline item can carry a terminal payload"
+        !entry.record_id.is_empty()
+            && entry
+                .atom
+                .completion_item_id
+                .as_ref()
+                .is_none_or(|id| id == &entry.record_id)
+            && entry
+                .atom
+                .completion_seq
+                .is_none_or(|seq| seq == entry.completion_seq),
+        "completed entry identity disagrees with its original atom"
     );
     ensure!(
-        item.members.is_none(),
-        "text/status Timeline item unexpectedly carried a members reference"
+        matches!(entry.atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
+        "completed entry contains a nonterminal atom"
     );
-    let Some(outcome) = item.outcome else {
-        ensure!(
-            item.payload.is_none() && item.content_item_id.is_none(),
-            "nonterminal Timeline item carried terminal payload ownership"
-        );
-        return Ok(None);
-    };
-    let payload_data = item
+    let payload_data = entry
+        .atom
         .payload
         .as_ref()
-        .context("terminal Timeline item omitted its original payload")?;
-    let content_item_id = item
-        .content_item_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .context("terminal Timeline item omitted content_item_id")?;
+        .context("completed entry omitted its frozen payload")?;
     if let PayloadData::Deferred { reference, .. } = payload_data {
         ensure!(
             matches!(
                 &reference.target,
-                ContentTarget::ItemPayload { item_id } if item_id == content_item_id
+                ContentTarget::ItemPayload { item_id } if !item_id.is_empty()
             ),
-            "Deferred Timeline payload identity did not match content_item_id"
+            "Deferred completion payload reference had an invalid item identity"
         );
     }
     let payload = chat_payload(read, payload_data, remaining, deadline).await?;
-    if let Some(turn_id) = item.turn_id.as_deref() {
+    if let Some(turn_id) = entry.atom.turn_id.as_deref() {
         ensure!(
             payload["turnId"].as_str() == Some(turn_id),
-            "Timeline metadata and original payload Turn conflict"
+            "completed atom metadata and original payload Turn conflict"
         );
     }
-    if let ChatSourceId::ForegroundTurn { turn_id } = &item.source {
+    if let ChatSourceId::ForegroundTurn { turn_id } = &entry.atom.source {
         ensure!(
-            item.turn_id.as_deref() == Some(turn_id),
-            "Timeline source and Turn identity conflict"
+            entry.atom.turn_id.as_deref() == Some(turn_id),
+            "completed atom source and Turn identity conflict"
         );
     }
-    if let Some(channel) = &item.text_channel {
+    if let ChatSourceId::InboxMessage {
+        source_id,
+        message_id,
+    } = &entry.atom.source
+    {
+        ensure!(
+            !source_id.is_empty() && !message_id.is_empty(),
+            "inbox completion omitted its stable source/message identity"
+        );
+    }
+    let payload_kind = payload["type"].as_str();
+    let kind_matches = match entry.atom.kind {
+        ChatAtomKind::Input | ChatAtomKind::Text => payload_kind == Some("text"),
+        ChatAtomKind::Reasoning => matches!(payload_kind, Some("thinking" | "inference")),
+        ChatAtomKind::ToolCall => payload_kind == Some("tool"),
+        ChatAtomKind::FileChange => payload_kind == Some("file"),
+        ChatAtomKind::Skill => payload_kind == Some("skill"),
+        ChatAtomKind::Interaction => {
+            payload_kind == Some("tool")
+                && payload["data"]
+                    .get("userInput")
+                    .is_some_and(|input| !input.is_null())
+        }
+        ChatAtomKind::Plan => payload_kind == Some("plan"),
+        ChatAtomKind::Compaction => payload_kind == Some("contextCompaction"),
+        ChatAtomKind::TurnReceipt => payload_kind == Some("turn"),
+        ChatAtomKind::Raw => payload_kind == Some("raw"),
+        ChatAtomKind::Agent => payload_kind == Some("agent"),
+        ChatAtomKind::Inference => payload_kind == Some("inference"),
+        ChatAtomKind::Receipt | ChatAtomKind::Unknown => true,
+    };
+    ensure!(
+        kind_matches,
+        "atom kind {:?} conflicts with payload type {payload_kind:?}",
+        entry.atom.kind
+    );
+    if let Some(tool) = &entry.atom.tool {
+        ensure!(
+            payload_kind == Some("tool")
+                && payload["data"]["invocation"]["toolCallId"].as_str()
+                    == Some(tool.call_id.as_str())
+                && payload["data"]["invocation"]["name"].as_str() == Some(tool.name.as_str()),
+            "atom tool metadata conflicts with frozen payload identity"
+        );
+    }
+    if let Some(channel) = &entry.atom.text_channel {
         ensure!(
             payload["type"] == "text"
                 && payload["data"]["channel"] == serde_json::to_value(channel)?,
-            "Timeline channel and original text payload disagree"
+            "completed atom channel and original text payload disagree"
         );
     }
-    ensure!(
-        matches!(
-            outcome,
-            pl_protocol::ChatTerminalOutcome::Completed
-                | pl_protocol::ChatTerminalOutcome::Failed
-                | pl_protocol::ChatTerminalOutcome::Cancelled
-                | pl_protocol::ChatTerminalOutcome::Transferred
-        ),
-        "unknown terminal Timeline outcome"
-    );
     Ok(Some(payload))
 }
 
-/// Read a work group's real members only through its typed reference. The
-/// member window is independently paged and charged against the caller's
-/// existing byte and deadline budgets.
-pub(crate) async fn group_member_atoms(
+/// Build a Run reference only from a validated representative's run position
+/// and its Deferred completion reference; never infer a run from atom fields.
+pub(crate) fn completion_run_ref(
+    entry: &pl_protocol::CompletedEntry,
+) -> Result<pl_protocol::CompletionRunRef> {
+    use pl_protocol::{COMPLETED_READ_INDEX_VERSION, MainPresentation};
+    ensure!(
+        matches!(
+            entry.main_presentation,
+            MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
+        ),
+        "only a Main work representative can identify a completion Run"
+    );
+    let run = entry
+        .run
+        .context("Main work representative omitted run position")?;
+    ensure!(
+        run.start_seq > 0 && run.start_seq <= entry.completion_seq && run.ordinal > 0,
+        "Main work representative has an invalid run position"
+    );
+    let Some(PayloadData::Deferred { reference, .. }) = entry.atom.payload.as_ref() else {
+        anyhow::bail!("Main work representative did not carry a Deferred payload reference");
+    };
+    ensure!(
+        !reference.database_id.is_empty()
+            && matches!(
+                &reference.target,
+                ContentTarget::ItemPayload { item_id } if !item_id.is_empty()
+            ),
+        "Main work representative has an invalid Deferred completion reference"
+    );
+    Ok(pl_protocol::CompletionRunRef {
+        database_id: reference.database_id.clone(),
+        index_version: COMPLETED_READ_INDEX_VERSION,
+        start_seq: run.start_seq,
+    })
+}
+
+/// Page every immutable member of one actual Run, preserving bounded demand,
+/// deadline, continuation progress, and the caller's cumulative byte budget.
+pub(crate) async fn completion_run_entries(
     read: &crate::http::ChatRead,
-    item: &TimelineItem,
+    representative: &pl_protocol::CompletedEntry,
     remaining: &mut usize,
     deadline: Instant,
-) -> Result<Vec<ChatAtom>> {
-    ensure!(
-        item.kind == TimelineItemKind::WorkGroup,
-        "GroupMembers requested for a non-work-group Timeline item"
-    );
-    ensure!(
-        item.payload.is_none() && item.content_item_id.is_none(),
-        "work group unexpectedly carried a terminal payload"
-    );
-    let reference = item
-        .members
-        .as_ref()
-        .context("work group omitted its typed members reference")?;
-    let (members_read, mut page) = tokio::time::timeout_at(
+) -> Result<(crate::http::ChatRead, Vec<pl_protocol::CompletedEntry>)> {
+    let reference = completion_run_ref(representative)?;
+    let scope = ChatScope::Run {
+        reference: reference.clone(),
+    };
+    let (run_read, mut page) = tokio::time::timeout_at(
         tokio::time::Instant::from_std(deadline),
-        read.open_members(reference, CHAT_DEMAND),
+        read.open_run(&reference, CHAT_DEMAND),
     )
     .await
-    .context("opening GroupMembers exceeded observation deadline")??;
-    let mut atoms = Vec::new();
+    .context("opening completion Run exceeded observation deadline")??;
+    let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for page_index in 0..256 {
         let has_more = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
             charge_chat_batch(&page, remaining)?;
-            page.validate_for(&ChatScope::GroupMembers {
-                reference: reference.clone(),
-            })?;
-            for entry in &page.entries {
-                if let pl_protocol::ChatEntry::Atom(atom) = entry {
-                    atoms.push((**atom).clone());
-                }
-            }
+            page.validate_for(&scope)?;
+            entries.extend(page.entries.iter().cloned());
             if let Some(before) = page.before.take() {
                 ensure!(
                     page_index + 1 < 256,
-                    "GroupMembers scope exceeded bounded page budget"
+                    "completion Run exceeded bounded page budget"
                 );
                 ensure!(
                     seen.insert(before.clone()),
-                    "GroupMembers continuation did not advance"
+                    "completion Run continuation did not advance"
                 );
-                page = members_read.load_older(&before, CHAT_DEMAND).await?;
+                page = run_read.load_older(&before, CHAT_DEMAND).await?;
             } else {
                 return Ok::<bool, anyhow::Error>(false);
             }
             Ok(true)
         })
         .await
-        .context("GroupMembers read exceeded observation deadline")??;
+        .context("completion Run read exceeded observation deadline")??;
         if !has_more {
             break;
         }
     }
     ensure!(
         page.before.is_none(),
-        "GroupMembers scope exceeded bounded page budget"
+        "completion Run exceeded bounded page budget"
     );
-    Ok(atoms)
+    Ok((run_read, entries))
 }
 
-/// Decode only actual terminal atoms; Source and Active are facts, never results.
-pub(crate) async fn completed_atom_payload(
+/// Successful Turn receipts are Hidden from Main; inspect the original typed
+/// Turn parent scope and require its one real successful completion record.
+pub(crate) async fn completed_turn_from_children(
     read: &crate::http::ChatRead,
-    atom: &ChatAtom,
+    turn_id: &str,
+    expected_input_id: Option<&str>,
+    require_success: bool,
     remaining: &mut usize,
     deadline: Instant,
-) -> Result<Option<serde_json::Value>> {
-    match &atom.lifecycle {
-        ChatAtomLifecycle::Active { .. } => {
+) -> Result<()> {
+    let parent_id = format!("{}:{turn_id}", turn_id.len());
+    let scope = ChatScope::Children {
+        parent_id: parent_id.clone(),
+    };
+    let (children_read, mut page) = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        read.open_children(&parent_id, CHAT_DEMAND),
+    )
+    .await
+    .context("opening Turn Children exceeded observation deadline")??;
+    let mut seen = std::collections::HashSet::new();
+    let mut matched = 0usize;
+    for page_index in 0..256 {
+        charge_chat_batch(&page, remaining)?;
+        page.validate_for(&scope)?;
+        for entry in &page.entries {
+            if entry.atom.kind != ChatAtomKind::TurnReceipt {
+                continue;
+            }
+            let payload = completed_entry_payload(&children_read, entry, remaining, deadline)
+                .await?
+                .context("Turn Children returned a nonterminal TurnReceipt")?;
             ensure!(
-                atom.payload.is_none()
-                    && atom.completion_item_id.is_none()
-                    && atom.completion_seq.is_none(),
-                "active atom carried terminal payload or completion identity"
+                payload["type"] == "turn" && payload["turnId"].as_str() == Some(turn_id),
+                "TurnReceipt atom and original payload identity disagree"
             );
-            Ok(None)
+            ensure!(
+                matches!(
+                    &entry.atom.source,
+                    ChatSourceId::ForegroundTurn { turn_id: source_turn }
+                        if source_turn == turn_id
+                ),
+                "TurnReceipt source does not match its typed Children parent"
+            );
+            let input_id = payload["data"]
+                .get("inputId")
+                .and_then(serde_json::Value::as_str);
+            if let Some(expected) = expected_input_id {
+                ensure!(
+                    input_id == Some(expected),
+                    "TurnReceipt input identity did not match the expected input"
+                );
+            }
+            let state: TurnState = serde_json::from_value(
+                payload["data"]
+                    .get("outcome")
+                    .context("Turn payload omitted outcome")?
+                    .clone(),
+            )?;
+            if require_success {
+                ensure!(
+                    matches!(state, TurnState::Completed(_)),
+                    "Turn {turn_id} did not complete successfully: {state:?}"
+                );
+            }
+            matched += 1;
         }
-        ChatAtomLifecycle::Terminal { .. } => {
-            let item_id = atom
-                .completion_item_id
-                .as_deref()
-                .filter(|id| !id.is_empty())
-                .context("terminal atom omitted completion_item_id")?;
+        let Some(before) = page.before.take() else {
             ensure!(
-                atom.completion_seq.is_some(),
-                "terminal atom omitted completion_seq"
+                matched == 1,
+                "Turn {turn_id} Children had {matched} terminal receipts"
             );
-            let payload_data = atom
-                .payload
-                .as_ref()
-                .context("terminal atom omitted its frozen payload")?;
-            if let PayloadData::Deferred { reference, .. } = payload_data {
-                ensure!(
-                    matches!(
-                        &reference.target,
-                        ContentTarget::ItemPayload { item_id: payload_id }
-                            if payload_id.as_str() == item_id
-                    ),
-                    "Deferred payload identity did not match completion_item_id"
-                );
-            }
-            let payload = chat_payload(read, payload_data, remaining, deadline).await?;
-            if let Some(turn_id) = atom.turn_id.as_deref() {
-                ensure!(
-                    payload["turnId"].as_str() == Some(turn_id),
-                    "terminal atom metadata and payload Turn conflict"
-                );
-            }
-            if let ChatSourceId::ForegroundTurn { turn_id } = &atom.source
-                && let Some(atom_turn_id) = atom.turn_id.as_deref()
-            {
-                ensure!(
-                    atom_turn_id == turn_id.as_str(),
-                    "atom source and Turn identity conflict"
-                );
-            }
-            let payload_kind = payload["type"].as_str();
-            let kind_matches = match atom.kind {
-                ChatAtomKind::Input | ChatAtomKind::Text => payload_kind == Some("text"),
-                ChatAtomKind::Reasoning => matches!(payload_kind, Some("thinking" | "inference")),
-                ChatAtomKind::ToolCall => payload_kind == Some("tool"),
-                ChatAtomKind::FileChange => payload_kind == Some("file"),
-                ChatAtomKind::Skill => payload_kind == Some("skill"),
-                ChatAtomKind::Interaction => {
-                    payload_kind == Some("tool")
-                        && payload["data"]
-                            .get("userInput")
-                            .is_some_and(|input| !input.is_null())
-                }
-                ChatAtomKind::Plan => payload_kind == Some("plan"),
-                ChatAtomKind::Compaction => payload_kind == Some("contextCompaction"),
-                ChatAtomKind::TurnReceipt => payload_kind == Some("turn"),
-                ChatAtomKind::Raw => payload_kind == Some("raw"),
-                ChatAtomKind::Agent => payload_kind == Some("agent"),
-                ChatAtomKind::Inference => payload_kind == Some("inference"),
-                ChatAtomKind::Receipt | ChatAtomKind::Unknown => true,
-            };
-            ensure!(
-                kind_matches,
-                "atom kind {:?} conflicts with payload type {payload_kind:?}",
-                atom.kind
-            );
-            if let Some(tool) = &atom.tool {
-                ensure!(
-                    payload_kind == Some("tool")
-                        && payload["data"]["invocation"]["toolCallId"].as_str()
-                            == Some(tool.call_id.as_str())
-                        && payload["data"]["invocation"]["name"].as_str()
-                            == Some(tool.name.as_str()),
-                    "atom tool metadata conflicts with frozen payload identity"
-                );
-            }
-            Ok(Some(payload))
-        }
+            return Ok(());
+        };
+        ensure!(
+            page_index + 1 < 256 && seen.insert(before.clone()),
+            "Turn Children exceeded its bounded page budget or repeated a continuation"
+        );
+        page = children_read.load_older(&before, CHAT_DEMAND).await?;
     }
+    bail!("Turn Children exceeded its bounded page budget")
 }

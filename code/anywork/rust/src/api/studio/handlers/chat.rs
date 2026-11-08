@@ -11,9 +11,10 @@ use std::sync::Arc;
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::chat;
 use crate::api::studio::types::{
-    BridgeChatBatch, BridgeChatScope, BridgeContentManifestPage, BridgeContentRange,
-    BridgeContentRef, BridgeContentWindow, BridgeConversationFrame, BridgeCurrentCollectionPage,
-    BridgeCurrentCollectionRef, BridgeError, BridgeReadDemand,
+    BridgeChatBatch, BridgeChatScope, BridgeCompletedEntry, BridgeContentManifestPage,
+    BridgeContentRange, BridgeContentRef, BridgeContentWindow, BridgeConversationFrame,
+    BridgeCurrentCollectionPage, BridgeCurrentCollectionRef, BridgeError, BridgeReadDemand,
+    BridgeThreadBusinessRefs,
 };
 use crate::frb_generated::StreamSink;
 
@@ -120,6 +121,30 @@ impl BridgeConversationFeed {
             );
         }
         Ok(batch)
+    }
+
+    /// Reads one immutable completion through this feed's original independent read lease.
+    pub async fn read_completed(
+        &self,
+        record_id: String,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeCompletedEntry, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let entry = self
+            .inner
+            .reader
+            .read_completed(&record_id, chat::demand(demand))
+            .await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::completed(entry))
+    }
+
+    /// Reads business-resource references from the existing independent read lease.
+    pub async fn read_business_refs(&self) -> Result<BridgeThreadBusinessRefs, BridgeError> {
+        self.inner.ensure_read_open()?;
+        let references = self.inner.reader.read_business_refs().await?;
+        self.inner.ensure_read_open()?;
+        Ok(chat::business_refs(references))
     }
 
     pub async fn list_contents(

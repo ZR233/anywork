@@ -321,6 +321,10 @@ extension StudioLocalizationsX on BuildContext {
         l10n.composerFailureInteractionNotHosted,
       StudioFailureReason.staleInteraction =>
         l10n.composerFailureStaleInteraction,
+      // A local content/collection revision expired, not the whole conversation.
+      StudioFailureReason.staleContent => l10n.studioFailureCodeStaleRevision,
+      StudioFailureReason.protocolVersionMismatch =>
+        l10n.studioFailureCodeProtocol,
       // 归档会话只读：使用专用的继续/提交阻塞说明，不复用侧栏的归档标签。
       StudioFailureReason.threadArchived => l10n.composerBlockedArchived,
       null => l10n.composerBlockerUnknown,

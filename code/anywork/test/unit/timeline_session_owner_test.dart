@@ -7,7 +7,9 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/chat_fixtures.dart';
+import '../support/completion_fixtures.dart';
+
+const chatDemand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
 // These tests exercise the presentation owner with the real Flyer controller.
 // SDK transport/ACK and native-reader lifecycles have their own integration tests;
@@ -19,7 +21,7 @@ void main() {
       'group body fold revokes synchronously and retains original IO/close responsibility (failure: $failClose)',
       () async {
         final h = _Harness();
-        await h.openA([workItem('group')], hasOlder: true);
+        await h.openA([completionEntry('group', 1)], hasOlder: true);
         final lease = h.owner.lease('a')!;
         final unit =
             lease.controller.messages.single.metadata![timelineDisplayUnitKey]
@@ -95,7 +97,7 @@ void main() {
     h.owner.updateReadDemand(chatDemand);
     expect(h.a.consumer, isNull);
     expect(h.b.consumer, isNotNull);
-    await h.b.deliver(chatBatch([_text('b', 1)]));
+    await h.b.deliver(_batch([_text('b', 1)]));
     expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
     await h.owner.close();
   });
@@ -123,7 +125,7 @@ void main() {
     expect(h.b.scopes, isEmpty);
 
     h.owner.updateReadDemand(chatDemand);
-    await h.a.deliver(chatBatch([_text('a', 1)], before: 'before-3'));
+    await h.a.deliver(_batch([_text('a', 1)], before: 'before-3'));
     final first = h.owner.lease('a')!;
     leases.add(first);
     expect(first.isMounted, isFalse);
@@ -194,7 +196,7 @@ void main() {
     h.owner.noteVisibleSelection('a');
     expect(h.owner.lease('a'), same(first));
     expect(h.owner.visibleLayoutSnapshot, isNull);
-    await h.a.deliver(chatBatch([_text('a', 2)], before: 'new-before'));
+    await h.a.deliver(_batch([_text('a', 2)], before: 'new-before'));
     final next = h.owner.lease('a')!;
     leases.add(next);
     expect(first.isRetired, isTrue);
@@ -266,7 +268,7 @@ void main() {
         h.owner.select(null);
         expect(h.b.consumer, isNull);
         h.owner.select('b');
-        await h.b.deliver(chatBatch([_text('b', 1)]));
+        await h.b.deliver(_batch([_text('b', 1)]));
         expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
         expect((await h.owner.close()).complete, isTrue);
         expect(h.a.consumer, isNull);
@@ -290,7 +292,7 @@ void main() {
       expect(h.owner.source.value?.connectionError, isNull);
       expect(h.a.consumer, isNotNull);
       expect(h.b.consumer, isNull);
-      await h.a.deliver(chatBatch([_text('a', 1)]));
+      await h.a.deliver(_batch([_text('a', 1)]));
       expect(h.owner.lease('a')!.controller.messages.single.id, 'a-1');
       expect((await h.owner.close()).complete, isTrue);
       expect(h.a.consumer, isNull);
@@ -311,7 +313,7 @@ void main() {
     expect(h.owner.source.value?.threadId, 'b');
     expect(h.a.consumer, isNull);
     expect(h.b.consumer, isNotNull);
-    await h.b.deliver(chatBatch([_text('b', 1)]));
+    await h.b.deliver(_batch([_text('b', 1)]));
     expect(h.owner.lease('b')!.controller.messages.single.id, 'b-1');
     await previous.released;
     expect((await h.owner.close()).complete, isTrue);
@@ -383,9 +385,9 @@ void main() {
     final h = _Harness();
     h.owner.select('a');
     final atom = _text('a', 1);
-    await h.a.deliver(chatBatch([atom]));
+    await h.a.deliver(_batch([atom]));
     final lease = h.owner.lease('a')!;
-    expect(lease.controller.messages.single.id, atom.id);
+    expect(lease.controller.messages.single.id, atom.recordId);
     expect(lease.controller.messages, hasLength(1));
     expect(h.a.attaches, 1);
     expect(h.a.refreshes, 0);
@@ -400,7 +402,7 @@ void main() {
       final lease = h.owner.lease('a')!;
       await h.owner.dispatch('a', const TimelineEnterHistory());
       await h.a.deliver(
-        chatBatch([_text('a', 2)], placement: ChatPlacement.append),
+        _batch([_text('a', 2)], placement: ChatPlacement.append),
       );
       expect(h.owner.lease('a'), same(lease));
       expect(lease.loadedCount, 2);
@@ -442,17 +444,13 @@ void main() {
     final loading = h.owner.loadOlder('a', generation: lease.generation);
     final scope = h.a.scopes.single;
     await scope.requested.future;
-    await h.a.deliver(
-      chatBatch([_text('a', 4)], placement: ChatPlacement.append),
-    );
+    await h.a.deliver(_batch([_text('a', 4)], placement: ChatPlacement.append));
     expect(lease.loadedCount, 2);
     scope.reply.complete(
       ChatBatch(
+        throughSeq: 3,
         placement: ChatPlacement.prepend,
-        entries: ([
-          _text('a', 1),
-          _text('a', 2),
-        ]).map(ItemChatEntry.new).toList(),
+        entries: ([_text('a', 1), _text('a', 2)]),
         before: 'before-1',
       ),
     );
@@ -478,15 +476,16 @@ void main() {
     final scope = h.a.scopes.single;
     await scope.requested.future;
     h.owner.select('b');
-    await h.b.deliver(chatBatch([_text('b', 1)]));
+    await h.b.deliver(_batch([_text('b', 1)]));
     h.owner.select('a');
-    await h.a.deliver(chatBatch([_text('a', 10)]));
+    await h.a.deliver(_batch([_text('a', 10)]));
     final latest = h.owner.lease('a')!;
     expect(latest, isNot(same(first)));
     scope.reply.complete(
       ChatBatch(
+        throughSeq: 3,
         placement: ChatPlacement.prepend,
-        entries: ([_text('a', 1)]).map(ItemChatEntry.new).toList(),
+        entries: ([_text('a', 1)]),
         before: null,
       ),
     );
@@ -502,7 +501,7 @@ void main() {
     await h.openA([_text('a', 1)]);
     final first = h.owner.lease('a')!;
     final scope = first.openDetailQueries()!;
-    await h.a.deliver(chatBatch([_text('a', 7)]));
+    await h.a.deliver(_batch([_text('a', 7)]));
     expect(scope.isActive, isFalse);
     final next = h.owner.lease('a')!;
     expect(next.generation, greaterThan(first.generation));
@@ -530,7 +529,7 @@ void main() {
         });
         addTearDown(operations.cancel);
         await h.a.deliver(
-          chatBatch([_text('a', 2)], placement: ChatPlacement.append),
+          _batch([_text('a', 2)], placement: ChatPlacement.append),
         );
         expect(
           switched,
@@ -547,7 +546,7 @@ void main() {
         expect(h.owner.source.value?.threadId, returnToA ? 'a' : 'b');
         expect(h.owner.source.value?.hasNewOutput, isFalse);
         final target = returnToA ? h.a : h.b;
-        await target.deliver(chatBatch([_text(returnToA ? 'a' : 'b', 10)]));
+        await target.deliver(_batch([_text(returnToA ? 'a' : 'b', 10)]));
         final next = h.owner.lease(returnToA ? 'a' : 'b')!;
         expect(next, isNot(same(old)));
         expect(next.controller.messages.single.id, returnToA ? 'a-10' : 'b-10');
@@ -570,7 +569,7 @@ void main() {
         await oldScope.requested.future;
         h.owner.select('b');
         h.owner.select('a');
-        await h.a.deliver(chatBatch([_text('a', 10)], before: 'new-before'));
+        await h.a.deliver(_batch([_text('a', 10)], before: 'new-before'));
         final next = h.owner.lease('a')!;
         final newLoad = h.owner.loadOlder('a', generation: next.generation);
         final newScope = h.a.scopes.last;
@@ -579,7 +578,7 @@ void main() {
           oldScope.reply.completeError(StateError('old failure'));
         } else {
           oldScope.reply.complete(
-            chatBatch([_text('a', 1)], placement: ChatPlacement.prepend),
+            _batch([_text('a', 1)], placement: ChatPlacement.prepend),
           );
         }
         await oldLoad;
@@ -593,7 +592,7 @@ void main() {
           reason: 'old finally cannot clear the new request',
         );
         newScope.reply.complete(
-          chatBatch([_text('a', 9)], placement: ChatPlacement.prepend),
+          _batch([_text('a', 9)], placement: ChatPlacement.prepend),
         );
         await newLoad;
         expect(next.controller.messages.map((message) => message.id), [
@@ -611,7 +610,7 @@ void main() {
     final h = _Harness();
     h.owner.select('a');
     await expectLater(
-      h.a.deliver(chatBatch([_text('a', 3)], placement: ChatPlacement.append)),
+      h.a.deliver(_batch([_text('a', 3)], placement: ChatPlacement.append)),
       throwsA(isA<ConversationContinuityError>()),
     );
     expect(h.owner.lease('a'), isNull);
@@ -635,8 +634,9 @@ void main() {
       final retry = h.owner.retryOlder('a', generation: lease.generation);
       scope.reply.complete(
         ChatBatch(
+          throughSeq: 3,
           placement: ChatPlacement.prepend,
-          entries: ([_text('a', 2)]).map(ItemChatEntry.new).toList(),
+          entries: ([_text('a', 2)]),
           before: null,
         ),
       );
@@ -667,6 +667,7 @@ void main() {
     expect(scope.isActive, isFalse);
     scope.reply.complete(
       ChatBatch(
+        throughSeq: 3,
         placement: ChatPlacement.prepend,
         entries: const [],
         before: null,
@@ -699,8 +700,12 @@ void main() {
   );
 }
 
-TimelineItem _text(String thread, int seq) =>
-    chatMessage('$thread-$seq', body: 'body-$seq', completionSeq: seq);
+CompletedEntry _text(String thread, int seq) => completionEntry(
+  '$thread-$seq',
+  seq,
+  presentation: MainPresentation.single,
+  text: 'body-$seq',
+);
 
 final class _Harness {
   _Harness({bool viewport = true}) {
@@ -713,9 +718,12 @@ final class _Harness {
   final b = _Content('b');
   final repository = _Repository();
   late final TimelineSessionOwner owner;
-  Future<void> openA(List<TimelineItem> items, {bool hasOlder = false}) async {
+  Future<void> openA(
+    List<CompletedEntry> items, {
+    bool hasOlder = false,
+  }) async {
     owner.select('a');
-    await a.deliver(chatBatch(items, before: hasOlder ? 'before-3' : null));
+    await a.deliver(_batch(items, before: hasOlder ? 'before-3' : null));
   }
 }
 
@@ -873,3 +881,16 @@ final class _Scope extends Fake implements ConversationQueryScope {
     return CloseReport();
   }
 }
+
+ChatBatch _batch(
+  List<CompletedEntry> entries, {
+  ChatPlacement placement = ChatPlacement.set,
+  String? before,
+}) => completedBatch(
+  entries,
+  placement: placement,
+  before: before,
+  from: placement == ChatPlacement.append
+      ? entries.first.completionSeq - 1
+      : null,
+);

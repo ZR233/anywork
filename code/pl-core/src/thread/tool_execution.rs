@@ -138,8 +138,15 @@ impl Owner {
 
     pub(super) fn commit_tool_execution(
         &mut self,
-        completion: ToolExecutionCompletion,
+        mut completion: ToolExecutionCompletion,
     ) -> Result<crate::tool::ToolOutput, ThreadError> {
+        // A retained completion is retried as the fact first observed here. Later stop/close
+        // requests must not turn an already completed successful result into a cancelled one.
+        let cancellation = CancellationToken::new();
+        if completion.cancellation.is_cancelled() {
+            cancellation.cancel();
+        }
+        completion.cancellation = cancellation;
         let id = completion.call.call.call_id.clone();
         let operation = tool_output_operation(&id);
         let previous = self.state.clone();
@@ -147,13 +154,21 @@ impl Owner {
         let terminal =
             result.is_ok() || matches!(result, Err(ThreadError::Tool(_) | ThreadError::Cancelled));
         if terminal && self.state.deliveries.len() > previous.deliveries.len() {
-            self.uncommitted_tools.remove(&id);
-            self.permission_leases.remove(&format!("permission:{id}"));
-            self.task_tokens.remove(&format!("task:{id}"));
             // The result being committed is exactly the output this call reserved budget for, so the
             // store transfers that reservation onto the fact instead of charging it a second time.
-            self.pending_output_claim = Some(operation.clone());
-            self.publish();
+            self.uncommitted_tools.remove(&id);
+            let previous_claim = self.pending_output_claim.replace(operation.clone());
+            if let Err(error) = self.publish() {
+                // The tool already ran: retain its exact completion and charged output ceiling,
+                // restore the published resource cut, and let retry_tool_commits retry only commit.
+                self.state = previous;
+                self.pending_output_claim = previous_claim;
+                self.uncommitted_tools.insert(id, completion);
+                self.publish_snapshot();
+                return Err(error);
+            }
+            self.permission_leases.remove(&format!("permission:{id}"));
+            self.task_tokens.remove(&format!("task:{id}"));
             // The call returned and its result is now enrolled by the same `publish`/`admit` the
             // ordinary path uses, so the transient ceiling can be given back — but only once that
             // hand-over really completed. Handing it back before the result was enrolled would let a
@@ -523,6 +538,14 @@ impl Owner {
         self.finish_task(&id, &outcome)?;
         self.settle_execution_permission(&id)?;
         if matches!(outcome, ToolOutcome::Succeeded) && !output.revealed_tools().is_empty() {
+            // Discovery changes the manager used by freeze(), not just the snapshot. Reserve every
+            // resource cut before applying that control; the remaining synchronous publish sees the
+            // same collection and cannot fail its revision preflight after discovery has escaped.
+            self.state.interaction_collection_revision_for(
+                &self.published,
+                &self.state.interactions,
+                &self.state.permissions,
+            )?;
             self.tools.reveal(output.revealed_tools())?;
             self.state.discovered_tools = self.tools.discovery();
         }

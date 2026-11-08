@@ -1,4 +1,5 @@
 use super::*;
+use crate::studio::storage::history::schema::legacy_timeline_types::CurrentProjection;
 use sea_orm::DatabaseConnection;
 
 const THREAD: &str = "atom-migration";
@@ -40,6 +41,7 @@ impl MigratorTraitSelf for Published13 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -191,7 +193,7 @@ async fn seed_active_members(db: &DatabaseConnection, turn: &str) -> Result<Curr
         db,
         0,
         &LegacyCurrent::new(
-            crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
+            crate::studio::storage::history::schema::legacy_timeline_types::FrozenCurrentProjection::new(current.clone()),
             changes.into(),
             contents.into(),
         ),

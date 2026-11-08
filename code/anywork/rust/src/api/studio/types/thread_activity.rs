@@ -1,5 +1,27 @@
 //! Existing state-domain activity and storage projections; chat current uses bounded heads.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeActivityIdentity {
+    ModelPart { atom_id: String },
+    ForegroundTool { call_id: String },
+    BackgroundTool { call_id: String },
+    Other { domain: String, id: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeActivityEntry {
+    pub identity: BridgeActivityIdentity,
+    pub atom: super::BridgeChatAtom,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeActivitySnapshot {
+    pub revision: u64,
+    pub completed_through: u64,
+    pub execution_present: bool,
+    pub entries: Vec<BridgeActivityEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadActivity {
     pub thread_id: String,

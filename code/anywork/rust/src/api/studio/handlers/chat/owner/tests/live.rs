@@ -4,10 +4,7 @@ use std::{collections::HashSet, io::Write};
 use super::*;
 use crate::api::studio::{
     handlers::chat::tests::MODEL,
-    types::{
-        BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeContentRef,
-        BridgeCurrentContentRole,
-    },
+    types::{BridgeChatBatch, BridgeChatPlacement, BridgeContentRange},
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
 
@@ -22,14 +19,41 @@ async fn chat(
         ensure!(frame.subscription_id == owner.subscription_id);
         ensure!(
             frame.delivery_sequence == *sent + 1,
-            "duplicated or skipped sent prefix"
+            "duplicated or skipped delivery prefix"
+        );
+        *sent = frame.delivery_sequence;
+        match frame.event {
+            BridgeConversationEvent::State { .. } | BridgeConversationEvent::Activity { .. } => {
+                owner.acknowledge(&owner.subscription_id, *sent)?;
+            }
+            BridgeConversationEvent::Chat { batch } => return Ok((*sent, *batch)),
+            event => anyhow::bail!("unexpected live terminal: {event:?}"),
+        }
+    }
+}
+
+async fn activity(
+    owner: &ConversationOwner,
+    port: &mut mpsc::Receiver<BridgeConversationFrame>,
+    sent: &mut u64,
+) -> Result<(u64, crate::api::studio::types::BridgeActivitySnapshot)> {
+    loop {
+        let frame = receive(port).await?;
+        ensure!(frame.thread_id == owner.thread_id);
+        ensure!(frame.subscription_id == owner.subscription_id);
+        ensure!(
+            frame.delivery_sequence == *sent + 1,
+            "duplicated or skipped delivery prefix"
         );
         *sent = frame.delivery_sequence;
         match frame.event {
             BridgeConversationEvent::State { .. } => {
-                owner.acknowledge(&owner.subscription_id, *sent)?
+                owner.acknowledge(&owner.subscription_id, *sent)?;
             }
-            BridgeConversationEvent::Chat { batch } => return Ok((*sent, *batch)),
+            BridgeConversationEvent::Activity { snapshot } => return Ok((*sent, *snapshot)),
+            BridgeConversationEvent::Chat { .. } => {
+                anyhow::bail!("unexpected Chat before Activity cut")
+            }
             event => anyhow::bail!("unexpected live terminal: {event:?}"),
         }
     }
@@ -76,41 +100,32 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let mut sent = 0;
         let (set_seq, initial) = chat(&owner, &mut port, &mut sent).await?;
         ensure!(initial.placement == BridgeChatPlacement::Set);
-        ensure!(initial.current.is_some());
+        ensure!(initial.from_seq.is_none());
+        let mut accepted_through = initial.through_seq;
         let before = initial.before.context("nonempty fixture must have an older page")?;
         let old = facade.load_older(before.clone(), BridgeReadDemand {
             max_items: 16, max_bytes: 64 * 1024,
         }).await.map_err(|error| anyhow::anyhow!("history.load_older.initial: {error:?}"))?;
-        ensure!(old.placement == BridgeChatPlacement::Prepend && old.current.is_none());
-        let mut completed_items = HashSet::new();
+        ensure!(old.placement == BridgeChatPlacement::Prepend && !old.entries.is_empty());
+        let historical_record_id = old.entries[0].record_id.clone();
+        let mut completed_records = HashSet::new();
         for entry in &initial.entries {
-            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
-                anyhow::bail!("Main must contain display items");
-            };
-            ensure!(completed_items.insert(item.id.clone()));
+            ensure!(completed_records.insert(entry.record_id.clone()));
+            if let Some(run) = entry.run {
+                ensure!(run.start_seq > 0 && run.ordinal > 0);
+            }
         }
         let mut historical = None;
         for entry in old.entries {
-            let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
-                continue;
-            };
-            ensure!(completed_items.insert(item.id.clone()));
-            if let Some(item_id) = item.content_item_id.as_deref() {
-                let manifest = facade
-                    .list_contents(
-                        item_id.to_owned(),
-                        None,
-                        BridgeReadDemand {
-                            max_items: 16,
-                            max_bytes: 64 * 1024,
-                        },
-                    )
-                    .await
-                    .map_err(|error| anyhow::anyhow!(
-                        "history.list_contents: item_id={item_id}: {error:?}"
-                    ))?;
-                if let Some(entry) = manifest.entries.into_iter().next() {
-                    historical = Some(entry.reference);
+            ensure!(completed_records.insert(entry.record_id.clone()));
+            if entry.atom.payload.is_some() || !entry.atom.contents.is_empty() {
+                let manifest = facade.list_contents(entry.record_id.clone(), None, BridgeReadDemand {
+                    max_items: 16, max_bytes: 64 * 1024,
+                }).await.map_err(|error| anyhow::anyhow!(
+                    "history.list_contents: record_id={}: {error:?}", entry.record_id
+                ))?;
+                if let Some(manifest_entry) = manifest.entries.into_iter().next() {
+                    historical = Some(manifest_entry.reference);
                     break;
                 }
             }
@@ -118,137 +133,97 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let historical = historical.context("real completed body manifest")?;
         let range = BridgeContentRange { offset: 3, max_bytes: 12 };
         let old_window = facade.read_content(historical.clone(), range.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "history.read_content.initial: reference={historical:?}; range={range:?}: {error:?}"
-            ))?;
+            .map_err(|error| anyhow::anyhow!("history.read_content.initial: {error:?}"))?;
         ensure!(old_window.sealed && old_window.offset == range.offset && !old_window.bytes.is_empty());
-        ensure!(owner.state.lock().unwrap().sent == set_seq);
         owner.acknowledge(&owner.subscription_id, set_seq)?;
         env.submit_followup().await?;
         tokio::time::timeout(Duration::from_secs(5), head.wait_reached()).await?;
 
-        let mut response_identity: Option<(String, BridgeContentRef)> = None;
-        let (held_seq, reference, preview_id, preview_bytes, preview_range_matches, held_cut) = loop {
-            let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
-            ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
+        // Chat completion and Activity are separate credit-bearing events. ACK each preceding
+        // Chat; hold the exact Activity snapshot that carries the live body owner.
+        let mut held_activity = None;
+        let (held_seq, reference, activity_id, turn_id) = loop {
+            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
+            ensure!(batch.placement == BridgeChatPlacement::Append
+                && batch.before.is_none()
+                && batch.from_seq.is_some_and(|from| from < batch.through_seq));
+            accepted_through = batch.through_seq;
             for entry in batch.entries {
-                let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
-                    anyhow::bail!("Main appended an atom instead of an item");
-                };
-                ensure!(completed_items.insert(item.id));
+                ensure!(completed_records.insert(entry.record_id));
             }
-            let mut responses = batch.current.iter()
-                .flat_map(|current| &current.previews)
-                .filter(|preview| preview.role == BridgeCurrentContentRole::Response);
-            if let Some(preview) = responses.next() {
-                ensure!(responses.next().is_none(), "fixture must expose one Response preview");
-                if let Some((id, reference)) = &response_identity {
-                    ensure!(
-                        preview.id == *id && preview.reference == *reference,
-                        "Response preview changed identity before its readable prefix"
-                    );
-                } else {
-                    response_identity = Some((preview.id.clone(), preview.reference.clone()));
-                }
-                // An early declaration is not the readable prefix needed by the
-                // original range. ACK it below and consume the next real batch.
-                if let Some(bytes) = preview.text.as_bytes().get(3..15) {
-                    ensure!(
-                        bytes == &prefix.as_bytes()[3..15],
-                        "readable Response preview differs from the expected prefix: \
-                         sequence={sequence}; preview_id={:?}; reference={:?}; actual_bytes={bytes:?}",
-                        preview.id, preview.reference,
-                    );
-                    let cut = batch.current.as_ref().map(|current| (
-                        current.source_effect_seq,
-                        current.execution_present,
-                        current.active.as_ref().map(|active| active.id.clone()),
-                        current.active_turn.clone(),
-                    ));
-                    break (
-                        sequence,
-                        preview.reference.clone(),
-                        preview.id.clone(),
-                        preview.text.len(),
-                        preview.text.as_bytes().get(3..15) == Some(&prefix.as_bytes()[3..15]),
-                        cut,
-                    );
-                }
+            owner.acknowledge(&owner.subscription_id, chat_seq)?;
+            let (sequence, snapshot) = activity(&owner, &mut port, &mut sent).await?;
+            ensure!(snapshot.revision > 0);
+            ensure!(snapshot.completed_through == accepted_through,
+                "Activity arrived ahead of or behind the accepted completion prefix");
+            let Some(entry) = snapshot.entries.iter().find(|entry|
+                entry.atom.kind == crate::api::studio::types::BridgeChatAtomKind::Text
+                    && matches!(&entry.atom.lifecycle, crate::api::studio::types::BridgeChatAtomLifecycle::Active { .. })
+                    && entry.atom.contents.iter().any(|content|
+                        content.role == crate::api::studio::types::BridgeChatContentRole::Body))
+            else {
+                owner.acknowledge(&owner.subscription_id, sequence)?;
+                continue;
+            };
+            ensure!(snapshot.execution_present && snapshot.completed_through >= 0);
+            let body = entry.atom.contents.iter()
+                .find(|content| content.role == crate::api::studio::types::BridgeChatContentRole::Body)
+                .context("Activity omitted Body reference")?;
+            let identity = match &entry.identity {
+                crate::api::studio::types::BridgeActivityIdentity::ModelPart { atom_id } => atom_id,
+                other => anyhow::bail!("text body has unexpected activity identity: {other:?}"),
+            };
+            ensure!(identity == &entry.atom.id);
+            let prefix_window = facade.read_content(body.reference.clone(), range.clone()).await
+                .map_err(|error| anyhow::anyhow!("Activity body read while credit held: {error:?}"))?;
+            if prefix_window.bytes != prefix.as_bytes()[3..15] {
+                owner.acknowledge(&owner.subscription_id, sequence)?;
+                continue;
             }
-            owner.acknowledge(&owner.subscription_id, sequence)?;
+            let reference = body.reference.clone();
+            let activity_id = identity.clone();
+            let turn_id = entry.atom.turn_id.clone().context("Activity omitted Turn identity")?;
+            held_activity = Some(snapshot);
+            break (sequence, reference, activity_id, turn_id);
         };
-        // Do not ACK the live batch: the producer holds native recv and is genuinely credit-blocked.
-        ensure!(owner.native.try_lock().is_err());
+        let held_snapshot = held_activity.context("no live Activity snapshot was held")?;
+        ensure!(held_snapshot.execution_present && held_snapshot.revision > 0);
+        ensure!(owner.native.try_lock().is_err(), "producer owns native recv while credit is held");
         let mut credit = Box::pin(owner.wait_credit());
         ensure!(futures::poll!(credit.as_mut()).is_pending());
-        let held_context = || format!(
-            "watch.primary held preview: thread_id={}; subscription_id={}; held_sequence={held_seq}; \
-             preview_id={preview_id:?}; preview_text_bytes={preview_bytes}; \
-             preview_range_matches={preview_range_matches}; \
-             cut(source_effect_seq,execution_present,active_id,active_turn)={held_cut:?}; \
-             reference={reference:?}; range={range:?}; expected_available_through={}; expected_window_bytes=12",
-            owner.thread_id, owner.subscription_id, prefix.len(),
-        );
-        let watch = facade.open_content_watch(reference.clone(), range.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.primary.open: reference={reference:?}; range={range:?}: {error:?}"
-            ))
-            .with_context(held_context)?;
-        let first = window(&facade, &watch, "watch.primary.initial").await
-            .with_context(held_context)?;
-        let held_context = held_context();
-        ensure!(
-            first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64,
-            "{held_context}; actual_initial_window={first:?}"
-        );
-        ensure!(
-            first.bytes == prefix.as_bytes()[3..15],
-            "{held_context}; actual_initial_window={first:?}"
-        );
-        let cancelled_watch = facade.open_content_watch(reference.clone(), range.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.cancelled.open: reference={reference:?}; range={range:?}: {error:?}"
-            ))?;
+        let watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
+        let first = window(&facade, &watch, "watch.primary.initial").await?;
+        ensure!(first.offset == 3 && !first.sealed && first.available_through == prefix.len() as u64);
+        ensure!(first.bytes == prefix.as_bytes()[3..15]);
+        let cancelled_watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
         window(&facade, &cancelled_watch, "watch.cancelled.initial").await?;
-        let mut waiting = Box::pin(async {
-            facade.next_content_window(cancelled_watch.clone()).await
-                .map_err(|error| anyhow::anyhow!(
-                    "watch.cancelled.wait_next: watch={cancelled_watch}: {error:?}"
-                ))
-        });
-        let waiting_state = futures::poll!(waiting.as_mut());
-        if let std::task::Poll::Ready(Err(error)) = waiting_state {
-            return Err(error);
-        }
-        ensure!(waiting_state.is_pending(), "unchanged native source must wait");
+        let mut waiting = Box::pin(async { facade.next_content_window(cancelled_watch.clone()).await });
+        ensure!(futures::poll!(waiting.as_mut()).is_pending(), "unchanged watch should wait");
         facade.request_close_content_watch(cancelled_watch.clone())?;
         let (next, close) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(waiting, facade.close_content_watch(cancelled_watch.clone()))
-        }).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.cancelled.close_join.timeout: watch={cancelled_watch}: {error:?}"
-            ))?;
+        }).await?;
         ensure!(next?.is_none());
         close?;
         let page = tokio::time::timeout(Duration::from_secs(5), facade.load_older(before.clone(),
-            BridgeReadDemand { max_items: 16, max_bytes: 64 * 1024 })).await
-            .map_err(|error| anyhow::anyhow!("history.load_older.credit_blocked.timeout: {error:?}"))?
-            .map_err(|error| anyhow::anyhow!("history.load_older.credit_blocked: {error:?}"))?;
-        ensure!(!page.entries.is_empty() && page.current.is_none());
-        ensure!(facade.read_content(historical, range.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "history.read_content.credit_blocked: range={range:?}: {error:?}"
-            ))?.bytes == old_window.bytes);
-        ensure!(port.try_recv().is_err(), "query or watch must not bypass feed credit");
-        // Only the real producer may consume the credit notification after ACK.
-        drop(credit);
+            BridgeReadDemand { max_items: 16, max_bytes: 64 * 1024 })).await??;
+        ensure!(!page.entries.is_empty());
+        let historical_entry = facade.read_completed(
+            historical_record_id.clone(),
+            BridgeReadDemand { max_items: 1, max_bytes: 64 * 1024 },
+        ).await?;
+        ensure!(historical_entry.record_id == historical_record_id);
+        ensure!(facade.read_content(historical, range.clone()).await?.bytes == old_window.bytes);
+        ensure!(port.try_recv().is_err(), "queries/watch must not bypass occupied feed credit");
+
         head.release();
         tokio::time::timeout(Duration::from_secs(5), appended.wait_reached()).await?;
         let second = window(&facade, &watch, "watch.primary.append").await?;
-        ensure!(second.generation == first.generation, "append-only content must retain its generation");
+        ensure!(second.generation == first.generation);
         ensure!(second.available_through == (prefix.len() + suffix.len()) as u64 && !second.sealed);
-        ensure!(second.offset == first.offset && second.bytes == first.bytes);
+        ensure!(second.bytes == first.bytes);
         owner.acknowledge(&owner.subscription_id, held_seq)?;
+        drop(credit);
         appended.release();
         let final_window = loop {
             let next = window(&facade, &watch, "watch.primary.replacement").await?;
@@ -256,77 +231,61 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         };
         ensure!(final_window.bytes == replacement.as_bytes()[3..15]);
         ensure!(final_window.available_through == replacement.len() as u64);
-        ensure!(final_window.generation != first.generation, "authoritative replacement must change generation");
-        ensure!(facade.next_content_window(watch.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.primary.terminal_next: watch={watch}: {error:?}"
-            ))?.is_none());
+        ensure!(final_window.generation != first.generation);
+        ensure!(facade.next_content_window(watch.clone()).await?.is_none());
         facade.close_content_watch(watch).await?;
 
-        let mut completed_body = false;
-        loop {
-            let (sequence, batch) = chat(&owner, &mut port, &mut sent).await?;
+        let mut completed_body = None;
+        let mut retired = false;
+        for _ in 0..64 {
+            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
             for entry in batch.entries {
-                let crate::api::studio::types::BridgeChatEntry::Item(item) = entry else {
-                    continue;
-                };
-                ensure!(completed_items.insert(item.id.clone()));
-                if let Some(item_id) = item.content_item_id.as_deref() {
-                    let manifest = facade
-                        .list_contents(
-                            item_id.to_owned(),
-                            None,
-                            BridgeReadDemand {
-                                max_items: 16,
-                                max_bytes: 64 * 1024,
-                            },
-                        )
-                        .await
-                        .map_err(|error| anyhow::anyhow!(
-                            "completion.list_contents: item_id={item_id}: {error:?}"
-                        ))?;
-                    completed_body |= manifest
-                        .entries
-                        .into_iter()
-                        .any(|entry| entry.reference == reference);
+                ensure!(completed_records.insert(entry.record_id.clone()));
+                if entry.record_id == match &reference.target {
+                    crate::api::studio::types::BridgeContentTarget::Body {
+                        owner: crate::api::studio::types::BridgeContentOwner::Item { item_id }, ..
+                    } => item_id.clone(),
+                    _ => String::new(),
+                } {
+                    ensure!(entry.atom.id == activity_id);
+                    ensure!(entry.atom.turn_id.as_deref() == Some(turn_id.as_str()));
+                    completed_body = Some(entry.record_id.clone());
                 }
             }
-            let retired = batch.current.is_some_and(|current|
-                current.active.is_none() && current.active_turn.is_none());
-            owner.acknowledge(&owner.subscription_id, sequence)?;
+            owner.acknowledge(&owner.subscription_id, chat_seq)?;
+            let (activity_seq, snapshot) = activity(&owner, &mut port, &mut sent).await?;
+            retired = !snapshot.execution_present && snapshot.entries.is_empty();
+            owner.acknowledge(&owner.subscription_id, activity_seq)?;
             if retired {
-                ensure!(completed_body, "current retired before the completed body was queryable");
+                ensure!(completed_body.is_some(), "Activity retired before response completion appeared");
                 break;
             }
         }
+        ensure!(retired);
+        let record_id = completed_body.context("completion record ID")?;
+        let point_read = facade.read_completed(record_id.clone(), BridgeReadDemand {
+            max_items: 1, max_bytes: 64 * 1024,
+        }).await?;
+        ensure!(point_read.record_id == record_id && point_read.atom.id == activity_id);
+
         env.runtime.synchronize_thread_observation(&env.thread_id).await?;
-        // A new facade cannot accept the original cursor. Retiring the old facade cannot revoke it.
         let replacement_owner = managed(env.feed().await?);
         let replacement_facade = BridgeConversationFeed { inner: replacement_owner };
         ensure!(replacement_facade.load_older(before.clone(),
             BridgeReadDemand { max_items: 2, max_bytes: 64 * 1024 }).await.is_err());
-        let late_watch = facade.open_content_watch(reference.clone(), range.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.late.open: reference={reference:?}; range={range:?}: {error:?}"
-            ))?;
+        let late_watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
         facade.request_close();
-        ensure!(facade.next_content_window(late_watch.clone()).await
-            .map_err(|error| anyhow::anyhow!(
-                "watch.late.retired_next: watch={late_watch}: {error:?}"
-            ))?.is_none());
+        ensure!(facade.next_content_window(late_watch.clone()).await?.is_none());
         facade.close().await?;
         ensure!(owner.is_settled() && owner.native.lock().await.is_none());
         ensure!(owner.producer.lock().await.task.is_none());
-        ensure!(facade.read_content(reference.clone(), range.clone()).await.is_err());
-        ensure!(replacement_facade.read_content(reference, range).await
-            .map_err(|error| anyhow::anyhow!("replacement.read_content: {error:?}"))?
-            .bytes == final_window.bytes);
+        ensure!(facade.read_completed(record_id, BridgeReadDemand {
+            max_items: 1, max_bytes: 64 * 1024,
+        }).await.is_err());
+        ensure!(replacement_facade.read_content(reference, range).await?.bytes == final_window.bytes);
         replacement_facade.close().await?;
-        writeln!(std::io::stdout(), "live FRB: Set→Append ordered through {sent}; old-page/range during unacked #{held_seq}; append generation {}; replacement generation {}; native watches/feed/read closed; \
-            {held_context}; actual_window_through(first,append,replacement)=({},{},{}); actual_initial_window={first:?}",
-            first.generation, final_window.generation,
-            first.available_through, second.available_through, final_window.available_through)?;
+        writeln!(std::io::stdout(), "typed Activity→CompletedEntry lifecycle; ACK held at Activity revision {}; independent older/read/watch while credit occupied; final watch close, point read, lease retirement and replacement qualification verified", held_snapshot.revision)?;
         Ok(())
     }).await.context("live FRB lifecycle exceeded its bounded test budget").and_then(|result| result);
     head.release();

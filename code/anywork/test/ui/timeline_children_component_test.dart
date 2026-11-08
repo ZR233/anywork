@@ -32,6 +32,130 @@ ThreadDirectoryStore _threadDirectory() =>
     ThreadDirectoryStore(feed: RecordingDemoTransport());
 
 void main() {
+  for (final run in [false, true]) {
+    testWidgets(
+      '${run ? 'Run' : 'Children'} accepts Activity barriers then pages and closes without touching Main',
+      (tester) async {
+        final transport = _Transport();
+        final repository = ConversationRepositoryImpl(
+          transport: transport,
+          directory: _threadDirectory(),
+          onRevision: (_, _) {},
+        );
+        const reference = CompletionRunRef(
+          databaseId: 'database',
+          indexVersion: 1,
+          startSeq: 1,
+        );
+        CompletedEntry runEntry(String id, int sequence) => CompletedEntry(
+          recordId: id,
+          completionSeq: sequence,
+          run: CompletionRunPosition(startSeq: 1, ordinal: sequence),
+          mainPresentation: MainPresentation.foregroundWork,
+          atom: memberMessage(id: id),
+        );
+        transport.feed.reader.onOlder = (before, _) async {
+          expect(before, 'before');
+          return ChatBatch(
+            placement: ChatPlacement.prepend,
+            entries: [
+              run
+                  ? runEntry('older', 1)
+                  : memberEntry(memberMessage(id: 'older')),
+            ],
+            throughSeq: 100,
+          );
+        };
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pureStudioTheme(),
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: TimelineChildrenConnector(
+                repository: run ? null : repository,
+                threadId: 'thread',
+                parentId: 'parent',
+                runReference: run ? reference : null,
+                openRun: run
+                    ? (reference, demand) => repository.openRun(
+                        threadId: 'thread',
+                        reference: reference,
+                        demand: demand,
+                      )
+                    : null,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        transport.feed.send(
+          ConversationChatEvent(
+            batch: run
+                ? ChatBatch(
+                    placement: ChatPlacement.set,
+                    entries: [runEntry('item', 100)],
+                    before: 'before',
+                    throughSeq: 100,
+                  )
+                : memberSet(before: 'before'),
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () => transport.feed.acknowledgements.contains(1),
+          'initial completed Set ACK',
+        );
+        final controller = tester
+            .widget<Chat>(find.byType(Chat))
+            .chatController;
+        final original = controller.messages.single;
+        transport.feed.send(
+          ConversationActivityEvent(
+            snapshot: ActivitySnapshot(
+              revision: 1,
+              completedThrough: 100,
+              executionPresent: false,
+              entries: const [],
+            ),
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () => transport.feed.acknowledgements.contains(2),
+          'independent Activity ACK',
+        );
+        expect(controller.messages.single, same(original));
+        expect(repository.session('thread').activity.value, isNull);
+        await tester.tap(
+          find.byKey(const ValueKey('timeline-children-load-older')),
+        );
+        await pumpClientUntil(
+          tester,
+          () => controller.messages.length == 2,
+          'page after Activity',
+        );
+        expect(controller.messages.map((message) => message.id), [
+          'older',
+          'item',
+        ]);
+        await tester.pumpWidget(const SizedBox());
+        await pumpClientUntil(
+          tester,
+          () => transport.feed.closeStarted.isCompleted,
+          'scope close',
+        );
+        final report = await pumpClientFuture(
+          tester,
+          repository.close(),
+          'independent scope and repository joined',
+        );
+        expect(report.complete, isTrue);
+        expect(transport.feed.acknowledgements, [1, 2]);
+      },
+    );
+  }
   for (final lateFailure in [false, true]) {
     testWidgets(
       'genuine business parent rejects retired open ${lateFailure ? 'failure' : 'success'} without rebinding into B',
@@ -283,7 +407,9 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(memberMessage(id: 'append'))],
+            fromSeq: 100,
+            throughSeq: 101,
+            entries: [memberEntry(memberMessage(id: 'append'), sequence: 101)],
           ),
         ),
       );
@@ -293,7 +419,8 @@ void main() {
       page.complete(
         ChatBatch(
           placement: ChatPlacement.prepend,
-          entries: [ChatAtomEntry(memberMessage(id: 'older'))],
+          throughSeq: 100,
+          entries: [memberEntry(memberMessage(id: 'older'))],
         ),
       );
       await pumpClientUntil(
@@ -359,6 +486,12 @@ void main() {
       expect(display.messages.single.id, 'replacement');
       expect(find.text('旧 Children 正文'), findsOneWidget);
       final generationBeforeSet = display.generation;
+      recorded.contents.single.refresh();
+      await pumpClientUntil(
+        tester,
+        () => transport.feeds.length == 4,
+        'fresh immutable Children attempt',
+      );
       transport.feeds.last.send(
         ConversationChatEvent(
           batch: memberSet(
@@ -390,7 +523,11 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(memberMessage(id: 'unaccepted'))],
+            fromSeq: 100,
+            throughSeq: 101,
+            entries: [
+              memberEntry(memberMessage(id: 'unaccepted'), sequence: 101),
+            ],
           ),
         ),
       );
@@ -553,7 +690,11 @@ void main() {
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: [ChatAtomEntry(memberMessage(id: 'must-not-apply'))],
+            fromSeq: 100,
+            throughSeq: 101,
+            entries: [
+              memberEntry(memberMessage(id: 'must-not-apply'), sequence: 101),
+            ],
           ),
         ),
       );
@@ -754,8 +895,9 @@ void main() {
         newPage.complete(
           ChatBatch(
             placement: ChatPlacement.prepend,
+            throughSeq: 100,
             entries: [
-              ChatAtomEntry(
+              memberEntry(
                 memberMessage(
                   id: 'replacement-older',
                   body: 'older from new feed',
@@ -922,7 +1064,14 @@ final class _Transport implements ConversationTransport {
   }
 }
 
-// Real business Children carry raw atoms, not Main TimelineItems.
+// Children use immutable completed records, independently from Main display cards.
+CompletedEntry memberEntry(ChatAtom atom, {int sequence = 1}) => CompletedEntry(
+  recordId: atom.completionItemId ?? atom.id,
+  completionSeq: sequence,
+  run: CompletionRunPosition(startSeq: sequence, ordinal: 1),
+  mainPresentation: MainPresentation.single,
+  atom: atom,
+);
 ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
   id: id,
   completionItemId: id,
@@ -936,15 +1085,13 @@ ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
     outcome: ChatTerminalOutcome.completed,
   ),
   contents: const [],
-  payload: main_fixtures.chatMessage(id: id, body: body).payload,
+  payload: main_fixtures.chatMessage(id: id, body: body).atom.payload,
 );
-ChatBatch memberSet({
-  List<ChatAtom>? messages,
-  String? before,
-  CurrentProjection? current,
-}) => ChatBatch(
+ChatBatch memberSet({List<ChatAtom>? messages, String? before}) => ChatBatch(
   placement: ChatPlacement.set,
-  entries: (messages ?? [memberMessage()]).map(ChatAtomEntry.new).toList(),
+  entries: (messages ?? [memberMessage()]).indexed
+      .map((pair) => memberEntry(pair.$2, sequence: 100 + pair.$1))
+      .toList(),
   before: before,
-  current: current,
+  throughSeq: 100 + (messages?.length ?? 1) - 1,
 );

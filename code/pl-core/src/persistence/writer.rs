@@ -363,7 +363,11 @@ impl SqliteSessionStore {
         use super::ResourceAdmissionError;
         use crate::storage::SessionEntry;
         let effect = &write.effect;
-        let checkpoint = write.checkpoint.pruned();
+        let checkpoint = write.checkpoint.pruned().map_err(|error| {
+            ResourceAdmissionError::InvalidIdentity(format!(
+                "Thread {thread_id} checkpoint pruning failed: {error}"
+            ))
+        })?;
         let valid_identity = effect.thread_id == thread_id
             && checkpoint.thread_id == thread_id
             && !thread_id.is_empty()

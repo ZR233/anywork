@@ -1,5 +1,5 @@
 //! Schema 16 → 17 changes only the rebuildable background-result grouping.
-use super::super::conversation::timeline;
+use super::legacy_timeline_store as timeline;
 use super::*;
 
 pub(super) struct TimelineBackgroundTail;
@@ -41,9 +41,11 @@ impl MigrationTrait for TimelineBackgroundTail {
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_timeline_types::*;
+    use super::legacy_timeline_types::{ChatScope, CurrentProjection};
     use super::*;
     use crate::studio::paths::SqliteFileMode;
-    use crate::studio::storage::history::{connect, conversation};
+    use crate::studio::storage::history::connect;
     use anyhow::Result;
     use pl_protocol::*;
 
@@ -66,8 +68,10 @@ mod tests {
             .migrations()
             .into_iter()
             .filter(|step| {
-                !matches!(step.name(), TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY)
-                    && !is_lifecycle_migration(step.name())
+                !matches!(
+                    step.name(),
+                    TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS
+                ) && !is_lifecycle_migration(step.name())
             })
             .collect()
         }
@@ -85,7 +89,9 @@ mod tests {
             }
             .migrations()
             .into_iter()
-            .take_while(|step| step.name() != COMPLETION_BOUNDARY)
+            .take_while(|step| {
+                !matches!(step.name(), COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS)
+            })
             .collect()
         }
     }
@@ -165,8 +171,16 @@ mod tests {
         db.execute_unprepared("UPDATE history_meta SET applied_write_seq=3 WHERE id=1")
             .await?;
         timeline::rebuild_schema16(&db, &database).await?;
-        let before =
-            conversation::timeline::page_rows(&db, &ChatScope::Main, None, 100, 3, 8, &[]).await?;
+        let before = crate::studio::storage::history::schema::legacy_timeline_store::page_rows(
+            &db,
+            &ChatScope::Main,
+            None,
+            100,
+            3,
+            8,
+            &[],
+        )
+        .await?;
         assert_eq!(
             before.len(),
             3,
@@ -181,15 +195,32 @@ mod tests {
         assert_eq!(version(&db).await?, 16);
         assert_eq!(migration_records(&db).await?, old_ledger);
         assert_eq!(
-            conversation::timeline::page_rows(&db, &ChatScope::Main, None, 100, 3, 8, &[]).await?,
+            crate::studio::storage::history::schema::legacy_timeline_store::page_rows(
+                &db,
+                &ChatScope::Main,
+                None,
+                100,
+                3,
+                8,
+                &[]
+            )
+            .await?,
             before
         );
         db.execute_unprepared("DROP TRIGGER reject_tail_marker")
             .await?;
         Published17.up(&db, None).await?;
         assert_eq!(version(&db).await?, 17);
-        let page =
-            conversation::timeline::page_rows(&db, &ChatScope::Main, None, 100, 3, 8, &[]).await?;
+        let page = crate::studio::storage::history::schema::legacy_timeline_store::page_rows(
+            &db,
+            &ChatScope::Main,
+            None,
+            100,
+            3,
+            8,
+            &[],
+        )
+        .await?;
         assert_eq!(page.len(), 1);
         let ChatEntry::Item(group) = &page[0].1 else {
             panic!("background group")
@@ -216,8 +247,16 @@ mod tests {
         Published17.up(&reopened, None).await?;
         assert_eq!(migration_records(&reopened).await?, ledger);
         assert_eq!(
-            conversation::timeline::page_rows(&reopened, &ChatScope::Main, None, 100, 3, 8, &[])
-                .await?,
+            crate::studio::storage::history::schema::legacy_timeline_store::page_rows(
+                &reopened,
+                &ChatScope::Main,
+                None,
+                100,
+                3,
+                8,
+                &[]
+            )
+            .await?,
             page
         );
         Ok(())

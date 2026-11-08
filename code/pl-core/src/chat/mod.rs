@@ -7,11 +7,14 @@ mod error;
 mod history;
 mod item;
 mod read;
+#[cfg(test)]
+mod run_tests;
 mod session;
 mod tail;
 
 pub use cursor::{
-    ChatBudget, ChatCompletionCursor, ChatCursor, ChatHistoryPage, ChatHistoryRequest, ChatPage,
+    CHAT_CURSOR_VERSION, CHAT_INDEX_VERSION, ChatBudget, ChatCompletionCursor, ChatCursor,
+    ChatHistoryItemRequest, ChatHistoryPage, ChatHistoryRequest, ChatItemRequest, ChatPage,
     ChatPageItem, ChatPageRequest, MAX_READ_BYTES, MAX_READ_ITEMS, PayloadData, PayloadMode,
     ReadDemand, TimelineEpoch, select_payload,
 };
@@ -22,7 +25,8 @@ pub use detail::{
 pub use error::ChatError;
 pub use history::ChatHistory;
 pub use item::{
-    ChatContents, ChatDraft, ChatItem, ChatItemHeader, ChatKey, ChatQuery, PresentationPart,
+    ChatContents, ChatDraft, ChatItem, ChatItemHeader, ChatKey, ChatPublicationSeed, ChatQuery,
+    ChatReadHint, ChatRunPosition, ChatRunSeed, ChatSelection, PresentationPart,
     presentation_item_id, presentation_prefix,
 };
 pub use session::{Session, WeakSession};

@@ -1,8 +1,10 @@
 use super::*;
 use crate::studio::paths::SqliteFileMode;
 use crate::studio::storage::history::conversation;
+use crate::studio::storage::history::schema::legacy_timeline_types::{
+    ChatEntry, CurrentProjection, FrozenCurrentProjection, TimelineItemKind,
+};
 use crate::studio::storage::history::{HistoryStore, connect};
-use crate::studio::thread_projection::FrozenCurrentProjection;
 use anyhow::Result;
 use pl_protocol::*;
 use sea_orm::DatabaseConnection;
@@ -23,7 +25,10 @@ impl MigratorTraitSelf for Published16 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                SOURCE_CLASSIFICATION | TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY
+                SOURCE_CLASSIFICATION
+                    | TIMELINE_BACKGROUND_TAIL
+                    | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .collect()
@@ -31,7 +36,23 @@ impl MigratorTraitSelf for Published16 {
 }
 
 async fn rows(db: &impl ConnectionTrait, sql: &str) -> Result<Vec<String>> {
-    db.query_all_raw(statement(sql, vec![]))
+    let sql = if version(db).await? >= 18 {
+        sql.replace(
+            "FROM timeline_items ",
+            "FROM completion_boundary_archive_timeline_items ",
+        )
+        .replace(
+            "FROM timeline_item_members ",
+            "FROM completion_boundary_archive_timeline_members ",
+        )
+        .replace(
+            "FROM timeline_projection_state",
+            "FROM completion_boundary_archive_projection_state",
+        )
+    } else {
+        sql.to_owned()
+    };
+    db.query_all_raw(statement(&sql, vec![]))
         .await?
         .into_iter()
         .map(|row| row.try_get("", "value").map_err(Into::into))
@@ -179,7 +200,7 @@ async fn fixture() -> Result<(tempfile::TempDir, PathBuf)> {
             draft.payload = std::sync::Arc::from(&b"unsupported original bytes"[..]);
         }
         draft.metadata = serde_json::to_vec(&atom)?.into();
-        let completion = pl_core::chat::ChatItem::complete(draft, seq);
+        let completion = pl_core::chat::ChatItem::complete(draft, seq, None);
         conversation::migration::append_published(&db, &completion).await?;
         db.execute_raw(statement(
             "UPDATE conversation_items SET metadata=?,query_class=? WHERE seq=?",
@@ -234,17 +255,9 @@ async fn open(path: &Path) -> Result<DatabaseConnection> {
 }
 
 async fn cold_shape(store: &HistoryStore) -> Result<(CurrentProjection, Vec<(u64, ChatEntry)>)> {
-    let current = store
-        .conversation_current()
-        .await?
-        .context("cold current")?;
-    let next = store
-        .timeline_snapshot()
-        .await?
-        .context("cold Timeline")?
-        .next_position();
     let reader = store.reader().await?.context("cold reader")?;
-    let page = timeline::page_rows(&reader.db, &ChatScope::Main, None, next, 9, 256, &[]).await?;
+    let current = super::super::legacy_current::read_archived(&reader.db).await?;
+    let page = timeline::archived_page(&reader.db).await?;
     assert!(!page.is_empty());
     Ok((current, page))
 }
@@ -267,9 +280,9 @@ async fn new_database_runs_source_step_before_lifecycle_and_records_it_once() ->
     assert!(old_ledger.iter().any(|row| row.contains(TIMELINE_ITEMS)));
     assert!(!old_ledger.iter().any(|row| row.contains(MODEL_ACCESS)));
     assert!(!needs_content_preparation(&db, THREAD).await?);
-    let generation = timeline::generation(&db).await?;
+    let generation = migration_generation(&db).await?;
     initialize(&db, THREAD).await?;
-    assert_eq!(timeline::generation(&db).await?, generation);
+    assert_eq!(migration_generation(&db).await?, generation);
     assert_eq!(ledger(&db).await?, old_ledger);
     db.close().await?;
     Ok(())
@@ -292,14 +305,14 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
             .iter()
             .all(|record| !record.contains(SOURCE_CLASSIFICATION))
     );
-    let generation = timeline::generation(&db).await?;
+    let generation = migration_generation(&db).await?;
     db.close().await?;
     let store = HistoryStore::open(&path, THREAD).await?;
     store.prepare_conversation_read().await?;
     let db = &store.writer().await?.db;
     assert_eq!(originals(db).await?, original);
     let new_ledger = ledger(db).await?;
-    assert_eq!(new_ledger.len(), old_ledger.len() + 3);
+    assert_eq!(new_ledger.len(), old_ledger.len() + 4);
     for step in [
         SOURCE_CLASSIFICATION,
         TIMELINE_BACKGROUND_TAIL,
@@ -308,7 +321,7 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         assert!(new_ledger.iter().any(|record| record.contains(step)));
     }
     assert!(old_ledger.iter().all(|record| new_ledger.contains(record)));
-    assert_ne!(timeline::generation(db).await?, generation);
+    assert_ne!(migration_generation(db).await?, generation);
     assert_eq!(rows(db, "SELECT json_extract(metadata,'$.kind') AS value FROM conversation_items WHERE seq IN (2,4,6,7) ORDER BY seq").await?,
         ["raw", "inference", "agent", "unknown"]);
     assert_eq!(
@@ -318,10 +331,10 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         )
         .await?,
         [
-            "workGroup",
             "status",
             "workGroup",
             "status",
+            "workGroup",
             "status",
             "status"
         ]
@@ -343,16 +356,13 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         .await?,
         ["摘要 1", "摘要 5"]
     );
-    let current = store
-        .conversation_current()
-        .await?
-        .context("cold current")?;
+    let current = super::super::legacy_current::read_archived(db).await?;
     assert_eq!(current.atoms[0].kind, ChatAtomKind::Agent);
     assert_eq!(current.items[0].kind, TimelineItemKind::Status);
     assert_eq!(current.items[0].source, current.atoms[0].source);
     let shape = cold_shape(&store).await?;
     let frozen = derived(db).await?;
-    db.execute_unprepared("CREATE TRIGGER reject_rebuild BEFORE DELETE ON timeline_items BEGIN SELECT RAISE(ABORT,'unexpected rebuild'); END;
+    db.execute_unprepared("CREATE TRIGGER reject_rebuild BEFORE DELETE ON completion_boundary_archive_timeline_items BEGIN SELECT RAISE(ABORT,'unexpected rebuild'); END;
         CREATE TRIGGER reject_reclassify BEFORE UPDATE OF metadata ON conversation_items BEGIN SELECT RAISE(ABORT,'unexpected reclassification'); END;").await?;
     store.close_for_deletion().await?;
     let store = HistoryStore::open(&path, THREAD).await?;
@@ -427,8 +437,8 @@ async fn source_upgrade_rejects_conflicting_evidence_and_supported_malformed_env
 #[tokio::test]
 async fn applied_source_upgrade_does_not_repair_missing_tables_or_recovery() -> Result<()> {
     for corruption in [
-        "DROP TABLE timeline_item_members",
-        "DELETE FROM timeline_projection_state",
+        "DROP INDEX conversation_items_visible_seq",
+        "DROP INDEX conversation_items_by_run_seq",
     ] {
         let (_directory, path) = fixture().await?;
         let db = open(&path).await?;
@@ -444,4 +454,12 @@ async fn applied_source_upgrade_does_not_repair_missing_tables_or_recovery() -> 
         db.close().await?;
     }
     Ok(())
+}
+
+async fn migration_generation(db: &impl ConnectionTrait) -> Result<String> {
+    if version(db).await? >= 18 {
+        timeline::archived_generation(db).await
+    } else {
+        timeline::generation(db).await
+    }
 }

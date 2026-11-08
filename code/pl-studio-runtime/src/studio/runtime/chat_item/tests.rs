@@ -96,7 +96,6 @@ fn active_wait_is_typed_without_payload_and_completion_keeps_only_original_wait(
 #[test]
 fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_resolution()
 -> Result<()> {
-    use crate::studio::thread_projection::timeline::{TimelineInput, TimelineProjection};
     use pl_protocol::*;
 
     for (name, kind, question_id) in [
@@ -177,8 +176,6 @@ fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_re
                 Some(input(resolution.clone())),
             );
             let terminal = tool_item(terminal_state, Some(input(resolution)));
-            let mut projection = TimelineProjection::new("database".into(), "generation".into(), 1);
-            let mut display_id = None;
             for (item, expected_outcome) in [
                 (initial, None),
                 (pending, None),
@@ -210,23 +207,11 @@ fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_re
                         ChatAtomLifecycle::Terminal { outcome, .. } if outcome == expected
                     )),
                 }
-                projection.apply_input(TimelineInput::Atom {
-                    atom: Box::new(projected_atom),
-                    payload: None,
-                    thinking_summary: None,
-                })?;
-                let mut items = projection.current_items();
-                items.extend(projection.take_committed());
-                assert_eq!(items.len(), 1, "{name}: interaction must remain one status");
-                let status = &items[0];
-                assert_eq!(status.kind, TimelineItemKind::Status, "{name}");
-                assert_eq!(status.atom_kind, Some(kind));
-                assert_eq!(status.source, first_atom.source);
-                assert_eq!(status.outcome, expected_outcome);
-                assert!(status.members.is_none());
-                assert!(status.summary.is_none());
-                let first_display_id = display_id.get_or_insert_with(|| status.id.clone());
-                assert_eq!(status.id.as_str(), first_display_id.as_str());
+                if expected_outcome.is_some() {
+                    let class = native_read_class_v1("conversation", &projected_atom);
+                    assert_eq!(class.hint, pl_core::chat::ChatReadHint::Single);
+                    assert_eq!(class.main_presentation, MainPresentation::Single);
+                }
             }
         }
     }
@@ -451,6 +436,7 @@ fn frozen_text_presence_uses_owned_blocks_not_the_static_shell_or_payload_json()
             serde_json::to_value(descriptor::item_descriptor(&shell)?)?,
             &mut blocks,
             &ChatContents::new(),
+            None,
         )?;
         let metadata: ChatAtom = serde_json::from_slice(&draft.metadata)?;
         assert_eq!(metadata.content_present, Some(expected));

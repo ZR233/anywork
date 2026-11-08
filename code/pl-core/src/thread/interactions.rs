@@ -110,13 +110,18 @@ impl Owner {
             state: InteractionState::Pending,
             extension_mutations: Vec::new(),
         };
-        self.state
-            .interactions
-            .insert(record.request.id.clone(), record.clone());
+        let mut interactions = self.state.interactions.clone();
+        interactions.insert(record.request.id.clone(), record.clone());
+        self.state.interaction_collection_revision_for(
+            &self.published,
+            &interactions,
+            &self.state.permissions,
+        )?;
+        self.state.interactions = interactions;
         let mut changes = self.state.interaction_changes.to_vec();
         changes.push(record.clone());
         self.state.interaction_changes = changes.into();
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 
@@ -161,6 +166,13 @@ impl Owner {
             state: InteractionState::Cancelled,
             extension_mutations: Vec::new(),
         };
+        let mut interactions = self.state.interactions.clone();
+        interactions.insert(record.request.id.clone(), record.clone());
+        self.state.interaction_collection_revision_for(
+            &self.published,
+            &interactions,
+            &self.state.permissions,
+        )?;
         let mut candidate = self.state.clone();
         stage_terminal_context(
             &mut candidate,
@@ -170,7 +182,7 @@ impl Owner {
             }],
         )?;
         self.state = candidate;
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 
@@ -182,9 +194,14 @@ impl Owner {
             return Err(ThreadError::PendingTools);
         }
         let mut candidate = self.state.clone();
-        let record = stage_resolution(&mut candidate, &self.effect_window, resolution)?;
+        let record = stage_resolution(
+            &mut candidate,
+            &self.effect_window,
+            &self.published,
+            resolution,
+        )?;
         self.state = candidate;
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 }
@@ -192,6 +209,7 @@ impl Owner {
 fn stage_resolution(
     state: &mut ThreadSnapshot,
     window: &EffectWindow,
+    published: &ThreadSnapshot,
     resolution: InteractionResolution,
 ) -> Result<InteractionRecord, ThreadError> {
     let InteractionResolution {
@@ -241,6 +259,9 @@ fn stage_resolution(
         state: InteractionState::Resolved(response.clone()),
         extension_mutations: mutations.clone(),
     };
+    let mut interactions = state.interactions.clone();
+    interactions.insert(record.request.id.clone(), record.clone());
+    state.interaction_collection_revision_for(published, &interactions, &state.permissions)?;
     super::extensions::stage_extensions(state, mutations)?;
     if let Some(input) = continuation
         && super::input::stage_input(state, input)?.state != super::input::InputState::Pending

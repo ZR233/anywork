@@ -182,7 +182,15 @@ impl Owner {
             MemberFact::Started(member) => self.pending_model_member_starts.push(member),
         }
         self.claim_output(operation);
-        self.publish();
+        if let Err(error) = self.publish() {
+            let error = Arc::new(error);
+            if let Some(call) = self.model_members.as_mut() {
+                call.error = Some(error.clone());
+                call.cancellation.cancel();
+            }
+            let _ = reply.send(Err(ModelMemberError::Rejected(error)));
+            return;
+        }
         // publish retains the obligation even if synchronous storage admission is refused.
         let _ = reply.send(Ok(()));
     }

@@ -24,7 +24,13 @@ extension ConversationTestDelivery on ConversationSession {
   Future<void> deliverWorkspace(ThreadWorkspace workspace) async {
     final feed = await scriptedFeed(threadId);
     await feed.deliver(
-      ConversationStateEvent(frame: ThreadSnapshotFrame(workspace: workspace)),
+      ConversationStateEvent(
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: workspace,
+        ),
+      ),
     );
   }
 

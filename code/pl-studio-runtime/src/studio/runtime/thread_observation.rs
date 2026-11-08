@@ -12,9 +12,7 @@ mod directory;
 mod publication;
 mod reports;
 mod slot;
-pub(super) use publication::{
-    ConversationCut, ConversationRegistration, ConversationSource, DeliveryReceiver,
-};
+pub(super) use publication::{ConversationRegistration, ConversationSource};
 pub(super) use slot::ObservationSlot;
 
 use super::{ModelPerformanceOwner, StudioRuntime};
@@ -42,12 +40,16 @@ use crate::thread_assembler::agent_review::ReviewDeliverySource;
 /// Fixed bound on the frames one subscriber may fall behind the projection owner.
 ///
 /// Slow State receivers lose continuity at this bound; they never delay the owner.
-/// Reliable conversation cuts have their own capacity and actual-read responsibility.
+/// Conversation progress is latest-only; immutable completions remain in Session/history.
 const LIVE_FEED_FRAMES: usize = 512;
 
 /// One output of a Thread's single realtime projection owner.
 #[derive(Debug, Clone)]
 pub(in crate::studio) enum ThreadLiveEvent {
+    BusinessRefs {
+        sequence: u64,
+        references: pl_protocol::ThreadBusinessRefs,
+    },
     /// Changes produced by committed effect `sequence`.
     ///
     /// The vocabulary is deliberately content-free: the projection owner writes every body into the
@@ -93,6 +95,12 @@ pub(super) struct RuntimeStateCut {
     pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
 }
 
+#[derive(Clone)]
+pub(super) struct StateActivityCut {
+    pub(super) observation_revision: u64,
+    pub(super) activity: Option<Arc<pl_protocol::ThreadActivity>>,
+}
+
 /// A bounded State observation, cancelled with its owner.
 ///
 /// This carries Tokio's explicit lag errors without taking responsibility for reliable delivery
@@ -113,6 +121,10 @@ impl StateReceiver {
     /// Captures the queued observation prefix without consuming it or reserving capacity.
     pub(super) fn len(&self) -> usize {
         self.receiver.len()
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.closed.is_cancelled() || (self.receiver.is_closed() && self.receiver.is_empty())
     }
 
     pub(super) async fn recv(&mut self) -> Result<ThreadLiveEvent, broadcast::error::RecvError> {
@@ -167,9 +179,19 @@ pub(in crate::studio) struct ThreadLiveFeed {
     #[cfg(test)]
     first_open_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     latest_runtime: Mutex<Option<RuntimeStateCut>>,
+    /// Original State activity event retained for subscribers opening after its broadcast.
+    latest_activity: Mutex<Option<StateActivityCut>>,
 }
 
 impl ThreadLiveFeed {
+    pub(super) fn is_delivery_closed(&self) -> bool {
+        self.delivery_closed.is_cancelled()
+    }
+
+    pub(super) async fn delivery_closed(&self) {
+        self.delivery_closed.cancelled().await;
+    }
+
     #[cfg(test)]
     pub(super) fn arm_first_open_wait(&self) -> tokio::sync::oneshot::Receiver<()> {
         let (entered, receiver) = tokio::sync::oneshot::channel();
@@ -189,15 +211,41 @@ impl ThreadLiveFeed {
         &self,
         session: &pl_core::chat::Session,
         current: Arc<crate::studio::thread_projection::CurrentState>,
-        handoff: Option<Arc<crate::studio::thread_projection::CurrentHandoff>>,
-        generation: &str,
     ) -> Result<()> {
-        if handoff.is_some() {
-            self.conversation.publish(session, current, handoff)
-        } else {
-            self.conversation
-                .publish_generation(session, current, generation)
+        self.publish_conversation(session, current)
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_test_state_activity(
+        &self,
+        observation_revision: u64,
+        activity: Option<pl_protocol::ThreadActivity>,
+    ) {
+        self.publish(|| ThreadLiveEvent::Activity {
+            observation_revision,
+            activity: activity.map(Arc::new),
+        });
+    }
+
+    fn publish_conversation(
+        &self,
+        session: &pl_core::chat::Session,
+        current: Arc<crate::studio::thread_projection::CurrentState>,
+    ) -> Result<()> {
+        let references = current.business_refs();
+        let changed = self
+            .current_conversation()
+            .is_none_or(|previous| previous.current.business_refs() != references);
+        let sequence = current.projection().source_effect_seq;
+        // Install the resource owner before its reference can enter State.
+        self.conversation.publish(session, current)?;
+        if changed {
+            self.publish(|| ThreadLiveEvent::BusinessRefs {
+                sequence,
+                references,
+            });
         }
+        Ok(())
     }
 
     pub(super) fn new(
@@ -209,7 +257,7 @@ impl ThreadLiveFeed {
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
-            conversation: publication::ConversationPublication::new(delivery_closed.clone()),
+            conversation: publication::ConversationPublication::new(),
             delivery_closed,
             events,
             storage,
@@ -218,6 +266,7 @@ impl ThreadLiveFeed {
             #[cfg(test)]
             first_open_wait: Default::default(),
             latest_runtime: Default::default(),
+            latest_activity: Default::default(),
         }
     }
 
@@ -233,6 +282,13 @@ impl ThreadLiveFeed {
 
     pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
         self.latest_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn state_activity(&self) -> Option<StateActivityCut> {
+        self.latest_activity
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -292,6 +348,25 @@ impl ThreadLiveFeed {
         // Demand is advisory, not the registration barrier. Facts and retained watches are updated
         // independently; no outward envelope (or its dedicated clone) is built without a receiver.
         let event = event();
+        if let ThreadLiveEvent::Activity {
+            observation_revision,
+            activity,
+        } = &event
+        {
+            let mut latest = self
+                .latest_activity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if latest
+                .as_ref()
+                .is_none_or(|cut| *observation_revision > cut.observation_revision)
+            {
+                *latest = Some(StateActivityCut {
+                    observation_revision: *observation_revision,
+                    activity: activity.clone(),
+                });
+            }
+        }
         if let ThreadLiveEvent::Runtime {
             runtime,
             model_route,
@@ -1185,7 +1260,7 @@ impl LiveOwner {
             None,
             Some(0),
             pl_core::chat::ReadDemand::new(1, pl_protocol::CHAT_BATCH_MAX_BYTES as usize),
-            &super::conversation_reader::JsonBudget::new(database_id.clone(), None, String::new()),
+            &super::conversation_reader::JsonBudget::new(database_id.clone(), String::new()),
         )
         .await?;
         let usage = live_usage(projector, id, snapshot);
@@ -1199,7 +1274,6 @@ impl LiveOwner {
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
         projection.seed(seed_items, hidden);
         projection.restore_current(&chat, &thread, snapshot).await?;
-        projection.initialize_timeline().await?;
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1443,25 +1517,22 @@ impl LiveOwner {
                 .publish_prepared(&self.chat, &mut pending.prepared)
                 .await?;
         }
-        // Publication's derived member/item increment is now concrete. Charge
-        // that same retained slot before exposing its display cut.
+        // Charge the original frozen completion batch before publishing its
+        // latest activity boundary. Slow readers do not reserve execution capacity.
         self.publish_retained()?;
         if let Some(pending) = self.pending.as_mut()
             && let Some(current) = pending.prepared.current_state.as_ref()
         {
-            self.feed.conversation.wait_capacity().await;
-            let handoff = pending
-                .prepared
-                .current_handoff
-                .as_ref()
-                .context("prepared current has no reliable delivery handoff")?;
-            self.feed
-                .conversation
-                .publish(&self.chat, current.clone(), Some(handoff.clone()))?;
+            // A behind transfer still owes its original durable facts, not a new
+            // publication right. In particular it may precede an already exposed
+            // resident collection cut from the very same effect.
+            if pending.mode == HandoffMode::Live {
+                self.feed
+                    .publish_conversation(&self.chat, current.clone())?;
+            }
             let prepared = Arc::get_mut(&mut pending.prepared)
                 .context("prepared effect is shared before its reliable handoff")?;
             prepared.current_state = None;
-            prepared.current_handoff = None;
         }
         self.publish_retained()?;
         // Test-only fault boundary: a fault test that installed a hook parks the real batch right
@@ -1818,11 +1889,7 @@ impl LiveOwner {
         self.observe_runtime(snapshot).await?;
         self.observe_activity(snapshot).await;
         if let Some(current) = self.projection.current_state() {
-            self.feed.conversation.publish_generation(
-                &self.chat,
-                current,
-                self.projection.timeline_generation(),
-            )?;
+            self.feed.publish_conversation(&self.chat, current)?;
         }
         self.publish_retained()?;
         Ok(())
@@ -3174,7 +3241,6 @@ mod storage_fault_tests {
                             .conversation_database_id()
                             .await?
                             .context("initialized history")?,
-                        None,
                         String::new(),
                     ),
                 )
@@ -4286,17 +4352,12 @@ mod storage_fault_tests {
                     .context("original feed")?;
                 let mut changes = source.content_changes();
                 tokio::time::timeout(Duration::from_secs(20), async {
-                    loop {
-                        let capacity = source.conversation.wait_capacity();
-                        tokio::pin!(capacity);
-                        if futures::poll!(capacity.as_mut()).is_pending() {
-                            break;
-                        }
-                        changes
-                            .changed()
-                            .await
-                            .context("original source closed before filling")?;
-                    }
+                    // The latest-value observation has no consumer capacity. Wait only
+                    // for a real producer publication, never for a full display queue.
+                    changes
+                        .changed()
+                        .await
+                        .context("original source closed before progress")?;
                     Ok::<_, anyhow::Error>(())
                 })
                 .await??;
@@ -4469,6 +4530,13 @@ mod storage_fault_tests {
             .history_channel(&thread.id);
         let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
         let result = async {
+            let database_id = fixture
+                .store
+                .history(&thread.id)
+                .await?
+                .conversation_database_id()
+                .await?
+                .context("live owner database identity")?;
             let mut slow = feed.subscribe();
             let mut fast = feed.subscribe();
             let mut cancelled_read = Box::pin(fast.recv());
@@ -4476,8 +4544,9 @@ mod storage_fault_tests {
             drop(cancelled_read);
             let count = u64::try_from(LIVE_FEED_FRAMES)? + 2;
             let (mut committed, mut runtimes, mut activities) = (0, 0, 0);
+            let mut business_refs = 0;
             // No conversation subscriber: only State is allowed to lag. The production reliable
-            // cut wait still runs on every owner handoff.
+            // handoff still runs for every effect, independently of latest-only presentation.
             for sequence in 1..=count {
                 let running = sequence % 2 != 0;
                 let turn_id = format!("state-turn-{}", sequence.div_ceil(2));
@@ -4558,12 +4627,31 @@ mod storage_fault_tests {
                             assert_eq!(activity.is_some(), running);
                             activities += 1;
                         }
+                        Ok(ThreadLiveEvent::BusinessRefs {
+                            sequence: delivered,
+                            references,
+                        }) => {
+                            assert_eq!(delivered, 1);
+                            assert_eq!(
+                                references,
+                                pl_protocol::ThreadBusinessRefs {
+                                    plan: None,
+                                    interactions: Some(pl_protocol::CurrentCollectionRef {
+                                        database_id: database_id.clone(),
+                                        collection: "interactions".into(),
+                                        revision: 0,
+                                    }),
+                                }
+                            );
+                            business_refs += 1;
+                        }
                         Err(broadcast::error::TryRecvError::Empty) => break,
                         other => anyhow::bail!("fast State receiver lost qualification: {other:?}"),
                     }
                 }
             }
             assert_eq!((committed, runtimes, activities), (count, count, count));
+            assert_eq!(business_refs, 1);
             tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, count)).await??;
             assert_eq!(
                 fixture.store.history(&thread.id).await?.watermark().await?,
@@ -4573,7 +4661,7 @@ mod storage_fault_tests {
             assert!(matches!(
                 slow.try_recv(),
                 Err(broadcast::error::TryRecvError::Lagged(dropped))
-                    if dropped == count * 3 - u64::try_from(LIVE_FEED_FRAMES)?
+                    if dropped == count * 3 + business_refs - u64::try_from(LIVE_FEED_FRAMES)?
             ));
 
             // Both consumer roles use this adapter. Close wakes both pending reads even while
@@ -4596,6 +4684,92 @@ mod storage_fault_tests {
                 slow.try_recv(),
                 Err(broadcast::error::TryRecvError::Closed)
             ));
+            Ok(())
+        }
+        .await;
+        drop(live);
+        handle.close().await?;
+        drop(sink);
+        channel.stop_and_join().await?;
+        fixture.writer.shutdown().await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn behind_handoff_saves_old_facts_without_republishing_a_newer_resource_cut() -> Result<()>
+    {
+        use crate::studio::storage_fault_test_support::ticket;
+
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("behind-business-cut");
+        register_test_thread(&fixture.store, &thread).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let result = async {
+            let database = fixture
+                .store
+                .history(&thread.id)
+                .await?
+                .conversation_database_id()
+                .await?
+                .context("live owner database identity")?;
+            // Explicit original-owner fixture cuts: a newer public resident slice
+            // already exists while the older transfer still owes reliable saving.
+            let newer = ThreadSnapshot {
+                commit_sequence: 2,
+                interaction_collection_revision: 2,
+                ..Default::default()
+            };
+            let current = crate::studio::thread_projection::CurrentState::cold(
+                database,
+                thread.id.clone(),
+                2,
+                &newer,
+            )?;
+            feed.publish_test_conversation(&live.chat, current)?;
+            let published = feed.current_conversation().context("newer public cut")?;
+            let references = published.current.business_refs();
+            let mut receiver = feed.subscribe();
+
+            let write = Arc::new(ticket(&thread.id, 1));
+            sink.admit(&thread.id, write.as_ref().clone())?;
+            live.prepare_behind(&fixture.services, &thread.id, &write)
+                .await?;
+            let after = feed.current_conversation().context("public cut retained")?;
+            assert!(Arc::ptr_eq(&published, &after));
+            assert_eq!(after.current.business_refs(), references);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, 1)).await??;
+            assert_eq!(
+                fixture.store.history(&thread.id).await?.watermark().await?,
+                1
+            );
+
+            live.stream(&newer).await?;
+            assert_eq!(
+                feed.current_conversation()
+                    .context("resident cut")?
+                    .current
+                    .business_refs(),
+                references
+            );
+            loop {
+                match receiver.try_recv() {
+                    Ok(ThreadLiveEvent::BusinessRefs { .. }) => {
+                        anyhow::bail!("unchanged resident resources were notified again")
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(error) => anyhow::bail!("State receiver lost qualification: {error}"),
+                }
+            }
             Ok(())
         }
         .await;
@@ -4658,6 +4832,7 @@ mod storage_fault_tests {
             effect.committed_at = 11;
             effect.interactions = Arc::from([pending.clone()]);
             write.checkpoint.state.interactions.insert(local_interaction_id, pending);
+            write.checkpoint.state.interaction_collection_revision = 1;
             sink.admit(&thread.id, write)?;
             let admitted = channel.next_unprojected().context("admitted question")?;
             assert!(!feed.has_subscribers());
@@ -4838,7 +5013,6 @@ mod storage_fault_tests {
                         .conversation_database_id()
                         .await?
                         .context("initialized history")?,
-                    None,
                     String::new(),
                 ),
             )
@@ -5387,9 +5561,10 @@ mod storage_fault_tests {
             1,
             ThreadSnapshot {
                 commit_sequence: 1,
+                interaction_collection_revision: 1,
                 ..Default::default()
             },
-        );
+        )?;
         let sink = ThreadStorageSink::new(store.clone(), thread.clone(), Some(&restored)).await?;
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store.chat_session(&thread.id).await?;
@@ -5424,6 +5599,8 @@ mod storage_fault_tests {
         };
         let answered_state = ThreadSnapshot {
             commit_sequence: 2,
+            // This fixture supplies the already-pruned business slice after resolution.
+            interaction_collection_revision: 3,
             ..Default::default()
         };
 
@@ -5703,7 +5880,7 @@ mod storage_fault_tests {
             checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, state),
             output_claim: None,
         };
-        let current = recovery.checkpoint.clone().pruned().state;
+        let current = recovery.checkpoint.pruned()?.state;
         assert!(current.turns.is_empty());
         // Admission can be delayed by storage pressure until after observer installation.
         if !delayed_admission {

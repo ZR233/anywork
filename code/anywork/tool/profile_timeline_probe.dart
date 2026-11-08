@@ -15,6 +15,7 @@ const Duration _pollInterval = Duration(milliseconds: 100);
 final ArgParser _parser = ArgParser()
   ..addFlag('help', abbr: 'h', negatable: false)
   ..addOption('vm-url')
+  ..addOption('project-id')
   ..addOption('thread-id')
   ..addOption('mode')
   ..addOption('samples')
@@ -25,6 +26,7 @@ final ArgParser _parser = ArgParser()
 class ProbeOptions {
   const ProbeOptions({
     required this.vmUrl,
+    required this.projectId,
     required this.threadId,
     required this.mode,
     required this.samples,
@@ -34,6 +36,7 @@ class ProbeOptions {
   });
 
   final Uri vmUrl;
+  final String projectId;
   final String threadId;
   final String mode;
   final int samples;
@@ -109,6 +112,7 @@ ProbeOptions parseProbeOptions(List<String> arguments) {
   );
   return ProbeOptions(
     vmUrl: uri,
+    projectId: requiredOption('project-id'),
     threadId: threadId,
     mode: mode,
     samples: samples,
@@ -536,7 +540,7 @@ Future<int> runProbe(List<String> arguments) async {
   if (arguments.contains('--help') || arguments.contains('-h')) {
     stdout
       ..writeln(
-        'Usage: profile_timeline_probe.dart --vm-url <URI> --thread-id <A> '
+        'Usage: profile_timeline_probe.dart --vm-url <URI> --project-id <P> --thread-id <A> '
         '--mode cold|switch --samples <1..100> --output <JSON file> '
         '[--other-thread-id <B>] [--deadline-ms <1..120000>]',
       )
@@ -586,6 +590,27 @@ Future<int> runProbe(List<String> arguments) async {
     if (connectionScope.hasService) {
       (report['cleanup']! as Map<String, Object?>)['vmServiceClosed'] = false;
     }
+    report['stage'] = 'projectExpansion';
+    report['projectId'] = options.projectId;
+    report['threadId'] = options.threadId;
+    final initial = await _readObservation(driver, options.deadline);
+    report['initialObservation'] = {
+      'status': initial.status,
+      'threadId': initial.threadId,
+      'selectionId': initial.selectionId,
+      'generation': initial.generation,
+    };
+    // Fresh profile applications start with ordinary projects collapsed. Only
+    // expanding the real sidebar owner mounts its Thread rows; no Thread is
+    // selected here, so the owner selection-to-layout timing remains unchanged.
+    await _OperationDeadline(options.deadline).run(
+      driver.tap(
+        find.byValueKey('project-expand-${options.projectId}'),
+        timeout: options.deadline,
+      ),
+      'Expanding seed project',
+    );
+    report['stage'] = 'sampling';
     if (options.mode == 'cold') {
       final sample = await _coldSample(driver, options);
       (report['samples']! as List<Map<String, Object?>>).add(sample);

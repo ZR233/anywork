@@ -6,12 +6,9 @@ use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 mod allocation;
-mod atoms;
 mod coalescing;
-mod cut_cost;
-mod payload;
-mod qualification;
-mod scheduling;
+mod completed_runs;
+mod state_activity;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EchoArgs {
@@ -153,9 +150,7 @@ async fn binding_tool_payloads(
     let mut tools = HashMap::new();
     loop {
         for entry in batch.entries {
-            let ChatEntry::Atom(atom) = entry else {
-                continue;
-            };
+            let atom = entry.atom;
             let bytes = match atom.payload.context("completed activity payload")? {
                 PayloadData::Inline { bytes } => bytes,
                 PayloadData::Deferred {
@@ -532,15 +527,6 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
     env.finish(result).await
 }
 
-fn completed_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
-    batch.entries.iter().filter_map(|entry| match entry {
-        ChatEntry::Item(item) if item.position.is_some() && item.payload.is_some() => {
-            Some(item.as_ref())
-        }
-        _ => None,
-    })
-}
-
 async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -554,7 +540,7 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
                     assert!(batch.encoded_len()? <= feed.demand.max_bytes as usize);
                     return Ok(*batch);
                 }
-                ConversationEvent::State { .. } => {}
+                ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
             }
         }
     })
@@ -626,7 +612,7 @@ async fn initial_snapshot(feed: &mut ConversationFeed) -> Result<ThreadSnapshot>
     else {
         bail!("Chat Set must be followed by State");
     };
-    let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
+    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = *update else {
         bail!("first State must be a snapshot");
     };
     Ok(*snapshot)
@@ -653,7 +639,7 @@ async fn finish_question(
                 .await?
                 .context("feed ended before terminal State")?
             {
-                ConversationEvent::Chat { .. } => {}
+                ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
                 ConversationEvent::State { update } => {
                     let ThreadSubscriptionUpdate::Notification { notification } = *update else {
                         bail!("live question flow emitted a second State snapshot");
@@ -816,7 +802,7 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
                     .await?
                     .context("feed ended before pending question")?
                 {
-                    ConversationEvent::Chat { .. } => {}
+                    ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
                     ConversationEvent::State { update } => {
                         let ThreadSubscriptionUpdate::Notification { notification } = *update
                         else {
@@ -835,6 +821,22 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
         })
         .await
         .context("live pending question was not delivered")??;
+        let pending_refs = feed.reader().read_business_refs().await?;
+        let pending_resource = pending_refs
+            .interactions
+            .context("pending interaction resource")?;
+        let first_page = feed
+            .reader()
+            .page_current(
+                &pending_resource,
+                None,
+                ReadDemand {
+                    max_items: 1,
+                    ..demand()
+                },
+            )
+            .await?;
+        assert_eq!(first_page.entries.len(), 1);
         let mut pending_count = 1;
         let mut resolved = 0;
         env.runtime
@@ -857,6 +859,19 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
         .await?;
         assert_eq!(pending_count, 1);
         assert_eq!(resolved, 1);
+        assert!(
+            feed.reader()
+                .page_current(
+                    &pending_resource,
+                    first_page.continuation.as_deref(),
+                    demand()
+                )
+                .await
+                .is_err(),
+            "old interaction revision silently read a newer collection"
+        );
+        let current_refs = feed.reader().read_business_refs().await?;
+        assert_ne!(current_refs.interactions.as_ref(), Some(&pending_resource));
         feed.close().await?;
         feed.reader().close().await?;
         Ok::<_, anyhow::Error>(())
@@ -872,7 +887,7 @@ async fn state_snapshot(feed: &mut ConversationFeed) -> Result<Box<ThreadSnapsho
     else {
         bail!("Set must be followed by the State baseline");
     };
-    let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
+    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = *update else {
         bail!("first State must be a snapshot");
     };
     Ok(snapshot)
@@ -973,10 +988,42 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
         assert_eq!(chat(&mut reopened).await?.placement, ChatPlacement::Set);
+        let baseline = state_snapshot(&mut reopened).await?;
+        assert_eq!(baseline.interactions, vec![pending.clone()]);
         assert_eq!(
-            state_snapshot(&mut reopened).await?.interactions,
-            vec![pending.clone()]
+            reopened.reader().read_business_refs().await?,
+            baseline.business_refs
         );
+        let document = baseline
+            .business_refs
+            .plan
+            .as_ref()
+            .context("Plan read head")?
+            .document
+            .as_ref()
+            .context("Plan document reference")?;
+        let window = reopened
+            .reader()
+            .read_content(
+                document,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 4096,
+                },
+            )
+            .await?;
+        assert_eq!(window.bytes, plan.as_bytes()[..4096]);
+        let reference = baseline
+            .business_refs
+            .interactions
+            .as_ref()
+            .context("interaction read resource")?;
+        let page = reopened
+            .reader()
+            .page_current(reference, None, demand())
+            .await?;
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].id, pending.interaction_id);
         reopened.close().await?;
         reopened.reader().close().await?;
 
@@ -987,10 +1034,46 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
-        assert_eq!(
-            state_snapshot(&mut cold).await?.interactions,
-            vec![pending.clone()]
+        let baseline = state_snapshot(&mut cold).await?;
+        assert!(
+            baseline.activity.is_none(),
+            "cold read invented execution activity"
         );
+        assert_eq!(baseline.interactions, vec![pending.clone()]);
+        assert_eq!(
+            cold.reader().read_business_refs().await?,
+            baseline.business_refs
+        );
+        let document = baseline
+            .business_refs
+            .plan
+            .as_ref()
+            .context("Plan read head")?
+            .document
+            .as_ref()
+            .context("Plan document reference")?;
+        let window = cold
+            .reader()
+            .read_content(
+                document,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 4096,
+                },
+            )
+            .await?;
+        assert_eq!(window.bytes, plan.as_bytes()[..4096]);
+        let reference = baseline
+            .business_refs
+            .interactions
+            .as_ref()
+            .context("interaction read resource")?;
+        let page = cold
+            .reader()
+            .page_current(reference, None, demand())
+            .await?;
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].id, pending.interaction_id);
         assert!(
             env.runtime.threads.observed_thread(id).is_none(),
             "reading a pending Plan activated execution"
@@ -1061,41 +1144,6 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
     env.finish(result).await
 }
 
-async fn terminal_state_after_set(
-    feed: &mut ConversationFeed,
-    expected: &pl_protocol::Turn,
-) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let ConversationEvent::State { update } = feed.recv().await?.context("missing State")?
-        else {
-            bail!("Set must be followed by the State snapshot");
-        };
-        let ThreadSubscriptionUpdate::Snapshot { snapshot } = *update else {
-            bail!("first State must be a snapshot");
-        };
-        assert!(snapshot.active_turn.is_none());
-        let ConversationEvent::State { update } = feed
-            .recv()
-            .await?
-            .context("missing retained terminal State")?
-        else {
-            bail!("completed reopen must restore its terminal Turn as State");
-        };
-        let ThreadSubscriptionUpdate::Notification { notification } = *update else {
-            bail!("terminal Turn must follow the snapshot as a notification");
-        };
-        assert_eq!(notification.base_revision, snapshot.revision);
-        assert_eq!(notification.revision, snapshot.revision + 1);
-        let ThreadNotification::TurnCompleted { turn } = notification.notification else {
-            bail!("completed reopen did not restore its canonical terminal Turn");
-        };
-        assert_eq!(&turn, expected);
-        Ok::<_, anyhow::Error>(())
-    })
-    .await
-    .context("completed reopen lost its terminal State")?
-}
-
 #[tokio::test]
 async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_deduplicated()
 -> Result<()> {
@@ -1111,6 +1159,7 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
             .await?;
         assert_eq!(chat(&mut feed).await?.placement, ChatPlacement::Set);
         let _snapshot = feed.recv().await?.context("initial State snapshot")?;
+        completed_runs::activity(&mut feed).await?;
         assert!(feed.pending.is_empty());
         let uncovered = feed
             .state_effect_floor
@@ -1202,388 +1251,4 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
     }
     .await;
     env.finish(result).await
-}
-
-#[tokio::test]
-async fn live_set_watch_completion_current_and_independent_read_close() -> Result<()> {
-    use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
-
-    let body = "真实正文汉📖".repeat(1600);
-    let frames = pl_provider_fixture::responses_text(&body, "demand-response", support::MODEL);
-    let delta = frames
-        .iter()
-        .position(|frame| frame["type"] == "response.output_text.delta")
-        .context("fixture text delta")?;
-    let stage = ReplyStage::new();
-    let reply: Reply = stage.gated(frames[..=delta].to_vec(), frames[delta + 1..].to_vec());
-    let env =
-        support::Environment::new(vec![support::prompt_step("demand-live", 0, reply)], vec![])
-            .await?;
-    let result = async {
-        let thread = env.start(ThreadWorkspaceMode::Local, "demand-live").await?;
-        let id = &thread.thread.id;
-        support::reached(&stage).await?;
-        let mut feed = env
-            .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
-            .await?;
-        let first = chat(&mut feed).await?;
-        assert_eq!(first.placement, ChatPlacement::Set);
-        assert!(first.current.is_some());
-        let before = first.before.clone();
-        let reader = feed.reader().clone();
-        let mut current = first.current.context("main Set current")?;
-        let reference = loop {
-            if let Some(preview) = current
-                .previews
-                .iter()
-                .find(|preview| preview.role == CurrentContentRole::Response)
-            {
-                break preview.reference.clone();
-            }
-            let next = chat(&mut feed).await?;
-            assert_eq!(next.placement, ChatPlacement::Append);
-            current = next.current.context("stream current")?;
-        };
-        // The fixture gate proves only that the provider wrote its prefix.
-        // Wait for the original product owner to publish the body before
-        // opening a range whose offset requires those bytes to exist.
-        let mut readiness = reader
-            .watch_content(
-                &reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: 16,
-                },
-            )
-            .await?;
-        let ready = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let window = readiness
-                    .recv()
-                    .await?
-                    .context("active body readiness ended")?;
-                assert!(!window.sealed);
-                assert!(window.available_through <= body.len() as u64);
-                if window.available_through == body.len() as u64 {
-                    break Ok::<_, anyhow::Error>(());
-                }
-            }
-        })
-        .await;
-        readiness.close().await?;
-        ready.context("active body was not published before opening its tail range")??;
-        let range = ContentRange {
-            offset: (body.len() - 16) as u64,
-            max_bytes: 16,
-        };
-        let mut watch = reader.watch_content(&reference, range.clone()).await?;
-        let window = watch.recv().await?.context("active window")?;
-        assert!(!window.sealed);
-        assert_eq!(window.bytes, &body.as_bytes()[body.len() - 16..]);
-        let cancel = watch.cancellation_token();
-        let waiting = tokio::spawn(async move {
-            let result = watch.recv().await;
-            watch.close().await?;
-            result
-        });
-        cancel.cancel();
-        assert!(
-            tokio::time::timeout(Duration::from_secs(3), waiting)
-                .await??
-                .is_err()
-        );
-        // Closing a watch did not revoke the original read qualification.
-        assert_eq!(
-            reader.read_content(&reference, range.clone()).await?.bytes,
-            window.bytes
-        );
-        let mut lifecycle = env
-            .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: id.clone(),
-            })
-            .await?;
-        // Hold the real writer behind an SQLite transaction: delivery and a later idle open
-        // must use the same complete pending tail instead of waiting for a flush or reading D.
-        let path = env
-            .runtime
-            .store
-            .registered_session_paths(id)?
-            .history_database();
-        let options = crate::studio::paths::sqlite_file_options(
-            &path,
-            crate::studio::paths::SqliteFileMode::ReadWrite,
-            |options| options.busy_timeout(Duration::from_secs(10)),
-        )
-        .await?;
-        let blocker = Database::connect(options).await?;
-        let writer_lock = blocker
-            .begin_with_options(TransactionOptions {
-                sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
-                ..Default::default()
-            })
-            .await?;
-        stage.release();
-        let mut saw_body = false;
-        let mut retired = false;
-        for _ in 0..64 {
-            let batch = chat(&mut feed).await?;
-            assert_eq!(batch.placement, ChatPlacement::Append);
-            assert!(batch.before.is_none());
-            for message in completed_items(&batch) {
-                let payload = match message.payload.as_ref().context("completed payload")? {
-                    PayloadData::Inline { bytes } => bytes.clone(),
-                    PayloadData::Deferred {
-                        reference,
-                        byte_length,
-                    } => {
-                        assert!(*byte_length <= CONTENT_WINDOW_MAX_BYTES as u64);
-                        reader
-                            .read_content(
-                                reference,
-                                ContentRange {
-                                    offset: 0,
-                                    max_bytes: *byte_length as u32,
-                                },
-                            )
-                            .await?
-                            .bytes
-                    }
-                };
-                let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
-                if envelope["type"] == "text"
-                    && envelope["bodies"].as_array().is_some_and(|bodies| {
-                        bodies
-                            .iter()
-                            .any(|entry| entry["byteLength"] == body.len() as u64)
-                    })
-                {
-                    // The real content reference is retained under Item from active through seal.
-                    if message.content_item_id.as_deref()
-                        == match &reference.target {
-                            ContentTarget::Body {
-                                owner: ContentOwner::Item { item_id },
-                                ..
-                            } => Some(item_id.as_str()),
-                            _ => None,
-                        }
-                    {
-                        saw_body = true;
-                    }
-                }
-            }
-            if batch
-                .current
-                .as_ref()
-                .is_some_and(|current| current.active.is_none() && current.active_turn.is_none())
-            {
-                assert!(
-                    saw_body,
-                    "current retired before its scope's completed response was delivered"
-                );
-                retired = true;
-                break;
-            }
-        }
-        assert!(retired);
-        let session = env.runtime.store.chat_session(id).await?;
-        assert!(
-            session.head_seq() > session.durable_seq(),
-            "writer barrier did not leave pending completions"
-        );
-        // The existing State owner supplies the real terminal fact before the second open.
-        // Neither a retired current nor idle is evidence that this handoff already occurred.
-        let completed = tokio::time::timeout(Duration::from_secs(20), async {
-            while let Some(update) = lifecycle.recv().await? {
-                if let ThreadSubscriptionUpdate::Notification { notification } = update
-                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
-                {
-                    return Ok::<_, anyhow::Error>(turn);
-                }
-            }
-            bail!("canonical State stream ended before the terminal Turn");
-        })
-        .await??;
-        drop(lifecycle);
-        let mut idle = env
-            .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
-            .await?;
-        let idle_set = chat(&mut idle).await?;
-        assert_eq!(idle_set.placement, ChatPlacement::Set);
-        assert!(
-            idle_set
-                .current
-                .as_ref()
-                .context("idle current")?
-                .active_turn
-                .is_none()
-        );
-        let ContentTarget::Body {
-            owner: ContentOwner::Item { item_id },
-            ..
-        } = &reference.target
-        else {
-            bail!("active response did not retain its Item owner");
-        };
-        assert!(
-            completed_items(&idle_set)
-                .any(|message| message.content_item_id.as_ref() == Some(item_id)),
-            "idle open lost the pending response"
-        );
-        terminal_state_after_set(&mut idle, &completed).await?;
-        idle.close().await?;
-        idle.reader().close().await?;
-        writer_lock.rollback().await?;
-        blocker.close().await?;
-        let sealed = reader.read_content(&reference, range).await?;
-        assert!(sealed.sealed);
-        assert_eq!(sealed.generation, window.generation);
-        feed.close().await?;
-        assert!(
-            reader
-                .read_content(
-                    &reference,
-                    ContentRange {
-                        offset: 0,
-                        max_bytes: 7
-                    }
-                )
-                .await
-                .is_ok()
-        );
-        if let Some(before) = before {
-            assert_eq!(
-                reader.load_older(&before, demand()).await?.placement,
-                ChatPlacement::Prepend
-            );
-        }
-        reader.close().await?;
-        assert!(
-            reader
-                .read_content(
-                    &reference,
-                    ContentRange {
-                        offset: 0,
-                        max_bytes: 1
-                    }
-                )
-                .await
-                .is_err()
-        );
-        support::completed_prompt(&env.runtime, id, "demand-live").await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    stage.release();
-    env.finish(result).await
-}
-
-#[tokio::test]
-async fn cold_open_is_passive_and_absent_live_absent_revokes_old_read_qualification() -> Result<()>
-{
-    let mut env = support::Environment::new(
-        vec![support::prompt_step(
-            "demand-cold",
-            0,
-            support::text_reply("durable cold response", "cold-response"),
-        )],
-        vec![],
-    )
-    .await?;
-    let result = async {
-        let thread = env.start(ThreadWorkspaceMode::Local, "demand-cold").await?;
-        let id = &thread.thread.id;
-        let completed = support::completed_prompt(&env.runtime, id, "demand-cold").await?;
-        env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
-        let mut feed = env
-            .runtime
-            .open_conversation_feed(
-                id,
-                ChatScope::Main,
-                ReadDemand {
-                    max_items: 1,
-                    max_bytes: 64 * 1024,
-                },
-            )
-            .await?;
-        let first = chat(&mut feed).await?;
-        assert_eq!(first.placement, ChatPlacement::Set);
-        assert!(completed_items(&first).next().is_some());
-        assert!(
-            !first
-                .current
-                .context("cold main current")?
-                .execution_present
-        );
-        assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
-            "passive open activated execution"
-        );
-        terminal_state_after_set(&mut feed, &completed).await?;
-        let reader = feed.reader().clone();
-        let before = first.before.context("cold history continuation")?;
-        let page = reader.load_older(&before, demand()).await?;
-        assert_eq!(page.placement, ChatPlacement::Prepend);
-        let mut independent = env
-            .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
-            .await?;
-        let error = independent
-            .reader()
-            .load_older(&before, demand())
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<pl_core::chat::ChatError>(),
-            Some(pl_core::chat::ChatError::InvalidArgument(_))
-        ));
-        independent.close().await?;
-        independent.reader().close().await?;
-        // Exercise the production registry's exact ABA transitions, without an execution/model start.
-        let slot = env.runtime.thread_observations.observation_slot(id);
-        let (_owner, owner_progress) = tokio::sync::watch::channel(Default::default());
-        let source = Arc::new(super::super::thread_observation::ThreadLiveFeed::new(
-            None,
-            owner_progress,
-            Default::default(),
-        ));
-        slot.install(source.clone());
-        slot.retire(&source);
-        let error = feed
-            .recv()
-            .await
-            .err()
-            .context("old feed did not require resync")?;
-        assert_eq!(
-            error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
-                .and_then(|error| error.reason()),
-            Some("conversationResyncRequired")
-        );
-        let error = reader.load_older(&before, demand()).await.unwrap_err();
-        assert_eq!(
-            error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
-                .and_then(|error| error.reason()),
-            Some("conversationResyncRequired")
-        );
-        feed.close().await?;
-        reader.close().await?;
-        let mut replacement = env
-            .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
-            .await?;
-        assert_eq!(chat(&mut replacement).await?.placement, ChatPlacement::Set);
-        replacement.close().await?;
-        replacement.reader().close().await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    let close = env.runtime.shutdown_runtime().await;
-    result?;
-    close?;
-    Ok(())
 }

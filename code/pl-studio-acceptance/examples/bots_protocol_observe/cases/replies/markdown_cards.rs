@@ -30,11 +30,14 @@ use super::{
 };
 use crate::http;
 use crate::report::{self, CaseResult};
-use crate::support::{CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload};
+use crate::support::{
+    CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
+    completed_turn_from_children,
+};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ChatBatch, ChatEntry, ChatScope, ContentRange, ContentRef, ReadDemand, TimelineItem,
-    TimelineItemKind,
+    ChatAtomKind, ChatBatch, ChatScope, CompletedEntry, ContentRange, ContentRef, MainPresentation,
+    ReadDemand,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -1707,32 +1710,51 @@ async fn inbound_target_timeline(
     charge_chat_batch(&batch, &mut remaining)?;
     let deadline = Instant::now() + CASE_BUDGET;
     let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
-    let mut envelopes = Vec::new();
-    for item in terminal_items(&batch) {
-        if let Some(payload) =
-            completed_timeline_payload(&read, item, &mut remaining, deadline).await?
-        {
-            envelopes.push(payload);
-        }
-    }
-    let mut turns = envelopes
-        .iter()
-        .filter(|payload| payload["type"] == "turn" && payload["data"]["inputId"] == input_id);
-    let turn = turns
+    let mut inputs = batch.entries.iter().filter(|entry| {
+        entry.atom.kind == ChatAtomKind::Input
+            && matches!(
+                &entry.atom.source,
+                pl_protocol::ChatSourceId::Input { input_id: source_input }
+                    if source_input == &input_id
+            )
+    });
+    let input = inputs
         .next()
-        .context("inbound input has no Turn in the timeline")?;
+        .context("inbound input has no Main completion record")?;
     ensure!(
-        turns.next().is_none(),
-        "inbound input has multiple Turns in the timeline"
+        inputs.next().is_none(),
+        "inbound input has multiple Main completion records"
     );
+    let input_payload = completed_entry_payload(&read, input, &mut remaining, deadline)
+        .await?
+        .context("inbound input record had no completed payload")?;
     ensure!(
-        turn["turnId"].as_str().is_some_and(|id| !id.is_empty()),
-        "inbound Turn has an invalid thread or empty Turn identity"
+        input_payload["type"] == "text"
+            && input_payload["data"]["channel"] == "user"
+            && input_payload["data"]["inputId"].as_str() == Some(input_id.as_str()),
+        "inbound input atom and frozen payload identity disagree"
     );
-    let turn_id = turn["turnId"]
-        .as_str()
-        .context("inbound Turn has no canonical Turn identity")?
+    let atom_turn_id = input.atom.turn_id.as_deref().filter(|id| !id.is_empty());
+    let payload_turn_id = input_payload["turnId"].as_str().filter(|id| !id.is_empty());
+    if let (Some(atom_turn_id), Some(payload_turn_id)) = (atom_turn_id, payload_turn_id) {
+        ensure!(
+            atom_turn_id == payload_turn_id,
+            "inbound input atom and payload Turn identities disagree"
+        );
+    }
+    let turn_id = atom_turn_id
+        .or(payload_turn_id)
+        .context("inbound input completion omitted its owning Turn identity")?
         .to_owned();
+    completed_turn_from_children(
+        &read,
+        &turn_id,
+        Some(&input_id),
+        false,
+        &mut remaining,
+        deadline,
+    )
+    .await?;
     Ok(TargetChat {
         read,
         batch,
@@ -1831,15 +1853,15 @@ async fn assert_canonical_final_blank(
         target.batch.before.is_none(),
         "cannot prove blank Final on a truncated timeline page for Turn {turn_id}"
     );
-    for item in terminal_items(&target.batch) {
+    for item in terminal_entries(&target.batch) {
         let Some(payload) =
-            completed_timeline_payload(&target.read, item, &mut target.remaining, target.deadline)
+            completed_entry_payload(&target.read, item, &mut target.remaining, target.deadline)
                 .await?
         else {
             ensure!(
-                item.turn_id.as_deref() != Some(turn_id.as_str())
-                    || item.text_channel != Some(pl_protocol::ThreadTextChannel::Final),
-                "target Turn Final item was not terminal"
+                item.atom.turn_id.as_deref() != Some(turn_id.as_str())
+                    || item.atom.text_channel != Some(pl_protocol::ThreadTextChannel::Final),
+                "target Turn Final completion was not terminal"
             );
             continue;
         };
@@ -1847,17 +1869,17 @@ async fn assert_canonical_final_blank(
             continue;
         }
         ensure!(
-            item.kind == TimelineItemKind::Text
-                && item.atom_kind == Some(pl_protocol::ChatAtomKind::Text)
-                && item.turn_id.as_deref() == Some(turn_id.as_str()),
-            "target Turn text item omitted its Timeline kind or turn_id identity"
+            item.atom.kind == ChatAtomKind::Text
+                && item.atom.turn_id.as_deref() == Some(turn_id.as_str()),
+            "target Turn text completion omitted its kind or turn identity"
         );
         let text_channel = item
+            .atom
             .text_channel
             .context("target Turn text item omitted its explicit text_channel")?;
         ensure!(
             payload["data"]["channel"] == serde_json::to_value(text_channel)?,
-            "Timeline text_channel and original text payload disagree"
+            "completion text_channel and original text payload disagree"
         );
         if text_channel != pl_protocol::ThreadTextChannel::Final {
             continue;
@@ -1920,29 +1942,24 @@ async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<s
         "cannot prove unique {channel:?} for Turn {turn_id} on a truncated timeline page"
     );
     let mut payloads = Vec::new();
-    for timeline_item in terminal_items(&target.batch) {
-        if timeline_item.kind != TimelineItemKind::Text
-            || timeline_item.atom_kind != Some(pl_protocol::ChatAtomKind::Text)
-            || timeline_item.text_channel != Some(expected_channel)
-            || timeline_item.turn_id.as_deref() != Some(turn_id.as_str())
+    for entry in terminal_entries(&target.batch) {
+        if entry.atom.kind != ChatAtomKind::Text
+            || entry.atom.text_channel != Some(expected_channel)
+            || entry.atom.turn_id.as_deref() != Some(turn_id.as_str())
         {
             continue;
         }
-        if let Some(payload) = completed_timeline_payload(
-            &target.read,
-            timeline_item,
-            &mut target.remaining,
-            target.deadline,
-        )
-        .await?
+        if let Some(payload) =
+            completed_entry_payload(&target.read, entry, &mut target.remaining, target.deadline)
+                .await?
         {
             ensure!(
                 is_channel(&payload, turn_id, channel),
-                "Timeline text item metadata and original payload disagree about {channel:?}"
+                "completion atom and original payload disagree about {channel:?}"
             );
             payloads.push(payload);
         } else {
-            anyhow::bail!("target Turn {turn_id} {channel:?} Timeline item is not terminal");
+            anyhow::bail!("target Turn {turn_id} {channel:?} completion is not terminal");
         }
     }
     let mut items = payloads
@@ -1958,22 +1975,14 @@ async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<s
     Ok(item)
 }
 
-/// Main includes work too; only terminal reply domains need envelope inspection.
-fn terminal_items(batch: &ChatBatch) -> impl Iterator<Item = &TimelineItem> {
-    batch.entries.iter().filter_map(|entry| match entry {
-        ChatEntry::Item(item)
-            if matches!(item.kind, TimelineItemKind::Text | TimelineItemKind::Status)
-                && matches!(
-                    item.atom_kind,
-                    Some(
-                        pl_protocol::ChatAtomKind::Text
-                            | pl_protocol::ChatAtomKind::TurnReceipt
-                            | pl_protocol::ChatAtomKind::Unknown
-                    )
-                ) =>
-        {
-            Some(item.as_ref())
-        }
-        _ => None,
+/// Main yields visible representatives; only standalone text/receipt records
+/// are decoded here. Work representatives require explicit Run traversal.
+fn terminal_entries(batch: &ChatBatch) -> impl Iterator<Item = &CompletedEntry> {
+    batch.entries.iter().filter(|entry| {
+        matches!(entry.main_presentation, MainPresentation::Single)
+            && matches!(
+                entry.atom.kind,
+                ChatAtomKind::Text | ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
+            )
     })
 }

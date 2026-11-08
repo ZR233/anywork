@@ -165,7 +165,7 @@ SQLite 分类使用官方主错误码而非诊断文案：具名数据迁移中�
 
 已经写入用户库的具名迁移身份属于持久化契约，不能因首次迁移的实现改进而删除注册。`m20261104_000001_history_background_results` 保留原身份、顺序和转换；已 Applied 时由 SeaORM 跳过，未知 Applied 名称仍明确拒绝，不删除或伪造账本。格式 15 曾存在六列和八列两种成员表，新增 `m20261107_000001_history_member_read_metadata` 在原子元数据步骤之后、旧后台修正之前处理这两种明确输入：已有六列表在同一迁移事务内补充 `updated_effect` 与 `payload_bytes`，从已保存投影切点取得活动头的保守更新上界、从原完成载荷取得确知长度；已有八列表保留原数据。格式 14 尚无派生成员表，由后继 TimelineItems 创建当前结构。升级不重建展示项，不改来源事实、顺序、正文、恢复内容或投影代际；DDL、回填及 Applied 同事务提交。Applied 后再次缺列属于损坏，普通打开不修补。
 
-`m20261108_000001_history_source_classification` 在上述内容步骤、TimelineItems 及思考摘要内容升级之后、执行生命周期迁移之前追加，消费已保存的来源类型证据修正分类元数据，并按 [26.11](./26-timeline-content.md#2611-内容迁移与重建输入) 重建派生模型和代际；不改变物理历史格式号、原正文与旧 Applied。新库、受支持旧库和仅内容打开均经过同一具名步骤；主线思考摘要迁移已 Applied、来源分类仍 pending 的库只补执行来源分类，重建保留摘要与后台分组语义。结构与恢复头的损坏不能冒充待建输出。该步骤与成员读取元数据迁移的“不重建、不换代”职责不同，不合并或改写旧步骤。
+`m20261108_000001_history_source_classification` 在上述内容步骤、TimelineItems 及思考摘要内容升级之后、执行生命周期迁移之前追加，消费已保存的来源类型证据修正分类元数据，并按 [26.11](./26-timeline-content.md#2611-内容迁移与保全) 重建派生模型和代际；不改变物理历史格式号、原正文与旧 Applied。新库、受支持旧库和仅内容打开均经过同一具名步骤；主线思考摘要迁移已 Applied、来源分类仍 pending 的库只补执行来源分类，重建保留摘要与后台分组语义。结构与恢复头的损坏不能冒充待建输出。该步骤与成员读取元数据迁移的“不重建、不换代”职责不同，不合并或改写旧步骤。
 
 显式打开单个会话（`Thread`）按以下步骤有序执行：
 
@@ -587,21 +587,21 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 首次信任持久化库的迁移 preparation 和独立冷 reader 都执行身份列元数据门禁。复用现有 SQLx/SQLite 连接及 SQLite 官方列元数据能力，不增加数据库引擎、DDL 解析器或平行结构缓存；底层原生访问只允许在驱动独占连接句柄期间完成，结果在解除独占前复制为拥有值，原始指针不跨异步等待或连接生命周期。SQLx 与 SQLite 绑定的链接身份和版本须共同保持一致。该门禁先于迁移事务及普通读取，不能在已经占用单连接事务时另取连接形成自锁；事务内继续用同一连接校验 canonical DDL、回填和写入约束。合法早期链只保留原 adoption 对缺失结构的明确许可，已存在身份列的比较矛盾不因此豁免。
 
-迁移创建以 append_seq 为主键、record_id 唯一的 timeline_records，保留来源 effect、可选封口时间、类型和冻结 payload；该原子步骤本身不创建展示组表或 accumulator，展示 item 只由 §17.18 的可重建派生读模型承载。按旧 ordinal 及稳定部件次序确定性拆分完成事实并回填序号，保留已知来源、正文、附件和 identity；旧数据不声称重建真实完成次序，不伪造首次完成时间。未完成内部事实留原恢复路径。
+迁移创建以 append_seq 为主键、record_id 唯一的 timeline_records，保留来源 effect、可选封口时间、类型和冻结 payload；该历史步骤本身不创建展示组表或 accumulator；后续步骤最终迁入 §17.18 的当前完成索引。按旧 ordinal 及稳定部件次序确定性拆分完成事实并回填序号，保留已知来源、正文、附件和 identity；旧数据不声称重建真实完成次序，不伪造首次完成时间。未完成内部事实留原恢复路径。
 
 所有 DDL、转换、回填验证与 schema 标记通过 migration manager 同一事务连接执行，use_transaction 为 true；SeaORM 的迁移完成记录也同事务，失败全部回滚，重试幂等。只在显式准备边界保留旧格式解码，当前 reader 只接受新模型。升级不清空当前数据或 v2 迁移源，不删除迁移备份及隔离旧根，不损坏工具回执、输入身份和审查事实。
 
 ## 17.18 按需聊天内容、当前投影与迁移
 
-按需聊天内容、Timeline item、来源分类与完成边界升级沿既有 SeaORM 序列各自追加具名内容迁移，版号与已应用步骤以代码和官方 Applied 账本为准；旧转换只保留在迁移边界。下列结构描述完成驱动的目标，不能把文档更新当作迁移或验收已完成。普通运行只消费当前结构，不双读双写旧活动快照或保留旧 API 别名。
+按需完成历史沿既有 SeaORM 序列追加不可变连续段索引迁移；原已发布来源分类、后台结果身份、完成边界步骤的名称和语义不改。当前格式只消费新索引，不双读双写旧组模型。本文描述目标，不是迁移或验收已完成声明。
 
-原子完成事实仍是原 `conversation_items`、完整正文/工具输出与真实来源生命周期；展示 item 是可删除、可重建的派生读模型。Studio Timeline 投影由原完成记录和真实来源事实重放同一 fold，生成 `text`／`workGroup`／`status` 展示 item、成员归属与 item_order，不重写、不重排原完成 seq，也不伪造旧时刻。活动正文、前台开放组摘要和可变活动成员集合只在内存；完成记录、前台组封口与后台完整结果追加按 [26.1](./26-timeline-content.md#261-完成事实与唯一所有者) 的不同边界沿原 writer 保存，后台可变组索引不改变原完成事实。Inference 原件与完整调用/执行历史保留，不因不进入普通过程展示而删除。
+完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新。工作段不是持久对象；不保存展示 item、成员关联、item_order、开放/封口或组恢复头。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
 
 后台结果的历史身份纠正在同一序列中拥有独立具名步骤，位于原子元数据迁移之后、展示项迁移之前。它以已保存的工具收件箱投递和消息身份账本证明最终结果的消息身份及受理序号，区分原工具移交回执与独立后台结果，保留完成项原身份、序号、载荷、正文引用、检查点和工具投递。缺失或冲突的消息证明使该步骤回滚并保源，不推导新消息身份。对已有完整展示项的库，仅在实际发生纠正时，在同一事务中保留无关真实开始／终态事实并重建派生展示及恢复头；无需纠正时保留原代际。内容准备以具名迁移账本判断待执行步骤，不能仅因物理格式号已是当前值就跳过新增纠正；已应用迁移的缺表、缺恢复头或账本冲突仍明确拒绝。
 
-派生读模型只在显式迁移或维护性重建边界整表重建：timeline_items、timeline_item_members 与 timeline_projection_state 保存当前投影版本、下一历史位置和可重建的 item/成员行；原完成项 payload/contents 仍是正文与附件的唯一事实源，item 行只保存有界信封、身份/排序/摘要/引用，不复制第二份正文。投影版本不符、缺恢复状态或重建校验失败进入明确修复/迁移错误，不回退从客户端分组、完成回放缓存或旧 item 别名恢复。原会话历史、正文与工具输出不变，派生表删除或重建不影响它们。
+当前完成索引只有原记录的两个可空 run 列及可见 seq/段 seq 索引。提示从原 typed metadata 经唯一 Native v1 分类还原，不再存 key 或呈现类别列。Main 索引跳过整段、Run 直接按段读记录；算法与切点见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
 
-普通原子按完成 seq/真实来源条件有界查询；Main 以派生 timeline_items.position 键集分页，成员窗口经 timeline_item_members 关联原完成项并有独立 continuation。单页条数/字节继续有界；填屏沿展示 item 逐页，不为填屏 COUNT、flush 或解码隐藏成员全文。真实来源生命周期随原可靠 effect 保存，不依赖 current 快照，不为展示分组新增事件库或第二保存链路。
+普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
 
 来源分类、后台尾组合并和完成边界分别沿正式具名步骤执行，已发布步骤的真实语义及 Applied 记录保持不变。完成边界迁移位于后台尾组合并之后，先在同一事务内封存旧 `conversation_view_state/entries`、开放组行及其成员、旧恢复快照等独有材料，再从可靠事实重建新版派生索引及恢复切点；混存于正文目录中的旧半成品块原样留存。受管归档只供迁移核查和原件保全，正常业务不读取或激活；不得因新版不用半成品就按表名、owner 前缀或 unsealed 标志删除数据。完成原件、身份、序号、水位、来源位置、checkpoint/context 和旧 Applied 均保留；无终态证明的旧前缀不转换为完成历史，旧开放组内已完成成员也不得丢失。归档、重建、新代际和 Applied 一次提交，失败或取消完整回滚。
 
@@ -616,7 +616,13 @@ CREATE TABLE conversation_items (
     query_class TEXT NOT NULL,
     parent_id   TEXT,
     payload     BLOB NOT NULL,
-    metadata    BLOB NOT NULL
+    metadata    BLOB NOT NULL,
+    display_run_start INTEGER,
+    display_run_ordinal INTEGER CHECK (
+        (display_run_start IS NULL AND display_run_ordinal IS NULL) OR
+        (display_run_start IS NOT NULL AND display_run_ordinal IS NOT NULL
+         AND display_run_start > 0 AND display_run_start <= seq
+         AND display_run_ordinal > 0))
 );
 CREATE INDEX conversation_items_by_class
     ON conversation_items(query_class, seq);
@@ -651,56 +657,32 @@ CREATE TABLE conversation_atom_facts (
     UNIQUE (atom_id, phase)
 ) WITHOUT ROWID;
 
--- Timeline 展示 item 派生读模型：可删除，由保留的真实来源事实重建。
-CREATE TABLE timeline_items (
-    item_id            TEXT NOT NULL PRIMARY KEY,
-    kind               TEXT NOT NULL,
-    position           INTEGER NOT NULL UNIQUE,
-    commit_seq         INTEGER NOT NULL,
-    metadata           BLOB NOT NULL,
-    projection_version INTEGER NOT NULL
-);
-CREATE INDEX timeline_items_by_commit
-    ON timeline_items(commit_seq, position);
-CREATE TABLE timeline_item_members (
-    item_id            TEXT NOT NULL,
-    member_order       INTEGER NOT NULL,
-    member_id          TEXT NOT NULL,
-    completion_item_id TEXT,
-    admitted_effect    INTEGER NOT NULL,
-    metadata           BLOB NOT NULL,
-    PRIMARY KEY (item_id, member_order),
-    UNIQUE (item_id, member_id)
-) WITHOUT ROWID;
-
-CREATE TABLE timeline_projection_state (
-    singleton_id       INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-    projection_version INTEGER NOT NULL,
-    projection_generation TEXT NOT NULL,
-    next_position      INTEGER NOT NULL,
-    source_effect_seq  INTEGER NOT NULL,
-    -- 必要身份及可靠事实索引切点；不含活动正文、开放组聚合或可变成员列表。
-    recovery           BLOB NOT NULL
-);
+-- 仅有不可变完成记录上的读取索引，无持久工作组表。
+CREATE INDEX conversation_items_visible_seq
+    ON conversation_items(seq) WHERE display_run_start IS NOT NULL;
+CREATE INDEX conversation_items_by_run_seq
+    ON conversation_items(display_run_start, seq) WHERE display_run_start IS NOT NULL;
 ```
 
 item 表保存普通查询/排序/身份、原始 UTF-8 JSON payload 及轻量原子 metadata；每会话已有独立库，不重复 thread_id。metadata 由产品 producer 冻结，含无需解码 payload 即可取得的真实归属、顺序、生命周期和内容引用，不复制正文，也不含展示 item 或成员归属；Core 仅将其视为 opaque header bytes，产品按实际编码计入单页预算。不另设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
 
 `conversation_atom_facts` 只保存规范来源实际接纳的开始/终态及必要身份、位置、计时、内容存在性和引用，不保存正文、工具 payload 或 token。原完成 payload/内容仍各只有一份；同一真实身份/阶段重试幂等、冲突拒绝。旧事实只在正式准备边界规范化，缺少的开始/时间保持未知。重建按已索引的可靠位置逐批读小元信息，不先读全 payload 再排序，也不把最新 `history_items` 或检查点当完整日志。
 
-`timeline_items` 以稳定 item_id 为身份键，按 position（item_order）键集读取；metadata 只保存有界信封、摘要及稳定成员引用，不保存全量成员 ID。前台组封口后一次保存最终组头与成员关系，不持续写开放组；尚未封组的完成成员已在 `conversation_items` 独立保存。后台结果组只接纳完整结果，在不改变身份、position、原 commit_seq 或引用的前提下，沿原事务追加成员并更新派生头；无新增完整结果不重写。member_order 保留 [26.1](./26-timeline-content.md#261-完成事实与唯一所有者) 定义的来源或独立结果段顺序，不按字符串 ID 排序。真实恢复中断可以产生有可靠终态证明但没有正文完成 receipt 的模型成员：该成员行保留原身份、顺序和终态 metadata，completion_item_id 为空，不伪造完成原子或正文，也不从组中删除。只有这一类有实际终态证明的成员可以缺少完成引用，不能借可空列接纳任意残缺记录。current、已发布待保存 item 和短读引用仍归同一产品/read owner 及原可靠预算，不长期持有已保存成员正文。
+schema17→18 新增具名 `m20261110_000001_history_immutable_completion_runs`，注册在 completion_boundary 之后。原初始化锁与 SeaORM Applied 是唯一执行依据。单事务新增两列和索引，按原 seq 每批最多128条轻量 metadata/class 调用唯一 v1 分类并回填；不改 item_id、seq、query_class、parent、payload/metadata 原字节、内容引用和归档。只在本次迁移有界验证段首、连续 ordinal、真实引用和原件可读性，不移到每次冷打开。
 
-投影版本与 source_effect_seq 覆盖包括“无新完成 atom 的正文开始”在内的可靠输入，不能以完成 seq 代替派生处理位置。恢复头只记录重建必要前沿的身份及索引切点，按原来源/事实位置索引读取相关可靠事实，不保存开放组累加器或在普通重开重放全会话；后台尾组从同一派生表实际尾部定点读取有界头，不重复序列化进恢复状态。`projection_generation` 在具名内容迁移建立或升级派生模型时，与派生行、小恢复状态和迁移完成记录同事务提交；正常增量及重开沿用。它限定 cursor/成员引用资格，不改原库或正文身份，不参与 item ID 与排序。writer 在原完成记录、独立可靠事实和 checkpoint 的同一事务保存派生项及完整结果增量，重试核验实际冻结字节、身份及已证明的尾组成员追加，不能放宽为任意覆盖；失败沿原保存故障/背压保留责任。初始化和迁移遵循 [26.11](./26-timeline-content.md#2611-内容迁移与重建输入)：复用共享存储、初始化锁和 SeaORM 内容迁移账本；首次有界回填在同一事务完成后才开放读写，零待迁移不回放。已应用迁移后缺失或损坏明确失败并保留源库，不在读请求或运行期自动重建；规则重算追加具名迁移，不孤立递增投影版本触发自动修复。
+回填后删除 `timeline_items`、`timeline_item_members`、`timeline_projection_state` 前，证明其材料已由保留的完成/来源/Core 中断事实或受管归档覆盖。无 receipt 中断占位不伪造完成记录；无法证明覆盖则整个迁移失败保全原库。回填、验证、DROP、schema18 和本次 Applied 在同一事务提交，故障/取消完整回滚；二次正常打开不回填。旧 fold 类型只供冻结迁移，不由普通 reader/writer 引用。
 
-13→14→15 的正式准备保留原始事实与正文。旧冻结 metadata 缺少真实开始位置时，`legacyAdmission` 只表达确定的结构准入，不补造开始事件或时间；仅在位置确实缺失时，以已有来源 ordinal 及完成前缀规范化顺序，独立来源保留完成序。缺少真实来源结束位置时才允许 `legacySourceEnd` 结构边界，不覆盖已知的 effect/suborder。成员读取不把这些边界标记当成员。规范化只在准备边界执行，后续仍用同一投影；有界 SQL 元数据排序及逐项终态接纳不在内存积累整会话活动成员。
+历史13→14→15等准备仍按原发布语义保留原始事实：legacyAdmission/legacySourceEnd 只表达有证据的结构位置，不补造开始/终态/时间，不覆盖已知 effect/suborder。这些旧转换仅在冻结迁移中使用；最终按保留的完成 seq 和新索引显示，不恢复来源顺序工作组。
 
 contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 在记录完成时显式提交完整共享内容及 manifest，不从未知业务 payload 猜引用，不要求数据库预先保存过 active 块。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文；首次写入只分块保存完整材料，重放或同身份冲突才核对既有内容。目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留；活动内容只由原内存 owner 保有并允许已接纳短读结束，不另建全局 GC。
 
 执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-view singleton 只含 sourceEffectSeq、逻辑摘要、真实 source 状态、有序未交接 item 轻量片段、必要活动 atoms、active turn/Plan/交互有界头部和引用；不镜像已提交历史、完整成员 ID 或正文。成员关联保存在成员表，已终态但尚待交接的组仍是 current。可能增长的集合按原分页机制读取，游标绑定对应 scope/版本，不塞完整 ThreadSnapshot、Plan 正文、全部交互或身份 map。PreparedEffect 冻结同 effect 的 current/派生增量，writer 按序保存，不能提交时采样最新 live 越过前缀。
+原轻量业务状态保留真实 active turn、Plan、交互、来源和必要集合引用，不保存有序未交接展示 item、组头或成员树。ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动且 execution_present=false；真实待决业务状态仍可读取和操作。PreparedEffect 保留原可靠检查点及冻结完成材料，不携展示组/交接字段。
 
-冷打开在一个短读快照中取得轻量水位、current、Main 展示 item 初始页和这些已选择 item/成员/current 涉及的真实 source 状态；source 查询只按有界身份及捕获的 current.sourceEffectSeq 作 as-of 读取，不异时另查最新状态拼接切面，较晚结束不提前生效，切点内开始也不能丢失。不调用完整 checkpoint decoder；普通版本/身份准入不执行 quick_check、不读 current_context、不触发 flush。完整性检查、迁移和执行恢复分别有显式边界；轻量投影缺失进入明确修复/迁移错误，不回退恢复全 checkpoint。独立只读池与 writer 同属 HistoryStore，保留创建/迁移及数据库身份屏障，不使用 immutable 忽略活跃写入。
+ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立可读材料再发 State，冷源在同一短事务取得字段和引用。Plan 完整 sealed 文档与交互恢复事实仍由原 writer 保存，缺块/坏引用失败，不借全量 checkpoint 或历史卡片补正文。业务引用只含 Plan 与 interactions，旧 tools/members 活动集合退出业务交付；原输入/收件历史不因新封存入口补写猜测的旧完成项。本补充沿同一次未发布 schema18 迁移保全，不另建引用表或并行迁移。
+
+冷打开按 [26](./26-timeline-content.md) 捕获完成上界与读取资格，必要时以新短事务读取完成代表和独立轻量业务状态。真实来源状态按原事实切点有界取得，不拼接未来状态。不读完整 checkpoint/current_context、不 quick_check、不 flush、不激活执行。独立只读池与 writer 同属 HistoryStore，保留初始化/迁移及数据库身份屏障，不用 immutable 忽略活跃写入。
 
 检查点小头同时保存模型路由的窄派生投影：仅含原路由 selector、对应扩展 revision 及原机器人托管归属，不保存凭据、完整扩展集合、可用性或另一份运行状态。它由原 checkpoint writer 从同一冻结 effect 的扩展机械派生，与原检查点及保存水位在同一事务提交；不是可独立写入的第二路由来源。按需冷读在原短快照中读取该小头，不选取或解码 checkpoint payload。该结构变化使用正式 SeaORM 迁移；受支持旧库在迁移事务内从原检查点保全回填，缺失扩展保持缺失，坏记录拒绝迁移，失败不推进版本。普通当前格式读取不能以迁移名义重读完整 checkpoint，也不因读取触发保存或执行恢复。
 
@@ -708,4 +690,4 @@ view singleton 只含 sourceEffectSeq、逻辑摘要、真实 source 状态、�
 
 旧模型路由与冻结 Profile 的生产者版本准备归本次正式小头迁移：在派生前复用原保全转换器，将载荷准备为当前结构并保留原扩展 revision，不再等待执行准备阶段的 ModelAccess。原 TOML 导入在自身显式格式准备边界复用同一转换。普通 checkpoint writer 只写已准备的当前布局与载荷，不增加旧格式解码或缺列 fallback；后续正式表示迁移若改写小头来源，须在其原事务中同步维护已建立的小头，不留下陈旧派生值。
 
-迁移有界遍历旧完成容器和原公开字段，保留已有 item_id/seq/公开原始字节、附件与执行恢复事实；未知工具不经当前 decoder，必要时存有界不兼容描述与原文引用。不能伪造旧完成事件、来源、计数或时间。新表/内容/current 回填、非空/排序/唯一性/manifest/回执校验、schema 和 SeaORM 完成记录在同一真实事务连接原子公开；按锁定组件实证回滚，不以 use_transaction 声明代替证明。Timeline item 派生表在该迁移或独立维护边界由同一 Studio 投影重建，并校验非空、排序、唯一性、成员引用与投影版本；重建失败保留原数据与旧派生状态，不发布半升级 item。失败保留旧数据并可重试，普通 reader 不见半升级状态；不清库、不删除原件、备份或 v2 前隔离数据。
+所有正式内容迁移保留已有 ID/seq/公开原始字节、附件及恢复事实，未知工具不经当前业务 decoder 重构。原 SQLite 事务连接原子公开数据、版本和 SeaORM Applied，故障必须实证回滚，不以声明替代。不得清库、删原件、迁移备份或 v2 前隔离数据；#308 受管归档继续原样保留，正常读写不激活。

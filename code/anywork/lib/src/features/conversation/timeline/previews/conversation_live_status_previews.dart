@@ -11,8 +11,10 @@ import '../widgets/chat_item_view.dart';
 import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
-import '../widgets/timeline_work_group_view.dart';
+import '../widgets/timeline_activity_section.dart';
 import '../widgets/timeline_reasoning_view.dart';
+import '../widgets/completion_run_view.dart';
+import '../state/completion_run_presentation.dart';
 
 /// 官方预览只装配生产组件，不装配 Client、原生桥或第二套状态投影。
 Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
@@ -39,118 +41,63 @@ const liveStatusResponseText =
     '- **子智能体只读**：详情展示历史、进展与工作区，主会话保持独立草稿。\n\n'
     '长正文达到可用高度后在区内滚动，向上阅读或选择文字暂停跟随，点击“跟随输出”回到底部。\n\n'
     '接下来继续核对各项交互：保留当前草稿与附件，检查宽窄窗口下的对齐，并逐项确认停止、等待和保存异常的呈现。\n\n'
-    '工作组成员逐项结束后仍留在当前区域，正文结束后完整进入时间线。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
+    '每项操作结束后立即进入时间线，活动区只保留尚未完成的操作。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
 
 Widget liveStatusGroupPreview({
   bool idle = false,
   bool history = false,
   bool thinkingOnly = false,
-}) => TimelineWorkGroupView(
-  id: history ? 'preview-history' : 'preview-live',
-  summary: TimelineGroupSummary(
-    memberCount: thinkingOnly ? 1 : 4,
-    activeCount: idle || history ? 0 : 1,
-    failedCount: 0,
-    cancelledCount: 0,
-    startedAt: history ? 100 : null,
-    finishedAt: history ? 225 : null,
-    latestThinkingSummary: thinkingOnly
-        ? '**Reading receipt metadata** · *检查* `owner`'
-        : null,
-    categories: [
-      const TimelineCategoryCount(
-        category: TimelineCategory.thinking,
-        count: 1,
+}) {
+  if (history) {
+    final entry = TimelinePreviewFixtures.runEntry(
+      'preview-history',
+      4,
+      count: 4,
+    );
+    final card = CompletionRunPresentation.fromEntry(entry);
+    return CompletionRunView(
+      id: card.messageId,
+      presentation: card,
+      initiallyExpanded: false,
+      childBuilder: (_) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ChatItemView(item: TimelinePreviewFixtures.reasoning),
+          ChatItemView(item: TimelinePreviewFixtures.tool),
+        ],
       ),
-      if (!thinkingOnly) ...[
-        const TimelineCategoryCount(category: TimelineCategory.read, count: 1),
-        const TimelineCategoryCount(
-          category: TimelineCategory.command,
-          count: 1,
-        ),
-        const TimelineCategoryCount(
-          category: TimelineCategory.search,
-          count: 1,
-        ),
-      ],
-    ],
-  ),
-  live: !history,
-  executionPresent: !history,
-  admissionClosed: history,
-  initiallyExpanded: !history,
-  childBuilder: (_) => Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (thinkingOnly && !idle && !history)
+    );
+  }
+  if (idle) return const SizedBox.shrink();
+  return _ActivityPreview(
+    childBuilder: (_) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         const TimelineReasoningView(
           summary: '梳理会话共享组件与锁定边界',
           running: true,
           body: ConversationCurrentWindowView(
             id: 'preview-reasoning',
-            text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
-          ),
-        )
-      else
-        ChatItemView(
-          item: TimelinePreviewFixtures.item(
-            'preview-reasoning',
-            'thinking',
-            const {},
-            bodies: [
-              TimelinePreviewFixtures.body(
-                'part.summaryText.0',
-                '梳理会话共享组件与锁定边界',
-              ),
-              TimelinePreviewFixtures.body(
-                'part.reasoningText.0',
-                '已完成的成员**留在状态栏的当前工作组**；同时核对运行期选择器的就地锁定提示。',
-              ),
-            ],
-          ),
-          bodyBuilder: (id, text) =>
-              ConversationCurrentWindowView(id: id, text: text),
-        ),
-      if (!thinkingOnly) ...[
-        const TimelineToolDetails(
-          item: TimelineToolPresentation(
-            id: 'preview-read',
-            toolCallId: 'preview-read',
-            name: 'stat_path',
-            presentationContract: 'builtin.stat_path@1',
-            statusString: 'succeeded',
-            arguments: '{"path":"composer_dock_connector.dart"}',
-            output: '{"kind":"file"}',
+            text: '核对现有调用链和组件边界，随后检查布局和状态。',
           ),
         ),
-        TimelineToolDetails(
-          item: TimelineToolPresentation(
-            id: 'preview-command',
-            toolCallId: 'preview-command',
-            name: 'exec',
-            presentationContract: 'builtin.exec@2',
-            statusString: idle || history ? 'succeeded' : 'running',
-            arguments: '{"command":"cargo test -p pl-core --features sqlite"}',
-            output: 'running 12 tests\ntest completed_items_keep_their_identity ... ok',
-            workingDirectory: '.',
+        if (!thinkingOnly)
+          const TimelineToolDetails(
+            item: TimelineToolPresentation(
+              id: 'preview-command',
+              toolCallId: 'preview-command',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'running',
+              arguments: '{"command":"cargo flutter analyze"}',
+              output: '检查进行中。',
+            ),
           ),
-        ),
-        const TimelineToolDetails(
-          item: TimelineToolPresentation(
-            id: 'preview-search',
-            toolCallId: 'preview-search',
-            name: 'search_session_note',
-            presentationContract: 'builtin.search_session_note@1',
-            statusString: 'succeeded',
-            arguments: '{"query":"选择器锁定 · 运行中发送"}',
-            output: '已找到交互约定',
-          ),
-        ),
       ],
-    ],
-  ),
-);
+    ),
+  );
+}
 
 Widget _status(ConversationActivityKind kind, {String? error}) =>
     ConversationActivityStatus(
@@ -233,21 +180,7 @@ Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
 Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
-      TimelineWorkGroupView(
-        id: 'preview-wait',
-        live: true,
-        executionPresent: true,
-        admissionClosed: false,
-        initiallyExpanded: true,
-        summary: TimelineGroupSummary(
-          memberCount: 1,
-          activeCount: 1,
-          failedCount: 0,
-          cancelledCount: 0,
-          categories: const [
-            TimelineCategoryCount(category: TimelineCategory.wait, count: 1),
-          ],
-        ),
+      _ActivityPreview(
         childBuilder: (_) => TimelineWaitDetails(
           identity: 'preview-wait-member',
           presentation: ThreadWaitPresentationView(
@@ -339,24 +272,7 @@ Widget conversationLiveStatusWindowPreview() => liveStatusPreviewHost(
 Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
-      TimelineWorkGroupView(
-        id: 'reasoning-variants',
-        summary: TimelineGroupSummary(
-          memberCount: 3,
-          activeCount: 0,
-          failedCount: 0,
-          cancelledCount: 0,
-          categories: [
-            TimelineCategoryCount(
-              category: TimelineCategory.thinking,
-              count: 3,
-            ),
-          ],
-        ),
-        live: true,
-        executionPresent: true,
-        admissionClosed: false,
-        initiallyExpanded: true,
+      _ActivityPreview(
         childBuilder: (_) => const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -394,21 +310,7 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
 Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
-      TimelineWorkGroupView(
-        id: 'long-tool',
-        summary: TimelineGroupSummary(
-          memberCount: 1,
-          activeCount: 1,
-          failedCount: 0,
-          cancelledCount: 0,
-          categories: const [
-            TimelineCategoryCount(category: TimelineCategory.command, count: 1),
-          ],
-        ),
-        live: true,
-        executionPresent: true,
-        admissionClosed: false,
-        initiallyExpanded: true,
+      _ActivityPreview(
         childBuilder: (_) => TimelineToolDetails(
           initiallyExpanded: true,
           item: TimelineToolPresentation(
@@ -425,3 +327,13 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
     ],
   ),
 );
+
+class _ActivityPreview extends StatelessWidget {
+  const _ActivityPreview({required this.childBuilder});
+  final WidgetBuilder childBuilder;
+  @override
+  Widget build(BuildContext context) => TimelineActivitySection(
+    header: const Text('进行中'),
+    body: Builder(builder: childBuilder),
+  );
+}

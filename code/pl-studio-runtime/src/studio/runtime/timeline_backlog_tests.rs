@@ -1,12 +1,6 @@
-//! Ordinary reliable backlog: one installed product owner preserves every fold fragment.
+//! Ordinary reliable backlog preserves immutable completions through the original writer.
 use super::*;
-use crate::{
-    runtime_test_support as support,
-    studio::thread_projection::{
-        TimelineProjection,
-        timeline::{MemberChange, TimelineInput, lightweight},
-    },
-};
+use crate::runtime_test_support as support;
 use anyhow::{Context, Result, bail, ensure};
 use futures::FutureExt as _;
 use pl_core::{
@@ -28,7 +22,6 @@ use pl_model::{
 use pl_protocol::*;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use std::{
-    collections::BTreeMap,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -274,14 +267,26 @@ async fn chat(feed: &mut ConversationFeed, scope: &ChatScope) -> Result<ChatBatc
                 batch.validate_for(scope)?;
                 return Ok(*batch);
             }
-            ConversationEvent::State { .. } => {}
+            ConversationEvent::State { update } => {
+                if let ThreadSubscriptionUpdate::Snapshot {
+                    completed_history_version,
+                    snapshot,
+                } = *update
+                {
+                    ensure!(completed_history_version == 1 && snapshot.schema_version == 17);
+                    if !snapshot.interactions.is_empty() {
+                        ensure!(snapshot.business_refs.interactions.is_some());
+                    }
+                }
+            }
+            ConversationEvent::Activity { .. } => {}
         }
     }
 }
 
 async fn receive_while<T>(
     feed: &mut ConversationFeed,
-    delivered: &mut Vec<TimelineItem>,
+    delivered: &mut Vec<CompletedEntry>,
     operation: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     tokio::pin!(operation);
@@ -294,11 +299,10 @@ async fn receive_while<T>(
                     assert_eq!(batch.placement, ChatPlacement::Append);
                     assert!(batch.encoded_len()? <= demand().max_bytes as usize);
                     for entry in batch.entries {
-                        let ChatEntry::Item(item) = entry else { bail!("Main delivered a non-item"); };
                         if let Some(previous) = delivered.last() {
-                            assert!(previous.position < item.position);
+                            assert!(previous.completion_seq < entry.completion_seq);
                         }
-                        delivered.push(*item);
+                        delivered.push(entry);
                     }
                 }
             }
@@ -325,129 +329,41 @@ async fn facts(db: &DatabaseConnection, through: u64) -> Result<Vec<(String, Str
     })
     .collect()
 }
-async fn saved_items(db: &DatabaseConnection) -> Result<Vec<TimelineItem>> {
-    db.query_all_raw(sql(
-        "SELECT metadata FROM timeline_items ORDER BY position",
-        vec![],
-    ))
-    .await?
-    .into_iter()
-    .map(|row| {
-        Ok(serde_json::from_slice(
-            &row.try_get::<Vec<u8>>("", "metadata")?,
-        )?)
-    })
-    .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SavedCompletion {
+    seq: u64,
+    id: String,
+    parent: Option<String>,
+    payload: Vec<u8>,
+    metadata: Vec<u8>,
+    run: Option<CompletionRunPosition>,
 }
-fn logical(mut item: TimelineItem) -> TimelineItem {
-    if let Some(reference) = &mut item.members {
-        reference.projection_generation = "logical-generation".into();
-    }
-    item
-}
-
-/// Postcondition oracle only: a fresh uninterrupted invocation of the production
-/// fold over the exact canonical facts. Never drives the tested owner's readiness.
-/// No legacy branch is appropriate: every fact in this fixture has real positions.
-async fn uninterrupted(
-    db: &DatabaseConnection,
-    database: &str,
-) -> Result<(Vec<TimelineItem>, BTreeMap<(String, u64), ChatAtom>)> {
-    let mut inputs = Vec::new();
-    for (_, phase, bytes) in facts(db, u64::try_from(i64::MAX)?).await? {
-        ensure!(
-            phase == "start" || phase == "terminal",
-            "unexpected legacy input"
-        );
-        let atom: ChatAtom = serde_json::from_slice(&bytes)?;
-        let payload = if let Some(id) = &atom.completion_item_id {
-            let row = db
-                .query_one_raw(sql(
-                    "SELECT length(payload) AS bytes FROM conversation_items WHERE item_id=?",
-                    vec![id.clone().into()],
-                ))
-                .await?
-                .context("original completion owner")?;
-            Some(PayloadData::Deferred {
-                reference: ContentRef {
-                    database_id: database.into(),
-                    target: ContentTarget::ItemPayload {
-                        item_id: id.clone(),
-                    },
+async fn saved_items(db: &DatabaseConnection) -> Result<Vec<SavedCompletion>> {
+    db.query_all_raw(sql("SELECT seq,item_id,parent_id,payload,metadata,display_run_start,display_run_ordinal FROM conversation_items ORDER BY seq", vec![]))
+        .await?.into_iter().map(|row| {
+            let start: Option<i64> = row.try_get("", "display_run_start")?;
+            let ordinal: Option<i64> = row.try_get("", "display_run_ordinal")?;
+            Ok(SavedCompletion {
+                seq: u64::try_from(row.try_get::<i64>("", "seq")?)?,
+                id: row.try_get("", "item_id")?, parent: row.try_get("", "parent_id")?,
+                payload: row.try_get("", "payload")?, metadata: row.try_get("", "metadata")?,
+                run: match (start, ordinal) {
+                    (Some(start), Some(ordinal)) => Some(CompletionRunPosition { start_seq: u64::try_from(start)?, ordinal: u64::try_from(ordinal)? }),
+                    (None, None) => None,
+                    _ => bail!("half-written run position"),
                 },
-                byte_length: u64::try_from(row.try_get::<i64>("", "bytes")?)?,
             })
-        } else {
-            None
-        };
-        inputs.push(TimelineInput::Atom {
-            atom: Box::new(atom),
-            payload,
-            thinking_summary: None,
-        });
-    }
-    for row in db
-        .query_all_raw(sql(
-            "SELECT source_key,started_effect,started_suborder,ended_effect,ended_suborder,outcome
-             FROM conversation_sources WHERE ended_effect IS NOT NULL",
-            vec![],
-        ))
-        .await?
-    {
-        inputs.push(TimelineInput::SourceEnd {
-            source: ChatSourceState {
-                source: serde_json::from_str(&row.try_get::<String>("", "source_key")?)?,
-                lifecycle: ChatSourceLifecycle::Ended {
-                    outcome: serde_json::from_str(&row.try_get::<String>("", "outcome")?)?,
-                },
-                started: match row.try_get::<Option<i64>>("", "started_effect")? {
-                    Some(effect) => Some(ChatFactPosition {
-                        effect_seq: u64::try_from(effect)?,
-                        suborder: u32::try_from(row.try_get::<i64>("", "started_suborder")?)?,
-                    }),
-                    None => None,
-                },
-                ended: Some(ChatFactPosition {
-                    effect_seq: u64::try_from(row.try_get::<i64>("", "ended_effect")?)?,
-                    suborder: u32::try_from(row.try_get::<i64>("", "ended_suborder")?)?,
-                }),
-            },
-        });
-    }
-    let mut ordered = inputs
-        .into_iter()
-        .map(|input| Ok((input.order(0)?, input)))
-        .collect::<Result<Vec<_>>>()?;
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut projection = TimelineProjection::new(database.into(), "uninterrupted".into(), 0);
-    let mut items = Vec::new();
-    let mut members = BTreeMap::new();
-    for (_, input) in ordered {
-        projection.apply_input(input)?;
-        items.extend(projection.take_committed().into_iter().map(logical));
-        let update = projection.take_update()?;
-        for MemberChange {
-            item_id,
-            member_order,
-            atom,
-            ..
-        } in update.members().iter().cloned()
-        {
-            // A terminal updates its original member slot, not a second admission.
-            members.insert((item_id, member_order), atom);
-        }
-    }
-    ensure!(
-        projection.current_items().is_empty(),
-        "reference source was not really ended"
-    );
-    Ok((items, members))
+        }).collect()
+}
+async fn saved_chunks(db: &DatabaseConnection) -> Result<Vec<(String, String, i64, Vec<u8>)>> {
+    db.query_all_raw(sql("SELECT owner_key,content_key,byte_offset,data FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset", vec![]))
+        .await?.into_iter().map(|row| Ok((row.try_get("", "owner_key")?, row.try_get("", "content_key")?, row.try_get("", "byte_offset")?, row.try_get("", "data")?))).collect()
 }
 
-async fn check_text(reader: &ConversationReader, item: &TimelineItem) -> Result<()> {
-    let owner = item.content_item_id.as_ref().context("T original owner")?;
-    ensure!(!item.contents.is_empty(), "T lost its body references");
-    let body = &item.contents[0];
+async fn check_text(reader: &ConversationReader, item: &CompletedEntry) -> Result<()> {
+    let owner = &item.record_id;
+    ensure!(!item.atom.contents.is_empty(), "T lost its body references");
+    let body = &item.atom.contents[0];
     let bytes = reader
         .read_content(
             &body.reference,
@@ -473,11 +389,10 @@ async fn all_members(
     runtime: &StudioRuntime,
     feeds: &mut Vec<ConversationFeed>,
     id: &str,
-    reference: TimelineMembersRef,
-    first_body: &str,
-    last_body: &str,
-) -> Result<Vec<ChatAtom>> {
-    let scope = ChatScope::GroupMembers { reference };
+    reference: CompletionRunRef,
+    expected_bodies: &[String],
+) -> Result<Vec<CompletedEntry>> {
+    let scope = ChatScope::Run { reference };
     feeds.push(
         runtime
             .open_conversation_feed(id, scope.clone(), demand())
@@ -491,23 +406,16 @@ async fn all_members(
         let mut atoms = Vec::new();
         loop {
             let mut prefix = Vec::new();
-            for entry in page.entries {
-                match entry {
-                    ChatEntry::Atom(atom) => prefix.push(lightweight(&atom)),
-                    ChatEntry::Source(_) => {}
-                    ChatEntry::Item(_) => bail!("GroupMembers returned Main items"),
-                }
-            }
+            prefix.extend(page.entries);
             prefix.extend(atoms);
             atoms = prefix;
             let Some(before) = page.before else { break };
             page = feed.reader().load_older(&before, demand()).await?;
             page.validate_for(&scope)?;
         }
-        for (atom, text) in [
-            (atoms.first().context("first group member")?, first_body),
-            (atoms.last().context("last group member")?, last_body),
-        ] {
+        assert_eq!(atoms.len(), expected_bodies.len());
+        for (entry, text) in atoms.iter().zip(expected_bodies) {
+            let atom = &entry.atom;
             ensure!(
                 matches!(
                     atom.lifecycle,
@@ -556,9 +464,18 @@ async fn all_members(
 }
 
 #[tokio::test]
-async fn ordinary_backlog_preserves_multifragment_cut_and_uninterrupted_fold() -> Result<()> {
+async fn ordinary_backlog_preserves_completion_order_runs_and_original_bytes() -> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
-    let result = run_case(&env).await;
+    let result = run_case(&env, false).await;
+    eprintln!("ordinary backlog story before environment shutdown: {result:#?}");
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn backlog_save_failure_retains_pending_and_retries_original_completions() -> Result<()> {
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = run_case(&env, true).await;
+    eprintln!("failed-save backlog story before environment shutdown: {result:#?}");
     env.finish(result).await
 }
 
@@ -578,9 +495,10 @@ fn diagnostic(
         .and_then(|live| live.current_conversation())
         .map(|current| {
             (
-                current.projection_generation.clone(),
-                current.current.projection().source_effect_seq,
-                current.current.projection().items.len(),
+                current.head,
+                current.session.durable_seq(),
+                current.activity.revision,
+                current.activity.entries.len(),
                 current.serial,
             )
         });
@@ -614,7 +532,7 @@ fn diagnostic(
     )
 }
 
-async fn run_case(env: &support::Environment) -> Result<()> {
+async fn run_case(env: &support::Environment, fail_final_save: bool) -> Result<()> {
     let thread = env
         .runtime
         .create_thread(&env.project.id, "ordinary backlog owner")
@@ -652,6 +570,7 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     let mut feeds = Vec::new();
     let mut delivered = Vec::new();
     let mut database_connection = None;
+    let mut fault_trigger_installed = false;
     let mut phase = "first-window producer ACKs";
     let story_started = std::time::Instant::now();
     let trace_phase = |phase: &str| {
@@ -665,59 +584,49 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         channel
             .await_handoff_durable(&id, channel.handoff_ticket())
             .await?;
-        let first = history
-            .conversation_current()
-            .await?
-            .context("first durable window")?;
-        assert_eq!(first.items.len(), 1);
-        assert_eq!(
-            first.items[0]
-                .summary
-                .as_ref()
-                .context("open group")?
-                .member_count,
-            (WINDOW + 1) as u32
-        );
+        let source = env
+            .runtime
+            .thread_observations
+            .live_feed(&id)
+            .context("original live owner")?;
+        let first = source.current_conversation().context("first publication")?;
+        assert_eq!(first.head, WINDOW as u64);
+        assert_eq!(first.session.durable_seq(), first.head);
+        assert_eq!(first.activity.entries.len(), 1, "only R is still active");
         script.release();
         phase = "second-window / R-T-U producer ACKs";
         script.reached(Stage::Cut).await?;
         phase = "R-T-U observation/durable barrier";
         env.runtime.synchronize_thread_observation(&id).await?;
+        channel
+            .await_handoff_durable(&id, channel.handoff_ticket())
+            .await?;
         let slot = env.runtime.thread_observations.observation_slot(&id);
         let (position, _) = slot.capture();
-        let source = position.source.context("installed original owner")?;
-        let live = source
+        let installed = position.source.context("installed original owner")?;
+        let live = installed
             .current_conversation()
-            .context("original publication")?;
-        let generation = live.projection_generation.clone();
-        let cut_current = live.current.projection().clone();
-        assert_eq!(cut_current.items.len(), 3, "R / completed T / active U");
-        let r_group = &cut_current.items[0];
-        let text = &cut_current.items[1];
-        let u_group = &cut_current.items[2];
-        assert_eq!(r_group.kind, TimelineItemKind::WorkGroup);
+            .context("cut publication")?;
+        let cut = live.current.projection().source_effect_seq;
+        let cut_head = live.head;
+        assert_eq!(cut_head, (PREFIX_MEMBERS + 1) as u64);
+        assert_eq!(live.session.durable_seq(), cut_head);
+        assert_eq!(live.activity.completed_through, cut_head);
         assert_eq!(
-            r_group.summary.as_ref().context("R summary")?.member_count,
-            (PREFIX_MEMBERS + 1) as u32
-        );
-        assert!(r_group.admission_closed);
-        assert_eq!(text.kind, TimelineItemKind::Text);
-        assert_eq!(text.outcome, Some(ChatTerminalOutcome::Completed));
-        assert_eq!(u_group.kind, TimelineItemKind::WorkGroup);
-        assert!(cut_current.items.iter().all(|item| item.position.is_none()));
-        assert!(r_group.source == text.source && text.source == u_group.source);
-        assert_eq!(
-            cut_current
-                .atoms
-                .iter()
-                .filter(|atom| matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }))
-                .count(),
-            2
+            live.activity.entries.len(),
+            2,
+            "R and U remain active after T completed"
         );
         assert!(
-            cut_current.atoms.len() < WINDOW,
-            "completed group was mirrored into active current"
+            live.activity
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.atom.lifecycle, ChatAtomLifecycle::Active { .. }))
         );
+        let database = history
+            .conversation_database_id()
+            .await?
+            .context("database identity")?;
         phase = "original Main Set and T range";
         feeds.push(
             env.runtime
@@ -726,55 +635,54 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         );
         let initial = chat(&mut feeds[0], &ChatScope::Main).await?;
         assert_eq!(initial.placement, ChatPlacement::Set);
-        check_text(feeds[0].reader(), text).await?;
-        phase = "durable C current/recovery/readonly facts";
-        trace_phase(phase);
-        let durable = history.conversation_current().await?.context("durable C")?;
-        let cut = durable.source_effect_seq;
-        assert_eq!(cut, cut_current.source_effect_seq);
-        assert_eq!(durable.items, cut_current.items);
-        assert_eq!(channel.handoff_ticket(), cut);
+        assert_eq!(initial.through_seq, cut_head);
+        assert_eq!(
+            initial.entries.len(),
+            2,
+            "prefix work representative followed by completed T"
+        );
+        let prefix_head = initial.entries[0].clone();
+        assert_eq!(
+            prefix_head.main_presentation,
+            MainPresentation::ForegroundWork
+        );
+        assert_eq!(
+            prefix_head.run,
+            Some(CompletionRunPosition {
+                start_seq: 1,
+                ordinal: PREFIX_MEMBERS as u64
+            })
+        );
+        assert!(matches!(
+            prefix_head.atom.payload,
+            Some(PayloadData::Deferred { .. })
+        ));
+        let text = initial.entries[1].clone();
+        assert_eq!(text.main_presentation, MainPresentation::Single);
+        assert_eq!(text.completion_seq, cut_head);
+        check_text(feeds[0].reader(), &text).await?;
         let mut status = channel.subscribe();
+        assert_eq!(channel.handoff_ticket(), cut);
         assert_eq!(status.borrow().committed_sequence, cut);
         assert_eq!(status.borrow().queued_records, 0);
         assert!(!channel.is_stopping());
-        let recovery = history.timeline_snapshot().await?.context("C recovery")?;
-        let database = recovery.database_id().to_owned();
-        assert_eq!(recovery.generation(), generation);
-        assert_eq!(recovery.current_items().len(), 3);
-        assert_eq!(recovery.active_atoms().len(), 2);
-        assert!(
-            recovery
-                .active_atoms()
-                .iter()
-                .all(|atom| atom.contents.is_empty())
-        );
         let path = env
             .runtime
             .store
             .registered_session_paths(&id)?
             .history_database();
+        let mode = if fail_final_save { "rw" } else { "ro" };
         database_connection =
-            Some(Database::connect(format!("sqlite://{}?mode=ro", path.display())).await?);
+            Some(Database::connect(format!("sqlite://{}?mode={mode}", path.display())).await?);
         let db = database_connection
             .as_ref()
             .context("test read connection")?;
-        let row = db
-            .query_one_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "SELECT recovery FROM timeline_projection_state WHERE singleton_id=1".to_owned(),
-            ))
-            .await?
-            .context("persisted recovery cut")?;
-        let recovery: serde_json::Value =
-            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "recovery")?)?;
-        assert!(
-            recovery.is_array(),
-            "persisted recovery contains open accumulators"
-        );
-        assert!(!recovery.to_string().contains("prefix body"));
         let prefix = facts(db, cut).await?;
         assert!(prefix.len() > PREFIX_MEMBERS * 2);
+        let originals = saved_items(db).await?;
+        assert_eq!(originals.len(), cut_head as usize);
+        let chunks = saved_chunks(db).await?;
+        assert!(!chunks.is_empty(), "fixture did not save original bodies");
 
         script.release();
         phase = "ordinary suffix producer ACKs";
@@ -817,7 +725,6 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             prefix,
             "durable prefix changed while suffix drained"
         );
-        assert_eq!(history.timeline_generation().await?, generation);
         assert!(Arc::ptr_eq(
             &channel,
             &env.runtime.store.thread_persistence().history_channel(&id)
@@ -825,22 +732,123 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         let (after_suffix, _) = slot.capture();
         assert!(Arc::ptr_eq(
             after_suffix.source.as_ref().context("owner after suffix")?,
-            &source
+            &installed
         ));
         assert_eq!(
             history.conversation_database_id().await?.as_deref(),
             Some(database.as_str())
         );
-        let suffix_current = history
-            .conversation_current()
-            .await?
-            .context("suffix durable current")?;
-        assert_eq!(suffix_current.source_effect_seq, suffix_target);
-        assert!(suffix_current.source_effect_seq > cut);
+        let suffix_live = installed
+            .current_conversation()
+            .context("suffix publication")?;
+        assert_eq!(
+            suffix_live.current.projection().source_effect_seq,
+            suffix_target
+        );
+        assert!(suffix_target > cut);
+        assert_eq!(
+            suffix_live.head,
+            (PREFIX_MEMBERS + 1 + SUFFIX_MEMBERS + 1) as u64
+        );
+        assert_eq!(suffix_live.session.durable_seq(), suffix_live.head);
+        assert_eq!(
+            suffix_live.activity.entries.len(),
+            1,
+            "only U remains active"
+        );
+        assert_eq!(
+            saved_items(db)
+                .await?
+                .into_iter()
+                .filter(|row| row.seq <= cut_head)
+                .collect::<Vec<_>>(),
+            originals,
+            "later saves changed immutable payload/metadata/run bytes"
+        );
 
+        if fail_final_save {
+            db.execute_unprepared(
+                "CREATE TRIGGER reject_backlog_completion BEFORE INSERT ON conversation_items
+                 BEGIN SELECT RAISE(ABORT,'injected backlog completion failure'); END",
+            )
+            .await?;
+            fault_trigger_installed = true;
+        }
         script.release();
         phase = "same producer U terminal";
         trace_phase(phase);
+        if fail_final_save {
+            phase = "real writer fault and retained pending completion";
+            receive_while(&mut feeds[0], &mut delivered, async {
+                while status.borrow_and_update().fault.is_none() {
+                    status.changed().await?;
+                }
+                Ok(())
+            })
+            .await?;
+            let failed = status.borrow().clone();
+            assert!(failed.queued_records > 0);
+            assert!(
+                failed
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("injected backlog completion failure"))
+            );
+            // The failed transaction cannot confirm the newly published U.
+            assert_eq!(live.session.durable_seq(), suffix_live.head);
+            assert!(live.session.head_seq() > live.session.durable_seq());
+            assert_eq!(
+                saved_items(db).await?.last().context("saved prefix")?.seq,
+                suffix_live.head
+            );
+            let pending_feed = feeds.len();
+            feeds.push(
+                env.runtime
+                    .open_conversation_feed(&id, ChatScope::Main, demand())
+                    .await?,
+            );
+            let set = chat(&mut feeds[pending_feed], &ChatScope::Main).await?;
+            let pending = set.entries.last().context("pending U representative")?;
+            assert!(pending.completion_seq > live.session.durable_seq());
+            let original = feeds[pending_feed]
+                .reader()
+                .read_completed(&pending.record_id, demand())
+                .await?;
+            let body = original
+                .atom
+                .contents
+                .first()
+                .context("pending original U body")?;
+            let bytes = feeds[pending_feed]
+                .reader()
+                .read_content(
+                    &body.reference,
+                    ContentRange {
+                        offset: 0,
+                        max_bytes: 4096,
+                    },
+                )
+                .await?;
+            assert_eq!(bytes.bytes, b"U ended after backlog");
+            db.execute_unprepared("DROP TRIGGER reject_backlog_completion")
+                .await?;
+            fault_trigger_installed = false;
+            env.runtime
+                .retry_thread_history(&id, failed.fault_generation)
+                .await?;
+            env.runtime
+                .resume_thread_history(&id, failed.fault_generation)
+                .await?;
+            let durable = feeds[pending_feed]
+                .reader()
+                .read_completed(&original.record_id, demand())
+                .await?;
+            assert_eq!(durable.record_id, original.record_id);
+            assert_eq!(durable.completion_seq, original.completion_seq);
+            assert_eq!(durable.run, original.run);
+            assert_eq!(durable.atom.payload, original.atom.payload);
+            assert_eq!(durable.atom.contents, original.atom.contents);
+        }
         let joined = receive_while(&mut feeds[0], &mut delivered, async {
             (&mut run)
                 .await
@@ -875,103 +883,117 @@ async fn run_case(env: &support::Environment) -> Result<()> {
             prefix,
             "C facts changed while ordinary backlog drained"
         );
-        let latest = history
-            .conversation_current()
-            .await?
-            .context("resumed durable current")?;
-        assert_eq!(latest.source_effect_seq, target);
-        assert!(latest.source_effect_seq > suffix_target);
+        let latest = installed
+            .current_conversation()
+            .context("final publication")?;
+        assert_eq!(latest.current.projection().source_effect_seq, target);
+        assert!(target > suffix_target);
         let final_status = status.borrow_and_update().clone();
         assert_eq!(final_status.queued_records, 0);
-        assert_eq!(final_status.admitted_sequence, latest.source_effect_seq);
-        assert_eq!(final_status.committed_sequence, latest.source_effect_seq);
-        assert!(final_status.fault.is_none());
-        assert!(final_status.error.is_none());
-        assert_eq!(history.timeline_generation().await?, generation);
+        assert_eq!(final_status.admitted_sequence, target);
+        assert_eq!(final_status.committed_sequence, target);
+        assert!(final_status.fault.is_none() && final_status.error.is_none());
+        assert_eq!(latest.session.durable_seq(), latest.head);
+        assert!(latest.activity.entries.is_empty());
         let (final_position, _) = slot.capture();
         assert!(Arc::ptr_eq(
             final_position
                 .source
                 .as_ref()
                 .context("final original owner")?,
-            &source
+            &installed
         ));
-        assert!(latest.items.is_empty());
-        phase = "final canonical facts and logical uninterrupted fold";
+        phase = "final immutable completion inventory and raw bytes";
         let saved = saved_items(db).await?;
-        assert_eq!(saved.len(), 3);
-        while delivered.len() < saved.len() {
+        assert_eq!(saved.last().context("final completion")?.seq, latest.head);
+        assert_eq!(
+            saved
+                .iter()
+                .filter(|row| row.seq <= cut_head)
+                .cloned()
+                .collect::<Vec<_>>(),
+            originals
+        );
+        let final_chunks = saved_chunks(db).await?;
+        for chunk in &chunks {
+            assert!(
+                final_chunks.contains(chunk),
+                "a durable original body chunk changed"
+            );
+        }
+        let visible = saved
+            .iter()
+            .filter(|row| row.run.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(visible.len(), PREFIX_MEMBERS + SUFFIX_MEMBERS + 3);
+        let suffix = visible
+            .iter()
+            .filter(|row| row.seq > cut_head)
+            .collect::<Vec<_>>();
+        while delivered.len() < suffix.len() {
             let batch = chat(&mut feeds[0], &ChatScope::Main).await?;
             assert_eq!(batch.placement, ChatPlacement::Append);
-            for entry in batch.entries {
-                let ChatEntry::Item(item) = entry else {
-                    bail!("Main delivered a non-item");
-                };
-                delivered.push(*item);
-            }
+            delivered.extend(batch.entries);
         }
         assert_eq!(
             delivered
                 .iter()
-                .map(|item| (&item.id, item.position))
+                .map(|entry| (&entry.record_id, entry.completion_seq, entry.run))
                 .collect::<Vec<_>>(),
-            saved
+            suffix
                 .iter()
-                .map(|item| (&item.id, item.position))
+                .map(|row| (&row.id, row.seq, row.run))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(
-            saved.iter().map(|item| &item.id).collect::<Vec<_>>(),
-            vec![&r_group.id, &text.id, &u_group.id]
-        );
-        assert_eq!(
-            saved.iter().map(|item| item.position).collect::<Vec<_>>(),
-            vec![Some(0), Some(1), Some(2)]
-        );
-        assert_eq!(
-            saved[2].summary.as_ref().context("U summary")?.member_count,
-            (SUFFIX_MEMBERS + 1) as u32
-        );
-        let (expected, expected_members) = uninterrupted(db, &database).await?;
-        assert_eq!(
-            saved.clone().into_iter().map(logical).collect::<Vec<_>>(),
-            expected
-        );
-        for group in saved.iter().filter(|item| item.is_work_group()) {
-            phase = "final real GroupMembers inventory / original body ranges";
-            let reference = group.members.clone().context("new typed ref")?;
-            assert_eq!(reference.projection_generation, generation);
-            let (first_body, last_body) = if group.id == r_group.id {
-                (
-                    "R ended after T",
-                    format!("prefix body {}", PREFIX_MEMBERS - 1),
-                )
-            } else {
-                (
-                    "U ended after backlog",
-                    format!("suffix body {}", SUFFIX_MEMBERS - 1),
-                )
-            };
+        // The emitter starts R before the prefix and U before the suffix. Neither
+        // may move backwards in completed history when its terminal finally arrives.
+        let suffix_start = cut_head + 1;
+        for (index, row) in suffix.iter().enumerate() {
+            assert_eq!(
+                row.run,
+                Some(CompletionRunPosition {
+                    start_seq: suffix_start,
+                    ordinal: index as u64 + 1
+                })
+            );
+        }
+        phase = "real Run pages and original body ranges";
+        let prefix_bodies = (0..PREFIX_MEMBERS)
+            .map(|index| format!("prefix body {index}"))
+            .collect::<Vec<_>>();
+        let mut suffix_bodies = (0..SUFFIX_MEMBERS)
+            .map(|index| format!("suffix body {index}"))
+            .collect::<Vec<_>>();
+        suffix_bodies.extend(["R ended after T".into(), "U ended after backlog".into()]);
+        for (start, expected_bodies) in [(1, prefix_bodies), (suffix_start, suffix_bodies)] {
             let actual = all_members(
                 &env.runtime,
                 &mut feeds,
                 &id,
-                reference,
-                first_body,
-                &last_body,
+                CompletionRunRef {
+                    database_id: database.clone(),
+                    index_version: COMPLETED_READ_INDEX_VERSION,
+                    start_seq: start,
+                },
+                &expected_bodies,
             )
             .await?;
-            let expected = expected_members
+            assert_eq!(actual.len(), expected_bodies.len());
+            let expected = saved
                 .iter()
-                .filter(|((item, _), _)| item == &group.id)
-                .map(|(_, atom)| atom.clone())
+                .filter(|row| row.run.is_some_and(|run| run.start_seq == start))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                actual, expected,
-                "member admission/order/completion owner changed"
-            );
+            for (entry, row) in actual.iter().zip(expected) {
+                assert_eq!(
+                    (&entry.record_id, entry.completion_seq, entry.run),
+                    (&row.id, row.seq, row.run)
+                );
+                let atom: ChatAtom = serde_json::from_slice(&row.metadata)?;
+                assert_eq!(entry.atom.id, atom.id);
+                assert_eq!(entry.atom.contents, atom.contents);
+            }
         }
-        phase = "final Main Set / original T range";
+        phase = "final Main representatives and real Hidden Children";
         let final_feed = feeds.len();
         feeds.push(
             env.runtime
@@ -980,33 +1002,57 @@ async fn run_case(env: &support::Environment) -> Result<()> {
         );
         let set = chat(&mut feeds[final_feed], &ChatScope::Main).await?;
         assert_eq!(set.placement, ChatPlacement::Set);
-        assert!(
-            set.current
-                .as_ref()
-                .context("fresh current")?
-                .items
-                .is_empty()
-        );
+        assert_eq!(set.through_seq, latest.head);
+        assert_eq!(set.entries.len(), 3);
         assert_eq!(
-            feeds[final_feed].reader().inner.projection_generation,
-            generation
-        );
-        assert!(
             set.entries
                 .iter()
-                .all(|entry| matches!(entry, ChatEntry::Item(_)))
+                .map(|entry| entry.run.context("Main run").map(|run| run.start_seq))
+                .collect::<Result<Vec<_>>>()?,
+            vec![1, cut_head, suffix_start]
         );
-        let fresh_text = set
-            .entries
-            .iter()
-            .find_map(|entry| match entry {
-                ChatEntry::Item(item) if item.id == text.id => Some(item.as_ref()),
-                _ => None,
-            })
-            .context("fresh T")?;
-        assert_eq!(fresh_text.content_item_id, text.content_item_id);
-        assert_eq!(fresh_text.contents, text.contents);
+        let fresh_text = &set.entries[1];
+        assert_eq!(fresh_text.record_id, text.record_id);
+        assert_eq!(fresh_text.atom.contents, text.atom.contents);
         check_text(feeds[final_feed].reader(), fresh_text).await?;
+        let hidden = saved
+            .iter()
+            .find(|row| {
+                serde_json::from_slice::<ChatAtom>(&row.metadata)
+                    .is_ok_and(|atom| atom.kind == ChatAtomKind::TurnReceipt)
+            })
+            .context("real successful Turn receipt")?;
+        assert!(hidden.run.is_none());
+        let scope = ChatScope::Children {
+            parent_id: hidden.parent.clone().context("real receipt parent")?,
+        };
+        let children_feed = feeds.len();
+        feeds.push(
+            env.runtime
+                .open_conversation_feed(&id, scope.clone(), demand())
+                .await?,
+        );
+        let mut page = chat(&mut feeds[children_feed], &scope).await?;
+        let mut found = false;
+        loop {
+            for entry in page.entries {
+                if entry.record_id == hidden.id {
+                    assert_eq!(entry.main_presentation, MainPresentation::Hidden);
+                    assert!(entry.run.is_none());
+                    assert_eq!(entry.completion_seq, hidden.seq);
+                    found = true;
+                }
+            }
+            let Some(before) = page.before else {
+                break;
+            };
+            page = feeds[children_feed]
+                .reader()
+                .load_older(&before, demand())
+                .await?;
+            page.validate_for(&scope)?;
+        }
+        assert!(found, "Children suppressed its real successful receipt");
         Ok::<_, anyhow::Error>(())
     };
     // Assertion failures must also reach the owned resource cleanup below.
@@ -1029,6 +1075,18 @@ async fn run_case(env: &support::Environment) -> Result<()> {
     // assertion path. A test-owned JoinHandle is always observed, never detached.
     trace_phase("cleanup begins");
     let mut cleanup_errors = Vec::new();
+    if fault_trigger_installed {
+        if let Some(db) = &database_connection
+            && let Err(error) = db
+                .execute_unprepared("DROP TRIGGER IF EXISTS reject_backlog_completion")
+                .await
+        {
+            cleanup_errors.push(format!("fault trigger cleanup: {error:#}"));
+        }
+        if let Err(error) = env.runtime.retry_persistence().await {
+            cleanup_errors.push(format!("fault retry cleanup: {error:#}"));
+        }
+    }
     cancel.cancel();
     script.next.add_permits(3);
     let joined = if let Some(joined) = producer_join {

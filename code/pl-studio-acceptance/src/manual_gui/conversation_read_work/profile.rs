@@ -128,6 +128,14 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
             .clone()
             .context("missing seed B")?;
         ensure!(a != b, "profile seeds reused the same Thread");
+        let project = evidence.seeds[0]
+            .project_id
+            .clone()
+            .context("missing seed project")?;
+        ensure!(
+            evidence.seeds[1].project_id.as_deref() == Some(project.as_str()),
+            "profile seeds must belong to the same project"
+        );
         for index in 0..SAMPLES {
             let mut app = run_app(
                 context,
@@ -135,6 +143,7 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
                 "cold",
                 &a,
                 &b,
+                &project,
                 1,
             );
             let fixed = require_fixed_artifacts(&evidence.applications, &app);
@@ -146,7 +155,7 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
             evidence.save(context.output)?;
             ensure!(!failed, "cold sample {} failed", index + 1);
         }
-        let mut app = run_app(context, "switch", "switch", &a, &b, SAMPLES);
+        let mut app = run_app(context, "switch", "switch", &a, &b, &project, SAMPLES);
         let fixed = require_fixed_artifacts(&evidence.applications, &app);
         record(&mut app.errors, "fixed application artifacts", fixed);
         admit_samples(&mut evidence.switches, 0, SAMPLES, &mut app, &a);
@@ -234,6 +243,7 @@ fn run_app(
     mode: &str,
     a: &str,
     b: &str,
+    project: &str,
     requested: usize,
 ) -> AppEvidence {
     let directory = context.output.join(format!("profile-{name}"));
@@ -318,7 +328,15 @@ fn run_app(
                 "--vm-url",
             ])
             .arg(websocket_url(vm))
-            .args(["--thread-id", a, "--mode", mode, "--samples"])
+            .args([
+                "--project-id",
+                project,
+                "--thread-id",
+                a,
+                "--mode",
+                mode,
+                "--samples",
+            ])
             .arg(requested.to_string())
             .arg("--output")
             .arg(&output);

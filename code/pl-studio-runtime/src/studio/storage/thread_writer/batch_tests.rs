@@ -491,7 +491,9 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
     assert_eq!(channel.subscribe().borrow().queued_records, 3);
     assert_eq!(fixture.sink.0.chat.durable_seq(), 2);
     assert_eq!(
-        pl_core::chat::ChatHistory::latest_append_seq(&history).await?,
+        pl_core::chat::ChatHistory::publication_seed(&history)
+            .await?
+            .head_seq,
         2
     );
     let checkpoint = history.checkpoint().await?.unwrap();

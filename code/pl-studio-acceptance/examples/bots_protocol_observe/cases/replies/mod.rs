@@ -14,10 +14,10 @@ mod send_outcomes;
 
 use super::Session;
 use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_timeline_payload,
+    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
 };
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatAtomKind, ChatEntry, ChatScope, ChatSourceId};
+use pl_protocol::{ChatAtomKind, ChatScope, ChatSourceId};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
 
@@ -133,30 +133,27 @@ pub(super) async fn wait_cancelled_turn(
                 .open_chat(thread_id, ChatScope::Main, CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
-            for entry in page.entries.iter().rev() {
-                let ChatEntry::Item(item) = entry else {
-                    anyhow::bail!("Main returned a member atom/source instead of a Timeline item");
-                };
+            for item in page.entries.iter().rev() {
                 if !matches!(
-                    item.atom_kind,
-                    Some(ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown)
+                    item.atom.kind,
+                    ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
                 ) {
                     continue;
                 }
                 let Some(payload) =
-                    completed_timeline_payload(&read, item, &mut remaining, deadline).await?
+                    completed_entry_payload(&read, item, &mut remaining, deadline).await?
                 else {
                     continue;
                 };
-                if let ChatSourceId::ForegroundTurn { turn_id } = &item.source {
+                if let ChatSourceId::ForegroundTurn { turn_id } = &item.atom.source {
                     ensure!(
-                        item.turn_id.as_deref() == Some(turn_id.as_str()),
-                        "Timeline source and Turn identity conflict"
+                        item.atom.turn_id.as_deref() == Some(turn_id.as_str()),
+                        "completion source and Turn identity conflict"
                     );
                 }
                 ensure!(
-                    item.atom_kind != Some(ChatAtomKind::TurnReceipt) || payload["type"] == "turn",
-                    "Timeline metadata and original payload domain conflict"
+                    item.atom.kind != ChatAtomKind::TurnReceipt || payload["type"] == "turn",
+                    "completion atom and original payload domain conflict"
                 );
                 if payload["type"] != "turn" || payload["turnId"].as_str() != Some(turn_id) {
                     continue;

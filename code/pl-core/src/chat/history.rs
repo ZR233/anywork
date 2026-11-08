@@ -4,26 +4,44 @@
 //! comes from natural keyset exhaustion, not COUNT/existence; cancellation publishes no partial page.
 
 use crate::chat::{
-    ChatBudget, ChatContent, ChatError, ChatHistoryPage, ChatHistoryRequest, ChatItem,
-    ContentManifestPage, ContentManifestRequest, ContentReadRequest, ContentWindow,
+    ChatBudget, ChatContent, ChatError, ChatHistoryItemRequest, ChatHistoryPage,
+    ChatHistoryRequest, ChatItem, ChatPageItem, ChatPublicationSeed, ContentManifestPage,
+    ContentManifestRequest, ContentReadRequest, ContentWindow,
 };
 use futures::future::BoxFuture;
 use std::{fmt, future::Future};
 
 pub trait ChatHistory: Send + Sync + fmt::Debug + 'static {
-    fn latest_append_seq(&self) -> impl Future<Output = Result<u64, ChatError>> + Send;
+    /// Head and last visible lightweight header from the SAME fresh short snapshot.
+    fn publication_seed(
+        &self,
+    ) -> impl Future<Output = Result<ChatPublicationSeed, ChatError>> + Send;
     /// Descending selection, ascending result. Demand has already reserved all non-item costs.
+    /// RunHeads uses visible-seq index seeks to each selected run's start-1, at most 64 candidates
+    /// per window and no more than the remaining item demand. Never scan members/COUNT/GROUP BY.
+    /// Honor budget.allow_inline before reading bytes; RunHeads Adjacent payloads stay Deferred.
     fn page(
         &self,
         request: &ChatHistoryRequest,
         budget: &dyn ChatBudget,
     ) -> impl Future<Output = Result<ChatHistoryPage, ChatError>> + Send;
-    /// Ascending selection and result, for bounded internal replay only.
+    /// Ascending selection and result, for bounded internal replay only. RunHeads here means every
+    /// visible completion, not a collapsed page: never drop members during catch-up.
+    /// Run filters by its indexed start; Records keeps the original class/parent semantics.
     fn page_after(
         &self,
         request: &ChatHistoryRequest,
         budget: &dyn ChatBudget,
     ) -> impl Future<Output = Result<ChatHistoryPage, ChatError>> + Send;
+    /// Bounded envelope point read by item_id with seq <= request.ceiling, on a NEW short snapshot.
+    /// Read only the indexed header/length first, then select_payload before fetching Inline bytes.
+    /// Never load the contents manifest, call publication item(), or materialize a Deferred body.
+    /// None means absent within this cut; insufficient envelope demand and storage failure are errors.
+    fn read_item(
+        &self,
+        request: &ChatHistoryItemRequest,
+        budget: &dyn ChatBudget,
+    ) -> impl Future<Output = Result<Option<ChatPageItem>, ChatError>> + Send;
     /// Complete frozen record for publication idempotency only, never used by normal pages/content.
     fn item(
         &self,
@@ -56,7 +74,7 @@ pub trait ChatHistory: Send + Sync + fmt::Debug + 'static {
 }
 
 pub(crate) trait ErasedChatHistory: Send + Sync + fmt::Debug {
-    fn latest_append_seq(&self) -> BoxFuture<'_, Result<u64, ChatError>>;
+    fn publication_seed(&self) -> BoxFuture<'_, Result<ChatPublicationSeed, ChatError>>;
     fn page<'a>(
         &'a self,
         request: &'a ChatHistoryRequest,
@@ -67,6 +85,11 @@ pub(crate) trait ErasedChatHistory: Send + Sync + fmt::Debug {
         request: &'a ChatHistoryRequest,
         budget: &'a dyn ChatBudget,
     ) -> BoxFuture<'a, Result<ChatHistoryPage, ChatError>>;
+    fn read_item<'a>(
+        &'a self,
+        request: &'a ChatHistoryItemRequest,
+        budget: &'a dyn ChatBudget,
+    ) -> BoxFuture<'a, Result<Option<ChatPageItem>, ChatError>>;
     fn item<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<ChatItem>, ChatError>>;
     fn validate_content<'a>(
         &'a self,
@@ -84,8 +107,8 @@ pub(crate) trait ErasedChatHistory: Send + Sync + fmt::Debug {
 }
 
 impl<T: ChatHistory> ErasedChatHistory for T {
-    fn latest_append_seq(&self) -> BoxFuture<'_, Result<u64, ChatError>> {
-        Box::pin(ChatHistory::latest_append_seq(self))
+    fn publication_seed(&self) -> BoxFuture<'_, Result<ChatPublicationSeed, ChatError>> {
+        Box::pin(ChatHistory::publication_seed(self))
     }
     fn page<'a>(
         &'a self,
@@ -100,6 +123,13 @@ impl<T: ChatHistory> ErasedChatHistory for T {
         budget: &'a dyn ChatBudget,
     ) -> BoxFuture<'a, Result<ChatHistoryPage, ChatError>> {
         Box::pin(ChatHistory::page_after(self, request, budget))
+    }
+    fn read_item<'a>(
+        &'a self,
+        request: &'a ChatHistoryItemRequest,
+        budget: &'a dyn ChatBudget,
+    ) -> BoxFuture<'a, Result<Option<ChatPageItem>, ChatError>> {
+        Box::pin(ChatHistory::read_item(self, request, budget))
     }
     fn item<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<ChatItem>, ChatError>> {
         Box::pin(ChatHistory::item(self, id))

@@ -109,9 +109,16 @@ impl Owner {
             payload,
             state: PermissionState::Pending,
         };
+        let mut permissions = self.state.permissions.clone();
+        permissions.insert(id.clone(), record.clone());
+        self.state.interaction_collection_revision_for(
+            &self.published,
+            &self.state.interactions,
+            &permissions,
+        )?;
         self.permission_leases.insert(id, authority);
         record_change(&mut self.state, record.clone());
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 
@@ -185,8 +192,15 @@ impl Owner {
         record.state = state;
         record.response = resolution.payload;
         record.updated_at = crate::time::unix_seconds();
+        let mut permissions = self.state.permissions.clone();
+        permissions.insert(record.id.clone(), record.clone());
+        self.state.interaction_collection_revision_for(
+            &self.published,
+            &self.state.interactions,
+            &permissions,
+        )?;
         record_change(&mut self.state, record.clone());
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 
@@ -197,8 +211,25 @@ impl Owner {
             .filter(|(_, authority)| !authority.remains_authorized(&self.tools))
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
+        let mut permissions = self.state.permissions.clone();
+        let mut changes = Vec::new();
+        for id in &stale {
+            if let Some(previous) = permissions.get(id)
+                && let Some(record) = cancelled_record(previous)?
+            {
+                permissions.insert(id.clone(), record.clone());
+                changes.push(record);
+            }
+        }
+        self.state.interaction_collection_revision_for(
+            &self.published,
+            &self.state.interactions,
+            &permissions,
+        )?;
+        for record in changes {
+            record_change(&mut self.state, record);
+        }
         for id in stale {
-            cancel_pending(&mut self.state, &id)?;
             self.permission_leases.remove(&id);
         }
         Ok(())
@@ -212,21 +243,26 @@ impl Owner {
 }
 
 pub(super) fn cancel_pending(state: &mut ThreadSnapshot, id: &str) -> Result<(), ThreadError> {
-    if let Some(previous) = state
-        .permissions
-        .get(id)
-        .filter(|record| record.state == PermissionState::Pending)
+    if let Some(previous) = state.permissions.get(id)
+        && let Some(record) = cancelled_record(previous)?
     {
-        let mut record = previous.clone();
-        record.revision = record
-            .revision
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
-        record.state = PermissionState::Cancelled;
-        record.updated_at = crate::time::unix_seconds();
         record_change(state, record);
     }
     Ok(())
+}
+
+fn cancelled_record(previous: &PermissionRecord) -> Result<Option<PermissionRecord>, ThreadError> {
+    if previous.state != PermissionState::Pending {
+        return Ok(None);
+    }
+    let mut record = previous.clone();
+    record.revision = record
+        .revision
+        .checked_add(1)
+        .ok_or(ThreadError::RevisionExhausted)?;
+    record.state = PermissionState::Cancelled;
+    record.updated_at = crate::time::unix_seconds();
+    Ok(Some(record))
 }
 
 fn record_change(state: &mut ThreadSnapshot, record: PermissionRecord) {

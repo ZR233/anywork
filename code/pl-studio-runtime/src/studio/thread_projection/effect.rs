@@ -425,7 +425,8 @@ pub(in crate::studio) fn project_effect_items(
         ));
     }
 
-    items.sort_by_key(|item| (item.ordinal == 0, item.ordinal));
+    // Preserve the reliable effect's receipt order here. The live execution
+    // owner assigns/sorts execution ordinals separately after freezing drafts.
     // Zero denotes a candidate whose placement is not committed yet. The Runtime
     // assigns every such identity together with its final stamp in one funded
     // index batch, before recording, publishing or handing any item to storage.

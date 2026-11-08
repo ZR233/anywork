@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/handlers/chat.dart' as wire;
 import 'package:anywork/src/rust/api/studio/types/chat.dart' as dto;
-import 'package:anywork/src/rust/api/studio/types/timeline.dart' as timeline;
+import 'package:anywork/src/rust/api/studio/types/thread_stream.dart' as state;
 import 'package:anywork/src/rust/api/studio/types/error.dart' as err;
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,147 +13,83 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/chat_fixtures.dart';
 
 void main() {
-  for (final placement in dto.BridgeChatPlacement.values) {
+  for (final details in [
+    '{"reason":"protocolVersionMismatch"}',
+    '{}',
+    '{"reason":"unknownReason"}',
+  ]) {
     test(
-      'FRB Main $placement preserves item order and opaque projection generation',
+      'FRB protocol reason is typed without inventing a code: $details',
       () async {
-        final native = _GeneratedFeed();
+        final native = _GeneratedFeed()
+          ..queryFailure = err.BridgeError(
+            code: err.BridgeErrorCode.protocol,
+            message: 'protocol failed',
+            retryable: false,
+            correlationId: 'protocol-reason',
+            detailsJson: details,
+          );
         final feed = FrbConversationFeed(native);
-        final iterator = StreamIterator(feed.events);
-        const generation = 'opaque/rebuild-generation:甲';
-        final textBytes = Uint8List.fromList(utf8.encode('原始正文 🐱'));
-        native.send(
-          dto.BridgeConversationEvent.chat(
-            batch: dto.BridgeChatBatch(
-              placement: placement,
-              before: 'opaque:item-before',
-              entries: [
-                dto.BridgeChatEntry.item(
-                  timeline.BridgeTimelineItem(
-                    id: 'work-item',
-                    kind: timeline.BridgeTimelineItemKind.workGroup,
-                    source: _source,
-                    delivery: dto.BridgeChatDeliveryKind.foreground,
-                    admissionClosed: true,
-                    position: BigInt.from(7),
-                    contents: const [],
-                    members: const timeline.BridgeTimelineMembersRef(
-                      databaseId: 'database',
-                      projectionVersion: 1,
-                      projectionGeneration: generation,
-                      itemId: 'work-item',
-                    ),
-                    summary: timeline.BridgeTimelineGroupSummary(
-                      latestThinkingSummary: '等待审查更新',
-                      memberCount: 82,
-                      activeCount: 0,
-                      failedCount: 2,
-                      cancelledCount: 1,
-                      categories: const [
-                        timeline.BridgeTimelineCategoryCount(
-                          category: timeline.BridgeTimelineCategory.thinking,
-                          count: 1,
-                        ),
-                      ],
-                      startedAt: 12,
-                      finishedAt: 20,
-                    ),
-                  ),
+        await expectLater(
+          feed.reader.loadOlder(before: 'before', demand: chatDemand),
+          throwsA(
+            isA<StudioFailure>()
+                .having(
+                  (failure) => failure.code,
+                  'code',
+                  StudioFailureCode.protocol,
+                )
+                .having(
+                  (failure) => failure.reason,
+                  'reason',
+                  details.contains('protocolVersionMismatch')
+                      ? StudioFailureReason.protocolVersionMismatch
+                      : null,
                 ),
-                dto.BridgeChatEntry.item(
-                  timeline.BridgeTimelineItem(
-                    id: 'text-item',
-                    kind: timeline.BridgeTimelineItemKind.text,
-                    source: _source,
-                    atomKind: dto.BridgeChatAtomKind.text,
-                    delivery: dto.BridgeChatDeliveryKind.foreground,
-                    admissionClosed: true,
-                    contents: const [],
-                    contentItemId: 'original-text-payload',
-                    payload: dto.BridgePayloadData.inline(bytes: textBytes),
-                  ),
-                ),
-              ],
-            ),
           ),
         );
-        expect(await iterator.moveNext(), isTrue);
-        final batch = (iterator.current.event as ConversationChatEvent).batch;
-        expect(batch.placement, ChatPlacement.values[placement.index]);
-        expect(batch.before, 'opaque:item-before');
-        expect(batch.current, isNull);
-        expect(batch.entries.every((entry) => entry is ItemChatEntry), isTrue);
-        final items = batch.items.toList();
-        expect(items.map((item) => item.id), ['work-item', 'text-item']);
-        final work = items.first;
-        expect(work.position, 7);
-        expect(work.members!.databaseId, 'database');
-        expect(work.members!.projectionVersion, 1);
-        expect(work.members!.projectionGeneration, generation);
-        expect(work.members!.itemId, work.id);
-        expect(work.summary!.memberCount, 82);
-        expect(work.summary!.latestThinkingSummary, '等待审查更新');
-        expect(work.summary!.failedCount, 2);
-        expect(work.summary!.cancelledCount, 1);
-        expect((work.summary!.startedAt, work.summary!.finishedAt), (12, 20));
-        expect(items.last.contentItemId, 'original-text-payload');
-        expect((items.last.payload as InlinePayload).bytes, textBytes);
         expect(native.acks, isEmpty);
-        await feed.acknowledge(iterator.current.deliverySequence);
-        expect(native.acks, [BigInt.one]);
         await feed.close();
-        await iterator.cancel();
       },
     );
   }
-
   for (final placement in dto.BridgeChatPlacement.values) {
     test(
-      'FRB member $placement maps Atom/Source, inline/deferred bytes and opaque before without ACK',
+      'FRB $placement preserves immutable records, Run positions, classification, bytes and credit',
       () async {
         final native = _GeneratedFeed();
         final feed = FrbConversationFeed(native);
         final iterator = StreamIterator(feed.events);
         final bytes = Uint8List.fromList(utf8.encode('中文 🐱 opaque JSON'));
+        final entries = [
+          for (final presentation in dto.BridgeMainPresentation.values)
+            _completedEntry(
+              presentation.name,
+              dto.BridgePayloadData.inline(bytes: bytes),
+              completionSeq: presentation.index + 1,
+              sourceOrder: 20 - presentation.index,
+              presentation: presentation,
+            ),
+          _completedEntry(
+            'deferred',
+            dto.BridgePayloadData.deferred_(
+              reference: _reference,
+              byteLength: BigInt.from(400000),
+            ),
+            completionSeq: 5,
+            sourceOrder: 11,
+          ),
+        ];
         native.send(
           dto.BridgeConversationEvent.chat(
             batch: dto.BridgeChatBatch(
               placement: placement,
+              entries: entries,
               before: 'opaque:中文:before',
-              entries: [
-                dto.BridgeChatEntry.source(
-                  dto.BridgeChatSourceState(
-                    source: _source,
-                    lifecycle: const dto.BridgeChatSourceLifecycle.active(),
-                    started: _position(1),
-                  ),
-                ),
-                _completedEntry(
-                  'inline',
-                  dto.BridgePayloadData.inline(bytes: bytes),
-                  completionSeq: 1,
-                  sourceOrder: 3,
-                ),
-                _completedEntry(
-                  'deferred',
-                  dto.BridgePayloadData.deferred_(
-                    reference: _reference,
-                    byteLength: BigInt.from(400000),
-                  ),
-                  completionSeq: 2,
-                  sourceOrder: 11,
-                ),
-                dto.BridgeChatEntry.source(
-                  dto.BridgeChatSourceState(
-                    source: _source,
-                    lifecycle: const dto.BridgeChatSourceLifecycle.ended(
-                      outcome: dto.BridgeChatTerminalOutcome.completed,
-                    ),
-                    started: _position(1),
-                    ended: _position(4),
-                  ),
-                ),
-              ],
+              fromSeq: placement == dto.BridgeChatPlacement.append
+                  ? BigInt.zero
+                  : null,
+              throughSeq: BigInt.from(5),
             ),
           ),
         );
@@ -165,62 +101,63 @@ void main() {
         expect(batch.placement, ChatPlacement.values[placement.index]);
         expect(batch.before, 'opaque:中文:before');
         expect(
-          batch.current,
-          isNull,
-          reason: 'None must not become an empty projection',
+          batch.fromSeq,
+          placement == dto.BridgeChatPlacement.append ? 0 : null,
         );
-        expect(batch.entries, [
-          isA<ChatSourceEntry>(),
-          isA<ChatAtomEntry>(),
-          isA<ChatAtomEntry>(),
-          isA<ChatSourceEntry>(),
-        ]);
-        final start = (batch.entries.first as ChatSourceEntry).state;
-        final end = (batch.entries.last as ChatSourceEntry).state;
-        expect(start.source, const ForegroundTurnChatSource(turnId: 'turn'));
-        expect(end.source, start.source);
-        expect(start.lifecycle, isA<ActiveChatSource>());
-        expect(start.started!.effectSeq, 1);
-        expect(start.ended, isNull);
-        expect(
-          end.lifecycle,
-          isA<EndedChatSource>().having(
-            (lifecycle) => lifecycle.outcome,
-            'outcome',
-            ChatTerminalOutcome.completed,
-          ),
-        );
-        expect(end.started!.effectSeq, 1);
-        expect(end.ended!.effectSeq, 4);
-        final atoms = batch.entries
-            .whereType<ChatAtomEntry>()
-            .map((entry) => entry.atom)
-            .toList();
-        expect(atoms.map((atom) => atom.id), [
-          'inline-member',
-          'deferred-member',
-        ]);
-        expect(atoms.map((atom) => atom.completionItemId), [
-          'inline',
+        expect(batch.throughSeq, 5);
+        expect(batch.entries.map((entry) => entry.recordId), [
+          'hidden',
+          'single',
+          'foregroundWork',
+          'backgroundResults',
           'deferred',
         ]);
-        expect(atoms.map((atom) => atom.completionSeq), [1, 2]);
-        expect(atoms.map((atom) => atom.sourceOrder), [3, 11]);
-        for (final atom in atoms) {
-          expect(atom.source, start.source);
+        expect(batch.entries.map((entry) => entry.completionSeq), [
+          1,
+          2,
+          3,
+          4,
+          5,
+        ]);
+        expect(
+          batch.entries.take(4).map((entry) => entry.mainPresentation),
+          MainPresentation.values,
+        );
+        // Source order deliberately decreases: the adapter must never sort or infer classes.
+        expect(batch.entries.map((entry) => entry.atom.sourceOrder), [
+          20,
+          19,
+          18,
+          17,
+          11,
+        ]);
+        for (var index = 0; index < batch.entries.length; index++) {
+          final entry = batch.entries[index];
+          final atom = entry.atom;
+          expect(entry.run?.startSeq, index + 1);
+          expect(entry.run?.ordinal, 1);
+          expect(atom.id, '${entry.recordId}-member');
+          expect(atom.completionItemId, entry.recordId);
+          expect(atom.completionSeq, index + 1);
+          expect(atom.source, const ForegroundTurnChatSource(turnId: 'turn'));
           expect(atom.turnId, 'turn');
-          expect(atom.sourceState, isNull, reason: 'FrozenNone stays absent');
+          expect(atom.sourceState, isNull);
           expect(
             atom.lifecycle,
             isA<TerminalChatAtom>().having(
-              (lifecycle) => lifecycle.outcome,
+              (value) => value.outcome,
               'outcome',
               ChatTerminalOutcome.completed,
             ),
           );
+          expect((atom.lifecycle as TerminalChatAtom).started?.effectSeq, 1);
+          expect(
+            (atom.lifecycle as TerminalChatAtom).ended?.effectSeq,
+            index + 2,
+          );
+          if (index < 4) expect((atom.payload as InlinePayload).bytes, bytes);
         }
-        expect((atoms.first.payload as InlinePayload).bytes, bytes);
-        final deferred = atoms.last.payload as DeferredPayload;
+        final deferred = batch.entries.last.atom.payload as DeferredPayload;
         expect(deferred.byteLength, 400000);
         expect(deferred.reference.databaseId, 'database');
         expect(
@@ -230,7 +167,7 @@ void main() {
         expect(
           native.acks,
           isEmpty,
-          reason: 'adapter never ACKs on behalf of a consumer',
+          reason: 'Mapping never ACKs for a consumer',
         );
         await feed.acknowledge(frame.deliverySequence);
         expect(native.acks, [BigInt.one]);
@@ -254,7 +191,7 @@ void main() {
       const dto.BridgeReadDemand(maxItems: 20, maxBytes: 65536),
     ));
     expect(batch.placement, ChatPlacement.prepend);
-    final atom = (batch.entries.single as ChatAtomEntry).atom;
+    final atom = batch.entries.single.atom;
     expect(atom.id, 'older-member');
     expect(atom.completionItemId, 'older');
     expect(atom.completionSeq, 1);
@@ -281,6 +218,22 @@ void main() {
     expect(window.availableThrough, 8);
     expect(window.generation, 'generation-1');
     expect(window.sealed, isTrue);
+    final completed = await reader.readCompleted(
+      recordId: 'held-completion',
+      demand: chatDemand,
+    );
+    expect(completed.recordId, 'held-completion');
+    expect(completed.completionSeq, 12);
+    expect(completed.atom.id, 'held-completion-member');
+    expect(native.completedRequests.single, (
+      'held-completion',
+      const dto.BridgeReadDemand(maxItems: 20, maxBytes: 65536),
+    ));
+    expect(
+      await reader.readBusinessRefs(),
+      const ThreadBusinessRefs(plan: null, interactions: null),
+    );
+    expect(native.businessReads, 1);
     expect(
       native.eventConsumers,
       0,
@@ -418,13 +371,21 @@ dto.BridgeChatFactPosition _position(int effectSeq) =>
 
 // Native seam fixture only: member identity is not the completed payload id,
 // and the source order deliberately has gaps.
-dto.BridgeChatEntry _completedEntry(
+dto.BridgeCompletedEntry _completedEntry(
   String completionItemId,
   dto.BridgePayloadData payload, {
   required int completionSeq,
   required int sourceOrder,
-}) => dto.BridgeChatEntry.atom(
-  dto.BridgeChatAtom(
+  dto.BridgeMainPresentation presentation = dto.BridgeMainPresentation.single,
+}) => dto.BridgeCompletedEntry(
+  recordId: completionItemId,
+  completionSeq: BigInt.from(completionSeq),
+  run: dto.BridgeCompletionRunPosition(
+    startSeq: BigInt.from(completionSeq),
+    ordinal: BigInt.one,
+  ),
+  mainPresentation: presentation,
+  atom: dto.BridgeChatAtom(
     id: '$completionItemId-member',
     completionItemId: completionItemId,
     completionSeq: BigInt.from(completionSeq),
@@ -449,6 +410,8 @@ final class _GeneratedFeed implements wire.BridgeConversationFeed {
   final _frames = StreamController<dto.BridgeConversationFrame>();
   final acks = <BigInt>[];
   final olderRequests = <(String, dto.BridgeReadDemand)>[];
+  final completedRequests = <(String, dto.BridgeReadDemand)>[];
+  int businessReads = 0;
   final manifestRequests = <(String, String?)>[];
   final contentRequests = <(dto.BridgeContentRef, dto.BridgeContentRange)>[];
   final watchCloseCalls = <String>[];
@@ -486,6 +449,28 @@ final class _GeneratedFeed implements wire.BridgeConversationFeed {
     required BigInt deliverySequence,
   }) => acks.add(deliverySequence);
   @override
+  Future<state.BridgeThreadBusinessRefs> readBusinessRefs() async {
+    businessReads++;
+    if (queryFailure case final failure?) throw failure;
+    return const state.BridgeThreadBusinessRefs();
+  }
+
+  @override
+  Future<dto.BridgeCompletedEntry> readCompleted({
+    required String recordId,
+    required dto.BridgeReadDemand demand,
+  }) async {
+    completedRequests.add((recordId, demand));
+    if (queryFailure case final failure?) throw failure;
+    return _completedEntry(
+      recordId,
+      dto.BridgePayloadData.inline(bytes: Uint8List.fromList([123, 125])),
+      completionSeq: 12,
+      sourceOrder: 7,
+    );
+  }
+
+  @override
   Future<dto.BridgeChatBatch> loadOlder({
     required String before,
     required dto.BridgeReadDemand demand,
@@ -494,6 +479,7 @@ final class _GeneratedFeed implements wire.BridgeConversationFeed {
     if (queryFailure case final failure?) throw failure;
     return dto.BridgeChatBatch(
       placement: dto.BridgeChatPlacement.prepend,
+      throughSeq: BigInt.one,
       entries: [
         _completedEntry(
           'older',

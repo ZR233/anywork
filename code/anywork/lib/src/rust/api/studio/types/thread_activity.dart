@@ -4,12 +4,82 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'chat.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'thread_stream/item.dart';
+part 'thread_activity.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+class BridgeActivityEntry {
+  final BridgeActivityIdentity identity;
+  final BridgeChatAtom atom;
+
+  const BridgeActivityEntry({required this.identity, required this.atom});
+
+  @override
+  int get hashCode => identity.hashCode ^ atom.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeActivityEntry &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          atom == other.atom;
+}
+
+@freezed
+sealed class BridgeActivityIdentity with _$BridgeActivityIdentity {
+  const BridgeActivityIdentity._();
+
+  const factory BridgeActivityIdentity.modelPart({required String atomId}) =
+      BridgeActivityIdentity_ModelPart;
+  const factory BridgeActivityIdentity.foregroundTool({
+    required String callId,
+  }) = BridgeActivityIdentity_ForegroundTool;
+  const factory BridgeActivityIdentity.backgroundTool({
+    required String callId,
+  }) = BridgeActivityIdentity_BackgroundTool;
+  const factory BridgeActivityIdentity.other({
+    required String domain,
+    required String id,
+  }) = BridgeActivityIdentity_Other;
+}
+
+class BridgeActivitySnapshot {
+  final BigInt revision;
+  final BigInt completedThrough;
+  final bool executionPresent;
+  final List<BridgeActivityEntry> entries;
+
+  const BridgeActivitySnapshot({
+    required this.revision,
+    required this.completedThrough,
+    required this.executionPresent,
+    required this.entries,
+  });
+
+  @override
+  int get hashCode =>
+      revision.hashCode ^
+      completedThrough.hashCode ^
+      executionPresent.hashCode ^
+      entries.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeActivitySnapshot &&
+          runtimeType == other.runtimeType &&
+          revision == other.revision &&
+          completedThrough == other.completedThrough &&
+          executionPresent == other.executionPresent &&
+          entries == other.entries;
+}
 
 enum BridgeHistoryFault {
   queueFull,

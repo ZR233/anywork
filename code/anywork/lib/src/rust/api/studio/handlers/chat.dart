@@ -11,7 +11,6 @@ import '../types/runtime.dart';
 import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';
 import '../types/thread_stream/item.dart';
-import '../types/timeline.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -73,6 +72,15 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   Future<BridgeCurrentCollectionPage> pageCurrent({
     required BridgeCurrentCollectionRef reference,
     String? continuation,
+    required BridgeReadDemand demand,
+  });
+
+  /// Reads business-resource references from the existing independent read lease.
+  Future<BridgeThreadBusinessRefs> readBusinessRefs();
+
+  /// Reads one immutable completion through this feed's original independent read lease.
+  Future<BridgeCompletedEntry> readCompleted({
+    required String recordId,
     required BridgeReadDemand demand,
   });
 

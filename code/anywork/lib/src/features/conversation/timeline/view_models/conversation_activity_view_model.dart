@@ -10,20 +10,25 @@ import '../state/conversation_activity_state.dart';
 part 'conversation_activity_view_model.g.dart';
 
 ConversationActivityState? projectConversationActivityState({
-  required CurrentProjection? current,
   required ThreadStorageStateView? storage,
   required List<PendingInteraction> interactions,
+  ActivitySnapshot? activity,
+  ThreadActivityView? status,
+  ThreadBusinessRefs? businessRefs,
 }) {
   final interaction = activePendingInteraction(interactions);
-  if (interaction?.kind == InteractionKind.userInput) return null;
-  final view = projectConversationActivity(
-    current: current,
-    storage: storage,
-    interaction: interaction,
-  );
-  return view == null && current == null
+  final view = interaction?.kind == InteractionKind.userInput
       ? null
-      : ConversationActivityState(view: view, current: current);
+      : projectConversationActivity(
+          activity: status,
+          snapshot: activity,
+          businessRefs: businessRefs,
+          storage: storage,
+          interaction: interaction,
+        );
+  return view == null && activity == null
+      ? null
+      : ConversationActivityState(view: view, activity: activity);
 }
 
 /// Observes only the activity component's current owner. Visibility and the
@@ -37,15 +42,17 @@ ConversationActivityState? conversationActivityViewModel(
   final conversations = ref.read(anyworkClientProvider).conversations;
   if (conversations.visibleThreadId.value != threadId) return null;
   final owner = conversations.existingSession(threadId);
-  final current = owner == null
+  final activity = owner == null
       ? null
-      : observeClient(ref, owner.current, (_) => ref.invalidateSelf());
-  if (session.workspace == null && !session.hasSnapshot && current == null) {
+      : observeClient(ref, owner.activity, (_) => ref.invalidateSelf());
+  if (session.workspace == null && !session.hasSnapshot && activity == null) {
     return null;
   }
   return projectConversationActivityState(
-    current: current,
     storage: session.storage,
     interactions: session.interactions,
+    activity: activity,
+    status: session.activity,
+    businessRefs: session.businessRefs,
   );
 }

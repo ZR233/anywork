@@ -7,12 +7,13 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -63,6 +64,13 @@ void main() {
         .session(threadId)
         .source
         .waitFor((s) => s.hasSnapshot);
+    await _publishPlanDocument(
+      tester,
+      graph,
+      transport,
+      threadId,
+      planMarkdown,
+    );
 
     /// 用 Client 自己的 canonical 状态入口投递一份待确认计划：这是运行时帧走的同一
     /// reducer，测试不去伪造第二个会话事实源。
@@ -99,7 +107,7 @@ void main() {
                   rebuild = setState;
                   return StudioWorkspaceBody(
                     readingArea: planOpen
-                        ? _planReadingArea(split: split, markdown: planMarkdown)
+                        ? _planReadingArea(threadId: threadId, split: split)
                         : const SizedBox.shrink(),
                     footer: PlanConfirmationConnector(
                       threadId: threadId,
@@ -115,6 +123,15 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TimelineMarkdown>(
+            find.byKey(StudioDriverKeys.planDetailsMarkdown),
+          )
+          .text,
+      planMarkdown,
+      reason: '计划正文必须经 State 业务引用和原 reader 到达阅读区',
+    );
 
     final dock = tester.state<State>(find.byType(PlanConfirmationConnector));
 
@@ -292,6 +309,13 @@ void main() {
         .session(threadId)
         .source
         .waitFor((s) => s.hasSnapshot);
+    await _publishPlanDocument(
+      tester,
+      graph,
+      transport,
+      threadId,
+      planMarkdown,
+    );
     final interaction = _planInteraction(threadId);
     transport.echo = interaction;
     final planSession = graph.client.conversations.session(threadId);
@@ -388,9 +412,9 @@ void main() {
             scale: 1.0,
             locale: locale,
             readingArea: _planReadingArea(
+              threadId: threadId,
               split: layout.split,
               panelWidth: layout.panelWidth,
-              markdown: planMarkdown,
             ),
           ),
         );
@@ -423,9 +447,9 @@ void main() {
           scale: 1.0,
           locale: locale,
           readingArea: _planReadingArea(
+            threadId: threadId,
             split: true,
             panelWidth: 720,
-            markdown: planMarkdown,
           ),
         ),
       );
@@ -512,13 +536,13 @@ void expectPlanHeaderAnchoredToContentEdge(
 
 /// 阅读区域的两种结构：并排（窄侧栏）与全宽阅读；两者都使用真实的计划详情面板。
 Widget _planReadingArea({
+  required String threadId,
   required bool split,
-  required String markdown,
   double panelWidth = 420,
 }) {
   final panel = PlanDetailConnector(
+    threadId: threadId,
     identity: 'interaction:1',
-    markdown: markdown,
     status: PlanDetailStatus.awaitingConfirmation,
     onToggleReadingMode: () {},
     onClose: () {},
@@ -529,6 +553,41 @@ Widget _planReadingArea({
       const Expanded(child: SizedBox.shrink()),
       SizedBox(width: panelWidth, child: panel),
     ],
+  );
+}
+
+Future<void> _publishPlanDocument(
+  WidgetTester tester,
+  AppGraph graph,
+  _PlanFeedbackTransport transport,
+  String threadId,
+  String markdown,
+) async {
+  final session = graph.client.conversations.session(threadId);
+  await session.content.ready;
+  transport.seedConversationState(
+    threadId,
+    ThreadRuntimeUpdate(
+      runtime: session.state.runtime!.copyWith(
+        plan: PlanRuntimeView(
+          revision: 1,
+          state: PlanRuntimePhase.awaitingConfirmation,
+          document: PlanDocumentView(
+            version: 1,
+            markdown: markdown,
+            contentHash: 'plan-feedback-document-v1',
+          ),
+          updatedAt: DateTime.utc(2026),
+        ),
+      ),
+      todo: null,
+      modelRoute: session.state.modelRoute,
+    ),
+  );
+  await pumpClientUntil(
+    tester,
+    () => session.state.businessRefs?.plan?.document != null,
+    'State 计划文档引用',
   );
 }
 

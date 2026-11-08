@@ -87,7 +87,7 @@ struct ObserveCheckpoint {
 }
 impl ColdStore for ObserveCheckpoint {
     fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        let encoded = serde_json::to_string(&write.checkpoint.pruned()).unwrap();
+        let encoded = serde_json::to_string(&write.checkpoint.pruned().unwrap()).unwrap();
         self.copies
             .fetch_max(encoded.matches(MARKER).count(), Ordering::SeqCst);
         self.durable.store(write.effect.sequence, Ordering::SeqCst);

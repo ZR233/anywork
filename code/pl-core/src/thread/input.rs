@@ -658,7 +658,7 @@ impl Owner {
             }
             self.discard_superseded_control_inputs(Some(&record.input.id))?;
         }
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 
@@ -692,7 +692,7 @@ impl Owner {
             return Err(ThreadError::InputInUse);
         }
         let record = self.change_input(id, InputState::Discarded)?;
-        self.publish();
+        self.publish()?;
         Ok(record)
     }
 

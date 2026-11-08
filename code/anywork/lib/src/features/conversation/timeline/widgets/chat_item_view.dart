@@ -10,6 +10,7 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
+import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
@@ -94,6 +95,41 @@ class _ChatItemViewState extends State<ChatItemView> {
     });
   }
 
+  Iterable<ChatBodyPresentation> get _textBodies {
+    final atom = item.atom;
+    if (atom == null) {
+      // Payload-only known Input/parent text is also used by official previews.
+      // Its canonical text field is body, not every retained content domain.
+      return switch (item.data['channel']) {
+        'user' ||
+        'parentAgent' => item.bodies.where((body) => body.key == 'body'),
+        _ => item.bodies,
+      };
+    }
+    if (atom.source is! InputChatSource &&
+        atom.source is! InboxMessageChatSource) {
+      // Model text can use part.outputText.N. Do not reinterpret its manifest.
+      return item.bodies;
+    }
+    final declared = atom.contents.where(
+      (content) => content.role == ChatContentRole.body,
+    );
+    return item.bodies.where(
+      (body) => declared.any((content) {
+        final reference = content.reference;
+        final target = reference.target;
+        if (target is! BodyContentTarget || target.key != body.key) {
+          return false;
+        }
+        // Inline bytes belong to this envelope's declared key. Deferred bytes
+        // additionally have to retain the exact database/owner/target identity.
+        return body.reference == null ||
+            contentReferenceIdentity(body.reference!) ==
+                contentReferenceIdentity(reference);
+      }),
+    );
+  }
+
   Widget _publicEnvelope() => _sensitiveQuestions.isEmpty
       ? SelectableText(item.raw ?? '')
       : Column(
@@ -120,17 +156,21 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
-      if (unit.item.kind != TimelineItemKind.workGroup) {
+      if (unit.run == null) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (unit.item.contents.isEmpty) const Text('内容状态未知'),
-            for (var index = 0; index < unit.item.contents.length; index++)
+            if (unit.entry.atom.contents.isEmpty) const Text('内容状态未知'),
+            for (
+              var index = 0;
+              index < unit.entry.atom.contents.length;
+              index++
+            )
               widget.contentRangeBuilder?.call(
                     unit.id,
                     'content-$index',
                     '查看内容',
-                    unit.item.contents[index].reference,
+                    unit.entry.atom.contents[index].reference,
                     _contentWitness,
                   ) ??
                   const Text('内容读取尚未就绪'),
@@ -142,7 +182,6 @@ class _ChatItemViewState extends State<ChatItemView> {
         child: TimelineDisplayUnitView(
           key: ValueKey(unit.id),
           unit: unit,
-          executionPresent: false,
           childBuilder: (_) =>
               widget.groupMembersBuilder?.call(unit) ?? const Text('成员读取尚未就绪'),
         ),
@@ -215,13 +254,15 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _text(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      if (item.data['channel'] == 'parentAgent')
+      if (item.atom?.source case InboxMessageChatSource(:final sourceId))
+        Text('来源 · $sourceId')
+      else if (item.data['channel'] == 'parentAgent')
         Text(
           context.l10n.timelineParentAgent,
           key: StudioDriverKeys.parentAgentLabel(item.id),
           style: context.text.bodySmall,
         ),
-      for (final body in item.bodies) _body(body),
+      for (final body in _textBodies) _body(body),
       _media(),
       // The independent Turn receipt owns terminal reasons. Accepted partial
       // text stays readable without repeating its failure/stop diagnostics.
@@ -311,10 +352,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (identity != null && identity.callId != tool.toolCallId) {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
-      // Main Status owns its declarations on the Item, not a fabricated Atom.
-      final declaredContents = item.displayUnit == null
-          ? item.atom?.contents
-          : item.displayUnit!.item.contents;
+      final declaredContents = item.atom?.contents;
       final contents = declaredContents
           ?.where(
             (content) =>
