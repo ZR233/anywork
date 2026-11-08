@@ -7,6 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -151,7 +152,7 @@ void main() {
         );
         if (kind == ConversationActivityKind.responding) {
           expect(find.byType(TimelineCatTail), findsNothing);
-          expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
+          expect(find.byType(TimelineWritingIndicator), findsOneWidget);
         } else {
           expect(
             find.byType(TimelineCatTail),
@@ -182,7 +183,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('流式正文使用现成书写图标，减少动态效果时停止书写动画', (tester) async {
+    testWidgets('书写时纸面固定且只有笔移动，减少动态效果时停止移动', (tester) async {
       for (final disabled in [false, true]) {
         await tester.pumpWidget(
           _wrapWithApp(
@@ -191,21 +192,15 @@ void main() {
           ),
         );
         expect(find.byType(TimelineCatTail), findsNothing);
-        expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
-        final writing = find.descendant(
-          of: find.byType(TimelineActivityIndicator),
-          matching: find.byType(SlideTransition),
-        );
-        if (disabled) {
-          expect(writing, findsNothing);
-        } else {
-          expect(writing, findsOneWidget);
-          await tester.pump();
-          final position = tester.widget<SlideTransition>(writing).position;
-          final before = position.value;
-          await tester.pump(const Duration(milliseconds: 150));
-          expect(position.value, isNot(before));
-        }
+        expect(find.byType(TimelineWritingIndicator), findsOneWidget);
+        final paper = find.byKey(const ValueKey('writing-paper'));
+        final pen = find.byKey(const ValueKey('writing-pen'));
+        await tester.pump();
+        final paperBefore = tester.getRect(paper);
+        final penBefore = tester.getRect(pen);
+        await tester.pump(const Duration(milliseconds: 150));
+        expect(tester.getRect(paper), paperBefore);
+        expect(tester.getRect(pen), disabled ? penBefore : isNot(penBefore));
         await tester.pumpWidget(const SizedBox.shrink());
       }
       await tester.pumpWidget(
@@ -213,7 +208,7 @@ void main() {
           const ConversationResponseView(active: false, child: Text('已结束的正文')),
         ),
       );
-      expect(find.byIcon(Icons.edit_note_rounded), findsNothing);
+      expect(find.byType(TimelineWritingIndicator), findsNothing);
       expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     });

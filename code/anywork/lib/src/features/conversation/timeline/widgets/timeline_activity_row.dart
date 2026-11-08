@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import 'timeline_cat_tail.dart';
+import 'timeline_writing_indicator.dart';
 
 enum TimelineActivityIndicatorStyle { catTail, writing }
 
@@ -335,17 +336,11 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   Widget build(BuildContext context) {
     if (widget.active) {
       if (widget.style == TimelineActivityIndicatorStyle.writing) {
-        final pen = Icon(
-          Icons.edit_note_rounded,
+        return TimelineWritingIndicator(
+          position: _writingStroke.animate(_motion),
           size: TimelineActivityRow.iconSize,
           color: widget.color,
         );
-        return _animate
-            ? SlideTransition(
-                position: _writingStroke.animate(_motion),
-                child: pen,
-              )
-            : pen;
       }
       return TimelineCatTail(
         progress: _motion,
