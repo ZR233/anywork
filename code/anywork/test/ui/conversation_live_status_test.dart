@@ -297,7 +297,12 @@ void main() {
           );
           await tester.pump();
           expect(tester.takeException(), isNull);
-          final label = find.text('工作记录 · 82 项');
+          final l10n = AppLocalizations.of(
+            tester.element(find.byType(Scaffold)),
+          );
+          final label = find.text(
+            '${l10n.timelineGroupRecord} · ${l10n.timelineGroupMemberCount(82)}',
+          );
           expect(label, findsOneWidget);
           final card = tester.getRect(
             find.byKey(const ValueKey('conversation-activity')),

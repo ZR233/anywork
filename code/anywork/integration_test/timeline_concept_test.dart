@@ -660,11 +660,17 @@ final class _ConceptScene {
         observed.groupHeader(unit.id),
       );
       expect(header.active, isFalse);
+      final l10n = AppLocalizations.of(
+        tester.element(observed.groupHeader(unit.id)),
+      );
       final label =
           unit.entry.mainPresentation == MainPresentation.backgroundResults
-          ? '后台结果'
-          : '工作记录';
-      expect(header.label, '$label · ${unit.entry.run!.ordinal} 项');
+          ? l10n.timelineBackgroundResults
+          : l10n.timelineGroupRecord;
+      expect(
+        header.label,
+        '$label · ${l10n.timelineGroupMemberCount(unit.entry.run!.ordinal)}',
+      );
     }
   }
 

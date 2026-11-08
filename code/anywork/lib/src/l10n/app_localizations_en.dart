@@ -6159,6 +6159,57 @@ class AppLocalizationsEn extends AppLocalizations {
   String get conversationActivityFollowOutput => 'Follow output';
 
   @override
+  String get timelineBackgroundResults => 'Background results';
+
+  @override
+  String get planDocumentNotReady => 'The document reader is not ready yet.';
+
+  @override
+  String get interactionDetailsTitle => 'Interaction details';
+
+  @override
+  String get interactionDetailsNextPage => 'Next page of interaction details';
+
+  @override
+  String get interactionDetailsOpenFull => 'View full interaction details';
+
+  @override
+  String get interactionDetailsQuestionDetailsReadOnly =>
+      'Question details (read-only)';
+
+  @override
+  String get interactionDetailsApprovalDetailsReadOnly =>
+      'Approval details (read-only)';
+
+  @override
+  String get interactionDetailsSecretQuestionHidden =>
+      'Sensitive question content is hidden.';
+
+  @override
+  String get interactionDetailsBudgetExceeded =>
+      'The details exceed the read budget.';
+
+  @override
+  String get interactionDetailsInvalidLength =>
+      'The details resource has an invalid length.';
+
+  @override
+  String get interactionDetailsDiscontinuous =>
+      'The details resource windows are not continuous.';
+
+  @override
+  String get interactionDetailsNoProgress =>
+      'Reading the details resource made no progress.';
+
+  @override
+  String get interactionDetailsReadFailed =>
+      'Failed to read the details resource.';
+
+  @override
+  String get interactionDetailsInvalidFormat =>
+      'The interaction details have an invalid format.';
+
+  @override
   String get timelineGroupWorking => 'Working';
 
   @override

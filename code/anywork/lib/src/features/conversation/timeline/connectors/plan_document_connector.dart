@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../state/content_reference_identity.dart';
 import '../widgets/timeline_content_range_view.dart';
 import 'timeline_content_connector.dart';
@@ -61,7 +62,7 @@ class _PlanDocumentConnectorState extends State<PlanDocumentConnector> {
     child: TimelineContentRangeConnector(
       itemId: 'plan-document',
       contentKey: 'plan.document',
-      label: '计划文档',
+      label: context.l10n.interactionPlanDetailsTitle,
       reference: widget.reference,
       isDisplayActive: () => _active,
       witness: (text, child) =>

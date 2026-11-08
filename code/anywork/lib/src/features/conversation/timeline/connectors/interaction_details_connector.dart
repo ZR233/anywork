@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../state/content_reference_identity.dart';
 import '../state/chat_payload_reading.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
@@ -41,7 +42,7 @@ class _InteractionDetailsState extends State<InteractionDetailsConnector> {
     return Material(
       type: MaterialType.transparency,
       child: ExpansionTile(
-        title: const Text('交互详情'),
+        title: Text(context.l10n.interactionDetailsTitle),
         maintainState: false,
         onExpansionChanged: (value) {
           if (!value) {
@@ -96,7 +97,7 @@ class _InteractionPageState extends State<_InteractionPageReader> {
     generation: 1,
   );
   CurrentCollectionPage? _page;
-  Object? _error;
+  ({Object cause, bool referenceChanged})? _error;
   bool _loading = false;
   bool _retired = false;
   int _request = 0;
@@ -118,6 +119,7 @@ class _InteractionPageState extends State<_InteractionPageReader> {
       _loading = true;
       _error = null;
     });
+    var referenceChanged = false;
     try {
       final value = await _scope.pageCurrent(
         reference: widget.reference,
@@ -126,13 +128,18 @@ class _InteractionPageState extends State<_InteractionPageReader> {
       );
       if (!_active || request != _request) return;
       if (value.revision != widget.reference.revision) {
+        referenceChanged = true;
         throw const ConversationContinuityError(
           'Interaction page changed its State reference',
         );
       }
       setState(() => _page = value);
     } catch (error) {
-      if (_active && request == _request) setState(() => _error = error);
+      if (_active && request == _request) {
+        setState(
+          () => _error = (cause: error, referenceChanged: referenceChanged),
+        );
+      }
     } finally {
       if (_active && request == _request) setState(() => _loading = false);
     }
@@ -158,7 +165,7 @@ class _InteractionPageState extends State<_InteractionPageReader> {
 
   Widget _summary(String id, List<int> bytes) {
     if (bytes.length > _interactionByteBudget) {
-      return const Text('详情资源超出读取预算');
+      return Text(context.l10n.interactionDetailsBudgetExceeded);
     }
     try {
       final payload = _requestPayload(
@@ -174,7 +181,7 @@ class _InteractionPageState extends State<_InteractionPageReader> {
     } catch (_) {
       // Parser diagnostics may contain input bytes. Never print an interaction
       // envelope, lifecycle resolution, continuation or secret field here.
-      return const Text('交互详情格式无效');
+      return Text(context.l10n.interactionDetailsInvalidFormat);
     }
   }
 
@@ -182,7 +189,12 @@ class _InteractionPageState extends State<_InteractionPageReader> {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      if (_error case final error?) Text(error.toString()),
+      if (_error case final error?)
+        Text(
+          error.referenceChanged
+              ? context.l10n.interactionDetailsDiscontinuous
+              : error.cause.toString(),
+        ),
       if (_loading) const LinearProgressIndicator(),
       for (final entry in _page?.entries ?? const <CurrentCollectionEntry>[])
         switch (entry.payload) {
@@ -206,11 +218,14 @@ class _InteractionPageState extends State<_InteractionPageReader> {
             ),
         },
       if (!_loading && _error != null)
-        TextButton(onPressed: () => _load(null), child: const Text('重试详情')),
+        TextButton(
+          onPressed: () => _load(null),
+          child: Text(context.l10n.timelineItemBodyRetry),
+        ),
       if (!_loading && _error == null && _page?.continuation != null)
         TextButton(
           onPressed: () => _load(_page!.continuation),
-          child: const Text('下一页交互详情'),
+          child: Text(context.l10n.interactionDetailsNextPage),
         ),
     ],
   );
@@ -242,9 +257,27 @@ class _DeferredInteractionDetails extends StatefulWidget {
       _DeferredInteractionState();
 }
 
+enum _InteractionFailureKind {
+  budgetExceeded,
+  invalidLength,
+  discontinuous,
+  noProgress,
+  readFailed,
+  invalidFormat;
+
+  String label(BuildContext context) => switch (this) {
+    budgetExceeded => context.l10n.interactionDetailsBudgetExceeded,
+    invalidLength => context.l10n.interactionDetailsInvalidLength,
+    discontinuous => context.l10n.interactionDetailsDiscontinuous,
+    noProgress => context.l10n.interactionDetailsNoProgress,
+    readFailed => context.l10n.interactionDetailsReadFailed,
+    invalidFormat => context.l10n.interactionDetailsInvalidFormat,
+  };
+}
+
 class _InteractionReadFailure implements Exception {
-  const _InteractionReadFailure(this.message);
-  final String message;
+  const _InteractionReadFailure(this.kind);
+  final _InteractionFailureKind kind;
 }
 
 class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
@@ -255,7 +288,7 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
   bool _retired = false;
   int _epoch = 0;
   InteractionPayload? _payload;
-  String? _error;
+  _InteractionFailureKind? _error;
 
   @override
   void initState() {
@@ -295,11 +328,11 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
     _error = null;
     final length = widget.byteLength;
     if (length > _interactionByteBudget) {
-      setState(() => _error = '详情资源超出读取预算');
+      setState(() => _error = _InteractionFailureKind.budgetExceeded);
       return;
     }
     if (length <= 0) {
-      setState(() => _error = '详情资源长度无效');
+      setState(() => _error = _InteractionFailureKind.invalidLength);
       return;
     }
     final scope = widget.content.openScope(generation: _epoch);
@@ -323,17 +356,23 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
         if (!_eligible(scope, epoch)) return;
         if (window.availableThrough > _interactionByteBudget ||
             bytes.length + window.bytes.length > _interactionByteBudget) {
-          throw const _InteractionReadFailure('详情资源超出读取预算');
+          throw const _InteractionReadFailure(
+            _InteractionFailureKind.budgetExceeded,
+          );
         }
         if (window.offset != offset ||
             window.bytes.length > limit ||
             window.availableThrough != length ||
             !window.sealed ||
             (generation != null && window.generation != generation)) {
-          throw const _InteractionReadFailure('详情资源窗口不连续');
+          throw const _InteractionReadFailure(
+            _InteractionFailureKind.discontinuous,
+          );
         }
         if (window.bytes.isEmpty) {
-          throw const _InteractionReadFailure('详情资源读取未取得进展');
+          throw const _InteractionReadFailure(
+            _InteractionFailureKind.noProgress,
+          );
         }
         generation ??= window.generation;
         bytes.add(window.bytes);
@@ -349,9 +388,9 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
       if (_eligible(scope, epoch)) {
         setState(
           () => _error = switch (error) {
-            _InteractionReadFailure(:final message) => message,
-            FormatException() => '交互详情格式无效',
-            _ => '详情资源读取失败',
+            _InteractionReadFailure(:final kind) => kind,
+            FormatException() => _InteractionFailureKind.invalidFormat,
+            _ => _InteractionFailureKind.readFailed,
           },
         );
       }
@@ -369,7 +408,7 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
 
   @override
   Widget build(BuildContext context) => ExpansionTile(
-    title: const Text('查看完整交互详情'),
+    title: Text(context.l10n.interactionDetailsOpenFull),
     maintainState: false,
     onExpansionChanged: (expanded) {
       setState(() {
@@ -383,7 +422,7 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
     },
     children: [
       if (_loading) const LinearProgressIndicator(),
-      if (_error case final error?) Text(error),
+      if (_error case final error?) Text(error.label(context)),
       if (_expanded)
         if (_payload case final payload?)
           _ReadOnlyInteractionDetails(id: widget.id, payload: payload),
@@ -515,7 +554,7 @@ class _ReadOnlyInteractionDetailsState
   Widget build(BuildContext context) => switch (widget.payload) {
     UserInputInteractionPayload(:final questions) => InteractionDockShell(
       kind: InteractionDockKind.question,
-      title: '问答详情（只读）',
+      title: context.l10n.interactionDetailsQuestionDetailsReadOnly,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -531,7 +570,7 @@ class _ReadOnlyInteractionDetailsState
             ),
           for (final question in questions)
             if (question.isSecret)
-              const Text('敏感问题内容已隐藏')
+              Text(context.l10n.interactionDetailsSecretQuestionHidden)
             else
               QuestionStep(
                 // The selectable public prompt above owns this text. Reuse the
@@ -566,7 +605,7 @@ class _ReadOnlyInteractionDetailsState
     ) =>
       InteractionDockShell(
         kind: InteractionDockKind.permission,
-        title: '审批详情（只读）',
+        title: context.l10n.interactionDetailsApprovalDetailsReadOnly,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -579,6 +618,8 @@ class _ReadOnlyInteractionDetailsState
           ],
         ),
       ),
-    UnknownInteractionPayload() => const Text('交互详情格式无效'),
+    UnknownInteractionPayload() => Text(
+      context.l10n.interactionDetailsInvalidFormat,
+    ),
   };
 }

@@ -57,20 +57,41 @@ void main() {
     final session = graph.client.conversations.session('thread-main');
     final workspace = session.state.workspace!;
     const markdown = '# Delivery Blueprint\n\nKeep the current draft readable.';
-    await transport.publishWorkspace(
-      workspace.copyWith(
-        interactions: const [],
-        runtime: workspace.runtime.copyWith(
-          plan: PlanRuntimeView(
-            revision: 4,
-            state: PlanRuntimePhase.revisionRequested,
-            updatedAt: DateTime.utc(2026, 3, 18),
-            document: const PlanDocumentView(
-              version: 7,
-              markdown: markdown,
-              contentHash: 'revision-document',
-            ),
-          ),
+    Future<void> publishPlan(PlanRuntimeView? plan, {bool cold = false}) async {
+      final runtime = workspace.runtime.copyWith(plan: plan);
+      transport.seedConversationState(
+        'thread-main',
+        ThreadRuntimeUpdate(
+          runtime: runtime,
+          todo: null,
+          modelRoute: session.state.modelRoute,
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => session.state.businessRefs?.plan?.revision == plan?.revision,
+        'original State Plan reference',
+      );
+      await transport.publishWorkspace(
+        session.state.workspace!.copyWith(
+          interactions: const [],
+          runtime: cold
+              ? runtime.copyWith(plan: null, execution: null)
+              : runtime,
+          activity: null,
+        ),
+      );
+    }
+
+    await publishPlan(
+      PlanRuntimeView(
+        revision: 4,
+        state: PlanRuntimePhase.revisionRequested,
+        updatedAt: DateTime.utc(2026, 3, 18),
+        document: const PlanDocumentView(
+          version: 7,
+          markdown: markdown,
+          contentHash: 'revision-document',
         ),
       ),
     );
@@ -126,17 +147,50 @@ void main() {
 
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
     await tester.pumpAndSettle();
-    await transport.publishWorkspace(
-      workspace.copyWith(
-        interactions: const [],
-        runtime: workspace.runtime.copyWith(
-          plan: PlanRuntimeView(
-            revision: 5,
-            state: PlanRuntimePhase.drafting,
-            updatedAt: DateTime.utc(2026, 3, 19),
-            document: null,
-          ),
+    await publishPlan(
+      PlanRuntimeView(
+        revision: 5,
+        state: PlanRuntimePhase.approved,
+        updatedAt: DateTime.utc(2026, 3, 19),
+        document: const PlanDocumentView(
+          version: 8,
+          markdown: markdown,
+          contentHash: 'cold-approved-document',
         ),
+      ),
+      cold: true,
+    );
+    await tester.pumpAndSettle();
+    expect(session.state.runtime?.plan, isNull);
+    expect(session.state.runtime?.execution, isNull);
+    expect(session.state.activity, isNull);
+    expect(session.state.businessRefs?.plan?.document, isNotNull);
+    await tester.tap(statusOverflow);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.planDetailsStatus)).data,
+      '已批准',
+    );
+    expect(
+      find.textContaining(
+        'Keep the current draft readable.',
+        findRichText: true,
+      ),
+      findsOneWidget,
+      reason: 'Cold State refs keep the original approved document readable',
+    );
+    expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
+    expect(find.byKey(StudioDriverKeys.planSubmitRevision), findsNothing);
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.pumpAndSettle();
+    await publishPlan(
+      PlanRuntimeView(
+        revision: 6,
+        state: PlanRuntimePhase.drafting,
+        updatedAt: DateTime.utc(2026, 3, 19),
+        document: null,
       ),
     );
     await tester.pumpAndSettle();
@@ -159,12 +213,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    await transport.publishWorkspace(
-      workspace.copyWith(
-        interactions: const [],
-        runtime: workspace.runtime.copyWith(plan: null),
-      ),
-    );
+    await publishPlan(null);
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
     if (statusOverflow.evaluate().isNotEmpty) {

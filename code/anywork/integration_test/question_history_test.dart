@@ -625,7 +625,11 @@ Future<Map<String, Object?>> _verifyStateInteractionDetails(
     findsNothing,
     reason: 'Read-only details do not reconstruct actionable questions',
   );
-  final title = find.descendant(of: connector, matching: find.text('交互详情'));
+  final l10n = AppLocalizations.of(tester.element(connector));
+  final title = find.descendant(
+    of: connector,
+    matching: find.text(l10n.interactionDetailsTitle),
+  );
   recordLayout('header-before-open', title);
   await revealReadable(title, 'header-ready-to-open');
   try {
@@ -659,7 +663,10 @@ Future<Map<String, Object?>> _verifyStateInteractionDetails(
 
   await _until(tester, () {
     expect(
-      find.descendant(of: connector, matching: find.textContaining('交互详情格式无效')),
+      find.descendant(
+        of: connector,
+        matching: find.textContaining(l10n.interactionDetailsInvalidFormat),
+      ),
       findsNothing,
       reason: 'Native collection payload must decode in the real UI',
     );

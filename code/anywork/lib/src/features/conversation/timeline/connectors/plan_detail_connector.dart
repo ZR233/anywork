@@ -58,7 +58,7 @@ class PlanDetailConnector extends ConsumerWidget {
       body: document == null
           ? null
           : content == null
-          ? const Text('文档读取尚未就绪')
+          ? Text(context.l10n.planDocumentNotReady)
           : PlanDocumentConnector(
               key: ValueKey((
                 content,

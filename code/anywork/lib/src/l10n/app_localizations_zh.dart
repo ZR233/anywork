@@ -5816,6 +5816,48 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityFollowOutput => '跟随输出';
 
   @override
+  String get timelineBackgroundResults => '后台结果';
+
+  @override
+  String get planDocumentNotReady => '文档读取尚未就绪';
+
+  @override
+  String get interactionDetailsTitle => '交互详情';
+
+  @override
+  String get interactionDetailsNextPage => '下一页交互详情';
+
+  @override
+  String get interactionDetailsOpenFull => '查看完整交互详情';
+
+  @override
+  String get interactionDetailsQuestionDetailsReadOnly => '问答详情（只读）';
+
+  @override
+  String get interactionDetailsApprovalDetailsReadOnly => '审批详情（只读）';
+
+  @override
+  String get interactionDetailsSecretQuestionHidden => '敏感问题内容已隐藏';
+
+  @override
+  String get interactionDetailsBudgetExceeded => '详情资源超出读取预算';
+
+  @override
+  String get interactionDetailsInvalidLength => '详情资源长度无效';
+
+  @override
+  String get interactionDetailsDiscontinuous => '详情资源窗口不连续';
+
+  @override
+  String get interactionDetailsNoProgress => '详情资源读取未取得进展';
+
+  @override
+  String get interactionDetailsReadFailed => '详情资源读取失败';
+
+  @override
+  String get interactionDetailsInvalidFormat => '交互详情格式无效';
+
+  @override
   String get timelineGroupWorking => '工作中';
 
   @override

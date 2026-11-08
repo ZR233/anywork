@@ -105,9 +105,16 @@ CurrentCollectionPage _page(
   ],
   continuation: next,
 );
-Widget _host(Widget child, {bool scrollBody = true}) => MaterialApp(
+AppLocalizations _l10n(WidgetTester tester) =>
+    AppLocalizations.of(tester.element(find.byType(Scaffold)));
+
+Widget _host(
+  Widget child, {
+  bool scrollBody = true,
+  Locale locale = const Locale('zh'),
+}) => MaterialApp(
   theme: pureStudioTheme(),
-  locale: const Locale('zh'),
+  locale: locale,
   localizationsDelegates: AppLocalizations.localizationsDelegates,
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(
@@ -163,7 +170,11 @@ ContentWindow _slice(
   sealed: sealed,
 );
 
-Future<_Content> _openDeferred(WidgetTester tester, int byteLength) async {
+Future<_Content> _openDeferred(
+  WidgetTester tester,
+  int byteLength, {
+  Locale locale = const Locale('zh'),
+}) async {
   final content = _Content();
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox());
@@ -186,21 +197,82 @@ Future<_Content> _openDeferred(WidgetTester tester, int byteLength) async {
         reference: _interactions(1),
         isCurrent: () => true,
       ),
+      locale: locale,
     ),
   );
   expect(tester.takeException(), isNull);
-  await tester.tap(find.text('交互详情'));
+  await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
   await _frames(tester);
   expect(tester.takeException(), isNull);
   content.reader.pages.single.$3.complete(_deferredPage(byteLength));
   await _frames(tester);
-  await tester.tap(find.text('查看完整交互详情'));
+  await tester.tap(find.text(_l10n(tester).interactionDetailsOpenFull));
   await _frames(tester);
   expect(tester.takeException(), isNull);
   return content;
 }
 
 void main() {
+  testWidgets(
+    'detail failures follow the current locale without interpreting SDK error text',
+    (tester) async {
+      final bytes =
+          (_page(1, 'deferred').entries.single.payload as InlinePayload).bytes;
+      final content = await _openDeferred(tester, bytes.length);
+      content.reader.reads.single.$2.complete(
+        ContentWindow(
+          offset: 1,
+          bytes: bytes,
+          generation: 'request-v1',
+          availableThrough: bytes.length,
+          sealed: true,
+        ),
+      );
+      await _frames(tester);
+      expect(
+        find.text(_l10n(tester).interactionDetailsDiscontinuous),
+        findsOneWidget,
+      );
+      final scopes = content.scopes.toList();
+      await tester.pumpWidget(
+        _host(
+          InteractionDetailsConnector(
+            content: content,
+            reference: _interactions(1),
+            isCurrent: () => true,
+          ),
+          locale: const Locale('en'),
+        ),
+      );
+      await _frames(tester);
+      expect(_l10n(tester).localeName, 'en');
+      expect(
+        find.text(_l10n(tester).interactionDetailsDiscontinuous),
+        findsOneWidget,
+      );
+      expect(content.scopes, orderedEquals(scopes));
+      expect(content.reader.pages, hasLength(1));
+      expect(content.reader.reads, hasLength(1));
+      // Matching text from a foreign failure is not our own continuity error.
+      await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
+      await _frames(tester);
+      await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
+      await _frames(tester);
+      final sdkError = StateError(
+        'Interaction page changed its State reference',
+      );
+      content.reader.pages.last.$3.completeError(sdkError);
+      await _frames(tester);
+      expect(find.text(sdkError.toString()), findsOneWidget);
+      expect(
+        find.text(_l10n(tester).interactionDetailsDiscontinuous),
+        findsNothing,
+      );
+      expect(find.text(_l10n(tester).timelineItemBodyRetry), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'Deferred details never expose raw JSON clipboard or download controls',
     (tester) async {
@@ -265,7 +337,10 @@ void main() {
       expect(content.reader.ranges.single.maxBytes, 65536);
       content.reader.reads.single.$2.complete(_slice(bytes, 0, 65536));
       await _frames(tester);
-      expect(find.text('交互详情格式无效'), findsNothing);
+      expect(
+        find.text(_l10n(tester).interactionDetailsInvalidFormat),
+        findsNothing,
+      );
       expect(
         find.text('deferred'),
         findsNothing,
@@ -285,7 +360,10 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(find.text('交互详情格式无效'), findsNothing);
+      expect(
+        find.text(_l10n(tester).interactionDetailsInvalidFormat),
+        findsNothing,
+      );
       expect(find.textContaining('不可展示的'), findsNothing);
       expect(find.text('复制当前段'), findsNothing);
     },
@@ -296,62 +374,77 @@ void main() {
     (tester) async {
       final content = await _openDeferred(tester, 1024 * 1024 + 1);
       expect(content.reader.reads, isEmpty);
-      expect(find.text('详情资源超出读取预算'), findsOneWidget);
-      expect(find.text('交互详情格式无效'), findsNothing);
+      expect(
+        find.text(_l10n(tester).interactionDetailsBudgetExceeded),
+        findsOneWidget,
+      );
+      expect(
+        find.text(_l10n(tester).interactionDetailsInvalidFormat),
+        findsNothing,
+      );
       expect(find.text('复制当前段'), findsNothing);
     },
   );
 
-  for (final fault in [
-    'generation',
-    'offset',
-    'length',
-    'sealed',
-    'progress',
-    'budget',
-  ]) {
-    testWidgets(
-      'Deferred interaction window $fault violation is explicit and never exposes raw bytes',
-      (tester) async {
-        final bytes =
-            (_page(1, 'deferred').entries.single.payload as InlinePayload)
-                .bytes;
-        final content = await _openDeferred(tester, bytes.length);
-        if (fault == 'progress') {
-          content.reader.reads.single.$2.complete(_slice(bytes, 0, 0));
-        } else {
-          content.reader.reads.single.$2.complete(_slice(bytes, 0, 100));
-          await _frames(tester);
-          content.reader.reads.last.$2.complete(
-            ContentWindow(
-              offset: fault == 'offset' ? 101 : 100,
-              bytes: bytes.sublist(100),
-              generation: fault == 'generation' ? 'request-v2' : 'request-v1',
-              availableThrough: fault == 'budget'
-                  ? 1024 * 1024 + 1
-                  : fault == 'length'
-                  ? bytes.length + 1
-                  : bytes.length,
-              sealed: fault != 'sealed',
-            ),
+  for (final language in ['zh', 'en']) {
+    for (final fault in [
+      'generation',
+      'offset',
+      'length',
+      'sealed',
+      'progress',
+      'budget',
+    ]) {
+      testWidgets(
+        'Deferred interaction window $fault violation is explicit and never exposes raw bytes ($language)',
+        (tester) async {
+          final bytes =
+              (_page(1, 'deferred').entries.single.payload as InlinePayload)
+                  .bytes;
+          final content = await _openDeferred(
+            tester,
+            bytes.length,
+            locale: Locale(language),
           );
-        }
-        await _frames(tester);
-        expect(
-          find.text(
-            fault == 'budget'
-                ? '详情资源超出读取预算'
-                : fault == 'progress'
-                ? '详情资源读取未取得进展'
-                : '详情资源窗口不连续',
-          ),
-          findsOneWidget,
-        );
-        expect(find.text('交互详情格式无效'), findsNothing);
-        expect(find.textContaining('不可展示的'), findsNothing);
-        expect(find.text('复制当前段'), findsNothing);
-      },
-    );
+          if (fault == 'progress') {
+            content.reader.reads.single.$2.complete(_slice(bytes, 0, 0));
+          } else {
+            content.reader.reads.single.$2.complete(_slice(bytes, 0, 100));
+            await _frames(tester);
+            content.reader.reads.last.$2.complete(
+              ContentWindow(
+                offset: fault == 'offset' ? 101 : 100,
+                bytes: bytes.sublist(100),
+                generation: fault == 'generation' ? 'request-v2' : 'request-v1',
+                availableThrough: fault == 'budget'
+                    ? 1024 * 1024 + 1
+                    : fault == 'length'
+                    ? bytes.length + 1
+                    : bytes.length,
+                sealed: fault != 'sealed',
+              ),
+            );
+          }
+          await _frames(tester);
+          expect(
+            find.text(
+              fault == 'budget'
+                  ? _l10n(tester).interactionDetailsBudgetExceeded
+                  : fault == 'progress'
+                  ? _l10n(tester).interactionDetailsNoProgress
+                  : _l10n(tester).interactionDetailsDiscontinuous,
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.text(_l10n(tester).interactionDetailsInvalidFormat),
+            findsNothing,
+          );
+          expect(find.textContaining('不可展示的'), findsNothing);
+          expect(find.text('复制当前段'), findsNothing);
+        },
+      );
+    }
   }
 
   for (final retirement in ['fold', 'ownFold', 'reference', 'unmount']) {
@@ -366,11 +459,12 @@ void main() {
         await _frames(tester);
         final pending = content.reader.reads.last.$2;
         final scope = content.scopes.last;
+        final invalidFormat = _l10n(tester).interactionDetailsInvalidFormat;
         expect(scope.pendingQueries, 1);
         if (retirement == 'fold') {
-          await tester.tap(find.text('交互详情'));
+          await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
         } else if (retirement == 'ownFold') {
-          await tester.tap(find.text('查看完整交互详情'));
+          await tester.tap(find.text(_l10n(tester).interactionDetailsOpenFull));
         } else if (retirement == 'reference') {
           await tester.pumpWidget(
             _host(
@@ -408,7 +502,7 @@ void main() {
           reason: 'A retired request cannot demand another chunk',
         );
         expect(find.text('deferred'), findsNothing);
-        expect(find.text('交互详情格式无效'), findsNothing);
+        expect(find.text(invalidFormat), findsNothing);
         expect(find.textContaining('不可展示的'), findsNothing);
         if (retirement == 'reference') {
           content.reader.pages.last.$3.complete(_page(2, '新引用公开问题'));
@@ -419,63 +513,78 @@ void main() {
     );
   }
 
-  testWidgets(
-    'Deferred canonical interaction details use the original bounded content reader',
-    (tester) async {
-      final content = _Content();
-      const reference = ContentRef(
-        databaseId: 'database',
-        target: BodyContentTarget(
-          owner: CurrentContentOwner(
-            domain: 'interactions',
-            id: 'deferred',
-            revision: 1,
-          ),
-          key: 'interaction',
-        ),
-      );
-      final bytes =
-          (_page(1, 'deferred').entries.single.payload as InlinePayload).bytes;
-      await tester.pumpWidget(
-        _host(
-          InteractionDetailsConnector(
-            content: content,
-            reference: _interactions(1),
-            isCurrent: () => true,
-          ),
-        ),
-      );
-      await tester.tap(find.text('交互详情'));
-      await _frames(tester);
-      content.reader.pages.single.$3.complete(
-        CurrentCollectionPage(
-          revision: 1,
-          entries: [
-            CurrentCollectionEntry(
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'Deferred canonical interaction details use the original bounded content reader ($language)',
+      (tester) async {
+        final content = _Content();
+        const reference = ContentRef(
+          databaseId: 'database',
+          target: BodyContentTarget(
+            owner: CurrentContentOwner(
+              domain: 'interactions',
               id: 'deferred',
-              position: 0,
-              payload: DeferredPayload(
-                reference: reference,
-                byteLength: bytes.length,
-              ),
+              revision: 1,
             ),
-          ],
-        ),
-      );
-      await _frames(tester);
-      expect(content.reader.reads, isEmpty);
-      await tester.tap(find.text('查看完整交互详情'));
-      await _frames(tester);
-      expect(content.reader.reads.single.$1, reference);
-      content.reader.reads.single.$2.complete(_window(utf8.decode(bytes)));
-      await _frames(tester);
-      expect(find.text('deferred'), findsOneWidget);
-      expect(find.text('交互详情格式无效'), findsNothing);
-      expect(find.textContaining('不可展示的'), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      await content.join();
-    },
-  );
+            key: 'interaction',
+          ),
+        );
+        final bytes =
+            (_page(1, 'deferred').entries.single.payload as InlinePayload)
+                .bytes;
+        await tester.pumpWidget(
+          _host(
+            InteractionDetailsConnector(
+              content: content,
+              reference: _interactions(1),
+              isCurrent: () => true,
+            ),
+            locale: Locale(language),
+          ),
+        );
+        await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
+        await _frames(tester);
+        content.reader.pages.single.$3.complete(
+          CurrentCollectionPage(
+            revision: 1,
+            entries: [
+              CurrentCollectionEntry(
+                id: 'deferred',
+                position: 0,
+                payload: DeferredPayload(
+                  reference: reference,
+                  byteLength: bytes.length,
+                ),
+              ),
+            ],
+          ),
+        );
+        await _frames(tester);
+        expect(content.reader.reads, isEmpty);
+        await tester.tap(find.text(_l10n(tester).interactionDetailsOpenFull));
+        await _frames(tester);
+        expect(content.reader.reads.single.$1, reference);
+        content.reader.reads.single.$2.complete(_window(utf8.decode(bytes)));
+        await _frames(tester);
+        expect(find.text('deferred'), findsOneWidget);
+        expect(
+          find.text(_l10n(tester).interactionDetailsQuestionDetailsReadOnly),
+          findsOneWidget,
+        );
+        expect(
+          find.text(_l10n(tester).interactionDetailsSecretQuestionHidden),
+          findsOneWidget,
+        );
+        expect(
+          find.text(_l10n(tester).interactionDetailsInvalidFormat),
+          findsNothing,
+        );
+        expect(find.textContaining('不可展示的'), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+        await content.join();
+      },
+    );
+  }
 
   testWidgets(
     'State refs read canonical requests without acquiring State decision authority',
@@ -619,22 +728,30 @@ void main() {
 
       expect(content.activity.value, isNull);
       expect(content.reader.pages, isEmpty);
-      await reveal(find.text('交互详情'));
-      await tester.tap(find.text('交互详情'));
+      await reveal(find.text(_l10n(tester).interactionDetailsTitle));
+      await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
       await _frames(tester);
       expect(tester.takeException(), isNull);
       expect(content.reader.pages.single.$1, refs.interactions);
       content.reader.pages.single.$3.complete(_page(1, '查询的公开问题'));
       await _frames(tester);
       expect(find.text('查询的公开问题'), findsOneWidget);
-      expect(find.text('交互详情格式无效'), findsNothing);
+      expect(
+        find.text(_l10n(tester).interactionDetailsInvalidFormat),
+        findsNothing,
+      );
       expect(find.textContaining('不可展示的'), findsNothing);
-      expect(find.text('敏感问题内容已隐藏'), findsOneWidget);
+      expect(
+        find.text(_l10n(tester).interactionDetailsSecretQuestionHidden),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
       final scope = content.scopes.single;
       await reveal(find.text('查询的公开问题'));
       final firstOffset = scroll.offset;
-      await reveal(find.text('敏感问题内容已隐藏'));
+      await reveal(
+        find.text(_l10n(tester).interactionDetailsSecretQuestionHidden),
+      );
       expect(scroll.offset, greaterThan(firstOffset));
       expect(content.scopes.single, same(scope));
       expect(content.reader.pages, hasLength(1));
@@ -650,8 +767,8 @@ void main() {
       expect(state.interactions.single, same(stateInteraction));
       expect(state.interactions.single.revision, 9);
       expect(decisions, 0);
-      await reveal(find.text('交互详情'));
-      await tester.tap(find.text('交互详情'));
+      await reveal(find.text(_l10n(tester).interactionDetailsTitle));
+      await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
       // Scrolling must not change the original synchronous fold retirement.
       expect(scope.isActive, isFalse);
       await _frames(tester);
@@ -686,79 +803,89 @@ void main() {
     },
   );
 
-  testWidgets(
-    'Canonical approval details omit lifecycle secrets and reject legacy title/body shapes',
-    (tester) async {
-      final content = _Content();
-      Widget view(int revision) => _host(
-        InteractionDetailsConnector(
-          content: content,
-          reference: _interactions(revision),
-          isCurrent: () => true,
-        ),
-      );
-      await tester.pumpWidget(view(1));
-      await tester.tap(find.text('交互详情'));
-      await _frames(tester);
-      content.reader.pages.single.$3.complete(
-        _page(
-          1,
-          'approval',
-          request: {
-            'interactionId': 'approval',
-            'scope': {'threadId': 'thread', 'turnId': 'turn'},
-            'revision': 5,
-            'createdAt': 1,
-            'updatedAt': 2,
-            'content': {
-              'kind': 'toolApproval',
-              'data': {
-                'request': {
-                  'name': 'read_file',
-                  'arguments': {'path': 'public.txt'},
-                  'workingDirectory': '/project',
-                },
-                'state': {
-                  'kind': 'resolved',
-                  'data': {
-                    'operationId': 'resolved-approval',
-                    'resolvedAt': 2,
-                    'decision': 'approved',
-                    'reason': '不可展示的审批决议',
+  for (final language in ['zh', 'en']) {
+    testWidgets(
+      'Canonical approval details omit lifecycle secrets and reject legacy title/body shapes ($language)',
+      (tester) async {
+        final content = _Content();
+        Widget view(int revision) => _host(
+          InteractionDetailsConnector(
+            content: content,
+            reference: _interactions(revision),
+            isCurrent: () => true,
+          ),
+          locale: Locale(language),
+        );
+        await tester.pumpWidget(view(1));
+        await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
+        await _frames(tester);
+        content.reader.pages.single.$3.complete(
+          _page(
+            1,
+            'approval',
+            request: {
+              'interactionId': 'approval',
+              'scope': {'threadId': 'thread', 'turnId': 'turn'},
+              'revision': 5,
+              'createdAt': 1,
+              'updatedAt': 2,
+              'content': {
+                'kind': 'toolApproval',
+                'data': {
+                  'request': {
+                    'name': 'read_file',
+                    'arguments': {'path': 'public.txt'},
+                    'workingDirectory': '/project',
+                  },
+                  'state': {
+                    'kind': 'resolved',
+                    'data': {
+                      'operationId': 'resolved-approval',
+                      'resolvedAt': 2,
+                      'decision': 'approved',
+                      'reason': '不可展示的审批决议',
+                    },
                   },
                 },
               },
             },
-          },
-        ),
-      );
-      await _frames(tester);
-      expect(find.text('read_file'), findsOneWidget);
-      expect(find.textContaining('public.txt'), findsOneWidget);
-      expect(find.textContaining('不可展示的'), findsNothing);
-      expect(find.byKey(StudioDriverKeys.toolApprove), findsNothing);
-      expect(find.byKey(StudioDriverKeys.toolDeny), findsNothing);
-      await tester.pumpWidget(view(2));
-      await _frames(tester);
-      content.reader.pages.last.$3.complete(
-        _page(
-          2,
-          'legacy',
-          request: {
-            'interactionId': 'legacy',
-            'title': '旧标题',
-            'body': '旧结构不得兜底',
-          },
-        ),
-      );
-      await _frames(tester);
-      expect(find.text('交互详情格式无效'), findsOneWidget);
-      expect(find.text('旧标题'), findsNothing);
-      expect(find.text('旧结构不得兜底'), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      await content.join();
-    },
-  );
+          ),
+        );
+        await _frames(tester);
+        expect(find.text('read_file'), findsOneWidget);
+        expect(
+          find.text(_l10n(tester).interactionDetailsApprovalDetailsReadOnly),
+          findsOneWidget,
+        );
+        expect(find.textContaining('public.txt'), findsOneWidget);
+        expect(find.textContaining('不可展示的'), findsNothing);
+        expect(find.byKey(StudioDriverKeys.toolApprove), findsNothing);
+        expect(find.byKey(StudioDriverKeys.toolDeny), findsNothing);
+        await tester.pumpWidget(view(2));
+        await _frames(tester);
+        content.reader.pages.last.$3.complete(
+          _page(
+            2,
+            'legacy',
+            request: {
+              'interactionId': 'legacy',
+              'title': '旧标题',
+              'body': '旧结构不得兜底',
+            },
+          ),
+        );
+        await _frames(tester);
+        expect(
+          find.text(_l10n(tester).interactionDetailsInvalidFormat),
+          findsOneWidget,
+        );
+        expect(find.text('旧标题'), findsNothing);
+        expect(find.text('旧结构不得兜底'), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+        await content.join();
+      },
+    );
+  }
 
   testWidgets(
     'B08/B09: an initial State Plan reference reads while activity is empty',
@@ -932,14 +1059,14 @@ void main() {
         await _frames(tester);
         expect(content.reader.pages, isEmpty);
         content.reader.reads.single.$2.complete(_window('保留的计划窗口'));
-        await tester.tap(find.text('交互详情'));
+        await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
         await _frames(tester);
         content.reader.pages.single.$3.complete(
           _page(1, '当前问题', next: 'page-2'),
         );
         await _frames(tester);
         expect(find.textContaining('不可展示的原始字段'), findsNothing);
-        await tester.tap(find.text('下一页交互详情'));
+        await tester.tap(find.text(_l10n(tester).interactionDetailsNextPage));
         await _frames(tester);
         final oldPage = content.reader.pages.last;
         expect(oldPage.$2, 'page-2');

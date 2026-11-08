@@ -1,6 +1,7 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../state/completion_run_presentation.dart';
 import 'timeline_activity_row.dart';
 
@@ -50,8 +51,9 @@ class _CompletionRunViewState extends State<CompletionRunView> {
   Widget build(BuildContext context) {
     final entry = widget.presentation.representative;
     final label = entry.mainPresentation == MainPresentation.backgroundResults
-        ? '后台结果'
-        : '工作记录';
+        ? context.l10n.timelineBackgroundResults
+        : context.l10n.timelineGroupRecord;
+    final count = context.l10n.timelineGroupMemberCount(entry.run!.ordinal);
     return Expansible(
       controller: _disclosure,
       maintainState: false,
@@ -66,7 +68,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           borderRadius: BorderRadius.circular(8),
           child: TimelineActivityRow(
             key: ValueKey('completion-run-header:${widget.id}'),
-            label: '$label · ${entry.run!.ordinal} 项',
+            label: '$label · $count',
             header: true,
             expanded: _disclosure.isExpanded,
           ),

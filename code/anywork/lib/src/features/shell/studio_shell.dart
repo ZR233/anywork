@@ -15,6 +15,7 @@ import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/thread_directory_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';

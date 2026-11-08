@@ -24,6 +24,11 @@ import 'package:anywork/src/features/conversation/timeline/state/completion_run_
 
 import '../support/pump_client_future.dart';
 
+String _workTitle(WidgetTester tester, int count) {
+  final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
+  return '${l10n.timelineGroupRecord} · ${l10n.timelineGroupMemberCount(count)}';
+}
+
 const _bodyRef = ContentRef(
   databaseId: 'database',
   target: BodyContentTarget(
@@ -97,7 +102,7 @@ void main() {
       await tester.pumpWidget(_host(unit));
       await _frames(tester);
       expect(find.textContaining('成员读取失败'), findsOneWidget);
-      expect(find.text('工作记录 · 82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('timeline-members-retry')));
       await _frames(tester);
       expect(opens, 2);
@@ -111,7 +116,7 @@ void main() {
       await tester.pump();
       expect(find.text('重试后的成员'), findsOneWidget);
       expect(find.textContaining('成员读取失败'), findsNothing);
-      expect(find.text('工作记录 · 82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       await _frames(tester);
     },
@@ -171,7 +176,7 @@ void main() {
       );
       await tester.pump();
       expect(find.text('展开直接可读'), findsOneWidget);
-      expect(find.text('工作记录 · 82 项'), findsOneWidget);
+      expect(find.text(_workTitle(tester, 82)), findsOneWidget);
       expect(display!.atoms.single.id, 'R');
       expect(display!.windows.single.window!.bytes, utf8.encode('展开直接可读'));
       old.closeGate = Completer<void>();
