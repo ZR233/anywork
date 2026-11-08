@@ -12,6 +12,7 @@ use std::future::Future;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Inventory {
+    pub project_id: Option<String>,
     pub thread_id: Option<String>,
     pub main_items: Option<usize>,
     batches: Vec<BatchReceipt>,
@@ -42,6 +43,7 @@ pub(super) fn run(
         for index in 0..2 {
             checkpoint(context.interrupt)?;
             let mut inventory = Inventory {
+                project_id: None,
                 thread_id: None,
                 main_items: None,
                 batches: Vec::with_capacity(GUI_TIMELINE_HISTORY_20K_SEED_BATCHES),
@@ -159,6 +161,7 @@ async fn seed_batches(
     inventory: &mut Inventory,
 ) -> Result<String> {
     let workspace = runtime.open_project(project).await?;
+    inventory.project_id = Some(workspace.id.clone());
     let input_id = |batch| format!("profile-read-{index}-{batch:02}");
     let created = runtime
         .create_thread_command(

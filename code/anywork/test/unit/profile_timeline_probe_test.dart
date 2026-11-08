@@ -33,6 +33,8 @@ List<String> _coldArguments({
 }) => [
   '--vm-url',
   'ws://127.0.0.1:8181/auth-token',
+  '--project-id',
+  'project-a',
   '--thread-id',
   'thread-a',
   '--mode',
@@ -51,6 +53,7 @@ void main() {
       final options = parseProbeOptions(_coldArguments());
 
       expect(options.mode, 'cold');
+      expect(options.projectId, 'project-a');
       expect(options.samples, 1);
       expect(options.deadline, const Duration(seconds: 30));
       expect(options.otherThreadId, isNull);
