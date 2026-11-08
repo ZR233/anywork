@@ -5840,6 +5840,24 @@ mod storage_fault_tests {
         projection.publish_prepared(&chat, &mut prepared).await?;
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
+        let source_ids = [pl_protocol::ChatSourceId::ForegroundTurn {
+            turn_id: turn.turn_id.clone(),
+        }];
+        let original_source = store
+            .history(&thread.id)
+            .await?
+            .conversation_sources(&source_ids, 1)
+            .await?
+            .pop()
+            .context("saved running source")?;
+        assert_eq!(
+            original_source.started,
+            Some(pl_protocol::ChatFactPosition {
+                effect_seq: 1,
+                suborder: 0,
+            })
+        );
+        assert!(original_source.ended.is_none());
         drop(projection);
 
         let interrupted = TurnRecord {
@@ -5912,6 +5930,25 @@ mod storage_fault_tests {
             .context("saved interrupted turn")?;
         assert_eq!(saved.id, interrupted.turn_id);
         assert!(matches!(saved.state, pl_protocol::TurnState::Cancelled(_)));
+        let recovered_source = history
+            .conversation_sources(&source_ids, 2)
+            .await?
+            .pop()
+            .context("saved interrupted source")?;
+        assert_eq!(recovered_source.started, original_source.started);
+        assert_eq!(
+            recovered_source.ended,
+            Some(pl_protocol::ChatFactPosition {
+                effect_seq: 2,
+                suborder: 0,
+            })
+        );
+        assert_eq!(
+            recovered_source.lifecycle,
+            pl_protocol::ChatSourceLifecycle::Ended {
+                outcome: pl_protocol::ChatTerminalOutcome::Cancelled,
+            }
+        );
         Ok(())
     }
 }

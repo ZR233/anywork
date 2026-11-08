@@ -429,6 +429,12 @@ impl WorktreeManager {
                 )
                 .await?;
         }
+        let (exists, registered) = self.inspect_identity(handle).await?;
+        if exists || registered {
+            return Err(WorktreeError::IdentityMismatch(
+                "cleanup did not remove the managed checkout and registration".into(),
+            ));
+        }
         Ok(())
     }
 }

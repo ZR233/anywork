@@ -3083,28 +3083,79 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 }
 
 #[cfg(test)]
-pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> Result<()> {
-    // Synthetic pre-demand fixtures start with current DDL, but no completed/public content.
-    // Refuse to erase real facts when removing those later outputs to recreate the old shape.
-    let completed = schema::completion_boundary::applied(db).await?;
-    let mut tables = vec![
-        "conversation_items",
-        "conversation_contents",
-        "conversation_sources",
-        "conversation_atom_facts",
-    ];
-    if completed {
-        tables.extend([
+pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    if schema::version(db).await? == 18 {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS count FROM conversation_items",
+                vec![],
+            ))
+            .await?
+            .context("fixture immutable completion count")?;
+        ensure!(
+            row.try_get::<i64>("", "count")? == 0,
+            "legacy fixture must not discard immutable completion indexes for real facts"
+        );
+        // Test-only downgrade of an empty current fixture; production never repairs Applied.
+        db.execute_unprepared(
+            "DROP INDEX conversation_items_visible_seq;
+             DROP INDEX conversation_items_by_run_seq;
+             ALTER TABLE conversation_items DROP COLUMN display_run_ordinal;
+             ALTER TABLE conversation_items DROP COLUMN display_run_start;
+             DELETE FROM seaql_migrations
+             WHERE version='m20261110_000001_history_immutable_completion_runs';",
+        )
+        .await?;
+    }
+    if schema::completion_boundary::applied(db).await? {
+        // Current writers cannot seed the retired view layout. Restore only empty archived
+        // material; a fixture must never erase unique pre-upgrade facts to fake an old boundary.
+        for table in [
             "completion_boundary_archive_view_entries",
             "completion_boundary_archive_timeline_items",
             "completion_boundary_archive_timeline_members",
             "completion_boundary_archive_contents",
             "completion_boundary_archive_content_chunks",
-        ]);
-    } else {
-        tables.push("conversation_view_entries");
+        ] {
+            let count: i64 = db
+                .query_one_raw(statement(
+                    &format!("SELECT COUNT(*) AS count FROM {table}"),
+                    vec![],
+                ))
+                .await?
+                .context("fixture archived output")?
+                .try_get("", "count")?;
+            ensure!(count == 0, "legacy fixture must not discard {table} facts");
+        }
+        db.execute_unprepared(
+            "
+            ALTER TABLE completion_boundary_archive_view_state RENAME TO conversation_view_state;
+            ALTER TABLE completion_boundary_archive_view_entries RENAME TO conversation_view_entries;
+            DROP TABLE completion_boundary_archive_timeline_items;
+            DROP TABLE completion_boundary_archive_timeline_members;
+            DROP TABLE completion_boundary_archive_projection_state;
+            DROP TABLE completion_boundary_archive_contents;
+            DROP TABLE completion_boundary_archive_content_chunks;
+        ",
+        )
+        .await?;
     }
-    for table in tables {
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    // Synthetic pre-demand fixtures start with current DDL, but no completed/public content.
+    // Refuse to erase real facts when removing those later outputs to recreate the old shape.
+    restore_empty_pre_completion_fixture(db).await?;
+    for table in [
+        "conversation_items",
+        "conversation_contents",
+        "conversation_content_chunks",
+        "conversation_sources",
+        "conversation_atom_facts",
+        "conversation_view_entries",
+    ] {
         let count: i64 = db
             .query_one_raw(statement(
                 &format!("SELECT COUNT(*) AS count FROM {table}"),
@@ -3115,24 +3166,10 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
             .try_get("", "count")?;
         ensure!(count == 0, "legacy fixture must not discard {table} facts");
     }
-    if completed {
-        db.execute_unprepared(
-            "
-            DROP TABLE completion_boundary_archive_view_state;
-            DROP TABLE completion_boundary_archive_view_entries;
-            DROP TABLE completion_boundary_archive_timeline_items;
-            DROP TABLE completion_boundary_archive_timeline_members;
-            DROP TABLE completion_boundary_archive_projection_state;
-            DROP TABLE completion_boundary_archive_contents;
-            DROP TABLE completion_boundary_archive_content_chunks;
-        ",
-        )
-        .await?;
-    }
     db.execute_unprepared(
-        "DROP TABLE timeline_item_members;
-         DROP TABLE timeline_items;
-         DROP TABLE timeline_projection_state;
+        "DROP TABLE IF EXISTS timeline_item_members;
+         DROP TABLE IF EXISTS timeline_items;
+         DROP TABLE IF EXISTS timeline_projection_state;
          DROP TABLE conversation_atom_facts;
          DROP TABLE conversation_sources;
          DROP TABLE IF EXISTS conversation_view_entries;
@@ -3146,9 +3183,12 @@ pub(super) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
          WHERE version IN ('m20261029_000001_history_demand_conversation',
                            'm20261101_000010_history_model_route_head',
                            'm20261102_000001_history_atom_metadata',
+                           'm20261104_000001_history_background_results',
+                           'm20261107_000001_history_member_read_metadata',
                            'm20261103_000001_history_timeline_items',
                            'm20261108_000001_history_source_classification',
                            'm20261109_000001_history_completion_boundary',
+                           'm20261109_000001_history_timeline_background_tail',
                            'm20261108_000001_history_timeline_thinking_summary')",
     )
     .await?;

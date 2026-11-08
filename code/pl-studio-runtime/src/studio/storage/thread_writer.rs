@@ -7922,6 +7922,22 @@ pub(crate) mod storage_fault_tests {
             .find(|item| item.id == turn_id)
             .unwrap();
         let history = store.history(id).await?;
+        let source_ids = [pl_protocol::ChatSourceId::ForegroundTurn {
+            turn_id: "visible-turn".into(),
+        }];
+        let original_source = history
+            .conversation_sources(&source_ids, 1)
+            .await?
+            .pop()
+            .context("saved running source")?;
+        assert_eq!(
+            original_source.started,
+            Some(pl_protocol::ChatFactPosition {
+                effect_seq: 1,
+                suborder: 0,
+            })
+        );
+        assert!(original_source.ended.is_none());
         let checkpoint = history.checkpoint().await?.context("running checkpoint")?;
         sink.0.channel.stop_and_join().await?;
         drop(projection);
@@ -7951,6 +7967,11 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(
             history.item(&turn_id).await?.unwrap().ordinal,
             original_turn.ordinal
+        );
+        assert_eq!(
+            history.conversation_sources(&source_ids, 2).await?,
+            vec![original_source],
+            "cold activation must retain the original source start, not start the Turn again"
         );
         sink.0.channel.stop_and_join().await?;
         Ok(())

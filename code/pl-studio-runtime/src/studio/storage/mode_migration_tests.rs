@@ -2750,11 +2750,7 @@ async fn restore_pre_timeline_history_fixture(
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
-            "SELECT (SELECT COUNT(*) FROM timeline_records)
-                  + (SELECT COUNT(*) FROM conversation_items)
-                  + (SELECT COUNT(*) FROM conversation_contents)
-                  + (SELECT COUNT(*) FROM conversation_sources)
-                  + (SELECT COUNT(*) FROM conversation_atom_facts) AS count",
+            "SELECT COUNT(*) AS count FROM timeline_records",
         ))
         .await?
         .context("fixture timeline output")?;
@@ -2763,20 +2759,9 @@ async fn restore_pre_timeline_history_fixture(
         0,
         "legacy fixture must not discard completed history"
     );
+    super::history::discard_empty_demand_fixture(db).await?;
     db.execute_unprepared(
-        "DROP TABLE IF EXISTS timeline_item_members;
-         DROP TABLE IF EXISTS timeline_items;
-         DROP TABLE IF EXISTS timeline_projection_state;
-         DROP TABLE conversation_atom_facts;
-         DROP TABLE conversation_content_chunks;
-         DROP TABLE conversation_view_entries;
-         DROP TABLE conversation_view_state;
-         DROP TABLE conversation_contents;
-         DROP TABLE conversation_items;
-         DROP TABLE conversation_sources;
-         DROP TABLE timeline_records;
-         ALTER TABLE history_meta DROP COLUMN model_route_json;
-         ALTER TABLE history_meta DROP COLUMN model_route_hash;
+        "DROP TABLE timeline_records;
          DROP TABLE seaql_migrations",
     )
     .await?;
@@ -2812,6 +2797,7 @@ async fn persist_schema12_fixture(
 
     let db = raw_database(path).await?;
     let tx = db.begin().await?;
+    super::history::restore_empty_pre_completion_fixture(&tx).await?;
     let facts = tx
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
@@ -2837,9 +2823,13 @@ async fn persist_schema12_fixture(
          DELETE FROM seaql_migrations
              WHERE version IN ('m20261101_000010_history_model_route_head',
                                'm20261102_000001_history_atom_metadata',
+                               'm20261104_000001_history_background_results',
+                               'm20261107_000001_history_member_read_metadata',
                                'm20261103_000001_history_timeline_items',
                                'm20261108_000001_history_timeline_thinking_summary',
-                               'm20261108_000001_history_source_classification');
+                               'm20261108_000001_history_source_classification',
+                               'm20261109_000001_history_timeline_background_tail',
+                               'm20261109_000001_history_completion_boundary');
          UPDATE history_meta SET schema_version=12 WHERE id=1",
     )
     .await?;
@@ -2874,7 +2864,12 @@ async fn persist_schema12_fixture(
                  WHERE version='m20261103_000001_history_timeline_items') AS timeline_completed,
                 (SELECT COUNT(*) FROM seaql_migrations
                  WHERE version IN ('m20261108_000001_history_timeline_thinking_summary',
-                                   'm20261108_000001_history_source_classification'))
+                                   'm20261108_000001_history_source_classification',
+                                   'm20261104_000001_history_background_results',
+                                   'm20261107_000001_history_member_read_metadata',
+                                   'm20261109_000001_history_timeline_background_tail',
+                                   'm20261109_000001_history_completion_boundary',
+                                   'm20261110_000001_history_immutable_completion_runs'))
                     AS later_projection_completed
              FROM history_meta WHERE id=1",
         ))
