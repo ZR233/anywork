@@ -231,10 +231,29 @@ impl WorktreeLeaseOwner {
     }
 
     /// Startup hydration never replaces facts already admitted in this process.
-    pub(in crate::studio) fn restore(&self, leases: Vec<WorktreeLease>) {
+    pub(in crate::studio) async fn restore(
+        &self,
+        store: &StudioStore,
+        leases: Vec<WorktreeLease>,
+    ) -> Result<()> {
+        // Read durable bindings before taking the admission lock. An SSH alias alone is not
+        // authority, but an existing frozen endpoint must not become an unproven legacy use.
+        let mut restored = Vec::with_capacity(leases.len());
+        for lease in leases {
+            let identity = store.workspace_identity(&lease.owner_thread_id).await?;
+            if let Some(identity) = &identity {
+                anyhow::ensure!(
+                    identity.matches_root(&lease.path)
+                        && matches!(identity.endpoint, WorkspaceEndpoint::Ssh { .. })
+                            == lease.ssh_alias.is_some(),
+                    "restored worktree physical binding no longer matches its lease"
+                );
+            }
+            restored.push((lease, identity));
+        }
         let mut state = self.state.lock().expect("worktree lease lock poisoned");
-        for mut lease in leases {
-            state.workspace.preserve_legacy_lease(&lease);
+        for (mut lease, identity) in restored {
+            state.workspace.preserve_restored_lease(&lease, identity);
             let explicitly_retiring = state.workspace.is_retiring(&lease.owner_thread_id);
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 state.entries.entry(lease.owner_thread_id.clone())
@@ -255,6 +274,7 @@ impl WorktreeLeaseOwner {
                 entry.insert(LeaseEntry { lease, ticket });
             }
         }
+        Ok(())
     }
 
     pub(in crate::studio) fn get(&self, owner_thread_id: &str) -> Option<WorktreeLease> {

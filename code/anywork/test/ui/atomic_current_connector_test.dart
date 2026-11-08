@@ -9,6 +9,8 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -132,11 +134,19 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 }
 
-Widget _host(Widget child) => MaterialApp(
+Widget _host(
+  Widget child, {
+  bool disableAnimations = false,
+  bool tickersEnabled = true,
+}) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
   localizationsDelegates: AppLocalizations.localizationsDelegates,
   supportedLocales: AppLocalizations.supportedLocales,
+  builder: (context, child) => MediaQuery(
+    data: MediaQuery.of(context).copyWith(disableAnimations: disableAnimations),
+    child: TickerMode(enabled: tickersEnabled, child: child!),
+  ),
   home: Scaffold(body: child),
 );
 
@@ -174,21 +184,24 @@ final class _Harness {
       entries: entries,
     ),
   );
-  Widget host() => _host(
-    ConversationCurrentConnector(
-      key: ObjectKey(content),
-      session: const ThreadSessionState(threadId: 'thread'),
-      content: content,
-      view: null,
-      images: images,
-      readAttachment: (_) async => Uint8List(0),
-      isDisplayActive: () => active,
-      registerDisplay: (value) {
-        display = value;
-        return () => display = null;
-      },
-    ),
-  );
+  Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
+      _host(
+        ConversationCurrentConnector(
+          key: ObjectKey(content),
+          session: const ThreadSessionState(threadId: 'thread'),
+          content: content,
+          view: null,
+          images: images,
+          readAttachment: (_) async => Uint8List(0),
+          isDisplayActive: () => active,
+          registerDisplay: (value) {
+            display = value;
+            return () => display = null;
+          },
+        ),
+        disableAnimations: disableAnimations,
+        tickersEnabled: tickersEnabled,
+      );
   void dispose() {
     active = false;
     images.release();
@@ -202,6 +215,128 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  testWidgets(
+    'real Activity animates thinking and writing, pauses accessibly, and retires tickers with identity',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final thinking = _part(
+        ChatAtom(
+          id: 'thinking',
+          source: _source,
+          sourceOrder: null,
+          kind: ChatAtomKind.reasoning,
+          delivery: ChatDeliveryKind.foreground,
+          lifecycle: const ActiveChatAtom(
+            started: null,
+            status: ChatActiveStatus.running,
+          ),
+          contents: const [],
+        ),
+      );
+      h.accept([thinking, _part(_textItem())]);
+      await tester.pumpWidget(h.host());
+      final scope = h.content.scopes.single;
+      scope.watches.single.add(_window('实际活动正文'));
+      await _flush(tester);
+      expect(find.text('实际活动正文'), findsOneWidget);
+      final tail = tester
+          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .progress;
+      final pen = tester
+          .widget<TimelineWritingIndicator>(
+            find.byType(TimelineWritingIndicator),
+          )
+          .position;
+      final tailBefore = tail.value;
+      final penBefore = pen.value;
+      await tester.pump(const Duration(milliseconds: 170));
+      expect(tail.value, isNot(tailBefore));
+      expect(pen.value, isNot(penBefore));
+
+      for (final reducedMotion in [true, false]) {
+        await tester.pumpWidget(
+          h.host(
+            disableAnimations: reducedMotion,
+            tickersEnabled: reducedMotion,
+          ),
+        );
+        final stoppedTail = tail.value;
+        final stoppedPen = pen.value;
+        await tester.pump(const Duration(milliseconds: 170));
+        expect(tail.value, stoppedTail);
+        expect(pen.value, stoppedPen);
+        expect(find.text('实际活动正文'), findsOneWidget);
+        expect(h.content.scopes.single, same(scope));
+        expect(scope.requests, hasLength(1));
+      }
+      await tester.pumpWidget(h.host());
+      final resumedTail = tail.value;
+      final resumedPen = pen.value;
+      await tester.pump(const Duration(milliseconds: 170));
+      expect(tail.value, isNot(resumedTail));
+      expect(pen.value, isNot(resumedPen));
+
+      h.accept([thinking]);
+      await tester.pump();
+      await _flush(tester);
+      expect(find.byType(TimelineWritingIndicator), findsNothing);
+      expect(find.text('实际活动正文'), findsNothing);
+      expect(scope.closed, isTrue);
+      expect(find.byType(TimelineCatTail), findsOneWidget);
+      h.accept([]);
+      await tester.pump();
+      expect(find.byType(TimelineCatTail), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(tester.binding.transientCallbackCount, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'active inline and deferred text use one writing shell without pre-reading deferred detail',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      final inline = InlinePayload(
+        bytes: utf8.encode(
+          jsonEncode({
+            'contract': 'anywork.chat/1',
+            'type': 'text',
+            'data': {'channel': 'final', 'attachments': []},
+            'bodies': [
+              {
+                'key': 'body',
+                'byteLength': utf8.encode('内联正文').length,
+                'inline': utf8.encode('内联正文'),
+              },
+            ],
+          }),
+        ),
+      );
+      h.accept([_part(_textItem(payload: inline))]);
+      await tester.pumpWidget(h.host());
+      expect(find.byType(TimelineWritingIndicator), findsOneWidget);
+      expect(find.text('内联正文'), findsOneWidget);
+      expect(h.content.scopes, isEmpty);
+      h.accept([
+        _part(
+          _textItem(
+            payload: DeferredPayload(reference: _ref(), byteLength: 100),
+          ),
+        ),
+      ]);
+      await tester.pumpWidget(h.host());
+      expect(find.byType(TimelineWritingIndicator), findsOneWidget);
+      expect(find.text('内联正文'), findsNothing);
+      expect(h.content.scopes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(tester.binding.transientCallbackCount, 0);
+    },
+  );
+
   testWidgets(
     'Activity retirement revokes bodies synchronously and a new qualification cannot reuse old IO',
     (tester) async {

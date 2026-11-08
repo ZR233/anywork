@@ -99,7 +99,10 @@ impl StudioThreadFactory {
         // Pending physical seals must precede hydration so cleanupRequested is not downgraded.
         // Conversely, hydration's legacy-resource protection cannot revive a terminal member's
         // already returned use: retained SessionFiles and refs are not live borrowers.
-        self.services.worktrees.restore(leases);
+        self.services
+            .worktrees
+            .restore(&self.services.store, leases)
+            .await?;
         for record in &records {
             if record.worktree_cleanup.is_terminal() {
                 self.services

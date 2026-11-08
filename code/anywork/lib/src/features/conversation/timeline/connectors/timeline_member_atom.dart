@@ -14,6 +14,7 @@ import '../state/timeline_image_resources.dart';
 import '../state/tool_presentation.dart';
 import '../view_models/conversation_current_owner.dart';
 import '../widgets/chat_item_view.dart';
+import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
 import '../widgets/timeline_activity_row.dart';
@@ -293,7 +294,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       bool qualified() =>
           _readActive('attachments') &&
           identical(qualification, _rangeQualification);
-      return ChatItemView(
+      final view = ChatItemView(
         item: ChatItemPresentation.decode(atom),
         initiallyExpanded: _expanded,
         monotonicMicros: widget.monotonicMicros,
@@ -330,6 +331,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           );
         },
       );
+      return _response(view);
     }
     if (atom.kind == ChatAtomKind.reasoning) return _reasoning();
     if (atom.tool case final tool?) {
@@ -378,7 +380,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         children: [_windows()],
       );
     }
-    return _windows();
+    return _response(_windows());
+  }
+
+  Widget _response(Widget body) {
+    final atom = widget.atom;
+    if (atom.kind != ChatAtomKind.text || atom.lifecycle is! ActiveChatAtom) {
+      return body;
+    }
+    return ConversationResponseView(startedAt: atom.startedAt, child: body);
   }
 
   Widget _witness(TimelineCurrentWindowDisplay observation, Widget child) {

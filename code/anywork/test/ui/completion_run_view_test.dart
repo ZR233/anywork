@@ -2,6 +2,9 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -36,6 +39,14 @@ void main() {
       await adapter.applyBatch(completedBatch([completionEntry('first', 1)]));
       await tester.pumpWidget(display());
       expect(find.text('工作记录 · 1 项'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .active,
+        isFalse,
+      );
+      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byType(TimelineWritingIndicator), findsNothing);
       expect(built, 0);
       expect(find.byType(_Body), findsNothing);
       await tester.tap(find.text('工作记录 · 1 项'));
@@ -55,6 +66,12 @@ void main() {
       );
       await tester.pumpWidget(display());
       expect(find.text('工作记录 · 2 项'), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+            .active,
+        isFalse,
+      );
       expect(tester.element(find.byType(_Body)), same(first));
       expect(unit.expansion.bodyGeneration, same(token));
       expect(retired, 0);

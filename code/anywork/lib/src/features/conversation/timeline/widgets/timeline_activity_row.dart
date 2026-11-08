@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import 'timeline_cat_tail.dart';
+import 'timeline_writing_indicator.dart';
+
+enum TimelineActivityIndicatorStyle { catTail, writing }
 
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
 ///
@@ -21,6 +25,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.iconColor,
     this.isIssue = false,
     this.active = false,
+    this.indicatorStyle = TimelineActivityIndicatorStyle.catTail,
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
@@ -69,6 +74,7 @@ class TimelineActivityRow extends StatelessWidget {
 
   /// 该行对应的成员仍在进行中。
   final bool active;
+  final TimelineActivityIndicatorStyle indicatorStyle;
 
   final bool expanded;
 
@@ -142,6 +148,7 @@ class TimelineActivityRow extends StatelessWidget {
                   TimelineActivityIndicator(
                     icon: isIssue ? Icons.error_outline : icon,
                     active: active && !isIssue,
+                    style: indicatorStyle,
                     color:
                         iconColor ??
                         (isIssue
@@ -246,12 +253,14 @@ class TimelineActivityIndicator extends StatefulWidget {
     required this.icon,
     required this.color,
     this.active = false,
+    this.style = TimelineActivityIndicatorStyle.catTail,
     super.key,
   });
 
   final IconData? icon;
   final Color color;
   final bool active;
+  final TimelineActivityIndicatorStyle style;
 
   @override
   State<TimelineActivityIndicator> createState() =>
@@ -260,10 +269,31 @@ class TimelineActivityIndicator extends StatefulWidget {
 
 class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _rotation = AnimationController(
+  late final AnimationController _motion = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1400),
+    duration: _duration,
   );
+
+  Duration get _duration =>
+      widget.style == TimelineActivityIndicatorStyle.writing
+      ? const Duration(milliseconds: 900)
+      : TimelineCatTail.duration;
+
+  static final _writingStroke = TweenSequence<Offset>([
+    for (final (from, to) in const [
+      (Offset(-.08, .06), Offset(.08, -.06)),
+      (Offset(.08, -.06), Offset(-.04, .06)),
+      (Offset(-.04, .06), Offset(.12, -.04)),
+      (Offset(.12, -.04), Offset(-.08, .06)),
+    ])
+      TweenSequenceItem(
+        tween: Tween(
+          begin: from,
+          end: to,
+        ).chain(CurveTween(curve: Curves.easeInOut)),
+        weight: 1,
+      ),
+  ]);
 
   bool get _animate =>
       widget.active &&
@@ -279,32 +309,50 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   @override
   void didUpdateWidget(covariant TimelineActivityIndicator oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.style != widget.style) {
+      _motion.stop();
+      _motion.value = 0;
+      _motion.duration = _duration;
+    }
     _sync();
   }
 
   void _sync() {
     if (_animate) {
-      if (!_rotation.isAnimating) _rotation.repeat();
+      if (!_motion.isAnimating) _motion.repeat();
     } else {
-      _rotation.stop();
-      _rotation.value = 0;
+      _motion.stop();
+      _motion.value = 0;
     }
   }
 
   @override
   void dispose() {
-    _rotation.dispose();
+    _motion.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final icon = Icon(
-      widget.active ? Icons.refresh : widget.icon,
+    if (widget.active) {
+      if (widget.style == TimelineActivityIndicatorStyle.writing) {
+        return TimelineWritingIndicator(
+          position: _writingStroke.animate(_motion),
+          size: TimelineActivityRow.iconSize,
+          color: widget.color,
+        );
+      }
+      return TimelineCatTail(
+        progress: _motion,
+        color: widget.color,
+        size: TimelineActivityRow.iconSize,
+      );
+    }
+    return Icon(
+      widget.icon,
       size: TimelineActivityRow.iconSize,
       color: widget.color,
     );
-    return _animate ? RotationTransition(turns: _rotation, child: icon) : icon;
   }
 }
 
