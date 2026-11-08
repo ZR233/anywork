@@ -107,19 +107,23 @@ final class TimelineObservation {
   Finder _groupTitle(String id, {bool skipOffstage = true}) {
     final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
+    final row = tester.widget<TimelineActivityRow>(header);
+    final labelWidget = row.labelWidget;
     // The header's Align/Row can have its centre in a Spacer, outside its
     // children's hit path. Target the real title inside this exact unit, not
     // the disclosure's body or another group's identically labelled header.
-    return find.descendant(
+    final title = find.descendant(
       of: header,
       matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is Text &&
-            widget.data == tester.widget<TimelineActivityRow>(header).label,
+        (widget) => labelWidget == null
+            ? widget is Text && widget.data == row.label
+            : identical(widget, labelWidget),
         skipOffstage: skipOffstage,
       ),
       skipOffstage: skipOffstage,
     );
+    expect(title, findsOneWidget);
+    return title;
   }
 
   Future<void> until(bool Function() ready, String description) async {

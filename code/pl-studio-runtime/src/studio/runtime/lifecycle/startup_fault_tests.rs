@@ -1027,34 +1027,11 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
     history.commit(1, std::slice::from_ref(&item), &[]).await?;
     drop(history);
     let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-    let facts = db
-        .query_one_raw(sea_orm::Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT COUNT(*) AS count FROM conversation_atom_facts",
-        ))
-        .await?
-        .expect("fixture fact count");
-    assert_eq!(
-        facts.try_get::<i64>("", "count")?,
-        0,
-        "downgrade fixture must not discard real canonical inputs"
-    );
+    crate::studio::storage::history::discard_empty_demand_fixture(&db).await?;
     db.execute_unprepared(
         "DROP TABLE seaql_migrations;
-         DROP TABLE IF EXISTS timeline_item_members;
-         DROP TABLE IF EXISTS timeline_items;
-         DROP TABLE IF EXISTS timeline_projection_state;
-         DROP TABLE conversation_atom_facts;
          DROP TABLE IF EXISTS timeline_records;
-         DROP TABLE conversation_content_chunks;
-         DROP TABLE conversation_contents;
-         DROP TABLE conversation_items;
-         DROP TABLE conversation_sources;
-         DROP TABLE conversation_view_entries;
-         DROP TABLE conversation_view_state;
          ALTER TABLE history_input_identities DROP COLUMN request_digest;
-         ALTER TABLE history_meta DROP COLUMN model_route_json;
-         ALTER TABLE history_meta DROP COLUMN model_route_hash;
          UPDATE history_meta SET schema_version=8",
     )
     .await?;
