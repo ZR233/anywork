@@ -190,9 +190,12 @@ async fn seed_batches(
             thread_id: id.clone(),
         })
         .await?;
+    // One State baseline belongs to this subscription, not to each seeded Turn.
+    let mut saw_snapshot = false;
     let mut revision = completed(
         runtime,
         &mut subscription,
+        &mut saw_snapshot,
         &id,
         &input_id(1),
         interrupt,
@@ -217,6 +220,7 @@ async fn seed_batches(
         revision = completed(
             runtime,
             &mut subscription,
+            &mut saw_snapshot,
             &id,
             &input_id(batch),
             interrupt,
@@ -230,6 +234,7 @@ async fn seed_batches(
 async fn completed(
     runtime: &StudioRuntime,
     subscription: &mut StudioThreadSubscription,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     input_id: &str,
     interrupt: &mpsc::Receiver<()>,
@@ -242,7 +247,6 @@ async fn completed(
             batches.len() < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES,
             "seed batch evidence exceeded the required batch count"
         );
-        let mut saw_snapshot = false;
         let turn_id = loop {
             let update = subscription.recv().await?;
             let Some(update) = update else {
@@ -254,18 +258,18 @@ async fn completed(
                     ..
                 } => {
                     ensure!(
-                        !saw_snapshot,
+                        !*saw_snapshot,
                         "seed subscription repeated its initial State snapshot"
                     );
                     ensure!(
                         completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
                         "unsupported completed history version {completed_history_version}"
                     );
-                    saw_snapshot = true;
+                    *saw_snapshot = true;
                 }
                 ThreadSubscriptionUpdate::Notification { notification } => {
                     ensure!(
-                        saw_snapshot,
+                        *saw_snapshot,
                         "seed notification arrived before State snapshot"
                     );
                     if let ThreadNotification::TurnCompleted { turn } = notification.notification
