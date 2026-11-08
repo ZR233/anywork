@@ -8,6 +8,9 @@ import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
@@ -420,6 +423,7 @@ final class _RealtimeScene {
   String? _submittedTurnId;
   int _liveTextObservation = 0;
   int _execReceiptObservation = 0;
+  int _sourceCloseObservation = 0;
   late final observed = TimelineObservation(tester, () => lease);
 
   TimelineDisplayLease get lease =>
@@ -462,15 +466,27 @@ final class _RealtimeScene {
   }
 
   Future<void> closeLatestTurnGroups() async {
-    await observed.closeSource(
-      ForegroundTurnChatSource(turnId: _latestTurn()!.turnId),
-    );
-    expect(
-      (await graph.client.conversations.retryCleanup(
+    final turnId = _latestTurn()!.turnId;
+    final evidence = <String, Object?>{'turnId': turnId};
+    try {
+      await observed.closeSource(
+        ForegroundTurnChatSource(turnId: turnId),
+        diagnostics: evidence,
+      );
+      final cleanup = await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
-      )).complete,
-      isTrue,
-    );
+      );
+      evidence['scopeCleanupJoined'] = cleanup.complete;
+      expect(cleanup.complete, isTrue);
+    } finally {
+      final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+      await File.fromUri(
+        Directory(output).uri
+            .resolve('realtime-source-close-${++_sourceCloseObservation}.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+      );
+    }
   }
 
   Future<_PreparedToolObserver> prepareToolObserver({
@@ -719,6 +735,7 @@ final class _RealtimeScene {
                       .item
                       .statusString,
                   'laidOut': _laidOut(currentToolCard(atom)),
+                  'finder': _toolFinderObservation(atom),
                 },
             ],
     };
@@ -2231,7 +2248,7 @@ final class _RealtimeScene {
     }
   }
 
-  Finder currentToolCard(ChatAtom atom) {
+  Finder _unscopedToolCard(ChatAtom atom) {
     final reading = atom.payload == null
         ? null
         : ChatItemPresentation.decode(atom).toolCard;
@@ -2251,6 +2268,98 @@ final class _RealtimeScene {
                 widget.item.name == atom.tool?.name,
           );
   }
+
+  Finder currentToolCard(ChatAtom atom) {
+    final active = atom.lifecycle is ActiveChatAtom;
+    final runs = [
+      if (!active)
+        for (final display in lease.groupDisplays)
+          if (display.isCurrent &&
+              display.atoms.any(
+                (member) =>
+                    member.completionItemId == atom.completionItemId &&
+                    member.completionSeq == atom.completionSeq,
+              ))
+            display.runReference,
+    ];
+    final scope = find.byWidgetPredicate(
+      (widget) => active
+          ? widget is ConversationCurrentConnector &&
+                identical(widget.content, lease.content) &&
+                widget.isDisplayActive()
+          : widget is TimelineChildrenConnector &&
+                widget.threadId == lease.threadId &&
+                widget.runReference != null &&
+                runs.contains(widget.runReference) &&
+                widget.isParentActive?.call() == true,
+    );
+    final member = find.descendant(
+      of: scope,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is TimelineMemberAtom &&
+            widget.isActive() &&
+            widget.atom.id == atom.id &&
+            widget.atom.source == atom.source &&
+            (widget.atom.lifecycle is ActiveChatAtom) == active &&
+            widget.atom.completionItemId == atom.completionItemId &&
+            widget.atom.completionSeq == atom.completionSeq &&
+            (active
+                ? identical(widget.content, lease.content)
+                : atom.completionItemId != null &&
+                      atom.lifecycle is TerminalChatAtom),
+      ),
+    );
+    return find.descendant(of: member, matching: _unscopedToolCard(atom));
+  }
+
+  Map<String, Object?> _toolFinderObservation(ChatAtom atom) {
+    final all = _unscopedToolCard(atom).evaluate().toList();
+    return {
+      'unscopedCount': all.length,
+      'qualifiedCount': currentToolCard(atom).evaluate().length,
+      'matches': [
+        for (final element in all.take(6))
+          (() {
+            final match = <String, Object?>{
+              'widget': element.widget.runtimeType.toString(),
+            };
+            element.visitAncestorElements((ancestor) {
+              final widget = ancestor.widget;
+              if (widget is TimelineMemberAtom) {
+                match['member'] = {
+                  'id': widget.atom.id,
+                  'lifecycle': widget.atom.lifecycle.runtimeType.toString(),
+                  'completionItemId': widget.atom.completionItemId,
+                  'completionSeq': widget.atom.completionSeq,
+                  'contentIdentity': identityHashCode(widget.content),
+                  'sameMainContent': identical(widget.content, lease.content),
+                  'activeScope': widget.isActive(),
+                };
+              } else if (widget is ConversationCurrentConnector) {
+                match['scope'] = 'Activity';
+                match['scopeActive'] = widget.isDisplayActive();
+                match['sameMainContent'] = identical(
+                  widget.content,
+                  lease.content,
+                );
+              } else if (widget is TimelineChildrenConnector) {
+                match['scope'] = widget.runReference == null
+                    ? 'Children'
+                    : 'Run';
+                match['parentId'] = widget.parentId;
+                match['runStartSeq'] = widget.runReference?.startSeq;
+                match['scopeActive'] = widget.isParentActive?.call();
+              }
+              return true;
+            });
+            return match;
+          })(),
+      ],
+    };
+  }
+
+  int _toolObservationSequence = 0;
 
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
@@ -2335,6 +2444,7 @@ final class _RealtimeScene {
                   'callId': atom.tool?.callId,
                   'active': atom.lifecycle is ActiveChatAtom,
                   'laidOut': _laidOut(currentToolCard(atom)),
+                  'finder': _toolFinderObservation(atom),
                 },
               )
               .toList(),
@@ -2394,10 +2504,7 @@ final class _RealtimeScene {
               (atom) => atom.tool?.callId == call,
             );
             final widget = tester.widget<TimelineToolDetails>(
-              find.byWidgetPredicate(
-                (widget) =>
-                    widget is TimelineToolDetails && widget.item.id == atom.id,
-              ),
+              currentToolCard(atom),
             );
             expect(widget.item.statusString, 'running');
           }
@@ -2423,6 +2530,19 @@ final class _RealtimeScene {
                   ),
                 );
           }
+          final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+          await File.fromUri(
+            Directory(output).uri.resolve(
+              'realtime-tool-observation-${++_toolObservationSequence}.json',
+            ),
+          ).writeAsString(
+            '${const JsonEncoder.withIndent('  ').convert({
+              'turnId': _submittedTurnId,
+              'expectedCallIds': expectedCallIds.toList(),
+              'observations': observations,
+              'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
+            })}\n',
+          );
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
