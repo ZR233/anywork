@@ -3,6 +3,9 @@ use pl_core::chat::{ChatDraft, ChatQuery, ReadDemand};
 use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
 use sea_orm::TransactionTrait;
 
+#[path = "run_read_tests/sqlite_work.rs"]
+mod sqlite_work;
+
 fn atom(id: &str, kind: ChatAtomKind, source: &str) -> ChatAtom {
     let mut atom: ChatAtom = serde_json::from_slice(&super::tests::metadata(id)).unwrap();
     atom.kind = kind;
@@ -164,25 +167,78 @@ async fn lost_ack_replay_compares_run_hint_and_bytes_and_transaction_failure_rol
 
 #[tokio::test]
 async fn hundred_thousand_members_use_index_seeks_and_never_inline_work_payload() -> Result<()> {
+    let init_started = std::time::Instant::now();
     let (_dir, db) = super::tests::fixture().await?;
-    let first = record(1, atom("work", ChatAtomKind::ToolCall, "F"), Some((1, 1)));
-    append_records(&db, [&first], true).await?;
+    let init_us = init_started.elapsed().as_micros();
+    let seed_started = std::time::Instant::now();
+    // Nineteen distinct single-member WORK runs, plus one long work run at seq=20.
+    // All are Adjacent/ForegroundWork, including ordinal=1: none is a Native Single which
+    // would legitimately be allowed to inline its own small payload.
+    let seeds = (1..=20)
+        .map(|seq| {
+            record(
+                seq,
+                atom(
+                    &format!("work-{seq}"),
+                    ChatAtomKind::ToolCall,
+                    &format!("foreground-{seq}"),
+                ),
+                Some((seq, 1)),
+            )
+        })
+        .collect::<Vec<_>>();
+    append_records(&db, seeds.iter(), true).await?;
+    let seed_us = seed_started.elapsed().as_micros();
     let mut previous_size = 1u64;
+    let mut baseline = None;
     for size in [1u64, 100, 10_000, 100_000] {
+        let setup_started = std::time::Instant::now();
+        let inserted = if size == 1 { 20 } else { size - previous_size };
         if size > previous_size {
             db.execute_raw(statement(
                 "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
                  INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal)
-                 SELECT i,'work-'||i,query_class,parent_id,payload,metadata,1,i
-                 FROM n CROSS JOIN conversation_items WHERE seq=1",
-                vec![integer(previous_size + 1)?.into(), integer(size)?.into()],
+                 SELECT i,'work-'||i,query_class,parent_id,payload,
+                        CAST(json_set(metadata,'$.id','work-'||i,'$.completionItemId','work-'||i) AS BLOB),
+                        20,i-19
+                 FROM n CROSS JOIN conversation_items WHERE seq=20",
+                vec![integer(previous_size + 20)?.into(), integer(size + 19)?.into()],
             )).await?;
         }
         previous_size = size;
-        let request = request(ChatSelection::RunHeads, size, None, 10);
-        let heads = page(&db, &request, &super::tests::Budget, false).await?;
-        assert_eq!(heads.items.len(), 1);
-        assert_eq!(heads.items[0].header.run.unwrap().ordinal, size);
+        let total = size + 19;
+        let count = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS records FROM conversation_items",
+                vec![],
+            ))
+            .await?
+            .context("scale fixture record count")?
+            .try_get::<i64>("", "records")?;
+        assert_eq!(u64::try_from(count)?, total);
+        let setup_us = setup_started.elapsed().as_micros() + if size == 1 { seed_us } else { 0 };
+        let request = request(ChatSelection::RunHeads, total, None, 20);
+        let sampler = sqlite_work::Sampler::install(&db).await?;
+        let outcome = page(&db, &request, &super::tests::Budget, false).await;
+        // Always join/unregister the native callbacks, including a failed production query,
+        // before propagating the original query result or checking any assertions.
+        let work = sampler.finish(&db).await?;
+        let heads = outcome?;
+        assert_eq!(heads.items.len(), 20);
+        assert_eq!(work.candidates, 20);
+        assert!(
+            heads
+                .items
+                .iter()
+                .all(|item| matches!(item.header.read_hint, ChatReadHint::Adjacent { .. }))
+        );
+        assert_eq!(
+            heads.items[19].header.run,
+            Some(ChatRunPosition {
+                start_seq: 20,
+                ordinal: size
+            })
+        );
         let payload_bytes: usize = heads
             .items
             .iter()
@@ -192,15 +248,36 @@ async fn hundred_thousand_members_use_index_seeks_and_never_inline_work_payload(
             })
             .sum();
         assert_eq!(payload_bytes, 0);
+        assert_eq!(
+            work.denied_reads, 0,
+            "Main tried to read a protected body/media column"
+        );
+        assert_eq!(work.reference_rows, u64::from(size > 1));
+        assert_eq!(work.statements, 1 + u64::from(size > 1));
+        if let Some((vm, scan)) = baseline {
+            assert!(work.vm_steps <= vm + 256, "{work:?}");
+            assert!(work.head_fullscan_steps <= scan + 20, "{work:?}");
+        } else {
+            baseline = Some((work.vm_steps, work.head_fullscan_steps));
+        }
         eprintln!(
-            "RunHeads members={size} representatives={} inline_payload_bytes={payload_bytes}",
-            heads.items.len()
+            "I15 {}",
+            serde_json::json!({
+                "members":size, "total_records":total, "candidates":work.candidates,
+                "returned":heads.items.len(), "inline_payload_bytes":payload_bytes,
+                "statements":work.statements, "reference_rows":work.reference_rows,
+                "vm_steps":work.vm_steps, "run_heads_vm_steps":work.head_vm_steps,
+                "fullscan_steps":work.fullscan_steps, "run_heads_fullscan_steps":work.head_fullscan_steps,
+                "payload_length_column_authorizations":work.payload_column_authorizations,
+                "denied_main_body_reads":work.denied_reads,
+                "init_us":init_us, "setup_inserted_rows":inserted, "setup_us":setup_us,
+            })
         );
     }
     let plan = db
         .query_all_raw(statement(
             &format!("EXPLAIN QUERY PLAN {}", run_read::RUN_HEADS_SQL),
-            vec![100_000i64.into(), 64i64.into(), 0i64.into()],
+            vec![100_019i64.into(), 20i64.into(), 0i64.into()],
         ))
         .await?;
     let plan = plan
@@ -216,6 +293,38 @@ async fn hundred_thousand_members_use_index_seeks_and_never_inline_work_payload(
     assert!(!plan.contains("(rowid>?)"), "{plan}");
     assert!(!plan.contains("GROUP BY"), "{plan}");
     eprintln!("RunHeads EXPLAIN QUERY PLAN:\n{plan}");
+
+    // A production admission error still takes the explicit locked cleanup path.
+    let sampler = sqlite_work::Sampler::install(&db).await?;
+    let lifetime = sampler.lifetime();
+    let mut rejected = request(ChatSelection::RunHeads, 100_019, None, 20);
+    rejected.query.as_mut().unwrap().parent_id = Some(ChatKey::new("turn", "invalid-on-main")?);
+    let outcome = page(&db, &rejected, &super::tests::Budget, false).await;
+    let work = sampler.finish(&db).await?;
+    assert!(outcome.is_err());
+    assert_eq!(work.statements, 0);
+    assert!(!lifetime.is_alive());
+
+    // Cancel a suspended sampling scope after native registration. Its Rust observer drops,
+    // but the driver's ownership keeps the context live until every hook/connection is closed.
+    let sampler = sqlite_work::Sampler::install(&db).await?;
+    let lifetime = sampler.lifetime();
+    let mut cancelled = Box::pin(async move {
+        std::future::pending::<()>().await;
+        drop(sampler);
+    });
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(cancelled.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    drop(cancelled);
+    assert!(lifetime.is_alive());
+    db.close().await?;
+    assert!(!lifetime.is_alive());
+    eprintln!(
+        "I15 sampler lifecycle: normal/error unregistered; cancelled context retained until connection close; released=true"
+    );
     Ok(())
 }
 
