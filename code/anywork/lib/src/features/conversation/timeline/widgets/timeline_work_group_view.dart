@@ -1,10 +1,12 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
+import 'timeline_cat_tail.dart';
 import 'timeline_reasoning_view.dart';
 
 /// 实时与历史共用的纯工作组视图，不读取成员或持有领域资源。
@@ -134,6 +136,22 @@ class _WorkGroupState extends State<TimelineWorkGroupView> {
                   emphasized: widget.live,
                   expanded: _disclosure.isExpanded,
                   active: active,
+                  // 标题动画跟随会话执行资格；成员终态不结束会话的活动指示，
+                  // 组自身的工作计时仍只取真实活动成员。
+                  leading: widget.live && !active
+                      ? widget.executionPresent
+                            ? TimelineActivityIndicator(
+                                icon: null,
+                                active: true,
+                                color: context.statusColors.activeIndicator,
+                              )
+                            : TimelineCatTail(
+                                progress: const AlwaysStoppedAnimation(0),
+                                color: context.colors.onSurfaceVariant
+                                    .withValues(alpha: .78),
+                                size: TimelineActivityRow.iconSize,
+                              )
+                      : null,
                   summaryWidget:
                       widget.live ||
                           summary == null ||

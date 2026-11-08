@@ -74,7 +74,10 @@ class ConversationActivityStatus extends StatelessWidget {
         label: context.conversationActivityLabel(view),
         icon: view.kind.icon,
         isIssue: view.kind.isIssue,
-        active: view.waits || view.kind == ConversationActivityKind.responding,
+        active:
+            view.waits ||
+            view.kind == ConversationActivityKind.responding ||
+            view.kind == ConversationActivityKind.planning,
         expandable: false,
         header: true,
         summary: view.kind == ConversationActivityKind.compacting

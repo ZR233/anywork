@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import 'timeline_cat_tail.dart';
 
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
 ///
@@ -260,9 +261,9 @@ class TimelineActivityIndicator extends StatefulWidget {
 
 class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _rotation = AnimationController(
+  late final AnimationController _motion = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1400),
+    duration: TimelineCatTail.duration,
   );
 
   bool get _animate =>
@@ -284,27 +285,33 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
 
   void _sync() {
     if (_animate) {
-      if (!_rotation.isAnimating) _rotation.repeat();
+      if (!_motion.isAnimating) _motion.repeat();
     } else {
-      _rotation.stop();
-      _rotation.value = 0;
+      _motion.stop();
+      _motion.value = 0;
     }
   }
 
   @override
   void dispose() {
-    _rotation.dispose();
+    _motion.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final icon = Icon(
-      widget.active ? Icons.refresh : widget.icon,
+    if (widget.active) {
+      return TimelineCatTail(
+        progress: _motion,
+        color: widget.color,
+        size: TimelineActivityRow.iconSize,
+      );
+    }
+    return Icon(
+      widget.icon,
       size: TimelineActivityRow.iconSize,
       color: widget.color,
     );
-    return _animate ? RotationTransition(turns: _rotation, child: icon) : icon;
   }
 }
 

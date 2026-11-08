@@ -1,6 +1,7 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
@@ -79,7 +80,8 @@ void main() {
       );
       expect(builds, 0);
       expect(find.text('实际成员'), findsNothing);
-      expect(find.text('折叠组摘要'), findsOneWidget);
+      expect(find.text('工作记录'), findsOneWidget);
+      expect(find.text('折叠组摘要'), findsNothing);
       expect(find.text('100000 项'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('source-unit-header:huge')));
       await tester.pump(const Duration(milliseconds: 300));
@@ -97,7 +99,7 @@ void main() {
   );
 
   testWidgets(
-    'latest thinking summary streams into active and completed headers without tool activity replacing it',
+    'latest thinking summary streams into live headers while history retains its work label',
     (tester) async {
       TimelineDisplayUnit activeUnit(
         String? latestThinkingSummary, {
@@ -218,7 +220,8 @@ void main() {
           ),
         ),
       );
-      expect(find.text('Completed review notes'), findsOneWidget);
+      expect(find.text('工作记录'), findsOneWidget);
+      expect(find.text('Completed review notes'), findsNothing);
       expect(
         tester
             .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
@@ -294,11 +297,16 @@ void main() {
     },
   );
 
-  testWidgets(
-    'terminal current members waiting for boundary never pretend to keep executing',
-    (tester) async {
+  testWidgets('成员结束待交接时标题继续动画，但不增加成员工作耗时', (tester) async {
+    for (final summary in [null, '正在整理审查结果']) {
       final unit = TimelineDisplayUnit(
-        item: workItem('waiting', closed: false, start: 10, end: 14),
+        item: workItem(
+          'waiting',
+          closed: false,
+          start: 10,
+          end: 14,
+          latestThinkingSummary: summary,
+        ),
         live: true,
       );
       await tester.pumpWidget(
@@ -310,19 +318,28 @@ void main() {
           ),
         ),
       );
-      expect(find.text('思考中'), findsOneWidget);
+      expect(find.text(summary ?? '思考中'), findsOneWidget);
+      expect(unit.expansion.expanded, isFalse);
+      expect(find.text('成员'), findsNothing);
+      expect(find.byType(TimelineCatTail), findsOneWidget);
+      final progress = tester
+          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .progress;
+      final before = progress.value;
       expect(
         tester
             .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
             .active,
         isFalse,
       );
-      await tester.pump(const Duration(seconds: 10));
-      expect(find.text('思考中'), findsOneWidget);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(find.text(summary ?? '思考中'), findsOneWidget);
+      expect(progress.value, isNot(before));
       expect(find.textContaining('秒'), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+    }
+  });
 
   testWidgets(
     'same item handoff retains expansion, unknown time remains unknown in narrow scaled layout',

@@ -6,6 +6,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -129,6 +130,49 @@ Widget _group({Widget? content, bool live = true, String? thinkingSummary}) =>
 
 void main() {
   group('统一实时状态栏', () {
+    testWidgets('所有活动阶段统一显示猫尾巴，故障仍保留错误图标', (tester) async {
+      for (final kind in [
+        ConversationActivityKind.preparing,
+        ConversationActivityKind.compacting,
+        ConversationActivityKind.thinking,
+        ConversationActivityKind.planning,
+        ConversationActivityKind.runningTool,
+        ConversationActivityKind.responding,
+        ConversationActivityKind.awaitingApproval,
+        ConversationActivityKind.awaitingInput,
+        ConversationActivityKind.stopping,
+      ]) {
+        await tester.pumpWidget(
+          _wrapWithApp(
+            ConversationActivityStatus(
+              view: _view(identity: kind.name, kind: kind),
+            ),
+          ),
+        );
+        expect(find.byType(TimelineCatTail), findsOneWidget, reason: kind.name);
+      }
+      final progress = tester
+          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .progress;
+      final before = progress.value;
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(progress.value, isNot(before));
+
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'storage-failure',
+              kind: ConversationActivityKind.storageBlocked,
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byIcon(Icons.error_outline), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('官方预览直接装配生产组件且各工况可渲染', (tester) async {
       for (final preview in [
         conversationLiveStatusWaitingPreview,
@@ -570,7 +614,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('耗时取真实投影，未知时不补零；减少动态效果不旋转', (tester) async {
+    testWidgets('耗时取真实投影，未知时不补零；减少动态效果保留静止猫尾巴', (tester) async {
       await tester.pumpWidget(
         _wrapWithApp(
           ConversationActivityBar(
@@ -588,13 +632,13 @@ void main() {
         ),
       );
       expect(find.text('用时 2 分 5 秒'), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byType(TimelineActivityIndicator),
-          matching: find.byType(RotationTransition),
-        ),
-        findsNothing,
-      );
+      expect(find.byType(TimelineCatTail), findsOneWidget);
+      final progress = tester
+          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .progress;
+      final still = progress.value;
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(progress.value, still);
       await tester.pumpWidget(
         _wrapWithApp(
           ConversationActivityBar(
@@ -613,6 +657,13 @@ void main() {
         find.byKey(const ValueKey('conversation-activity-trailing-meta')),
         findsNothing,
       );
+      await tester.pump();
+      final resumed = tester
+          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .progress;
+      final resumedBefore = resumed.value;
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(resumed.value, isNot(resumedBefore));
       await tester.pumpWidget(const SizedBox.shrink());
     });
     testWidgets('有界窗口只通过同步动作翻页并保留原文', (tester) async {

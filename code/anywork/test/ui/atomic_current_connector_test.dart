@@ -16,6 +16,7 @@ import 'package:anywork/src/features/conversation/timeline/view_models/timeline_
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -497,15 +498,15 @@ void main() {
           of: header,
           matching: find.byType(TimelineActivityIndicator),
         );
-        final workRotation = find.descendant(
+        final workTail = find.descendant(
           of: workIndicator,
-          matching: find.byType(RotationTransition),
+          matching: find.byType(TimelineCatTail),
         );
         expect(find.text('工作未完成'), findsOneWidget);
         expect(tester.widget<TimelineActivityRow>(header).active, isFalse);
         expect(find.text('工作中'), findsNothing);
         expect(workIndicator, findsNothing);
-        expect(workRotation, findsNothing);
+        expect(workTail, findsNothing);
         expect(find.byType(ComposerDockView), findsOneWidget);
         expect(memberOpens, 0);
         await tester.tap(header);
@@ -556,7 +557,7 @@ void main() {
         expect(tester.widget<TimelineActivityRow>(header).meta, coldMeta);
         expect(coldMeta, '7 项');
         expect(workIndicator, findsNothing);
-        expect(workRotation, findsNothing);
+        expect(workTail, findsNothing);
         expect(h.presentation.live.value.single.item, same(group));
         expect(group.summary, same(originalSummary));
         expect(originalSummary.activeCount, 2);
@@ -572,12 +573,12 @@ void main() {
           tester.widget<TimelineActivityIndicator>(workIndicator).active,
           isTrue,
         );
-        expect(workRotation, findsOneWidget);
+        expect(workTail, findsOneWidget);
         await h.acceptCurrent(snapshot(false));
         await tester.pumpWidget(h.host(view: view, dock: dock));
         expect(tester.widget<TimelineActivityRow>(header).active, isFalse);
         expect(workIndicator, findsNothing);
-        expect(workRotation, findsNothing);
+        expect(workTail, findsNothing);
         expect(find.text('已保存的思考片段'), findsOneWidget);
         expect(
           memberOpens,
