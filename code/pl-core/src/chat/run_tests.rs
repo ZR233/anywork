@@ -30,6 +30,13 @@ fn main_request(items: usize) -> ChatPageRequest {
     ChatPageRequest::latest(select(ChatSelection::RunHeads), demand(items))
 }
 
+fn pending_cut(session: &Session) -> (u64, u64, usize, usize) {
+    session.with_timeline(|state| {
+        let (records, content_keys) = state.pending_counts();
+        (state.head, state.durable, records, content_keys)
+    })
+}
+
 async fn main_page(session: &Session, items: usize) -> ChatPage {
     session
         .page(main_request(items), &Budget::default())
@@ -517,7 +524,32 @@ async fn durable_confirmation_releases_all_secondary_record_and_content_referenc
     let weak = Arc::downgrade(&records[0]);
     let remaining = Arc::downgrade(&records[1]);
     stored.insert((*records[0]).clone());
+    let before = pending_cut(&session);
+    let record_references_before = Arc::strong_count(&records[0]);
+    let content_references_before = Arc::strong_count(&body);
     session.confirm_durable(1).unwrap();
+    let after = pending_cut(&session);
+    assert_eq!(before, (2, 0, 2, 1));
+    assert_eq!(after, (2, 1, 1, 0));
+    eprintln!(
+        "core_pending_release history=controlled \
+         head_before={} durable_before={} pending_completion_records_before={} pending_content_keys_before={} \
+         head_after={} durable_after={} pending_completion_records_after={} pending_content_keys_after={} \
+         first_record_strong_before={} first_record_strong_after={} \
+         content_strong_before={} content_strong_after={}",
+        before.0,
+        before.1,
+        before.2,
+        before.3,
+        after.0,
+        after.1,
+        after.2,
+        after.3,
+        record_references_before,
+        Arc::strong_count(&records[0]),
+        content_references_before,
+        Arc::strong_count(&body),
+    );
     assert_eq!(
         Arc::strong_count(&records[0]),
         1,
@@ -546,6 +578,7 @@ async fn durable_confirmation_releases_all_secondary_record_and_content_referenc
     ));
     assert_eq!((session.durable_seq(), session.head_seq()), (1, 2));
     session.confirm_durable(1).unwrap();
+    assert_eq!(pending_cut(&session), after);
 }
 
 #[tokio::test]
@@ -624,11 +657,45 @@ async fn collapsed_pending_work_is_bounded_by_requested_runs_for_one_to_100000_m
         assert_eq!(stored.reads.payload_bytes.load(Ordering::SeqCst), 0);
         let cost = budget.visited.lock().unwrap().len();
         assert_eq!(*expected_cost.get_or_insert(cost), cost);
+        let work_inline_bytes: usize = page
+            .items
+            .iter()
+            .filter(|item| matches!(&item.header.read_hint, ChatReadHint::Adjacent { .. }))
+            .map(|item| match &item.payload {
+                PayloadData::Inline(bytes) => bytes.len(),
+                PayloadData::Deferred { .. } => 0,
+            })
+            .sum();
+        assert_eq!(work_inline_bytes, 0);
+        let history_page_calls = stored.reads.pages.lock().unwrap().len();
+        let before = pending_cut(&session);
+        assert_eq!(before, (size as u64 + 19, 0, size + 19, 0));
         // A real scoped index must not retain any saved work member or scan it at the next read.
         for record in records.iter() {
             stored.insert((**record).clone());
         }
         session.confirm_durable(session.head_seq()).unwrap();
+        let after = pending_cut(&session);
+        assert_eq!(after, (before.0, before.0, 0, 0));
+        eprintln!(
+            "core_pending_scale history=controlled members={} budget_visited={} returned={} \
+             work_inline_bytes={} history_page_calls={} \
+             head_before={} durable_before={} pending_completion_records_before={} pending_content_keys_before={} \
+             head_after={} durable_after={} pending_completion_records_after={} pending_content_keys_after={}",
+            size,
+            cost,
+            page.items.len(),
+            work_inline_bytes,
+            history_page_calls,
+            before.0,
+            before.1,
+            before.2,
+            before.3,
+            after.0,
+            after.1,
+            after.2,
+            after.3,
+        );
         assert!(records.iter().all(|record| Arc::strong_count(record) == 1));
     }
 }

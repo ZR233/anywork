@@ -8,6 +8,7 @@ use crate::runtime_test_support as support;
 mod allocation;
 mod coalescing;
 mod completed_runs;
+mod state_activity;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EchoArgs {
@@ -1034,6 +1035,10 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             .await?;
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
         let baseline = state_snapshot(&mut cold).await?;
+        assert!(
+            baseline.activity.is_none(),
+            "cold read invented execution activity"
+        );
         assert_eq!(baseline.interactions, vec![pending.clone()]);
         assert_eq!(
             cold.reader().read_business_refs().await?,

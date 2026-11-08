@@ -98,6 +98,12 @@ ActivitySnapshot 含 revision、completed_through、execution_present、entries�
 
 保留原 State 的可靠业务事实与慢接收者 Lagged/重同步语义，不把全部 State 降为 latest-only。基线携同切面的待决交互，准备与订阅登记的竞态不得漏事实；State 慢消费者不反压执行保存。原 observation slot、来源 ABA、初次准备失败、来源退役与 pending 交接仍须明确处理，不能吞错为空页。
 
+原 State 的 `ThreadActivity`／`ActivityChanged` 仍交付同一执行 owner 的类型化阶段摘要，
+用于尚无内容时的准备、思考、压缩、等待和停止提示；首份热基线与后续通知都不得丢弃。
+它不携带完成成员、不决定正文退休，也不能替代 `ActivitySnapshot` 的完成 through 屏障。
+冷打开没有执行 owner 时保持摘要为空；客户端不得仅凭 `execution_present` 猜测阶段，
+也不以较早摘要清除或复活已经完成的内容。
+
 Frame 保留 thread/subscription/delivery sequence 与有界信用，事件为 Chat、Activity、State、Failure、Closed。首个 State/握手声明 completedHistoryVersion=1；不支持明确 ProtocolVersionMismatch，不双解码。ACK 在实际串行接纳完成且原 lease 有效后推进，不等布局、query、详情或 SQLite。低层已读位置不冒充外层 ACK；连续性丢失关闭原资格，新句柄以 Set 重同步。
 
 ### 业务引用由 State 交付

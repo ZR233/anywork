@@ -51,6 +51,12 @@ pub(crate) struct TimelineState {
 }
 
 impl TimelineState {
+    /// Pending completion records and distinct content keys, not the number of Arc references
+    /// retained by the secondary indexes or external readers/writers.
+    pub(super) fn pending_counts(&self) -> (usize, usize) {
+        (self.pending.len(), self.pending_contents.len())
+    }
+
     /// Select membership before iteration; hidden pending entries are never visited.
     pub(crate) fn pending_index(
         &self,
@@ -407,7 +413,8 @@ impl Session {
                 state.insert(record.clone());
                 records.push(record);
             }
-            if seed.head_seq > state.head {
+            let published = seed.head_seq > state.head;
+            if published {
                 state.head = seed.head_seq;
                 state.last_visible = seed.last_visible;
                 // The wake carries the completion head only; the subscription computes its own content
@@ -416,6 +423,20 @@ impl Session {
                 self.0.changed.send_replace(state.head);
             }
             records.sort_by_key(|record| record.header.append_seq);
+            let (head, durable) = (state.head, state.durable);
+            let (pending_completion_records, pending_content_keys) = state.pending_counts();
+            drop(state);
+            if published {
+                tracing::debug!(
+                    target: "conversation_work",
+                    head,
+                    durable,
+                    pending_completion_records,
+                    pending_content_keys,
+                    published_records = additions,
+                    "completion publication"
+                );
+            }
             return Ok(Arc::from(records));
         }
     }
@@ -462,6 +483,9 @@ impl Session {
         if through <= state.durable {
             return Ok(());
         }
+        let previous_durable = state.durable;
+        let (pending_completion_records_before, pending_content_keys_before) =
+            state.pending_counts();
         state.durable = through;
         let reclaimed: Vec<u64> = state
             .pending
@@ -473,6 +497,20 @@ impl Session {
                 state.remove_indexes(&record);
             }
         }
+        let (head, durable) = (state.head, state.durable);
+        let (pending_completion_records, pending_content_keys) = state.pending_counts();
+        drop(state);
+        tracing::debug!(
+            target: "conversation_work",
+            head,
+            durable,
+            previous_durable,
+            pending_completion_records_before,
+            pending_content_keys_before,
+            pending_completion_records,
+            pending_content_keys,
+            "durable confirmation"
+        );
         Ok(())
     }
 }

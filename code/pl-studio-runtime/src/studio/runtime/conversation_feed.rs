@@ -50,6 +50,8 @@ pub struct ConversationFeed {
     active_turn: Option<String>,
     delivered_terminal: Option<(String, u64)>,
     runtime_floor: (u64, u64),
+    state_activity: Option<ThreadActivity>,
+    state_activity_floor: u64,
     state_turn: bool,
     cancel: CancellationToken,
 }
@@ -314,6 +316,13 @@ impl StudioRuntime {
             demand,
         )?;
         let runtime_source = position.source.as_ref().and_then(|source| source.runtime());
+        let state_activity_cut = position
+            .source
+            .as_ref()
+            .and_then(|source| source.state_activity());
+        let (state_activity_floor, state_activity) = state_activity_cut
+            .map(|cut| (cut.observation_revision, cut.activity.as_deref().cloned()))
+            .unwrap_or((0, None));
         let runtime_floor = runtime_source.as_ref().map_or((0, 0), |cut| {
             (cut.observation_revision, cut.catalog_revision)
         });
@@ -339,7 +348,7 @@ impl StudioRuntime {
             active_turn: initial_turn,
             interactions: initial_interactions,
             business_refs: business_refs.clone(),
-            activity: None,
+            activity: state_activity.clone(),
             storage: storage
                 .as_ref()
                 .and_then(|storage| storage.borrow().clone()),
@@ -370,6 +379,8 @@ impl StudioRuntime {
             active_turn,
             delivered_terminal: None,
             runtime_floor,
+            state_activity,
+            state_activity_floor,
             state_turn: true,
             cancel: CancellationToken::new(),
         };
@@ -602,7 +613,21 @@ impl ConversationFeed {
                     model_route,
                 })?
             }
-            ThreadLiveEvent::Activity { .. } => {}
+            ThreadLiveEvent::Activity {
+                observation_revision,
+                activity,
+            } => {
+                if observation_revision <= self.state_activity_floor {
+                    return Ok(());
+                }
+                self.state_activity_floor = observation_revision;
+                if activity.as_deref() != self.state_activity.as_ref() {
+                    self.state_activity = activity.as_deref().cloned();
+                    self.notification(ThreadNotification::ActivityChanged {
+                        activity: activity.map(|activity| Box::new((*activity).clone())),
+                    })?;
+                }
+            }
             ThreadLiveEvent::UnframedCommit { sequence } => {
                 ensure!(
                     sequence <= self.state_effect_floor,
@@ -653,6 +678,13 @@ impl ConversationFeed {
                 return Err(core::ChatError::Cancelled.into());
             }
             self.reader.ensure()?;
+            ensure!(
+                !self
+                    .state
+                    .as_ref()
+                    .is_some_and(super::thread_observation::StateReceiver::is_closed),
+                resync()
+            );
             self.reflect_retained_turn()?;
             if let Some(batch) = self.initial.take() {
                 return Ok(Some(ConversationEvent::Chat {

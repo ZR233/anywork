@@ -360,8 +360,218 @@ final class _ConceptScene {
 
   Future<void> reach(String stage, bool Function() ready) async {
     await fixtureGate(tester, provider, stage);
-    await _until(tester, ready, 'production state at $stage');
+    try {
+      await _until(tester, ready, 'production state at $stage');
+    } catch (error, stack) {
+      // Borrow the failing cut before teardown. No query, refresh, extra pump,
+      // body text or arbitrary widget dump may alter/expose this observation.
+      try {
+        report['stageFailure'] = _stageFailure(stage, error, stack);
+      } catch (diagnosticError) {
+        report['stageFailure'] = {
+          'stage': stage,
+          'gateReached': true,
+          'exceptionType': error.runtimeType.toString(),
+          'stack': stack.toString(),
+          'diagnosticErrorType': diagnosticError.runtimeType.toString(),
+        };
+      }
+      rethrow;
+    }
     await _record(stage);
+  }
+
+  Map<String, Object?> _stageFailure(
+    String stage,
+    Object error,
+    StackTrace stack,
+  ) {
+    final selected = graph.client.selection.state.selectedThreadId;
+    final session = selected == null
+        ? null
+        : graph.client.conversations.existingSession(selected);
+    final state = session?.state;
+    final target = selected == null ? null : graph.timeline.lease(selected);
+    final snapshot = target?.content.activity.value;
+    final current = target?.currentDisplay;
+    final status = state?.activity;
+    final execution = state?.runtime?.execution;
+    const activityKey = ValueKey('conversation-activity');
+    final keyOnstage = find.byKey(activityKey).evaluate().length;
+    final keyAll = find
+        .byKey(activityKey, skipOffstage: false)
+        .evaluate()
+        .length;
+    final liveEmpty = snapshot?.entries.isEmpty ?? true;
+    Map<String, Object?>? turn(StudioTurnView? value) => value == null
+        ? null
+        : {
+            'threadId': value.threadId,
+            'turnId': value.turnId,
+            'revision': value.revision,
+            'status': value.state.status.name,
+            'activity': value.state.activity?.name,
+          };
+    final connectors = find.byType(
+      ConversationCurrentConnector,
+      skipOffstage: false,
+    );
+    final relevant = find.byWidgetPredicate(
+      (widget) =>
+          widget is ConversationCurrentConnector ||
+          widget is ConversationActivityBar ||
+          widget is ConversationActivityStatus ||
+          widget is TimelineView ||
+          widget.key == activityKey,
+      skipOffstage: false,
+    );
+    final surface =
+        Offset.zero & (tester.view.physicalSize / tester.view.devicePixelRatio);
+    final tree = <Map<String, Object?>>[];
+    for (final element in relevant.evaluate().take(20)) {
+      final render = element.findRenderObject();
+      Rect? bounds;
+      if (render is RenderBox && render.attached && render.hasSize) {
+        bounds = render.localToGlobal(Offset.zero) & render.size;
+      }
+      final ancestors = <Map<String, Object?>>[];
+      element.visitAncestorElements((ancestor) {
+        final widget = ancestor.widget;
+        ancestors.add({
+          'type': widget.runtimeType.toString(),
+          if (widget is Offstage) 'offstage': widget.offstage,
+          if (widget is Opacity) 'opacity': widget.opacity,
+          if (widget is TickerMode) 'enabled': widget.enabled,
+        });
+        return ancestors.length < 12;
+      });
+      tree.add({
+        'type': element.widget.runtimeType.toString(),
+        'mounted': element.mounted,
+        'renderAttached': render?.attached,
+        'tickerEnabled': TickerMode.valuesOf(element).enabled,
+        'bounds': bounds == null
+            ? null
+            : [bounds.left, bounds.top, bounds.right, bounds.bottom],
+        'overlapsSurface': bounds?.overlaps(surface),
+        'ancestors': ancestors,
+      });
+    }
+    return {
+      'stage': stage,
+      'gateReached': true,
+      'observedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      'exceptionType': error.runtimeType.toString(),
+      'stack': stack.toString(),
+      if (stage == 'thinking')
+        'thinkingConditions': {
+          'liveEmpty': liveEmpty,
+          'activityKeyPresent': keyOnstage > 0,
+          'combined': liveEmpty && keyOnstage > 0,
+        },
+      'selectedThreadId': selected,
+      'visibleThreadId': graph.client.conversations.visibleThreadId.value,
+      'state': {
+        'hasSnapshot': state?.hasSnapshot,
+        'revision': state?.revision,
+        'epoch': state?.streamEpoch,
+        'baseRevision': state?.baseRevision,
+        'syncPhase': state?.sync.phase.name,
+        'activeTurn': turn(state?.activeTurn),
+        'lastTurn': turn(state?.lastTurn),
+        'execution': execution == null
+            ? null
+            : {
+                'id': execution.id,
+                'turnId': execution.turnId,
+                'phase': execution.phase.name,
+              },
+        'activity': status == null
+            ? null
+            : {
+                'identity': status.identity,
+                'revision': status.revision,
+                'kind': status.kind.name,
+                'turnId': status.turnId,
+                'executionId': status.executionId,
+                'attemptId': status.attemptId,
+              },
+      },
+      'lease': {
+        'present': target != null,
+        'generation': target?.generation,
+        'mounted': target?.isMounted,
+        'retired': target?.isRetired,
+        'released': target?.isReleased,
+        'appliedSets': target?.appliedSets,
+        'contentState': target?.content.state.value.runtimeType.toString(),
+        'sameSessionContent':
+            session != null && identical(session.content, target?.content),
+        'sameSessionActivity':
+            session != null && identical(session.activity.value, snapshot),
+        'currentDisplay': current == null
+            ? null
+            : {
+                'isCurrent': current.isCurrent,
+                'expanded': current.expanded,
+                'turnId': current.turnId,
+                'activityId': current.activityId,
+                'windowCount': current.windows.length,
+              },
+      },
+      'activity': snapshot == null
+          ? null
+          : {
+              'revision': snapshot.revision,
+              'completedThrough': snapshot.completedThrough,
+              'executionPresent': snapshot.executionPresent,
+              'entryCount': snapshot.entries.length,
+              'entries': [
+                for (final entry in snapshot.entries.take(16))
+                  {
+                    'identityType': entry.identity.runtimeType.toString(),
+                    'id': entry.atom.id,
+                    'kind': entry.atom.kind.name,
+                    'lifecycle': entry.atom.lifecycle.runtimeType.toString(),
+                    'sourceType': entry.atom.source.runtimeType.toString(),
+                    'turnId': entry.atom.turnId,
+                    'attemptId': entry.atom.attemptId,
+                    'completionSeq': entry.atom.completionSeq,
+                  },
+              ],
+            },
+      'widgets': {
+        'activityKeyOnstage': keyOnstage,
+        'activityKeyAll': keyAll,
+        'activityBarOnstage': find
+            .byType(ConversationActivityBar)
+            .evaluate()
+            .length,
+        'activityBarAll': find
+            .byType(ConversationActivityBar, skipOffstage: false)
+            .evaluate()
+            .length,
+        'currentConnectorOnstage': find
+            .byType(ConversationCurrentConnector)
+            .evaluate()
+            .length,
+        'currentConnectorAll': connectors.evaluate().length,
+        'connectors': [
+          for (final widget in tester.widgetList<ConversationCurrentConnector>(
+            connectors,
+          ))
+            {
+              'sameContent': identical(widget.content, target?.content),
+              'displayActive': widget.isDisplayActive(),
+              'viewKind': widget.view?.kind.name,
+              'stateActivityKind': widget.session.activity?.kind.name,
+              'stateActiveTurnId': widget.session.activeTurn?.turnId,
+            },
+        ],
+        'treeLimit': 20,
+        'tree': tree,
+      },
+    };
   }
 
   Future<void> release(String stage) =>

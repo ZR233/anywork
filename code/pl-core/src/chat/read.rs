@@ -317,57 +317,70 @@ impl Session {
             }
         }
         self.ensure_initialized().await?;
-        let (head, durable, mut selected) = self.with_timeline(|state| {
-            let head = request
-                .before
-                .as_ref()
-                .map(|cursor| cursor.ceiling)
-                .or(request.ceiling)
-                .unwrap_or(state.head);
-            if head > state.head {
-                return Err(ChatError::InvalidArgument(
-                    "ceiling exceeds published head".into(),
-                ));
-            }
-            let upper = request
-                .before
-                .as_ref()
-                .map_or(head, |cursor| head.min(cursor.append_seq - 1));
-            let records = state.pending_index(Some(&request.query));
-            let selection = if upper <= state.durable {
-                Selection {
-                    records: Vec::new(),
-                    remaining: demand,
-                    exhausted: true,
-                    candidates: 0,
+        let (head, durable, mut selected, collection_head, collection_durable, pending_counts) =
+            self.with_timeline(|state| {
+                let head = request
+                    .before
+                    .as_ref()
+                    .map(|cursor| cursor.ceiling)
+                    .or(request.ceiling)
+                    .unwrap_or(state.head);
+                if head > state.head {
+                    return Err(ChatError::InvalidArgument(
+                        "ceiling exceeds published head".into(),
+                    ));
                 }
-            } else if request.query.selection == ChatSelection::RunHeads {
-                select_run_heads(records, state.durable, upper, demand, budget)
-            } else {
-                select_records(
-                    records.into_iter().flat_map(|index| {
-                        index
-                            .range((Excluded(state.durable), Included(upper)))
-                            .rev()
-                            .map(|(_, record)| record)
-                    }),
-                    demand,
-                    budget,
-                )
-            };
-            let sql_upper = if request.query.selection == ChatSelection::RunHeads {
-                selection
-                    .records
-                    .last()
-                    .and_then(|(record, _)| record.header.run)
-                    .map_or(upper, |run| upper.min(run.start_seq - 1))
-            } else {
-                upper
-            };
-            Ok((head, state.durable.min(head).min(sql_upper), selection))
-        })?;
+                let upper = request
+                    .before
+                    .as_ref()
+                    .map_or(head, |cursor| head.min(cursor.append_seq - 1));
+                let records = state.pending_index(Some(&request.query));
+                let selection = if upper <= state.durable {
+                    Selection {
+                        records: Vec::new(),
+                        remaining: demand,
+                        exhausted: true,
+                        candidates: 0,
+                    }
+                } else if request.query.selection == ChatSelection::RunHeads {
+                    select_run_heads(records, state.durable, upper, demand, budget)
+                } else {
+                    select_records(
+                        records.into_iter().flat_map(|index| {
+                            index
+                                .range((Excluded(state.durable), Included(upper)))
+                                .rev()
+                                .map(|(_, record)| record)
+                        }),
+                        demand,
+                        budget,
+                    )
+                };
+                let sql_upper = if request.query.selection == ChatSelection::RunHeads {
+                    selection
+                        .records
+                        .last()
+                        .and_then(|(record, _)| record.header.run)
+                        .map_or(upper, |run| upper.min(run.start_seq - 1))
+                } else {
+                    upper
+                };
+                Ok((
+                    head,
+                    state.durable.min(head).min(sql_upper),
+                    selection,
+                    state.head,
+                    state.durable,
+                    state.pending_counts(),
+                ))
+            })?;
         tracing::debug!(
             target: "conversation_work",
+            head = collection_head,
+            durable = collection_durable,
+            ceiling = head,
+            pending_completion_records = pending_counts.0,
+            pending_content_keys = pending_counts.1,
             pending_candidates = selected.candidates,
             pending_returned = selected.records.len(),
             pending_payload_bytes = selected.records.iter()

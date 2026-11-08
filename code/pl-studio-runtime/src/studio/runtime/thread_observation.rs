@@ -95,6 +95,12 @@ pub(super) struct RuntimeStateCut {
     pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
 }
 
+#[derive(Clone)]
+pub(super) struct StateActivityCut {
+    pub(super) observation_revision: u64,
+    pub(super) activity: Option<Arc<pl_protocol::ThreadActivity>>,
+}
+
 /// A bounded State observation, cancelled with its owner.
 ///
 /// This carries Tokio's explicit lag errors without taking responsibility for reliable delivery
@@ -115,6 +121,10 @@ impl StateReceiver {
     /// Captures the queued observation prefix without consuming it or reserving capacity.
     pub(super) fn len(&self) -> usize {
         self.receiver.len()
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.closed.is_cancelled() || (self.receiver.is_closed() && self.receiver.is_empty())
     }
 
     pub(super) async fn recv(&mut self) -> Result<ThreadLiveEvent, broadcast::error::RecvError> {
@@ -169,6 +179,8 @@ pub(in crate::studio) struct ThreadLiveFeed {
     #[cfg(test)]
     first_open_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     latest_runtime: Mutex<Option<RuntimeStateCut>>,
+    /// Original State activity event retained for subscribers opening after its broadcast.
+    latest_activity: Mutex<Option<StateActivityCut>>,
 }
 
 impl ThreadLiveFeed {
@@ -201,6 +213,18 @@ impl ThreadLiveFeed {
         current: Arc<crate::studio::thread_projection::CurrentState>,
     ) -> Result<()> {
         self.publish_conversation(session, current)
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_test_state_activity(
+        &self,
+        observation_revision: u64,
+        activity: Option<pl_protocol::ThreadActivity>,
+    ) {
+        self.publish(|| ThreadLiveEvent::Activity {
+            observation_revision,
+            activity: activity.map(Arc::new),
+        });
     }
 
     fn publish_conversation(
@@ -242,6 +266,7 @@ impl ThreadLiveFeed {
             #[cfg(test)]
             first_open_wait: Default::default(),
             latest_runtime: Default::default(),
+            latest_activity: Default::default(),
         }
     }
 
@@ -257,6 +282,13 @@ impl ThreadLiveFeed {
 
     pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
         self.latest_runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn state_activity(&self) -> Option<StateActivityCut> {
+        self.latest_activity
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -316,6 +348,25 @@ impl ThreadLiveFeed {
         // Demand is advisory, not the registration barrier. Facts and retained watches are updated
         // independently; no outward envelope (or its dedicated clone) is built without a receiver.
         let event = event();
+        if let ThreadLiveEvent::Activity {
+            observation_revision,
+            activity,
+        } = &event
+        {
+            let mut latest = self
+                .latest_activity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if latest
+                .as_ref()
+                .is_none_or(|cut| *observation_revision > cut.observation_revision)
+            {
+                *latest = Some(StateActivityCut {
+                    observation_revision: *observation_revision,
+                    activity: activity.clone(),
+                });
+            }
+        }
         if let ThreadLiveEvent::Runtime {
             runtime,
             model_route,
