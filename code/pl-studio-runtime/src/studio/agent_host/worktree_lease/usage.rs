@@ -52,13 +52,19 @@ pub(super) struct WorkspaceAdmission {
     removals: BTreeMap<u64, (String, WorkspaceIdentity)>,
 }
 impl WorkspaceAdmission {
-    pub(super) fn preserve_legacy_lease(&mut self, lease: &super::WorktreeLease) {
+    pub(super) fn preserve_restored_lease(
+        &mut self,
+        lease: &super::WorktreeLease,
+        identity: Option<WorkspaceIdentity>,
+    ) {
         if lease.state == super::WorktreeLeaseState::Cleaned
             || self.resources.contains_key(&lease.owner_thread_id)
         {
             return;
         }
-        let target = if lease.ssh_alias.is_some() {
+        let target = if let Some(identity) = identity {
+            UsageTarget::Assigned(identity)
+        } else if lease.ssh_alias.is_some() {
             // A pre-identity SSH lease does not prove an endpoint. Its original Git-derived
             // canonical path remains protected at any matching SSH site, never rebound by scan.
             UsageTarget::LegacySshWorktree(lease.path.clone())

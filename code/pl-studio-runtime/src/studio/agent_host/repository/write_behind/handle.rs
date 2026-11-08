@@ -765,6 +765,90 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn hydrated_ssh_worktree_cleanup_uses_only_its_saved_physical_binding() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::{
+            WorkspaceEndpoint, WorkspaceIdentity, load_leases,
+        };
+        for has_binding in [true, false] {
+            let temp = tempfile::tempdir()?;
+            let database = temp.path().join("data/studio.sqlite");
+            let store = StudioStore::open(&database).await?;
+            let mut active = lease(Path::new("/repository"), "cold-ssh-child");
+            active.repository_root = "/repository".into();
+            active.path = "/repository/.anywork/worktrees/root/cold-ssh-child".into();
+            active.ssh_alias = Some("original-alias".into());
+            let identity = WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Ssh {
+                    host: "original.example".into(),
+                    port: 22,
+                    username: "fixture".into(),
+                },
+                active.path.clone(),
+            )?;
+            if has_binding {
+                store
+                    .bind_workspace_identity(&active.owner_thread_id, &identity)
+                    .await?;
+            }
+            let old_writer = ThreadWriteBehindWriter::new(store.clone());
+            let old_owner = WorktreeLeaseOwner::new(old_writer.clone());
+            old_owner.record_durable(active.clone()).await?;
+            active.transition(WorktreeLeaseState::Active);
+            old_owner.record_durable(active.clone()).await?;
+            old_writer.shutdown().await?;
+            drop(old_owner);
+            drop(store);
+
+            let store = StudioStore::open(&database).await?;
+            let writer = ThreadWriteBehindWriter::new(store.clone());
+            let owner = WorktreeLeaseOwner::new(writer.clone());
+            owner.restore(&store, load_leases(&store).await?).await?;
+            assert_eq!(writer.admitted_ticket(), 0, "restore must not write leases");
+            if has_binding {
+                let borrower = owner.reserve_workspace("borrower", identity.endpoint.clone())?;
+                owner.assign_workspace(&borrower, identity.clone())?;
+                assert!(
+                    owner
+                        .begin_workspace_cleanup(&active.owner_thread_id, &identity, None)
+                        .is_err(),
+                    "saved identity must not bypass a live borrower"
+                );
+                drop(borrower);
+                let changed = WorkspaceIdentity::canonical(
+                    WorkspaceEndpoint::Ssh {
+                        host: "replacement.example".into(),
+                        port: 22,
+                        username: "fixture".into(),
+                    },
+                    identity.root.clone(),
+                )?;
+                assert!(
+                    owner
+                        .begin_workspace_cleanup(&active.owner_thread_id, &changed, None)
+                        .is_err(),
+                    "the same path on a different endpoint is not deletion authority"
+                );
+                // No execution owner or SSH connection is needed to recover cleanup authority.
+                let removal =
+                    owner.begin_workspace_cleanup(&active.owner_thread_id, &identity, None)?;
+                drop(removal);
+                owner
+                    .begin_workspace_cleanup(&active.owner_thread_id, &identity, None)?
+                    .complete();
+            } else {
+                assert!(
+                    owner
+                        .begin_workspace_cleanup(&active.owner_thread_id, &identity, None)
+                        .is_err(),
+                    "an old alias without a saved endpoint must remain protected"
+                );
+            }
+            writer.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn hydrated_active_binding_waits_for_the_current_writer_ack() -> Result<()> {
         check_hydrated_active_binding(false).await
     }
@@ -794,7 +878,7 @@ mod storage_fault_tests {
 
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let owner = WorktreeLeaseOwner::new(writer.clone());
-        owner.restore(load_leases(&store).await?);
+        owner.restore(&store, load_leases(&store).await?).await?;
         assert_eq!(owner.get(&active.owner_thread_id), Some(active.clone()));
         assert_eq!(writer.admitted_ticket(), 0, "hydration must not enqueue");
         let usage = owner.reserve_workspace(&active.owner_thread_id, WorkspaceEndpoint::Local)?;
