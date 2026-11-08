@@ -73,6 +73,9 @@ class ConversationActivityStatus extends StatelessWidget {
       header: TimelineActivityRow(
         label: context.conversationActivityLabel(view),
         icon: view.kind.icon,
+        indicatorStyle: view.kind == ConversationActivityKind.responding
+            ? TimelineActivityIndicatorStyle.writing
+            : TimelineActivityIndicatorStyle.catTail,
         isIssue: view.kind.isIssue,
         active:
             view.waits ||
@@ -119,6 +122,7 @@ class ConversationResponseView extends StatelessWidget {
       builder: (context, seconds) => TimelineActivityRow(
         label: context.l10n.conversationActivityResponding,
         icon: Icons.chat_bubble_outline,
+        indicatorStyle: TimelineActivityIndicatorStyle.writing,
         active: active,
         header: true,
         expandable: false,

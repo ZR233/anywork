@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import 'timeline_cat_tail.dart';
 
+enum TimelineActivityIndicatorStyle { catTail, writing }
+
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
 ///
 /// Timeline 的组摘要、思考、工具、搜索与等候成员统一使用这一行，因此它们的图标与
@@ -22,6 +24,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.iconColor,
     this.isIssue = false,
     this.active = false,
+    this.indicatorStyle = TimelineActivityIndicatorStyle.catTail,
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
@@ -70,6 +73,7 @@ class TimelineActivityRow extends StatelessWidget {
 
   /// 该行对应的成员仍在进行中。
   final bool active;
+  final TimelineActivityIndicatorStyle indicatorStyle;
 
   final bool expanded;
 
@@ -143,6 +147,7 @@ class TimelineActivityRow extends StatelessWidget {
                   TimelineActivityIndicator(
                     icon: isIssue ? Icons.error_outline : icon,
                     active: active && !isIssue,
+                    style: indicatorStyle,
                     color:
                         iconColor ??
                         (isIssue
@@ -247,12 +252,14 @@ class TimelineActivityIndicator extends StatefulWidget {
     required this.icon,
     required this.color,
     this.active = false,
+    this.style = TimelineActivityIndicatorStyle.catTail,
     super.key,
   });
 
   final IconData? icon;
   final Color color;
   final bool active;
+  final TimelineActivityIndicatorStyle style;
 
   @override
   State<TimelineActivityIndicator> createState() =>
@@ -263,8 +270,29 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
     with SingleTickerProviderStateMixin {
   late final AnimationController _motion = AnimationController(
     vsync: this,
-    duration: TimelineCatTail.duration,
+    duration: _duration,
   );
+
+  Duration get _duration =>
+      widget.style == TimelineActivityIndicatorStyle.writing
+      ? const Duration(milliseconds: 900)
+      : TimelineCatTail.duration;
+
+  static final _writingStroke = TweenSequence<Offset>([
+    for (final (from, to) in const [
+      (Offset(-.08, .06), Offset(.08, -.06)),
+      (Offset(.08, -.06), Offset(-.04, .06)),
+      (Offset(-.04, .06), Offset(.12, -.04)),
+      (Offset(.12, -.04), Offset(-.08, .06)),
+    ])
+      TweenSequenceItem(
+        tween: Tween(
+          begin: from,
+          end: to,
+        ).chain(CurveTween(curve: Curves.easeInOut)),
+        weight: 1,
+      ),
+  ]);
 
   bool get _animate =>
       widget.active &&
@@ -280,6 +308,11 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   @override
   void didUpdateWidget(covariant TimelineActivityIndicator oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.style != widget.style) {
+      _motion.stop();
+      _motion.value = 0;
+      _motion.duration = _duration;
+    }
     _sync();
   }
 
@@ -301,6 +334,19 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   @override
   Widget build(BuildContext context) {
     if (widget.active) {
+      if (widget.style == TimelineActivityIndicatorStyle.writing) {
+        final pen = Icon(
+          Icons.edit_note_rounded,
+          size: TimelineActivityRow.iconSize,
+          color: widget.color,
+        );
+        return _animate
+            ? SlideTransition(
+                position: _writingStroke.animate(_motion),
+                child: pen,
+              )
+            : pen;
+      }
       return TimelineCatTail(
         progress: _motion,
         color: widget.color,

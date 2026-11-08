@@ -130,7 +130,7 @@ Widget _group({Widget? content, bool live = true, String? thinkingSummary}) =>
 
 void main() {
   group('统一实时状态栏', () {
-    testWidgets('所有活动阶段统一显示猫尾巴，故障仍保留错误图标', (tester) async {
+    testWidgets('输出阶段显示书写图标，其余活动显示猫尾巴，故障保留错误图标', (tester) async {
       for (final kind in [
         ConversationActivityKind.preparing,
         ConversationActivityKind.compacting,
@@ -149,7 +149,16 @@ void main() {
             ),
           ),
         );
-        expect(find.byType(TimelineCatTail), findsOneWidget, reason: kind.name);
+        if (kind == ConversationActivityKind.responding) {
+          expect(find.byType(TimelineCatTail), findsNothing);
+          expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
+        } else {
+          expect(
+            find.byType(TimelineCatTail),
+            findsOneWidget,
+            reason: kind.name,
+          );
+        }
       }
       final progress = tester
           .widget<TimelineCatTail>(find.byType(TimelineCatTail))
@@ -170,6 +179,42 @@ void main() {
       );
       expect(find.byType(TimelineCatTail), findsNothing);
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('流式正文使用现成书写图标，减少动态效果时停止书写动画', (tester) async {
+      for (final disabled in [false, true]) {
+        await tester.pumpWidget(
+          _wrapWithApp(
+            const ConversationResponseView(child: Text('正在增长的正文')),
+            disableAnimations: disabled,
+          ),
+        );
+        expect(find.byType(TimelineCatTail), findsNothing);
+        expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
+        final writing = find.descendant(
+          of: find.byType(TimelineActivityIndicator),
+          matching: find.byType(SlideTransition),
+        );
+        if (disabled) {
+          expect(writing, findsNothing);
+        } else {
+          expect(writing, findsOneWidget);
+          await tester.pump();
+          final position = tester.widget<SlideTransition>(writing).position;
+          final before = position.value;
+          await tester.pump(const Duration(milliseconds: 150));
+          expect(position.value, isNot(before));
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+      await tester.pumpWidget(
+        _wrapWithApp(
+          const ConversationResponseView(active: false, child: Text('已结束的正文')),
+        ),
+      );
+      expect(find.byIcon(Icons.edit_note_rounded), findsNothing);
+      expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
