@@ -105,25 +105,27 @@ const _tools = [
   ),
 ];
 
-Widget _group({Widget? content, bool live = true}) => TimelineWorkGroupView(
-  id: 'test-group',
-  live: live,
-  executionPresent: live,
-  admissionClosed: !live,
-  initiallyExpanded: live,
-  summary: TimelineGroupSummary(
-    memberCount: 82,
-    activeCount: live ? 1 : 0,
-    failedCount: 4,
-    cancelledCount: 2,
-    startedAt: live ? null : 100,
-    finishedAt: live ? null : 225,
-    categories: const [
-      TimelineCategoryCount(category: TimelineCategory.command, count: 10),
-    ],
-  ),
-  childBuilder: (_) => content ?? const Text('成员正文'),
-);
+Widget _group({Widget? content, bool live = true, String? thinkingSummary}) =>
+    TimelineWorkGroupView(
+      id: 'test-group',
+      live: live,
+      executionPresent: live,
+      admissionClosed: !live,
+      initiallyExpanded: live,
+      summary: TimelineGroupSummary(
+        memberCount: 82,
+        activeCount: live ? 1 : 0,
+        failedCount: 4,
+        cancelledCount: 2,
+        startedAt: live ? null : 100,
+        finishedAt: live ? null : 225,
+        latestThinkingSummary: thinkingSummary,
+        categories: const [
+          TimelineCategoryCount(category: TimelineCategory.command, count: 10),
+        ],
+      ),
+      childBuilder: (_) => content ?? const Text('成员正文'),
+    );
 
 void main() {
   group('统一实时状态栏', () {
@@ -223,6 +225,79 @@ void main() {
       }
     }
 
+    for (final live in [true, false]) {
+      testWidgets('实时标题渲染 Markdown 概要，历史标题保留耗时且可展开 ($live)', (tester) async {
+        const source =
+            '**Reading receipt metadata** *检查* `owner` [详情](https://example.test)';
+        await tester.pumpWidget(
+          _wrapWithApp(
+            _group(live: live, thinkingSummary: source),
+            disableAnimations: true,
+          ),
+        );
+        await tester.pump();
+        final header = find.byKey(
+          const ValueKey('source-unit-header:test-group'),
+        );
+        if (live) {
+          final paragraph = tester.renderObject<RenderParagraph>(
+            find.descendant(
+              of: header,
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is RichText &&
+                    widget.text.toPlainText().contains(
+                      'Reading receipt metadata',
+                    ),
+              ),
+            ),
+          );
+          expect(
+            paragraph.text.toPlainText(),
+            'Reading receipt metadata 检查 owner 详情',
+          );
+          bool hasStyle(InlineSpan span, bool Function(TextStyle?) matches) =>
+              span is TextSpan &&
+              (matches(span.style) ||
+                  (span.children?.any((child) => hasStyle(child, matches)) ??
+                      false));
+          expect(
+            hasStyle(
+              paragraph.text,
+              (style) => style?.fontWeight == FontWeight.bold,
+            ),
+            isTrue,
+          );
+          expect(
+            hasStyle(
+              paragraph.text,
+              (style) => style?.fontStyle == FontStyle.italic,
+            ),
+            isTrue,
+          );
+          bool interactive(InlineSpan span) =>
+              span is TextSpan &&
+              (span.recognizer != null ||
+                  (span.children?.any(interactive) ?? false));
+          expect(interactive(paragraph.text), isFalse);
+        } else {
+          expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
+          expect(find.byType(TimelineReasoningSummary), findsNothing);
+          expect(
+            find.textContaining('Reading receipt metadata', findRichText: true),
+            findsNothing,
+          );
+        }
+        expect(find.text('成员正文'), live ? findsOneWidget : findsNothing);
+        await tester.tap(
+          find.descendant(of: header, matching: find.byType(RichText)).first,
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('成员正文'), live ? findsNothing : findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+
     testWidgets('思考概要在窄窗和文字缩放下保持一行，正文保持独立展开', (tester) async {
       for (final width in [360.0, 760.0, 1040.0]) {
         await tester.binding.setSurfaceSize(Size(width, 600));
@@ -231,6 +306,7 @@ void main() {
             ConversationActivityBar(
               children: [
                 _group(
+                  thinkingSummary: summary,
                   content: TimelineReasoningView(
                     summary: summary,
                     body: const Text('按需展开的正文'),
@@ -252,6 +328,18 @@ void main() {
           );
           await tester.pump();
           expect(tester.takeException(), isNull);
+          final headerParagraph = tester.renderObject<RenderParagraph>(
+            find.descendant(
+              of: find.byKey(const ValueKey('source-unit-header:test-group')),
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is RichText &&
+                    widget.text.toPlainText().contains('第一段概要很长'),
+              ),
+            ),
+          );
+          expect(headerParagraph.maxLines, 1);
+          expect(headerParagraph.didExceedMaxLines, isTrue);
           expect(
             tester.getSize(find.byType(TimelineReasoningView)).height,
             closeTo(shortHeight, .1),

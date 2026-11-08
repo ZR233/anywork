@@ -93,6 +93,27 @@ impl CutMeasure {
         Ok(next)
     }
 
+    pub(super) fn frame_bytes_for(
+        self,
+        entries_bytes: usize,
+        entries: usize,
+        placement: ChatPlacement,
+    ) -> Result<usize> {
+        if placement == ChatPlacement::Update {
+            return ChatBatch {
+                placement,
+                entries: Vec::new(),
+                before: None,
+                current: None,
+            }
+            .encoded_len()?
+            .checked_add(entries_bytes)
+            .and_then(|bytes| bytes.checked_add(entries.saturating_sub(1)))
+            .ok_or_else(overflow);
+        }
+        self.frame_bytes(entries_bytes, entries)
+    }
+
     pub(super) fn frame_bytes(self, entries_bytes: usize, entries: usize) -> Result<usize> {
         self.base
             .checked_add(self.suffix_bytes)

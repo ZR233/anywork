@@ -154,8 +154,42 @@ async fn background_tool_group_members_remain_readable_and_rebuild_at_real_compl
     )?;
     // apply_input already committed the independent result; persist transfers it.
     persist(&db, &mut projection, 2).await?;
+    let saved = read_state(&db).await?.context("saved projection cut")?;
+    projection = TimelineProjection::new("db".into(), saved.generation, saved.next_position);
+    projection.restore_recovery(&saved.recovery)?;
+    for seq in 2..=3 {
+        let mut result = atom.clone();
+        result.id = format!("background-tool-{seq}");
+        result.source = ChatSourceId::BackgroundResult {
+            message_id: format!("message-{seq}"),
+        };
+        result.turn_id = Some(format!("different-origin-{seq}"));
+        result.completion_item_id = Some(result.id.clone());
+        result.completion_seq = Some(seq);
+        result.lifecycle = ChatAtomLifecycle::Terminal {
+            started: Some(at(seq + 1)),
+            ended: Some(at(seq + 1)),
+            outcome: ChatTerminalOutcome::Completed,
+        };
+        result.finished_at = Some(seq as i64 + 1);
+        db.execute_raw(statement(
+            "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,metadata,payload) VALUES(?,?,'conversation',NULL,?,?)",
+            vec![integer(seq)?.into(), result.id.clone().into(),
+                serde_json::to_vec(&result)?.into(), b"original result".to_vec().into()],
+        )).await?;
+        projection.apply_input(TimelineInput::Atom {
+            atom: Box::new(result),
+            payload: Some(PayloadData::Inline {
+                bytes: b"original result".to_vec(),
+            }),
+            thinking_summary: None,
+        })?;
+        assert!(projection.take_committed().is_empty());
+        persist(&db, &mut projection, seq + 1).await?;
+    }
     let read = |reference| ChatScope::GroupMembers { reference };
-    let items = page_rows(&db, &ChatScope::Main, None, 100, 2, 8, &[]).await?;
+    let items = page_rows(&db, &ChatScope::Main, None, 100, 4, 8, &[]).await?;
+    assert_eq!(items.len(), 1);
     let ChatEntry::Item(group) = &items[0].1 else {
         panic!("background group")
     };
@@ -164,37 +198,79 @@ async fn background_tool_group_members_remain_readable_and_rebuild_at_real_compl
         &read(group.members.clone().unwrap()),
         None,
         100,
-        2,
+        4,
         8,
         &[],
     )
     .await?;
-    assert_eq!(members.len(), 1);
+    assert_eq!(members.len(), 3);
     assert!(
-        matches!(&members[0].1, ChatEntry::Atom(member) if member.id == atom.id && member.source == atom.source)
+        members.iter().any(|(_, entry)| matches!(entry, ChatEntry::Atom(member) if member.id == atom.id && member.source == atom.source))
     );
     assert!(
         matches!(&items[0].1, ChatEntry::Item(item) if item.kind == TimelineItemKind::WorkGroup && item.position == Some(0))
     );
-    rebuild(&db, "db").await?;
-    let items = page_rows(&db, &ChatScope::Main, None, 100, 2, 8, &[]).await?;
+    let original_facts = db
+        .query_all_raw(statement(
+            "SELECT metadata FROM conversation_atom_facts ORDER BY effect_seq,atom_id",
+            vec![],
+        ))
+        .await?
+        .into_iter()
+        .map(|row| row.try_get::<Vec<u8>>("", "metadata"))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for batch in [1, 2, 128] {
+        rebuild_batched(&db, "db", batch).await?;
+        let items = page_rows(&db, &ChatScope::Main, None, 100, 4, 8, &[]).await?;
+        assert_eq!(items.len(), 1);
+        let ChatEntry::Item(group) = &items[0].1 else {
+            panic!("rebuilt group")
+        };
+        assert_eq!(group.kind, TimelineItemKind::WorkGroup);
+        assert_eq!(group.position, Some(0));
+        assert_eq!(group.source, atom.source);
+        assert_eq!(group.summary.as_ref().unwrap().member_count, 3);
+        let members = page_rows(
+            &db,
+            &read(group.members.clone().unwrap()),
+            None,
+            100,
+            4,
+            8,
+            &[],
+        )
+        .await?;
+        assert_eq!(members.len(), 3);
+        let mut sources = std::collections::BTreeSet::new();
+        for (_, member) in &members {
+            let ChatEntry::Atom(member) = member else {
+                panic!("member atom")
+            };
+            sources.insert(serde_json::to_string(&member.source)?);
+        }
+        assert_eq!(sources.len(), 3);
+        assert_eq!(
+            original_facts,
+            db.query_all_raw(statement(
+                "SELECT metadata FROM conversation_atom_facts ORDER BY effect_seq,atom_id",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<Vec<u8>>("", "metadata"))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        );
+    }
+    let items = page_rows(&db, &ChatScope::Main, None, 100, 4, 8, &[]).await?;
     let ChatEntry::Item(group) = &items[0].1 else {
-        panic!("rebuilt group")
+        panic!("group")
     };
-    assert_eq!(group.kind, TimelineItemKind::WorkGroup);
-    assert_eq!(group.position, Some(0));
-    assert_eq!(group.source, atom.source);
-    let members = page_rows(
-        &db,
-        &read(group.members.clone().unwrap()),
-        None,
-        100,
-        2,
-        8,
-        &[],
-    )
-    .await?;
-    assert!(matches!(&members[0].1, ChatEntry::Atom(member) if member.id == atom.id));
+    let mut invalid = group.as_ref().clone();
+    invalid.source = ChatSourceId::BackgroundResult {
+        message_id: "rewritten-source".into(),
+    };
+    assert!(update_background_tail(&db, &invalid).await.is_err());
+    assert!(save_item(&db, "db", &invalid, 5).await.is_err());
     Ok(())
 }
 

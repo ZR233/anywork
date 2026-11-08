@@ -18,8 +18,8 @@ impl MigrationTrait for CompletionBoundary {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         async {
             let db = manager.get_connection();
-            ensure!(version(db).await? == 16, "completion boundary requires schema 16");
-            // This step runs after the published SourceClassification step. Its layout and
+            ensure!(version(db).await? == 17, "completion boundary requires schema 17");
+            // This step runs after the published TimelineBackgroundTail step. Its layout and
             // recovery decoding are validated before moving any original material.
             demand_conversation::validate_tables(db).await?;
             timeline::validate_tables(db).await?;
@@ -67,8 +67,8 @@ pub(in crate::studio::storage::history) async fn applied(
 
 pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
     ensure!(
-        version(db).await? == 16,
-        "completion boundary requires schema 16"
+        version(db).await? == 17,
+        "completion boundary requires schema 17"
     );
     super::validate_tables(db).await?;
     for sql in [

@@ -15,22 +15,6 @@ use std::sync::Arc;
 
 const THREAD: &str = "timeline-items-migration";
 
-struct BeforeCompletion;
-impl MigratorTraitSelf for BeforeCompletion {
-    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
-        Migrator {
-            thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
-        }
-        .migrations()
-        .into_iter()
-        .take_while(|step| !is_lifecycle_migration(step.name()))
-        .filter(|step| step.name() != COMPLETION_BOUNDARY)
-        .collect()
-    }
-}
-
 struct Published13;
 impl MigratorTraitSelf for Published13 {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
@@ -47,6 +31,7 @@ impl MigratorTraitSelf for Published13 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
             )
@@ -72,6 +57,7 @@ impl MigratorTraitSelf for Published14 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
             )
@@ -79,6 +65,32 @@ impl MigratorTraitSelf for Published14 {
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
         .collect()
     }
+}
+
+/// Freeze the released member step's schema-16 input and official ledger.
+struct Published16;
+impl MigratorTraitSelf for Published16 {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        Migrator {
+            thread_id: THREAD.into(),
+            execution_identity: None,
+            bot_root: None,
+        }
+        .migrations()
+        .into_iter()
+        .filter(|step| !matches!(step.name(), TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY))
+        .collect()
+    }
+}
+async fn prepare_published16(db: &DatabaseConnection) -> Result<()> {
+    let count = Published16
+        .get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .take_while(|step| !is_lifecycle_migration(step.name()))
+        .count();
+    Published16.up(db, Some(u32::try_from(count)?)).await?;
+    Ok(())
 }
 
 async fn database_id(db: &impl ConnectionTrait) -> Result<String> {
@@ -660,7 +672,8 @@ async fn published_members(old_columns: bool) -> Result<(tempfile::TempDir, std:
     let (directory, path, _, _) = schema14().await?;
     let db = super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
         .await?;
-    BeforeCompletion.up(&db, None).await?;
+    prepare_published16(&db).await?;
+    assert_eq!(version(&db).await?, 16);
     db.execute_raw(statement(
         "DELETE FROM seaql_migrations WHERE version=?",
         vec![MEMBER_READ_METADATA.into()],
@@ -704,29 +717,43 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
         }
         db.close().await?;
 
-        let store = HistoryStore::open(&path, THREAD).await?;
-        store.prepare_conversation_read().await?;
-        assert_migrated_content(&store).await?;
-        let db = &store.writer().await?.db;
-        assert_eq!(source_bytes(db).await?, source);
-        assert_eq!(derived_bytes(db).await?, derived);
-        let upgraded_ledger = migration_records(db).await?;
-        assert_eq!(upgraded_ledger.len(), ledger.len() + 2);
+        let db =
+            super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+                .await?;
+        prepare_published16(&db).await?;
+        assert_eq!(source_bytes(&db).await?, source);
+        assert_eq!(derived_bytes(&db).await?, derived);
+        let upgraded_ledger = migration_records(&db).await?;
+        assert_eq!(upgraded_ledger.len(), ledger.len() + 1);
         assert!(ledger.iter().all(|record| upgraded_ledger.contains(record)));
         let invalid = db.query_one_raw(statement("SELECT 1 FROM timeline_item_members m
             LEFT JOIN conversation_items c ON c.item_id=m.completion_item_id
             WHERE m.updated_effect>4 OR m.updated_effect<m.admitted_effect
               OR (m.completion_item_id IS NOT NULL AND m.payload_bytes IS NOT length(c.payload)) LIMIT 1", vec![])).await?;
         assert!(invalid.is_none());
-        store.close_for_deletion().await?;
-
+        prepare_published16(&db).await?;
+        assert_eq!(migration_records(&db).await?, upgraded_ledger);
+        assert_eq!(derived_bytes(&db).await?, derived);
+        // The later named tail migration deliberately rebuilds derived data.
+        // Only this fixture owns these rejection triggers.
+        for row in db
+            .query_all_raw(statement(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'reject_%'",
+                vec![],
+            ))
+            .await?
+        {
+            let name: String = row.try_get("", "name")?;
+            db.execute_unprepared(&format!("DROP TRIGGER \"{}\"", name.replace('"', "\"\"")))
+                .await?;
+        }
+        db.close().await?;
         let store = HistoryStore::open(&path, THREAD).await?;
         store.prepare_conversation_read().await?;
         assert_migrated_content(&store).await?;
-        assert_eq!(
-            migration_records(&store.writer().await?.db).await?,
-            upgraded_ledger
-        );
+        let latest = migration_records(&store.writer().await?.db).await?;
+        assert_eq!(latest.len(), upgraded_ledger.len() + 2);
+        assert!(upgraded_ledger.iter().all(|record| latest.contains(record)));
         store.close_for_deletion().await?;
     }
     Ok(())
@@ -745,10 +772,15 @@ async fn member_metadata_ddl_and_receipt_roll_back_then_retry_preserves_the_orig
         WHEN NEW.version='{MEMBER_READ_METADATA}' BEGIN SELECT RAISE(ABORT,'member metadata commit fault'); END;")).await?;
     db.close().await?;
     let store = HistoryStore::open(&path, THREAD).await?;
-    let failure = store
-        .prepare_conversation_read()
-        .await
-        .expect_err("the Applied record is in the migration transaction");
+    let failure = {
+        let db =
+            super::super::super::connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite)
+                .await?;
+        let result = prepare_published16(&db).await;
+        db.close().await?;
+        result
+    }
+    .expect_err("the Applied record is in the migration transaction");
     assert!(
         format!("{failure:#}").contains("member metadata commit fault"),
         "{failure:#}"
@@ -762,6 +794,9 @@ async fn member_metadata_ddl_and_receipt_roll_back_then_retry_preserves_the_orig
     assert_eq!(migration_records(&db).await?, ledger);
     db.execute_unprepared("DROP TRIGGER reject_member_metadata")
         .await?;
+    prepare_published16(&db).await?;
+    assert_eq!(source_bytes(&db).await?, source);
+    assert_eq!(derived_bytes(&db).await?, derived);
     db.close().await?;
     let store = HistoryStore::open(&path, THREAD).await?;
     store.prepare_conversation_read().await?;
@@ -953,17 +988,18 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 4,
-        "content preparation records TimelineItems, TimelineThinkingSummary, SourceClassification and CompletionBoundary, not lifecycle migrations"
+        original_ledger.len() + 5,
+        "content preparation records the five named timeline/content upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
                 SOURCE_CLASSIFICATION.into(),
                 COMPLETION_BOUNDARY.into(),
+                TIMELINE_BACKGROUND_TAIL.into(),
             ],
         ))
         .await?
@@ -976,7 +1012,8 @@ async fn formal_migration_round_trip() -> Result<()> {
             TIMELINE_ITEMS,
             SOURCE_CLASSIFICATION,
             TIMELINE_THINKING_SUMMARY,
-            COMPLETION_BOUNDARY
+            COMPLETION_BOUNDARY,
+            TIMELINE_BACKGROUND_TAIL
         ]
     );
     for record in &original_ledger {

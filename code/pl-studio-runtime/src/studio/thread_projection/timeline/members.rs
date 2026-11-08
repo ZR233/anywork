@@ -41,6 +41,13 @@ impl Members {
     }
     fn apply(&mut self, update: &TimelineUpdate) {
         for change in &update.members {
+            // Background results are independently complete and persisted in this
+            // delta. Only their bounded derived head remains in the fold.
+            if matches!(change.atom.source, ChatSourceId::BackgroundResult { .. })
+                && matches!(change.atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+            {
+                continue;
+            }
             if !self.groups.contains_key(&change.item_id) {
                 self.bytes = self.bytes.saturating_add(change.item_id.len() as u64 + 256);
             }

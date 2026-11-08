@@ -3,12 +3,32 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+
+TimelineItem _resultGroup({
+  int count = 1,
+  int position = 0,
+  String id = 'results',
+}) {
+  final fixture = workItem(id, count: count);
+  return TimelineItem(
+    id: id,
+    kind: TimelineItemKind.workGroup,
+    source: const BackgroundResultChatSource(messageId: 'first-result'),
+    delivery: ChatDeliveryKind.independent,
+    position: position,
+    admissionClosed: true,
+    contents: const [],
+    summary: fixture.summary,
+    members: fixture.members,
+  );
+}
 
 // Placement/order are producer facts. The adapter must not recreate the deleted
 // atom/seq/group ledger, deduplicate, or merge adjacent same-turn activities.
@@ -124,6 +144,71 @@ void main() {
     expect(stock.messages.first, same(message));
     expect(card(0), same(presentation));
     expect(card(0).body('body'), same(body));
+  });
+
+  test('Update replaces a result-group header in place and preserves its open member scope', () async {
+    await adapter.applyBatch(
+      chatBatch([chatMessage('before'), _resultGroup()]),
+    );
+    final before = stock.messages.first;
+    final original =
+        stock.messages.last.metadata![timelineDisplayUnitKey]
+            as TimelineDisplayUnit;
+    original.expansion.expanded = true;
+    original.expansion.setBodyVisible(Object(), true);
+    final bodyGeneration = original.expansion.bodyGeneration;
+    await flush();
+    operations.clear();
+    await adapter.applyBatch(
+      chatBatch([_resultGroup(count: 3)], placement: ChatPlacement.update),
+    );
+    await flush();
+    final updated =
+        stock.messages.last.metadata![timelineDisplayUnitKey]
+            as TimelineDisplayUnit;
+    expect(stock.messages, hasLength(2));
+    expect(stock.messages.first, same(before));
+    expect(updated.item.position, 0);
+    expect(updated.item.summary!.memberCount, 3);
+    expect(updated.expansion, same(original.expansion));
+    expect(updated.expansion.expanded, isTrue);
+    expect(updated.expansion.bodyActive, isTrue);
+    expect(updated.expansion.bodyGeneration, same(bodyGeneration));
+    expect(updated.expansion.current, same(updated));
+    expect(operations, hasLength(1));
+    expect(operations.single.type, ChatOperationType.update);
+  });
+
+  test('Update rejects unknown groups, changed positions and ordinary items before mutating', () async {
+    await adapter.applyBatch(chatBatch([_resultGroup(), chatMessage('text')]));
+    final original = List<Message>.of(stock.messages);
+    await flush();
+    operations.clear();
+    for (final replacement in [
+      _resultGroup(id: 'unknown'),
+      _resultGroup(position: 9),
+      workItem('results'),
+      chatMessage('text'),
+    ]) {
+      await expectLater(
+        adapter.applyBatch(
+          chatBatch([replacement], placement: ChatPlacement.update),
+        ),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+    }
+    await expectLater(
+      adapter.applyBatch(
+        chatBatch([
+          _resultGroup(count: 3),
+          _resultGroup(id: 'missing'),
+        ], placement: ChatPlacement.update),
+      ),
+      throwsA(isA<ConversationContinuityError>()),
+    );
+    await flush();
+    expect(stock.messages, orderedEquals(original));
+    expect(operations, isEmpty);
   });
 
   test('Prepend preserves producer order and old identities without grouping or a second insert', () async {

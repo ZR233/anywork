@@ -21,6 +21,7 @@ impl MigratorTraitSelf for PublishedV11 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
             )
@@ -57,6 +58,7 @@ impl MigratorTraitSelf for PublishedV9 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
             )
@@ -98,6 +100,7 @@ impl MigratorTraitSelf for PublishedV10 {
                 BACKGROUND_RESULTS
                     | MEMBER_READ_METADATA
                     | TIMELINE_THINKING_SUMMARY
+                    | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
             )

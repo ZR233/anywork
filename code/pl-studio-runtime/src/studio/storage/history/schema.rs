@@ -12,6 +12,7 @@ mod member_read_metadata;
 mod model_route_head;
 mod source_classification;
 mod sqlite_metadata;
+mod timeline_background_tail;
 mod timeline_items;
 mod timeline_thinking_summary;
 use conversion::{
@@ -125,6 +126,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(timeline_items::TimelineItems),
             Box::new(timeline_thinking_summary::TimelineThinkingSummary),
             Box::new(source_classification::SourceClassification),
+            Box::new(timeline_background_tail::TimelineBackgroundTail),
             Box::new(completion_boundary::CompletionBoundary),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
@@ -172,6 +174,7 @@ const ATOM_METADATA: &str = "m20261102_000001_history_atom_metadata";
 const BACKGROUND_RESULTS: &str = "m20261104_000001_history_background_results";
 const TIMELINE_ITEMS: &str = "m20261103_000001_history_timeline_items";
 const TIMELINE_THINKING_SUMMARY: &str = "m20261108_000001_history_timeline_thinking_summary";
+const TIMELINE_BACKGROUND_TAIL: &str = "m20261109_000001_history_timeline_background_tail";
 const MEMBER_READ_METADATA: &str = "m20261107_000001_history_member_read_metadata";
 const SOURCE_CLASSIFICATION: &str = "m20261108_000001_history_source_classification";
 const COMPLETION_BOUNDARY: &str = "m20261109_000001_history_completion_boundary";
@@ -365,14 +368,18 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let thinking_summary_pending = pending
         .iter()
         .any(|step| step.name() == TIMELINE_THINKING_SUMMARY);
+    let background_tail_pending = pending
+        .iter()
+        .any(|step| step.name() == TIMELINE_BACKGROUND_TAIL);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
-            && (source_classification_pending || matches!(version, 15 | 16))
+            && (source_classification_pending || matches!(version, 15..=17))
             && thinking_summary_pending == (version < 16)
+            && background_tail_pending == (version < 17)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
                 9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -384,7 +391,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12..=16 => {
+                12..=17 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -410,11 +417,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 .iter()
                 .any(|step| step.name() == MEMBER_READ_METADATA)
             {
-                demand_conversation::validate_tables(db).await?;
-                model_route_head::validate_tables(db).await?;
-                atom_metadata::validate_tables(db).await?;
-                member_read_metadata::validate_source(db).await?;
-                validate_saved_heads(db).await?;
+                validate_member_metadata_source(db).await?;
             } else {
                 validate_current_structure(db).await?;
             }
@@ -448,6 +451,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
+                                    | TIMELINE_BACKGROUND_TAIL
                                     | MEMBER_READ_METADATA
                             ) || is_lifecycle_migration(step.name())
                         }),
@@ -468,6 +472,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
+                                    | TIMELINE_BACKGROUND_TAIL
                                     | MEMBER_READ_METADATA
                             ) || is_lifecycle_migration(step.name())
                         }),
@@ -488,6 +493,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | SOURCE_CLASSIFICATION
                                     | COMPLETION_BOUNDARY
                                     | TIMELINE_THINKING_SUMMARY
+                                    | TIMELINE_BACKGROUND_TAIL
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 14 has pending earlier content migrations; existing data preserved"
@@ -508,11 +514,35 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 BACKGROUND_RESULTS
                                     | MEMBER_READ_METADATA
                                     | TIMELINE_THINKING_SUMMARY
+                                    | TIMELINE_BACKGROUND_TAIL
                                     | SOURCE_CLASSIFICATION
                                     | COMPLETION_BOUNDARY
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
+                    );
+                }
+                16 => {
+                    if pending
+                        .iter()
+                        .any(|step| step.name() == MEMBER_READ_METADATA)
+                    {
+                        validate_member_metadata_source(db).await?;
+                    } else {
+                        validate_schema16_structure(db).await?;
+                    }
+                    ensure!(
+                        pending.iter().all(|step| {
+                            matches!(
+                                step.name(),
+                                TIMELINE_BACKGROUND_TAIL
+                                    | BACKGROUND_RESULTS
+                                    | MEMBER_READ_METADATA
+                                    | SOURCE_CLASSIFICATION
+                                    | COMPLETION_BOUNDARY
+                            ) || is_lifecycle_migration(step.name())
+                        }),
+                        "schema 16 has pending earlier content migrations; existing data preserved"
                     );
                 }
                 _ => anyhow::bail!(
@@ -704,10 +734,27 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
+    validate_timeline_structure(db).await
+}
+
+async fn validate_schema16_structure(db: &impl ConnectionTrait) -> Result<()> {
+    ensure!(version(db).await? == 16, "expected schema 16 upgrade input");
+    validate_timeline_structure(db).await
+}
+
+async fn validate_timeline_structure(db: &impl ConnectionTrait) -> Result<()> {
     demand_conversation::validate_tables(db).await?;
     model_route_head::validate_tables(db).await?;
     atom_metadata::validate_tables(db).await?;
     super::conversation::timeline::validate_tables(db).await?;
+    validate_saved_heads(db).await
+}
+
+async fn validate_member_metadata_source(db: &impl ConnectionTrait) -> Result<()> {
+    demand_conversation::validate_tables(db).await?;
+    model_route_head::validate_tables(db).await?;
+    atom_metadata::validate_tables(db).await?;
+    member_read_metadata::validate_source(db).await?;
     validate_saved_heads(db).await
 }
 
@@ -1187,6 +1234,7 @@ impl MigrationTrait for CombinedContent {
                             | SOURCE_CLASSIFICATION
                             | COMPLETION_BOUNDARY
                             | TIMELINE_THINKING_SUMMARY
+                            | TIMELINE_BACKGROUND_TAIL
                     ) && !is_lifecycle_migration(step.name())
                 })
         {

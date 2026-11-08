@@ -184,6 +184,7 @@ pub(in crate::studio) struct MemberChange {
 pub(in crate::studio) struct TimelineUpdate {
     facts: Vec<ChatAtom>,
     members: Vec<MemberChange>,
+    updates: Vec<TimelineItem>,
     current: Vec<TimelineItem>,
     recovery: Vec<u8>,
     next_position: u64,
@@ -203,6 +204,7 @@ pub(in crate::studio) struct TimelineUpdate {
 struct TimelineUpdateRetentionView<'a> {
     facts: &'a [ChatAtom],
     members: &'a [MemberChange],
+    updates: &'a [TimelineItem],
     current: &'a [TimelineItem],
     recovery: &'a [u8],
     next_position: u64,
@@ -248,6 +250,9 @@ impl TimelineUpdate {
             &self.completed_members[index - self.members.len()]
         }
     }
+    pub fn updates(&self) -> &[TimelineItem] {
+        &self.updates
+    }
     pub fn current(&self) -> &[TimelineItem] {
         &self.current
     }
@@ -266,6 +271,7 @@ impl TimelineUpdate {
             let view = TimelineUpdateRetentionView {
                 facts: &self.facts,
                 members: &self.members,
+                updates: &self.updates,
                 current: &self.current,
                 recovery: &[],
                 next_position: self.next_position,
@@ -293,6 +299,7 @@ impl Default for TimelineUpdate {
         Self {
             facts: Vec::new(),
             members: Vec::new(),
+            updates: Vec::new(),
             current: Vec::new(),
             recovery: br#"{"items":[],"active":{}}"#.to_vec(),
             next_position: 0,
@@ -353,6 +360,14 @@ impl LiveItem {
 struct Recovery {
     items: Vec<LiveItem>,
     active: BTreeMap<String, ActiveMember>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background_tail: Option<BackgroundTail>,
+}
+/// A committed product head, never a cache of its members or canonical bodies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackgroundTail {
+    item: TimelineItem,
+    next_member: u64,
 }
 #[derive(Serialize)]
 struct RecoveryView<'a> {
@@ -379,6 +394,8 @@ pub(in crate::studio) struct TimelineProjection {
     next_item: u64,
     active: BTreeMap<String, ActiveMember>,
     committed: Vec<TimelineItem>,
+    background_tail: Option<BackgroundTail>,
+    updates: Vec<TimelineItem>,
     changes: Vec<MemberChange>,
     facts: Vec<ChatAtom>,
     retained_bytes: OnceLock<u64>,
@@ -437,7 +454,79 @@ fn add(value: &mut u32) -> Result<(), ProjectionError> {
     *value = value.checked_add(1).ok_or_else(overflow)?;
     Ok(())
 }
+pub(in crate::studio) fn extend_background_head(
+    item: &mut TimelineItem,
+    atom: &ChatAtom,
+) -> Result<(), ProjectionError> {
+    let summary = item
+        .summary
+        .as_mut()
+        .ok_or_else(|| ProjectionError::History("background group has no summary".into()))?;
+    add(&mut summary.member_count)?;
+    match outcome(atom) {
+        Some(ChatTerminalOutcome::Failed) => add(&mut summary.failed_count)?,
+        Some(ChatTerminalOutcome::Cancelled) => add(&mut summary.cancelled_count)?,
+        _ => {}
+    }
+    let cat = category(atom);
+    if let Some(count) = summary
+        .categories
+        .iter_mut()
+        .find(|count| count.category == cat)
+    {
+        add(&mut count.count)?;
+    } else {
+        summary.categories.push(TimelineCategoryCount {
+            category: cat,
+            count: 1,
+        });
+        summary.categories.sort_by_key(|count| count.category);
+    }
+    item.finished_at = atom.finished_at;
+    summary.finished_at = atom.finished_at;
+    Ok(())
+}
 impl TimelineProjection {
+    /// Initialized once from the actual committed history tail, never an open snapshot.
+    pub(in crate::studio) fn restore_background_tail(
+        &mut self,
+        item: TimelineItem,
+    ) -> Result<(), ProjectionError> {
+        if item.kind != TimelineItemKind::WorkGroup
+            || !matches!(item.source, ChatSourceId::BackgroundResult { .. })
+            || item.position.and_then(|position| position.checked_add(1))
+                != Some(self.next_position)
+            || !item.admission_closed
+            || item
+                .summary
+                .as_ref()
+                .is_none_or(|summary| summary.member_count == 0 || summary.active_count != 0)
+            || item.members.as_ref().is_none_or(|reference| {
+                reference.database_id != self.database_id
+                    || reference.projection_generation != self.generation
+                    || reference.projection_version != TIMELINE_PROJECTION_VERSION
+                    || reference.item_id != item.id
+            })
+            || item.payload.is_some()
+            || !item.contents.is_empty()
+            || item.content_item_id.is_some()
+        {
+            return Err(ProjectionError::History(
+                "invalid committed background tail".into(),
+            ));
+        }
+        self.background_tail = Some(BackgroundTail {
+            next_member: u64::from(
+                item.summary
+                    .as_ref()
+                    .expect("validated summary")
+                    .member_count,
+            ),
+            item,
+        });
+        self.retained_bytes.take();
+        Ok(())
+    }
     pub(in crate::studio) fn new(
         database_id: String,
         generation: String,
@@ -454,6 +543,8 @@ impl TimelineProjection {
             next_item: 0,
             active: BTreeMap::new(),
             committed: Vec::new(),
+            background_tail: None,
+            updates: Vec::new(),
             changes: Vec::new(),
             facts: Vec::new(),
             retained_bytes: OnceLock::new(),
@@ -501,6 +592,33 @@ impl TimelineProjection {
     ) -> Result<(), ProjectionError> {
         let state: Recovery =
             serde_json::from_slice(bytes).map_err(|e| ProjectionError::History(e.to_string()))?;
+        if let Some(tail) = &state.background_tail {
+            let item = &tail.item;
+            if item.kind != TimelineItemKind::WorkGroup
+                || !matches!(item.source, ChatSourceId::BackgroundResult { .. })
+                || item.position.and_then(|position| position.checked_add(1))
+                    != Some(self.next_position)
+                || !item.admission_closed
+                || item.summary.as_ref().is_none_or(|summary| {
+                    summary.active_count != 0
+                        || summary.member_count == 0
+                        || u64::from(summary.member_count) != tail.next_member
+                })
+                || item.members.as_ref().is_none_or(|reference| {
+                    reference.database_id != self.database_id
+                        || reference.projection_generation != self.generation
+                        || reference.projection_version != TIMELINE_PROJECTION_VERSION
+                        || reference.item_id != item.id
+                })
+                || item.payload.is_some()
+                || !item.contents.is_empty()
+                || item.content_item_id.is_some()
+            {
+                return Err(ProjectionError::History(
+                    "invalid background tail recovery".into(),
+                ));
+            }
+        }
         for live in &state.items {
             let count = state
                 .active
@@ -572,6 +690,7 @@ impl TimelineProjection {
             self.insert_item(item)?;
         }
         self.active = state.active;
+        self.background_tail = state.background_tail;
         Ok(())
     }
     #[cfg(test)]
@@ -689,6 +808,23 @@ impl TimelineProjection {
             self.facts.push(lightweight(&atom));
             self.end_source(&atom.source);
             return Ok(());
+        }
+        if !terminal
+            && atom.kind == ChatAtomKind::ToolCall
+            && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+        {
+            // Result sources may have a frozen start in old canonical history.
+            // Only the actual final result participates in the Main tail run.
+            self.facts.push(lightweight(&atom));
+            return Ok(());
+        }
+        if terminal
+            && atom.kind == ChatAtomKind::ToolCall
+            && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+            && !self.active.contains_key(&atom.id)
+            && self.background_tail.is_some()
+        {
+            return self.append_background_result(atom, payload);
         }
         let started = key(&atom, sequence, false);
         let ended = key(&atom, sequence, true);
@@ -878,6 +1014,44 @@ impl TimelineProjection {
         self.refresh_ready(index);
         Ok(())
     }
+    fn append_background_result(
+        &mut self,
+        atom: ChatAtom,
+        payload: Option<PayloadData>,
+    ) -> Result<(), ProjectionError> {
+        let tail = self
+            .background_tail
+            .as_mut()
+            .expect("checked background tail");
+        let order = tail.next_member;
+        tail.next_member = order.checked_add(1).ok_or_else(overflow)?;
+        extend_background_head(&mut tail.item, &atom)?;
+        let payload_bytes = match payload.as_ref().or(atom.payload.as_ref()) {
+            Some(PayloadData::Inline { bytes }) => Some(bytes.len() as u64),
+            Some(PayloadData::Deferred { byte_length, .. }) => Some(*byte_length),
+            None => None,
+        };
+        self.changes.push(MemberChange {
+            item_id: tail.item.id.clone(),
+            member_order: order,
+            atom: lightweight(&atom),
+            payload_bytes,
+        });
+        self.facts.push(lightweight(&atom));
+        // Within one undrained effect, publish the latest header only once.
+        if let Some(item) = self
+            .committed
+            .iter_mut()
+            .find(|item| item.id == tail.item.id)
+        {
+            *item = tail.item.clone();
+        } else if let Some(item) = self.updates.iter_mut().find(|item| item.id == tail.item.id) {
+            *item = tail.item.clone();
+        } else {
+            self.updates.push(tail.item.clone());
+        }
+        Ok(())
+    }
     fn refresh_ready(&mut self, index: u64) {
         let item = &self.items[&index];
         let eligible = item.item.kind == TimelineItemKind::Status
@@ -992,6 +1166,12 @@ impl TimelineProjection {
             live.item.position = Some(self.next_position);
             live.item.admission_closed = true;
             self.next_position = next.expect("visible item has a validated position");
+            self.background_tail = (live.item.kind == TimelineItemKind::WorkGroup
+                && matches!(live.item.source, ChatSourceId::BackgroundResult { .. }))
+            .then(|| BackgroundTail {
+                item: live.item.clone(),
+                next_member: live.next_member,
+            });
             self.committed.push(live.item);
         }
         Ok(())
@@ -1060,14 +1240,25 @@ impl TimelineProjection {
         if !self.facts.is_empty() || !self.changes.is_empty() || !self.finished_groups.is_empty() {
             self.retained_bytes.take();
         }
-        let completed_members = self
+        let mut completed_members = self
             .members
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .freeze(&self.finished_groups, &self.changes);
+        completed_members.extend(
+            self.changes
+                .iter()
+                .filter(|member| {
+                    matches!(member.atom.source, ChatSourceId::BackgroundResult { .. })
+                        && matches!(member.atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+                        && !self.finished_groups.contains(&member.item_id)
+                })
+                .cloned(),
+        );
         TimelineUpdate {
             facts: std::mem::take(&mut self.facts),
             members: std::mem::take(&mut self.changes),
+            updates: std::mem::take(&mut self.updates),
             current: Vec::new(),
             recovery: Vec::new(),
             next_position: self.next_position,
@@ -1084,6 +1275,8 @@ impl TimelineProjection {
                 &self.items,
                 &self.active,
                 &self.committed,
+                &self.background_tail,
+                &self.updates,
                 &self.changes,
                 &self.facts,
                 &self.finished_groups,

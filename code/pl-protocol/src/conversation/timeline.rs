@@ -100,7 +100,9 @@ pub struct TimelineItem {
     /// index, member count, content hash or play-time counter.
     pub id: String,
     pub kind: TimelineItemKind,
-    /// Actual source that owns the item.
+    /// Actual source that owns the item. A group of adjacent independent
+    /// background results is anchored by its first result; each member retains
+    /// its own source identity.
     pub source: ChatSourceId,
     /// Domain kind for text/status items; `None` for a mixed work group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,8 +137,10 @@ pub struct TimelineItem {
     pub content_item_id: Option<String>,
     /// `item_order` once the item entered history; `None` while still current.
     pub position: Option<u64>,
-    /// Admission is closed by a real following boundary. A closed item can still
-    /// have running members and is not yet history.
+    /// No more active members are admitted from the original source. A closed
+    /// foreground item may still await running members before entering history.
+    /// An independent background-result tail can append completed results via
+    /// `ChatPlacement::Update`; this flag does not freeze its derived summary.
     pub admission_closed: bool,
 }
 

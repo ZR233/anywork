@@ -37,14 +37,19 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     TimelineItem item, {
     required bool current,
     bool borrowCurrentIntent = true,
+    TimelineDisplayUnit? previousUnit,
   }) {
     // Borrow intent only from the bounded current fragment at handoff. There
     // is deliberately no permanent history-ID or member-ID map.
-    final previous = borrowCurrentIntent
-        ? live.value
-              .where((unit) => unit.id == item.id && !unit.expansion.isRetired)
-              .firstOrNull
-        : null;
+    final previous =
+        previousUnit ??
+        (borrowCurrentIntent
+            ? live.value
+                  .where(
+                    (unit) => unit.id == item.id && !unit.expansion.isRetired,
+                  )
+                  .firstOrNull
+            : null);
     final unit = TimelineDisplayUnit(
       item: item,
       live: current,
@@ -97,6 +102,49 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     if (ids.length != items.length) {
       throw const ConversationContinuityError('Duplicate Main item identity');
     }
+    if (batch.placement == ChatPlacement.update) {
+      if (batch.before != null || batch.current != null || items.isEmpty) {
+        throw const ConversationContinuityError('Invalid Main header update');
+      }
+      final replacements = <(Message, TimelineDisplayUnit, TimelineItem)>[];
+      for (final item in items) {
+        final message = controller.messages
+            .where((message) => message.id == item.id)
+            .firstOrNull;
+        final previous = message?.metadata?[timelineDisplayUnitKey];
+        if (message == null ||
+            previous is! TimelineDisplayUnit ||
+            previous.item.kind != TimelineItemKind.workGroup ||
+            previous.item.delivery != ChatDeliveryKind.independent ||
+            previous.item.source is! BackgroundResultChatSource ||
+            item.kind != previous.item.kind ||
+            item.delivery != previous.item.delivery ||
+            item.source != previous.item.source ||
+            item.position != previous.item.position ||
+            item.members != previous.item.members ||
+            item.turnId != previous.item.turnId) {
+          throw const ConversationContinuityError(
+            'Main header update changed or lost its group identity',
+          );
+        }
+        replacements.add((message, previous, item));
+      }
+      for (final (message, previous, item) in replacements) {
+        if (_retired) return;
+        await controller.updateMessage(
+          message,
+          _message(
+            _unit(
+              item,
+              current: false,
+              borrowCurrentIntent: false,
+              previousUnit: previous,
+            ),
+          ),
+        );
+      }
+      return;
+    }
     if (batch.placement == ChatPlacement.set) {
       for (final unit in [
         ..._history,
@@ -143,6 +191,8 @@ final class TimelineMessageController implements ConversationBatchConsumer {
             index: controller.messages.length,
           );
         }
+      case ChatPlacement.update:
+        throw StateError('Header updates are applied before insertion');
     }
     // The public component operation may synchronously trigger selection
     // retirement. Its successful completion must join the old admission, not

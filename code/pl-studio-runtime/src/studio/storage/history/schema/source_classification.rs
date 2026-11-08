@@ -25,7 +25,7 @@ impl MigrationTrait for SourceClassification {
                 "source classification requires schema 16"
             );
             // Applied-but-missing structures/heads are corruption, not upgrade inputs.
-            validate_current_structure(db).await?;
+            validate_schema16_structure(db).await?;
             normalize(db).await?;
             let row = db
                 .query_one_raw(statement(
@@ -34,7 +34,7 @@ impl MigrationTrait for SourceClassification {
                 ))
                 .await?
                 .context("source classification has no database identity")?;
-            timeline::rebuild(db, &row.try_get::<String>("", "database_id")?).await?;
+            timeline::rebuild_schema16(db, &row.try_get::<String>("", "database_id")?).await?;
             Ok::<_, anyhow::Error>(())
         }
         .await

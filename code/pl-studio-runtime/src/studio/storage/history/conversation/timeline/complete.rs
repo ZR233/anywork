@@ -51,7 +51,11 @@ async fn save_completed(
         ensure!(
             committed
                 .iter()
-                .any(|entry| entry.item.id == member.item_id),
+                .any(|entry| entry.item.id == member.item_id)
+                || update
+                    .updates()
+                    .iter()
+                    .any(|item| item.id == member.item_id),
             "final member has no completed group"
         );
         ensure!(
@@ -132,6 +136,36 @@ async fn save_completed(
             written.rows_affected() == 1,
             "immutable group member conflict"
         );
+    }
+    // Qualify the old tail before inserting any visible separator from this delta.
+    for item in update.updates() {
+        if !committed.iter().any(|entry| entry.item.id == item.id) {
+            let previous = db
+                .query_one_raw(statement(
+                    "SELECT metadata FROM timeline_items WHERE item_id=?
+                 AND position=(SELECT MAX(position) FROM timeline_items)",
+                    vec![item.id.clone().into()],
+                ))
+                .await?
+                .context("background update is not the committed history tail")?;
+            let previous: Vec<u8> = previous.try_get("", "metadata")?;
+            let item = deferred_item(database, item);
+            validate_background_extension(db, serde_json::from_slice(&previous)?, &item).await?;
+            let written = db
+                .execute_raw(statement(
+                    "UPDATE timeline_items SET metadata=? WHERE item_id=? AND metadata=?",
+                    vec![
+                        serde_json::to_vec(&item)?.into(),
+                        item.id.into(),
+                        previous.into(),
+                    ],
+                ))
+                .await?;
+            ensure!(
+                written.rows_affected() == 1,
+                "background tail update conflict"
+            );
+        }
     }
     for entry in committed {
         let item = deferred_item(database, &entry.item);
@@ -238,6 +272,20 @@ pub(in crate::studio::storage::history) async fn restore(
         false,
     )
     .await?;
+    if let Some(row) = db
+        .query_one_raw(statement(
+            "SELECT metadata FROM timeline_items ORDER BY position DESC LIMIT 1",
+            vec![],
+        ))
+        .await?
+    {
+        let item: TimelineItem = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+        if item.kind == TimelineItemKind::WorkGroup
+            && matches!(item.source, ChatSourceId::BackgroundResult { .. })
+        {
+            projection.restore_background_tail(item)?;
+        }
+    }
     Ok(projection)
 }
 

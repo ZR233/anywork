@@ -11259,6 +11259,7 @@ impl SseDecode for crate::api::studio::types::chat::BridgeChatPlacement {
             0 => crate::api::studio::types::chat::BridgeChatPlacement::Set,
             1 => crate::api::studio::types::chat::BridgeChatPlacement::Prepend,
             2 => crate::api::studio::types::chat::BridgeChatPlacement::Append,
+            3 => crate::api::studio::types::chat::BridgeChatPlacement::Update,
             _ => unreachable!("Invalid variant for BridgeChatPlacement: {}", inner),
         };
     }
@@ -27735,6 +27736,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeCh
             Self::Set => 0.into_dart(),
             Self::Prepend => 1.into_dart(),
             Self::Append => 2.into_dart(),
+            Self::Update => 3.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -41873,6 +41875,7 @@ impl SseEncode for crate::api::studio::types::chat::BridgeChatPlacement {
                 crate::api::studio::types::chat::BridgeChatPlacement::Set => 0,
                 crate::api::studio::types::chat::BridgeChatPlacement::Prepend => 1,
                 crate::api::studio::types::chat::BridgeChatPlacement::Append => 2,
+                crate::api::studio::types::chat::BridgeChatPlacement::Update => 3,
                 _ => {
                     unimplemented!("");
                 }

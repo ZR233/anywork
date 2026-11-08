@@ -53,9 +53,27 @@ impl PreparedCurrent {
     pub fn projection(&self) -> &CurrentProjection {
         self.projection.projection()
     }
+    /// One index domain over typed appends and authorized derived-head updates.
+    pub(in crate::studio) fn history_items(
+        &self,
+    ) -> impl Iterator<Item = &pl_protocol::TimelineItem> {
+        self.timeline
+            .iter()
+            .map(|entry| &entry.item)
+            .chain(self.timeline_update.updates())
+    }
+    pub(in crate::studio) fn history_item(&self, index: usize) -> &pl_protocol::TimelineItem {
+        if index < self.timeline.len() {
+            &self.timeline[index].item
+        } else {
+            &self.timeline_update.updates()[index - self.timeline.len()]
+        }
+    }
+
     pub(in crate::studio) fn frozen_projection(&self) -> &Arc<FrozenCurrentProjection> {
         &self.projection
     }
+
     pub(in crate::studio) fn replace_projection(
         &mut self,
         projection: Arc<FrozenCurrentProjection>,
@@ -81,7 +99,7 @@ impl PreparedCurrent {
     }
     pub(in crate::studio) fn pending_index_bytes(&self) -> u64 {
         128_u64
-            .saturating_add(self.timeline.len() as u64 * 256)
+            .saturating_add(self.history_items().count() as u64 * 256)
             .saturating_add(
                 self.timeline_update
                     .members()

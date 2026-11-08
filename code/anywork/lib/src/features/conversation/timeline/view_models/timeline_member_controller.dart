@@ -32,6 +32,11 @@ final class TimelineMemberController implements ConversationBatchConsumer {
   @override
   Future<void> applyBatch(ChatBatch batch) async {
     if (_disposed) throw const StaleConversationScope();
+    if (batch.placement == ChatPlacement.update) {
+      throw const ConversationContinuityError(
+        'Header updates belong only to Main',
+      );
+    }
     if (batch.current != null) {
       throw const ConversationContinuityError(
         'Member windows cannot contain current projections',

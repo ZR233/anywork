@@ -88,6 +88,7 @@ ChatBatch _chatBatchFromFrb(frb_chat_types.BridgeChatBatch value) => ChatBatch(
     frb_chat_types.BridgeChatPlacement.set_ => ChatPlacement.set,
     frb_chat_types.BridgeChatPlacement.prepend => ChatPlacement.prepend,
     frb_chat_types.BridgeChatPlacement.append => ChatPlacement.append,
+    frb_chat_types.BridgeChatPlacement.update => ChatPlacement.update,
   },
   entries: value.entries.map(_chatEntryFromFrb).toList(),
   before: value.before,
