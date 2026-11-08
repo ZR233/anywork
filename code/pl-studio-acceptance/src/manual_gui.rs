@@ -61,7 +61,8 @@ pub(crate) struct ManualGuiOptions {
     /// suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
     pub(crate) preset: String,
-    /// Enable official Flutter MCP/Driver interaction for the manual gui preset.
+    /// Enable official Flutter MCP/Driver interaction for the manual gui or
+    /// plan-recovery preset.
     #[arg(long)]
     pub(crate) inspect: bool,
     /// Measure native Profile first-content layout with the conversation-read-work preset.
@@ -132,6 +133,16 @@ pub(crate) struct ManualGuiOptions {
     /// The harness owns capture and shutdown; the script is not launched.
     #[arg(long, value_name = "PATH")]
     pub(crate) delegation_driver: Option<PathBuf>,
+}
+
+fn validate_inspect_options(options: &ManualGuiOptions) -> Result<()> {
+    ensure!(
+        !options.inspect
+            || (matches!(options.preset.as_str(), "gui" | "plan-recovery")
+                && !options.bots_fixture),
+        "--inspect requires --preset gui or plan-recovery without --bots-fixture"
+    );
+    Ok(())
 }
 
 fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
@@ -743,10 +754,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         !options.profile_read_samples || options.preset == "conversation-read-work",
         "--profile-read-samples requires --preset conversation-read-work"
     );
-    ensure!(
-        !options.inspect || (options.preset == "gui" && !options.bots_fixture),
-        "--inspect requires the manual gui preset without --bots-fixture"
-    );
+    validate_inspect_options(&options)?;
     let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
@@ -1501,6 +1509,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 interrupt: &interrupt_rx,
             },
             fixture,
+            options.inspect,
         );
     }
 
@@ -4995,6 +5004,7 @@ fn run_history_fault_scenario(
 fn run_plan_recovery_scenario(
     context: &RecoveryScenario<'_>,
     mut fixture: OwnedProcess,
+    inspect: bool,
 ) -> Result<()> {
     let RecoveryScenario {
         workspace,
@@ -5036,7 +5046,7 @@ fn run_plan_recovery_scenario(
         // 1. First lifecycle: submit the Approve-branch Plan, then shut the GUI
         // down normally while the confirmation is pending.
         let at_first_card = {
-            let mut gui = start_recovery_gui(workspace, home, &gui_logs[0].0)?;
+            let mut gui = start_recovery_gui(workspace, home, &gui_logs[0].0, inspect)?;
             let vm_url = wait_for_vm(&gui_logs[0].0, &mut gui, &mut fixture, interrupt)?;
             wait_operator_done(
                 &format!(
@@ -5077,7 +5087,7 @@ fn run_plan_recovery_scenario(
         // 2. Restart lifecycle: restore the pending Plan, prove the reopened
         // window stays quiet, approve, stage the Revise branch, shut down again.
         let at_revise_card = {
-            let mut gui = start_recovery_gui(workspace, home, &gui_logs[1].0)?;
+            let mut gui = start_recovery_gui(workspace, home, &gui_logs[1].0, inspect)?;
             let vm_url = wait_for_vm(&gui_logs[1].0, &mut gui, &mut fixture, interrupt)?;
             wait_operator_done(
                 "plan-recovery restart: reopen the pending Plan, confirm the window stays quiet, then type done.",
@@ -5135,7 +5145,7 @@ fn run_plan_recovery_scenario(
         // 3. Recheck lifecycle: restore the second pending Plan, answer Revise
         // then Approve, and prove neither answered Plan re-pops.
         {
-            let mut gui = start_recovery_gui(workspace, home, &gui_logs[2].0)?;
+            let mut gui = start_recovery_gui(workspace, home, &gui_logs[2].0, inspect)?;
             let vm_url = wait_for_vm(&gui_logs[2].0, &mut gui, &mut fixture, interrupt)?;
             wait_operator_done(
                 "plan-recovery recheck: restore the second pending Plan, confirm the window stays quiet, then type done.",
@@ -5334,7 +5344,12 @@ fn preserved_toolchain_home(
     }
 }
 
-fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
+fn start_recovery_gui(
+    workspace: &Path,
+    home: &Path,
+    log_path: &Path,
+    inspect: bool,
+) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     configure_isolated_gui_home(&mut command, home)?;
@@ -5343,6 +5358,9 @@ fn start_recovery_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<
         .args(["xtask", "run-gui", "--capture"])
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    if inspect {
+        command.arg("--inspect");
+    }
     OwnedProcess::start(&mut command, false)
 }
 
@@ -5977,7 +5995,7 @@ mod desktop_test_command_tests {
 
 #[cfg(test)]
 mod scenario_cli_tests {
-    use super::ManualGuiOptions;
+    use super::{ManualGuiOptions, validate_inspect_options};
     use clap::Parser;
 
     #[test]
@@ -5998,6 +6016,37 @@ mod scenario_cli_tests {
             assert!(
                 ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario]).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn inspect_is_limited_to_gui_and_plan_recovery_without_bots_fixture() {
+        for args in [
+            vec!["acceptance", "--preset", "gui", "--inspect"],
+            vec!["acceptance", "--preset", "plan-recovery", "--inspect"],
+        ] {
+            let options = ManualGuiOptions::try_parse_from(args).expect("valid inspect args");
+            validate_inspect_options(&options).expect("inspect is allowed for this preset");
+        }
+        for args in [
+            vec![
+                "acceptance",
+                "--preset",
+                "gui",
+                "--inspect",
+                "--bots-fixture",
+            ],
+            vec![
+                "acceptance",
+                "--preset",
+                "plan-recovery",
+                "--inspect",
+                "--bots-fixture",
+            ],
+            vec!["acceptance", "--preset", "timeline-history", "--inspect"],
+        ] {
+            let options = ManualGuiOptions::try_parse_from(args).expect("syntactically valid args");
+            assert!(validate_inspect_options(&options).is_err());
         }
     }
 }

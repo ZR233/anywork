@@ -118,12 +118,26 @@ async fn public_history(
                     };
                     let value: serde_json::Value = serde_json::from_slice(&raw)?;
                     ensure!(value["contract"] == "anywork.chat/1");
+                    let mut contents = Vec::new();
+                    let mut continuation = None;
+                    loop {
+                        let page = reader
+                            .list_contents(owner, continuation.as_deref(), demand)
+                            .await?;
+                        contents.extend(page.entries);
+                        let Some(next) = page.continuation else {
+                            break;
+                        };
+                        ensure!(
+                            continuation.as_ref() != Some(&next),
+                            "content manifest cursor made no progress"
+                        );
+                        continuation = Some(next);
+                    }
                     for body in value["bodies"].as_array().context("public body manifest")? {
                         let key = body["key"].as_str().context("body key")?;
                         let len = body["byteLength"].as_u64().context("body length")?;
-                        let reference = &item
-                            .atom
-                            .contents
+                        let reference = &contents
                             .iter()
                             .find(|content| {
                                 matches!(&content.reference.target,

@@ -86,6 +86,9 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 日常设计对照按证据需要选择入口：纯布局使用官方 Widget Previewer（项目入口为
 `cargo xtask preview-gui --headless --no-devtools`），组件行为使用无显示依赖的 `test/ui`，
 真实页面检查使用 `run-gui --inspect` 或隔离 `manual-gui --preset gui --inspect`。
+Plan 保存重开旅程支持 `manual-gui --preset plan-recovery --inspect`，三个生命周期均沿
+原隔离 home、模拟供应商、捕获与退出核对运行；`--inspect` 仅为各次 debug 启动增加官方
+Flutter Driver 入口，不替代原 Plan 状态与恢复断言。其他专用 preset 不因此开放交互扩展。
 官方 MCP 负责 widget tree、布局诊断、交互与 Flutter 内容截图，重复功能旅程仍用
 `integration_test`。固定场景、视口、主题及文字缩放后复用热更新；各层不构成必跑流水线。
 用户级官方技能维护通用写法，项目技能只维护构建与业务边界。

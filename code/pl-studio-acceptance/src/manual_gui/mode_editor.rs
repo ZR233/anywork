@@ -232,7 +232,7 @@ fn run_phase(
     phase_reports: &mut Vec<serde_json::Value>,
 ) -> Result<()> {
     let gui_log = context.working.join(format!("mode-editor-{phase}-gui.log"));
-    let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log)?;
+    let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log, false)?;
     let gui_pid = gui.child.id();
     let outcome = (|| -> Result<()> {
         let vm_url = wait_for_vm(&gui_log, &mut gui, fixture, context.interrupt)?;

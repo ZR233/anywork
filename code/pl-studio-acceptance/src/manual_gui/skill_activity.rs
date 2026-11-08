@@ -103,7 +103,7 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         // compaction, then the reload Turn. Capture+exit reaps every owned
         // process before the same home is reopened below.
         {
-            let mut gui = start_recovery_gui(workspace, home, &first_log)?;
+            let mut gui = start_recovery_gui(workspace, home, &first_log, false)?;
             let vm_url = wait_for_vm(&first_log, &mut gui, &mut fixture, interrupt)?;
             observe_capture_exit(
                 app_dir,
@@ -128,7 +128,7 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         // normal stop entry. Nothing is submitted after that stop.
         enable_automatic_compaction(home)?;
         {
-            let mut gui = start_recovery_gui(workspace, home, &reopen_log)?;
+            let mut gui = start_recovery_gui(workspace, home, &reopen_log, false)?;
             let vm_url = wait_for_vm(&reopen_log, &mut gui, &mut fixture, interrupt)?;
             observe_capture_exit(
                 app_dir,

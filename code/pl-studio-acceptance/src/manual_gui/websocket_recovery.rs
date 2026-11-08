@@ -29,7 +29,7 @@ pub(super) fn run(
                 gui_log.clone(),
                 context.output.join(format!("{phase}-gui.log")),
             ));
-            let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log)?;
+            let mut gui = start_recovery_gui(context.workspace, context.home, &gui_log, false)?;
             let vm = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
             let gui_pid = gui.child.id();
             let stage = if phase == "first" {

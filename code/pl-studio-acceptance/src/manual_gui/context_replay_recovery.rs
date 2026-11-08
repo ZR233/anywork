@@ -36,7 +36,7 @@ pub(super) fn run(
             for phase in ["first", "restart", "recheck"] {
                 let gui_log = coord.join(format!("{phase}-gui.log"));
                 logs.push((gui_log.clone(), output.join(format!("{phase}-gui.log"))));
-                let mut gui = start_recovery_gui(context.workspace, &home, &gui_log)?;
+                let mut gui = start_recovery_gui(context.workspace, &home, &gui_log, false)?;
                 let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
                 let gui_launcher_pid = gui.child.id();
                 if phase != "first" {
