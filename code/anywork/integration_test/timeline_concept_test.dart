@@ -349,6 +349,32 @@ final class _ConceptScene {
     expect(tester.takeException(), isNull);
   }
 
+  Future<void> backFromSettings() async {
+    final page = find.byKey(StudioDriverKeys.settingsPage);
+    final back = find.byKey(StudioDriverKeys.settingsBack);
+    try {
+      await _until(
+        tester,
+        () =>
+            page.evaluate().length == 1 &&
+            back.evaluate().length == 1 &&
+            tester.widget<InkWell>(back).onTap != null &&
+            back.hitTestable().evaluate().length == 1,
+        'actual settings page and unique enabled hittable back control',
+      );
+    } catch (error, stack) {
+      report['settingsNavigationFailure'] = {
+        'pageCount': page.evaluate().length,
+        'backCount': back.evaluate().length,
+        'hittableBackCount': back.hitTestable().evaluate().length,
+        'exceptionType': error.runtimeType.toString(),
+        'stack': stack.toString(),
+      };
+      rethrow;
+    }
+    await tap(back);
+  }
+
   Future<void> submit(String text) async {
     final input = find.byKey(const ValueKey('composer-input'));
     await _until(tester, () => input.evaluate().isNotEmpty, 'composer input');
@@ -850,7 +876,7 @@ final class _ConceptScene {
         isTrue,
       );
       final navigationStartedAtUtc = DateTime.now().toUtc().toIso8601String();
-      await tap(find.byKey(StudioDriverKeys.settingsBack));
+      await backFromSettings();
       await openThread(id);
       final next = lease;
       expect(next, isNot(same(before)));
@@ -946,7 +972,7 @@ final class _ConceptScene {
       )).complete,
       isTrue,
     );
-    await tap(find.byKey(StudioDriverKeys.settingsBack));
+    await backFromSettings();
     await openThread(selectedThread);
     await _until(
       tester,
@@ -1011,46 +1037,6 @@ final class _ConceptScene {
       );
     }
     await observed.reveal(target, id);
-  }
-
-  Future<void> reveal(Finder finder, {String? unitId}) async {
-    final scrollable = find
-        .descendant(
-          of: find.byKey(lease.chatKey),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    final clock = Stopwatch()..start();
-    // Exercise ordinary UI demand until the row is mounted. The deadline bounds
-    // the test, not page count; no group-head query or fixed page budget.
-    while (finder.evaluate().isEmpty) {
-      if (clock.elapsed > const Duration(seconds: 60)) {
-        fail('Timed out revealing a real Main item');
-      }
-      final target = unitId == null
-          ? -1
-          : main.indexWhere((unit) => unit.id == unitId);
-      final mounted =
-          tester.allWidgets
-              .map(
-                (widget) => switch (widget) {
-                  TimelineDisplayUnitView(:final unit) => unit.id,
-                  ChatItemView(:final item) => item.id,
-                  _ => null,
-                },
-              )
-              .map((id) => main.indexWhere((unit) => unit.id == id))
-              .where((index) => index >= 0)
-              .toList()
-            ..sort();
-      final newer = target >= 0 && mounted.isNotEmpty && target > mounted.last;
-      await tester.drag(scrollable, Offset(0, newer ? -320 : 320));
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(tester.takeException(), isNull);
-    }
-    await tester.ensureVisible(finder);
-    await tester.pump();
-    expect(finder, findsOneWidget);
   }
 
   Future<void> expand(TimelineDisplayUnit unit) async {
@@ -1880,12 +1866,7 @@ final class _ConceptScene {
     }
     await capture('images-live');
     await release('images-ready');
-    await idle();
-    await _until(
-      tester,
-      () => hasText(_imageDone),
-      'real image continuation answer',
-    );
+    await showImageContinuation(imageWork);
     await verifyImages(imageWorkItemId: imageWork.id, input: input);
     await submit(_failedPrompt);
     await reach(
@@ -1950,6 +1931,139 @@ final class _ConceptScene {
       'questionsAndReceipts': 'question-history (separate strict provider)',
       'normalStopContinue': 'realtime-presentation (separate strict provider)',
     };
+  }
+
+  Future<void> showImageContinuation(TimelineDisplayUnit imageWork) async {
+    final owner = lease;
+    final source = imageWork.entry.atom.source;
+    expect(source, isA<ForegroundTurnChatSource>());
+    final turnId = (source as ForegroundTurnChatSource).turnId;
+    final observation = <String, Object?>{
+      'turnId': turnId,
+      'sourceType': source.runtimeType.toString(),
+      'mainAdmitted': false,
+      'bodyVerified': false,
+      'visible': false,
+    };
+    report['imageContinuation'] = observation;
+    var phase = 'idle';
+    Iterable<CompletedEntry> candidates() => items.where(
+      (entry) =>
+          entry.mainPresentation == MainPresentation.single &&
+          entry.atom.source == source &&
+          entry.atom.turnId == turnId &&
+          entry.atom.kind == ChatAtomKind.text &&
+          entry.atom.textChannel == ThreadTextChannel.finalAnswer &&
+          entry.atom.lifecycle is TerminalChatAtom &&
+          (entry.atom.lifecycle as TerminalChatAtom).outcome ==
+              ChatTerminalOutcome.completed,
+    );
+    try {
+      await idle();
+      final clock = Stopwatch()..start();
+      Duration remaining() {
+        final value = const Duration(seconds: 60) - clock.elapsed;
+        if (value <= Duration.zero) {
+          fail(
+            'Timed out waiting for real image continuation answer at $phase',
+          );
+        }
+        return value;
+      }
+
+      phase = 'Main admission';
+      CompletedEntry? admitted;
+      await _until(
+        tester,
+        () {
+          expect(lease, same(owner));
+          final matches = candidates().toList();
+          expect(matches.length, lessThanOrEqualTo(1));
+          admitted = matches.singleOrNull;
+          return admitted != null;
+        },
+        'real image continuation completion in Main',
+        timeout: remaining(),
+      );
+      final entry = admitted!;
+      observation.addAll({
+        'mainAdmitted': true,
+        'recordId': entry.recordId,
+        'completionSeq': entry.completionSeq,
+        'atomId': entry.atom.id,
+        'mainPayloadType': entry.atom.payload.runtimeType.toString(),
+      });
+      phase = 'completed body';
+      var readable = entry;
+      if (entry.atom.payload is DeferredPayload) {
+        final scope = owner.content.openScope(generation: owner.generation);
+        try {
+          readable = await scope
+              .readCompleted(
+                recordId: entry.recordId,
+                demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+              )
+              .timeout(remaining());
+        } finally {
+          scope.retire();
+          expect(
+            (await scope.close(
+              deadline: DateTime.now().add(const Duration(seconds: 5)),
+            )).complete,
+            isTrue,
+          );
+        }
+        expect(readable.recordId, entry.recordId);
+        expect(readable.completionSeq, entry.completionSeq);
+        expect(readable.atom.id, entry.atom.id);
+        expect(readable.atom.source, source);
+      }
+      final value = presentation(readable);
+      expect(value.compatibility, ChatItemCompatibility.current);
+      expect(value.type, 'text');
+      expect(
+        value.bodies.any((body) => value.inlineText(body.key) == _imageDone),
+        isTrue,
+        reason: 'The original Main completion must own the expected answer',
+      );
+      observation['bodyVerified'] = true;
+      phase = 'Main reveal';
+      await observed.revealItem(entry, timeout: remaining());
+      expect(lease, same(owner));
+      expect(observed.unit(entry.recordId).entry, same(entry));
+      phase = 'visible text';
+      await _until(
+        tester,
+        () => hasText(_imageDone),
+        'real image continuation answer',
+        timeout: remaining(),
+      );
+      expect(
+        find.descendant(
+          of: observed.itemRow(entry.recordId),
+          matching: find.textContaining(_imageDone, findRichText: true),
+        ),
+        findsWidgets,
+      );
+      observation['visible'] = true;
+    } catch (error, stack) {
+      observation['failedPhase'] = phase;
+      report['stageFailure'] = _stageFailure('images-ready', error, stack)
+        ..addAll({
+          'gateReleased': true,
+          'waitPhase': phase,
+          'mainAnswerCandidates': [
+            for (final entry in candidates().take(8))
+              {
+                'recordId': entry.recordId,
+                'completionSeq': entry.completionSeq,
+                'atomId': entry.atom.id,
+                'payloadType': entry.atom.payload.runtimeType.toString(),
+              },
+          ],
+        });
+      rethrow;
+    }
   }
 
   Future<void> _openBackgroundRuns() async {
@@ -2328,7 +2442,7 @@ final class _ConceptScene {
     expect(originalLease.queryCleanupError, isNull);
     expect(current.isCurrent, isFalse);
     expect(current.windows, isEmpty);
-    await tap(find.byKey(StudioDriverKeys.settingsBack));
+    await backFromSettings();
     await openThread(selectedThread);
     expect(lease, isNot(same(originalLease)));
     expect(lease.generation, greaterThan(originalGeneration));
@@ -2359,9 +2473,22 @@ final class _ConceptScene {
       final savedRecord = records[index];
       final id = savedRecord['messageId'] as String;
       final isWork = savedRecord['run'] != null;
-      await reveal(
+      final admissions =
+          (report['a07MainIdentityObservations'] ??= <Map<String, Object?>>[])
+              as List<Map<String, Object?>>;
+      admissions.add({
+        'phase': phase,
+        'generation': owner.generation,
+        'savedMessageId': id,
+        'exactMainMatches': controller.messages
+            .where((message) => message.id == id)
+            .length,
+        'mainMessageCount': controller.messages.length,
+        'hasOlder': owner.hasOlder,
+      });
+      await observed.reveal(
         isWork ? observed.groupHeader(id) : observed.itemRow(id),
-        unitId: id,
+        id,
       );
       final unit = observed.unit(id);
       expect(unit.entry.recordId, savedRecord['recordId']);
@@ -2490,12 +2617,113 @@ final class _ConceptScene {
       () => live.any((atom) => atom.kind == ChatAtomKind.text),
     );
     final empty = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
-    expect(empty.contentPresent, isFalse);
-    await release('a14-empty-start');
-    await reach(
-      'a14-empty-terminal',
-      () => !live.any((atom) => atom.id == empty.id),
-    );
+    final owner = lease;
+    final scope = owner.content.openScope(generation: owner.generation);
+    final emptyObservation = <String, Object?>{'atomId': empty.id};
+    report['emptyTextEvidence'] = emptyObservation;
+    final readClock = Stopwatch()..start();
+    Duration remainingReadTime() {
+      final remaining = const Duration(seconds: 60) - readClock.elapsed;
+      if (remaining <= Duration.zero) {
+        fail('Timed out reading original A14 empty text evidence');
+      }
+      return remaining;
+    }
+
+    try {
+      emptyObservation['phase'] = 'active-body';
+      expect(empty.source, source);
+      expect(empty.lifecycle, isA<ActiveChatAtom>());
+      expect(empty.completionSeq, isNull);
+      expect(empty.contentPresent, isNull);
+      final activeBody = empty.contents
+          .where((content) => content.role == ChatContentRole.body)
+          .single;
+      final activeWindow = await scope
+          .readContent(
+            reference: activeBody.reference,
+            range: const ContentRange(offset: 0, maxBytes: 1024),
+          )
+          .timeout(remainingReadTime());
+      expect(lease, same(owner));
+      expect(activeWindow.offset, 0);
+      expect(activeWindow.bytes, isEmpty);
+      expect(activeWindow.availableThrough, 0);
+      emptyObservation['active'] = {
+        'contentPresent': 'unknown',
+        'completionSeq': empty.completionSeq,
+        'bodyBytes': activeWindow.bytes.length,
+        'availableThrough': activeWindow.availableThrough,
+        'generation': activeWindow.generation,
+        'sealed': activeWindow.sealed,
+      };
+      await release('a14-empty-start');
+      await reach(
+        'a14-empty-terminal',
+        () => !live.any((atom) => atom.id == empty.id),
+      );
+      readClock.reset();
+      emptyObservation['phase'] = 'terminal-completion';
+      // Ordinary text freezes under its original atom ID. Hidden excludes this
+      // completion from Main, not from the original reader's point lookup.
+      final completed = await scope
+          .readCompleted(
+            recordId: empty.id,
+            demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+          )
+          .timeout(remainingReadTime());
+      expect(lease, same(owner));
+      expect(completed.recordId, empty.id);
+      expect(completed.atom.id, empty.id);
+      expect(completed.atom.completionItemId, completed.recordId);
+      expect(completed.atom.completionSeq, completed.completionSeq);
+      expect(completed.completionSeq, greaterThan(0));
+      expect(completed.atom.source, source);
+      expect(completed.atom.lifecycle, isA<TerminalChatAtom>());
+      expect(completed.atom.contentPresent, isFalse);
+      expect(completed.mainPresentation, MainPresentation.hidden);
+      expect(completed.run, isNull);
+      final value = presentation(completed);
+      expect(value.compatibility, ChatItemCompatibility.current);
+      expect(value.type, 'text');
+      expect(value.data['attachments'], isA<List>());
+      expect(value.attachments, isEmpty);
+      expect(value.bodies, hasLength(1));
+      expect(value.bodies.single.byteLength, 0);
+      final terminalBody = completed.atom.contents
+          .where((content) => content.role == ChatContentRole.body)
+          .single;
+      final terminalWindow = await scope
+          .readContent(
+            reference: terminalBody.reference,
+            range: const ContentRange(offset: 0, maxBytes: 1024),
+          )
+          .timeout(remainingReadTime());
+      expect(terminalWindow.offset, 0);
+      expect(terminalWindow.bytes, isEmpty);
+      expect(terminalWindow.availableThrough, 0);
+      expect(terminalWindow.sealed, isTrue);
+      emptyObservation['terminal'] = {
+        'recordId': completed.recordId,
+        'completionSeq': completed.completionSeq,
+        'contentPresent': completed.atom.contentPresent,
+        'mainPresentation': completed.mainPresentation.name,
+        'payloadType': value.type,
+        'attachmentCount': value.attachments.length,
+        'bodyByteLength': value.bodies.single.byteLength,
+        'bodyBytes': terminalWindow.bytes.length,
+        'availableThrough': terminalWindow.availableThrough,
+        'sealed': terminalWindow.sealed,
+      };
+      emptyObservation['phase'] = 'verified';
+    } finally {
+      scope.retire();
+      final cleanup = await scope.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      );
+      emptyObservation['scopeJoined'] = cleanup.complete;
+      expect(cleanup.complete, isTrue);
+    }
     expect(
       items.where((entry) => entry.atom.id == empty.id),
       isEmpty,
@@ -3060,6 +3288,108 @@ final class _ConceptScene {
     report['mediaResourceFailureObserved'] = missing;
   }
 
+  Future<void> _admitSavedMain(Set<String> requiredIds) async {
+    final owner = lease;
+    final controller = owner.controller;
+    final generation = owner.generation;
+    final clock = Stopwatch()..start();
+    final pages = <Map<String, Object?>>[];
+    final observation = <String, Object?>{
+      'requiredMessageIds': requiredIds.toList(),
+      'generation': generation,
+      'initialCount': controller.messages.length,
+      'initialCursor': owner.olderCursor,
+      'initialHasOlder': owner.hasOlder,
+      'pages': pages,
+      'admitted': false,
+    };
+    report['savedMainAdmission'] = observation;
+    List<String> missingIds() => requiredIds
+        .where((id) => !controller.messages.any((message) => message.id == id))
+        .toList();
+    void stop(String reason) {
+      observation.addAll({
+        'missingMessageIds': missingIds(),
+        'count': controller.messages.length,
+        'cursor': owner.olderCursor,
+        'hasOlder': owner.hasOlder,
+        'elapsedMillis': clock.elapsedMilliseconds,
+        'olderError': graph.timeline.source.value?.olderError?.toString(),
+        'failure': reason,
+      });
+      fail('$reason: ${jsonEncode(observation)}');
+    }
+
+    void requireOwner() {
+      if (!identical(lease, owner) ||
+          !identical(owner.controller, controller) ||
+          lease.generation != generation ||
+          owner.isRetired ||
+          owner.isReleased) {
+        stop(
+          'Saved Main admission lost its original lease/controller/generation',
+        );
+      }
+    }
+
+    while (true) {
+      requireOwner();
+      if (missingIds().isEmpty) break;
+      if (!owner.hasOlder || owner.olderCursor == null) {
+        stop('Main reached EOF without the exact saved message IDs');
+      }
+      final remaining = const Duration(seconds: 60) - clock.elapsed;
+      if (remaining <= Duration.zero) {
+        stop('Timed out admitting the exact saved Main message IDs');
+      }
+      final views = tester
+          .widgetList<TimelineView>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is TimelineView &&
+                  identical(widget.controls, owner) &&
+                  widget.threadId == owner.threadId &&
+                  widget.view.generation == generation,
+            ),
+          )
+          .toList();
+      if (views.length != 1) stop('Expected one original Main paging view');
+      final before = owner.olderCursor;
+      final count = controller.messages.length;
+      try {
+        await views.single.onLoadOlder().timeout(remaining);
+        await tester.pump();
+      } catch (error) {
+        stop('Original Main page failed: $error');
+      }
+      requireOwner();
+      pages.add({
+        'beforeCursor': before,
+        'afterCursor': owner.olderCursor,
+        'beforeCount': count,
+        'afterCount': controller.messages.length,
+      });
+      if (graph.timeline.source.value?.olderError != null ||
+          owner.olderCursor == before ||
+          controller.messages.length <= count) {
+        stop('Original Main page did not advance its cursor and loaded count');
+      }
+      expect(tester.takeException(), isNull);
+    }
+    for (final id in requiredIds) {
+      expect(
+        controller.messages.where((message) => message.id == id),
+        hasLength(1),
+      );
+    }
+    observation.addAll({
+      'admitted': true,
+      'finalCount': controller.messages.length,
+      'finalCursor': owner.olderCursor,
+      'elapsedMillis': clock.elapsedMilliseconds,
+    });
+  }
+
   Future<void> reopened(
     Map<String, dynamic> saved, {
     required bool missing,
@@ -3068,12 +3398,28 @@ final class _ConceptScene {
     if (!missing) await warmSelectionSamples();
     final input = saved['imageInput'] as Map<String, dynamic>;
     final inputId = input['inputId'] as String;
+    // A finite assertion demand, not another history collection. The original
+    // page owner alone admits these saved Message IDs into its controller.
+    await _admitSavedMain({
+      input['itemId'] as String,
+      saved['imageWorkItemId'] as String,
+      ...(saved['coreOrder'] as List).cast<String>(),
+      for (final record
+          in (saved['a07Handoff'] as Map<String, dynamic>)['records'] as List)
+        (record as Map<String, dynamic>)['messageId'] as String,
+      for (final field in [
+        'partialItemId',
+        'failureItemId',
+        'compactionItemId',
+      ])
+        saved[field] as String,
+    });
     // Production projection IDs survive reopen. Reveal exactly the saved Main
     // item, never search folded groups by member contents or ID prefixes.
     final target = find.byWidgetPredicate(
       (widget) => widget is ChatItemView && widget.item.id == input['itemId'],
     );
-    await reveal(target);
+    await observed.reveal(target, input['itemId'] as String);
     final item = items.singleWhere(
       (item) => item.atom.source == InputChatSource(inputId: inputId),
     );
