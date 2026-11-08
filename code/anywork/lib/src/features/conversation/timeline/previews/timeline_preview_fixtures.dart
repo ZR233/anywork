@@ -57,7 +57,7 @@ abstract final class TimelinePreviewFixtures {
     'preview-user',
     'text',
     const {'channel': 'user', 'attachments': []},
-    bodies: [body('part.text.0', '请核对时间线的历史呈现，并保留窄窗口下的完整阅读能力。')],
+    bodies: [body('body', '请核对时间线的历史呈现，并保留窄窗口下的完整阅读能力。')],
   );
 
   static final assistant = item(

@@ -50,6 +50,11 @@ Hidden 不分隔可见连续段，Single 自成一段。相邻只指可见完成
 
 记录头具有 `read_hint` 与可空 `run { start_seq, ordinal }`。Single 的 start=seq、ordinal=1；Adjacent 与最后可见记录 key 相同时沿用 start、ordinal 加一，否则起新段；Hidden 的 run=None 且不改变最后可见值。Session 只保留有界 `last_visible` seed。整批在私有候选中完成算术、身份和预算校验后原子发布；幂等命中不推进 head 或 seed。
 
+已知文本的可见正文与保全原始请求的内容域不同。Accepted/Inbox 的原 payload 引用及字节继续保留；
+文本组件仅展示规范正文角色与附件，不把通用内容清单中的原始请求域逐项当正文，也不根据 JSON
+外观过滤用户文本。原 payload 引用若复用真正正文，不能因此隐藏正文。文本的 `content_present`
+只计正文角色的非空内容与附件，不由原始请求封装或其他保留域变成 true。
+
 ## 26.3 完整 pending 与保存交接
 
 H 是已发布完成上界，D 是已确认落盘连续前缀，pending 完整覆盖 `(D,H]`，不是可淘汰缓存。可见、段、class/parent 及内容索引只引用同一冻结 Arc，不复制正文或保留已保存全组。冷绑定从一个短快照取得 head 与最后可见轻量头，已初始化 Session 不反复查询 seed。

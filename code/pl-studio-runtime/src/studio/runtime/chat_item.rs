@@ -303,8 +303,12 @@ fn freeze(
     }
     let mut atom = metadata.unwrap_or_else(|| atom(item));
     if let ThreadItemState::Text(text) = item.state() {
-        atom.content_present =
-            Some(bodies.values().any(|block| !block.is_empty()) || !text.attachments().is_empty());
+        atom.content_present = Some(
+            bodies.iter().any(|(key, block)| {
+                atom_content_role(key) == Some(pl_protocol::ChatContentRole::Body)
+                    && !block.is_empty()
+            }) || !text.attachments().is_empty(),
+        );
     }
     // Frozen completions (including background handoff receipts) carry the original
     // typed tool payload, never a duplicate of the active wait presentation.

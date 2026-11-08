@@ -10,6 +10,7 @@ import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
+import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
@@ -92,6 +93,41 @@ class _ChatItemViewState extends State<ChatItemView> {
           ?.group(1);
       return index == null || !sensitive.contains(int.parse(index));
     });
+  }
+
+  Iterable<ChatBodyPresentation> get _textBodies {
+    final atom = item.atom;
+    if (atom == null) {
+      // Payload-only known Input/parent text is also used by official previews.
+      // Its canonical text field is body, not every retained content domain.
+      return switch (item.data['channel']) {
+        'user' ||
+        'parentAgent' => item.bodies.where((body) => body.key == 'body'),
+        _ => item.bodies,
+      };
+    }
+    if (atom.source is! InputChatSource &&
+        atom.source is! InboxMessageChatSource) {
+      // Model text can use part.outputText.N. Do not reinterpret its manifest.
+      return item.bodies;
+    }
+    final declared = atom.contents.where(
+      (content) => content.role == ChatContentRole.body,
+    );
+    return item.bodies.where(
+      (body) => declared.any((content) {
+        final reference = content.reference;
+        final target = reference.target;
+        if (target is! BodyContentTarget || target.key != body.key) {
+          return false;
+        }
+        // Inline bytes belong to this envelope's declared key. Deferred bytes
+        // additionally have to retain the exact database/owner/target identity.
+        return body.reference == null ||
+            contentReferenceIdentity(body.reference!) ==
+                contentReferenceIdentity(reference);
+      }),
+    );
   }
 
   Widget _publicEnvelope() => _sensitiveQuestions.isEmpty
@@ -226,7 +262,7 @@ class _ChatItemViewState extends State<ChatItemView> {
           key: StudioDriverKeys.parentAgentLabel(item.id),
           style: context.text.bodySmall,
         ),
-      for (final body in item.bodies) _body(body),
+      for (final body in _textBodies) _body(body),
       _media(),
       // The independent Turn receipt owns terminal reasons. Accepted partial
       // text stays readable without repeating its failure/stop diagnostics.

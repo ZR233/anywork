@@ -96,6 +96,37 @@ fn only_explicit_hidden_or_control_qualifications_return_none_and_corruption_pro
 }
 
 #[test]
+fn original_request_is_retained_without_making_empty_input_body_present() -> Result<()> {
+    let thread = Thread::placeholder("thread");
+    let mut record = input("empty");
+    record.input.payload = OpaquePayload::new(
+        "pl.studio.prompt",
+        1,
+        r#"{"text":"","presentation":"visible","attachments":[],"request":{"inputId":"empty","text":"","attachmentDraftIds":[]}}"#,
+    )?;
+    let draft = accepted_input_draft(&thread, &record, at(), 123, "database")?.unwrap();
+    let atom: ChatAtom = serde_json::from_slice(&draft.metadata)?;
+    assert_eq!(atom.content_present, Some(false));
+    // Admission remains a Single fact even when its visible text is empty.
+    assert_eq!(draft.read_hint, pl_core::chat::ChatReadHint::Single);
+    let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
+    let reference: ContentRef =
+        serde_json::from_value(envelope["data"]["acceptedPayload"]["reference"].clone())?;
+    let ContentTarget::Body { owner, key } = reference.target else {
+        anyhow::bail!("original body ref");
+    };
+    let content = &draft.contents[&ChatContentKey {
+        owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+        key,
+    }];
+    assert_eq!(
+        content.data.range(0, 4096)?.as_bytes(),
+        record.input.payload.content().as_bytes()
+    );
+    Ok(())
+}
+
+#[test]
 fn parent_inbox_is_received_once_with_original_source_and_never_infers_tool_or_system_roles()
 -> Result<()> {
     let mut thread = Thread::placeholder("child");
