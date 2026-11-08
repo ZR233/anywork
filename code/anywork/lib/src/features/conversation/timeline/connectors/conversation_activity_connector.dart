@@ -7,6 +7,7 @@ import '../../../../shared/studio_driver_state.dart';
 import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
 import '../widgets/conversation_activity_bar.dart';
+import '../widgets/conversation_activity_viewport.dart';
 import 'conversation_current_connector.dart';
 import 'interaction_details_connector.dart';
 
@@ -76,9 +77,8 @@ class ConversationActivityConnector extends ConsumerWidget {
         ),
       );
     }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return ConversationActivityViewport(
+      key: ValueKey(threadId),
       children: children,
     );
   }

@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/composer/views/composer_dock_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_viewport.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_document_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -102,7 +105,7 @@ CurrentCollectionPage _page(
   ],
   continuation: next,
 );
-Widget _host(Widget child) => MaterialApp(
+Widget _host(Widget child, {bool scrollBody = true}) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
   localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -112,7 +115,7 @@ Widget _host(Widget child) => MaterialApp(
       builder: (context) => DecoratedBox(
         // Match the opaque composer footer between Scaffold and the details.
         decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface),
-        child: SingleChildScrollView(child: child),
+        child: scrollBody ? SingleChildScrollView(child: child) : child,
       ),
     ),
   ),
@@ -477,6 +480,10 @@ void main() {
   testWidgets(
     'State refs read canonical requests without acquiring State decision authority',
     (tester) async {
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final content = _Content();
       final refs = ThreadBusinessRefs(
         plan: null,
@@ -502,6 +509,22 @@ void main() {
                 UserQuestionOptionView(label: '允许', description: 'State选项'),
               ],
             ),
+            UserQuestionView(
+              id: 'state-q2',
+              header: '第二个问题',
+              question: '公开补充说明',
+              isOther: true,
+              isSecret: false,
+              options: [],
+            ),
+            UserQuestionView(
+              id: 'state-q3',
+              header: '第三个问题',
+              question: '输入私密答案',
+              isOther: false,
+              isSecret: true,
+              options: [],
+            ),
           ],
         ),
       );
@@ -512,28 +535,91 @@ void main() {
       var decisions = 0;
       await tester.pumpWidget(
         _host(
-          Column(
-            children: [
-              UserInputView(
-                payload: InteractionPayloadSnapshot.from(
-                  state.interactions.single,
-                ),
-                enabled: true,
-                onSubmit: (_) => decisions++,
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: SizedBox(
+              width: 939,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: ConstrainedBox(
+                      // Reproduce the real 1280×720 footer's remaining budget,
+                      // not a larger canvas that hides the overflow.
+                      constraints: const BoxConstraints(maxHeight: 17.4),
+                      child: ConversationActivityViewport(
+                        children: [
+                          ConversationActivityBar(
+                            children: [
+                              ConversationActivityStatus(
+                                view: ConversationActivityView(
+                                  identity: 'planning',
+                                  kind: ConversationActivityKind.planning,
+                                  activeTools: const [],
+                                  activeToolCount: 0,
+                                  expandable: false,
+                                ),
+                              ),
+                            ],
+                          ),
+                          InteractionDetailsConnector(
+                            content: content,
+                            reference: state.businessRefs.interactions!,
+                            isCurrent: () => true,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  ComposerDockView(
+                    compact: true,
+                    additionalDiagnostics: const [],
+                    childInteractions: null,
+                    content: UserInputView(
+                      payload: InteractionPayloadSnapshot.from(
+                        state.interactions.single,
+                      ),
+                      enabled: true,
+                      onSubmit: (_) => decisions++,
+                    ),
+                  ),
+                ],
               ),
-              InteractionDetailsConnector(
-                content: content,
-                reference: state.businessRefs.interactions!,
-                isCurrent: () => true,
-              ),
-            ],
+            ),
           ),
+          scrollBody: false,
         ),
       );
       expect(tester.takeException(), isNull);
+      final viewport = find.byType(ConversationActivityViewport);
+      expect(tester.getSize(viewport), const Size(939, 17.4));
+      final submit = find.byKey(StudioDriverKeys.userInputSubmit);
+      final submitRect = tester.getRect(submit);
+      expect(submit.hitTestable(), findsOneWidget);
+      final scroll = tester
+          .widget<SingleChildScrollView>(
+            find
+                .descendant(
+                  of: viewport,
+                  matching: find.byType(SingleChildScrollView),
+                )
+                .first,
+          )
+          .controller!;
+      expect(scroll.position.maxScrollExtent, greaterThan(0));
+      await tester.drag(viewport, const Offset(0, -48));
+      await _frames(tester);
+      expect(scroll.offset, greaterThan(0));
+      Future<void> reveal(Finder finder) async {
+        await Scrollable.ensureVisible(tester.element(finder), alignment: .5);
+        await _frames(tester);
+        expect(finder.hitTestable(), findsOneWidget);
+      }
+
       expect(content.activity.value, isNull);
       expect(content.reader.pages, isEmpty);
-      await tester.ensureVisible(find.text('交互详情'));
+      await reveal(find.text('交互详情'));
       await tester.tap(find.text('交互详情'));
       await _frames(tester);
       expect(tester.takeException(), isNull);
@@ -545,6 +631,15 @@ void main() {
       expect(find.textContaining('不可展示的'), findsNothing);
       expect(find.text('敏感问题内容已隐藏'), findsOneWidget);
       expect(tester.takeException(), isNull);
+      final scope = content.scopes.single;
+      await reveal(find.text('查询的公开问题'));
+      final firstOffset = scroll.offset;
+      await reveal(find.text('敏感问题内容已隐藏'));
+      expect(scroll.offset, greaterThan(firstOffset));
+      expect(content.scopes.single, same(scope));
+      expect(content.reader.pages, hasLength(1));
+      expect(tester.getRect(submit), submitRect);
+      expect(submit.hitTestable(), findsOneWidget);
       expect(
         tester
             .widgetList<TextField>(find.byType(TextField))
@@ -555,18 +650,39 @@ void main() {
       expect(state.interactions.single, same(stateInteraction));
       expect(state.interactions.single.revision, 9);
       expect(decisions, 0);
+      await reveal(find.text('交互详情'));
+      await tester.tap(find.text('交互详情'));
+      // Scrolling must not change the original synchronous fold retirement.
+      expect(scope.isActive, isFalse);
+      await _frames(tester);
+      expect(find.text('查询的公开问题'), findsNothing);
+      expect(tester.takeException(), isNull);
       await tester.ensureVisible(find.text('允许'));
       await tester.tap(find.text('允许'));
       await _frames(tester);
-      final submit = find.byKey(StudioDriverKeys.userInputSubmit);
       expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
-      await tester.ensureVisible(submit);
+      expect(submit.hitTestable(), findsOneWidget);
+      await tester.tap(submit);
+      await _frames(tester);
+      expect(find.text('第二个问题'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '公开回复');
+      await tester.tap(submit);
+      await _frames(tester);
+      expect(find.text('第三个问题'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).obscureText,
+        isTrue,
+      );
+      await tester.enterText(find.byType(TextField), 'private answer');
+      expect(submit.hitTestable(), findsOneWidget);
       await tester.tap(submit);
       await _frames(tester);
       expect(decisions, 1);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await content.join();
+      await _frames(tester);
+      expect(tester.takeException(), isNull);
     },
   );
 
