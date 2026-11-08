@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
 use pl_protocol::{
-    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind,
-    ChatEntry, ChatFactPosition, ChatPlacement, ChatScope, ChatSourceId, ChatSourceLifecycle,
-    ChatSourceState, ChatTerminalOutcome, ChatToolIdentity, PayloadData, ReadDemand,
-    ThreadWaitIntent, ThreadWaitPresentation, ThreadWaitState, studio::StudioErrorCode,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatFactPosition,
+    ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, CompletedEntry,
+    CompletionRunPosition, MainPresentation, PayloadData, ReadDemand, studio::StudioErrorCode,
 };
 
 use super::*;
@@ -92,7 +91,7 @@ async fn child_interactions_query_requires_exactly_its_host_scope() {
 }
 
 #[tokio::test]
-async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() {
+async fn conversation_query_requires_demand_and_accepts_only_complete_scope_references() {
     assert!(matches!(
         conversation_query("/?maxItems=7&maxBytes=4096").await,
         Ok((
@@ -108,12 +107,11 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
     ));
     assert!(matches!(
-        conversation_query("/?maxItems=3&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=%20opaque-generation%3A1%20&membersItemId=group-a").await,
-        Ok((ChatScope::GroupMembers { reference }, _))
+        conversation_query("/?maxItems=3&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=17").await,
+        Ok((ChatScope::Run { reference }, _))
             if reference.database_id == "db"
-                && reference.projection_version == 1
-                && reference.projection_generation == " opaque-generation:1 "
-                && reference.item_id == "group-a"
+                && reference.index_version == 1
+                && reference.start_seq == 17
     ));
     for uri in [
         "/",
@@ -126,17 +124,10 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
         "/?maxItems=7&maxBytes=4096&parent_id=parent-a",
         "/?maxItems=7&maxBytes=4096&unknown=1",
         "/?maxItems=7&maxItems=8&maxBytes=4096",
-        "/?maxItems=7&maxBytes=4096&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&parentId=parent-a&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=%20%20&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&parentId=parent-a&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersProjectionGeneration=opaque-generation",
-        "/?maxItems=7&maxBytes=4096&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionGeneration=opaque-generation&membersItemId=group-a",
-        "/?maxItems=7&maxBytes=4096&membersDatabaseId=db&membersProjectionVersion=1&membersProjectionGeneration=opaque-generation",
+        "/?maxItems=7&maxBytes=4096&runDatabaseId=db",
+        "/?maxItems=7&maxBytes=4096&runDatabaseId=db&runIndexVersion=1",
+        "/?maxItems=7&maxBytes=4096&parentId=parent-a&runDatabaseId=db&runIndexVersion=1&runStartSeq=7",
+        "/?maxItems=7&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=0",
     ] {
         let Err(error) = conversation_query(uri).await else {
             panic!("invalid conversation query admitted: {uri}");
@@ -146,11 +137,34 @@ async fn conversation_query_requires_demand_and_rejects_old_resume_parameters() 
 }
 
 #[tokio::test]
+async fn unsupported_run_index_is_a_typed_protocol_version_mismatch() {
+    let Err(error) = conversation_query(
+        "/?maxItems=3&maxBytes=4096&runDatabaseId=db&runIndexVersion=2&runStartSeq=17",
+    )
+    .await
+    else {
+        panic!("unsupported completion run index version was accepted");
+    };
+    assert_eq!(error.0.code, StudioErrorCode::Protocol);
+    assert_eq!(
+        error.0.reason(),
+        Some(pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch.label())
+    );
+}
+
+#[tokio::test]
 async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() -> Result<()> {
     let batch = ChatBatch {
         placement: ChatPlacement::Set,
-        entries: vec![
-            ChatEntry::Atom(Box::new(ChatAtom {
+        entries: vec![CompletedEntry {
+            record_id: "message-a".into(),
+            completion_seq: 7,
+            run: Some(CompletionRunPosition {
+                start_seq: 7,
+                ordinal: 1,
+            }),
+            main_presentation: MainPresentation::Single,
+            atom: ChatAtom {
                 id: "member-a".into(),
                 completion_item_id: Some("message-a".into()),
                 completion_seq: Some(7),
@@ -184,56 +198,11 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
                 payload: Some(PayloadData::Inline {
                     bytes: b"  body\n".to_vec(),
                 }),
-            })),
-            ChatEntry::Atom(Box::new(ChatAtom {
-                id: "active-wait".into(),
-                completion_item_id: None,
-                completion_seq: None,
-                source: ChatSourceId::ForegroundTurn {
-                    turn_id: "turn-a".into(),
-                },
-                source_state: None,
-                source_order: Some(4),
-                kind: ChatAtomKind::ToolCall,
-                delivery: ChatDeliveryKind::Foreground,
-                lifecycle: ChatAtomLifecycle::Active {
-                    started: None,
-                    status: ChatActiveStatus::Running,
-                },
-                turn_id: Some("turn-a".into()),
-                attempt_id: Some("attempt-a".into()),
-                tool: Some(ChatToolIdentity {
-                    call_id: "wait-call".into(),
-                    name: "wait".into(),
-                }),
-                wait: Some(ThreadWaitPresentation::new(
-                    ThreadWaitIntent::Timer {
-                        duration_ms: 30_000,
-                    },
-                    ThreadWaitState::Waiting,
-                    None,
-                )),
-                text_channel: None,
-                content_present: None,
-                started_at: None,
-                finished_at: None,
-                contents: Vec::new(),
-                payload: None,
-            })),
-            ChatEntry::Source(ChatSourceState {
-                source: ChatSourceId::ForegroundTurn {
-                    turn_id: "turn-a".into(),
-                },
-                lifecycle: ChatSourceLifecycle::Active,
-                started: Some(ChatFactPosition {
-                    effect_seq: 1,
-                    suborder: 0,
-                }),
-                ended: None,
-            }),
-        ],
+            },
+        }],
         before: Some("opaque-before".into()),
-        current: None,
+        from_seq: None,
+        through_seq: 7,
     };
     batch.validate_for(&ChatScope::Children {
         parent_id: "parent-a".into(),
@@ -273,12 +242,7 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
             .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
     );
     assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
-    for name in [
-        "membersDatabaseId",
-        "membersProjectionVersion",
-        "membersProjectionGeneration",
-        "membersItemId",
-    ] {
+    for name in ["runDatabaseId", "runIndexVersion", "runStartSeq"] {
         assert!(
             params
                 .iter()
@@ -286,18 +250,19 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
         );
     }
     let schemas = &document["components"]["schemas"];
-    assert!(schemas["TimelineItem"]["properties"]["members"].is_object());
-    assert!(
-        schemas["TimelineItem"]["properties"]
-            .get("currentMembers")
-            .is_none()
-    );
-    assert!(schemas["TimelineMembersRef"]["properties"]["databaseId"].is_object());
-    assert!(schemas["TimelineMembersRef"]["properties"]["projectionVersion"].is_object());
-    assert!(schemas["TimelineMembersRef"]["properties"]["projectionGeneration"].is_object());
-    assert!(schemas["TimelineMembersRef"]["properties"]["itemId"].is_object());
+    assert!(schemas["CompletedEntry"].is_object());
+    assert!(schemas["CompletionRunRef"].is_object());
+    assert!(schemas["ActivitySnapshot"].is_object());
+    assert!(schemas["MainPresentation"].is_object());
+    assert!(schemas["ChatBatch"]["properties"]["fromSeq"].is_object());
+    assert!(schemas["ChatBatch"]["properties"]["throughSeq"].is_object());
+    assert!(schemas["ChatBatch"]["properties"].get("current").is_none());
+    assert!(schemas.get("TimelineItem").is_none());
+    assert!(schemas.get("TimelineMembersRef").is_none());
+    assert!(schemas.get("ChatEntry").is_none());
     for suffix in [
         "chat/older",
+        "chat/completed",
         "contents/manifest",
         "contents/read",
         "contents/watch",
@@ -325,40 +290,34 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
 }
 
 #[tokio::test]
-async fn main_sse_preserves_display_items_and_lightweight_outcome_without_member_payloads()
--> Result<()> {
+async fn main_sse_encodes_typed_completed_entries_without_legacy_display_shapes() -> Result<()> {
     let batch: ChatBatch = serde_json::from_value(serde_json::json!({
         "placement": "set",
         "entries": [
-            {"kind": "item", "value": {
-                "id": "group", "kind": "workGroup",
-                "source": {"kind": "foregroundTurn", "turnId": "turn"},
-                "delivery": "foreground", "turnId": "turn",
-                "startedAt": 100, "finishedAt": 110,
-                "summary": {
-                    "latestThinkingSummary": "Reviewing updates",
-                    "memberCount": 20, "activeCount": 0, "failedCount": 1, "cancelledCount": 2,
-                    "categories": [{"category": "command", "count": 20}],
-                    "startedAt": 100, "finishedAt": 110
-                },
-                "members": {"databaseId": "db", "projectionVersion": 1, "projectionGeneration": "generation:1", "itemId": "group"},
-                "position": 4, "admissionClosed": true
-            }},
-            {"kind": "item", "value": {
-                "id": "interrupted-text", "kind": "text",
-                "source": {"kind": "foregroundTurn", "turnId": "turn"},
-                "atomKind": "text", "delivery": "foreground", "outcome": "cancelled",
-                "textChannel": "final", "turnId": "turn",
-                "startedAt": 111, "finishedAt": 112,
-                "payload": {"kind": "deferred", "reference": {
-                    "databaseId": "db",
-                    "target": {"kind": "itemPayload", "itemId": "original-content"}
-                }, "byteLength": 1000000},
-                "contentItemId": "original-content", "position": 5, "admissionClosed": true
-            }}
+            {
+                "recordId": "record-a",
+                "completionSeq": 8,
+                "run": {"startSeq": 8, "ordinal": 1},
+                "mainPresentation": "single",
+                "atom": {
+                    "id": "atom-a",
+                    "completionItemId": "record-a",
+                    "completionSeq": 8,
+                    "source": {"kind": "foregroundTurn", "turnId": "turn"},
+                    "kind": "text",
+                    "delivery": "foreground",
+                    "lifecycle": {"kind": "terminal", "outcome": "completed"},
+                    "contents": [],
+                    "payload": {"kind": "deferred", "reference": {
+                        "databaseId": "db",
+                        "target": {"kind": "itemPayload", "itemId": "record-a"}
+                    }, "byteLength": 1000000}
+                }
+            }
         ],
-        "before": "opaque-item-page",
-        "current": serde_json::to_value(pl_protocol::CurrentProjection::empty(43, pl_protocol::ThreadStatus::Idle))?
+        "before": "opaque-run-page",
+        "fromSeq": null,
+        "throughSeq": 8
     }))?;
     batch.validate_for(&ChatScope::Main)?;
     let event = encode_conversation_event(&ConversationEvent::Chat {

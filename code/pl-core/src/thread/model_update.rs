@@ -97,7 +97,7 @@ impl Owner {
         extensions::stage_extensions(&mut candidate, mutations)?;
         self.state = candidate;
         self.pending_model_update = pending;
-        self.publish();
+        self.publish()?;
         Ok(self.state.clone())
     }
     pub(super) async fn apply_model_update(&mut self) -> Result<(), ThreadError> {

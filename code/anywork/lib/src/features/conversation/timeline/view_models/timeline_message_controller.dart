@@ -1,15 +1,14 @@
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
-import '../state/content_reference_identity.dart';
+import '../state/completion_run_presentation.dart';
 import '../state/timeline_display_unit.dart';
 
-/// Main's mechanical admission adapter. Loaded history belongs exclusively to
-/// InMemoryChatController; only the bounded current item fragment lives here.
+/// The only Main combination adapter. The public chat controller exclusively
+/// owns loaded cards; Append reads only its tail, and never sorts or deduplicates.
 final class TimelineMessageController implements ConversationBatchConsumer {
   TimelineMessageController(
     this.controller, {
@@ -17,64 +16,40 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     this.onUnitCreated,
     this.onUnitRetired,
   });
+
   final InMemoryChatController controller;
   final int generation;
   final void Function(TimelineDisplayUnit)? onUnitCreated;
   final void Function(TimelineDisplayUnit)? onUnitRetired;
-  final ValueNotifier<List<TimelineDisplayUnit>> live = ValueNotifier(const []);
   bool _disposed = false;
   bool _retired = false;
+  int? _through;
   int get length => controller.messages.length;
 
-  Iterable<TimelineDisplayUnit> get _history sync* {
-    for (final message in controller.messages) {
-      final unit = message.metadata?[timelineDisplayUnitKey];
-      if (unit is TimelineDisplayUnit) yield unit;
-    }
-  }
+  TimelineDisplayUnit _unitOf(Message message) =>
+      message.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
 
   TimelineDisplayUnit _unit(
-    TimelineItem item, {
-    required bool current,
-    bool borrowCurrentIntent = true,
-    TimelineDisplayUnit? previousUnit,
+    CompletedEntry entry, {
+    TimelineDisplayUnit? previous,
   }) {
-    // Borrow intent only from the bounded current fragment at handoff. There
-    // is deliberately no permanent history-ID or member-ID map.
-    final previous =
-        previousUnit ??
-        (borrowCurrentIntent
-            ? live.value
-                  .where(
-                    (unit) => unit.id == item.id && !unit.expansion.isRetired,
-                  )
-                  .firstOrNull
-            : null);
+    final run = switch (entry.mainPresentation) {
+      MainPresentation.foregroundWork || MainPresentation.backgroundResults =>
+        CompletionRunPresentation.fromEntry(entry),
+      MainPresentation.single => null,
+      MainPresentation.hidden => throw const ConversationContinuityError(
+        'Main cannot contain Hidden records',
+      ),
+    };
     final unit = TimelineDisplayUnit(
-      item: item,
-      live: current,
+      entry: entry,
+      run: run,
       expansion: previous?.expansion,
     );
     unit.expansion.current = unit;
-    if (previous != null &&
-        (previous.item.members != item.members ||
-            !listEquals(
-              _bodyCapabilities(previous.item),
-              _bodyCapabilities(item),
-            ))) {
-      unit.expansion.replaceBody();
-    }
     if (previous == null) onUnitCreated?.call(unit);
     return unit;
   }
-
-  List<Object> _bodyCapabilities(TimelineItem item) => [
-    item.payload != null,
-    for (final content in item.contents)
-      (content.role, contentReferenceIdentity(content.reference)),
-    if (item.payload case DeferredPayload(:final reference))
-      contentReferenceIdentity(reference),
-  ];
 
   Message _message(TimelineDisplayUnit unit) {
     final presentation = ChatItemPresentation.forUnit(unit);
@@ -85,137 +60,154 @@ final class TimelineMessageController implements ConversationBatchConsumer {
       metadata: {
         chatItemPresentationKey: presentation,
         timelineDisplayUnitKey: unit,
+        completionRunPresentationKey: ?unit.run,
       },
     );
   }
 
+  void _validateEntry(CompletedEntry entry) {
+    final run = entry.run;
+    if (entry.mainPresentation == MainPresentation.hidden ||
+        run == null ||
+        run.startSeq <= 0 ||
+        run.startSeq > entry.completionSeq ||
+        run.ordinal <= 0 ||
+        run.ordinal > entry.completionSeq - run.startSeq + 1 ||
+        entry.completionSeq <= 0 ||
+        entry.recordId.isEmpty ||
+        (entry.atom.completionItemId != null &&
+            entry.atom.completionItemId != entry.recordId) ||
+        (entry.atom.completionSeq != null &&
+            entry.atom.completionSeq != entry.completionSeq) ||
+        entry.atom.lifecycle is! TerminalChatAtom ||
+        (entry.mainPresentation == MainPresentation.single &&
+            (run.startSeq != entry.completionSeq || run.ordinal != 1))) {
+      throw const ConversationContinuityError('Invalid Main completion');
+    }
+    if (entry.mainPresentation != MainPresentation.single) {
+      CompletionRunPresentation.fromEntry(entry);
+    }
+  }
+
   @override
   Future<void> applyBatch(ChatBatch batch) async {
-    _checkActive();
-    if (batch.entries.any((entry) => entry is! ItemChatEntry)) {
-      throw const ConversationContinuityError(
-        'Main accepts only TimelineItem entries',
-      );
+    if (_disposed || _retired) {
+      throw const StaleConversationScope();
     }
-    final items = batch.items.toList();
-    final ids = items.map((item) => item.id).toSet();
-    if (ids.length != items.length) {
-      throw const ConversationContinuityError('Duplicate Main item identity');
+    if (batch.placement == ChatPlacement.append) {
+      if (_through == null ||
+          batch.fromSeq == null ||
+          batch.fromSeq! < _through! ||
+          batch.throughSeq <= _through! ||
+          batch.before != null) {
+        throw const ConversationContinuityError('Invalid Main completion cut');
+      }
+    } else if (batch.fromSeq != null ||
+        (batch.placement == ChatPlacement.prepend && _through == null)) {
+      throw const ConversationContinuityError('Invalid Main page cut');
     }
-    if (batch.placement == ChatPlacement.update) {
-      if (batch.before != null || batch.current != null || items.isEmpty) {
-        throw const ConversationContinuityError('Invalid Main header update');
-      }
-      final replacements = <(Message, TimelineDisplayUnit, TimelineItem)>[];
-      for (final item in items) {
-        final message = controller.messages
-            .where((message) => message.id == item.id)
-            .firstOrNull;
-        final previous = message?.metadata?[timelineDisplayUnitKey];
-        if (message == null ||
-            previous is! TimelineDisplayUnit ||
-            previous.item.kind != TimelineItemKind.workGroup ||
-            previous.item.delivery != ChatDeliveryKind.independent ||
-            previous.item.source is! BackgroundResultChatSource ||
-            item.kind != previous.item.kind ||
-            item.delivery != previous.item.delivery ||
-            item.source != previous.item.source ||
-            item.position != previous.item.position ||
-            item.members != previous.item.members ||
-            item.turnId != previous.item.turnId) {
-          throw const ConversationContinuityError(
-            'Main header update changed or lost its group identity',
-          );
-        }
-        replacements.add((message, previous, item));
-      }
-      for (final (message, previous, item) in replacements) {
-        if (_retired) return;
-        await controller.updateMessage(
-          message,
-          _message(
-            _unit(
-              item,
-              current: false,
-              borrowCurrentIntent: false,
-              previousUnit: previous,
-            ),
-          ),
-        );
-      }
+    if (batch.placement == ChatPlacement.append && batch.entries.isEmpty) {
+      _through = batch.throughSeq;
       return;
     }
-    if (batch.placement == ChatPlacement.set) {
-      for (final unit in [
-        ..._history,
-        if (batch.current != null) ...live.value,
-      ]) {
-        _retire(unit);
+    // Validate all entries before mutating the public component. This visits
+    // only the incoming batch and, for Append, the single existing tail card.
+    int previousSeq = batch.fromSeq ?? 0;
+    TimelineDisplayUnit? tail =
+        batch.placement == ChatPlacement.append &&
+            controller.messages.isNotEmpty
+        ? _unitOf(controller.messages.last)
+        : null;
+    CompletedEntry? previous = tail?.entry;
+    final recordIds = <String>{};
+    for (final entry in batch.entries) {
+      _validateEntry(entry);
+      if (entry.completionSeq <= previousSeq ||
+          entry.completionSeq > batch.throughSeq ||
+          !recordIds.add(entry.recordId)) {
+        throw const ConversationContinuityError('Unordered completion batch');
       }
-    }
-    if (batch.placement != ChatPlacement.set && items.isNotEmpty) {
-      final loadedIds = <String>{
-        for (final message in controller.messages) message.id,
-      };
-      if (items.any((item) => loadedIds.contains(item.id))) {
-        throw const ConversationContinuityError(
-          'Main item was already committed',
-        );
+      final prior = previous;
+      if (batch.placement == ChatPlacement.append &&
+          entry.run!.startSeq != prior?.run?.startSeq &&
+          (entry.run!.startSeq != entry.completionSeq ||
+              entry.run!.ordinal != 1)) {
+        throw const ConversationContinuityError('Invalid new completion Run');
       }
+      if (prior != null) {
+        final start = entry.run!.startSeq;
+        final priorStart = prior.run!.startSeq;
+        if (start < priorStart ||
+            entry.recordId == prior.recordId ||
+            (start == priorStart &&
+                (batch.placement != ChatPlacement.append ||
+                    entry.mainPresentation == MainPresentation.single ||
+                    entry.mainPresentation != prior.mainPresentation ||
+                    entry.run!.ordinal != prior.run!.ordinal + 1))) {
+          throw const ConversationContinuityError(
+            'Non-contiguous completion Run',
+          );
+        }
+        if (start == priorStart &&
+            tail?.run != null &&
+            CompletionRunPresentation.fromEntry(entry).reference.databaseId !=
+                tail!.run!.reference.databaseId) {
+          throw const ConversationContinuityError(
+            'Completion database changed',
+          );
+        }
+      }
+      previousSeq = entry.completionSeq;
+      previous = entry;
     }
-    final messages = [
-      for (final item in items)
-        _message(
-          _unit(
-            item,
-            current: false,
-            borrowCurrentIntent: batch.current != null,
-          ),
-        ),
-    ];
+    if (batch.placement == ChatPlacement.prepend &&
+        batch.entries.isNotEmpty &&
+        controller.messages.isNotEmpty &&
+        batch.entries.last.completionSeq >=
+            _unitOf(controller.messages.first).entry.run!.startSeq) {
+      throw const ConversationContinuityError('Main pages overlap');
+    }
+
     switch (batch.placement) {
       case ChatPlacement.set:
-        await controller.setMessages(messages, animated: false);
+        for (final message in controller.messages) {
+          _retire(_unitOf(message));
+        }
+        await controller.setMessages([
+          for (final entry in batch.entries) _message(_unit(entry)),
+        ], animated: false);
       case ChatPlacement.prepend:
-        if (messages.isNotEmpty) {
+        if (batch.entries.isNotEmpty) {
           await controller.insertAllMessages(
-            messages,
+            [for (final entry in batch.entries) _message(_unit(entry))],
             index: 0,
             animated: false,
           );
         }
       case ChatPlacement.append:
-        if (messages.isNotEmpty) {
-          await controller.insertAllMessages(
-            messages,
-            index: controller.messages.length,
-          );
+        for (final entry in batch.entries) {
+          if (_retired) return;
+          if (tail != null && entry.run!.startSeq == tail.entry.run!.startSeq) {
+            final old = controller.messages.last;
+            final next = _unit(entry, previous: tail);
+            await controller.updateMessage(old, _message(next));
+            tail = next;
+          } else {
+            final next = _unit(entry);
+            await controller.insertMessage(_message(next));
+            tail = next;
+          }
         }
-      case ChatPlacement.update:
-        throw StateError('Header updates are applied before insertion');
     }
-    // The public component operation may synchronously trigger selection
-    // retirement. Its successful completion must join the old admission, not
-    // reactivate that display or publish current after losing qualification.
     if (_retired) return;
-    if (batch.current case final current?) {
-      final next = [
-        for (final item in current.items) _unit(item, current: true),
-      ];
-      final retained = {...ids, ...next.map((unit) => unit.id)};
-      for (final unit in live.value) {
-        if (!retained.contains(unit.id)) _retire(unit);
-      }
-      live.value = List.unmodifiable(next);
-    }
+    if (batch.placement != ChatPlacement.prepend) _through = batch.throughSeq;
     developer.Timeline.instantSync(
       'conversation.applied',
       arguments: {
         'generation': generation,
         'placement': batch.placement.name,
-        'acceptedEntries': items.length,
+        'acceptedEntries': batch.entries.length,
         'controllerMessages': length,
-        'liveUnits': live.value.length,
       },
     );
   }
@@ -225,19 +217,25 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     onUnitRetired?.call(unit);
   }
 
-  void _checkActive() {
-    if (_disposed || _retired) {
-      throw StateError('Timeline message controller is retired');
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    if (_disposed || _retired) throw const StaleConversationScope();
+    final identities = <ActivityIdentity>{};
+    for (final entry in snapshot.entries) {
+      if (entry.atom.lifecycle is! ActiveChatAtom ||
+          !identities.add(entry.identity)) {
+        throw const ConversationContinuityError('Invalid unfinished activity');
+      }
     }
+    // Activity belongs to ConversationContent.activity. In particular this
+    // operation must never inspect the completed message collection.
   }
 
-  /// Revoke group/body/media qualification before the old widget tree detaches.
-  /// Controller disposal still waits for the owner's in-flight mutations.
   void retireDisplays() {
     if (_retired) return;
     _retired = true;
-    for (final unit in [..._history, ...live.value]) {
-      _retire(unit);
+    for (final message in controller.messages) {
+      _retire(_unitOf(message));
     }
   }
 
@@ -245,6 +243,5 @@ final class TimelineMessageController implements ConversationBatchConsumer {
     if (_disposed) return;
     retireDisplays();
     _disposed = true;
-    live.dispose();
   }
 }

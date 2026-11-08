@@ -152,7 +152,11 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                 .conversation_current()
                 .await?
                 .context("saved current")?;
-            assert_eq!(saved.atoms, vec![active.clone()]);
+            assert!(saved.atoms.is_empty());
+            assert_eq!(
+                history.recovery_atom_starts(None, 128).await?,
+                vec![active.clone()]
+            );
             assert!(!saved.execution_present);
             assert!(
                 saved.active.is_none(),
@@ -180,14 +184,7 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                 .prepare_committed(&thread, &unchanged, &state)
                 .await?;
             restored.publish_prepared(&session, &mut prepared).await?;
-            assert!(
-                prepared
-                    .current_handoff
-                    .as_ref()
-                    .context("handoff")?
-                    .entries()
-                    .is_empty()
-            );
+            assert!(prepared.completions.is_empty());
             assert_eq!(prepared.current.projection().atoms, vec![active.clone()]);
             let effect = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
@@ -227,10 +224,8 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
             assert!(prepared.current.projection().active.is_none());
             assert!(
                 prepared
-                    .current_handoff
-                    .as_ref()
-                    .context("end handoff")?
-                    .sources()
+                    .current
+                    .source_changes
                     .iter()
                     .any(|state| state.source == source
                         && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })

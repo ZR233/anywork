@@ -181,7 +181,7 @@ impl Owner {
         }
         if let Some(sequence) = self.accepted_message_receipt(&message)? {
             self.request_message_wakeup(sequence, drive);
-            self.publish();
+            self.publish()?;
             self.publish_snapshot();
             return Ok(sequence);
         }
@@ -209,7 +209,7 @@ impl Owner {
             }
         }
         self.request_message_wakeup(sequence, drive);
-        self.publish();
+        self.publish()?;
         self.publish_snapshot();
         Ok(sequence)
     }
@@ -273,7 +273,7 @@ impl Owner {
             return Err(ThreadError::InvalidIdentity);
         }
         self.request_message_wakeup(sequence, Some(options));
-        self.publish();
+        self.publish()?;
         self.publish_snapshot();
         Ok(true)
     }

@@ -16,6 +16,42 @@ const CONSUMED_MESSAGE_LEDGER_CAPACITY: usize = 64;
 /// inspection with the durable task identity, so it is a fixed window and never grows with history.
 const TERMINAL_TASK_LEDGER_CAPACITY: usize = 64;
 
+#[cfg(test)]
+mod collection_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_collection_pruning_keeps_export_buffers_and_original_members() {
+        let record = interactions::InteractionRecord {
+            created_at: 1,
+            updated_at: 2,
+            continuation_id: None,
+            request: interactions::InteractionRequest {
+                id: "a".into(),
+                turn_id: "turn".into(),
+                payload: crate::context::OpaquePayload::text("original question"),
+            },
+            revision: 2,
+            state: interactions::InteractionState::Cancelled,
+            extension_mutations: vec![],
+        };
+        let mut state = ThreadSnapshot {
+            interaction_collection_revision: u64::MAX,
+            interactions: [(record.request.id.clone(), record.clone())].into(),
+            interaction_changes: vec![record].into(),
+            ..Default::default()
+        };
+        let exported = state.interaction_changes.clone();
+        let original = serde_json::to_value(&state).unwrap();
+        assert!(matches!(
+            state.retain_live_facts(),
+            Err(ThreadError::RevisionExhausted)
+        ));
+        assert!(Arc::ptr_eq(&exported, &state.interaction_changes));
+        assert_eq!(serde_json::to_value(state).unwrap(), original);
+    }
+}
+
 /// One committed effect batch as retained by the live window.
 #[derive(Default)]
 struct EffectWindowState {
@@ -408,6 +444,12 @@ pub struct ThreadSnapshot {
     pub consumed_message_identities: Arc<[inbox::MessageIdentity]>,
     /// Interactions the host still has to answer; resolved or cancelled ones are history.
     pub interactions: std::collections::BTreeMap<String, interactions::InteractionRecord>,
+    /// Revision of the interaction/permission resource slice, owned by this Thread.
+    /// Content changes and actual resident pruning are distinct cuts; token-only
+    /// observations and persistence acknowledgements never advance it.
+    /// Legacy checkpoints begin at zero without inventing historical revisions.
+    #[serde(default)]
+    pub interaction_collection_revision: u64,
     /// Commit-export buffer for interaction revisions; drained by the commit that exports it.
     #[serde(skip)]
     pub interaction_changes: Arc<[interactions::InteractionRecord]>,
@@ -472,6 +514,49 @@ pub struct UsagePricingSummary {
 }
 
 impl ThreadSnapshot {
+    /// Reserves both the transfer cut and its resident cut before installing resource changes.
+    pub(crate) fn interaction_collection_revision_for(
+        &self,
+        previous: &Self,
+        interactions: &std::collections::BTreeMap<String, interactions::InteractionRecord>,
+        permissions: &std::collections::BTreeMap<String, permissions::PermissionRecord>,
+    ) -> Result<u64, ThreadError> {
+        let changed =
+            previous.interactions != *interactions || previous.permissions != *permissions;
+        let revision = previous
+            .interaction_collection_revision
+            .checked_add(u64::from(changed))
+            .ok_or(ThreadError::RevisionExhausted)?;
+        revision
+            .checked_add(u64::from(
+                self.prunes_interaction_collection(interactions, permissions),
+            ))
+            .ok_or(ThreadError::RevisionExhausted)?;
+        Ok(revision)
+    }
+
+    fn prunes_interaction_collection(
+        &self,
+        interactions: &std::collections::BTreeMap<String, interactions::InteractionRecord>,
+        permissions: &std::collections::BTreeMap<String, permissions::PermissionRecord>,
+    ) -> bool {
+        interactions
+            .values()
+            .any(|record| record.state != interactions::InteractionState::Pending)
+            || permissions.values().any(|record| {
+                !self.tasks.get(&record.task_id).is_some_and(|task| {
+                    task.status == task::TaskStatus::Running
+                        || self.deliveries.iter().any(|delivery| {
+                            delivery.call_id == task.call_id
+                                && matches!(&delivery.target, ToolDeliveryTarget::Inbox { message_id }
+                                    if self.inbox.iter().any(|message|
+                                        message.sequence > self.consumed_messages
+                                        && message.message.id == *message_id))
+                        })
+                })
+            })
+    }
+
     /// Clears volatile execution handles and observation buffers that are never persisted.
     ///
     /// This is the part shared by every captured state: the restart DTO additionally drops
@@ -493,7 +578,17 @@ impl ThreadSnapshot {
     /// After this call the snapshot holds only facts that current execution and live observation
     /// still own. The matching [`super::ThreadEffectBatch`] remains the only copy of everything
     /// dropped here, so history and call records are unaffected.
-    pub(crate) fn retain_live_facts(&mut self) {
+    pub(crate) fn retain_live_facts(&mut self) -> Result<(), ThreadError> {
+        // Check before clearing any export buffer or pruning any fact: callers retain the complete
+        // original state on exhaustion, including the reliable effect facts it has not handed off.
+        let revision = self
+            .interaction_collection_revision
+            .checked_add(u64::from(self.prunes_interaction_collection(
+                &self.interactions,
+                &self.permissions,
+            )))
+            .ok_or(ThreadError::RevisionExhausted)?;
+        self.interaction_collection_revision = revision;
         // Export buffers are consumed by the commit that publishes them.
         self.permission_changes = Default::default();
         self.input_changes = Default::default();
@@ -684,6 +779,7 @@ impl ThreadSnapshot {
         // it from there without a checkpoint-visible payload ledger and without a new lease.
         self.permissions
             .retain(|_, record| live_tasks.contains(record.task_id.as_str()));
+        Ok(())
     }
 }
 

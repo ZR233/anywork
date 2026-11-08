@@ -16,7 +16,7 @@ impl Owner {
                 self.input_driver.fail(Arc::new(error));
                 self.pause_inputs();
             }
-            self.publish();
+            self.publish()?;
         }
         // The execution identity belongs to live state only, so every exit path releases it — a
         // failed or cancelled Turn as well as a completed one. A stop that named this generation
@@ -62,7 +62,7 @@ impl Owner {
         });
         self.state.turns = turns.clone().into();
         self.enter_running_execution(&turn_id);
-        self.publish();
+        self.publish()?;
         // Publish the generation before any asynchronous preparation: input received while a
         // model is being opened must redirect this Turn, not silently queue behind it.
         let mut result = async {
@@ -125,7 +125,7 @@ impl Owner {
             self.input_driver.fail(Arc::new(error));
             self.pause_inputs();
         }
-        self.publish();
+        self.publish()?;
         result
     }
 

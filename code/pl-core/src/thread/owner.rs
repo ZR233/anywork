@@ -457,11 +457,14 @@ impl Owner {
                     let _ = reply.send(Ok(()));
                 }
                 Command::Reveal(ids, reply) => {
-                    let result = self.tools.reveal(&ids).map_err(ThreadError::from);
-                    if result.is_ok() {
-                        self.state.discovered_tools = self.tools.discovery();
-                        self.publish();
-                    }
+                    let result =
+                        self.tools
+                            .reveal(&ids)
+                            .map_err(ThreadError::from)
+                            .and_then(|()| {
+                                self.state.discovered_tools = self.tools.discovery();
+                                self.publish()
+                            });
                     let _ = reply.send(result);
                 }
 
@@ -582,26 +585,34 @@ impl Owner {
                     let _ = reply.send(result);
                 }
                 Command::Close(purpose, reply) => {
-                    if self.state.lifecycle == ThreadLifecycle::Open {
+                    let started = if self.state.lifecycle == ThreadLifecycle::Open {
                         self.state.lifecycle = ThreadLifecycle::Closing;
                         // Preserving close records cut work for recovery; deletion owes only
                         // actual resource shutdown, because its caller will remove the content.
                         if purpose == ClosePurpose::Preserve && !self.interrupt.is_deleting() {
                             self.form_host_shutdown();
                         }
-                        self.publish();
-                    }
-                    let result = match self.close_resources().await {
-                        Ok(()) => {
-                            self.state.lifecycle = ThreadLifecycle::Closed;
-                            self.publish();
-                            if purpose == ClosePurpose::Delete || self.interrupt.is_deleting() {
-                                Ok(())
-                            } else {
-                                self.flush_cold().await
-                            }
-                        }
+                        self.publish()
+                    } else {
+                        Ok(())
+                    };
+                    let result = match started {
                         Err(error) => Err(error),
+                        Ok(()) => match self.close_resources().await {
+                            Ok(()) => {
+                                self.state.lifecycle = ThreadLifecycle::Closed;
+                                if let Err(error) = self.publish() {
+                                    Err(error)
+                                } else if purpose == ClosePurpose::Delete
+                                    || self.interrupt.is_deleting()
+                                {
+                                    Ok(())
+                                } else {
+                                    self.flush_cold().await
+                                }
+                            }
+                            Err(error) => Err(error),
+                        },
                     };
                     let finished = result.is_ok();
                     self.publish_snapshot();
@@ -618,11 +629,15 @@ impl Owner {
         if !self.interrupt.is_deleting() {
             self.form_host_shutdown();
         }
-        self.publish();
+        if let Err(error) = self.publish() {
+            tracing::error!(thread = self.id, %error, "abandoned Thread closing commit failed");
+        }
         match self.close_resources().await {
             Ok(()) => {
                 self.state.lifecycle = ThreadLifecycle::Closed;
-                self.publish();
+                if let Err(error) = self.publish() {
+                    tracing::error!(thread = self.id, %error, "abandoned Thread closed commit failed");
+                }
                 if !self.interrupt.is_deleting()
                     && let Err(error) = self.flush_cold().await
                 {
@@ -662,13 +677,14 @@ impl Owner {
         // model, tools and background tasks must not answer or cancel them. Only the explicit
         // cancel command settles Pending -> Cancelled, so the final checkpoint below keeps every
         // pending request (with its revision and extension association) for recovery.
-        self.publish();
-        if self
-            .state
-            .tasks
-            .values()
-            .any(|task| task.status == task::TaskStatus::Running)
-        {
+        self.publish()?;
+        if self.state.tasks.values().any(|task| {
+            task.status == task::TaskStatus::Running
+                    // Deletion already owns disposal of the exact retained completion. It owes
+                    // joining real work, not committing a terminal cut it is about to delete.
+                    && !(self.interrupt.is_deleting()
+                        && self.uncommitted_tools.contains_key(&task.call_id))
+        }) {
             return Err(ThreadError::InvalidOutput);
         }
         if let Some(mut model) = self.model.take()
@@ -679,16 +695,18 @@ impl Owner {
         }
         self.retry_plan = None;
         self.pending.clear();
+        if self.interrupt.is_deleting() {
+            // All executions joined above. Deletion owns disposal of their retained completions,
+            // including frozen executor leases that tools.close must no longer wait for.
+            self.uncommitted_tools.clear();
+            self.pending_effects.clear();
+        }
         self.tools
             .close()
             .await
             .map_err(|error| ThreadError::Tool(Arc::new(error)))?;
         self.pending.clear();
         self.retry_plan = None;
-        if self.interrupt.is_deleting() {
-            self.uncommitted_tools.clear();
-            self.pending_effects.clear();
-        }
         self.resources = None;
         Ok(())
     }
@@ -777,12 +795,20 @@ impl Owner {
         self.publish.send_replace(snapshot);
     }
 
-    pub(super) fn publish(&mut self) {
+    pub(super) fn publish(&mut self) -> Result<(), ThreadError> {
+        // Reserve both resource cuts before consuming effect buffers, claims or sequence numbers.
+        let revision = self.state.interaction_collection_revision_for(
+            &self.published,
+            &self.state.interactions,
+            &self.state.permissions,
+        )?;
         if self.interrupt.is_deleting() {
             // Deletion still publishes real execution/resource state to resident waiters, but
             // never creates a new cold-store obligation for the content being removed.
+            self.state.interaction_collection_revision = revision;
+            self.published = self.state.clone();
             self.publish_snapshot();
-            return;
+            return Ok(());
         }
         if self.retry_plan.as_ref().is_some_and(|(id, plan)| {
             !self.state.attempts.last().is_some_and(|attempt| {
@@ -799,19 +825,25 @@ impl Owner {
         }) {
             self.retry_plan = None;
         }
-        self.publish_once();
+        self.publish_once()?;
         // A pending output repair can only supplement a result that is already committed: the journal
         // validates a delivered context record against its delivery, so the supplement always lands in
         // its own commit right after the result. Applying it here — right after the commit that may
         // have carried that result — keeps the reference off the snapshot that produced the delivery
         // while still becoming durable before any consumer can observe the pause released.
         if self.flush_pending_output_repairs() {
-            self.publish_once();
+            self.publish_once()?;
         }
+        Ok(())
     }
 
     /// Commits the resident facts as exactly one effect batch.
-    fn publish_once(&mut self) {
+    fn publish_once(&mut self) -> Result<(), ThreadError> {
+        let revision = self.state.interaction_collection_revision_for(
+            &self.published,
+            &self.state.interactions,
+            &self.state.permissions,
+        )?;
         self.state.tool_progress.retain(|id, _| {
             self.state.lifecycle == ThreadLifecycle::Open
                 && self
@@ -833,7 +865,7 @@ impl Owner {
             // Nothing was committed, so no fact can take a reservation over: the claim is dropped
             // and the operation's own boundary releases its ceiling instead.
             self.pending_output_claim = None;
-            return;
+            return Ok(());
         };
         let mut output_claim = self.pending_output_claim.take();
         let mut encoded_bytes = None;
@@ -859,6 +891,7 @@ impl Owner {
             }
         }
         let effect = Arc::new(effect);
+        self.state.interaction_collection_revision = revision;
         self.state.commit_sequence = sequence;
         if let Some(store) = &self.cold {
             store.fold_usage(&mut self.state.usage_summary, &effect);
@@ -868,7 +901,7 @@ impl Owner {
         // back a pruned checkpoint; the resident state drops the same facts right after.
         let checkpoint =
             ThreadCheckpoint::capture_transfer(self.id.clone(), sequence, self.state.clone());
-        self.state.retain_live_facts();
+        self.state.retain_live_facts()?;
         self.published = self.state.clone();
         // The operation about to see its result committed names the reservation that funds it; a
         // publish that commits no effect (handled above) drops the claim, so the operation's own
@@ -884,6 +917,7 @@ impl Owner {
         self.effect_window.push(effect);
         self.admit_cold();
         self.publish_snapshot();
+        Ok(())
     }
 
     /// Names the reservation that funds the facts the next [`Owner::publish`] commits.

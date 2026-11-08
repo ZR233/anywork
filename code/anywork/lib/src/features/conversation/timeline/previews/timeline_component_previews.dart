@@ -225,50 +225,11 @@ class _AtomicGroupPreview extends StatefulWidget {
 class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
   late final groups = [
     for (var index = 0; index < (widget.live ? 1 : 2); index++)
-      TimelineDisplayUnit(
-        live: widget.live,
-        item: TimelineItem(
-          id: 'preview-group-$index',
-          kind: TimelineItemKind.workGroup,
-          source: TimelinePreviewFixtures.groupSource,
-          delivery: ChatDeliveryKind.foreground,
-          turnId: 'preview-turn',
-          position: widget.live ? null : index * 2 + 1,
-          admissionClosed: !widget.live,
-          contents: const [],
-          members: TimelineMembersRef(
-            databaseId: 'preview',
-            projectionVersion: 1,
-            projectionGeneration: 'preview-projection-generation',
-            itemId: 'preview-group-$index',
-          ),
-          summary: TimelineGroupSummary(
-            memberCount: index == 0 ? 2 : 1,
-            activeCount: widget.live && !widget.waitingForBoundary ? 1 : 0,
-            failedCount: 0,
-            cancelledCount: 0,
-            categories: [
-              const TimelineCategoryCount(
-                category: TimelineCategory.thinking,
-                count: 1,
-              ),
-              if (index == 0)
-                const TimelineCategoryCount(
-                  category: TimelineCategory.command,
-                  count: 1,
-                ),
-            ],
-            startedAt: widget.live && !widget.waitingForBoundary
-                ? null
-                : index == 0
-                ? TimelinePreviewFixtures.groupStartedAt
-                : 1735689603,
-            finishedAt: widget.live && !widget.waitingForBoundary
-                ? null
-                : index == 0
-                ? TimelinePreviewFixtures.commandFinishedAt
-                : 1735689603,
-          ),
+      TimelinePreviewFixtures.runUnit(
+        TimelinePreviewFixtures.runEntry(
+          'preview-group-$index',
+          index * 4 + 2,
+          count: index == 0 ? 2 : 1,
         ),
       ),
   ];
@@ -290,7 +251,6 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
           TimelineDisplayUnitView(
             key: ValueKey(groups[index].id),
             unit: groups[index],
-            executionPresent: widget.executionPresent,
             childBuilder: (_) => Column(
               children: [
                 if (widget.live && !widget.waitingForBoundary)
@@ -371,11 +331,11 @@ class _OverlapCurrentPreview extends StatefulWidget {
 }
 
 class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
-  final current = TimelinePreviewFixtures.overlapCurrent;
+  final activity = TimelinePreviewFixtures.overlapActivity;
   late final units = [
-    for (final item in current.items)
-      TimelineDisplayUnit(item: item, live: true),
+    TimelineDisplayUnit(entry: TimelinePreviewFixtures.overlapText),
   ];
+
   @override
   void dispose() {
     for (final unit in units) {
@@ -389,12 +349,8 @@ class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TimelineDisplayUnitView(
-          unit: units[0],
-          executionPresent: current.executionPresent,
-          childBuilder: (_) => _activeReasoningWindow(),
-        ),
-        _chatItem(ChatItemPresentation.forUnit(units[1])),
+        _chatItem(ChatItemPresentation.forUnit(units[0])),
+        _activeReasoningWindow(),
       ],
     ),
   );
@@ -423,9 +379,8 @@ class _MediaGroupPreview extends StatefulWidget {
 }
 
 class _MediaGroupPreviewState extends State<_MediaGroupPreview> {
-  final unit = TimelineDisplayUnit(
-    item: TimelinePreviewFixtures.mediaGroup,
-    live: false,
+  final unit = TimelinePreviewFixtures.runUnit(
+    TimelinePreviewFixtures.mediaGroup,
   );
   @override
   void dispose() {
@@ -437,7 +392,6 @@ class _MediaGroupPreviewState extends State<_MediaGroupPreview> {
   Widget build(BuildContext context) => SingleChildScrollView(
     child: TimelineDisplayUnitView(
       unit: unit,
-      executionPresent: false,
       childBuilder: (_) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

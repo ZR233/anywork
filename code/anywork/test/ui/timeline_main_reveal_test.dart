@@ -29,7 +29,7 @@ void main() {
           generation: 7,
           demand: chatDemand,
           content: content,
-          openMembers: (_, _) async {
+          openRun: (_, _) async {
             memberOpens++;
             throw StateError('Main reveal must not open a member query');
           },
@@ -49,11 +49,12 @@ void main() {
         chatBatch([
           for (var i = 0; i < ids.length; i++)
             if (i == ids.length - 1)
-              workItem(ids[i], count: 1)
+              workItem(ids[i], count: 1, startSeq: i + 1)
             else
-              chatMessage(ids[i], body: 'Main row $i', completionSeq: i),
+              chatMessage(ids[i], body: 'Main row $i', completionSeq: i + 1),
         ]),
       );
+      ids[ids.length - 1] = controller.messages.last.id;
       final atomScroll = ScrollController();
       var operations = 0;
       final subscription = controller.operationsStream.listen(
@@ -256,7 +257,10 @@ void main() {
         final groupItem = tester.widget<ChatItemView>(cachedGroupRow).item;
         expect(groupItem.type, 'displayUnit');
         expect(groupItem.compatibility, ChatItemCompatibility.current);
-        expect(groupUnit.item.kind, TimelineItemKind.workGroup);
+        expect(
+          groupUnit.entry.mainPresentation,
+          MainPresentation.foregroundWork,
+        );
         expect(
           find.byWidgetPredicate(
             (widget) =>
@@ -327,7 +331,7 @@ void main() {
         final typedItem = tester.widget<ChatItemView>(cachedTypedRow).item;
         expect(typedItem.type, 'text');
         expect(typedItem.compatibility, ChatItemCompatibility.current);
-        expect(typedUnit.item.kind, TimelineItemKind.text);
+        expect(typedUnit.entry.mainPresentation, MainPresentation.single);
         final cachedTypedBody = body(0);
         expect(cachedTypedBody, findsNothing);
         expect(cachedTypedBody.hitTestable(), findsNothing);

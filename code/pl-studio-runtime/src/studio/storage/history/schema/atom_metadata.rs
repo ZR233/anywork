@@ -1,6 +1,7 @@
 //! Schema 13 → 14: immutable lightweight atom metadata and actual source lifecycle only.
 //! Published payloads are decoded here, never by normal storage reads or a current tool renderer.
 use super::super::conversation::{self, sources};
+use super::legacy_timeline_types::CurrentProjection;
 use super::*;
 use anyhow::Result;
 use pl_core::chat::ChatKey;

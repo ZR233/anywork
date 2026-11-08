@@ -5,6 +5,14 @@ import 'package:anywork_client/studio_client.dart';
 /// Records actual SDK admissions and lets a test suspend the component boundary.
 final class ControlledBatchConsumer implements ConversationBatchConsumer {
   final List<ChatBatch> batches = [];
+  final List<ActivitySnapshot> activities = [];
+  Future<void> Function(ActivitySnapshot)? onActivity;
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    activities.add(snapshot);
+    await onActivity?.call(snapshot);
+  }
+
   final Map<int, Completer<void>> _entered = {};
   Future<void> Function(ChatBatch batch)? onApply;
 

@@ -63,7 +63,7 @@ impl Owner {
         task::record_change(&mut self.state, task.clone());
         // The task receipt belongs to the still-running call whose reliable output ceiling funds it.
         self.claim_output(task.id.clone());
-        self.publish();
+        self.publish()?;
         Ok(task)
     }
 

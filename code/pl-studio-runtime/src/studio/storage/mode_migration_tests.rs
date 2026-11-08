@@ -106,7 +106,7 @@ async fn persist(store: &HistoryStore, state: ThreadSnapshot, append: bool) -> R
             .into(),
         ..Default::default()
     };
-    let checkpoint = ThreadCheckpoint::capture(store.thread_id().into(), sequence, state);
+    let checkpoint = ThreadCheckpoint::capture(store.thread_id().into(), sequence, state)?;
     store
         .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
             checkpoint: &checkpoint,
@@ -1522,7 +1522,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
         extensions: vec![extension_change].into(),
         ..Default::default()
     };
-    let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state);
+    let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state)?;
     let empty = BTreeSet::new();
     history
         .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
@@ -2805,7 +2805,7 @@ async fn persist_schema12_fixture(
     persist(&seed, state, true).await?;
     let mut checkpoint = seed.checkpoint().await?.context("seed checkpoint")?;
     checkpoint.state.extensions = original.extensions;
-    let mut metadata = checkpoint.pruned();
+    let mut metadata = checkpoint.pruned()?;
     metadata.state.context.records = Default::default();
     let payload = serde_json::to_string(&metadata)?;
     drop(seed);
@@ -3540,7 +3540,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     );
     let preserved: ThreadCheckpoint =
         serde_json::from_str(&saved_checkpoint_payload(&faults).await?)?;
-    let mut before_metadata = before.pruned();
+    let mut before_metadata = before.pruned()?;
     before_metadata.state.context.records = Default::default();
     assert_eq!(
         serde_json::to_vec(&preserved)?,
@@ -4349,7 +4349,7 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                 .await?;
             } else if fault == "checkpoint" {
                 let mut checkpoint =
-                    ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());
+                    ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default())?;
                 checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION + 1;
                 let payload = serde_json::to_string(&checkpoint)?;
                 db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,

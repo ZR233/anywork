@@ -30,7 +30,9 @@ Session 统一读取不可变完成 pending 与已持久化历史，完成发布
 
 同一 PreparedEffect 由产品投影准备一次，完成批次先原子可查询，再由现有 writer 与执行事实、checkpoint、身份/回执同事务保存。保存确认仅推进连续提交前缀并回收 pending，不更改完成载荷或触发历史更新；保存状态在独立当前态报告。发送成功只代表受理，不代表已落盘或模型执行，不能由 Flutter 合成第二条输入。
 
-调用产生的活动记录、正文、前台开放组成员关系和摘要只由原产品 owner 在内存中更新；可靠 effect、flush 或其他状态变化不能顺带将它们保存为可续写的半成品。单条记录有权威完成事实时，立即冻结完整共享正文并沿原完成链保存，不等待所属工作组或整个 Turn。前台组真实封口后保存完整展示项；后台结果组只随新增完整结果追加成员、更新派生摘要，不将组索引的可变性等同于原完成记录可变。两者沿同一 writer，完成记录与展示组的具体边界归 [26](./26-timeline-content.md#261-完成事实与唯一所有者)。
+调用的活动正文与进度仅由原内存 owner 维护，不随可靠 effect 或 flush 保存为可续写半成品。单项权威完成即冻结原共享内容，由原 Session 发布并沿唯一 writer 保存；不等工作组或 Turn。完成历史只追加记录及其不可变 run 读取索引，不保存组对象、成员表、封口或组头 Update；分类与 UI 组合归 [26](./26-timeline-content.md)。
+
+输入 Accepted 和目标 Thread 收件准入也是完整事实：原产品封存层在这一次接纳即记录，不等消费/Turn。执行 InputRecord、InboxRecord、队列及 ThreadItem 仍可推进业务状态，但不重封存原完成内容或回填后来 Turn 关联。原输入/收件去重账本、附件准入、权限和副作用前保存屏障保留；界面命令回执、平台转发和 writer ACK 不是额外完成生产者，详见 [26](./26-timeline-content.md#已接纳输入与已接收外部内容)。
 
 正文分块只是完整内容的存储表示。首次写入从原冻结材料保存整份内容，不读取旧半成品、查询末块或维护跨 effect 的 Append/Replace/Seal/Takeover 协议。完成身份、内容描述和字节不可变；重复身份须验证同一冻结内容，冲突、缺块、非法块长或损坏明确失败并回滚。耐久重放仍验证本批实际承担的完成事实及必要独立状态，不逐 effect 重验无关历史正文，也不重新执行旧半成品操作。
 
@@ -289,7 +291,7 @@ Runtime 执行顺序索引由现有 `HistoryChannel` 强持有并显式注入实
 
 ## 15.6 完成读取与内部执行查询
 
-对外聊天读取由 Session 按需求、scope 和不透明 before 统一提供，契约归 [26](./26-timeline-content.md)。HistoryStore 的完成 reader 只读 conversation_items/content/current 新结构，内存不足才补持久化前缀，不解码业务工具；不保留旧 Page/Baseline/Update、hasOlder、客户端完成游标、Around、字段 patch 或旧表 fallback。
+对外完成读取由原 Session 按 scope、需求和不透明 before 统一提供，见 [26](./26-timeline-content.md)。Main 段代表、Run 明细、Children 与按 ID 读取共用 conversation_items/contents；捕获 RAM 切点后才开新 SQLite 快照补不足前缀。保留完成 through 前缀，不保留旧展示 Item/Update、字段 patch 或旧表 fallback；真实 current 业务查询独立。
 
 history_items、history_turns、输入身份、工具交付和 checkpoint 保留执行恢复及子智能体审查职责。其内部按 ordinal/write_seq/身份读取不得作为第二 Timeline 正文源；仍有独立执行消费者的查询保留其真实领域名称，不以转发别名维持旧 UI API。数据表和载荷升级只能在 [17](./17-studio-storage.md) 的正式迁移 preparation 内完成，正常 reader 不解码旧格式或自动清库。
 

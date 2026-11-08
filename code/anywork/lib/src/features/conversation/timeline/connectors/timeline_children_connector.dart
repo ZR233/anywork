@@ -21,8 +21,8 @@ class TimelineChildrenConnector extends StatefulWidget {
     this.repository,
     required this.threadId,
     required this.parentId,
-    this.membersRef,
-    this.openMembers,
+    this.runReference,
+    this.openRun,
     this.monotonicMicros,
     this.onContentLayout,
     this.readAttachment,
@@ -30,16 +30,16 @@ class TimelineChildrenConnector extends StatefulWidget {
     this.isParentActive,
     this.parentRetirement,
   }) : assert(
-         membersRef == null
-             ? repository != null && openMembers == null
-             : repository == null && openMembers != null,
+         runReference == null
+             ? repository != null && openRun == null
+             : repository == null && openRun != null,
        );
   final ConversationRepository? repository;
   final String threadId;
   final String parentId;
-  final TimelineMembersRef? membersRef;
-  final Future<ConversationContent> Function(TimelineMembersRef, ReadDemand)?
-  openMembers;
+  final CompletionRunRef? runReference;
+  final Future<ConversationContent> Function(CompletionRunRef, ReadDemand)?
+  openRun;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
   final Future<Uint8List> Function(String id)? readAttachment;
@@ -85,14 +85,14 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   late final ValueListenable<bool>? _parentRetirement;
   late final String _originalThreadId;
   late final String _originalParentId;
-  late final TimelineMembersRef? _originalMembersRef;
+  late final CompletionRunRef? _originalRunReference;
   VoidCallback? _unregisterDisplay;
   final Set<TimelineMemberDisplay> _members = {};
 
   bool get _parentActive =>
       widget.threadId == _originalThreadId &&
       widget.parentId == _originalParentId &&
-      widget.membersRef == _originalMembersRef &&
+      widget.runReference == _originalRunReference &&
       identical(widget.parentRetirement, _parentRetirement) &&
       !(_parentRetirement?.value ?? false) &&
       (_isParentActive?.call() ?? true);
@@ -185,7 +185,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     super.initState();
     _originalThreadId = widget.threadId;
     _originalParentId = widget.parentId;
-    _originalMembersRef = widget.membersRef;
+    _originalRunReference = widget.runReference;
     // Borrow only the original parent lease; widget rebuilds never transfer this
     // State or an old callback into a newly selected lease.
     _registerDisplay = widget.registerDisplay;
@@ -231,14 +231,14 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   Future<void> _open() async {
     try {
-      final reference = _originalMembersRef;
+      final reference = _originalRunReference;
       final content = reference == null
           ? await widget.repository!.openChildren(
               threadId: _originalThreadId,
               parentId: _originalParentId,
               demand: _demand,
             )
-          : await widget.openMembers!(reference, _demand);
+          : await widget.openRun!(reference, _demand);
       _content = content;
       if (_retired || !_parentActive) {
         _retireOwner();
@@ -265,6 +265,19 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
         setState(() => _error = error);
       }
     }
+  }
+
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    if (_retired || !_parentActive) {
+      _retireOwner();
+      throw const StaleConversationScope();
+    }
+    final adapter = _adapter;
+    if (adapter == null) {
+      throw StateError('Children consumer has no active display resources');
+    }
+    await adapter.applyActivity(snapshot);
   }
 
   @override
@@ -305,8 +318,6 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             _appliedPrepends++;
           case ChatPlacement.append:
             _appliedAppends++;
-          case ChatPlacement.update:
-            throw StateError('Children accepted a Main header update');
         }
         _registerCurrent();
       });

@@ -1182,9 +1182,16 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
     return MappedConversationFeed(
       await super.openConversationFeed(threadId, scope: scope, demand: demand),
       (frame) => switch (frame) {
-        ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
-          workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-        ),
+        ThreadSnapshotFrame(
+          :final workspace,
+          :final completedHistoryVersion,
+          :final schemaVersion,
+        ) =>
+          ThreadSnapshotFrame(
+            workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
+            completedHistoryVersion: completedHistoryVersion,
+            schemaVersion: schemaVersion,
+          ),
         ThreadNotificationFrame() => switch (frame.update) {
           ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
             ThreadNotificationFrame(

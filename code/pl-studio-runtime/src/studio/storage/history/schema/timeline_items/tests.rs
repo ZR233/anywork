@@ -1,7 +1,9 @@
 use super::super::super::HistoryStore;
 use super::*;
 use crate::studio::storage::history::conversation;
-use crate::studio::thread_projection::timeline::TimelineInput;
+use crate::studio::storage::history::schema::legacy_timeline_types::{
+    ChatEntry, CurrentProjection, TimelineItem, TimelineItemKind,
+};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
@@ -34,6 +36,7 @@ impl MigratorTraitSelf for Published13 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -60,6 +63,7 @@ impl MigratorTraitSelf for Published14 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -78,7 +82,12 @@ impl MigratorTraitSelf for Published16 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| !matches!(step.name(), TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS
+            )
+        })
         .collect()
     }
 }
@@ -130,6 +139,7 @@ async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Resul
         let completion = pl_core::chat::ChatItem::complete(
             crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity)?,
             part,
+            None,
         );
         conversation::migration::append_published(db, &completion).await?;
     }
@@ -152,6 +162,7 @@ async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Resul
     let completion = pl_core::chat::ChatItem::complete(
         crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity)?,
         3,
+        None,
     );
     conversation::migration::append_published(db, &completion).await?;
 
@@ -235,7 +246,7 @@ async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Resul
         db,
         4,
         &LegacyCurrent::new(
-            crate::studio::thread_projection::FrozenCurrentProjection::new(current),
+            crate::studio::storage::history::schema::legacy_timeline_types::FrozenCurrentProjection::new(current),
             changes.into(),
             contents.into(),
         ),
@@ -378,7 +389,7 @@ async fn schema14() -> Result<(tempfile::TempDir, std::path::PathBuf, Vec<String
                 },
                 ..Default::default()
             },
-        ),
+        )?,
         None,
         None,
     )
@@ -403,10 +414,26 @@ async fn schema14() -> Result<(tempfile::TempDir, std::path::PathBuf, Vec<String
 }
 
 async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
-    let current_table = if completion_boundary::applied(db).await? {
+    let completed = completion_boundary::applied(db).await?;
+    let current_table = if completed {
         "completion_boundary_archive_view_state"
     } else {
         "conversation_view_state"
+    };
+    let item_table = if completed {
+        "completion_boundary_archive_timeline_items"
+    } else {
+        "timeline_items"
+    };
+    let member_table = if completed {
+        "completion_boundary_archive_timeline_members"
+    } else {
+        "timeline_item_members"
+    };
+    let state_table = if completed {
+        "completion_boundary_archive_projection_state"
+    } else {
+        "timeline_projection_state"
     };
     db.execute_unprepared(
         &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON conversation_atom_facts
@@ -415,25 +442,25 @@ async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
          CREATE TRIGGER reject_atom_delete BEFORE DELETE ON conversation_atom_facts
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
-         CREATE TRIGGER reject_item_insert BEFORE INSERT ON timeline_items
+         CREATE TRIGGER reject_item_insert BEFORE INSERT ON {item_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote items'); END;
-         CREATE TRIGGER reject_item_update BEFORE UPDATE ON timeline_items
+         CREATE TRIGGER reject_item_update BEFORE UPDATE ON {item_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote items'); END;
-         CREATE TRIGGER reject_item_delete BEFORE DELETE ON timeline_items
+         CREATE TRIGGER reject_item_delete BEFORE DELETE ON {item_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote items'); END;
-         CREATE TRIGGER reject_member_insert BEFORE INSERT ON timeline_item_members
+         CREATE TRIGGER reject_member_insert BEFORE INSERT ON {member_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote members'); END;
-         CREATE TRIGGER reject_member_update BEFORE UPDATE ON timeline_item_members
+         CREATE TRIGGER reject_member_update BEFORE UPDATE ON {member_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote members'); END;
-         CREATE TRIGGER reject_member_delete BEFORE DELETE ON timeline_item_members
+         CREATE TRIGGER reject_member_delete BEFORE DELETE ON {member_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote members'); END;
-         CREATE TRIGGER reject_state_insert BEFORE INSERT ON timeline_projection_state
+         CREATE TRIGGER reject_state_insert BEFORE INSERT ON {state_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
-         CREATE TRIGGER reject_state_update BEFORE UPDATE ON timeline_projection_state
+         CREATE TRIGGER reject_state_update BEFORE UPDATE ON {state_table}
            WHEN NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='completion_boundary_archive_view_state')
              OR EXISTS(SELECT 1 FROM seaql_migrations WHERE version='m20261109_000001_history_completion_boundary')
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
-         CREATE TRIGGER reject_state_delete BEFORE DELETE ON timeline_projection_state
+         CREATE TRIGGER reject_state_delete BEFORE DELETE ON {state_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
          CREATE TRIGGER reject_current_update BEFORE UPDATE ON {current_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote current'); END;"),
@@ -447,47 +474,36 @@ async fn group_members(
     database: &str,
     group: &TimelineItem,
 ) -> Result<Vec<ChatAtom>> {
-    let reference = group
-        .members
-        .as_ref()
-        .context("complete member directory")?;
-    let count = group
+    let expected = group
         .summary
         .as_ref()
-        .context("group summary")?
-        .member_count;
-    let limit = usize::try_from(count)? + 1;
-    let rows = if let Some(rows) =
-        timeline::complete::open_member_rows(db, reference, None, u64::from(count), 4, limit)
-            .await?
-    {
-        rows
-    } else {
-        timeline::validate_members_ref(db, database, &timeline::generation(db).await?, reference)
-            .await?;
-        timeline::page_rows(
-            db,
-            &ChatScope::GroupMembers {
-                reference: reference.clone(),
-            },
-            None,
-            u64::from(count),
-            4,
-            limit,
-            &[],
-        )
-        .await?
-    };
-    assert_eq!(rows.len(), usize::try_from(count)?);
+        .context("archived group summary")?
+        .member_count as usize;
+    let rows = db.query_all_raw(statement(
+        "SELECT member_order,metadata,payload_bytes FROM completion_boundary_archive_timeline_members
+         WHERE item_id=? ORDER BY member_order LIMIT ?",
+        vec![group.id.clone().into(),integer(expected+1)?.into()],
+    )).await?;
+    assert_eq!(rows.len(), expected);
     rows.into_iter()
-        .rev()
-        .enumerate()
-        .map(|(expected, (order, entry))| {
-            assert_eq!(order, u64::try_from(expected)?);
-            match entry {
-                ChatEntry::Atom(atom) => Ok(*atom),
-                _ => anyhow::bail!("member page returned a Timeline item"),
+        .map(|row| {
+            let mut atom: ChatAtom =
+                serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+            if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
+                atom.contents.clear();
             }
+            if let Some(id) = &atom.completion_item_id {
+                atom.payload = Some(PayloadData::Deferred {
+                    reference: ContentRef {
+                        database_id: database.into(),
+                        target: ContentTarget::ItemPayload {
+                            item_id: id.clone(),
+                        },
+                    },
+                    byte_length: u64::try_from(row.try_get::<i64>("", "payload_bytes")?)?,
+                });
+            }
+            Ok(atom)
         })
         .collect()
 }
@@ -525,10 +541,7 @@ async fn assert_migrated_content(
 ) -> Result<(CurrentProjection, Vec<ChatAtom>)> {
     let db = &store.writer().await?.db;
     let database = database_id(db).await?;
-    let current = store
-        .conversation_current()
-        .await?
-        .context("migrated current")?;
+    let current = super::super::legacy_current::read_archived(db).await?;
     assert_eq!(current.source_effect_seq, 4);
     assert_eq!(current.items.len(), 1);
     let group = &current.items[0];
@@ -591,10 +604,7 @@ async fn assert_migrated_content(
         assert_eq!(bytes, expected.as_bytes());
     }
 
-    let restored = store.timeline_snapshot().await?.context("Timeline head")?;
-    let next = restored.next_position();
-    assert_eq!(next, 2);
-    let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3, &[]).await?;
+    let mut history = timeline::archived_page(db).await?;
     history.reverse();
     assert_eq!(history.len(), 2);
     let mut items = Vec::new();
@@ -752,7 +762,7 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
         store.prepare_conversation_read().await?;
         assert_migrated_content(&store).await?;
         let latest = migration_records(&store.writer().await?.db).await?;
-        assert_eq!(latest.len(), upgraded_ledger.len() + 2);
+        assert_eq!(latest.len(), upgraded_ledger.len() + 3);
         assert!(upgraded_ledger.iter().all(|record| latest.contains(record)));
         store.close_for_deletion().await?;
     }
@@ -988,18 +998,19 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 5,
-        "content preparation records the five named timeline/content upgrades, not lifecycle migrations"
+        original_ledger.len() + 6,
+        "content preparation records the six named timeline/content upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
                 SOURCE_CLASSIFICATION.into(),
                 COMPLETION_BOUNDARY.into(),
                 TIMELINE_BACKGROUND_TAIL.into(),
+                IMMUTABLE_COMPLETION_RUNS.into(),
             ],
         ))
         .await?
@@ -1013,7 +1024,8 @@ async fn formal_migration_round_trip() -> Result<()> {
             SOURCE_CLASSIFICATION,
             TIMELINE_THINKING_SUMMARY,
             COMPLETION_BOUNDARY,
-            TIMELINE_BACKGROUND_TAIL
+            TIMELINE_BACKGROUND_TAIL,
+            IMMUTABLE_COMPLETION_RUNS
         ]
     );
     for record in &original_ledger {
@@ -1053,41 +1065,16 @@ async fn formal_migration_round_trip() -> Result<()> {
         "migration archives the legacy cut without rewriting its non-Timeline material"
     );
 
-    let mut restored = migrated
-        .timeline_snapshot()
-        .await?
-        .context("migration recovery")?;
-    let generation = restored.generation().to_owned();
-    assert_eq!(restored.current_items(), current.items);
-    let mut terminal = members[0].clone();
-    let started = match terminal.lifecycle {
-        ChatAtomLifecycle::Active { started, .. } => started,
-        _ => anyhow::bail!("fixture member is not active"),
-    };
-    terminal.lifecycle = ChatAtomLifecycle::Terminal {
-        started,
-        ended: Some(ChatFactPosition {
-            effect_seq: 5,
-            suborder: 0,
-        }),
-        outcome: ChatTerminalOutcome::Completed,
-    };
-    terminal.completion_item_id = Some("future-completion".into());
-    terminal.completion_seq = Some(4);
-    terminal.finished_at = Some(5);
-    restored.apply_input(TimelineInput::Atom {
-        atom: Box::new(terminal),
-        payload: None,
-        thinking_summary: None,
-    })?;
-    assert_eq!(
-        restored.current_items()[0]
-            .summary
-            .as_ref()
-            .context("continued group")?
-            .active_count,
-        2,
-        "restored recovery must continue through the production fold"
+    let database_identity = migrated.conversation_database_id().await?;
+    assert!(
+        migrated
+            .cold_current_state()
+            .await?
+            .context("cold state")?
+            .projection()
+            .atoms
+            .is_empty(),
+        "ordinary cold browsing cannot restore the legacy active group"
     );
     let derived = derived_bytes(db).await?;
     migrated.close_for_deletion().await?;
@@ -1101,7 +1088,10 @@ async fn formal_migration_round_trip() -> Result<()> {
 
     let reopened = HistoryStore::open(&path, THREAD).await?;
     reopened.prepare_history_access().await?;
-    assert_eq!(reopened.timeline_generation().await?, generation);
+    assert_eq!(
+        reopened.conversation_database_id().await?,
+        database_identity
+    );
     assert_eq!(
         source_bytes(&reopened.writer().await?.db).await?,
         original_source

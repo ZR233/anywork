@@ -10,7 +10,7 @@ use crate::{
     TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 16;
+pub const THREAD_SCHEMA_VERSION: u32 = 17;
 
 /// Timeline 游标 token 的版本号。
 ///
@@ -163,6 +163,8 @@ pub struct ThreadSnapshot {
     pub schema_version: u32,
     pub revision: u64,
     pub thread: Thread,
+    /// Required same-cut business resource heads; never inferred from Chat/Activity.
+    pub business_refs: crate::ThreadBusinessRefs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<Turn>,
     #[serde(default)]
@@ -189,6 +191,7 @@ impl ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
             revision: 0,
             thread: Thread::placeholder(thread_id),
+            business_refs: crate::ThreadBusinessRefs::empty(),
             active_turn: None,
             interactions: Vec::new(),
             model_route: None,
@@ -376,6 +379,9 @@ pub enum ThreadNotification {
     InteractionChanged {
         interaction: Box<InteractionRequest>,
     },
+    BusinessRefsChanged {
+        references: crate::ThreadBusinessRefs,
+    },
     ThreadRuntimeUpdated {
         runtime: Box<ThreadRuntimeSnapshot>,
         model_route: Option<ThreadModelRouteSnapshot>,
@@ -452,6 +458,8 @@ impl ThreadNotificationEnvelope {
 )]
 pub enum ThreadSubscriptionUpdate {
     Snapshot {
+        /// Required Native content protocol handshake; no old decoder fallback.
+        completed_history_version: u32,
         snapshot: Box<ThreadSnapshot>,
     },
     Notification {

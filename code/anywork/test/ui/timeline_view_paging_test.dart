@@ -128,7 +128,10 @@ void main() {
       expect(h.requests, hasLength(1));
       h.requests.last.reply.complete(
         chatBatch(
-          [for (var i = 0; i < 5; i++) chatMessage('older:$i')],
+          [
+            for (var i = 0; i < 5; i++)
+              chatMessage('older:$i', completionSeq: 10 + i),
+          ],
           placement: ChatPlacement.prepend,
           before: 'page:1',
         ),
@@ -274,12 +277,10 @@ void main() {
       final retry = h.owner.retryOlder('a', generation: lease.generation);
       expect(identical(loading, retry), isTrue);
       await h.content.deliver(
-        chatBatch(
-          [for (var i = 0; i < 18; i++) chatMessage('append:$i')],
-          placement: ChatPlacement.append,
-          before: 'must-not-replace-before',
-          current: chatCurrent(sequence: 8),
-        ),
+        chatBatch([
+          for (var i = 0; i < 18; i++)
+            chatMessage('append:$i', completionSeq: 2000 + i),
+        ], placement: ChatPlacement.append),
       );
       await _frames(tester);
       expect(lease.olderCursor, 'page:0');
@@ -296,7 +297,7 @@ void main() {
       expect(h.requests, hasLength(1));
       h.requests.single.reply.complete(
         chatBatch(
-          [chatMessage('older')],
+          [chatMessage('older', completionSeq: 10)],
           placement: ChatPlacement.prepend,
           before: 'page:1',
         ),
@@ -328,7 +329,8 @@ void main() {
       final oldRequest = h.requests.single;
       await h.content.deliver(
         chatBatch([
-          for (var i = 0; i < 18; i++) chatMessage('new:$i'),
+          for (var i = 0; i < 18; i++)
+            chatMessage('new:$i', completionSeq: 3000 + i),
         ], before: 'new-before'),
       );
       await _frames(tester);
@@ -411,7 +413,9 @@ final class _Harness {
       hidden: hidden,
     );
     await h.content.deliver(
-      chatBatch([chatMessage('first', body: 'first body')], before: 'page:0'),
+      chatBatch([
+        chatMessage('first', body: 'first body', completionSeq: 1000),
+      ], before: 'page:0'),
     );
     h._observation = h.owner.source.watch((_) => h._rebuild?.call(() {}));
     await tester.pumpWidget(

@@ -4,7 +4,12 @@ import 'package:anywork/src/features/conversation/timeline/widgets/conversation_
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
+import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
+
+import '../support/completion_fixtures.dart';
+
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
@@ -105,27 +110,30 @@ const _tools = [
   ),
 ];
 
-Widget _group({Widget? content, bool live = true, String? thinkingSummary}) =>
-    TimelineWorkGroupView(
+Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
+  if (!live) {
+    final entry = completionEntry('test-group', 82, start: 1, ordinal: 82);
+    return CompletionRunView(
       id: 'test-group',
-      live: live,
-      executionPresent: live,
-      admissionClosed: !live,
-      initiallyExpanded: live,
-      summary: TimelineGroupSummary(
-        memberCount: 82,
-        activeCount: live ? 1 : 0,
-        failedCount: 4,
-        cancelledCount: 2,
-        startedAt: live ? null : 100,
-        finishedAt: live ? null : 225,
-        latestThinkingSummary: thinkingSummary,
-        categories: const [
-          TimelineCategoryCount(category: TimelineCategory.command, count: 10),
-        ],
-      ),
+      presentation: CompletionRunPresentation.fromEntry(entry),
+      initiallyExpanded: false,
       childBuilder: (_) => content ?? const Text('成员正文'),
     );
+  }
+  return TimelineActivitySection(
+    header: TimelineActivityRow(
+      key: const ValueKey('activity-test-header'),
+      label: thinkingSummary ?? '工作中',
+      labelWidget: thinkingSummary == null
+          ? null
+          : TimelineReasoningSummary(text: thinkingSummary),
+      header: true,
+      active: true,
+      expandable: false,
+    ),
+    body: content ?? const Text('成员正文'),
+  );
+}
 
 void main() {
   group('统一实时状态栏', () {
@@ -205,97 +213,19 @@ void main() {
           );
           await tester.pump();
           expect(tester.takeException(), isNull);
-          final label = find.text('工作了 2 分 5 秒');
+          final label = find.text('工作记录 · 82 项');
           expect(label, findsOneWidget);
           final card = tester.getRect(
             find.byKey(const ValueKey('conversation-activity')),
           );
           final title = tester.getRect(label);
-          final metadata = tester.getRect(find.text('82 项 · 4 项执行失败 · 2 项已停止'));
+          expect(find.textContaining('执行失败'), findsNothing);
           expect(title.left, greaterThanOrEqualTo(card.left));
           expect(title.right, lessThanOrEqualTo(card.right));
-          expect(metadata.right, lessThanOrEqualTo(card.right));
-          if (width >= 760) {
-            expect(metadata.right, closeTo(card.right - 33, 1));
-          }
-          expect(metadata.bottom, lessThanOrEqualTo(card.bottom));
           expect(tester.widget<Text>(label).maxLines, isNull);
           await tester.pumpWidget(const SizedBox.shrink());
         });
       }
-    }
-
-    for (final live in [true, false]) {
-      testWidgets('实时标题渲染 Markdown 概要，历史标题保留耗时且可展开 ($live)', (tester) async {
-        const source =
-            '**Reading receipt metadata** *检查* `owner` [详情](https://example.test)';
-        await tester.pumpWidget(
-          _wrapWithApp(
-            _group(live: live, thinkingSummary: source),
-            disableAnimations: true,
-          ),
-        );
-        await tester.pump();
-        final header = find.byKey(
-          const ValueKey('source-unit-header:test-group'),
-        );
-        if (live) {
-          final paragraph = tester.renderObject<RenderParagraph>(
-            find.descendant(
-              of: header,
-              matching: find.byWidgetPredicate(
-                (widget) =>
-                    widget is RichText &&
-                    widget.text.toPlainText().contains(
-                      'Reading receipt metadata',
-                    ),
-              ),
-            ),
-          );
-          expect(
-            paragraph.text.toPlainText(),
-            'Reading receipt metadata 检查 owner 详情',
-          );
-          bool hasStyle(InlineSpan span, bool Function(TextStyle?) matches) =>
-              span is TextSpan &&
-              (matches(span.style) ||
-                  (span.children?.any((child) => hasStyle(child, matches)) ??
-                      false));
-          expect(
-            hasStyle(
-              paragraph.text,
-              (style) => style?.fontWeight == FontWeight.bold,
-            ),
-            isTrue,
-          );
-          expect(
-            hasStyle(
-              paragraph.text,
-              (style) => style?.fontStyle == FontStyle.italic,
-            ),
-            isTrue,
-          );
-          bool interactive(InlineSpan span) =>
-              span is TextSpan &&
-              (span.recognizer != null ||
-                  (span.children?.any(interactive) ?? false));
-          expect(interactive(paragraph.text), isFalse);
-        } else {
-          expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
-          expect(find.byType(TimelineReasoningSummary), findsNothing);
-          expect(
-            find.textContaining('Reading receipt metadata', findRichText: true),
-            findsNothing,
-          );
-        }
-        expect(find.text('成员正文'), live ? findsOneWidget : findsNothing);
-        await tester.tap(
-          find.descendant(of: header, matching: find.byType(RichText)).first,
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('成员正文'), live ? findsNothing : findsOneWidget);
-        expect(tester.takeException(), isNull);
-      });
     }
 
     testWidgets('思考概要在窄窗和文字缩放下保持一行，正文保持独立展开', (tester) async {
@@ -330,7 +260,7 @@ void main() {
           expect(tester.takeException(), isNull);
           final headerParagraph = tester.renderObject<RenderParagraph>(
             find.descendant(
-              of: find.byKey(const ValueKey('source-unit-header:test-group')),
+              of: find.byKey(const ValueKey('activity-test-header')),
               matching: find.byWidgetPredicate(
                 (widget) =>
                     widget is RichText &&

@@ -428,8 +428,8 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     required bool sideBySideFeasible,
   }) {
     return PlanDetailConnector(
+      threadId: threadId,
       identity: presentation.identity,
-      markdown: presentation.markdown,
       status: presentation.status,
       fullWidth: fullWidth,
       onToggleReadingMode: sideBySideFeasible
@@ -443,14 +443,12 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 class _WorkspacePlanPresentation {
   const _WorkspacePlanPresentation({
     required this.identity,
-    required this.markdown,
     required this.status,
   });
 
   factory _WorkspacePlanPresentation.fromPending(PlanConfirmationView plan) {
     return _WorkspacePlanPresentation(
       identity: 'interaction:${plan.interactionId}',
-      markdown: plan.markdown,
       status: PlanDetailStatus.awaitingConfirmation,
     );
   }
@@ -461,13 +459,11 @@ class _WorkspacePlanPresentation {
       identity: document == null
           ? 'plan:${plan.revision}'
           : 'document:${document.version}',
-      markdown: document?.markdown,
       status: planDetailStatusFromRuntime(plan.state),
     );
   }
 
   final String identity;
-  final String? markdown;
   final PlanDetailStatus status;
 }
 

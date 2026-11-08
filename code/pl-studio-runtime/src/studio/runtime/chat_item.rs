@@ -16,7 +16,11 @@ use pl_protocol::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod accepted;
 mod atom;
+pub(in crate::studio) use accepted::{accepted_inbox_draft, accepted_input_draft};
+mod read_hint;
+pub(in crate::studio) use read_hint::{native_read_class_v1, native_read_hint_v1};
 mod descriptor;
 mod payload;
 pub(crate) use atom::atom;
@@ -122,6 +126,7 @@ pub(crate) fn completion_draft_reusing(
         serde_json::to_value(descriptor)?,
         &mut bodies,
         previous,
+        None,
     )
 }
 
@@ -169,6 +174,7 @@ pub(crate) fn background_started_draft(
         value,
         &mut bodies,
         &ChatContents::new(),
+        None,
     )
 }
 
@@ -185,6 +191,7 @@ fn freeze(
     descriptor: serde_json::Value,
     bodies: &mut BTreeMap<BodyKey, Arc<ContentBlock>>,
     previous: &ChatContents,
+    metadata: Option<pl_protocol::ChatAtom>,
 ) -> Result<ChatDraft> {
     let CompletionStamp {
         id,
@@ -294,7 +301,7 @@ fn freeze(
     if !item.turn_id.is_empty() {
         envelope["turnId"] = item.turn_id.clone().into();
     }
-    let mut atom = atom(item);
+    let mut atom = metadata.unwrap_or_else(|| atom(item));
     if let ThreadItemState::Text(text) = item.state() {
         atom.content_present =
             Some(bodies.values().any(|block| !block.is_empty()) || !text.attachments().is_empty());
@@ -332,6 +339,7 @@ fn freeze(
     Ok(ChatDraft {
         item_id: id.into(),
         query_class: "conversation".into(),
+        read_hint: native_read_hint_v1("conversation", &atom),
         parent_id,
         metadata: serde_json::to_vec(&atom)?.into(),
         payload: Arc::from(serde_json::to_vec(&envelope)?),

@@ -17,8 +17,8 @@ use super::StudioRuntime;
 use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, ThreadSnapshot};
 use pl_protocol::{
-    ThreadActivity, ThreadNotification, ThreadNotificationEnvelope, ThreadStorageState,
-    ThreadSubscriptionUpdate,
+    ThreadActivity, ThreadBusinessRefs, ThreadNotification, ThreadNotificationEnvelope,
+    ThreadStorageState, ThreadSubscriptionUpdate,
 };
 use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 use tokio::{
@@ -88,6 +88,10 @@ struct LiveSubscription {
     ready_frames: usize,
     /// Highest effect sequence covered by the baseline or applied from the owner's committed feed.
     applied: u64,
+    /// References have their own effect watermark: Committed and BusinessRefs at the same
+    /// sequence are distinct facts. Seeded from the qualified Core baseline.
+    business_refs_sequence: u64,
+    business_refs: ThreadBusinessRefs,
     /// Notification watermark: the strict `revision` counter seeded from the first snapshot.
     revision: u64,
     /// Broadcast lifecycle identity; increments when the effect window forces a resync.
@@ -150,7 +154,7 @@ impl LiveSubscription {
         let state = self
             .baseline
             .take()
-            .unwrap_or_else(|| self.handle.snapshot());
+            .context("State baseline already consumed")?;
         self.baseline_observation_revision = state.observation_revision;
         self.applied = state.commit_sequence;
         self.revision = state.commit_sequence;
@@ -163,6 +167,7 @@ impl LiveSubscription {
             &state,
             &usage,
             persistence.as_ref(),
+            self.business_refs.clone(),
         )?;
         self.baseline_catalog_revision = runtime.annotate_model_route(&mut snapshot)?;
         runtime.annotate_mode_availability(&mut snapshot);
@@ -190,6 +195,7 @@ impl LiveSubscription {
         self.active_turn = snapshot.active_turn.as_ref().map(|turn| turn.id.clone());
         self.reflect_retained_turn();
         Ok(ThreadSubscriptionUpdate::Snapshot {
+            completed_history_version: pl_protocol::COMPLETED_HISTORY_VERSION,
             snapshot: Box::new(snapshot),
         })
     }
@@ -389,6 +395,19 @@ impl LiveSubscription {
                 self.applied = sequence;
                 for change in changes {
                     self.push(change);
+                }
+            }
+            ThreadLiveEvent::BusinessRefs {
+                sequence,
+                references,
+            } => {
+                if sequence <= self.business_refs_sequence {
+                    return;
+                }
+                self.business_refs_sequence = sequence;
+                if references != self.business_refs {
+                    self.business_refs.clone_from(&references);
+                    self.enqueue(ThreadNotification::BusinessRefsChanged { references });
                 }
             }
             ThreadLiveEvent::Runtime {
@@ -618,7 +637,10 @@ impl StudioThreadSubscription {
             SubscriptionSource::Retired(retired) => {
                 if let Some(snapshot) = retired.snapshot.take() {
                     retired.revision = snapshot.revision;
-                    return Ok(Some(ThreadSubscriptionUpdate::Snapshot { snapshot }));
+                    return Ok(Some(ThreadSubscriptionUpdate::Snapshot {
+                        completed_history_version: pl_protocol::COMPLETED_HISTORY_VERSION,
+                        snapshot,
+                    }));
                 }
                 // The child's newest finished Turn is the one Turn fact a retired history still owes
                 // a subscriber that opened after it committed — the same one-shot `turnCompleted` a
@@ -717,12 +739,19 @@ impl StudioRuntime {
         &self,
         request: pl_protocol::ThreadSubscriptionRequest,
     ) -> Result<StudioThreadSubscription> {
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
+        let _lifecycle_guard = tokio::select! {
+            biased;
+            _ = self.shutdown_latch.committed() => {
+                anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+            }
+            guard = self.lifecycle_lock.lock() => guard,
+        };
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
         self.check_thread_read_access(&thread)?;
         // Cold parent recovery nests history preparation under this operation. Keep its candidate
         // on the heap so composing subscriptions does not duplicate the large future on the stack.
+        let mut opening_feed = None;
         let candidate = Box::pin(async {
             self.store
                 .history(&request.thread_id)
@@ -795,15 +824,77 @@ impl StudioRuntime {
                 // 首个快照就是注册后可见的状态，注册与快照之间提交的效果仍然会被投递（其中已被
                 // 快照覆盖的帧按 effect 序号丢弃）。反过来（先快照再订阅）会留下一个很窄的窗口，
                 // 该窗口里提交的效果既不在基线里也不会被投递，只能靠有界 effect 窗口兜底。
-                let live_feed = self.thread_observations.live_feed(&request.thread_id);
+                let slot = self
+                    .thread_observations
+                    .observation_slot(&request.thread_id);
+                let (position, mut source_changed) = slot.capture();
+                let live_feed = position.source;
+                opening_feed.clone_from(&live_feed);
                 let feed = live_feed.as_ref().map(|feed| feed.subscribe());
                 // The owner publishes the typed storage state; this subscriber only mirrors it.
                 let storage_feed = live_feed.as_ref().map(|feed| feed.storage());
                 // The owner also retains its newest terminal Turn, so a subscription that opens after
                 // that commit restores the last-turn fact instead of reporting none.
                 let last_turn = live_feed.as_ref().map(|feed| feed.last_turn());
+                let owner_feed = live_feed
+                    .as_ref()
+                    .ok_or(pl_core::chat::ChatError::StaleContent)?;
+                anyhow::ensure!(
+                    !self.shutdown_latch.is_committed() && !owner_feed.is_delivery_closed(),
+                    pl_core::chat::ChatError::StaleContent
+                );
+                let registration = owner_feed.conversation();
+                let current = match registration.source {
+                    Some(source) => source.current.clone(),
+                    None => {
+                        // The subscription's existing activation may not have published its first
+                        // resource cut yet. Await that first value from this exact owner, never a
+                        // newer owner or a cold fallback. Failure/termination also ends this wait.
+                        let mut progress = registration.progress;
+                        let mut owner_progress = registration.owner_progress;
+                        #[cfg(test)]
+                        owner_feed.notify_first_open_wait();
+                        tokio::select! {
+                            biased;
+                            _ = self.shutdown_latch.committed() => {
+                                anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+                            }
+                            _ = owner_feed.delivery_closed() => {
+                                anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+                            }
+                            _ = source_changed.changed() => {
+                                anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+                            }
+                            retained = owner_progress.wait_for(|progress| {
+                                progress.retained_error().is_some() || progress.is_finished()
+                            }) => {
+                                let retained = retained
+                                    .map_err(|_| pl_core::chat::ChatError::StaleContent)?;
+                                if let Some(error) = retained.retained_error() {
+                                    return Err(crate::error_mapping::shared_runtime_error(error));
+                                }
+                                anyhow::bail!(pl_core::chat::ChatError::StaleContent);
+                            }
+                            source = progress.wait_for(Option::is_some) => {
+                                source
+                                    .map_err(|_| pl_core::chat::ChatError::StaleContent)?
+                                    .as_ref()
+                                    .ok_or(pl_core::chat::ChatError::StaleContent)?
+                                    .current
+                                    .clone()
+                            }
+                        }
+                    }
+                };
                 let baseline = handle.snapshot();
                 let applied = baseline.commit_sequence;
+                let business_refs = current.business_refs_at(&request.thread_id, &baseline)?;
+                anyhow::ensure!(
+                    !self.shutdown_latch.is_committed()
+                        && !owner_feed.is_delivery_closed()
+                        && slot.is_current(position.epoch),
+                    pl_core::chat::ChatError::StaleContent
+                );
                 SubscriptionSource::Live(Box::new(LiveSubscription {
                     handle,
                     thread: thread.clone(),
@@ -815,6 +906,8 @@ impl StudioRuntime {
                     observation_due: None,
                     ready_frames: 0,
                     applied,
+                    business_refs_sequence: applied,
+                    business_refs,
                     revision: applied,
                     epoch: 1,
                     started: false,
@@ -834,6 +927,13 @@ impl StudioRuntime {
         .await;
         self.check_thread_read_access(&thread)?;
         let source = candidate?;
+        anyhow::ensure!(
+            !self.shutdown_latch.is_committed()
+                && opening_feed
+                    .as_ref()
+                    .is_none_or(|feed| !feed.is_delivery_closed()),
+            pl_core::chat::ChatError::StaleContent
+        );
         Ok(StudioThreadSubscription {
             source,
             runtime: self.clone(),
@@ -846,13 +946,28 @@ impl StudioRuntime {
     pub async fn thread_snapshot(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
-        let state = self.read_thread_state(thread_id).await?;
-        let handle = self
-            .threads
-            .observed_threads()
-            .into_iter()
-            .find(|(id, _)| id == thread_id)
-            .map(|(_, handle)| handle);
+        let slot = self.thread_observations.observation_slot(thread_id);
+        let (position, _) = slot.capture();
+        // Choose the read source once. In particular, an execution owner installed during cold IO
+        // must not supply usage for the independently captured durable State.
+        let handle = self.threads.observed_thread(thread_id);
+        let (state, business_refs) = match handle.as_ref() {
+            Some(handle) => {
+                let state = handle.snapshot();
+                let references = self.thread_business_refs_at(thread_id, &state)?;
+                (state, references)
+            }
+            None => self
+                .store
+                .history(thread_id)
+                .await?
+                .read_state_with_business_refs()
+                .await?
+                .context("Thread has no saved checkpoint")?,
+        };
+        self.store
+            .thread_persistence()
+            .seed_usage(thread_id, state.usage_summary.clone());
         let usage = match handle {
             Some(handle) => self.usage_through_owner(thread_id, &state, &handle).await?,
             None => self.usage_summary(thread_id, &state),
@@ -863,6 +978,7 @@ impl StudioRuntime {
             &state,
             &usage,
             persistence.as_ref(),
+            business_refs,
         )?;
         if let Some(close) = self.store.agent_close(thread_id).await? {
             snapshot.thread.status = if close.execution_closed {
@@ -873,7 +989,27 @@ impl StudioRuntime {
         }
         self.annotate_model_route(&mut snapshot)?;
         self.annotate_mode_availability(&mut snapshot);
+        anyhow::ensure!(
+            slot.is_current(position.epoch),
+            pl_core::chat::ChatError::StaleContent
+        );
         Ok(snapshot)
+    }
+
+    /// Qualify an existing hot resource owner against the captured Core business slice.
+    /// Missing or replaced live resources are stale; cold State uses the storage transaction pair.
+    fn thread_business_refs_at(
+        &self,
+        thread_id: &str,
+        state: &ThreadSnapshot,
+    ) -> Result<ThreadBusinessRefs> {
+        let current = self
+            .thread_observations
+            .live_feed(thread_id)
+            .and_then(|feed| feed.current_conversation())
+            .map(|source| source.current.clone())
+            .ok_or(pl_core::chat::ChatError::StaleContent)?;
+        current.business_refs_at(thread_id, state)
     }
 
     fn annotate_mode_availability(&self, snapshot: &mut pl_protocol::ThreadSnapshot) {
@@ -1005,11 +1141,140 @@ mod storage_fault_tests {
     use super::*;
     use pl_core::context::ContextContent;
 
+    #[test]
+    fn state_baseline_carries_qualified_plan_and_rejects_mixed_business_slice() -> Result<()> {
+        use crate::studio::thread_projection::CurrentState;
+        use pl_protocol::{AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState};
+
+        let text = "# The saved Plan\n\nKeep the business references consistent.";
+        let mut plan = AgentSessionPlanState {
+            revision: 3,
+            state: AgentSessionPlanPhase::Approved,
+            document: Some(AgentSessionPlanDocument {
+                version: 3,
+                markdown: text.into(),
+                content_hash: crate::canonical_content_hash(text.as_bytes()),
+            }),
+            ..Default::default()
+        };
+        let mut state = ThreadSnapshot::default();
+        state.extensions.insert(
+            crate::plan_tool::PLAN_EXTENSION.into(),
+            pl_core::thread::extensions::ExtensionRecord {
+                revision: 3,
+                payload: crate::plan_tool::encode_plan_state(&plan)?,
+            },
+        );
+        let thread = pl_protocol::Thread::placeholder("state-baseline");
+        let current = CurrentState::cold("state-db".into(), thread.id.clone(), 7, &state)?;
+        let references = current.business_refs_at(&thread.id, &state)?;
+        let snapshot = crate::studio::thread_projection::project_snapshot(
+            thread.clone(),
+            &state,
+            &state.usage_summary,
+            None,
+            references.clone(),
+        )?;
+        assert_eq!(snapshot.business_refs, references);
+        assert!(
+            snapshot
+                .business_refs
+                .plan
+                .as_ref()
+                .unwrap()
+                .document
+                .is_some()
+        );
+        assert!(snapshot.business_refs.interactions.is_some());
+        assert!(snapshot.activity.is_none());
+        // Unrelated Core progress does not invalidate the same business slice.
+        state.commit_sequence = 8;
+        assert_eq!(current.business_refs_at(&thread.id, &state)?, references);
+        plan.revision = 4;
+        state
+            .extensions
+            .get_mut(crate::plan_tool::PLAN_EXTENSION)
+            .unwrap()
+            .payload = crate::plan_tool::encode_plan_state(&plan)?;
+        assert!(matches!(
+            current
+                .business_refs_at(&thread.id, &state)
+                .unwrap_err()
+                .downcast_ref::<pl_core::chat::ChatError>(),
+            Some(pl_core::chat::ChatError::StaleContent)
+        ));
+        Ok(())
+    }
+
     /// Inject delayed status frames after a real persisted Thread is reopened.
     /// Its first snapshot must stand even if the projection worker was behind
     /// the core publication when a new receiver registered.
     #[tokio::test]
     async fn history_reopen_baseline_rejects_older_live_observations() -> Result<()> {
+        let stage = std::cell::Cell::new("initialize");
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            history_reopen_case(&stage, HistoryReadCase::Live),
+        )
+        .await
+        .with_context(|| format!("history reopen timed out during {}", stage.get()))?
+    }
+
+    #[tokio::test]
+    async fn cold_state_snapshot_uses_saved_business_slice_without_owner() -> Result<()> {
+        let stage = std::cell::Cell::new("initialize");
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            history_reopen_case(&stage, HistoryReadCase::Cold),
+        )
+        .await
+        .with_context(|| format!("cold State read timed out during {}", stage.get()))?
+    }
+
+    #[tokio::test]
+    async fn first_current_wait_closes_without_new_publication() -> Result<()> {
+        close_first_current_cases(false).await
+    }
+
+    #[tokio::test]
+    async fn first_current_wait_prefers_close_when_current_is_also_ready() -> Result<()> {
+        close_first_current_cases(true).await
+    }
+
+    async fn close_first_current_cases(current_ready: bool) -> Result<()> {
+        for shutdown in [false, true] {
+            let stage = std::cell::Cell::new("initialize");
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                history_reopen_case(
+                    &stage,
+                    HistoryReadCase::CloseFirstCurrent {
+                        shutdown,
+                        current_ready,
+                    },
+                ),
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "first-current close timed out during {} (shutdown={shutdown}, current_ready={current_ready})",
+                    stage.get()
+                )
+            })??;
+        }
+        Ok(())
+    }
+
+    enum HistoryReadCase {
+        Live,
+        Cold,
+        CloseFirstCurrent { shutdown: bool, current_ready: bool },
+    }
+
+    async fn history_reopen_case(
+        stage: &std::cell::Cell<&'static str>,
+        case: HistoryReadCase,
+    ) -> Result<()> {
         use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
         use pl_model::model::ModelInfo;
@@ -1058,21 +1323,151 @@ mod storage_fault_tests {
         let thread = runtime
             .create_thread(&project.id, "observation baseline")
             .await?;
+        stage.set("settle initial observation");
         runtime
             .synchronize_thread_observation(&thread.id)
             .await
             .context("settle stored thread")?;
-        runtime
-            .shutdown_runtime()
-            .await
-            .context("history observer shutdown")?;
+        let observer_progress = runtime
+            .thread_observations
+            .live_feed(&thread.id)
+            .context("stored thread observer")?
+            .conversation()
+            .owner_progress;
+        stage.set("initial shutdown");
+        runtime.shutdown_runtime().await.with_context(|| {
+            format!(
+                "history observer shutdown; retained projection error: {:?}",
+                observer_progress.borrow().retained_error()
+            )
+        })?;
 
+        stage.set("reinitialize");
         let runtime = StudioRuntime::initialize(options()).await?;
         // Isolate the catalog-to-State projection before creating its execution owner.
         // Independent model/tool refresh legitimately enqueues Core updates on settings changes;
         // join those producers so the unchanged-revision assertion measures only this projection.
         runtime.stop_model_refresh().await?;
         runtime.stop_tool_refresh().await?;
+        if let HistoryReadCase::CloseFirstCurrent {
+            shutdown,
+            current_ready,
+        } = case
+        {
+            stage.set("prepare existing hot owner");
+            runtime.ensure_thread_owner(&thread.id).await?;
+            runtime.synchronize_thread_observation(&thread.id).await?;
+            let slot = runtime.thread_observations.observation_slot(&thread.id);
+            let original = slot.capture().0.source.context("original live feed")?;
+            let source = original
+                .current_conversation()
+                .context("original current resource")?;
+            // Keep the original execution owner, but hold back this feed's first resource value.
+            // Neither closing signal needs the retained owner to publish or finish.
+            let (owner_progress, progress) = watch::channel(Default::default());
+            let delivery = tokio_util::sync::CancellationToken::new();
+            let paused = Arc::new(super::super::thread_observation::ThreadLiveFeed::new(
+                None,
+                progress,
+                delivery.clone(),
+            ));
+            slot.install(paused.clone());
+            let entered = paused.arm_first_open_wait();
+            let mut subscribing = Box::pin(runtime.subscribe_thread(
+                pl_protocol::ThreadSubscriptionRequest {
+                    thread_id: thread.id.clone(),
+                },
+            ));
+            stage.set("await first-resource wait registration");
+            tokio::select! {
+                result = subscribing.as_mut() => {
+                    anyhow::bail!("subscription ended before close: {}", result.is_ok());
+                }
+                entered = entered => entered.context("first-resource wait entered")?,
+            }
+            assert!(paused.current_conversation().is_none());
+            assert!(!owner_progress.borrow().is_finished());
+            let mut closing = shutdown.then(|| Box::pin(runtime.shutdown_runtime()));
+            if let Some(closing) = closing.as_mut() {
+                // shutdown arms before blocking on the lifecycle lock held by subscribing.
+                assert!(futures::poll!(closing.as_mut()).is_pending());
+                assert!(runtime.shutdown_latch.is_committed());
+            } else {
+                delivery.cancel();
+                assert!(!runtime.shutdown_latch.is_committed());
+            }
+            if current_ready {
+                // Both branches become ready before the subscription is polled again.
+                paused.publish_test_conversation(&source.session, source.current.clone())?;
+            }
+            stage.set("close first-resource wait");
+            let result = tokio::time::timeout(Duration::from_secs(5), subscribing.as_mut())
+                .await
+                .context("subscription did not leave first-resource wait on close")?;
+            let Err(error) = result else {
+                anyhow::bail!("closed first-resource wait returned a late subscription");
+            };
+            assert!(matches!(
+                error.downcast_ref::<pl_core::chat::ChatError>(),
+                Some(pl_core::chat::ChatError::StaleContent)
+            ));
+            if !current_ready {
+                assert!(paused.current_conversation().is_none());
+            }
+            assert!(!owner_progress.borrow().is_finished());
+            drop(subscribing);
+            slot.install(original);
+            stage.set("join shutdown after first-resource cancellation");
+            if let Some(closing) = closing {
+                tokio::time::timeout(Duration::from_secs(5), closing)
+                    .await
+                    .context("shutdown did not acquire released lifecycle lock")??;
+            } else {
+                assert!(runtime.lifecycle_lock.try_lock().is_ok());
+                runtime.shutdown_runtime().await?;
+            }
+            assert!(runtime.lifecycle_lock.try_lock().is_ok());
+            return Ok(());
+        }
+        if matches!(case, HistoryReadCase::Cold) {
+            stage.set("cold State snapshot without execution owner");
+            assert!(runtime.threads.observed_thread(&thread.id).is_none());
+            let (saved, references) = runtime
+                .store
+                .history(&thread.id)
+                .await?
+                .read_state_with_business_refs()
+                .await?
+                .context("saved State and business references")?;
+            let snapshot = runtime.thread_snapshot(&thread.id).await?;
+            assert_eq!(snapshot.revision, saved.commit_sequence);
+            assert_eq!(snapshot.business_refs, references);
+            assert!(snapshot.business_refs.interactions.is_some());
+            assert!(snapshot.interactions.is_empty());
+            assert!(snapshot.active_turn.is_none());
+            assert!(snapshot.activity.is_none());
+            assert!(
+                runtime.threads.observed_thread(&thread.id).is_none(),
+                "cold State reading activated an execution owner"
+            );
+            assert_eq!(
+                runtime
+                    .store
+                    .thread_persistence()
+                    .usage(&thread.id)
+                    .context("cold State seeded usage")?
+                    .applied_sequence,
+                saved.usage_summary.applied_sequence
+            );
+            stage.set("cold snapshot fixture shutdown");
+            runtime.shutdown_runtime().await?;
+            endpoint.set_nonblocking(true)?;
+            assert!(
+                matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+            return Ok(());
+        }
+        stage.set("cold subscribe");
         let mut subscription = runtime
             .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
                 thread_id: thread.id.clone(),
@@ -1130,13 +1525,24 @@ mod storage_fault_tests {
                 tools: Default::default(),
             })),
         })?;
+        stage.set("first State baseline");
         let first = subscription
             .recv()
             .await?
             .context("first reopened snapshot")?;
-        let ThreadSubscriptionUpdate::Snapshot { snapshot } = first else {
+        let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = first else {
             anyhow::bail!("first status frame was not a snapshot");
         };
+        let source = runtime
+            .thread_observations
+            .live_feed(&thread.id)
+            .and_then(|feed| feed.current_conversation())
+            .context("baseline resource owner")?;
+        assert_eq!(
+            snapshot.business_refs,
+            source.current.business_refs_at(&thread.id, &baseline)?
+        );
+        assert!(snapshot.business_refs.interactions.is_some());
         let initial = snapshot.runtime.context("runtime in first frame")?;
         assert!(
             snapshot
@@ -1152,6 +1558,7 @@ mod storage_fault_tests {
             .threads
             .thread(&thread.id)
             .context("reopened owner")?;
+        stage.set("patch runtime facts");
         let mut publications = handle.subscribe();
         let before = publications.next().await.context("owner baseline")?;
         handle
@@ -1203,7 +1610,72 @@ mod storage_fault_tests {
         })
         .await
         .context("delayed baseline frames")??;
+        stage.set("same-sequence BusinessRefs in both orders");
         if let SubscriptionSource::Live(live) = &mut subscription.source {
+            // Baseline-covered references and unchanged later publications spend no revision.
+            let revision = live.revision;
+            let covered = live.business_refs_sequence;
+            let references = live.business_refs.clone();
+            live.apply(ThreadLiveEvent::BusinessRefs {
+                sequence: covered,
+                references: references.clone(),
+            });
+            live.apply(ThreadLiveEvent::BusinessRefs {
+                sequence: covered + 1,
+                references: references.clone(),
+            });
+            assert_eq!(live.revision, revision);
+            // Both orders are legal: the Committed watermark must not swallow same-sequence refs,
+            // and accepting refs must not swallow the corresponding committed lifecycle fact.
+            for refs_first in [false, true] {
+                let sequence = live.applied.max(live.business_refs_sequence) + 1;
+                let mut changed = references.clone();
+                changed
+                    .interactions
+                    .as_mut()
+                    .context("interaction reference")?
+                    .revision += sequence;
+                let refs = ThreadLiveEvent::BusinessRefs {
+                    sequence,
+                    references: changed.clone(),
+                };
+                let committed = ThreadLiveEvent::Committed {
+                    sequence,
+                    changes: Vec::new(),
+                };
+                let revision = live.revision;
+                let epoch = live.epoch;
+                if refs_first {
+                    live.apply(refs);
+                    live.apply(committed);
+                } else {
+                    live.apply(committed);
+                    live.apply(refs);
+                }
+                assert_eq!(live.applied, sequence);
+                assert_eq!(live.revision, revision + 1);
+                assert_eq!(live.epoch, epoch);
+                assert!(matches!(
+                    live.pending.back(),
+                    Some(ThreadSubscriptionUpdate::Notification { notification })
+                        if notification.base_revision == revision
+                            && notification.revision == revision + 1
+                            && matches!(
+                                &notification.notification,
+                                ThreadNotification::BusinessRefsChanged { references }
+                                    if references == &changed
+                            )
+                ));
+                live.apply(ThreadLiveEvent::BusinessRefs {
+                    sequence,
+                    references: changed,
+                });
+                live.apply(ThreadLiveEvent::BusinessRefs {
+                    sequence: covered,
+                    references: references.clone(),
+                });
+                assert_eq!(live.revision, revision + 1);
+            }
             let revision = live.revision;
             let epoch = live.epoch;
             let pending = live.pending.len();
@@ -1229,8 +1701,11 @@ mod storage_fault_tests {
             live.feed = original_feed;
         }
         drop(subscription);
+        stage.set("flush fixture");
         handle.flush().await?;
+        stage.set("settle reconnect observation");
         runtime.synchronize_thread_observation(&thread.id).await?;
+        stage.set("reconnect subscribe");
         let mut subscription = runtime
             .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
                 thread_id: thread.id.clone(),
@@ -1245,8 +1720,9 @@ mod storage_fault_tests {
             }
             SubscriptionSource::Retired(_) => anyhow::bail!("expected live reconnect"),
         };
+        stage.set("reconnect State baseline");
         let first = subscription.recv().await?.context("reconnected snapshot")?;
-        let ThreadSubscriptionUpdate::Snapshot { snapshot } = first else {
+        let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = first else {
             anyhow::bail!("reconnect baseline missing");
         };
         snapshot.runtime.as_ref().context("reconnected runtime")?;
@@ -1278,6 +1754,7 @@ mod storage_fault_tests {
         .context("catalog-only availability notification")??;
         assert_eq!(handle.snapshot().observation_revision, owner_revision);
         drop(subscription);
+        stage.set("final shutdown");
         runtime
             .shutdown_runtime()
             .await

@@ -24,6 +24,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|migration| {
@@ -61,6 +62,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|migration| {
@@ -103,6 +105,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|migration| {
@@ -137,7 +140,7 @@ async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
             THREAD.into(),
             0,
             pl_core::thread::ThreadSnapshot::default(),
-        );
+        )?;
         write_published_checkpoint(&db, &checkpoint).await?;
         // Lifecycle preparation may normalize the checkpoint before execution identity recovery.
         // Supply the actual post-preparation representation as the explicit recovery candidate.
@@ -316,7 +319,7 @@ async fn atomic_timeline_rejects_current_identity_column_collation_mismatch() ->
         // A newly opened cold reader does not run preflight. Its own first-connection gate
         // must reject the mismatch before publishing a trusted HistoryConnection.
         let cold = HistoryStore::open(&directory.path().join("history.sqlite"), THREAD).await?;
-        let error = tokio::time::timeout(Duration::from_secs(10), cold.latest_append_seq())
+        let error = tokio::time::timeout(Duration::from_secs(10), cold.publication_seed())
             .await?
             .expect_err("independent cold reader must reject mismatched comparison");
         assert!(format!("{error:#}").contains("timeline_records.record_id requires BINARY"));
@@ -392,16 +395,16 @@ async fn atomic_timeline_checks_nonunique_turn_identity_and_kind_comparison() ->
                     original.push(payload);
                 }
                 let before = schema_state(&db).await?;
-                let error = if current {
+                let error: anyhow::Error = if current {
                     let cold = HistoryStore::open(&path, THREAD).await?;
                     let error =
-                        tokio::time::timeout(Duration::from_secs(10), cold.latest_append_seq())
+                        tokio::time::timeout(Duration::from_secs(10), cold.publication_seed())
                             .await?
                             .expect_err(
                                 "cold reader must check nonunique identity and selector columns",
                             );
                     assert!(cold.state.reader.get().is_none());
-                    error
+                    error.into()
                 } else {
                     tokio::time::timeout(Duration::from_secs(10), initialize(&db, THREAD))
                         .await?
@@ -640,7 +643,7 @@ async fn atomic_timeline_identity_affinity_matches_sqlite_type_precedence() -> R
                     result?;
                     assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
                     let expected = if populated { 2 } else { 0 };
-                    assert_eq!(cold.latest_append_seq().await?, expected);
+                    assert_eq!(cold.publication_seed().await?.head_seq, expected);
                     if populated {
                         for id in ["01", "1"] {
                             let hits = db
@@ -800,14 +803,14 @@ async fn atomic_timeline_validates_all_v9_write_keys_and_semantic_unique_indexes
                         .collect::<std::result::Result<Vec<_>, _>>()?;
                     assert_eq!(original.len(), if populated { 2 } else { 0 });
                     let before = schema_state(&db).await?;
-                    let error = if current {
+                    let error: anyhow::Error = if current {
                         let cold = HistoryStore::open(&path, THREAD).await?;
                         let error =
-                            tokio::time::timeout(Duration::from_secs(10), cold.latest_append_seq())
+                            tokio::time::timeout(Duration::from_secs(10), cold.publication_seed())
                                 .await?
                                 .expect_err("cold reader must reject nullable composite key");
                         assert!(cold.state.reader.get().is_none());
-                        error
+                        error.into()
                     } else {
                         tokio::time::timeout(Duration::from_secs(10), initialize(&db, THREAD))
                             .await?
@@ -993,7 +996,7 @@ async fn combined_content_upgrades_both_published_v10_sources_without_rewriting_
                 currency: "USD".into(),
                 amount: 1.25,
             });
-        let saved = pl_core::thread::ThreadCheckpoint::capture(THREAD.into(), 7, state);
+        let saved = pl_core::thread::ThreadCheckpoint::capture(THREAD.into(), 7, state)?;
         write_published_checkpoint(&db, &saved).await?;
         db.execute_unprepared(
             "UPDATE history_meta SET applied_write_seq=7;

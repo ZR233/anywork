@@ -5,11 +5,12 @@ use super::super::conversation;
 use super::legacy_current::{
     CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent as PreparedCurrent,
 };
+use super::legacy_timeline_types::CurrentProjection;
 use super::*;
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
 use pl_protocol::{
     ContentOwner, ContentRef, ContentTarget, CurrentCollectionRef, CurrentPlanHead,
-    CurrentProjection, CurrentTurnHead, ThreadStatus,
+    CurrentTurnHead, ThreadStatus,
 };
 use std::sync::Arc;
 
@@ -205,7 +206,7 @@ pub(in super::super) async fn seed_current(
         // There is no persisted execution source yet; that explicit import reseeds this projection
         // in its checkpoint transaction before its preparation barrier is released.
         let prepared = PreparedCurrent::new(
-            crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+            super::legacy_timeline_types::FrozenCurrentProjection::new(projection),
             Arc::from([]),
             Arc::from([]),
         );
@@ -337,7 +338,7 @@ pub(in super::super) async fn seed_current(
     // Persisted running remains a logical fact; it does not reactivate the old execution.
     projection.execution_present = false;
     let prepared = PreparedCurrent::new(
-        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        super::legacy_timeline_types::FrozenCurrentProjection::new(projection),
         Arc::from(entries),
         Arc::from(contents),
     );

@@ -12,6 +12,7 @@ import 'package:anywork/src/features/conversation/composer/view_models/composer_
 import 'package:anywork/src/features/conversation/composer/views/composer_dock_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -268,6 +269,11 @@ void main() {
           'Questions dock temporarily replaces, rather than clears, the draft',
     );
     await capturePresentation(tester, 'question-pending-dock.png');
+    report['stateInteractionReference'] = await _verifyStateInteractionDetails(
+      tester,
+      graph,
+      draftThread,
+    );
     expect(find.text('这次时间线里的问答回执，你更想要哪种展示？'), findsOneWidget);
     await _tap(tester, find.byKey(StudioDriverKeys.userInputFirstOption));
     await _tap(tester, find.byKey(StudioDriverKeys.userInputSubmit));
@@ -405,6 +411,168 @@ void _expectReceiptTextVisible(
     }
     ancestor = ancestor.parent;
   }
+}
+
+Future<Map<String, Object?>> _verifyStateInteractionDetails(
+  WidgetTester tester,
+  AppGraph graph,
+  String threadId,
+) async {
+  final session = graph.client.conversations.session(threadId);
+  final pending = session.state.interactions.singleWhere(
+    (interaction) => interaction.payload is UserInputInteractionPayload,
+  );
+  final payload = pending.payload as UserInputInteractionPayload;
+  final publicQuestions = payload.questions
+      .where((question) => !question.isSecret)
+      .toList();
+  final secretQuestions = payload.questions
+      .where((question) => question.isSecret)
+      .toList();
+  expect(publicQuestions, isNotEmpty);
+  expect(secretQuestions, isNotEmpty);
+  final publicText = {
+    for (final question in publicQuestions) ...[
+      question.header,
+      question.question,
+      for (final option in question.options) ...[
+        option.label,
+        option.description,
+      ],
+    ],
+  }..remove('');
+  final privateText = {
+    _secretAnswer,
+    for (final question in secretQuestions) ...[
+      question.header,
+      question.question,
+      for (final option in question.options) ...[
+        option.label,
+        option.description,
+      ],
+    ],
+  }..remove('');
+  final reference = session.state.businessRefs?.interactions;
+  expect(
+    reference,
+    isNotNull,
+    reason: 'The real State must carry the readable interaction head',
+  );
+  expect(reference!.collection, 'interactions');
+  expect(reference.databaseId, isNotEmpty);
+  final connector = find.byWidgetPredicate(
+    (widget) =>
+        widget is InteractionDetailsConnector &&
+        identical(widget.content, session.content) &&
+        widget.reference == reference,
+  );
+  await _until(
+    tester,
+    () => connector.evaluate().length == 1,
+    'State reference wired to the production interaction details reader',
+  );
+  final submit = find.byKey(StudioDriverKeys.userInputSubmit);
+  final originalSubmit = tester.element(submit);
+  expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
+  final stateRevision = session.state.revision;
+  expect(
+    find.descendant(of: connector, matching: submit),
+    findsNothing,
+    reason: 'Read-only details do not reconstruct actionable questions',
+  );
+  final title = find.descendant(of: connector, matching: find.text('交互详情'));
+  await _tap(tester, title);
+  Finder detailText(String text) => find.descendant(
+    of: connector,
+    matching: find.textContaining(text, findRichText: true),
+  );
+  void expectPrivateDetailsHidden() {
+    for (final text in privateText) {
+      expect(
+        detailText(text),
+        findsNothing,
+        reason: 'Read-only details must omit secret prompts and values',
+      );
+      expect(
+        find.descendant(
+          of: connector,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is EditableText && widget.controller.text.contains(text),
+          ),
+        ),
+        findsNothing,
+      );
+    }
+  }
+
+  await _until(tester, () {
+    expect(
+      find.descendant(of: connector, matching: find.textContaining('交互详情格式无效')),
+      findsNothing,
+      reason: 'Native collection payload must decode in the real UI',
+    );
+    expectPrivateDetailsHidden();
+    return publicText.every((text) => detailText(text).evaluate().isNotEmpty);
+  }, 'public interaction content read from the real State reference');
+  for (final text in publicText) {
+    final visible = detailText(text).first;
+    await Scrollable.ensureVisible(tester.element(visible), alignment: 0.5);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(visible, findsOneWidget);
+    final bounds = tester.getRect(visible);
+    expect(bounds.isEmpty, isFalse);
+    expect(
+      bounds.overlaps(
+        Offset.zero & (tester.view.physicalSize / tester.view.devicePixelRatio),
+      ),
+      isTrue,
+      reason: 'The public question/header/option is visible in the real UI',
+    );
+  }
+  expectPrivateDetailsHidden();
+  expect(session.state.businessRefs?.interactions, reference);
+  expect(
+    session.state.revision,
+    stateRevision,
+    reason: 'Reading details does not publish another State revision',
+  );
+  expect(
+    session.state.interactions.singleWhere(
+      (interaction) => interaction.id == pending.id,
+    ),
+    same(pending),
+  );
+  expect(tester.element(submit), same(originalSubmit));
+  expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
+  await _tap(tester, title);
+  await tester.pump(const Duration(milliseconds: 300));
+  for (final text in publicText) {
+    expect(detailText(text), findsNothing);
+  }
+  expectPrivateDetailsHidden();
+  expect(find.descendant(of: connector, matching: submit), findsNothing);
+  expect(tester.element(submit), same(originalSubmit));
+  expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
+  expect(
+    (await graph.client.conversations.retryCleanup(
+      deadline: DateTime.now().add(const Duration(seconds: 5)),
+    )).complete,
+    isTrue,
+  );
+  return {
+    'source': 'native-State.businessRefs.interactions',
+    'databaseId': reference.databaseId,
+    'collection': reference.collection,
+    'revision': reference.revision,
+    'interactionId': pending.id,
+    'bodyReadInProductionUi': true,
+    'publicQuestionsVerified': publicQuestions.length,
+    'secretPromptsAndValuesHidden': true,
+    'originalActionableControlRetained': true,
+    'detailScopeJoinedAfterCollapse': true,
+  };
 }
 
 Future<void> _reportMissingQuestionControls({
@@ -557,26 +725,30 @@ Future<ChatItemPresentation> _questionReceipt(
         turn.state is CompletedStudioTurnState;
   }, 'completed real question continuation Turn');
   final source = ForegroundTurnChatSource(turnId: questionTurn.turnId);
-  TimelineItem? target;
+  CompletedEntry? target;
   await _until(tester, () {
     final matches = observed.main
         .where(
           (unit) =>
-              unit.item.source == source &&
-              unit.item.kind == TimelineItemKind.status &&
-              unit.item.atomKind == ChatAtomKind.interaction &&
-              unit.item.outcome == ChatTerminalOutcome.completed,
+              unit.entry.atom.source == source &&
+              unit.entry.mainPresentation == MainPresentation.single &&
+              unit.entry.atom.kind == ChatAtomKind.interaction &&
+              (unit.entry.atom.lifecycle as TerminalChatAtom).outcome ==
+                  ChatTerminalOutcome.completed,
         )
-        .map((unit) => unit.item)
+        .map((unit) => unit.entry)
         .toList();
     expect(matches.length, lessThanOrEqualTo(1));
     target = matches.singleOrNull;
     return target != null;
   }, 'completed question interaction in independent Main status');
   final status = target!;
-  expect(status.outcome, ChatTerminalOutcome.completed);
-  expect(status.members, isNull);
-  final payload = status.payload;
+  expect(
+    (status.atom.lifecycle as TerminalChatAtom).outcome,
+    ChatTerminalOutcome.completed,
+  );
+  expect(status.mainPresentation, MainPresentation.single);
+  final payload = status.atom.payload;
   final byteLength = payload is InlinePayload
       ? payload.bytes.length
       : payload is DeferredPayload
@@ -584,22 +756,24 @@ Future<ChatItemPresentation> _questionReceipt(
       : null;
   final reason =
       'Known small question fixture requires Inline/current business '
-      'presentation within the original frame =${status.id}, '
+      'presentation within the original frame =${status.recordId}, '
       'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
       'Over-budget payloads may remain Deferred in the product.';
   expect(payload is InlinePayload, isTrue, reason: reason);
   expect(
-    ChatItemPresentation.forUnit(observed.unit(status.id)).compatibility,
+    ChatItemPresentation.forUnit(observed.unit(status.recordId)).compatibility,
     ChatItemCompatibility.current,
     reason: reason,
   );
   // Reveal the independent status through the production Main owner, then
   // inspect the receipt actually supplied to its real UI, not a fabricated atom.
   await observed.revealItem(status);
-  final receipt = tester.widget<ChatItemView>(observed.itemRow(status.id)).item;
-  expect(receipt.id, status.id);
-  expect(receipt.atom, isNull);
-  expect(observed.unit(receipt.id).item.source, source);
+  final receipt = tester
+      .widget<ChatItemView>(observed.itemRow(status.recordId))
+      .item;
+  expect(receipt.id, status.recordId);
+  expect(receipt.atom, same(status.atom));
+  expect(observed.unit(receipt.id).entry.atom.source, source);
   expect(receipt.compatibility, ChatItemCompatibility.current, reason: reason);
   expect(receipt.type, 'tool');
   final invocation = receipt.data['invocation'] as Map<String, Object?>;

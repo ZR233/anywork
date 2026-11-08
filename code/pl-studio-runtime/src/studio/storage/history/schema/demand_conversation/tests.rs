@@ -6,10 +6,7 @@ const THREAD: &str = "demand-migration";
 
 async fn fixture_current(db: &impl ConnectionTrait) -> Result<CurrentProjection> {
     if completion_boundary::applied(db).await? {
-        Ok(conversation::completed::cold(db)
-            .await?
-            .projection()
-            .clone())
+        super::super::legacy_current::read_archived(db).await
     } else {
         super::super::legacy_current::read(db).await
     }
@@ -34,6 +31,7 @@ impl MigratorTraitSelf for Published11 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| {
@@ -66,6 +64,7 @@ impl MigratorTraitSelf for Published12 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| {
@@ -215,6 +214,7 @@ async fn published_item(db: &DatabaseConnection, id: &str) -> Result<pl_core::ch
     Ok(pl_core::chat::ChatItem::complete(
         draft,
         u64::try_from(row.try_get::<i64>("", "seq")?)?,
+        None,
     ))
 }
 
@@ -574,7 +574,7 @@ async fn current_admission_neither_quick_checks_nor_decodes_recovery_checkpoint(
         THREAD.into(),
         0,
         pl_core::thread::ThreadSnapshot::default(),
-    );
+    )?;
     checkpoint::write(&db, &checkpoint, None, None).await?;
     db.execute_unprepared(
         "UPDATE session_checkpoint SET payload='{\"schemaVersion\":999}' WHERE id=1",
@@ -644,8 +644,8 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         },
         ..Default::default()
     };
-    let mut first = ThreadCheckpoint::capture(THREAD.into(), 1, first_state);
-    let mut second = ThreadCheckpoint::capture(THREAD.into(), 2, second_state);
+    let mut first = ThreadCheckpoint::capture(THREAD.into(), 1, first_state)?;
+    let mut second = ThreadCheckpoint::capture(THREAD.into(), 2, second_state)?;
     for (checkpoint, revision, model) in [
         (&mut first, 1, "first-model"),
         (&mut second, 2, "second-model"),
@@ -689,14 +689,22 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
     let c1 = super::super::super::test_current(1);
     let c2 = super::super::super::test_current(2);
     let empty = std::collections::BTreeSet::new();
-    let completions1 = [Arc::new(pl_core::chat::ChatItem::complete(
-        pl_core::chat::ChatDraft::new("first", "conversation", Arc::from(b"{}".as_slice())),
-        1,
-    ))];
-    let completions2 = [Arc::new(pl_core::chat::ChatItem::complete(
-        pl_core::chat::ChatDraft::new("second", "conversation", Arc::from(b"{}".as_slice())),
-        2,
-    ))];
+    let completion = |id: &str, seq| {
+        let mut draft =
+            pl_core::chat::ChatDraft::new(id, "conversation", Arc::from(b"{}".as_slice()));
+        draft.metadata = super::super::super::conversation::tests::metadata(id);
+        draft.read_hint = pl_core::chat::ChatReadHint::Single;
+        Arc::new(pl_core::chat::ChatItem::complete(
+            draft,
+            seq,
+            Some(pl_core::chat::ChatRunPosition {
+                start_seq: seq,
+                ordinal: 1,
+            }),
+        ))
+    };
+    let completions1 = [completion("first", 1)];
+    let completions2 = [completion("second", 2)];
     fn history<'a>(
         current: &'a crate::studio::storage::history::conversation::current::PreparedCurrent,
         completions: &'a [Arc<pl_core::chat::ChatItem>],
@@ -742,7 +750,7 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
     ).await?;
     assert!(store.commit_checkpoint_effects(&effects).await.is_err());
     assert_eq!(store.watermark().await?, 0);
-    assert_eq!(store.latest_append_seq().await?, 0);
+    assert_eq!(store.publication_seed().await?.head_seq, 0);
     assert!(store.checkpoint().await?.is_none());
     assert!(
         checkpoint::read_model_route_head(&store.reader().await?.unwrap().db)
@@ -750,8 +758,11 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
             .is_none()
     );
     assert_eq!(
-        fixture_current(&store.reader().await?.unwrap().db)
+        store
+            .cold_current_state()
             .await?
+            .context("cold domain state")?
+            .projection()
             .source_effect_seq,
         0
     );
@@ -768,7 +779,7 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         .unwrap();
     assert_eq!(head.revision, 2);
     assert_eq!(head.route.model_id, "second-model");
-    assert_eq!(store.latest_append_seq().await?, 2);
+    assert_eq!(store.publication_seed().await?.head_seq, 2);
     assert_eq!(
         store
             .checkpoint()
@@ -781,8 +792,11 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         2
     );
     assert_eq!(
-        fixture_current(&store.reader().await?.unwrap().db)
+        store
+            .cold_current_state()
             .await?
+            .context("cold domain state")?
+            .projection()
             .source_effect_seq,
         2
     );

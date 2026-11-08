@@ -138,7 +138,7 @@ void main() {
     final display = graph.timeline.lease('thread-main');
     expect(display, isNotNull, reason: 'ready 只能在真实展示接纳完成基线后完成');
     expect(display!.controller.messages, isNotEmpty);
-    expect(session.current.value, isNotNull);
+    expect(session.state.businessRefs, isNotNull);
     graph.setConversationPageVisible(false);
     await transport.feeds.single.joined.future;
     expect(transport.feeds.single.closeCalls, 1);
@@ -163,14 +163,7 @@ final class _AckObservedFeed extends RecordingConversationFeed {
         'placement': batch.placement.name,
         'entries': [
           for (final entry in batch.entries)
-            switch (entry) {
-              ItemChatEntry(:final item) => {'itemId': item.id},
-              ChatAtomEntry(:final atom) => {'atomId': atom.id},
-              ChatSourceEntry(:final state) => {
-                'source': state.source.toString(),
-                'lifecycle': state.lifecycle.runtimeType.toString(),
-              },
-            },
+            {'recordId': entry.recordId, 'atomId': entry.atom.id},
         ],
       },
     });

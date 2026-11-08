@@ -2,10 +2,535 @@ use super::*;
 
 use crate::runtime_test_support as support;
 
+/// Build the required fields of the advertised scope branch, then let the
+/// production argument decoder and real reader prove that it is callable.
+fn advertised_scope(kind: &str, values: serde_json::Value) -> Result<serde_json::Value> {
+    let schema = read_schema();
+    let branch = schema["properties"]["scope"]["anyOf"]
+        .as_array()
+        .context("scope alternatives")?
+        .iter()
+        .find(|branch| {
+            branch["properties"]["kind"]["enum"]
+                .as_array()
+                .is_some_and(|variants| variants.iter().any(|value| value == kind))
+        })
+        .context("advertised scope kind")?;
+    let mut scope = serde_json::json!({"kind":kind});
+    for key in branch["required"]
+        .as_array()
+        .context("scope required fields")?
+    {
+        let key = key.as_str().context("required field name")?;
+        if key != "kind" {
+            scope[key] = values
+                .get(key)
+                .with_context(|| format!("missing advertised field {key}"))?
+                .clone();
+        }
+    }
+    Ok(scope)
+}
+
+#[tokio::test]
+async fn run_read_and_search_cover_nonrepresentative_members_and_release_scopes() -> Result<()> {
+    use pl_provider_fixture::Reply;
+    use serde_json::json;
+    let mut events = vec![
+        json!({"type":"response.created","response":{"id":"search-run","model":support::MODEL}}),
+    ];
+    for index in 0..40 {
+        let id = format!("search-reason-{index}");
+        let text = if index == 20 {
+            "only-inside-member"
+        } else {
+            "ordinary reasoning"
+        };
+        events.extend([
+            json!({"type":"response.output_item.added","output_index":index,
+                "item":{"id":id,"type":"reasoning","summary":[],"content":[]}}),
+            json!({"type":"response.reasoning_summary_text.delta","output_index":index,
+                "item_id":id,"summary_index":0,"delta":text}),
+            json!({"type":"response.output_item.done","output_index":index,
+                "item":{"id":id,"type":"reasoning","summary":[{"type":"summary_text","text":text}]}}),
+        ]);
+    }
+    for mut event in
+        pl_provider_fixture::responses_text("final answer", "search-run", support::MODEL)
+            .into_iter()
+            .skip(1)
+    {
+        if let Some(index) = event
+            .get("output_index")
+            .and_then(serde_json::Value::as_u64)
+        {
+            event["output_index"] = (index + 40).into();
+        }
+        events.push(event);
+    }
+    let env = support::Environment::new(
+        vec![support::prompt_step(
+            "search-run-members",
+            0,
+            Reply::Sse(events),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let thread = env
+            .start(
+                pl_protocol::ThreadWorkspaceMode::Local,
+                "search-run-members",
+            )
+            .await?;
+        let session = &thread.thread.id;
+        let completed = support::completed_prompt(&env.runtime, session, "search-run-members").await?;
+        env.runtime.synchronize_thread_observation(session).await?;
+        let owners = ReadOwners::default();
+        let main = read(&env.runtime, &owners, pl_agent_tool::typed::decode_json(&json!({
+            "sessionId":session,"scope":advertised_scope("main", json!({}))?,
+            "demand":{"maxItems":16,"maxBytes":131072}
+        }).to_string())?).await?;
+        let main: serde_json::Value = serde_json::from_str(main.payload().content())?;
+        let main_id = main["readScope"].as_str().context("Main read scope")?;
+        let page: ChatBatch = serde_json::from_value(main["chat"].clone())?;
+        let representative = page
+            .entries
+            .iter()
+            .find(|entry| entry.main_presentation == pl_protocol::MainPresentation::ForegroundWork)
+            .context("reasoning run representative")?;
+        let Some(pl_protocol::PayloadData::Deferred { reference, .. }) =
+            &representative.atom.payload
+        else {
+            anyhow::bail!("work representative eagerly included its payload");
+        };
+        let scope = advertised_scope("run", json!({
+            "reference": pl_protocol::CompletionRunRef {
+                database_id: reference.database_id.clone(),
+                index_version: pl_protocol::COMPLETED_READ_INDEX_VERSION,
+                start_seq: representative.run.context("run position")?.start_seq,
+            },
+        }))?;
+        let opened = read(
+            &env.runtime,
+            &owners,
+            pl_agent_tool::typed::decode_json(&json!({
+                "sessionId":session,"scope":scope,"demand":{"maxItems":1,"maxBytes":131072}
+            }).to_string())?,
+        )
+        .await?;
+        let opened: serde_json::Value = serde_json::from_str(opened.payload().content())?;
+        assert!(opened["activity"].is_object());
+        let run_id = opened["readScope"].as_str().context("run read scope")?;
+        let run_reader = owners.get(run_id, session, None).await?;
+        let mut page: ChatBatch = serde_json::from_value(opened["chat"].clone())?;
+        let mut members = std::collections::BTreeSet::new();
+        loop {
+            for entry in page.entries {
+                assert_eq!(entry.atom.kind, pl_protocol::ChatAtomKind::Reasoning);
+                assert!(members.insert(entry.record_id));
+            }
+            let Some(before) = page.before else { break };
+            page = run_reader.load_older(&before, demand(1)?).await?;
+        }
+        assert_eq!(members.len(), 40);
+        owners.close(run_id).await?;
+        owners.close(main_id).await?;
+        let parent = pl_core::chat::ChatKey::new("turn", &completed.id)?;
+        let children = read(&env.runtime, &owners, pl_agent_tool::typed::decode_json(&json!({
+            "sessionId":session,"scope":advertised_scope("children", json!({"parentId":parent.as_str()}))?,
+            "demand":{"maxItems":100,"maxBytes":131072}
+        }).to_string())?).await?;
+        let children: serde_json::Value = serde_json::from_str(children.payload().content())?;
+        let child_id = children["readScope"].as_str().context("Children read scope")?;
+        let child_reader = owners.get(child_id, session, None).await?;
+        let mut page: ChatBatch = serde_json::from_value(children["chat"].clone())?;
+        let mut child_members = std::collections::BTreeSet::new();
+        let mut terminal_receipt = false;
+        for _ in 0..64 {
+            for entry in &page.entries {
+                if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                    assert!(child_members.insert(entry.record_id.clone()));
+                }
+                terminal_receipt |= entry.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt;
+            }
+            let Some(before) = page.before.as_deref() else { break };
+            page = child_reader.load_older(before, demand(100)?).await?;
+        }
+        assert!(page.before.is_none(), "Children pagination did not terminate");
+        assert_eq!(child_members, members);
+        assert!(terminal_receipt, "Children omitted the real hidden Turn receipt");
+        owners.close(child_id).await?;
+        let cancel = CancellationToken::new();
+        let mut token: Option<String> = None;
+        let mut found = Vec::new();
+        let mut complete = false;
+        for _ in 0..8 {
+            let result = search(
+                &env.runtime,
+                &owners,
+                serde_json::from_value(json!({
+                    "sessionId":session,"query":"only-inside-member","cursor":token
+                }))?,
+                &cancel,
+            )
+            .await?;
+            let result: serde_json::Value = serde_json::from_str(result.payload().content())?;
+            found.extend(
+                result["matches"]
+                    .as_array()
+                    .context("search matches")?
+                    .iter()
+                    .cloned(),
+            );
+            complete = result["complete"] == true;
+            token = result["cursor"].as_str().map(str::to_owned);
+            if complete {
+                break;
+            }
+            assert!(token.is_some());
+            assert!(owners.readers.lock().await.len() <= MAX_READ_SCOPES);
+        }
+        assert!(complete, "bounded search never completed its run");
+        assert_eq!(found.len(), 1);
+        assert!(
+            members.contains(
+                found[0]["itemId"]
+                    .as_str()
+                    .context("member match identity")?
+            )
+        );
+        assert!(
+            found[0]["snippet"]
+                .as_str()
+                .unwrap()
+                .contains("only-inside-member")
+        );
+        assert!(owners.readers.lock().await.is_empty());
+        assert_eq!(owners.permits.available_permits(), MAX_READ_SCOPES);
+        owners.close_all().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
 fn reason(error: &anyhow::Error) -> Option<&str> {
     error
         .downcast_ref::<pl_protocol::studio::StudioError>()
         .and_then(|error| error.reason())
+}
+
+#[tokio::test]
+async fn session_tools_read_plan_and_interaction_refs_then_keep_hidden_continuation_out_of_history()
+-> Result<()> {
+    use pl_protocol::studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput};
+    use pl_protocol::{
+        AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionResolution, InteractionStatus,
+        ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, UserInputAnswer,
+        UserInputResolution,
+    };
+    use serde_json::json;
+    use std::time::Duration;
+    const PROMPT: &str = "session-business-plan";
+    const PLAN: &str = "# Business reference plan\n\nRead the actual saved plan and approve once.";
+    let env = support::Environment::new(
+        vec![
+            support::prompt_step(
+                PROMPT,
+                0,
+                support::tool_reply(
+                    "plan_submit",
+                    "business-plan-call",
+                    json!({"expectedRevision":0,"plan":PLAN}),
+                ),
+            ),
+            support::prompt_step(
+                PLAN,
+                1,
+                support::text_reply("approved once", "business-plan-final"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let started = Box::pin(env.runtime.create_thread_command(
+            env.project.id.clone(),
+            CreateThreadRequest {
+                title: Some("Business reference tool consumer".into()),
+                input: StudioPromptInput {
+                    input_id: "business-plan-input".into(),
+                    text: PROMPT.into(),
+                    attachment_draft_ids: Vec::new(),
+                },
+                mode: pl_protocol::ThreadModeId::task().to_string(),
+                route: NewThreadModelRoute {
+                    account_id: "root-fixture".into(),
+                    model_id: support::MODEL.into(),
+                    effort: None,
+                },
+                delegation_mode: None,
+                delegation_preference: None,
+                workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+            },
+            None,
+        ))
+        .await?;
+        let id = &started.thread.id;
+        let mut subscription = env
+            .runtime
+            .subscribe_thread(ThreadSubscriptionRequest {
+                thread_id: id.clone(),
+            })
+            .await?;
+        let pending = tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(update) = subscription.recv().await? {
+                let interaction = match update {
+                    ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => snapshot
+                        .interactions
+                        .into_iter()
+                        .find(|interaction| interaction.status() == InteractionStatus::Pending),
+                    ThreadSubscriptionUpdate::Notification { notification } => {
+                        match notification.notification {
+                            ThreadNotification::InteractionChanged { interaction }
+                                if interaction.status() == InteractionStatus::Pending =>
+                            {
+                                Some(*interaction)
+                            }
+                            _ => None,
+                        }
+                    }
+                };
+                if let Some(interaction) = interaction {
+                    return Ok::<_, anyhow::Error>(interaction);
+                }
+            }
+            anyhow::bail!("plan never reached pending confirmation");
+        })
+        .await??;
+        env.runtime.synchronize_thread_observation(id).await?;
+        let source = env
+            .runtime
+            .create_thread(&env.project.id, "Business tool caller")
+            .await?;
+        let actionable = env
+            .runtime
+            .pending_interaction_from_bot(&source.id, id, &pending.interaction_id)
+            .await?;
+        assert_eq!(actionable, pending);
+        let owners = ReadOwners::default();
+        let got = get(&env.runtime, &owners, id).await?;
+        let got: serde_json::Value = serde_json::from_str(got.payload().content())?;
+        assert!(
+            got["plan"].is_object(),
+            "get_session erased the existing Plan head"
+        );
+        assert_eq!(got["pending"][0]["interactionId"], pending.interaction_id);
+        assert!(
+            owners.readers.lock().await.is_empty(),
+            "Get leaked its one-shot qualification"
+        );
+        let opened = read(
+            &env.runtime,
+            &owners,
+            serde_json::from_value(json!({
+                "sessionId":id,"demand":{"maxItems":16,"maxBytes":131072}
+            }))?,
+        )
+        .await?;
+        let opened: serde_json::Value = serde_json::from_str(opened.payload().content())?;
+        assert_eq!(
+            opened["state"]["schemaVersion"],
+            pl_protocol::THREAD_SCHEMA_VERSION
+        );
+        let state_refs: pl_protocol::ThreadBusinessRefs =
+            serde_json::from_value(opened["state"]["businessRefs"].clone())?;
+        let scope = opened["readScope"].as_str().context("read scope")?;
+        let reader = owners.get(scope, id, None).await?;
+        let heads = read(
+            &env.runtime,
+            &owners,
+            serde_json::from_value(json!({
+                "sessionId":id,"readScope":scope,"readBusinessRefs":true
+            }))?,
+        )
+        .await?;
+        let heads: serde_json::Value = serde_json::from_str(heads.payload().content())?;
+        assert_eq!(
+            serde_json::from_value::<pl_protocol::ThreadBusinessRefs>(
+                heads["businessRefs"].clone()
+            )?,
+            state_refs
+        );
+        let plan = state_refs.plan.as_ref().context("Plan head")?;
+        assert_eq!(got["plan"]["revision"], plan.revision);
+        let document = plan.document.as_ref().context("Plan document reference")?;
+        let window = read(
+            &env.runtime,
+            &owners,
+            serde_json::from_value(json!({
+                "sessionId":id,"readScope":scope,"reference":document,
+                "range":{"offset":0,"maxBytes":65536}
+            }))?,
+        )
+        .await?;
+        let window: serde_json::Value = serde_json::from_str(window.payload().content())?;
+        let window: pl_protocol::ContentWindow = serde_json::from_value(window["window"].clone())?;
+        assert!(String::from_utf8(window.bytes)?.contains("Business reference plan"));
+        let collection = state_refs.interactions.context("interaction collection")?;
+        let page = read(
+            &env.runtime,
+            &owners,
+            serde_json::from_value(json!({
+                "sessionId":id,"readScope":scope,"collection":collection,
+                "demand":{"maxItems":1,"maxBytes":131072}
+            }))?,
+        )
+        .await?;
+        let page: serde_json::Value = serde_json::from_str(page.payload().content())?;
+        assert_eq!(
+            page["currentPage"]["entries"][0]["id"],
+            pending.interaction_id
+        );
+        let approve = || {
+            InteractionResolution::UserInput(UserInputResolution {
+                answers: [(
+                    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                    UserInputAnswer {
+                        answers: vec!["Approve".into()],
+                    },
+                )]
+                .into(),
+            })
+        };
+        let resolved = env
+            .runtime
+            .resolve_interaction(
+                "tool-business-approve".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                approve(),
+            )
+            .await?;
+        assert_eq!(resolved.interaction.status(), InteractionStatus::Resolved);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(update) = subscription.recv().await? {
+                if let ThreadSubscriptionUpdate::Notification { notification } = update
+                    && let ThreadNotification::TurnCompleted { turn } = notification.notification
+                    && turn.input_id.as_deref() != Some("business-plan-input")
+                {
+                    anyhow::ensure!(
+                        matches!(turn.state, pl_protocol::TurnState::Completed(_)),
+                        "approved continuation failed: {:?}",
+                        turn.state
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+            anyhow::bail!("approved plan continuation did not complete");
+        })
+        .await??;
+        env.runtime.synchronize_thread_observation(id).await?;
+        let (before_replay_reader, before_replay) = owners
+            .open(&env.runtime, id, demand(100)?, None, None)
+            .await?;
+        owners.close(before_replay_reader.subscription_id()).await?;
+        let replayed = env
+            .runtime
+            .resolve_interaction(
+                "tool-business-repeat".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                approve(),
+            )
+            .await?;
+        assert_eq!(
+            replayed.interaction, resolved.interaction,
+            "idempotent replay changed the actual resolution"
+        );
+        // Replaying the same decision returns its original receipt. It must not
+        // make a historical question actionable or permit a different decision.
+        assert!(
+            env.runtime
+                .pending_interaction_from_bot(&source.id, id, &pending.interaction_id)
+                .await
+                .is_err(),
+            "historical interaction returned as an actionable question"
+        );
+        let conflicting = InteractionResolution::UserInput(UserInputResolution {
+            answers: [(
+                AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                UserInputAnswer {
+                    answers: vec!["Revise".into()],
+                },
+            )]
+            .into(),
+        });
+        assert!(
+            env.runtime
+                .resolve_interaction(
+                    "tool-business-conflict".into(),
+                    id.clone(),
+                    pending.revision,
+                    pending.interaction_id.clone(),
+                    conflicting
+                )
+                .await
+                .is_err(),
+            "historical interaction authorized a conflicting decision"
+        );
+        env.runtime.synchronize_thread_observation(id).await?;
+        let after = get(&env.runtime, &owners, id).await?;
+        let after: serde_json::Value = serde_json::from_str(after.payload().content())?;
+        assert_eq!(after["pending"], json!([]));
+        let mut history = env
+            .runtime
+            .open_conversation_feed(id, ChatScope::Main, demand(100)?)
+            .await?;
+        let Some(crate::studio::ConversationEvent::Chat { batch }) = history.recv().await? else {
+            anyhow::bail!("missing completion history");
+        };
+        assert_eq!(
+            batch.through_seq, before_replay.through_seq,
+            "resolution replay published another completed fact"
+        );
+        assert!(batch.before.is_none());
+        assert_eq!(
+            batch
+                .entries
+                .iter()
+                .filter(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Input)
+                .count(),
+            1,
+            "hidden approval continuation became another user message"
+        );
+        let unique = batch
+            .entries
+            .iter()
+            .map(|entry| &entry.record_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), batch.entries.len());
+        assert_eq!(
+            env.root_provider.recorded().len(),
+            2,
+            "approval replay executed work twice"
+        );
+        history.close().await?;
+        history.reader().close().await?;
+        owners.close(scope).await?;
+        assert!(
+            reader.read_business_refs().await.is_err(),
+            "retired scope published business references"
+        );
+        owners.close_all().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 #[tokio::test]
@@ -409,12 +934,8 @@ async fn tool_read_eof_keeps_qualification_until_explicit_or_tool_close_and_neve
             .entries
             .iter()
             .find_map(|entry| {
-                let pl_protocol::ChatEntry::Item(message) = entry else {
-                    return None;
-                };
-                (message.atom_kind == Some(pl_protocol::ChatAtomKind::Text))
-                    .then(|| message.content_item_id.clone())
-                    .flatten()
+                (entry.atom.kind == pl_protocol::ChatAtomKind::Text)
+                    .then(|| entry.record_id.clone())
             })
             .context("public text item")?;
         let reference = text_reference(&reader, &item)

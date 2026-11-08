@@ -20,6 +20,7 @@ pub(in crate::studio) fn project_snapshot(
     state: &ThreadSnapshot,
     usage: &pl_core::thread::UsageSummary,
     persistence: Option<&ThreadPersistenceSnapshot>,
+    business_refs: pl_protocol::ThreadBusinessRefs,
 ) -> Result<pl_protocol::ThreadSnapshot, ProjectionError> {
     let active_turn = project_active_turn(&thread.id, state, thread.updated_at)?;
     let mut interactions = Vec::new();
@@ -47,6 +48,7 @@ pub(in crate::studio) fn project_snapshot(
         thread,
         active_turn,
         interactions,
+        business_refs,
         activity,
         storage,
     })

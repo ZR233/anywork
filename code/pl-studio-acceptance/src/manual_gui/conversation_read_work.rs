@@ -363,17 +363,47 @@ async fn wait_completed(
     input_id: &str,
 ) -> Result<u64> {
     tokio::time::timeout(Duration::from_secs(60), async {
+        let mut saw_snapshot = false;
         while let Some(update) = subscription.recv().await? {
-            if let ThreadSubscriptionUpdate::Notification { notification } = update
-                && let ThreadNotification::TurnCompleted { turn } = notification.notification
-                && turn.input_id.as_deref() == Some(input_id)
-            {
-                let snapshot = runtime.thread_snapshot(thread_id).await?;
-                return snapshot
-                    .model_route
-                    .as_ref()
-                    .map(|route| route.revision)
-                    .context("completed Turn has no model route");
+            match update {
+                ThreadSubscriptionUpdate::Snapshot {
+                    completed_history_version,
+                    ..
+                } => {
+                    ensure!(
+                        !saw_snapshot,
+                        "Thread subscription repeated its initial State snapshot"
+                    );
+                    ensure!(
+                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        "unsupported completed history version {completed_history_version}"
+                    );
+                    saw_snapshot = true;
+                }
+                ThreadSubscriptionUpdate::Notification { notification } => {
+                    ensure!(
+                        saw_snapshot,
+                        "Thread notification arrived before State snapshot"
+                    );
+                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
+                        && turn.input_id.as_deref() == Some(input_id)
+                    {
+                        let snapshot = runtime.thread_snapshot(thread_id).await?;
+                        ensure!(
+                            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                                && snapshot.thread.id == thread_id
+                                && matches!(turn.state, pl_protocol::TurnState::Completed(_))
+                                && snapshot.active_turn.is_none()
+                                && snapshot.thread.status == pl_protocol::ThreadStatus::Idle,
+                            "completed Turn notification and schema-17 Thread State disagree"
+                        );
+                        return snapshot
+                            .model_route
+                            .as_ref()
+                            .map(|route| route.revision)
+                            .context("completed Turn has no model route");
+                    }
+                }
             }
         }
         anyhow::bail!("thread stream ended without a terminal Turn for {input_id}")

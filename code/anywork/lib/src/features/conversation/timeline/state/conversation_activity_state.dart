@@ -9,6 +9,6 @@ part 'conversation_activity_state.freezed.dart';
 abstract class ConversationActivityState with _$ConversationActivityState {
   const factory ConversationActivityState({
     required ConversationActivityView? view,
-    CurrentProjection? current,
+    ActivitySnapshot? activity,
   }) = _ConversationActivityState;
 }

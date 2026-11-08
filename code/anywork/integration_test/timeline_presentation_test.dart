@@ -10,9 +10,9 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
@@ -219,7 +219,7 @@ Future<void> _runLive(
   final streaming = await scene.waitForStreamingTurn(after: priorTurn);
   final singleConsumption = await scene.outputConsumption();
   late _StreamingBody streamingBody;
-  late CurrentContentPreview afterPage;
+  late _StreamingWindow afterPage;
   final streamingLease = streaming.lease;
   try {
     await Future.wait([
@@ -290,7 +290,7 @@ Future<void> _runLive(
     'streamingActivityVisible': !streamingBody.visibleGlyphBounds.isEmpty,
     'streamingPresentation': {
       'renderer': 'TimelinePlainText',
-      'unitId': streaming.unit.id,
+      'atomId': streaming.response.id,
       'prefixBytes': utf8.encode(streamingBody.prefix).length,
       'visibleGlyphBounds': [
         streamingBody.visibleGlyphBounds.left,
@@ -447,9 +447,10 @@ typedef _StreamingTurn = ({
   String turnId,
   String activityId,
   ChatAtom response,
-  CurrentContentPreview preview,
-  TimelineDisplayUnit unit,
+  _StreamingWindow preview,
 });
+
+typedef _StreamingWindow = ({ContentRef reference, String text});
 
 typedef _StreamingBody = ({String prefix, Rect visibleGlyphBounds});
 
@@ -469,7 +470,7 @@ final class _TimelineScene {
   List<String> ids(TimelineDisplayLease display) => TimelineObservation(
     tester,
     () => display,
-  ).main.map((unit) => unit.item.id).toList();
+  ).main.map((unit) => unit.id).toList();
 
   Future<void> until(
     bool Function() ready,
@@ -558,8 +559,8 @@ final class _TimelineScene {
         final source = ForegroundTurnChatSource(turnId: candidate.turnId);
         // Main admission is a separate requirement, not the Turn's completion
         // authority. Both must arrive within the original wait budget.
-        return observed.items.any((item) => item.source == source) &&
-            !observed.live.any((unit) => unit.item.source == source);
+        return observed.entries.any((item) => item.atom.source == source) &&
+            !observed.activity.any((entry) => entry.atom.source == source);
       },
       'completed timeline Turn',
       timeout: const Duration(minutes: 6),
@@ -618,13 +619,11 @@ final class _TimelineScene {
         if (display == null || !display.isMounted || display.isRetired) {
           return false;
         }
-        final current = display.content.current.value;
-        final candidate = current?.activeTurn?.id;
-        final candidateActivity = current?.active?.id;
-        final sessionTurn = graph.client.conversations
-            .session(selected)
-            .state
-            .activeTurn;
+        final state = graph.client.conversations.session(selected).state;
+        final current = display.content.activity.value;
+        final sessionTurn = state.activeTurn;
+        final candidate = sessionTurn?.turnId;
+        final candidateActivity = state.activity?.identity;
         final currentDisplay = display.currentDisplay;
         if (candidate == null ||
             candidate == _priorTurnId ||
@@ -634,20 +633,16 @@ final class _TimelineScene {
             currentDisplay.turnId != candidate ||
             currentDisplay.activityId != candidateActivity ||
             !currentDisplay.isCurrent ||
-            sessionTurn?.turnId != candidate ||
             sessionTurn?.threadId != selected ||
             sessionTurn?.state.isBusy != true ||
-            current?.activeTurn?.phase != sessionTurn?.state.activity ||
-            current?.active?.kind != ThreadActivityKind.responding ||
-            current!.logicalStatus.isActive != true ||
-            !current.executionPresent) {
+            state.activity?.kind != ThreadActivityKind.responding ||
+            current?.executionPresent != true) {
           return false;
         }
         _submittedTurnId ??= candidate;
         if (candidate != _submittedTurnId) return false;
-        // Busy/preparing is not a streaming witness: wait for a real unfinished
-        // response and its producer-owned nonempty body before freezing identity.
-        final response = current.atoms
+        final response = current!.entries
+            .map((entry) => entry.atom)
             .where(
               (atom) =>
                   atom.kind == ChatAtomKind.text &&
@@ -657,36 +652,26 @@ final class _TimelineScene {
             )
             .firstOrNull;
         if (response == null) return false;
-        final preview = current.previews
+        final body = response.contents
+            .where((content) => content.role == ChatContentRole.body)
+            .singleOrNull;
+        if (body == null) return false;
+        final window = currentDisplay.windows
             .where(
-              (preview) =>
-                  preview.id == response.id &&
-                  preview.role == CurrentContentRole.response &&
-                  preview.text.isNotEmpty,
+              (window) =>
+                  window.id == response.id &&
+                  contentReferenceIdentity(window.reference) ==
+                      contentReferenceIdentity(body.reference) &&
+                  window.window?.offset == 0 &&
+                  window.window!.bytes.isNotEmpty,
             )
             .firstOrNull;
-        if (preview == null) return false;
-        final units = display.liveUnits.value
-            .where(
-              (unit) =>
-                  unit.live &&
-                  unit.item.kind == TimelineItemKind.text &&
-                  unit.item.atomKind == ChatAtomKind.text &&
-                  unit.item.source == response.source &&
-                  unit.item.turnId == candidate &&
-                  unit.item.outcome == null,
-            )
-            .toList();
-        if (units.length != 1) return false;
-        final unit = units.single;
-        final bodies = unit.item.contents
-            .where((content) => content.role == ChatContentRole.body)
-            .toList();
-        if (bodies.length != 1 ||
-            contentReferenceIdentity(bodies.single.reference) !=
-                contentReferenceIdentity(preview.reference)) {
-          return false;
-        }
+        if (window == null) return false;
+        if (window.error case final error?) throw StateError('$error');
+        final preview = (
+          reference: body.reference,
+          text: utf8.decode(window.window!.bytes, allowMalformed: true),
+        );
         streaming = (
           lease: display,
           display: currentDisplay,
@@ -694,7 +679,6 @@ final class _TimelineScene {
           activityId: candidateActivity,
           response: response,
           preview: preview,
-          unit: unit,
         );
         return true;
       },
@@ -720,19 +704,17 @@ final class _TimelineScene {
         final connector = find.byWidgetPredicate(
           (widget) =>
               widget is ConversationCurrentConnector &&
-              identical(widget.content, streaming.lease.content) &&
-              identical(widget.units, streaming.lease.liveUnits),
+              identical(widget.content, streaming.lease.content),
         );
         if (connector.evaluate().length != 1) return false;
         expect(tester.state(connector), same(streaming.display));
-        final row = find.descendant(
-          of: connector,
-          matching: find.byKey(ValueKey(streaming.unit.id)),
-        );
-        if (row.evaluate().length != 1) return false;
         final item = find.descendant(
-          of: row,
-          matching: find.byKey(ObjectKey(streaming.unit.expansion)),
+          of: connector,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineMemberAtom &&
+                widget.atom.id == streaming.response.id,
+          ),
         );
         if (item.evaluate().length != 1) return false;
         final body = find.descendant(
@@ -792,13 +774,13 @@ final class _TimelineScene {
         }
         return false;
       },
-      'visible live response body ${streaming.unit.id}',
+      'visible live response body ${streaming.response.id}',
       timeout: const Duration(seconds: 30),
     );
     return (prefix: prefix, visibleGlyphBounds: visibleGlyphBounds!);
   }
 
-  CurrentContentPreview expectStreamingTurn(_StreamingTurn streaming) {
+  _StreamingWindow expectStreamingTurn(_StreamingTurn streaming) {
     final selected = graph.client.selection.state.selectedThreadId!;
     expect(selected, _submittedThreadId);
     expect(streaming.turnId, _submittedTurnId);
@@ -807,65 +789,46 @@ final class _TimelineScene {
     expect(display.threadId, selected);
     expect(display.isMounted, isTrue);
     expect(display.isRetired, isFalse);
-    final current = display.content.current.value!;
-    final sessionTurn = graph.client.conversations
-        .session(selected)
-        .state
-        .activeTurn;
-    expect(current.activeTurn?.id, streaming.turnId);
-    expect(current.active?.id, streaming.activityId);
-    expect(current.active?.kind, ThreadActivityKind.responding);
-    expect(current.logicalStatus.isActive, isTrue);
+    final current = display.content.activity.value!;
+    final session = graph.client.conversations.session(selected).state;
+    final sessionTurn = session.activeTurn;
     expect(current.executionPresent, isTrue);
-    expect(display.currentDisplay, same(streaming.display));
-    expect(display.currentDisplay?.turnId, streaming.turnId);
-    expect(display.currentDisplay?.activityId, streaming.activityId);
-    expect(display.currentDisplay?.isCurrent, isTrue);
     expect(sessionTurn?.turnId, streaming.turnId);
     expect(sessionTurn?.threadId, selected);
     expect(sessionTurn?.state.isBusy, isTrue);
-    // Turn phase tracks the attempt outcome, while active.kind tracks live
-    // response facts. Require their own typed projections to agree, not the
-    // coarse Turn phase to become responding before the attempt has committed.
-    expect(current.activeTurn?.phase, sessionTurn?.state.activity);
-    final response = current.atoms.singleWhere(
-      (atom) => atom.id == streaming.response.id,
-    );
+    expect(session.activity?.identity, streaming.activityId);
+    expect(session.activity?.kind, ThreadActivityKind.responding);
+    expect(display.currentDisplay, same(streaming.display));
+    expect(streaming.display.isCurrent, isTrue);
+    final response = current.entries
+        .map((entry) => entry.atom)
+        .singleWhere((atom) => atom.id == streaming.response.id);
     expect(response.kind, ChatAtomKind.text);
     expect(response.lifecycle, isA<ActiveChatAtom>());
     expect(response.source, streaming.response.source);
     expect(response.turnId, streaming.turnId);
-    final unit = display.liveUnits.value.singleWhere(
-      (unit) => unit.id == streaming.unit.id,
-    );
-    // Admission replaces unit snapshots while retaining their original intent.
-    expect(unit.live, isTrue);
-    expect(unit.expansion, same(streaming.unit.expansion));
-    expect(unit.expansion.isRetired, isFalse);
-    expect(unit.item.kind, TimelineItemKind.text);
-    expect(unit.item.atomKind, ChatAtomKind.text);
-    expect(unit.item.source, streaming.unit.item.source);
-    expect(unit.item.turnId, streaming.turnId);
-    expect(unit.item.outcome, isNull);
-    final body = unit.item.contents.singleWhere(
+    final body = response.contents.singleWhere(
       (content) => content.role == ChatContentRole.body,
     );
     expect(
       contentReferenceIdentity(body.reference),
       contentReferenceIdentity(streaming.preview.reference),
     );
-    final preview = current.previews.singleWhere(
-      (preview) => preview.id == streaming.preview.id,
+    final window = streaming.display.windows.singleWhere(
+      (window) =>
+          window.id == response.id &&
+          contentReferenceIdentity(window.reference) ==
+              contentReferenceIdentity(body.reference),
     );
-    expect(preview.role, CurrentContentRole.response);
-    expect(
-      contentReferenceIdentity(preview.reference),
-      contentReferenceIdentity(streaming.preview.reference),
-    );
-    // Producer previews are bounded prefixes (range 0..PREVIEW_BYTES), so real
-    // token progress may extend the body but must not replace its accepted text.
-    expect(preview.text, startsWith(streaming.preview.text));
-    return preview;
+    expect(window.error, isNull);
+    expect(window.window, isNotNull);
+    // The display owns a bounded moving window. Its reference stays stable
+    // across Main paging; only a window still at zero can prove prefix growth.
+    final text = utf8.decode(window.window!.bytes, allowMalformed: true);
+    if (window.window!.offset == 0) {
+      expect(text, startsWith(streaming.preview.text));
+    }
+    return (reference: window.reference, text: text);
   }
 
   Future<void> waitForTerminalTurn(String turnId) async {
@@ -874,7 +837,7 @@ final class _TimelineScene {
         final selected = graph.client.selection.state.selectedThreadId;
         if (selected == null || selected != _submittedThreadId) return false;
         final display = graph.timeline.lease(selected);
-        final current = display?.content.current.value;
+        final current = display?.content.activity.value;
         final state = graph.client.conversations.session(selected).state;
         final completed = state.lastTurn;
         return turnId == _submittedTurnId &&
@@ -883,7 +846,7 @@ final class _TimelineScene {
             completed?.state.status == StudioTurnStatus.completed &&
             completed?.state.isTerminal == true &&
             state.activeTurn?.turnId != turnId &&
-            current?.activeTurn?.id != turnId;
+            !current!.entries.any((entry) => entry.atom.turnId == turnId);
       },
       'terminal canonical Turn $turnId',
       timeout: const Duration(minutes: 6),

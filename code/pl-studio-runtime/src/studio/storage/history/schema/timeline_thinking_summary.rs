@@ -1,6 +1,6 @@
 //! Schema 15 → 16: rebuild bounded thinking summaries and independent background
 //! tool groups from original facts and explicit summary contents.
-use super::super::conversation::timeline;
+use super::legacy_timeline_store as timeline;
 use super::*;
 
 pub(super) struct TimelineThinkingSummary;
@@ -43,6 +43,8 @@ impl MigrationTrait for TimelineThinkingSummary {
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_timeline_types::*;
+    use super::legacy_timeline_types::{ChatScope, CurrentProjection};
     use super::*;
     use crate::studio::storage::history::{connect, conversation};
     use anyhow::Result;
@@ -65,6 +67,7 @@ mod tests {
                             | SOURCE_CLASSIFICATION
                             | TIMELINE_BACKGROUND_TAIL
                             | COMPLETION_BOUNDARY
+                            | IMMUTABLE_COMPLETION_RUNS
                     )
                 })
                 .collect()
@@ -161,9 +164,11 @@ mod tests {
                 )).await?;
             }
             draft.metadata = terminal.into();
-            records.push(ChatItem::complete(draft, records.len() as u64 + 1));
+            records.push(ChatItem::complete(draft, records.len() as u64 + 1, None));
         }
-        conversation::append_records(db, records.iter(), true).await?;
+        for record in &records {
+            timeline::append_fixture(db, record).await?;
+        }
         let current = CurrentProjection::empty(7, ThreadStatus::Idle);
         db.execute_raw(statement(
             "UPDATE conversation_view_state SET payload=? WHERE singleton_id=1",
@@ -254,9 +259,9 @@ mod tests {
         );
         db.execute_unprepared("DROP TRIGGER reject_summary_marker")
             .await?;
-        // Exercise schema preflight as well as SeaORM's transactional step.
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        // Inspect this published step before later migrations archive its display tables.
+        migrator().up(&db, Some(1)).await?;
+        assert_eq!(version(&db).await?, 16);
         let row = db
             .query_one_raw(statement(
                 "SELECT metadata,projection_version FROM timeline_items WHERE kind='workGroup' AND json_extract(CAST(metadata AS TEXT),'$.source.kind')='foregroundTurn'",
@@ -300,23 +305,42 @@ mod tests {
         assert!(matches!(&members[0].1, ChatEntry::Atom(atom) if atom.id == "background"));
         assert_eq!(source_facts(&db).await?, facts_before);
         for original in originals {
-            let stored = conversation::read_item(&db, &original.header.item_id)
+            let stored = db
+                .query_one_raw(statement(
+                    "SELECT seq,metadata,payload FROM conversation_items WHERE item_id=?",
+                    vec![original.header.item_id.clone().into()],
+                ))
                 .await?
                 .context("original completion")?;
-            assert_eq!(stored.header, original.header);
-            assert_eq!(stored.payload, original.payload);
-            assert_eq!(stored.contents, original.contents);
+            assert_eq!(
+                stored.try_get::<i64>("", "seq")?,
+                integer(original.header.append_seq)?
+            );
+            assert_eq!(
+                stored.try_get::<Vec<u8>>("", "metadata")?,
+                original.header.metadata.as_ref()
+            );
+            assert_eq!(
+                stored.try_get::<Vec<u8>>("", "payload")?,
+                original.payload.as_ref()
+            );
+            assert_eq!(
+                conversation::read_contents(&db, &original.header.item_id).await?,
+                *original.contents
+            );
         }
         let head = timeline::read_state(&db).await?.context("rebuilt head")?;
         assert_ne!(head.generation, old_head);
-        let generation = head.generation;
         db.close().await?;
         let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(
-            timeline::read_state(&db).await?.unwrap().generation,
-            generation
-        );
+        // Later published source/tail steps may rotate their generation before archiving.
+        let generation = timeline::archived_generation(&db).await?;
+        assert!(!generation.is_empty());
+        db.close().await?;
+        let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
+        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        assert_eq!(timeline::archived_generation(&db).await?, generation);
         db.close().await?;
         Ok(())
     }

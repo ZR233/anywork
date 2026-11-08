@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 pub struct Reads {
     pub pages: Mutex<Vec<ChatHistoryRequest>>,
     pub afters: Mutex<Vec<ChatHistoryRequest>>,
+    pub item_envelopes: Mutex<Vec<ChatHistoryItemRequest>>,
     pub item: AtomicUsize,
     pub payload_bytes: AtomicUsize,
     pub ranges: Mutex<Vec<ContentReadRequest>>,
@@ -29,6 +30,7 @@ pub struct Stored {
     pub reads: Arc<Reads>,
     pub fail_page: Arc<AtomicBool>,
     pub fail_validation: Arc<AtomicBool>,
+    pub fail_read_item: Arc<AtomicBool>,
 }
 impl Stored {
     pub fn with(records: impl IntoIterator<Item = ChatItem>) -> Self {
@@ -89,7 +91,16 @@ impl Stored {
         let mut remaining = request.demand;
         let mut items = Vec::new();
         let mut exhausted = true;
+        let heads = descending
+            && request
+                .query
+                .as_ref()
+                .is_some_and(|query| query.selection == ChatSelection::RunHeads);
+        let mut upper = request.ceiling;
         for record in iter {
+            if heads && record.header.append_seq > upper {
+                continue;
+            }
             if remaining.max_items == 0 || remaining.max_bytes == 0 {
                 exhausted = false;
                 break;
@@ -116,6 +127,9 @@ impl Stored {
                 header: record.header.clone(),
                 payload,
             });
+            if heads {
+                upper = record.header.run.unwrap().start_seq - 1;
+            }
         }
         if descending {
             items.reverse();
@@ -125,13 +139,18 @@ impl Stored {
 }
 
 impl ChatHistory for Stored {
-    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
-        Ok(self
-            .map
-            .lock()
-            .unwrap()
-            .last_key_value()
-            .map_or(0, |(seq, _)| *seq))
+    async fn publication_seed(&self) -> Result<ChatPublicationSeed, ChatError> {
+        let map = self.map.lock().unwrap();
+        Ok(ChatPublicationSeed {
+            head_seq: map.last_key_value().map_or(0, |(seq, _)| *seq),
+            last_visible: map.values().rev().find_map(|record| {
+                record.header.run.map(|position| ChatRunSeed {
+                    seq: record.header.append_seq,
+                    hint: record.header.read_hint.clone(),
+                    position,
+                })
+            }),
+        })
     }
     async fn page(
         &self,
@@ -148,6 +167,46 @@ impl ChatHistory for Stored {
     ) -> Result<ChatHistoryPage, ChatError> {
         self.reads.afters.lock().unwrap().push(request.clone());
         self.select(request, budget, false)
+    }
+    async fn read_item(
+        &self,
+        request: &ChatHistoryItemRequest,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ChatPageItem>, ChatError> {
+        self.reads
+            .item_envelopes
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        if self.fail_read_item.swap(false, Ordering::SeqCst) {
+            return Err(ChatError::History(Box::new(std::io::Error::other(
+                "controlled envelope read failure",
+            ))));
+        }
+        let map = self.map.lock().unwrap();
+        let Some(record) = map.values().find(|record| {
+            record.header.item_id == request.item_id && record.header.append_seq <= request.ceiling
+        }) else {
+            return Ok(None);
+        };
+        let mode = select_payload(&record.header, request.demand.max_bytes, budget)
+            .ok_or_else(|| ChatError::InvalidDemand("item envelope exceeds demand".into()))?;
+        let payload = match mode {
+            PayloadMode::Inline => {
+                self.reads
+                    .payload_bytes
+                    .fetch_add(record.payload.len(), Ordering::SeqCst);
+                PayloadData::Inline(record.payload.clone())
+            }
+            PayloadMode::Deferred => PayloadData::Deferred {
+                item_id: record.header.item_id.clone(),
+                byte_length: record.header.byte_length,
+            },
+        };
+        Ok(Some(ChatPageItem {
+            header: record.header.clone(),
+            payload,
+        }))
     }
     async fn item(&self, id: &str) -> Result<Option<ChatItem>, ChatError> {
         self.reads.item.fetch_add(1, Ordering::SeqCst);
@@ -290,6 +349,7 @@ pub struct GatedHistory {
     pub inner: Stored,
     pub page_gate: Option<Arc<HistoryGate>>,
     pub after_gate: Option<Arc<HistoryGate>>,
+    pub read_item_gate: Option<Arc<HistoryGate>>,
     pub content_gate: Option<Arc<HistoryGate>>,
     pub captured_item_gate: Option<Arc<HistoryGate>>,
     pub captured_validation_gate: Option<Arc<HistoryGate>>,
@@ -302,6 +362,7 @@ impl GatedHistory {
             inner,
             page_gate: None,
             after_gate: None,
+            read_item_gate: None,
             content_gate: None,
             captured_item_gate: None,
             captured_validation_gate: None,
@@ -311,8 +372,8 @@ impl GatedHistory {
     }
 }
 impl ChatHistory for GatedHistory {
-    async fn latest_append_seq(&self) -> Result<u64, ChatError> {
-        self.inner.latest_append_seq().await
+    async fn publication_seed(&self) -> Result<ChatPublicationSeed, ChatError> {
+        self.inner.publication_seed().await
     }
     async fn page(
         &self,
@@ -333,6 +394,16 @@ impl ChatHistory for GatedHistory {
             gate.pause().await;
         }
         self.inner.page_after(request, budget).await
+    }
+    async fn read_item(
+        &self,
+        request: &ChatHistoryItemRequest,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ChatPageItem>, ChatError> {
+        if let Some(gate) = &self.read_item_gate {
+            gate.pause().await;
+        }
+        self.inner.read_item(request, budget).await
     }
     async fn item(&self, id: &str) -> Result<Option<ChatItem>, ChatError> {
         let item = self.inner.item(id).await?;
@@ -413,7 +484,7 @@ pub fn record(seq: u64, text: &str) -> ChatItem {
     record_identified(&format!("item-{seq}"), seq, text)
 }
 pub fn record_identified(id: &str, seq: u64, text: &str) -> ChatItem {
-    ChatItem::complete(draft(id, text), seq)
+    ChatItem::complete(draft(id, text), seq, None)
 }
 pub fn sequences(items: &[ChatPageItem]) -> Vec<u64> {
     items.iter().map(|item| item.header.append_seq).collect()

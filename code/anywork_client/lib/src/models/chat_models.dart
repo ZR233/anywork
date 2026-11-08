@@ -1,14 +1,11 @@
 import 'dart:typed_data';
 
 import 'runtime_models.dart';
-import 'thread_activity_models.dart';
-import 'thread_directory_models.dart';
 import 'thread_models.dart' show ThreadTextChannel;
 import 'thread_wait_models.dart';
-import 'turn_models.dart';
 
 part 'chat_atom_models.dart';
-part 'timeline_item_models.dart';
+part 'completed_models.dart';
 
 /// The caller's item and encoded-byte demand, mechanically mapped to the Rust protocol.
 final class ReadDemand {
@@ -32,10 +29,10 @@ final class ChildrenChatScope extends ChatScope {
   final String parentId;
 }
 
-final class GroupMembersChatScope extends ChatScope {
-  const GroupMembersChatScope({required this.reference});
+final class RunChatScope extends ChatScope {
+  const RunChatScope({required this.reference});
 
-  final TimelineMembersRef reference;
+  final CompletionRunRef reference;
 }
 
 sealed class PayloadData {
@@ -56,32 +53,23 @@ final class DeferredPayload extends PayloadData {
   final int byteLength;
 }
 
-enum ChatPlacement { set, prepend, append, update }
+enum ChatPlacement { set, prepend, append }
 
-/// The sole message delivery model. Null current means retain the previous current snapshot.
+/// Immutable completion envelopes in producer order; no presentation grouping.
 final class ChatBatch {
   ChatBatch({
     required this.placement,
-    required List<ChatEntry> entries,
+    required List<CompletedEntry> entries,
     this.before,
-    this.current,
+    this.fromSeq,
+    required this.throughSeq,
   }) : entries = List.unmodifiable(entries);
 
   final ChatPlacement placement;
-  final List<ChatEntry> entries;
+  final List<CompletedEntry> entries;
   final String? before;
-  final CurrentProjection? current;
-
-  Iterable<TimelineItem> get items {
-    if (entries.any((entry) => entry is! ItemChatEntry)) {
-      throw StateError('Display item access requires an Item-only chat batch');
-    }
-    return entries.cast<ItemChatEntry>().map((entry) => entry.item);
-  }
-
-  /// Only member/Children windows carry atoms; Main carries display items.
-  Iterable<ChatAtom> get atoms =>
-      entries.whereType<ChatAtomEntry>().map((entry) => entry.atom);
+  final int? fromSeq;
+  final int throughSeq;
 }
 
 final class ContentRef {
@@ -89,6 +77,13 @@ final class ContentRef {
 
   final String databaseId;
   final ContentTarget target;
+  @override
+  bool operator ==(Object other) =>
+      other is ContentRef &&
+      databaseId == other.databaseId &&
+      target == other.target;
+  @override
+  int get hashCode => Object.hash(databaseId, target);
 }
 
 sealed class ContentTarget {
@@ -99,6 +94,11 @@ final class ItemPayloadTarget extends ContentTarget {
   const ItemPayloadTarget({required this.itemId});
 
   final String itemId;
+  @override
+  bool operator ==(Object other) =>
+      other is ItemPayloadTarget && itemId == other.itemId;
+  @override
+  int get hashCode => Object.hash(ItemPayloadTarget, itemId);
 }
 
 final class BodyContentTarget extends ContentTarget {
@@ -106,6 +106,11 @@ final class BodyContentTarget extends ContentTarget {
 
   final ContentOwner owner;
   final String key;
+  @override
+  bool operator ==(Object other) =>
+      other is BodyContentTarget && owner == other.owner && key == other.key;
+  @override
+  int get hashCode => Object.hash(BodyContentTarget, owner, key);
 }
 
 sealed class ContentOwner {
@@ -116,6 +121,11 @@ final class ItemContentOwner extends ContentOwner {
   const ItemContentOwner({required this.itemId});
 
   final String itemId;
+  @override
+  bool operator ==(Object other) =>
+      other is ItemContentOwner && itemId == other.itemId;
+  @override
+  int get hashCode => Object.hash(ItemContentOwner, itemId);
 }
 
 final class CurrentContentOwner extends ContentOwner {
@@ -128,6 +138,14 @@ final class CurrentContentOwner extends ContentOwner {
   final String domain;
   final String id;
   final int revision;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentContentOwner &&
+      domain == other.domain &&
+      id == other.id &&
+      revision == other.revision;
+  @override
+  int get hashCode => Object.hash(CurrentContentOwner, domain, id, revision);
 }
 
 final class ContentRange {
@@ -175,81 +193,6 @@ final class ContentManifestPage {
   final String? continuation;
 }
 
-final class CurrentProjection {
-  CurrentProjection({
-    required this.sourceEffectSeq,
-    required this.logicalStatus,
-    required this.executionPresent,
-    this.active,
-    this.activeTurn,
-    required List<ChatSourceState> sources,
-    required List<TimelineItem> items,
-    required List<ChatAtom> atoms,
-    this.plan,
-    this.interactions,
-    required List<CurrentContentPreview> previews,
-    required List<CurrentCollectionRef> collections,
-  }) : sources = List.unmodifiable(sources),
-       items = List.unmodifiable(items),
-       atoms = List.unmodifiable(atoms),
-       previews = List.unmodifiable(previews),
-       collections = List.unmodifiable(collections);
-
-  final int sourceEffectSeq;
-  final ThreadStatusView logicalStatus;
-  final bool executionPresent;
-  final CurrentActivityHead? active;
-  final CurrentTurnHead? activeTurn;
-  final List<ChatSourceState> sources;
-  final List<TimelineItem> items;
-  final List<ChatAtom> atoms;
-  final CurrentPlanHead? plan;
-  final CurrentCollectionRef? interactions;
-  final List<CurrentContentPreview> previews;
-  final List<CurrentCollectionRef> collections;
-}
-
-final class CurrentActivityHead {
-  const CurrentActivityHead({
-    required this.id,
-    required this.kind,
-    required this.summary,
-    this.thinkingSummary,
-    this.thinkingSeconds,
-    required this.toolCount,
-    required this.backgroundToolCount,
-    this.latestTool,
-  });
-
-  final String id;
-  final ThreadActivityKind kind;
-  final String summary;
-  final String? thinkingSummary;
-  final int? thinkingSeconds;
-  final int toolCount;
-  final int backgroundToolCount;
-  final CurrentToolHead? latestTool;
-}
-
-final class CurrentToolHead {
-  const CurrentToolHead({
-    required this.callId,
-    required this.name,
-    required this.state,
-  });
-
-  final String callId;
-  final String name;
-  final ThreadActivityToolState state;
-}
-
-final class CurrentTurnHead {
-  const CurrentTurnHead({required this.id, required this.phase});
-
-  final String id;
-  final StudioTurnActivity phase;
-}
-
 final class CurrentPlanHead {
   const CurrentPlanHead({
     required this.revision,
@@ -260,6 +203,14 @@ final class CurrentPlanHead {
   final int revision;
   final PlanRuntimePhase phase;
   final ContentRef? document;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentPlanHead &&
+      revision == other.revision &&
+      phase == other.phase &&
+      document == other.document;
+  @override
+  int get hashCode => Object.hash(revision, phase, document);
 }
 
 final class CurrentCollectionRef {
@@ -272,26 +223,27 @@ final class CurrentCollectionRef {
   final String databaseId;
   final String collection;
   final int revision;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentCollectionRef &&
+      databaseId == other.databaseId &&
+      collection == other.collection &&
+      revision == other.revision;
+  @override
+  int get hashCode => Object.hash(databaseId, collection, revision);
 }
 
-enum CurrentContentRole { reasoning, response, toolArguments, toolOutput }
-
-final class CurrentContentPreview {
-  const CurrentContentPreview({
-    required this.id,
-    required this.role,
-    required this.text,
-    required this.reference,
-    this.textChannel,
-  });
-
-  final String id;
-  final CurrentContentRole role;
-
-  /// Original producer channel, not inferred from the display role or body.
-  final ThreadTextChannel? textChannel;
-  final String text;
-  final ContentRef reference;
+final class ThreadBusinessRefs {
+  const ThreadBusinessRefs({required this.plan, required this.interactions});
+  final CurrentPlanHead? plan;
+  final CurrentCollectionRef? interactions;
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadBusinessRefs &&
+      plan == other.plan &&
+      interactions == other.interactions;
+  @override
+  int get hashCode => Object.hash(plan, interactions);
 }
 
 final class CurrentCollectionEntry {

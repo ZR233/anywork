@@ -1,5 +1,6 @@
 //! Named completion-boundary upgrade. Unique legacy material stays in managed archive tables.
-use super::super::conversation::{self, timeline};
+use super::super::conversation;
+use super::legacy_timeline_store as timeline;
 use super::*;
 #[cfg(test)]
 mod tests;
@@ -45,7 +46,9 @@ impl MigrationTrait for CompletionBoundary {
                 u64::try_from(row.try_get::<i64>("","applied_write_seq")?)?,
             ).await?;
             timeline::complete::validate(db).await?;
-            conversation::completed::cold(db).await?;
+            let head = timeline::read_state(db).await?.context("completion boundary has no recovery cut")?;
+            timeline::complete::restore(db, &row.try_get::<String>("","database_id")?, &head).await?;
+            super::legacy_current::validate_cold_domains(db).await?;
             Ok::<_, anyhow::Error>(())
         }.await.map_err(conversion)
     }
@@ -70,6 +73,11 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == 17,
         "completion boundary requires schema 17"
     );
+    validate_preserved(db).await?;
+    timeline::complete::validate(db).await
+}
+
+pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> {
     super::validate_tables(db).await?;
     for sql in [
         "SELECT seq,item_id,query_class,parent_id,payload,metadata FROM conversation_items LIMIT 0",
@@ -132,7 +140,6 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
     .await?;
     model_route_head::validate_tables(db).await?;
     atom_metadata::validate_tables(db).await?;
-    timeline::complete::validate(db).await?;
     checkpoint::read_model_route_head(db).await?;
     Ok(())
 }
@@ -217,7 +224,7 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
                 let row = db.query_one_raw(statement(
                     "SELECT payload FROM completion_boundary_archive_view_state WHERE singleton_id=1",vec![],
                 )).await?.context("unfinished current has no archived owner")?;
-                let original: pl_protocol::CurrentProjection =
+                let original: super::legacy_timeline_types::CurrentProjection =
                     serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
                 let referenced = super::legacy_current::references(&original).any(|reference| {
                     matches!(&reference.target, ContentTarget::Body {owner: candidate,key: candidate_key}

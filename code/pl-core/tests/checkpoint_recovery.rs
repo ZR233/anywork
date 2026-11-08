@@ -6,11 +6,64 @@ use std::sync::{Arc, Mutex};
 
 use pl_core::context::ContextSource;
 use pl_core::model::DynModelSession;
-use pl_core::thread::{StepInput, ThreadHandle, ToolOutcome, TurnOutcome};
+use pl_core::thread::{
+    StepInput, ThreadCheckpoint, ThreadHandle, ThreadSnapshot, ToolOutcome, TurnOutcome,
+};
 use tokio_util::sync::CancellationToken;
 
 use support::{ScriptedModel, text, turn};
 use tool_support::tool;
+
+#[tokio::test]
+async fn interaction_collection_revision_reopens_from_schema_six_without_guessing_legacy_versions()
+{
+    let checkpoint = ThreadCheckpoint::capture(
+        "interaction-revision".into(),
+        0,
+        ThreadSnapshot {
+            interaction_collection_revision: 41,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(checkpoint.schema_version, 6);
+    let encoded = serde_json::to_value(&checkpoint).unwrap();
+    let decoded: ThreadCheckpoint = serde_json::from_value(encoded.clone()).unwrap();
+    let original =
+        ThreadHandle::resume_without_model("interaction-revision".into(), Some(decoded)).unwrap();
+    assert_eq!(original.snapshot().interaction_collection_revision, 41);
+    let saved = original
+        .checkpoint(original.snapshot().commit_sequence)
+        .unwrap();
+    assert_eq!(
+        saved
+            .pruned()
+            .unwrap()
+            .state
+            .interaction_collection_revision,
+        41
+    );
+    original.close().await.unwrap();
+
+    let mut legacy = encoded;
+    assert_eq!(
+        legacy["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("interactionCollectionRevision"),
+        Some(serde_json::json!(41))
+    );
+    let decoded: ThreadCheckpoint = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.state.interaction_collection_revision, 0);
+    let restored =
+        ThreadHandle::resume_without_model("interaction-revision".into(), Some(decoded)).unwrap();
+    assert_eq!(restored.snapshot().interaction_collection_revision, 0);
+    let saved = restored
+        .checkpoint(restored.snapshot().commit_sequence)
+        .unwrap();
+    assert_eq!(saved.state.interaction_collection_revision, 0);
+    restored.close().await.unwrap();
+}
 
 #[tokio::test]
 async fn a_checkpoint_restores_context_without_replaying_model_work() {

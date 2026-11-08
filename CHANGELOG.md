@@ -9,6 +9,8 @@ anywork release notes are generated from Conventional Commits by Release Please.
 
 ### BREAKING CHANGES
 
+- Native 完成历史改为按真实完成发布序号排列，移除持久工作组、组成员表、展示顺序和组头 Update。主列表按不可变连续段索引读取代表，由 Flutter 显示“工作记录 · N 项”并按需展开；不再等待整组或将迟到结果插回旧组。FRB/HTTP/SDK 同版切换至 `completedHistoryVersion=1`，旧协议明确拒绝。schema17→18 在原事务中保全完成记录及内容原字节、回填两列索引并移除纯展示表；可靠执行、保存、恢复和 ACP 外部边界不变。详见 [#311](https://github.com/ZR233/anywork/issues/311) 与[完成历史契约](design/26-timeline-content.md)。
+- 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
 ## [6.36.0](https://github.com/ZR233/anywork/compare/v6.35.0...v6.36.0) (2026-10-30)

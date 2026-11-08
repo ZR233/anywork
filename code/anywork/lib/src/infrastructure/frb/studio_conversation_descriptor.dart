@@ -1,80 +1,53 @@
 part of 'studio_api.dart';
 
-frb_timeline_types.BridgeTimelineMembersRef _timelineMembersToFrb(
-  TimelineMembersRef value,
-) => frb_timeline_types.BridgeTimelineMembersRef(
+frb_chat_types.BridgeCompletionRunRef _completionRunToFrb(
+  CompletionRunRef value,
+) => frb_chat_types.BridgeCompletionRunRef(
   databaseId: value.databaseId,
-  projectionVersion: value.projectionVersion,
-  projectionGeneration: value.projectionGeneration,
-  itemId: value.itemId,
+  indexVersion: value.indexVersion,
+  startSeq: BigInt.from(value.startSeq),
 );
 
-TimelineItem _timelineItemFromFrb(
-  frb_timeline_types.BridgeTimelineItem value,
-) => TimelineItem(
-  id: value.id,
-  kind: TimelineItemKind.values.byName(value.kind.name),
-  source: _chatSourceFromFrb(value.source),
-  atomKind: value.atomKind == null
+CompletedEntry _completedEntryFromFrb(
+  frb_chat_types.BridgeCompletedEntry value,
+) => CompletedEntry(
+  recordId: value.recordId,
+  completionSeq: _exactTimelineInt(value.completionSeq, 'completion sequence'),
+  run: value.run == null
       ? null
-      : ChatAtomKind.values.byName(value.atomKind!.name),
-  delivery: ChatDeliveryKind.values.byName(value.delivery.name),
-  outcome: value.outcome == null
-      ? null
-      : ChatTerminalOutcome.values.byName(value.outcome!.name),
-  textChannel: value.textChannel == null
-      ? null
-      : ThreadTextChannel.values.byName(value.textChannel!.name),
-  turnId: value.turnId,
-  startedAt: value.startedAt == null
-      ? null
-      : _exactSignedTimelineInt(value.startedAt!),
-  finishedAt: value.finishedAt == null
-      ? null
-      : _exactSignedTimelineInt(value.finishedAt!),
-  summary: value.summary == null
-      ? null
-      : TimelineGroupSummary(
-          latestThinkingSummary: value.summary!.latestThinkingSummary,
-          memberCount: value.summary!.memberCount,
-          activeCount: value.summary!.activeCount,
-          failedCount: value.summary!.failedCount,
-          cancelledCount: value.summary!.cancelledCount,
-          categories: [
-            for (final count in value.summary!.categories)
-              TimelineCategoryCount(
-                category: TimelineCategory.values.byName(count.category.name),
-                count: count.count,
-              ),
-          ],
-          startedAt: value.summary!.startedAt == null
-              ? null
-              : _exactSignedTimelineInt(value.summary!.startedAt!),
-          finishedAt: value.summary!.finishedAt == null
-              ? null
-              : _exactSignedTimelineInt(value.summary!.finishedAt!),
+      : CompletionRunPosition(
+          startSeq: _exactTimelineInt(value.run!.startSeq, 'run start'),
+          ordinal: _exactTimelineInt(value.run!.ordinal, 'run ordinal'),
         ),
-  members: value.members == null
-      ? null
-      : TimelineMembersRef(
-          databaseId: value.members!.databaseId,
-          projectionVersion: value.members!.projectionVersion,
-          projectionGeneration: value.members!.projectionGeneration,
-          itemId: value.members!.itemId,
-        ),
-  contents: [
-    for (final content in value.contents)
-      ChatAtomContent(
-        role: ChatContentRole.values.byName(content.role.name),
-        reference: _contentRefFromFrb(content.reference),
+  mainPresentation: MainPresentation.values.byName(value.mainPresentation.name),
+  atom: _chatAtomFromFrb(value.atom),
+);
+
+ActivitySnapshot _activitySnapshotFromFrb(
+  frb_activity.BridgeActivitySnapshot value,
+) => ActivitySnapshot(
+  revision: _exactTimelineInt(value.revision, 'activity revision'),
+  completedThrough: _exactTimelineInt(
+    value.completedThrough,
+    'activity prefix',
+  ),
+  executionPresent: value.executionPresent,
+  entries: [
+    for (final entry in value.entries)
+      ActivityEntry(
+        identity: switch (entry.identity) {
+          frb_activity.BridgeActivityIdentity_ModelPart(:final atomId) =>
+            ModelPartActivityIdentity(atomId: atomId),
+          frb_activity.BridgeActivityIdentity_ForegroundTool(:final callId) =>
+            ForegroundToolActivityIdentity(callId: callId),
+          frb_activity.BridgeActivityIdentity_BackgroundTool(:final callId) =>
+            BackgroundToolActivityIdentity(callId: callId),
+          frb_activity.BridgeActivityIdentity_Other(:final domain, :final id) =>
+            OtherActivityIdentity(domain: domain, id: id),
+        },
+        atom: _chatAtomFromFrb(entry.atom),
       ),
   ],
-  payload: value.payload == null ? null : _payloadFromFrb(value.payload!),
-  contentItemId: value.contentItemId,
-  position: value.position == null
-      ? null
-      : _exactTimelineInt(value.position!, 'item position'),
-  admissionClosed: value.admissionClosed,
 );
 
 frb_chat_types.BridgeReadDemand _readDemandToFrb(ReadDemand value) =>
@@ -88,11 +61,11 @@ ChatBatch _chatBatchFromFrb(frb_chat_types.BridgeChatBatch value) => ChatBatch(
     frb_chat_types.BridgeChatPlacement.set_ => ChatPlacement.set,
     frb_chat_types.BridgeChatPlacement.prepend => ChatPlacement.prepend,
     frb_chat_types.BridgeChatPlacement.append => ChatPlacement.append,
-    frb_chat_types.BridgeChatPlacement.update => ChatPlacement.update,
   },
-  entries: value.entries.map(_chatEntryFromFrb).toList(),
+  entries: value.entries.map(_completedEntryFromFrb).toList(),
   before: value.before,
-  current: value.current == null ? null : _currentFromFrb(value.current!),
+  fromSeq: _exactNullableTimelineInt(value.fromSeq, 'completion prefix'),
+  throughSeq: _exactTimelineInt(value.throughSeq, 'completion prefix'),
 );
 
 ChatSourceId _chatSourceFromFrb(frb_chat_types.BridgeChatSourceId value) =>
@@ -101,6 +74,11 @@ ChatSourceId _chatSourceFromFrb(frb_chat_types.BridgeChatSourceId value) =>
         ForegroundTurnChatSource(turnId: turnId),
       frb_chat_types.BridgeChatSourceId_Input(:final inputId) =>
         InputChatSource(inputId: inputId),
+      frb_chat_types.BridgeChatSourceId_InboxMessage(
+        :final sourceId,
+        :final messageId,
+      ) =>
+        InboxMessageChatSource(sourceId: sourceId, messageId: messageId),
       frb_chat_types.BridgeChatSourceId_BackgroundResult(:final messageId) =>
         BackgroundResultChatSource(messageId: messageId),
       frb_chat_types.BridgeChatSourceId_Operation(:final operationId) =>
@@ -114,18 +92,6 @@ ChatFactPosition _chatPositionFromFrb(
   effectSeq: _exactTimelineInt(value.effectSeq, 'effect sequence'),
   suborder: value.suborder,
 );
-ChatEntry _chatEntryFromFrb(frb_chat_types.BridgeChatEntry value) =>
-    switch (value) {
-      frb_chat_types.BridgeChatEntry_Item(:final field0) => ItemChatEntry(
-        _timelineItemFromFrb(field0),
-      ),
-      frb_chat_types.BridgeChatEntry_Atom(:final field0) => ChatAtomEntry(
-        _chatAtomFromFrb(field0),
-      ),
-      frb_chat_types.BridgeChatEntry_Source(:final field0) => ChatSourceEntry(
-        _chatSourceStateFromFrb(field0),
-      ),
-    };
 ChatSourceState _chatSourceStateFromFrb(
   frb_chat_types.BridgeChatSourceState value,
 ) => ChatSourceState(
@@ -282,71 +248,24 @@ frb_chat_types.BridgeCurrentCollectionRef _collectionToFrb(
   revision: BigInt.from(value.revision),
 );
 
-CurrentProjection _currentFromFrb(
-  frb_chat_types.BridgeCurrentProjection value,
-) => CurrentProjection(
-  sourceEffectSeq: _exactTimelineInt(value.sourceEffectSeq, 'source effect'),
-  logicalStatus: ThreadStatusView.values.byName(value.logicalStatus.name),
-  executionPresent: value.executionPresent,
-  sources: value.sources.map(_chatSourceStateFromFrb).toList(),
-  items: value.items.map(_timelineItemFromFrb).toList(),
-  atoms: value.atoms.map(_chatAtomFromFrb).toList(),
-  active: value.active == null ? null : _currentActivityFromFrb(value.active!),
-  activeTurn: value.activeTurn == null
-      ? null
-      : CurrentTurnHead(
-          id: value.activeTurn!.id,
-          phase: StudioTurnActivity.values.byName(value.activeTurn!.phase.name),
-        ),
-  plan: value.plan == null
-      ? null
-      : CurrentPlanHead(
-          revision: _exactTimelineInt(value.plan!.revision, 'plan revision'),
-          phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
-          document: value.plan!.document == null
-              ? null
-              : _contentRefFromFrb(value.plan!.document!),
-        ),
-  interactions: value.interactions == null
-      ? null
-      : _collectionFromFrb(value.interactions!),
-  previews: value.previews
-      .map(
-        (preview) => CurrentContentPreview(
-          id: preview.id,
-          role: CurrentContentRole.values.byName(preview.role.name),
-          textChannel: preview.textChannel == null
-              ? null
-              : ThreadTextChannel.values.byName(preview.textChannel!.name),
-          text: preview.text,
-          reference: _contentRefFromFrb(preview.reference),
-        ),
-      )
-      .toList(),
-  collections: value.collections.map(_collectionFromFrb).toList(),
-);
-
-CurrentActivityHead _currentActivityFromFrb(
-  frb_chat_types.BridgeCurrentActivityHead value,
-) => CurrentActivityHead(
-  id: value.id,
-  kind: ThreadActivityKind.values.byName(value.kind.name),
-  summary: value.summary,
-  thinkingSummary: value.thinkingSummary,
-  thinkingSeconds: _exactNullableTimelineInt(
-    value.thinkingSeconds,
-    'thinking seconds',
-  ),
-  toolCount: value.toolCount,
-  backgroundToolCount: value.backgroundToolCount,
-  latestTool: value.latestTool == null
-      ? null
-      : CurrentToolHead(
-          callId: value.latestTool!.callId,
-          name: value.latestTool!.name,
-          state: _activityToolStateFromFrb(value.latestTool!.state),
-        ),
-);
+ThreadBusinessRefs _businessRefsFromFrb(frb.BridgeThreadBusinessRefs value) =>
+    ThreadBusinessRefs(
+      plan: value.plan == null
+          ? null
+          : CurrentPlanHead(
+              revision: _exactTimelineInt(
+                value.plan!.revision,
+                'plan revision',
+              ),
+              phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
+              document: value.plan!.document == null
+                  ? null
+                  : _contentRefFromFrb(value.plan!.document!),
+            ),
+      interactions: value.interactions == null
+          ? null
+          : _collectionFromFrb(value.interactions!),
+    );
 
 ContentWindow _contentWindowFromFrb(frb_chat_types.BridgeContentWindow value) =>
     ContentWindow(
@@ -369,6 +288,30 @@ final class _FrbConversationReader implements ConversationReader {
   String get threadId => _feed.threadId;
   void _checkOpen() {
     if (_feed._admissionsClosed) throw _conversationClosedFailure;
+  }
+
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _businessRefsFromFrb(await _feed._native.readBusinessRefs()),
+    );
+  }
+
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) async {
+    _checkOpen();
+    return FrbStudioTransport._bridgeCall(
+      () async => _completedEntryFromFrb(
+        await _feed._native.readCompleted(
+          recordId: recordId,
+          demand: _readDemandToFrb(demand),
+        ),
+      ),
+    );
   }
 
   @override

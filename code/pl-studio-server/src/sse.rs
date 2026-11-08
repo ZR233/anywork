@@ -233,43 +233,57 @@ pub(crate) struct ConversationQuery {
     max_items: u32,
     max_bytes: u32,
     parent_id: Option<String>,
-    members_database_id: Option<String>,
-    members_projection_version: Option<u32>,
-    members_projection_generation: Option<String>,
-    members_item_id: Option<String>,
+    run_database_id: Option<String>,
+    run_index_version: Option<u32>,
+    run_start_seq: Option<u64>,
 }
 
 impl ConversationQuery {
     fn scope_demand(self) -> Result<(pl_protocol::ChatScope, pl_protocol::ReadDemand), ApiError> {
         let scope = match (
             self.parent_id,
-            self.members_database_id,
-            self.members_projection_version,
-            self.members_projection_generation,
-            self.members_item_id,
+            self.run_database_id,
+            self.run_index_version,
+            self.run_start_seq,
         ) {
-            (None, None, None, None, None) => pl_protocol::ChatScope::Main,
-            (Some(parent_id), None, None, None, None) => {
-                pl_protocol::ChatScope::Children { parent_id }
+            (None, None, None, None) => pl_protocol::ChatScope::Main,
+            (Some(parent_id), None, None, None) => pl_protocol::ChatScope::Children { parent_id },
+            (None, Some(database_id), Some(index_version), Some(start_seq)) => {
+                if index_version != pl_protocol::COMPLETED_READ_INDEX_VERSION {
+                    return Err(ApiError(
+                        pl_protocol::studio::StudioError::new(
+                            pl_protocol::studio::StudioErrorCode::Protocol,
+                            "Unsupported completion run index version",
+                            false,
+                        )
+                        .with_reason(
+                            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+                            serde_json::json!({
+                                "expected": pl_protocol::COMPLETED_READ_INDEX_VERSION,
+                                "actual": index_version,
+                            }),
+                        ),
+                    ));
+                }
+                if database_id.is_empty() || start_seq == 0 || start_seq > i64::MAX as u64 {
+                    return Err(ApiError(
+                        pl_protocol::studio::StudioError::invalid_argument(
+                            "A completion run reference requires a database ID and positive start sequence",
+                        ),
+                    ));
+                }
+                pl_protocol::ChatScope::Run {
+                    reference: pl_protocol::CompletionRunRef {
+                        database_id,
+                        index_version,
+                        start_seq,
+                    },
+                }
             }
-            (
-                None,
-                Some(database_id),
-                Some(projection_version),
-                Some(projection_generation),
-                Some(item_id),
-            ) if !projection_generation.trim().is_empty() => pl_protocol::ChatScope::GroupMembers {
-                reference: pl_protocol::TimelineMembersRef {
-                    database_id,
-                    projection_version,
-                    projection_generation,
-                    item_id,
-                },
-            },
             _ => {
                 return Err(ApiError(pl_protocol::studio::StudioError::new(
                     pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                    "Use Main, a real parentId, or a complete Timeline members reference, never mixed scopes",
+                    "Use Main, a real parentId, or a complete completion run reference, never mixed scopes",
                     false,
                 )));
             }
@@ -291,11 +305,10 @@ impl ConversationQuery {
         ("thread_id" = String, Path, description = "Thread ID"),
         ("maxItems" = u32, Query, description = "Requested bounded item count"),
         ("maxBytes" = u32, Query, description = "Requested encoded byte budget"),
-        ("parentId" = Option<String>, Query, description = "Real business Children parent; cannot be combined with members fields"),
-        ("membersDatabaseId" = Option<String>, Query, description = "GroupMembers reference databaseId; all four members fields are required together"),
-        ("membersProjectionVersion" = Option<u32>, Query, description = "GroupMembers reference projectionVersion"),
-        ("membersProjectionGeneration" = Option<String>, Query, description = "GroupMembers opaque nonempty projectionGeneration; never defaulted or parsed"),
-        ("membersItemId" = Option<String>, Query, description = "GroupMembers reference itemId; omit all scope fields for Main display items")
+        ("parentId" = Option<String>, Query, description = "Real business Children parent; cannot be combined with run fields"),
+        ("runDatabaseId" = Option<String>, Query, description = "Completion run databaseId; all run fields are required together"),
+        ("runIndexVersion" = Option<u32>, Query, description = "Completion run indexVersion (currently 1)"),
+        ("runStartSeq" = Option<u64>, Query, description = "Completion run startSeq")
     ),
     responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream",
         headers(("X-Anywork-Conversation" = String, description = "Original feed read capability"))))
@@ -429,7 +442,7 @@ fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::E
     match event {
         ConversationEvent::State { update } => {
             let (name, id) = match &**update {
-                ThreadSubscriptionUpdate::Snapshot { snapshot } => {
+                ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
                     ("snapshot", format!("thread:{}", snapshot.revision))
                 }
                 ThreadSubscriptionUpdate::Notification { notification } => (
@@ -444,6 +457,7 @@ fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::E
             encode_event(name, Some(&id), update)
         }
         ConversationEvent::Chat { batch } => encode_event("chat", None, batch),
+        ConversationEvent::Activity { snapshot } => encode_event("activity", None, snapshot),
     }
 }
 

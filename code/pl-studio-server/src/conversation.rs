@@ -7,8 +7,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use pl_protocol::{
-    ChatBatch, ContentManifestPage, ContentRange, ContentRef, ContentWindow, CurrentCollectionPage,
-    CurrentCollectionRef, ReadDemand,
+    ChatBatch, CompletedEntry, ContentManifestPage, ContentRange, ContentRef, ContentWindow,
+    CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 use pl_studio_runtime::ConversationReader;
@@ -145,6 +145,13 @@ pub(crate) struct OlderRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CompletedRequest {
+    pub record_id: String,
+    pub demand: ReadDemand,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManifestRequest {
     pub item_id: String,
     pub continuation: Option<String>,
@@ -185,6 +192,29 @@ pub(crate) async fn older(
             .owner
             .reader
             .load_older(&request.before, request.demand)
+            .await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/chat/completed",
+    operation_id = "thread.readCompleted",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = CompletedRequest,
+    responses(StudioApiErrors, (status = 200, body = CompletedEntry)))]
+pub(crate) async fn completed(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CompletedRequest>,
+) -> Result<Json<CompletedEntry>, ApiError> {
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    Ok(Json(
+        lease
+            .owner
+            .reader
+            .read_completed(&request.record_id, request.demand)
             .await?,
     ))
 }

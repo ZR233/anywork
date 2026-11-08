@@ -77,8 +77,7 @@ enum _DemoPlanDecisionKind { approved, revisionRequested }
 
 typedef _DemoContent = ({
   _DemoContentKind kind,
-  TimelineItemKind itemKind,
-  TimelineCategory? category,
+  MainPresentation mainPresentation,
   bool? contentPresent,
   ThreadTextChannel? textChannel,
   Map<String, Object?>? descriptor,
@@ -133,8 +132,7 @@ _DemoContent _demoText({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.text,
-    itemKind: TimelineItemKind.text,
-    category: null,
+    mainPresentation: MainPresentation.single,
     contentPresent: text.isNotEmpty || attachments.isNotEmpty,
     textChannel: channel,
     descriptor: outcome == null
@@ -171,8 +169,7 @@ _DemoContent _demoThinking({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.thinking,
-    itemKind: TimelineItemKind.workGroup,
-    category: TimelineCategory.thinking,
+    mainPresentation: MainPresentation.foregroundWork,
     contentPresent: null,
     textChannel: null,
     descriptor: outcome == null
@@ -204,8 +201,7 @@ _DemoContent _demoTool({
   String? result,
 }) => (
   kind: _DemoContentKind.tool,
-  itemKind: TimelineItemKind.workGroup,
-  category: TimelineCategory.other,
+  mainPresentation: MainPresentation.foregroundWork,
   contentPresent: null,
   textChannel: null,
   descriptor: outcome == null
@@ -294,8 +290,7 @@ _DemoContent _demoTurn(StudioTurnState state, {String? inputId}) {
   }
   return (
     kind: _DemoContentKind.completed,
-    itemKind: TimelineItemKind.status,
-    category: null,
+    mainPresentation: MainPresentation.single,
     contentPresent: null,
     textChannel: null,
     descriptor: {
@@ -321,8 +316,7 @@ _DemoItem _demoPlanCompletion(
   updatedAt: completedAt,
   content: (
     kind: _DemoContentKind.completed,
-    itemKind: TimelineItemKind.status,
-    category: null,
+    mainPresentation: MainPresentation.single,
     contentPresent: null,
     textChannel: null,
     descriptor: {
@@ -417,8 +411,8 @@ void _demoDemand(ReadDemand d) {
 
 String _demoScopeKey(ChatScope scope) => switch (scope) {
   MainChatScope() => 'main',
-  GroupMembersChatScope(:final reference) =>
-    'group:${reference.databaseId}:${reference.projectionVersion}:${reference.projectionGeneration}:${reference.itemId}',
+  RunChatScope(:final reference) =>
+    'run:${reference.databaseId}:${reference.indexVersion}:${reference.startSeq}',
   ChildrenChatScope(:final parentId) => 'children:$parentId',
 };
 ChatAtom _demoCopy(
@@ -539,28 +533,29 @@ final class _DemoHistory {
   // Demo scripts explicitly assign one display slot per scripted event. Thinking
   // and tool fixtures each have exactly one member; this is not the production
   // grouping algorithm and never merges adjacent atoms or scans a Turn.
-  final List<TimelineItem> displayItems = [];
-  final Map<String, TimelineItem> liveDisplay = {};
-  final Map<String, String> fixtureMembers = {};
+  final List<CompletedEntry> displayItems = [];
+  final Map<String, CompletedEntry> completed = {};
+  final String epoch = newStudioCorrelationId();
   final Map<String, ChatAtom> activeAtoms = {};
   final Map<ChatSourceId, ChatSourceState> sourceStates = {};
   final Map<ChatSourceId, int> _sourceOrders = {};
   int _facts = 0;
   ChatFactPosition _fact() =>
       ChatFactPosition(effectSeq: ++_facts, suborder: 0);
-  List<ChatEntry> entries(
-    Iterable<ChatAtom> atoms, {
-    Map<ChatSourceId, ChatSourceState>? states,
-  }) {
-    final cut = states ?? sourceStates;
-    return [
-      for (final atom in atoms)
-        ChatAtomEntry(_demoCopy(atom, sourceState: cut[atom.source])),
-    ];
-  }
-
-  final String epoch = 'demo-chat:${newStudioCorrelationId()}';
-  final String projectionGeneration = 'demo-timeline-fixture-generation:1';
+  List<CompletedEntry> entries(Iterable<ChatAtom> atoms) => [
+    for (final atom in atoms)
+      CompletedEntry(
+        recordId: atom.completionItemId ?? atom.id,
+        completionSeq: atom.completionSeq!,
+        run:
+            completed[atom.completionItemId ?? atom.id]?.run ??
+            CompletionRunPosition(startSeq: atom.completionSeq!, ordinal: 1),
+        mainPresentation:
+            completed[atom.completionItemId ?? atom.id]?.mainPresentation ??
+            MainPresentation.single,
+        atom: atom,
+      ),
+  ];
   final List<_DemoFrozen> items = [];
   final Map<String, _DemoFrozen> byId = {};
   final Map<String, List<_DemoFrozen>> _indices = {};
@@ -571,17 +566,30 @@ final class _DemoHistory {
   int _nextPosition = 0;
   _DemoBody? planDocument;
   int? planRevision;
+  int interactionRevision = 0;
+  String? _interactionSignature;
   final Set<void Function()> changes = {};
   int revision = 0;
-  int get head => items.length;
+  int get head => items.lastOrNull?.order ?? 0;
   void prepareCurrent(ThreadWorkspace workspace) {
     final plan = workspace.runtime.plan;
     if (plan?.document == null) {
       planDocument = null;
     } else if (planRevision != plan!.revision) {
-      planDocument = _DemoBody()..update(plan.document!.markdown);
+      planDocument = _DemoBody()
+        ..update(plan.document!.markdown)
+        ..sealed = true;
     }
     planRevision = plan?.revision;
+    final signature = jsonEncode([
+      for (final value in workspace.interactions)
+        [value.id, value.revision, value.title, value.body],
+    ]);
+    if (signature != _interactionSignature) {
+      _interactionSignature = signature;
+      interactionRevision++;
+      currentBodies.clear();
+    }
     for (final interaction in workspace.interactions) {
       positions.putIfAbsent((
         'interaction',
@@ -592,7 +600,6 @@ final class _DemoHistory {
 
   void changed(ThreadWorkspace workspace) {
     revision++;
-    currentBodies.clear();
     prepareCurrent(workspace);
     for (final wake in changes.toList()) {
       wake();
@@ -601,76 +608,31 @@ final class _DemoHistory {
 
   List<_DemoFrozen> index(ChatScope scope) =>
       _indices[_demoScopeKey(scope)] ?? const [];
-  TimelineMembersRef membersRef(String itemId) => TimelineMembersRef(
-    databaseId: epoch,
-    projectionVersion: 1,
-    projectionGeneration: projectionGeneration,
-    itemId: itemId,
-  );
-
   void validateScope(ChatScope scope) {
-    if (scope case GroupMembersChatScope(:final reference)) {
-      if (reference.databaseId != epoch ||
-          reference.projectionVersion != 1 ||
-          reference.projectionGeneration != projectionGeneration) {
+    if (scope case RunChatScope(:final reference)) {
+      if (reference.databaseId != epoch || reference.indexVersion != 1) {
         throw _demoStale();
       }
-      if (!fixtureMembers.containsKey(reference.itemId)) throw _demoMissing();
+      if (!completed.values.any(
+        (entry) => entry.run?.startSeq == reference.startSeq,
+      )) {
+        throw _demoMissing();
+      }
     }
   }
 
-  TimelineItem displayFixture(
-    _DemoItem fixture,
-    ChatAtom atom, {
-    int? position,
-  }) {
-    final group = fixture.content.itemKind == TimelineItemKind.workGroup;
-    final itemId = 'demo-item:${fixture.id}';
-    if (group) fixtureMembers[itemId] = atom.id;
-    final terminal = atom.lifecycle is TerminalChatAtom;
-    final outcome = terminal
-        ? (atom.lifecycle as TerminalChatAtom).outcome
-        : null;
-    return TimelineItem(
-      id: itemId,
-      kind: fixture.content.itemKind,
-      source: atom.source,
-      atomKind: group ? null : atom.kind,
-      delivery: atom.delivery,
-      outcome: group ? null : outcome,
-      textChannel: atom.textChannel,
-      turnId: atom.turnId,
-      startedAt: atom.startedAt,
-      finishedAt: atom.finishedAt,
-      summary: !group
-          ? null
-          : TimelineGroupSummary(
-              memberCount: 1,
-              activeCount: terminal ? 0 : 1,
-              failedCount: outcome == ChatTerminalOutcome.failed ? 1 : 0,
-              cancelledCount: outcome == ChatTerminalOutcome.cancelled ? 1 : 0,
-              categories: [
-                TimelineCategoryCount(
-                  category: fixture.content.category!,
-                  count: 1,
-                ),
-              ],
-              startedAt: atom.startedAt,
-              finishedAt: atom.finishedAt,
-            ),
-      members: group ? membersRef(itemId) : null,
-      contents: group ? const [] : atom.contents,
-      payload: group ? null : atom.payload,
-      contentItemId: group ? null : atom.completionItemId,
-      position: position,
-      admissionClosed: terminal,
-    );
-  }
+  // Script fixtures explicitly choose their class and singleton Run. Demo does
+  // not implement Native's grouping/classification algorithm.
+  CompletedEntry displayFixture(_DemoItem fixture, ChatAtom atom) =>
+      CompletedEntry(
+        recordId: atom.completionItemId!,
+        completionSeq: atom.completionSeq!,
+        run: CompletionRunPosition(startSeq: atom.completionSeq!, ordinal: 1),
+        mainPresentation: fixture.content.mainPresentation,
+        atom: atom,
+      );
 
   bool accept(ChatAtom message, ChatScope scope) {
-    if (scope is MainChatScope) {
-      throw _demoQueryFailure('Main accepts TimelineItem fixtures, not atoms');
-    }
     validateScope(scope);
     if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
     final key = _demoScopeKey(scope);
@@ -705,36 +667,26 @@ final class _DemoHistory {
     return true;
   }
 
-  bool acceptDisplay(TimelineItem item) {
-    if (displayItems.any((existing) => existing.id == item.id)) {
-      throw _demoQueryFailure('Duplicate display fixture identity');
+  bool acceptDisplay(CompletedEntry entry) {
+    if (completed.containsKey(entry.recordId) ||
+        entry.completionSeq <= (displayItems.lastOrNull?.completionSeq ?? 0)) {
+      throw _demoQueryFailure('Duplicate or unordered completion fixture');
     }
-    if (item.position == null ||
-        (displayItems.lastOrNull?.position ?? 0) >= item.position!) {
-      throw _demoQueryFailure('Display fixtures require increasing positions');
+    completed[entry.recordId] = entry;
+    final atom = entry.atom;
+    if (!byId.containsKey(atom.id)) {
+      final record = _DemoFrozen(atom, entry.completionSeq, 'main');
+      items.add(record);
+      byId[atom.id] = record;
     }
-    if (item.kind == TimelineItemKind.workGroup) {
-      final reference = item.members;
-      if (reference == null ||
-          reference.itemId != item.id ||
-          reference.databaseId != epoch ||
-          reference.projectionVersion != 1 ||
-          reference.projectionGeneration != projectionGeneration ||
-          item.summary == null ||
-          item.outcome != null ||
-          item.payload != null ||
-          item.contents.isNotEmpty) {
-        throw _demoQueryFailure('Invalid folded group fixture');
-      }
-      fixtureMembers.putIfAbsent(item.id, () => '');
-    } else if (item.payload case InlinePayload(:final bytes)) {
-      final id = item.contentItemId;
-      if (id == null) throw _demoQueryFailure('Missing fixture content owner');
-      payloads[id] = _DemoBody()
+    if (atom.payload case InlinePayload(:final bytes)) {
+      payloads[entry.recordId] = _DemoBody()
         ..append(bytes)
         ..sealed = true;
     }
-    displayItems.add(item);
+    if (entry.mainPresentation != MainPresentation.hidden) {
+      displayItems.add(entry);
+    }
     return true;
   }
 
@@ -821,11 +773,6 @@ final class _DemoHistory {
             ),
         ],
       );
-      if (activeAtoms[item.id]!.contentPresent != false) {
-        liveDisplay[item.id] = displayFixture(item, activeAtoms[item.id]!);
-      } else {
-        liveDisplay.remove(item.id);
-      }
     }
     positions.putIfAbsent(('member', item.id), () => _nextPosition++);
     final contents = bodies.putIfAbsent(item.id, () => {});
@@ -907,21 +854,10 @@ final class _DemoHistory {
         ),
       ),
     );
-    final display = displayFixture(
-      item,
-      message,
-      position: (displayItems.lastOrNull?.position ?? 0) + 1,
-    );
-    final memberScope = item.content.itemKind == TimelineItemKind.workGroup
-        ? GroupMembersChatScope(reference: display.members!)
-        : ChildrenChatScope(parentId: item.turnId ?? item.id);
+    final memberScope = ChildrenChatScope(parentId: item.turnId ?? item.id);
     if (!accept(message, memberScope)) return;
-    if (memberScope is GroupMembersChatScope && item.turnId != null) {
-      (_indices[_demoScopeKey(ChildrenChatScope(parentId: item.turnId!))] ??=
-              [])
-          .add(byId[item.id]!);
-    }
-    liveDisplay.remove(item.id);
+    final display = displayFixture(item, message);
+    completed[display.recordId] = display;
     if (message.contentPresent != false) displayItems.add(display);
     final ended = <ChatSourceId>[
       if (active.source is! ForegroundTurnChatSource) active.source,
@@ -950,14 +886,12 @@ final class _DemoHistory {
 final class _DemoReader implements ConversationReader {
   _DemoReader(this._api, this.threadId, this._history, this.scope)
     : h0 = _history.head,
-      itemH0 = _history.displayItems.lastOrNull?.position ?? 0,
-      _sourceCut = Map.of(_history.sourceStates);
+      itemH0 = _history.head;
   final DemoStudioTransport _api;
   final _DemoHistory _history;
   final ChatScope scope;
   final int h0;
   final int itemH0;
-  final Map<ChatSourceId, ChatSourceState> _sourceCut;
   @override
   final String threadId;
   final Map<String, (String, int, int)> _cursors = {};
@@ -1015,185 +949,91 @@ final class _DemoReader implements ConversationReader {
     );
   }
 
-  ChatBatch page(
-    ReadDemand demand, {
-    String? before,
-    CurrentProjection? current,
+  CompletedEntry fitEntry(
+    CompletedEntry entry,
+    int budget, {
+    bool main = false,
   }) {
+    final atom = fit(
+      entry.atom,
+      main && entry.mainPresentation != MainPresentation.single ? 0 : budget,
+    );
+    return CompletedEntry(
+      recordId: entry.recordId,
+      completionSeq: entry.completionSeq,
+      run: entry.run,
+      mainPresentation: entry.mainPresentation,
+      atom: atom,
+    );
+  }
+
+  List<CompletedEntry> source() {
+    if (scope is MainChatScope) return _history.displayItems;
+    if (scope case RunChatScope(:final reference)) {
+      return [
+        for (final entry in _history.completed.values)
+          if (entry.run?.startSeq == reference.startSeq) entry,
+      ];
+    }
+    return _history.entries(
+      _history.index(scope).map((record) => record.message),
+    );
+  }
+
+  ChatBatch page(ReadDemand demand, {String? before}) {
     _history.validateScope(scope);
-    if (scope is MainChatScope) {
-      return itemPage(demand, before: before, current: current);
-    }
-    if (scope case GroupMembersChatScope(:final reference)
-        when before == null) {
-      final active =
-          _history.activeAtoms[_history.fixtureMembers[reference.itemId]];
-      if (active != null) {
-        final batch = ChatBatch(
-          placement: ChatPlacement.set,
-          entries: _history.entries([active]),
-        );
-        _demoDemand(demand);
-        if (_demoBatchBytes(batch) > demand.maxBytes) {
-          throw _demoQueryFailure(
-            'InvalidDemand: active member envelope does not fit',
-          );
-        }
-        return batch;
-      }
-    }
     _demoDemand(demand);
-    final cut = h0;
-    final states = _sourceCut;
-    const kind = 'history';
-    final end = before == null ? h0 : boundary(before, kind, cut);
-    final source = _history.index(scope);
-    var low = 0, high = source.length;
-    while (low < high) {
-      final mid = (low + high) ~/ 2;
-      if (source[mid].order < end ||
-          before == null && source[mid].order == end) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-    final selected = <ChatAtom>[];
+    final end = before == null ? h0 + 1 : boundary(before, 'history', h0);
+    final records = source();
+    final selected = <CompletedEntry>[];
     String? next;
-    for (var i = low - 1; i >= 0 && selected.length < demand.maxItems; i--) {
-      final candidate = fit(source[i].message, demand.maxBytes);
-      final staged = [candidate, ...selected];
-      final token = cursor(kind, cut, source[i].order);
-      final trial = ChatBatch(
-        placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-        entries: _history.entries(staged, states: states),
-        before: token,
-        current: current,
-      );
-      if (_demoBatchBytes(trial) > demand.maxBytes) {
-        // Try deferring even a medium payload when the remaining page is smaller.
-        final compact = fit(source[i].message, 0);
-        final smaller = ChatBatch(
-          placement: trial.placement,
-          entries: _history.entries([compact, ...selected], states: states),
-          before: token,
-          current: current,
-        );
-        if (_demoBatchBytes(smaller) > demand.maxBytes) {
-          if (selected.isEmpty) {
-            throw _demoQueryFailure('InvalidDemand: envelope does not fit');
-          }
-          break;
-        }
-        selected.insert(0, compact);
-      } else {
-        selected.insert(0, candidate);
-      }
-      next = token;
-      if (i == 0) next = null;
-    }
-    final batch = ChatBatch(
-      placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-      entries: _history.entries(selected, states: states),
-      before: next,
-      current: current,
-    );
-    if (_demoBatchBytes(batch) > demand.maxBytes) {
-      throw _demoQueryFailure('InvalidDemand: current envelope does not fit');
-    }
-    return batch;
-  }
-
-  TimelineItem fitItem(TimelineItem item, int budget) {
-    final payload = item.payload;
-    if (payload is! InlinePayload ||
-        _demoEncoded(timelineItemToJson(item)) <= budget) {
-      return item;
-    }
-    final owner = item.contentItemId;
-    if (owner == null) throw _demoQueryFailure('Missing display content owner');
-    return TimelineItem(
-      id: item.id,
-      kind: item.kind,
-      source: item.source,
-      atomKind: item.atomKind,
-      delivery: item.delivery,
-      outcome: item.outcome,
-      textChannel: item.textChannel,
-      turnId: item.turnId,
-      startedAt: item.startedAt,
-      finishedAt: item.finishedAt,
-      summary: item.summary,
-      members: item.members,
-      contents: item.contents,
-      payload: DeferredPayload(
-        reference: ContentRef(
-          databaseId: _history.epoch,
-          target: ItemPayloadTarget(itemId: owner),
-        ),
-        byteLength: payload.bytes.length,
-      ),
-      contentItemId: owner,
-      position: item.position,
-      admissionClosed: item.admissionClosed,
-    );
-  }
-
-  ChatBatch itemPage(
-    ReadDemand demand, {
-    String? before,
-    CurrentProjection? current,
-  }) {
-    _demoDemand(demand);
-    final end = before == null ? itemH0 + 1 : boundary(before, 'items', itemH0);
-    final source = _history.displayItems;
-    var low = 0, high = source.length;
-    while (low < high) {
-      final mid = (low + high) ~/ 2;
-      if (source[mid].position! < end) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-    final entries = <ChatEntry>[];
-    String? next;
-    for (var i = low - 1; i >= 0 && entries.length < demand.maxItems; i--) {
+    for (var i = records.length - 1; i >= 0; i--) {
+      final entry = records[i];
+      if (entry.completionSeq >= end) continue;
+      final candidate = fitEntry(entry, 0, main: scope is MainChatScope);
       final token = i == 0
           ? null
-          : cursor('items', itemH0, source[i].position!);
-      var candidate = fitItem(source[i], demand.maxBytes);
-      ChatBatch trial() => ChatBatch(
+          : cursor('history', h0, entry.run?.startSeq ?? entry.completionSeq);
+      final trial = ChatBatch(
         placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-        entries: [ItemChatEntry(candidate), ...entries],
+        entries: [candidate, ...selected],
         before: token,
-        current: current,
+        throughSeq: h0,
       );
-      if (_demoBatchBytes(trial()) > demand.maxBytes) {
-        candidate = fitItem(source[i], 0);
-      }
-      if (_demoBatchBytes(trial()) > demand.maxBytes) {
-        if (entries.isEmpty) {
-          throw _demoQueryFailure('InvalidDemand: item envelope does not fit');
+      if (_demoBatchBytes(trial) > demand.maxBytes) {
+        if (selected.isEmpty) {
+          throw _demoQueryFailure(
+            'InvalidDemand: completion envelope does not fit',
+          );
         }
         break;
       }
-      entries.insert(0, ItemChatEntry(candidate));
+      selected.insert(0, candidate);
       next = token;
+      if (selected.length == demand.maxItems) break;
     }
-    final batch = ChatBatch(
+    return ChatBatch(
       placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-      entries: entries,
+      entries: selected,
       before: next,
-      current: current,
+      throughSeq: h0,
     );
-    if (_demoBatchBytes(batch) > demand.maxBytes) {
-      throw _demoQueryFailure(
-        'InvalidDemand: item/current envelope does not fit',
-      );
-    }
-    return batch;
   }
+
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() =>
+      _read(() => _api._snapshotOf(_api._demoWorkspace(threadId)).businessRefs);
+
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) => _read(() {
+    _demoDemand(demand);
+    final entry = _history.completed[recordId];
+    if (entry == null) throw _demoMissing();
+    return fitEntry(entry, demand.maxBytes);
+  });
 
   @override
   Future<ChatBatch> loadOlder({
@@ -1302,7 +1142,10 @@ final class _DemoReader implements ConversationReader {
               // Owner data is prepared at publication, not materialized by a range read.
               return _history.planDocument ?? (throw _demoMissing());
             }
-            if (revision != _history.revision) throw _demoStale();
+            if (domain != 'interactions' ||
+                revision != _history.interactionRevision) {
+              throw _demoStale();
+            }
             return _history.currentBodies[(domain, id, key)] ??
                 (throw _demoMissing());
         }
@@ -1350,7 +1193,10 @@ final class _DemoReader implements ConversationReader {
     if (scope is! MainChatScope || reference.databaseId != _history.epoch) {
       throw _demoMissing();
     }
-    if (reference.revision != _history.revision) throw _demoStale();
+    if (reference.collection != 'interactions' ||
+        reference.revision != _history.interactionRevision) {
+      throw _demoStale();
+    }
     final source = _collection(reference.collection);
     final start = continuation == null
         ? 0
@@ -1441,56 +1287,72 @@ final class _DemoReader implements ConversationReader {
     );
   });
   Iterable<(String, int, Map<String, Object?>)> _collection(String name) sync* {
-    if (name == 'members' || name == 'tools') {
-      for (final item in _api._pendingItemsOf(threadId)) {
-        if (name == 'tools' && item.content.kind != _DemoContentKind.tool) {
-          continue;
-        }
-        yield (
-          item.id,
-          _history.positions[('member', item.id)]!,
-          {
-            'id': item.id,
-            'kind': item.content.kind.name,
-            if (item.content.invocation != null)
-              'invocation': item.content.invocation!.toJson(),
-            'bodies': [
-              for (final e
-                  in (_history.bodies[item.id] ?? const <String, _DemoBody>{})
-                      .entries)
-                {
-                  'key': e.key,
-                  'byteLength': e.value.length,
-                  'reference': contentRefToJson(
-                    ContentRef(
-                      databaseId: _history.epoch,
-                      target: BodyContentTarget(
-                        owner: ItemContentOwner(itemId: item.id),
-                        key: e.key,
-                      ),
-                    ),
-                  ),
+    if (name != 'interactions') throw _demoMissing();
+    final ordered = _api._demoWorkspace(threadId).interactions.toList()
+      ..sort(
+        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
+          _history.positions[('interaction', b.id)]!,
+        ),
+      );
+    for (final value in ordered) {
+      yield (
+        value.id,
+        _history.positions[('interaction', value.id)]!,
+        {
+          'interactionId': value.id,
+          'scope': {'threadId': value.threadId, 'turnId': value.turnId},
+          'revision': value.revision,
+          'content': {
+            'kind': value.kind.name,
+            'data': {
+              ...switch (value.payload) {
+                UserInputInteractionPayload(:final questions) => {
+                  'questions': [
+                    for (final question in questions)
+                      {
+                        'id': question.id,
+                        'header': question.header,
+                        'question': question.question,
+                        'isOther': question.isOther,
+                        'isSecret': question.isSecret,
+                        'options': [
+                          for (final option in question.options)
+                            {
+                              'label': option.label,
+                              'description': option.description,
+                            },
+                        ],
+                      },
+                  ],
                 },
-            ],
+                ToolApprovalInteractionPayload(
+                  :final toolName,
+                  :final arguments,
+                  :final workingDirectory,
+                  :final parentAgentId,
+                ) =>
+                  {
+                    'request': {
+                      'name': toolName,
+                      'arguments': arguments,
+                      'workingDirectory': workingDirectory,
+                      'parentAgentId': parentAgentId,
+                    },
+                  },
+                UnknownInteractionPayload() => throw _demoQueryFailure(
+                  'Unknown interaction content',
+                ),
+              },
+              'state': {
+                'kind': 'pending',
+                'data': {'operationId': value.id},
+              },
+            },
           },
-        );
-      }
-    } else if (name == 'interactions') {
-      final ordered = _api._demoWorkspace(threadId).interactions.toList()
-        ..sort(
-          (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
-            _history.positions[('interaction', b.id)]!,
-          ),
-        );
-      for (final i in ordered) {
-        yield (
-          i.id,
-          _history.positions[('interaction', i.id)]!,
-          {'id': i.id, 'revision': i.revision, 'kind': i.kind.name},
-        );
-      }
-    } else {
-      throw _demoMissing();
+          'createdAt': 0,
+          'updatedAt': value.revision,
+        },
+      );
     }
   }
 
@@ -1592,213 +1454,13 @@ final class _DemoContentWatch implements ConversationContentWatch {
   }
 }
 
-Map<String, Object?> _demoCurrentJson(CurrentProjection c) => {
-  'sources': c.sources.map(chatSourceStateToJson).toList(),
-  'items': c.items.map(timelineItemToJson).toList(),
-  'atoms': c.atoms.map(chatAtomToJson).toList(),
-  'sourceEffectSeq': c.sourceEffectSeq,
-  'logicalStatus': c.logicalStatus.name,
-  'executionPresent': c.executionPresent,
-  'active': c.active == null
-      ? null
-      : {
-          'id': c.active!.id,
-          'kind': c.active!.kind.name,
-          'summary': c.active!.summary,
-          'thinkingSummary': c.active!.thinkingSummary,
-          'thinkingSeconds': c.active!.thinkingSeconds,
-          'toolCount': c.active!.toolCount,
-          'backgroundToolCount': c.active!.backgroundToolCount,
-          'latestTool': c.active!.latestTool == null
-              ? null
-              : {
-                  'callId': c.active!.latestTool!.callId,
-                  'name': c.active!.latestTool!.name,
-                  'state': c.active!.latestTool!.state.name,
-                },
-        },
-  'activeTurn': c.activeTurn == null
-      ? null
-      : {'id': c.activeTurn!.id, 'phase': c.activeTurn!.phase.name},
-  'plan': c.plan == null
-      ? null
-      : {
-          'revision': c.plan!.revision,
-          'phase': c.plan!.phase.name,
-          'document': c.plan!.document == null
-              ? null
-              : contentRefToJson(c.plan!.document!),
-        },
-  'interactions': c.interactions == null
-      ? null
-      : _demoCollectionJson(c.interactions!),
-  'previews': c.previews.map(currentContentPreviewToJson).toList(),
-  'collections': [for (final r in c.collections) _demoCollectionJson(r)],
-};
-Map<String, Object?> _demoCollectionJson(CurrentCollectionRef r) => {
-  'databaseId': r.databaseId,
-  'collection': r.collection,
-  'revision': r.revision,
-};
 int _demoBatchBytes(ChatBatch batch) => _demoEncoded({
   'placement': batch.placement.name,
-  'entries': batch.entries.map(chatEntryToJson).toList(),
+  'entries': batch.entries.map(completedEntryToJson).toList(),
   'before': batch.before,
-  'current': batch.current == null ? null : _demoCurrentJson(batch.current!),
+  'fromSeq': batch.fromSeq,
+  'throughSeq': batch.throughSeq,
 });
-
-CurrentProjection _demoCurrent(_DemoReader reader, int budget) {
-  final api = reader._api, history = reader._history;
-  final workspace = api._demoWorkspace(reader.threadId);
-  final activity = workspace.activity,
-      turn = workspace.activeTurn,
-      plan = workspace.runtime.plan;
-  history.prepareCurrent(workspace);
-  final collections = <CurrentCollectionRef>[];
-  CurrentCollectionRef collection(String name) {
-    final ref = CurrentCollectionRef(
-      databaseId: history.epoch,
-      collection: name,
-      revision: history.revision,
-    );
-    collections.add(ref);
-    return ref;
-  }
-
-  if (api._pendingItemsOf(reader.threadId).isNotEmpty) collection('members');
-  if (api
-      ._pendingItemsOf(reader.threadId)
-      .any((i) => i.content.kind == _DemoContentKind.tool)) {
-    collection('tools');
-  }
-  final interactions = workspace.interactions.isEmpty
-      ? null
-      : collection('interactions');
-  ContentRef? document;
-  if (plan?.document != null) {
-    document = ContentRef(
-      databaseId: history.epoch,
-      target: BodyContentTarget(
-        owner: CurrentContentOwner(
-          domain: 'plan',
-          id: reader.threadId,
-          revision: plan!.revision,
-        ),
-        key: 'plan.document',
-      ),
-    );
-  }
-  final previews = <CurrentContentPreview>[];
-  final pending = api._pendingItemsOf(reader.threadId);
-  // Only a bounded tail preview is pushed; complete member/tool lists are paged.
-  final last = pending.lastOrNull;
-  if (last != null && last.content.itemKind != TimelineItemKind.workGroup) {
-    final entry = history.bodies[last.id]?.entries.lastOrNull;
-    if (entry != null) {
-      final bytes = entry.value.range(0, (budget ~/ 16).clamp(1, 256));
-      var end = bytes.length;
-      while (end > 0) {
-        try {
-          utf8.decode(bytes.sublist(0, end));
-          break;
-        } on FormatException {
-          end--;
-        }
-      }
-      previews.add(
-        CurrentContentPreview(
-          id: last.id,
-          textChannel: last.content.kind == _DemoContentKind.text
-              ? last.content.textChannel
-              : null,
-          role: switch (last.content.kind) {
-            _DemoContentKind.thinking => CurrentContentRole.reasoning,
-            _DemoContentKind.tool =>
-              entry.key == 'tool.arguments'
-                  ? CurrentContentRole.toolArguments
-                  : CurrentContentRole.toolOutput,
-            _ => CurrentContentRole.response,
-          },
-          text: utf8.decode(bytes.sublist(0, end)),
-          reference: ContentRef(
-            databaseId: history.epoch,
-            target: BodyContentTarget(
-              owner: ItemContentOwner(itemId: last.id),
-              key: entry.key,
-            ),
-          ),
-        ),
-      );
-    }
-  }
-  return CurrentProjection(
-    sourceEffectSeq: history.revision,
-    logicalStatus: workspace.thread.status,
-    executionPresent: workspace.runtime.execution != null,
-    sources: [
-      for (final source
-          in history.activeAtoms.values.map((atom) => atom.source).toSet())
-        history.sourceStates[source]!,
-    ],
-    items: history.liveDisplay.values.toList(),
-    atoms: [
-      for (final atom in history.activeAtoms.values)
-        if (history.liveDisplay.containsKey(atom.id) &&
-            history.liveDisplay[atom.id]!.kind != TimelineItemKind.workGroup)
-          atom,
-    ],
-    active: activity == null
-        ? null
-        : CurrentActivityHead(
-            id: activity.identity,
-            kind: activity.kind,
-            summary: _capDemoText(activity.summary, 128),
-            thinkingSummary: activity.thinkingSummary == null
-                ? null
-                : _capDemoText(activity.thinkingSummary!, 128),
-            thinkingSeconds: activity.thinkingSeconds,
-            toolCount: activity.tools.count,
-            backgroundToolCount: activity.tools.background,
-            latestTool: activity.tools.latestStarted == null
-                ? null
-                : CurrentToolHead(
-                    callId: activity.tools.latestStarted!.callId,
-                    name: _capDemoText(activity.tools.latestStarted!.name, 128),
-                    state: activity.tools.latestStarted!.state,
-                  ),
-          ),
-    activeTurn: turn == null
-        ? null
-        : CurrentTurnHead(
-            id: turn.turnId,
-            phase: turn.state.activity ?? StudioTurnActivity.preparing,
-          ),
-    plan: plan == null
-        ? null
-        : CurrentPlanHead(
-            revision: plan.revision,
-            phase: plan.state,
-            document: document,
-          ),
-    interactions: interactions,
-    previews: previews,
-    collections: collections,
-  );
-}
-
-String _capDemoText(String text, int maxBytes) {
-  // Only bounded heads use this helper. Body range reads use the chunk owner.
-  final out = StringBuffer();
-  var bytes = 0;
-  for (final rune in text.runes) {
-    final s = String.fromCharCode(rune);
-    final n = utf8.encode(s).length;
-    if (bytes + n > maxBytes) break;
-    out.write(s);
-    bytes += n;
-  }
-  return out.toString();
-}
 
 final class _DemoConversationFeed implements ConversationFeed {
   _DemoConversationFeed(
@@ -1810,17 +1472,13 @@ final class _DemoConversationFeed implements ConversationFeed {
   ) : subscriptionId = 'demo:${newStudioCorrelationId()}',
       reader = _DemoReader(_api, threadId, _history, scope) {
     _demoDemand(_demand);
-    _initial = reader.page(
-      _demand,
-      current: scope is MainChatScope
-          ? _demoCurrent(reader, _demand.maxBytes)
-          : null,
-    );
+    _initial = reader.page(_demand);
     _completed = reader.h0;
-    _completedDisplay = reader.itemH0;
     _currentRevision = _history.revision;
     _initialState = ConversationStateEvent(
       frame: ThreadSnapshotFrame(
+        schemaVersion: threadSchemaVersion,
+        completedHistoryVersion: 1,
         workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
       ),
     );
@@ -1841,7 +1499,6 @@ final class _DemoConversationFeed implements ConversationFeed {
   ChatBatch? _initial;
   ConversationStateEvent? _initialState;
   late int _completed, _currentRevision;
-  late int _completedDisplay;
   int _sent = 0, _acked = 0, _phase = 0;
   bool _started = false,
       _claimed = false,
@@ -1890,72 +1547,20 @@ final class _DemoConversationFeed implements ConversationFeed {
     }
   }
 
-  void _flushItems() {
-    final source = _history.displayItems;
-    var low = 0, high = source.length;
-    while (low < high) {
-      final mid = (low + high) ~/ 2;
-      if (source[mid].position! <= _completedDisplay) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-    final selected = <TimelineItem>[];
-    for (
-      var i = low;
-      i < source.length && selected.length < _demand.maxItems;
-      i++
-    ) {
-      final candidate = reader.fitItem(source[i], 0);
-      final trial = ChatBatch(
-        placement: ChatPlacement.append,
-        entries: [...selected.map(ItemChatEntry.new), ItemChatEntry(candidate)],
-      );
-      if (_demoBatchBytes(trial) > _demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure('InvalidDemand: display item does not fit');
-        }
-        break;
-      }
-      selected.add(candidate);
-    }
-    CurrentProjection? current;
-    if (low + selected.length == source.length &&
-        (_pendingCurrent || _currentRevision != _history.revision)) {
-      current = _demoCurrent(reader, _demand.maxBytes);
-      final trial = ChatBatch(
-        placement: ChatPlacement.append,
-        entries: selected.map(ItemChatEntry.new).toList(),
-        current: current,
-      );
-      if (_demoBatchBytes(trial) > _demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: current item snapshot does not fit',
-          );
-        }
-        // Deliver the committed prefix first. The next credit carries the full
-        // current replacement; None never retires any live display object.
-        current = null;
-      }
-    }
-    if (selected.isEmpty && current == null) return;
-    if (selected.isNotEmpty) _completedDisplay = selected.last.position!;
-    if (current != null) {
-      _pendingCurrent = false;
-      _currentRevision = _history.revision;
-    }
-    _send(
-      ConversationChatEvent(
-        batch: ChatBatch(
-          placement: ChatPlacement.append,
-          entries: selected.map(ItemChatEntry.new).toList(),
-          current: current,
+  ActivitySnapshot _activity() => ActivitySnapshot(
+    revision: _history.revision,
+    completedThrough: _completed,
+    executionPresent: _api._demoWorkspace(threadId).runtime.execution != null,
+    entries: [
+      for (final atom in _history.activeAtoms.values)
+        ActivityEntry(
+          identity: atom.tool != null
+              ? ForegroundToolActivityIdentity(callId: atom.tool!.callId)
+              : ModelPartActivityIdentity(atomId: atom.id),
+          atom: atom,
         ),
-      ),
-    );
-  }
+    ],
+  );
 
   void _flush() {
     if (_closed || _ended || !_started || _sent != _acked) return;
@@ -1972,101 +1577,79 @@ final class _DemoConversationFeed implements ConversationFeed {
         _initial = null;
         return;
       }
+      if (_phase == 2 && reader.scope is MainChatScope) {
+        _phase = 3;
+        _send(ConversationActivityEvent(snapshot: _activity()));
+        return;
+      }
+      _phase = 3;
       if (_pendingState) {
         _pendingState = false;
         _send(
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
+              schemaVersion: threadSchemaVersion,
+              completedHistoryVersion: 1,
               workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
             ),
           ),
         );
         return;
       }
-      if (reader.scope is MainChatScope) {
-        _flushItems();
-        return;
-      }
-      if (reader.scope case GroupMembersChatScope(:final reference)
-          when _pendingCurrent || _currentRevision != _history.revision) {
-        final active =
-            _history.activeAtoms[_history.fixtureMembers[reference.itemId]];
-        if (active != null) {
-          final batch = ChatBatch(
-            placement: ChatPlacement.append,
-            entries: _history.entries([active]),
-          );
-          if (_demoBatchBytes(batch) > _demand.maxBytes) {
-            throw _demoQueryFailure(
-              'InvalidDemand: active group member does not fit',
-            );
-          }
-          _pendingCurrent = false;
-          _currentRevision = _history.revision;
-          _send(ConversationChatEvent(batch: batch));
-          return;
-        }
-      }
-      final source = _history.index(reader.scope);
-      var low = 0, high = source.length;
-      while (low < high) {
-        final mid = (low + high) ~/ 2;
-        if (source[mid].order <= _completed) {
-          low = mid + 1;
-        } else {
-          high = mid;
-        }
-      }
-      final messages = <ChatAtom>[];
-      var through = _completed;
       final head = _history.head;
-      // Do not let current retire a member before its completion is delivered.
-      for (
-        var i = low;
-        i < source.length && messages.length < _demand.maxItems;
-        i++
-      ) {
-        var message = reader.fit(source[i].message, _demand.maxBytes);
-        final trial = ChatBatch(
-          placement: ChatPlacement.append,
-          entries: _history.entries([...messages, message]),
-        );
-        if (_demoBatchBytes(trial) > _demand.maxBytes) {
-          message = reader.fit(source[i].message, 0);
-          if (_demoBatchBytes(
-                ChatBatch(
-                  placement: ChatPlacement.append,
-                  entries: _history.entries([...messages, message]),
-                ),
-              ) >
-              _demand.maxBytes) {
-            if (messages.isEmpty) {
+      if (_completed < head) {
+        final selected = <CompletedEntry>[];
+        var through = _completed;
+        for (final entry in reader.source()) {
+          if (entry.completionSeq <= _completed || entry.completionSeq > head) {
+            continue;
+          }
+          final candidate = reader.fitEntry(
+            entry,
+            0,
+            main: reader.scope is MainChatScope,
+          );
+          final trial = ChatBatch(
+            placement: ChatPlacement.append,
+            entries: [...selected, candidate],
+            fromSeq: _completed,
+            throughSeq: entry.completionSeq,
+          );
+          if (selected.length == _demand.maxItems ||
+              _demoBatchBytes(trial) > _demand.maxBytes) {
+            if (selected.isEmpty) {
               throw _demoQueryFailure(
-                'InvalidDemand: message envelope does not fit',
+                'InvalidDemand: completion envelope does not fit',
               );
             }
             break;
           }
+          selected.add(candidate);
+          through = entry.completionSeq;
         }
-        messages.add(message);
-        through = source[i].order;
-      }
-      final caughtUp = low + messages.length == source.length;
-      if (messages.isEmpty) {
-        if (caughtUp) _completed = head;
+        // Filtering can advance the global checked prefix with no visible entry.
+        if (selected.length < _demand.maxItems) through = head;
+        final from = _completed;
+        _completed = through;
+        _send(
+          ConversationChatEvent(
+            batch: ChatBatch(
+              placement: ChatPlacement.append,
+              entries: selected,
+              fromSeq: from,
+              throughSeq: through,
+            ),
+          ),
+        );
         return;
       }
-      _completed = caughtUp ? head : through;
-      _send(
-        ConversationChatEvent(
-          batch: ChatBatch(
-            placement: ChatPlacement.append,
-            entries: _history.entries(messages),
-          ),
-        ),
-      );
+      if (reader.scope is MainChatScope &&
+          (_pendingCurrent || _currentRevision != _history.revision)) {
+        _pendingCurrent = false;
+        _currentRevision = _history.revision;
+        _send(ConversationActivityEvent(snapshot: _activity()));
+      }
     } catch (error) {
-      // Producer termination does not retire the independent read lease.
       _send(
         ConversationFailureEvent(
           failure: _studioFailure(error) as StudioFailure,

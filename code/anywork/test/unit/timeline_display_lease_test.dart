@@ -26,9 +26,9 @@ void main() {
     owner.select('thread');
     final session = client.conversations.session('thread');
     await session.content.ready;
-    await transport.main.accepted(1);
+    await transport.main.accepted(2);
     final mainLease = owner.lease('thread')!;
-    final mainCurrent = session.current.value;
+    final mainCurrent = session.activity.value;
     final children = await client.conversations.openChildren(
       threadId: 'thread',
       parentId: 'parent',
@@ -53,8 +53,8 @@ void main() {
     await children.ready;
     await transport.child.accepted(1);
     expect(controller.messages.single.id, 'child');
-    expect(session.current.value, same(mainCurrent));
-    expect(children.current.value, isNull);
+    expect(session.activity.value, same(mainCurrent));
+    expect(children.activity.value, isNull);
     expect(
       transport.scopes.last,
       isA<ChildrenChatScope>().having(
@@ -79,9 +79,11 @@ void main() {
     expect(transport.main.closed, isFalse);
     expect(owner.lease('thread'), same(mainLease));
     transport.main.emit(
-      chatBatch([chatMessage('main-next')], placement: ChatPlacement.append),
+      chatBatch([
+        chatMessage('main-next', completionSeq: 2),
+      ], placement: ChatPlacement.append),
     );
-    await transport.main.accepted(2);
+    await transport.main.accepted(3);
     expect(mainLease.controller.messages.map((message) => message.id), [
       'main',
       'main-next',
@@ -95,8 +97,8 @@ void main() {
     'Set owns one controller collection and an opaque older boundary',
     () async {
       final h = _Harness([
-        chatMessage('a'),
-        chatMessage('b'),
+        chatMessage('a', completionSeq: 10),
+        chatMessage('b', completionSeq: 11),
       ], before: 'opaque:before');
       await h.open();
       final lease = h.lease;
@@ -114,7 +116,9 @@ void main() {
   );
 
   test('older read is admitted once before return and preserves existing Message identity', () async {
-    final h = _Harness([chatMessage('c')], before: 'opaque:before');
+    final h = _Harness([
+      chatMessage('c', completionSeq: 1000),
+    ], before: 'opaque:before');
     await h.open();
     final lease = h.lease;
     final message = lease.controller.messages.single;
@@ -125,8 +129,8 @@ void main() {
     await h.transport.reader.entered.future;
     h.transport.reader.reply.complete(
       chatBatch([
-        chatMessage('a'),
-        chatMessage('b'),
+        chatMessage('a', completionSeq: 10),
+        chatMessage('b', completionSeq: 11),
       ], placement: ChatPlacement.prepend),
     );
     await loading;
@@ -160,7 +164,7 @@ void main() {
       final lease = h.lease;
       final first = lease.controller.messages.single;
       await h.owner.dispatch('thread', const TimelineEnterHistory());
-      await h.append([chatMessage('b')]);
+      await h.append([chatMessage('b', completionSeq: 2)]);
       expect(h.lease, same(lease));
       expect(lease.controller.messages.first, same(first));
       expect(lease.loadedCount, 2);
@@ -219,7 +223,9 @@ void main() {
   );
 
   test('native reader close failure belongs to SDK and remains retryable after UI release', () async {
-    final h = _Harness([chatMessage('c')], before: 'older');
+    final h = _Harness([
+      chatMessage('c', completionSeq: 1000),
+    ], before: 'older');
     await h.open();
     final lease = h.lease;
     final scope = lease.openDetailQueries()!;
@@ -241,7 +247,9 @@ void main() {
   test(
     'retirement fences new queries and joins an already accepted older read',
     () async {
-      final h = _Harness([chatMessage('c')], before: 'older');
+      final h = _Harness([
+        chatMessage('c', completionSeq: 1000),
+      ], before: 'older');
       await h.open();
       final lease = h.lease;
       final loading = h.owner.loadOlder('thread', generation: lease.generation);
@@ -280,7 +288,10 @@ void main() {
     ]);
     final resource = old.imageResources.borrow('image');
     final oldKey = old.chatKey;
-    h.transport.feed.emit(chatBatch([chatMessage('reset')]));
+    h.transport.initial = chatBatch([chatMessage('reset')]);
+    final content = h.client.conversations.session('thread').content;
+    content.refresh();
+    await content.ready;
     await h.transport.feed.accepted(2);
     final next = h.lease;
     expect(next.chatKey, isNot(oldKey));
@@ -294,7 +305,7 @@ void main() {
     );
     await old.unbind();
     expect(old.isReleased, isTrue);
-    expect(h.transport.opens, 1);
+    expect(h.transport.opens, 2);
   });
 
   test('Append preserves parsed card and body references without a second collection', () async {
@@ -304,7 +315,7 @@ void main() {
     final card =
         original.metadata![chatItemPresentationKey] as ChatItemPresentation;
     final body = card.body('body');
-    await h.append([chatMessage('next')]);
+    await h.append([chatMessage('next', completionSeq: 2)]);
     expect(h.lease.controller.messages.first, same(original));
     expect(
       h.lease.controller.messages.first.metadata![chatItemPresentationKey],
@@ -316,10 +327,8 @@ void main() {
 }
 
 final class _Harness {
-  _Harness(List<TimelineItem> messages, {String? before})
-    : transport = _LeaseTransport(
-        chatBatch(messages, before: before, current: chatCurrent()),
-      ) {
+  _Harness(List<CompletedEntry> messages, {String? before})
+    : transport = _LeaseTransport(chatBatch(messages, before: before)) {
     client = AnyworkClient(transport: transport, clientId: 'lease');
     owner = TimelineSessionOwner(client: client)..updateReadDemand(chatDemand);
     addTearDown(() async {
@@ -347,26 +356,36 @@ final class _Harness {
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await client.conversations.session('thread').content.ready;
-    await transport.feed.accepted(1);
+    await transport.feed.accepted(2);
   }
 
-  Future<void> append(List<TimelineItem> messages) async {
+  Future<void> append(List<CompletedEntry> messages) async {
     transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }
 }
 
 final class _LeaseTransport extends Fake implements StudioTransport {
-  _LeaseTransport(ChatBatch initial) {
+  _LeaseTransport(this.initial) {
+    _createFeed();
+  }
+  ChatBatch initial;
+  void _createFeed() {
     feed = ScriptedConversationFeed(
       threadId: 'thread',
       subscriptionId: 'lease',
+      state: () => ThreadSnapshotFrame(
+        workspace: chatWorkspace('thread'),
+        completedHistoryVersion: 1,
+        schemaVersion: threadSchemaVersion,
+      ),
       initial: () => initial,
       reader: reader,
     );
   }
-  late final ScriptedConversationFeed feed;
-  final reader = _Reader();
+
+  late ScriptedConversationFeed feed;
+  _Reader reader = _Reader();
   int opens = 0;
   @override
   Future<ConversationFeed> openConversationFeed(
@@ -374,6 +393,10 @@ final class _LeaseTransport extends Fake implements StudioTransport {
     required ChatScope scope,
     required ReadDemand demand,
   }) async {
+    if (opens > 0) {
+      reader = _Reader();
+      _createFeed();
+    }
     opens++;
     return feed;
   }
@@ -414,9 +437,13 @@ final class _ScopedTransport extends Fake implements StudioTransport {
   late final main = ScriptedConversationFeed(
     threadId: 'thread',
     subscriptionId: 'main',
+    state: () => ThreadSnapshotFrame(
+      workspace: chatWorkspace('thread'),
+      completedHistoryVersion: 1,
+      schemaVersion: threadSchemaVersion,
+    ),
     reader: mainReader,
-    initial: () =>
-        chatBatch([chatMessage('main')], current: chatCurrent(sequence: 1)),
+    initial: () => chatBatch([chatMessage('main')]),
   );
   late final child = ScriptedConversationFeed(
     threadId: 'thread',
@@ -424,7 +451,8 @@ final class _ScopedTransport extends Fake implements StudioTransport {
     reader: childReader,
     initial: () => ChatBatch(
       placement: ChatPlacement.set,
-      entries: [ChatAtomEntry(chatAtomMessage('child'))],
+      entries: [chatMessage('child')],
+      throughSeq: 1,
     ),
   );
   final scopes = <ChatScope>[];

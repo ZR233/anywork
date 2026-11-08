@@ -1,4 +1,4 @@
-//! Mechanical mappings of Studio display items and independently read members.
+//! Mechanical mappings of immutable completed records and activity snapshots.
 use pl_protocol as protocol;
 
 use crate::api::studio::types::*;
@@ -13,12 +13,11 @@ pub(crate) fn demand(value: BridgeReadDemand) -> protocol::ReadDemand {
 pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
     match value {
         BridgeChatScope::Main => protocol::ChatScope::Main,
-        BridgeChatScope::GroupMembers { reference } => protocol::ChatScope::GroupMembers {
-            reference: protocol::TimelineMembersRef {
+        BridgeChatScope::Run { reference } => protocol::ChatScope::Run {
+            reference: protocol::CompletionRunRef {
                 database_id: reference.database_id,
-                projection_version: reference.projection_version,
-                projection_generation: reference.projection_generation,
-                item_id: reference.item_id,
+                index_version: reference.index_version,
+                start_seq: reference.start_seq,
             },
         },
         BridgeChatScope::Children { parent_id } => protocol::ChatScope::Children { parent_id },
@@ -107,6 +106,13 @@ fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
             BridgeChatSourceId::ForegroundTurn { turn_id }
         }
         protocol::ChatSourceId::Input { input_id } => BridgeChatSourceId::Input { input_id },
+        protocol::ChatSourceId::InboxMessage {
+            source_id,
+            message_id,
+        } => BridgeChatSourceId::InboxMessage {
+            source_id,
+            message_id,
+        },
         protocol::ChatSourceId::BackgroundResult { message_id } => {
             BridgeChatSourceId::BackgroundResult { message_id }
         }
@@ -184,62 +190,6 @@ fn atom_content(value: protocol::ChatAtomContent) -> BridgeChatAtomContent {
     }
 }
 
-fn timeline_item(value: protocol::TimelineItem) -> BridgeTimelineItem {
-    BridgeTimelineItem {
-        id: value.id,
-        kind: match value.kind {
-            protocol::TimelineItemKind::Text => BridgeTimelineItemKind::Text,
-            protocol::TimelineItemKind::WorkGroup => BridgeTimelineItemKind::WorkGroup,
-            protocol::TimelineItemKind::Status => BridgeTimelineItemKind::Status,
-        },
-        source: source_id(value.source),
-        atom_kind: value.atom_kind.map(atom_kind),
-        delivery: delivery(value.delivery),
-        outcome: value.outcome.map(terminal_outcome),
-        text_channel: value.text_channel.map(text_channel),
-        turn_id: value.turn_id,
-        started_at: value.started_at,
-        finished_at: value.finished_at,
-        summary: value.summary.map(|summary| BridgeTimelineGroupSummary {
-            latest_thinking_summary: summary.latest_thinking_summary,
-            member_count: summary.member_count,
-            active_count: summary.active_count,
-            failed_count: summary.failed_count,
-            cancelled_count: summary.cancelled_count,
-            categories: summary
-                .categories
-                .into_iter()
-                .map(|count| BridgeTimelineCategoryCount {
-                    category: match count.category {
-                        protocol::TimelineCategory::Thinking => BridgeTimelineCategory::Thinking,
-                        protocol::TimelineCategory::Read => BridgeTimelineCategory::Read,
-                        protocol::TimelineCategory::Image => BridgeTimelineCategory::Image,
-                        protocol::TimelineCategory::Command => BridgeTimelineCategory::Command,
-                        protocol::TimelineCategory::Search => BridgeTimelineCategory::Search,
-                        protocol::TimelineCategory::Edit => BridgeTimelineCategory::Edit,
-                        protocol::TimelineCategory::Wait => BridgeTimelineCategory::Wait,
-                        protocol::TimelineCategory::Other => BridgeTimelineCategory::Other,
-                    },
-                    count: count.count,
-                })
-                .collect(),
-            started_at: summary.started_at,
-            finished_at: summary.finished_at,
-        }),
-        members: value.members.map(|reference| BridgeTimelineMembersRef {
-            database_id: reference.database_id,
-            projection_version: reference.projection_version,
-            projection_generation: reference.projection_generation,
-            item_id: reference.item_id,
-        }),
-        contents: value.contents.into_iter().map(atom_content).collect(),
-        payload: value.payload.map(payload),
-        content_item_id: value.content_item_id,
-        position: value.position,
-        admission_closed: value.admission_closed,
-    }
-}
-
 fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
     BridgeChatAtom {
         id: value.id,
@@ -301,11 +251,23 @@ fn source_state(value: protocol::ChatSourceState) -> BridgeChatSourceState {
     }
 }
 
-fn entry(value: protocol::ChatEntry) -> BridgeChatEntry {
-    match value {
-        protocol::ChatEntry::Item(value) => BridgeChatEntry::Item(Box::new(timeline_item(*value))),
-        protocol::ChatEntry::Atom(value) => BridgeChatEntry::Atom(Box::new(atom(*value))),
-        protocol::ChatEntry::Source(value) => BridgeChatEntry::Source(source_state(value)),
+pub(crate) fn completed(value: protocol::CompletedEntry) -> BridgeCompletedEntry {
+    BridgeCompletedEntry {
+        record_id: value.record_id,
+        completion_seq: value.completion_seq,
+        run: value.run.map(|run| BridgeCompletionRunPosition {
+            start_seq: run.start_seq,
+            ordinal: run.ordinal,
+        }),
+        main_presentation: match value.main_presentation {
+            protocol::MainPresentation::Hidden => BridgeMainPresentation::Hidden,
+            protocol::MainPresentation::Single => BridgeMainPresentation::Single,
+            protocol::MainPresentation::ForegroundWork => BridgeMainPresentation::ForegroundWork,
+            protocol::MainPresentation::BackgroundResults => {
+                BridgeMainPresentation::BackgroundResults
+            }
+        },
+        atom: atom(value.atom),
     }
 }
 
@@ -315,84 +277,55 @@ pub(crate) fn batch(value: protocol::ChatBatch) -> BridgeChatBatch {
             protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
             protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
             protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
-            protocol::ChatPlacement::Update => BridgeChatPlacement::Update,
         },
-        entries: value.entries.into_iter().map(entry).collect(),
+        entries: value.entries.into_iter().map(completed).collect(),
         before: value.before,
-        current: value.current.map(current),
+        from_seq: value.from_seq,
+        through_seq: value.through_seq,
     }
 }
 
-fn current(value: protocol::CurrentProjection) -> BridgeCurrentProjection {
-    BridgeCurrentProjection {
-        source_effect_seq: value.source_effect_seq,
-        logical_status: match value.logical_status {
-            protocol::ThreadStatus::Idle => BridgeThreadStatus::Idle,
-            protocol::ThreadStatus::Queued => BridgeThreadStatus::Queued,
-            protocol::ThreadStatus::Running => BridgeThreadStatus::Running,
-            protocol::ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
-            protocol::ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
-            protocol::ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
-            protocol::ThreadStatus::Closing => BridgeThreadStatus::Closing,
-            protocol::ThreadStatus::Closed => BridgeThreadStatus::Closed,
-            protocol::ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
-        },
+pub(crate) fn activity(value: protocol::ActivitySnapshot) -> BridgeActivitySnapshot {
+    BridgeActivitySnapshot {
+        revision: value.revision,
+        completed_through: value.completed_through,
         execution_present: value.execution_present,
-        active: value.active.map(|head| BridgeCurrentActivityHead {
-            id: head.id,
-            kind: super::thread_stream::activity::activity_kind(head.kind),
-            summary: head.summary,
-            thinking_summary: head.thinking_summary,
-            thinking_seconds: head.thinking_seconds,
-            tool_count: head.tool_count,
-            background_tool_count: head.background_tool_count,
-            latest_tool: head.latest_tool.map(|tool| BridgeCurrentToolHead {
-                call_id: tool.call_id,
-                name: tool.name,
-                state: super::thread_stream::activity::tool_state(tool.state),
-            }),
-        }),
-        active_turn: value.active_turn.map(|head| BridgeCurrentTurnHead {
-            id: head.id,
-            phase: super::thread_stream::turn_phase(head.phase),
-        }),
-        sources: value.sources.into_iter().map(source_state).collect(),
-        atoms: value.atoms.into_iter().map(atom).collect(),
-        items: value.items.into_iter().map(timeline_item).collect(),
-        plan: value.plan.map(|head| BridgeCurrentPlanHead {
-            revision: head.revision,
-            phase: super::thread_stream::plan_phase(head.phase),
-            document: head.document.map(content_ref),
-        }),
-        interactions: value.interactions.map(collection_ref),
-        previews: value
-            .previews
+        entries: value
+            .entries
             .into_iter()
-            .map(|preview| BridgeCurrentContentPreview {
-                id: preview.id,
-                role: match preview.role {
-                    protocol::CurrentContentRole::Reasoning => BridgeCurrentContentRole::Reasoning,
-                    protocol::CurrentContentRole::Response => BridgeCurrentContentRole::Response,
-                    protocol::CurrentContentRole::ToolArguments => {
-                        BridgeCurrentContentRole::ToolArguments
+            .map(|entry| BridgeActivityEntry {
+                identity: match entry.identity {
+                    protocol::ActivityIdentity::ModelPart { atom_id } => {
+                        BridgeActivityIdentity::ModelPart { atom_id }
                     }
-                    protocol::CurrentContentRole::ToolOutput => {
-                        BridgeCurrentContentRole::ToolOutput
+                    protocol::ActivityIdentity::ForegroundTool { call_id } => {
+                        BridgeActivityIdentity::ForegroundTool { call_id }
+                    }
+                    protocol::ActivityIdentity::BackgroundTool { call_id } => {
+                        BridgeActivityIdentity::BackgroundTool { call_id }
+                    }
+                    protocol::ActivityIdentity::Other { domain, id } => {
+                        BridgeActivityIdentity::Other { domain, id }
                     }
                 },
-                text_channel: preview.text_channel.map(|channel| match channel {
-                    protocol::ThreadTextChannel::User => BridgeThreadTextChannel::User,
-                    protocol::ThreadTextChannel::ParentAgent => {
-                        BridgeThreadTextChannel::ParentAgent
-                    }
-                    protocol::ThreadTextChannel::Commentary => BridgeThreadTextChannel::Commentary,
-                    protocol::ThreadTextChannel::Final => BridgeThreadTextChannel::FinalAnswer,
-                }),
-                text: preview.text,
-                reference: content_ref(preview.reference),
+                atom: atom(entry.atom),
             })
             .collect(),
-        collections: value.collections.into_iter().map(collection_ref).collect(),
+    }
+}
+
+pub(crate) fn business_refs(value: protocol::ThreadBusinessRefs) -> BridgeThreadBusinessRefs {
+    BridgeThreadBusinessRefs {
+        plan: value.plan.map(current_plan_head),
+        interactions: value.interactions.map(collection_ref),
+    }
+}
+
+fn current_plan_head(value: protocol::CurrentPlanHead) -> BridgeCurrentPlanHead {
+    BridgeCurrentPlanHead {
+        revision: value.revision,
+        phase: super::thread_stream::plan_phase(value.phase),
+        document: value.document.map(content_ref),
     }
 }
 
@@ -461,171 +394,178 @@ pub(crate) fn collection_page(
 mod tests {
     use super::*;
 
-    #[test]
-    fn display_items_and_member_qualification_are_mapped_without_atom_reconstruction() {
-        let reference = protocol::TimelineMembersRef {
-            database_id: "original-db".into(),
-            projection_version: 7,
-            projection_generation: "projection-incarnation:α".into(),
-            item_id: "stable-item".into(),
-        };
-        let group = protocol::TimelineItem {
-            id: reference.item_id.clone(),
-            kind: protocol::TimelineItemKind::WorkGroup,
+    fn atom(lifecycle: protocol::ChatAtomLifecycle) -> protocol::ChatAtom {
+        protocol::ChatAtom {
+            id: "atom-id".into(),
+            completion_item_id: Some("record-id".into()),
+            completion_seq: Some(7),
             source: protocol::ChatSourceId::ForegroundTurn {
-                turn_id: "turn".into(),
+                turn_id: "turn-id".into(),
             },
-            atom_kind: None,
+            source_state: None,
+            source_order: Some(2),
+            kind: protocol::ChatAtomKind::Text,
             delivery: protocol::ChatDeliveryKind::Foreground,
-            outcome: None,
-            text_channel: None,
-            turn_id: Some("turn".into()),
-            started_at: Some(100),
+            lifecycle,
+            turn_id: Some("turn-id".into()),
+            attempt_id: Some("attempt-id".into()),
+            tool: None,
+            wait: None,
+            text_channel: Some(protocol::ThreadTextChannel::Final),
+            started_at: None,
             finished_at: None,
-            summary: Some(protocol::TimelineGroupSummary {
-                latest_thinking_summary: Some("Reviewing updates".into()),
-                member_count: 11,
-                active_count: 2,
-                failed_count: 1,
-                cancelled_count: 3,
-                categories: vec![protocol::TimelineCategoryCount {
-                    category: protocol::TimelineCategory::Wait,
-                    count: 11,
-                }],
-                started_at: Some(100),
-                finished_at: None,
-            }),
-            members: Some(reference.clone()),
-            contents: vec![],
-            payload: None,
-            content_item_id: None,
-            position: Some(23),
-            admission_closed: true,
-        };
-        let mut projection =
-            protocol::CurrentProjection::empty(41, protocol::ThreadStatus::Running);
-        let mut live = group.clone();
-        live.position = None;
-        projection.items.push(live);
-        let mapped = batch(protocol::ChatBatch {
-            placement: protocol::ChatPlacement::Set,
-            entries: vec![protocol::ChatEntry::Item(Box::new(group.clone()))],
-            before: Some("opaque-item-cursor".into()),
-            current: Some(projection),
-        });
-        let BridgeChatEntry::Item(item) = &mapped.entries[0] else {
-            panic!("not an item");
-        };
-        assert_eq!(item.kind, BridgeTimelineItemKind::WorkGroup);
-        assert_eq!(item.position, Some(23));
-        assert!(item.payload.is_none() && item.contents.is_empty());
-        assert!(item.outcome.is_none());
-        let summary = item.summary.as_ref().unwrap();
-        assert_eq!(
-            summary.latest_thinking_summary.as_deref(),
-            Some("Reviewing updates")
-        );
-        assert_eq!(
-            (
-                summary.member_count,
-                summary.active_count,
-                summary.failed_count,
-                summary.cancelled_count
-            ),
-            (11, 2, 1, 3)
-        );
-        assert_eq!(summary.categories[0].category, BridgeTimelineCategory::Wait);
-        let members = item.members.clone().unwrap();
-        assert_eq!(members.projection_generation, "projection-incarnation:α");
-        assert_eq!(
-            scope(BridgeChatScope::GroupMembers { reference: members }),
-            protocol::ChatScope::GroupMembers { reference }
-        );
-        let current = mapped.current.unwrap();
-        assert_eq!(current.items[0].id, "stable-item");
-        assert_eq!(current.items[0].position, None);
-        assert!(current.atoms.is_empty());
-        for kind in [
-            protocol::TimelineItemKind::Text,
-            protocol::TimelineItemKind::Status,
-        ] {
-            let mapped = timeline_item(protocol::TimelineItem {
-                kind,
-                atom_kind: Some(protocol::ChatAtomKind::Text),
-                outcome: Some(protocol::ChatTerminalOutcome::Cancelled),
-                text_channel: Some(protocol::ThreadTextChannel::Commentary),
-                summary: None,
-                members: None,
-                payload: Some(protocol::PayloadData::Inline {
-                    bytes: vec![0, 255, b' '],
-                }),
-                content_item_id: Some("original-content".into()),
-                ..group.clone()
-            });
-            assert_eq!(mapped.outcome, Some(BridgeChatTerminalOutcome::Cancelled));
-            assert_eq!(
-                mapped.text_channel,
-                Some(BridgeThreadTextChannel::Commentary)
-            );
-            assert_eq!(mapped.content_item_id.as_deref(), Some("original-content"));
-            assert!(
-                matches!(mapped.payload, Some(BridgePayloadData::Inline { bytes }) if bytes == [0, 255, b' '])
-            );
-        }
-    }
-
-    #[test]
-    fn current_text_channels_preserve_unknown_and_the_original_producer_channel() {
-        for (channel, expected) in [
-            (None, None),
-            (
-                Some(protocol::ThreadTextChannel::User),
-                Some(BridgeThreadTextChannel::User),
-            ),
-            (
-                Some(protocol::ThreadTextChannel::ParentAgent),
-                Some(BridgeThreadTextChannel::ParentAgent),
-            ),
-            (
-                Some(protocol::ThreadTextChannel::Commentary),
-                Some(BridgeThreadTextChannel::Commentary),
-            ),
-            (
-                Some(protocol::ThreadTextChannel::Final),
-                Some(BridgeThreadTextChannel::FinalAnswer),
-            ),
-        ] {
-            let reference = protocol::ContentRef {
-                database_id: "original-database".into(),
-                target: protocol::ContentTarget::Body {
-                    owner: protocol::ContentOwner::Item {
-                        item_id: "original-text".into(),
+            content_present: Some(true),
+            contents: Vec::new(),
+            payload: Some(protocol::PayloadData::Deferred {
+                reference: protocol::ContentRef {
+                    database_id: "database".into(),
+                    target: protocol::ContentTarget::ItemPayload {
+                        item_id: "record-id".into(),
                     },
-                    key: "body".into(),
                 },
-            };
-            let mut projection =
-                protocol::CurrentProjection::empty(23, protocol::ThreadStatus::Running);
-            projection.previews.push(protocol::CurrentContentPreview {
-                id: "original-text".into(),
-                role: protocol::CurrentContentRole::Response,
-                text_channel: channel,
-                text: "正文".into(),
-                reference: reference.clone(),
-            });
-
-            let mapped = current(projection);
-            let preview = &mapped.previews[0];
-            assert_eq!(preview.role, BridgeCurrentContentRole::Response);
-            assert_eq!(preview.text_channel, expected);
-            assert_eq!(preview.id, "original-text");
-            assert_eq!(preview.text, "正文");
-            assert_eq!(protocol_content_ref(preview.reference.clone()), reference);
+                byte_length: 4096,
+            }),
         }
     }
 
     #[test]
-    fn references_round_trip_without_reinterpreting_owner_identity() {
+    fn run_scope_and_completed_batch_are_mechanically_mapped() {
+        let run = BridgeCompletionRunRef {
+            database_id: "database".into(),
+            index_version: protocol::COMPLETED_READ_INDEX_VERSION,
+            start_seq: 7,
+        };
+        assert_eq!(
+            scope(BridgeChatScope::Run {
+                reference: run.clone()
+            }),
+            protocol::ChatScope::Run {
+                reference: protocol::CompletionRunRef {
+                    database_id: run.database_id,
+                    index_version: run.index_version,
+                    start_seq: run.start_seq,
+                }
+            }
+        );
+        let mapped = batch(protocol::ChatBatch {
+            placement: protocol::ChatPlacement::Append,
+            entries: vec![protocol::CompletedEntry {
+                record_id: "record-id".into(),
+                completion_seq: 7,
+                run: Some(protocol::CompletionRunPosition {
+                    start_seq: 3,
+                    ordinal: 2,
+                }),
+                main_presentation: protocol::MainPresentation::ForegroundWork,
+                atom: atom(protocol::ChatAtomLifecycle::Terminal {
+                    started: None,
+                    ended: None,
+                    outcome: protocol::ChatTerminalOutcome::Completed,
+                }),
+            }],
+            before: None,
+            from_seq: Some(6),
+            through_seq: 7,
+        });
+        assert_eq!(mapped.placement, BridgeChatPlacement::Append);
+        assert_eq!(mapped.from_seq, Some(6));
+        assert_eq!(mapped.through_seq, 7);
+        assert_eq!(mapped.entries.len(), 1);
+        let entry = &mapped.entries[0];
+        assert_eq!(entry.record_id, "record-id");
+        assert_eq!(entry.completion_seq, 7);
+        assert_eq!(
+            entry.run,
+            Some(BridgeCompletionRunPosition {
+                start_seq: 3,
+                ordinal: 2
+            })
+        );
+        assert_eq!(
+            entry.main_presentation,
+            BridgeMainPresentation::ForegroundWork
+        );
+        assert_eq!(entry.atom.completion_item_id.as_deref(), Some("record-id"));
+        assert_eq!(entry.atom.completion_seq, Some(7));
+    }
+
+    #[test]
+    fn inbox_message_source_preserves_both_typed_identity_parts() {
+        let source = source_id(protocol::ChatSourceId::InboxMessage {
+            source_id: "source-123".into(),
+            message_id: "message-456".into(),
+        });
+        assert!(matches!(
+            source,
+            BridgeChatSourceId::InboxMessage { source_id, message_id }
+                if source_id == "source-123" && message_id == "message-456"
+        ));
+    }
+
+    #[test]
+    fn business_refs_preserve_empty_and_nonempty_heads() {
+        assert_eq!(
+            business_refs(protocol::ThreadBusinessRefs::empty()),
+            BridgeThreadBusinessRefs {
+                plan: None,
+                interactions: None,
+            }
+        );
+
+        let mapped = business_refs(protocol::ThreadBusinessRefs {
+            plan: Some(protocol::CurrentPlanHead {
+                revision: 12,
+                phase: protocol::AgentSessionPlanPhase::Approved,
+                document: None,
+            }),
+            interactions: Some(protocol::CurrentCollectionRef {
+                database_id: "db-1".into(),
+                collection: "interactions".into(),
+                revision: 8,
+            }),
+        });
+        assert_eq!(mapped.plan.as_ref().map(|plan| plan.revision), Some(12));
+        assert_eq!(
+            mapped.plan.as_ref().map(|plan| plan.phase),
+            Some(BridgePlanPhase::Approved)
+        );
+        assert_eq!(
+            mapped.interactions,
+            Some(BridgeCurrentCollectionRef {
+                database_id: "db-1".into(),
+                collection: "interactions".into(),
+                revision: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn activity_keeps_typed_identity() {
+        let snapshot = activity(protocol::ActivitySnapshot {
+            revision: 11,
+            completed_through: 7,
+            execution_present: true,
+            entries: vec![protocol::ActivityEntry {
+                identity: protocol::ActivityIdentity::ForegroundTool {
+                    call_id: "call-1".into(),
+                },
+                atom: atom(protocol::ChatAtomLifecycle::Active {
+                    started: None,
+                    status: protocol::ChatActiveStatus::Running,
+                }),
+            }],
+        });
+        assert_eq!(snapshot.revision, 11);
+        assert_eq!(snapshot.completed_through, 7);
+        assert!(snapshot.execution_present);
+        assert!(matches!(
+            &snapshot.entries[0].identity,
+            BridgeActivityIdentity::ForegroundTool { call_id } if call_id == "call-1"
+        ));
+    }
+
+    #[test]
+    fn content_references_round_trip_without_reinterpreting_owner_identity() {
         for target in [
             protocol::ContentTarget::ItemPayload {
                 item_id: "unknown:payload".into(),
@@ -657,188 +597,71 @@ mod tests {
     }
 
     #[test]
-    fn payload_remains_opaque_and_none_current_is_not_an_empty_snapshot() {
+    fn opaque_atom_payload_and_source_cut_survive_completed_entry_mapping() {
         let bytes = vec![0, 255, b'{', b'}'];
-        let value = protocol::ChatBatch {
-            placement: protocol::ChatPlacement::Prepend,
-            entries: vec![
-                protocol::ChatEntry::Atom(Box::new(protocol::ChatAtom {
-                    id: "member-id".into(),
-                    completion_item_id: Some("frozen-payload-id".into()),
-                    completion_seq: Some(12),
-                    source: protocol::ChatSourceId::BackgroundResult {
-                        message_id: "source-id".into(),
-                    },
-                    source_state: Some(protocol::ChatSourceState {
-                        source: protocol::ChatSourceId::BackgroundResult {
-                            message_id: "source-id".into(),
-                        },
-                        lifecycle: protocol::ChatSourceLifecycle::Active,
-                        started: Some(protocol::ChatFactPosition {
-                            effect_seq: 8,
-                            suborder: 2,
-                        }),
-                        ended: None,
-                    }),
-                    source_order: None,
-                    kind: protocol::ChatAtomKind::ToolCall,
-                    delivery: protocol::ChatDeliveryKind::BackgroundHandoff,
-                    lifecycle: protocol::ChatAtomLifecycle::Terminal {
-                        started: None,
-                        ended: None,
-                        outcome: protocol::ChatTerminalOutcome::Transferred,
-                    },
-                    turn_id: Some("turn-id".into()),
-                    attempt_id: None,
-                    tool: None,
-                    wait: None,
-                    text_channel: None,
-                    content_present: None,
-                    started_at: None,
-                    finished_at: None,
-                    contents: vec![],
-                    payload: Some(protocol::PayloadData::Inline {
-                        bytes: bytes.clone(),
-                    }),
-                })),
-                protocol::ChatEntry::Source(protocol::ChatSourceState {
-                    source: protocol::ChatSourceId::ForegroundTurn {
-                        turn_id: "unknown-turn".into(),
-                    },
-                    lifecycle: protocol::ChatSourceLifecycle::Unknown,
-                    started: None,
-                    ended: None,
-                }),
-            ],
-            before: Some("opaque-cursor".into()),
-            current: None,
+        let mut original = atom(protocol::ChatAtomLifecycle::Terminal {
+            started: None,
+            ended: None,
+            outcome: protocol::ChatTerminalOutcome::Transferred,
+        });
+        original.id = "member-id".into();
+        original.completion_seq = Some(12);
+        original.source = protocol::ChatSourceId::BackgroundResult {
+            message_id: "source-id".into(),
         };
-        let mapped = batch(value.clone());
-        assert!(mapped.current.is_none());
-        assert_eq!(mapped.before.as_deref(), Some("opaque-cursor"));
-        let BridgeChatEntry::Atom(atom) = &mapped.entries[0] else {
-            panic!("atom entry changed kind");
-        };
-        assert_eq!(atom.id, "member-id");
-        assert_eq!(
-            atom.completion_item_id.as_deref(),
-            Some("frozen-payload-id")
-        );
-        assert_eq!(atom.completion_seq, Some(12));
-        assert_eq!(atom.source_order, None);
-        assert!(matches!(
-            &atom.source,
-            BridgeChatSourceId::BackgroundResult { message_id } if message_id == "source-id"
-        ));
-        let source_state = atom.source_state.as_ref().expect("source cut is present");
-        assert!(matches!(
-            &source_state.source,
-            BridgeChatSourceId::BackgroundResult { message_id } if message_id == "source-id"
-        ));
-        assert!(matches!(
-            &source_state.lifecycle,
-            BridgeChatSourceLifecycle::Active
-        ));
-        assert_eq!(
-            source_state.started,
-            Some(BridgeChatFactPosition {
-                effect_seq: 8,
-                suborder: 2
-            })
-        );
-        assert_eq!(source_state.ended, None);
-        assert!(matches!(
-            &atom.lifecycle,
-            BridgeChatAtomLifecycle::Terminal {
-                started: None,
-                ended: None,
-                outcome: BridgeChatTerminalOutcome::Transferred
-            }
-        ));
-        assert!(matches!(
-            &atom.payload,
-            Some(BridgePayloadData::Inline { bytes: mapped }) if *mapped == bytes
-        ));
-        let BridgeChatEntry::Source(source) = &mapped.entries[1] else {
-            panic!("source state entry changed kind");
-        };
-        assert!(matches!(
-            source.lifecycle,
-            BridgeChatSourceLifecycle::Unknown
-        ));
-        assert_eq!(source.started, None);
-        assert_eq!(source.ended, None);
-        let mut projection =
-            protocol::CurrentProjection::empty(29, protocol::ThreadStatus::Running);
-        let protocol::ChatEntry::Atom(current_atom) = &value.entries[0] else {
-            panic!("atom entry changed kind");
-        };
-        let active_position = protocol::ChatFactPosition {
-            effect_seq: 29,
-            suborder: 1,
-        };
-        let mut active_atom = current_atom.as_ref().clone();
-        active_atom.id = "active-member".into();
-        active_atom.completion_item_id = None;
-        active_atom.completion_seq = None;
-        active_atom.source = protocol::ChatSourceId::ForegroundTurn {
-            turn_id: "active-turn".into(),
-        };
-        active_atom.source_state = None;
-        active_atom.source_order = Some(1);
-        active_atom.kind = protocol::ChatAtomKind::Text;
-        active_atom.delivery = protocol::ChatDeliveryKind::Foreground;
-        active_atom.lifecycle = protocol::ChatAtomLifecycle::Active {
-            started: Some(active_position),
-            status: protocol::ChatActiveStatus::Running,
-        };
-        active_atom.turn_id = Some("active-turn".into());
-        active_atom.payload = None;
-        projection.atoms.push(active_atom);
-        projection.sources.push(protocol::ChatSourceState {
-            source: protocol::ChatSourceId::ForegroundTurn {
-                turn_id: "active-turn".into(),
+        original.source_state = Some(protocol::ChatSourceState {
+            source: protocol::ChatSourceId::BackgroundResult {
+                message_id: "source-id".into(),
             },
             lifecycle: protocol::ChatSourceLifecycle::Active,
-            started: Some(active_position),
+            started: Some(protocol::ChatFactPosition {
+                effect_seq: 8,
+                suborder: 2,
+            }),
             ended: None,
         });
-        let mapped = current(projection);
-        assert_eq!(mapped.atoms[0].id, "active-member");
-        assert_eq!(mapped.atoms[0].completion_seq, None);
-        assert_eq!(mapped.atoms[0].source_order, Some(1));
-        assert!(mapped.atoms[0].source_state.is_none());
-        assert!(mapped.atoms[0].payload.is_none());
+        original.source_order = None;
+        original.kind = protocol::ChatAtomKind::ToolCall;
+        original.delivery = protocol::ChatDeliveryKind::BackgroundHandoff;
+        original.payload = Some(protocol::PayloadData::Inline {
+            bytes: bytes.clone(),
+        });
+        let mapped = batch(protocol::ChatBatch {
+            placement: protocol::ChatPlacement::Prepend,
+            entries: vec![protocol::CompletedEntry {
+                record_id: "record-id".into(),
+                completion_seq: 12,
+                run: None,
+                main_presentation: protocol::MainPresentation::Hidden,
+                atom: original,
+            }],
+            before: Some("opaque-cursor".into()),
+            from_seq: None,
+            through_seq: 12,
+        });
+        assert_eq!(mapped.before.as_deref(), Some("opaque-cursor"));
+        assert_eq!(mapped.from_seq, None);
+        assert_eq!(mapped.through_seq, 12);
+        let entry = &mapped.entries[0];
+        assert_eq!(entry.main_presentation, BridgeMainPresentation::Hidden);
+        assert_eq!(entry.atom.id, "member-id");
+        assert_eq!(entry.atom.completion_seq, Some(12));
+        assert_eq!(entry.atom.source_order, None);
+        let source = entry.atom.source_state.as_ref().expect("typed source cut");
         assert!(matches!(
-            &mapped.atoms[0].lifecycle,
-            BridgeChatAtomLifecycle::Active {
-                started: Some(BridgeChatFactPosition {
-                    effect_seq: 29,
-                    suborder: 1
-                }),
-                status: BridgeChatActiveStatus::Running
-            }
-        ));
-        assert!(matches!(
-            &mapped.sources[0].lifecycle,
+            &source.lifecycle,
             BridgeChatSourceLifecycle::Active
         ));
         assert_eq!(
-            mapped.sources[0].started,
+            source.started,
             Some(BridgeChatFactPosition {
-                effect_seq: 29,
-                suborder: 1
+                effect_seq: 8,
+                suborder: 2,
             })
         );
-        assert_eq!(mapped.sources[0].ended, None);
-        let mut empty = value;
-        empty.current = Some(protocol::CurrentProjection::empty(
-            23,
-            protocol::ThreadStatus::Idle,
+        assert!(matches!(
+            &entry.atom.payload,
+            Some(BridgePayloadData::Inline { bytes: mapped }) if *mapped == bytes
         ));
-        let empty = batch(empty).current.unwrap();
-        assert_eq!(empty.source_effect_seq, 23);
-        assert!(empty.active.is_none());
-        assert!(!empty.execution_present);
     }
 }

@@ -1495,7 +1495,8 @@ async fn sqlite_adopts_current_database_and_refuses_future_writes() {
                 .await
                 .unwrap();
         } else if fault == "checkpoint" {
-            let mut checkpoint = ThreadCheckpoint::capture("future".into(), 0, Default::default());
+            let mut checkpoint =
+                ThreadCheckpoint::capture("future".into(), 0, Default::default()).unwrap();
             checkpoint.schema_version = 7;
             let envelope = serde_json::to_string(&checkpoint).unwrap();
             db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,

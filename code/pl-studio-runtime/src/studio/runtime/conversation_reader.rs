@@ -19,9 +19,6 @@ pub struct ConversationReader {
     pub(super) inner: Arc<ReadLease>,
 }
 pub(super) struct ReadLease {
-    pub projection_generation: String,
-    generation: watch::Receiver<String>,
-    member_window: std::sync::Mutex<std::collections::BTreeMap<String, ChatSourceId>>,
     pub id: String,
     pub thread_id: String,
     pub scope: ChatScope,
@@ -35,8 +32,6 @@ pub(super) struct ReadLease {
 }
 pub(super) struct ReadResources {
     /// Bounded metadata at this read cut; never retains a body or a current collection.
-    pub active_heads: Vec<ChatAtom>,
-    pub projection_generation: String,
     pub history: HistoryStore,
     pub session: core::Session,
     pub database_id: Option<String>,
@@ -78,8 +73,9 @@ impl std::fmt::Debug for ConversationReader {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
-    projection_generation: String,
-    projection_version: u32,
+    version: u32,
+    index_version: u32,
+    thread_id: String,
     lease: String,
     database: Option<String>,
     scope: ChatScope,
@@ -104,13 +100,21 @@ enum CursorKind {
 }
 
 pub(super) fn query(scope: &ChatScope) -> Result<core::ChatQuery> {
-    Ok(core::ChatQuery::new(
+    let mut query = core::ChatQuery::new(
         scope.query_class(),
         scope
             .parent_id()
             .map(|parent| core::ChatKey::from_encoded(parent.to_owned()))
             .transpose()?,
-    ))
+    );
+    query.selection = match scope {
+        ChatScope::Main => core::ChatSelection::RunHeads,
+        ChatScope::Run { reference } => core::ChatSelection::Run {
+            start_seq: reference.start_seq,
+        },
+        ChatScope::Children { .. } => core::ChatSelection::Records,
+    };
+    Ok(query)
 }
 pub(super) fn core_demand(demand: ReadDemand) -> Result<core::ReadDemand> {
     demand.validate(1)?;
@@ -148,6 +152,25 @@ fn stale() -> anyhow::Error {
 }
 
 impl ConversationReader {
+    pub async fn read_business_refs(&self) -> Result<ThreadBusinessRefs> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let source = resources
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
+        let references = if let Some(source) = source {
+            source.current.business_refs()
+        } else {
+            let references = tokio::select! { biased;
+                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+                references = resources.history.read_business_refs() => references?,
+            };
+            references.unwrap_or_else(ThreadBusinessRefs::empty)
+        };
+        self.ensure()?;
+        Ok(references)
+    }
     pub(super) fn new(
         id: String,
         scope: ChatScope,
@@ -159,9 +182,6 @@ impl ConversationReader {
     ) -> Self {
         let reader = Self {
             inner: Arc::new(ReadLease {
-                projection_generation: resources.projection_generation.clone(),
-                generation: resources.history.timeline_generation_changes(),
-                member_window: std::sync::Mutex::new(Default::default()),
                 thread_id: resources.thread.id.clone(),
                 id,
                 scope,
@@ -183,49 +203,6 @@ impl ConversationReader {
     pub fn subscription_id(&self) -> &str {
         &self.inner.id
     }
-    pub(super) fn select_member_window(&self, entries: &[ChatEntry]) {
-        if !matches!(self.inner.scope, ChatScope::GroupMembers { .. }) {
-            return;
-        }
-        let mut window = self
-            .inner
-            .member_window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Loaded terminal members are immutable and need no resident interest.
-        // Keep only opened active facts (already bounded by the original current
-        // admission budget), including an earlier page still waiting on a part.
-        for entry in entries {
-            if let ChatEntry::Atom(atom) = entry {
-                if matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }) {
-                    window.insert(atom.id.clone(), atom.source.clone());
-                } else {
-                    window.remove(&atom.id);
-                }
-            }
-        }
-    }
-    pub(super) fn observes_member(&self, id: &str, order: u64) -> bool {
-        // The initial page freezes only the older-page boundary. New members
-        // of this same group still belong to its live append tail, including a
-        // member first observed at its reliable terminal handoff. Older hidden
-        // members must not be materialized by an unrelated update.
-        order >= self.inner.ceiling
-            || self
-                .inner
-                .member_window
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(id)
-    }
-    pub(super) fn observes_source(&self, source: &ChatSourceId) -> bool {
-        self.inner
-            .member_window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .any(|value| value == source)
-    }
     pub(crate) fn ensure(&self) -> Result<()> {
         if self.inner.resync.load(Ordering::Acquire) {
             return Err(resync());
@@ -233,9 +210,7 @@ impl ConversationReader {
         if self.inner.cancel.is_cancelled() {
             return Err(cancelled());
         }
-        if *self.inner.generation.borrow() != self.inner.projection_generation
-            || !self.inner.slot.is_current(self.inner.epoch)
-        {
+        if !self.inner.slot.is_current(self.inner.epoch) {
             self.invalidate();
             return Err(resync());
         }
@@ -252,11 +227,6 @@ impl ConversationReader {
             source_line = caller.line(),
             "conversation reader invalidated"
         );
-        self.inner
-            .member_window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
         self.inner.resync.store(true, Ordering::Release);
         self.inner.cancel.cancel();
         if let Ok(mut resources) = self.inner.resources.try_write() {
@@ -264,11 +234,6 @@ impl ConversationReader {
         }
     }
     pub fn request_close(&self) {
-        self.inner
-            .member_window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
         self.inner.cancel.cancel();
         if let Ok(mut resources) = self.inner.resources.try_write() {
             resources.take();
@@ -298,8 +263,9 @@ impl ConversationReader {
     }
     fn token(&self, resources: &ReadResources, kind: CursorKind) -> Result<String> {
         Ok(serde_json::to_string(&Cursor {
-            projection_generation: self.inner.projection_generation.clone(),
-            projection_version: TIMELINE_PROJECTION_VERSION,
+            version: 2,
+            index_version: COMPLETED_READ_INDEX_VERSION,
+            thread_id: self.thread_id().into(),
             lease: self.inner.id.clone(),
             database: resources.database_id.clone(),
             scope: self.inner.scope.clone(),
@@ -317,9 +283,10 @@ impl ConversationReader {
             core::ChatError::InvalidArgument("invalid conversation continuation".into())
         })?;
         ensure!(
-            cursor.projection_generation == self.inner.projection_generation
-                && cursor.lease == self.inner.id
-                && cursor.projection_version == TIMELINE_PROJECTION_VERSION
+            cursor.lease == self.inner.id
+                && cursor.version == 2
+                && cursor.index_version == COMPLETED_READ_INDEX_VERSION
+                && cursor.thread_id == self.thread_id()
                 && cursor.database == resources.database_id
                 && cursor.scope == self.inner.scope
                 && cursor.epoch == resources.session.epoch().as_str()
@@ -337,50 +304,18 @@ impl ConversationReader {
             .map(|boundary| self.token(r, CursorKind::Before { boundary }))
             .transpose()
     }
-    pub(super) async fn budget(&self, current: Option<CurrentProjection>) -> Result<JsonBudget> {
+    pub(super) async fn budget(&self) -> Result<JsonBudget> {
         let guard = self.resources().await?;
         let r = guard.as_ref().ok_or_else(cancelled)?;
         let token = self.token(r, CursorKind::Before { boundary: u64::MAX })?;
         Ok(JsonBudget::new(
             r.database_id.clone().unwrap_or_default(),
-            current,
             token,
         ))
     }
-    /// Crate-local consumer proof at an already-delivered current cut. Uses the
-    /// original owner metadata, or its durable source row after retention; never
-    /// advances the read cut, activates execution, flushes or reads a body.
-    pub(crate) async fn source_ended_at(&self, source: &ChatSourceId, cut: u64) -> Result<bool> {
-        let guard = self.resources().await?;
-        let resources = guard.as_ref().ok_or_else(cancelled)?;
-        let retained = resources
-            .source
-            .as_ref()
-            .and_then(|owner| owner.current_conversation());
-        if let Some(state) = retained.as_ref().and_then(|current| {
-            current
-                .current
-                .source_states()
-                .iter()
-                .find(|state| &state.source == source)
-        }) && state.ended.is_some_and(|at| at.effect_seq <= cut)
-            && matches!(state.lifecycle, ChatSourceLifecycle::Ended { .. })
-        {
-            self.ensure()?;
-            return Ok(true);
-        }
-        let states = resources
-            .history
-            .conversation_sources(std::slice::from_ref(source), cut)
-            .await?;
-        self.ensure()?;
-        Ok(states
-            .iter()
-            .any(|state| matches!(state.lifecycle, ChatSourceLifecycle::Ended { .. })))
-    }
     pub(super) async fn annotate_source_states(
         &self,
-        entries: &mut [ChatEntry],
+        entries: &mut [CompletedEntry],
         known: &[ChatSourceState],
         effect_cut: u64,
     ) -> Result<()> {
@@ -430,19 +365,18 @@ impl ConversationReader {
             boundary > 0 && boundary <= self.inner.ceiling,
             core::ChatError::InvalidArgument("invalid exclusive boundary".into())
         );
-        if !matches!(self.inner.scope, ChatScope::Children { .. }) {
-            return self.display_older(r, boundary, demand).await;
-        }
         let budget = JsonBudget::new(
             r.database_id.clone().unwrap_or_default(),
-            None,
             self.token(r, CursorKind::Before { boundary: u64::MAX })?,
-        );
+        )
+        .for_scope(&self.inner.scope);
         let page = r
             .session
             .page(
                 core::ChatPageRequest::before(
                     core::ChatCursor {
+                        version: core::CHAT_CURSOR_VERSION,
+                        index_version: core::CHAT_INDEX_VERSION,
                         epoch: r.session.epoch(),
                         query: query(&self.inner.scope)?,
                         ceiling: self.inner.ceiling,
@@ -467,7 +401,8 @@ impl ConversationReader {
                     )
                 })
                 .transpose()?,
-            current: None,
+            from_seq: None,
+            through_seq: self.inner.ceiling,
         };
         let source = r
             .source
@@ -491,159 +426,48 @@ impl ConversationReader {
         );
         Ok(batch)
     }
-    async fn display_older(
+    /// Header-first point lookup on the original completion collection. Queries
+    /// keep their independent read permit and never wait for stream credit.
+    pub async fn read_completed(
         &self,
-        resources: &ReadResources,
-        boundary: u64,
+        record_id: &str,
         demand: ReadDemand,
-    ) -> Result<ChatBatch> {
-        let token = self.token(
-            resources,
-            CursorKind::Before {
-                boundary: i64::MAX as u64,
-            },
-        )?;
-        let budget = JsonBudget::new(
-            resources.database_id.clone().unwrap_or_default(),
-            None,
-            token,
-        );
-        let page = tokio::select! { biased;
+    ) -> Result<CompletedEntry> {
+        let guard = self.resources().await?;
+        let r = guard.as_ref().ok_or_else(cancelled)?;
+        let budget = JsonBudget::new(r.database_id.clone().unwrap_or_default(), String::new());
+        let item = tokio::select! { biased;
             _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-            page = resources.history.timeline_page(&self.inner.scope, Some(boundary),
-                crate::studio::storage::history::TimelineReadCut {
-                    ceiling: self.inner.ceiling,
-                    effect: self.inner.effect_cut,
-                    active_heads: &resources.active_heads,
-                }, demand, core::ChatBudget::fixed_bytes(&budget)) => page?,
-        };
-        let mut batch = ChatBatch {
-            placement: ChatPlacement::Prepend,
-            entries: page.entries,
-            before: page
-                .before
-                .map(|boundary| self.token(resources, CursorKind::Before { boundary }))
-                .transpose()?,
-            current: None,
-        };
+            result = r.session.read_item(core::ChatItemRequest {
+                epoch: r.session.epoch(), item_id: record_id.into(),
+                ceiling: None, demand: core_demand(demand)?,
+            }, &budget) => result?,
+        }
+        .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
+        let mut entries = entries(vec![item], &budget.database_id)?;
+        let current = r
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
         annotate_sources(
-            &mut batch.entries,
-            &resources.history,
-            &[],
-            self.inner.effect_cut,
+            &mut entries,
+            &r.history,
+            current
+                .as_ref()
+                .map_or(&[], |source| source.current.source_states()),
+            current.as_ref().map_or(self.inner.effect_cut, |source| {
+                source.current.projection().source_effect_seq
+            }),
         )
         .await?;
-        self.select_member_window(&batch.entries);
-        self.inline_timeline_payloads(&mut batch, demand).await?;
-        self.finish_batch(batch, demand)
-    }
-
-    /// Resolve frame-budgeted Text/Status and explicitly opened member envelopes
-    /// through their original content owner. WorkGroup headers never read members.
-    pub(super) async fn inline_timeline_payloads(
-        &self,
-        batch: &mut ChatBatch,
-        demand: ReadDemand,
-    ) -> Result<()> {
-        if matches!(self.inner.scope, ChatScope::Children { .. }) {
-            return Ok(());
-        }
-        let mut used = batch.encoded_len()?;
-        let reverse =
-            batch.placement == ChatPlacement::Prepend || batch.placement == ChatPlacement::Set;
-        for offset in 0..batch.entries.len() {
-            let index = if reverse {
-                batch.entries.len() - 1 - offset
-            } else {
-                offset
-            };
-            let entry = &mut batch.entries[index];
-            let original_bytes = serde_json::to_vec(&*entry)?.len();
-            let without = used
-                .checked_sub(original_bytes)
-                .ok_or_else(|| anyhow::anyhow!("chat inline accounting underflow"))?;
-            let encoded = self
-                .inline_timeline_entry(entry, original_bytes, without, demand)
-                .await?;
-            used = without
-                .checked_add(encoded)
-                .ok_or_else(|| anyhow::anyhow!("chat inline accounting overflow"))?;
-        }
-        Ok(())
-    }
-
-    /// Try only this candidate, using the exact surrounding frame length.
-    /// The conservative pre-read bound prevents reading bodies that cannot fit.
-    pub(super) async fn inline_timeline_entry(
-        &self,
-        entry: &mut ChatEntry,
-        original_bytes: usize,
-        without: usize,
-        demand: ReadDemand,
-    ) -> Result<usize> {
-        use crate::studio::storage::history::conversation::timeline;
-        if !matches!(
-            (&self.inner.scope, &*entry),
-            (ChatScope::Main, ChatEntry::Item(_))
-                | (ChatScope::GroupMembers { .. }, ChatEntry::Atom(_))
-        ) {
-            return Ok(original_bytes);
-        }
-        let Some(inline_bound) = timeline::inline_entry_bytes(entry)? else {
-            return Ok(original_bytes);
-        };
-        if without
-            .checked_add(inline_bound)
-            .ok_or_else(|| anyhow::anyhow!("chat inline pre-read accounting overflow"))?
-            > demand.max_bytes as usize
-        {
-            return Ok(original_bytes);
-        }
-        let (payload, content_item_id) = match &*entry {
-            ChatEntry::Item(item) => (&item.payload, item.content_item_id.as_deref()),
-            ChatEntry::Atom(atom) => (&atom.payload, atom.completion_item_id.as_deref()),
-            ChatEntry::Source(_) => unreachable!(),
-        };
-        let Some(PayloadData::Deferred {
-            reference,
-            byte_length,
-        }) = payload
-        else {
-            unreachable!()
-        };
+        self.ensure()?;
+        let entry = entries.pop().expect("one point-read result");
         ensure!(
-            matches!(&reference.target,ContentTarget::ItemPayload {item_id}
-            if content_item_id==Some(item_id.as_str())),
-            core::ChatError::StaleContent
+            serde_json::to_vec(&entry)?.len() <= demand.max_bytes as usize,
+            core::ChatError::InvalidDemand("completed envelope exceeds demand".into())
         );
-        let window = self
-            .read_content(
-                reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: (*byte_length as u32).max(1),
-                },
-            )
-            .await?;
-        ensure!(
-            window.sealed
-                && window.available_through == *byte_length
-                && window.bytes.len() as u64 == *byte_length,
-            core::ChatError::Conflict("frozen timeline payload differs from its header".into())
-        );
-        let payload = match entry {
-            ChatEntry::Item(item) => &mut item.payload,
-            ChatEntry::Atom(atom) => &mut atom.payload,
-            ChatEntry::Source(_) => unreachable!(),
-        };
-        *payload = Some(PayloadData::Inline {
-            bytes: window.bytes,
-        });
-        // The pre-read upper bound already admitted this Inline. The caller
-        // uses its exact fragment length; finish_batch validates the full frame.
-        Ok(serde_json::to_vec(&*entry)?.len())
+        Ok(entry)
     }
-
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
         self.ensure()?;
         batch.validate_for(&self.inner.scope)?;
@@ -652,53 +476,21 @@ impl ConversationReader {
             core::ChatError::InvalidDemand("chat entry count exceeds demand".into())
         );
         for entry in &batch.entries {
-            if let ChatEntry::Atom(atom) = entry {
-                ensure!(
-                    atom.source_state
-                        .as_ref()
-                        .is_none_or(|state| state.source == atom.source),
-                    core::ChatError::Conflict(
-                        "source annotation identity differs from its atom".into()
-                    )
-                );
-            }
+            let atom = &entry.atom;
+            ensure!(
+                atom.source_state
+                    .as_ref()
+                    .is_none_or(|state| state.source == atom.source),
+                core::ChatError::Conflict(
+                    "source annotation identity differs from its atom".into()
+                )
+            );
         }
         let encoded_bytes = batch.encoded_len()?;
         ensure!(
             encoded_bytes <= demand.max_bytes as usize,
             core::ChatError::InvalidDemand("encoded chat batch exceeds demand".into())
         );
-        if tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
-            let (atom_entries, inline_payload_bytes) =
-                batch
-                    .entries
-                    .iter()
-                    .fold((0_usize, 0_usize), |counts, entry| {
-                        if let ChatEntry::Atom(atom) = entry {
-                            let bytes = match &atom.payload {
-                                Some(PayloadData::Inline { bytes }) => bytes.len(),
-                                _ => 0,
-                            };
-                            (counts.0 + 1, counts.1 + bytes)
-                        } else {
-                            counts
-                        }
-                    });
-            // This is a validated product batch, not an ACK or a disk-IO measurement.
-            // Reuse the mandatory budget encoding; diagnostics never read a body.
-            tracing::debug!(
-                target: "conversation_work",
-                thread_id = self.thread_id(),
-                lease_id = self.subscription_id(),
-                placement = ?batch.placement,
-                atom_entries,
-                source_entries = batch.entries.len() - atom_entries,
-                batch_encoded_bytes = encoded_bytes,
-                inline_payload_bytes,
-                has_before = batch.before.is_some(),
-                "bounded chat batch validated"
-            );
-        }
         Ok(batch)
     }
     pub async fn list_contents(
@@ -726,7 +518,6 @@ impl ConversationReader {
         })?;
         let mut budget = JsonBudget::new(
             database.into(),
-            None,
             self.token(
                 r,
                 CursorKind::Manifest {
@@ -866,7 +657,12 @@ impl ConversationReader {
             .as_ref()
             .and_then(|source| source.current_conversation());
         if let ContentTarget::Body { owner, key } = &reference.target {
-            let cold = if source.is_none() && matches!(owner, ContentOwner::Current { .. }) {
+            // Cold Plan bytes must come from their original sealed content
+            // store. Reconstructing the document from checkpoint state here
+            // would hide missing/corrupt saved content blocks.
+            let cold = if source.is_none()
+                && matches!(owner, ContentOwner::Current { domain, .. } if domain == "collection:interactions")
+            {
                 r.history.cold_current_state().await?
             } else {
                 None
@@ -914,9 +710,9 @@ impl ConversationReader {
                     ensure!(
                         state
                             .projection()
-                            .collections
-                            .iter()
-                            .any(|reference| reference.collection == collection
+                            .interactions
+                            .as_ref()
+                            .is_some_and(|reference| reference.collection == collection
                                 && reference.revision == *revision),
                         core::ChatError::StaleContent
                     );
@@ -1058,7 +854,6 @@ impl ConversationReader {
         let changed = r.source.as_ref().map(|source| source.content_changes());
         let (_, slot_changed) = self.inner.slot.capture();
         Ok(ContentWatch {
-            generation_changed: self.inner.generation.clone(),
             reader: self.clone(),
             reference: reference.clone(),
             range,
@@ -1092,7 +887,6 @@ impl From<&ContentWindow> for WindowStamp {
 }
 
 pub struct ContentWatch {
-    generation_changed: watch::Receiver<String>,
     reader: ConversationReader,
     reference: ContentRef,
     range: ContentRange,
@@ -1127,7 +921,6 @@ impl ContentWatch {
                     _=self.cancel.cancelled()=>return Err(cancelled()),
                     _=self.reader.inner.cancel.cancelled()=>return Err(self.reader.ensure().err().unwrap_or_else(cancelled)),
                     _=self.slot_changed.changed()=>{self.reader.invalidate();return Err(resync());},
-                    _=self.generation_changed.changed()=>{self.reader.invalidate();return Err(resync());},
                     result=changed.changed()=>if result.is_err() { return Err(resync()); }
                 }
             }
@@ -1153,35 +946,59 @@ impl ContentWatch {
 
 pub(super) struct JsonBudget {
     pub database_id: String,
+    main: bool,
+    deferred_only: bool,
     fixed: usize,
     manifest_item: Option<String>,
     manifest_cursor: Option<Cursor>,
 }
 impl JsonBudget {
-    pub(super) fn new(
-        database_id: String,
-        current: Option<CurrentProjection>,
-        continuation: String,
-    ) -> Self {
+    pub(super) fn new(database_id: String, continuation: String) -> Self {
         let batch = ChatBatch {
             placement: ChatPlacement::Prepend,
             entries: Vec::new(),
             before: Some(continuation),
-            current,
+            from_seq: None,
+            through_seq: i64::MAX as u64,
         };
         Self {
             database_id,
+            main: false,
+            deferred_only: false,
             fixed: serde_json::to_vec(&batch).map_or(usize::MAX, |bytes| bytes.len()),
             manifest_item: None,
             manifest_cursor: None,
         }
     }
+    pub(super) fn for_scope(mut self, scope: &ChatScope) -> Self {
+        self.main = matches!(scope, ChatScope::Main);
+        self
+    }
+    pub(super) fn headers_only(mut self) -> Self {
+        self.deferred_only = true;
+        self
+    }
 }
 impl core::ChatBudget for JsonBudget {
+    fn allow_inline(&self, header: &core::ChatItemHeader) -> bool {
+        !self.deferred_only
+            && (!self.main || matches!(header.read_hint, core::ChatReadHint::Single))
+    }
     fn fixed_bytes(&self) -> usize {
         self.fixed
     }
     fn item_bytes(&self, header: &core::ChatItemHeader, mode: core::PayloadMode) -> usize {
+        if self.main && mode == core::PayloadMode::Inline {
+            let Ok(atom) = serde_json::from_slice::<ChatAtom>(&header.metadata) else {
+                return usize::MAX;
+            };
+            if crate::studio::runtime::chat_item::native_read_class_v1(&header.query_class, &atom)
+                .main_presentation
+                != MainPresentation::Single
+            {
+                return usize::MAX;
+            }
+        }
         let payload = match mode {
             core::PayloadMode::Inline => PayloadData::Inline { bytes: Vec::new() },
             core::PayloadMode::Deferred => PayloadData::Deferred {
@@ -1194,10 +1011,10 @@ impl core::ChatBudget for JsonBudget {
                 byte_length: header.byte_length,
             },
         };
-        let base = completion_atom(header, payload)
-            .and_then(|mut atom| {
-                atom.source_state = Some(ChatSourceState {
-                    source: atom.source.clone(),
+        let base = completed_entry(header, payload)
+            .and_then(|mut entry| {
+                entry.atom.source_state = Some(ChatSourceState {
+                    source: entry.atom.source.clone(),
                     lifecycle: ChatSourceLifecycle::Ended {
                         outcome: ChatTerminalOutcome::Transferred,
                     },
@@ -1210,8 +1027,7 @@ impl core::ChatBudget for JsonBudget {
                         suborder: u32::MAX,
                     }),
                 });
-                // A read-cut annotation is part of the single Atom's item budget, never another row.
-                Ok(serde_json::to_vec(&ChatEntry::Atom(Box::new(atom)))?)
+                Ok(serde_json::to_vec(&entry)?)
             })
             .map_or(usize::MAX, |bytes| bytes.len().saturating_add(1));
         if mode == core::PayloadMode::Inline {
@@ -1254,17 +1070,14 @@ impl core::ChatBudget for JsonBudget {
     }
 }
 pub(super) async fn annotate_sources(
-    entries: &mut [ChatEntry],
+    entries: &mut [CompletedEntry],
     history: &HistoryStore,
     known: &[ChatSourceState],
     effect_cut: u64,
 ) -> Result<()> {
     let ids = entries
         .iter()
-        .filter_map(|entry| match entry {
-            ChatEntry::Atom(atom) => Some(atom.source.clone()),
-            _ => None,
-        })
+        .map(|entry| entry.atom.source.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let mut states = Vec::with_capacity(ids.len());
     let mut missing = Vec::new();
@@ -1301,7 +1114,10 @@ pub(super) async fn annotate_sources(
     annotate_atoms(entries, &states)
 }
 
-pub(super) fn annotate_atoms(entries: &mut [ChatEntry], states: &[ChatSourceState]) -> Result<()> {
+pub(super) fn annotate_atoms(
+    entries: &mut [CompletedEntry],
+    states: &[ChatSourceState],
+) -> Result<()> {
     let mut by_source = std::collections::BTreeMap::new();
     for state in states {
         if let Some(old) = by_source.insert(&state.source, state) {
@@ -1312,19 +1128,7 @@ pub(super) fn annotate_atoms(entries: &mut [ChatEntry], states: &[ChatSourceStat
         }
     }
     for entry in entries {
-        let atom = match entry {
-            ChatEntry::Atom(atom) => atom,
-            // Timeline items already carry the product projection's identity,
-            // summary and terminal outcome. Atomic source annotations belong
-            // only to member/Children entries.
-            ChatEntry::Item(_) => continue,
-            ChatEntry::Source(_) => {
-                return Err(core::ChatError::Conflict(
-                    "ordinary page contains a source event".into(),
-                )
-                .into());
-            }
-        };
+        let atom = &mut entry.atom;
         ensure!(
             atom.source_state
                 .as_ref()
@@ -1339,21 +1143,46 @@ pub(super) fn annotate_atoms(entries: &mut [ChatEntry], states: &[ChatSourceStat
     Ok(())
 }
 
-fn completion_atom(header: &core::ChatItemHeader, payload: PayloadData) -> Result<ChatAtom> {
+pub(super) fn completed_entry(
+    header: &core::ChatItemHeader,
+    payload: PayloadData,
+) -> Result<CompletedEntry> {
     let mut atom: ChatAtom = serde_json::from_slice(&header.metadata)?;
     ensure!(
-        atom.completion_item_id.as_deref() == Some(header.item_id.as_str())
+        atom.completion_item_id
+            .as_deref()
+            .is_none_or(|id| id == header.item_id)
+            && atom
+                .completion_seq
+                .is_none_or(|seq| seq == header.append_seq)
             && atom.payload.is_none()
-            && atom.completion_seq.is_none()
-            && atom.source_state.is_none(),
-        "completion metadata does not name its frozen item"
+            && atom.source_state.is_none()
+            && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
+        core::ChatError::Conflict("completion metadata differs from its frozen header".into())
     );
+    atom.completion_item_id = Some(header.item_id.clone());
     atom.completion_seq = Some(header.append_seq);
     atom.payload = Some(payload);
-    Ok(atom)
+    let class = crate::studio::runtime::chat_item::native_read_class_v1(&header.query_class, &atom);
+    ensure!(
+        class.hint == header.read_hint,
+        core::ChatError::Conflict("native read class differs from completion index".into())
+    );
+    Ok(CompletedEntry {
+        record_id: header.item_id.clone(),
+        completion_seq: header.append_seq,
+        run: header.run.map(|run| CompletionRunPosition {
+            start_seq: run.start_seq,
+            ordinal: run.ordinal,
+        }),
+        main_presentation: class.main_presentation,
+        atom,
+    })
 }
-
-pub(super) fn entries(items: Vec<core::ChatPageItem>, database_id: &str) -> Result<Vec<ChatEntry>> {
+pub(super) fn entries(
+    items: Vec<core::ChatPageItem>,
+    database_id: &str,
+) -> Result<Vec<CompletedEntry>> {
     items
         .into_iter()
         .map(|item| {
@@ -1372,10 +1201,7 @@ pub(super) fn entries(items: Vec<core::ChatPageItem>, database_id: &str) -> Resu
                     byte_length,
                 },
             };
-            Ok(ChatEntry::Atom(Box::new(completion_atom(
-                &item.header,
-                payload,
-            )?)))
+            completed_entry(&item.header, payload)
         })
         .collect()
 }

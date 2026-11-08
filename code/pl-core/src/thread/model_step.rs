@@ -24,7 +24,7 @@ impl Owner {
         }
         self.retry_plan = None;
         self.state.private_context = None;
-        self.publish();
+        self.publish()?;
         self.publish_snapshot();
         if self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
@@ -232,6 +232,11 @@ impl Owner {
         // covers the early returns between the reservation and the provider call that a call-site
         // release would miss.
         self.settle_operation_output(&attempt_id);
+        if !self.state.attempt_ids.contains_key(&attempt_id) {
+            // Preparation can install an observation receiver before admission. A refused attempt
+            // owns no running observation, and must leave no receiver for a later attempt to inherit.
+            self.model_progress = None;
+        }
         if self.state.model_execution.is_some() {
             self.state.model_execution = None;
             self.publish_snapshot();
@@ -543,39 +548,54 @@ impl Owner {
             }),
         });
         self.validate_steering(&steering_ids)?;
-        self.consume_active_input(&input.turn_id, &input.attempt_id)?;
-        self.consume_steering(&steering_ids, &input.turn_id, &input.attempt_id)?;
-        self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
-        self.state.context = context;
-        // Whether this admission really executes queued work — a Message input of this batch or of the
-        // steering set, or the messages it delivers. That is what serves a point nothing claims any
-        // more, and it is measured before the watermark and the inputs move.
-        let ran_queued_work = consumed_messages > self.state.consumed_messages
-            || self
-                .active_inputs
-                .iter()
-                .chain(steering_ids.iter())
-                .any(|id| {
-                    self.state.inputs.iter().any(|record| {
-                        record.input.id == *id
-                            && record.input.purpose == input::InputPurpose::Message
-                    })
-                });
-        self.state.consumed_messages = consumed_messages;
-        // The point a claimed input or message stood for is cleared in the very commit that consumes
-        // that fact. A point whose work this batch did not carry stays exactly as it is, so a stop
-        // right before admission leaves the owed work untouched.
-        self.settle_continuation_claim(ran_queued_work);
-        self.state.attempts = attempts.clone().into();
-        self.state
-            .attempt_ids
-            .insert(input.attempt_id.clone(), input.turn_id.clone());
-        // The attempt is now running the prepared provider call; streaming output is observed
-        // through the model progress sender.
-        self.enter_model_execution(ModelExecutionPhase::Running);
-        // The attempt's own "running" row is part of what this call's reliable output ceiling funds.
-        self.claim_output(input.attempt_id.clone());
-        self.publish();
+        // Consumption can retire the task/permission that still owns an undelivered result.
+        // Keep the entire synchronous admission atomic, including the owner fields outside state:
+        // no snapshot may expose it until publish has reserved both resource cuts.
+        let previous = self.state.clone();
+        let previous_retry_plan = self.retry_plan.clone();
+        let previous_claim = self.pending_output_claim.clone();
+        let admission = (|| {
+            self.consume_active_input(&input.turn_id, &input.attempt_id)?;
+            self.consume_steering(&steering_ids, &input.turn_id, &input.attempt_id)?;
+            self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
+            self.state.context = context;
+            // Whether this admission really executes queued work — a Message input of this batch or of the
+            // steering set, or the messages it delivers. That is what serves a point nothing claims any
+            // more, and it is measured before the watermark and the inputs move.
+            let ran_queued_work = consumed_messages > self.state.consumed_messages
+                || self
+                    .active_inputs
+                    .iter()
+                    .chain(steering_ids.iter())
+                    .any(|id| {
+                        self.state.inputs.iter().any(|record| {
+                            record.input.id == *id
+                                && record.input.purpose == input::InputPurpose::Message
+                        })
+                    });
+            self.state.consumed_messages = consumed_messages;
+            // The point a claimed input or message stood for is cleared in the very commit that consumes
+            // that fact. A point whose work this batch did not carry stays exactly as it is, so a stop
+            // right before admission leaves the owed work untouched.
+            self.settle_continuation_claim(ran_queued_work);
+            self.state.attempts = attempts.clone().into();
+            self.state
+                .attempt_ids
+                .insert(input.attempt_id.clone(), input.turn_id.clone());
+            // The attempt is now running the prepared provider call; streaming output is observed
+            // through the model progress sender.
+            self.state.model_execution = Some(ModelExecutionPhase::Running);
+            // The attempt's own "running" row is part of what this call's reliable output ceiling funds.
+            self.claim_output(input.attempt_id.clone());
+            self.publish()
+        })();
+        if let Err(error) = admission {
+            self.state = previous;
+            self.retry_plan = previous_retry_plan;
+            self.pending_output_claim = previous_claim;
+            return Err(error);
+        }
+        drop((previous, previous_retry_plan, previous_claim));
         self.model_members = Some(super::model_members::MemberCall::new(
             member_receiver,
             &input,
@@ -692,7 +712,7 @@ impl Owner {
         } else {
             Some(input.attempt_id.clone())
         };
-        self.publish();
+        self.publish()?;
         // Keep bounded member validation through the final output checks and terminal handoff.
         // Closing ingress above is not permission to release its identity/metadata obligation early.
         self.model_members = None;

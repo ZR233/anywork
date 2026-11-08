@@ -9,9 +9,10 @@ use pl_studio_runtime::StudioRuntime;
 
 use super::*;
 use crate::api::studio::types::{
-    BridgeChatEntry, BridgeChatPlacement, BridgeContentOwner, BridgeContentRange, BridgeContentRef,
-    BridgeContentTarget, BridgeContentWindow, BridgeCurrentContentRole, BridgeCurrentProjection,
-    BridgeThreadNotification, BridgeThreadSubscriptionUpdate, BridgeTurnState,
+    BridgeActivityIdentity, BridgeActivitySnapshot, BridgeChatAtomKind, BridgeChatAtomLifecycle,
+    BridgeChatContentRole, BridgeChatPlacement, BridgeContentOwner, BridgeContentRange,
+    BridgeContentRef, BridgeContentTarget, BridgeContentWindow, BridgeThreadNotification,
+    BridgeThreadSubscriptionUpdate, BridgeTurnState,
 };
 
 /// `gui_streaming_output_reply(1, 1)` streams one item of 128000 reference tokens as " a" pairs.
@@ -35,36 +36,49 @@ impl LiveBodyTarget {
     }
 }
 
-fn live_body_target(current: &BridgeCurrentProjection) -> Result<Option<LiveBodyTarget>> {
-    let Some(turn) = &current.active_turn else {
-        return Ok(None);
-    };
-    let Some(preview) = current.previews.iter().find(|preview| {
-        preview.role == BridgeCurrentContentRole::Response && !preview.text.is_empty()
+fn live_body_target(activity: &BridgeActivitySnapshot) -> Result<Option<LiveBodyTarget>> {
+    let Some(entry) = activity.entries.iter().find(|entry| {
+        entry.atom.kind == BridgeChatAtomKind::Text
+            && matches!(
+                &entry.atom.lifecycle,
+                BridgeChatAtomLifecycle::Active { .. }
+            )
+            && entry
+                .atom
+                .contents
+                .iter()
+                .any(|content| content.role == BridgeChatContentRole::Body)
     }) else {
         return Ok(None);
     };
+    let Some(content) = entry
+        .atom
+        .contents
+        .iter()
+        .find(|content| content.role == BridgeChatContentRole::Body)
+    else {
+        return Ok(None);
+    };
     ensure!(matches!(
-        &preview.reference.target,
+        &content.reference.target,
         BridgeContentTarget::Body {
             owner: BridgeContentOwner::Item { .. },
             ..
         }
     ));
-    let item = current
-        .items
-        .iter()
-        .find(|item| {
-            item.contents
-                .iter()
-                .any(|content| content.reference == preview.reference)
-        })
-        .context("live response omitted its original Timeline item")?;
+    let (atom_id, identity_turn) = match &entry.identity {
+        BridgeActivityIdentity::ModelPart { atom_id } => (atom_id, entry.atom.turn_id.as_ref()),
+        _ => anyhow::bail!("live Text activity has a non-model identity"),
+    };
+    let Some(turn_id) = identity_turn else {
+        return Ok(None);
+    };
+    ensure!(atom_id == &entry.atom.id);
     Ok(Some(LiveBodyTarget {
-        reference: preview.reference.clone(),
-        preview_id: preview.id.clone(),
-        display_id: item.id.clone(),
-        turn_id: turn.id.clone(),
+        reference: content.reference.clone(),
+        preview_id: atom_id.clone(),
+        display_id: atom_id.clone(),
+        turn_id: turn_id.clone(),
     }))
 }
 
@@ -360,23 +374,28 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 }
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(batch.placement == BridgeChatPlacement::Set);
-                    ensure!(batch.current.is_some());
+                    ensure!(batch.from_seq.is_none());
                     break *batch;
+                }
+                BridgeConversationEvent::Activity { snapshot } => {
+                    ensure!(snapshot.completed_through <= i64::MAX as u64);
+                    owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                 }
                 event => anyhow::bail!("unexpected initial event: {event:?}"),
             }
         };
+        let mut accepted_through = initial.through_seq;
         let mut item_ids = HashSet::new();
         let mut last_position = None;
         for entry in &initial.entries {
-            let BridgeChatEntry::Item(item) = entry else {
-                anyhow::bail!("initial Main delivered a raw member instead of an item");
-            };
-            ensure!(item_ids.insert(item.id.clone()), "initial Main repeated item");
-            let position = item.position.context("initial item lacked its position")?;
+            ensure!(
+                item_ids.insert(entry.record_id.clone()),
+                "initial Main repeated record"
+            );
+            let position = entry.completion_seq;
             ensure!(
                 last_position.is_none_or(|last| position > last),
-                "initial Main changed item order"
+                "initial Main changed completion order"
             );
             last_position = Some(position);
         }
@@ -394,12 +413,14 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 .context("Main never published an original live body")?;
             consume_live_body(runtime, &thread_id, &facade, target).await
         };
-        let observe = async {
-            let result = async {
+        let observe =
+            async {
+                let result = async {
                 let mut terminal = None;
                 let mut retired = false;
                 let mut handed_off: Option<LiveBodyTarget> = None;
                 let mut appended: Vec<(String, Option<String>)> = Vec::new();
+                let mut activity_revision = 0;
                 while terminal.is_none() || !retired {
                     let frame = next_frame(&owner, &mut port, &mut sent).await?;
                     match frame.event {
@@ -412,59 +433,58 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                             ensure!(
                                 batch.placement == BridgeChatPlacement::Append
                                     && batch.before.is_none()
+                                    && batch.from_seq.is_some_and(|from| from < batch.through_seq)
                             );
+                            accepted_through = batch.through_seq;
                             ensure!(
                                 batch.entries.len() <= 1,
                                 "append exceeded the original Main demand"
                             );
-                            for entry in batch.entries {
-                                let BridgeChatEntry::Item(item) = entry else {
-                                    anyhow::bail!("Main appended a raw member instead of an item");
-                                };
+                            for item in batch.entries {
                                 ensure!(
-                                    item_ids.insert(item.id.clone()),
-                                    "Main repeated item {}",
-                                    item.id
+                                    item_ids.insert(item.record_id.clone()),
+                                    "Main repeated completion record {}",
+                                    item.record_id
                                 );
-                                let position = item
-                                    .position
-                                    .context("appended item lacked its position")?;
+                                let position = item.completion_seq;
                                 let last = last_position
-                                    .context("no baseline position after the initial Set")?;
+                                    .context("no baseline completion position after initial Set")?;
                                 ensure!(
                                     position > last,
                                     "Main Append changed item order: {position} after {last}"
                                 );
                                 last_position = Some(position);
-                                appended.push((item.id, item.content_item_id));
+                                appended.push((item.record_id, item.atom.completion_item_id));
                             }
-                            if let Some(current) = &batch.current {
-                                if let Some(target) = live_body_target(current)? {
-                                    if let Some(previous) = &handed_off {
-                                        ensure!(
-                                            previous.same_identity(&target),
-                                            "live body identity changed mid-stream: {previous:?} -> {target:?}"
-                                        );
-                                    } else {
-                                        let delivered = offer
-                                            .take()
-                                            .context("body handoff offered twice")?;
-                                        delivered
-                                            .send(target.clone())
-                                            .map_err(|_| anyhow::anyhow!("body consumer closed before its target"))?;
-                                        handed_off = Some(target);
-                                    }
+                            owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
+                        }
+                        BridgeConversationEvent::Activity { snapshot } => {
+                            ensure!(snapshot.revision > activity_revision);
+                            ensure!(snapshot.completed_through == accepted_through,
+                                "Activity crossed its checked completion prefix");
+                            activity_revision = snapshot.revision;
+                            if let Some(target) = live_body_target(&snapshot)? {
+                                if let Some(previous) = &handed_off {
+                                    ensure!(
+                                        previous.same_identity(&target),
+                                        "live Activity identity changed: {previous:?} -> {target:?}"
+                                    );
+                                } else {
+                                    let delivered =
+                                        offer.take().context("body handoff offered twice")?;
+                                    delivered.send(target.clone()).map_err(|_| {
+                                        anyhow::anyhow!("body consumer closed before its target")
+                                    })?;
+                                    handed_off = Some(target);
                                 }
-                                // Track the latest genuine retirement: only a post-handoff
-                                // current with no activity, no active Turn and no residual
-                                // items retires the original stream. A stale pre-submit idle
-                                // projection, a stopping Turn or the typed terminal alone
-                                // never counts, and a later live sighting resets it.
-                                retired = handed_off.is_some()
-                                    && current.active.is_none()
-                                    && current.active_turn.is_none()
-                                    && current.items.is_empty();
                             }
+                            retired = handed_off.as_ref().is_some_and(|target| {
+                                !snapshot.execution_present
+                                    && !snapshot.entries.iter().any(|entry| {
+                                        entry.atom.turn_id.as_deref()
+                                            == Some(target.turn_id.as_str())
+                                    })
+                            });
                             owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                         }
                         event => anyhow::bail!("unexpected live event: {event:?}"),
@@ -477,9 +497,9 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 ))
             }
             .await;
-            drop(offer);
-            result
-        };
+                drop(offer);
+                result
+            };
         // The one-time identity transfer is synchronous; both owners stay joined on any failure.
         let (main, body) = tokio::join!(observe, consume);
         let (terminal_turn, target, appended) =
@@ -556,7 +576,9 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                     },
                 )
                 .await
-                .map_err(|error| anyhow::anyhow!("sealed.read offset={sealed_cursor}: {error:?}"))?;
+                .map_err(|error| {
+                    anyhow::anyhow!("sealed.read offset={sealed_cursor}: {error:?}")
+                })?;
             ensure!(
                 window.sealed
                     && window.offset == sealed_cursor
@@ -568,9 +590,11 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 "sealed read returned {} bytes over the bounded request {request}",
                 window.bytes.len()
             );
-            ensure!(sealed_generation
-                .as_ref()
-                .is_none_or(|value| value == &window.generation));
+            ensure!(
+                sealed_generation
+                    .as_ref()
+                    .is_none_or(|value| value == &window.generation)
+            );
             sealed_generation = Some(window.generation.clone());
             let (parts, remainder) = window.bytes.as_chunks::<2>();
             ensure!(remainder.is_empty() && parts.iter().all(|part| part == b" a"));
@@ -578,7 +602,7 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
         }
         ensure!(sealed_cursor == BODY_BYTES);
         ensure!(sealed_generation.as_ref() == Some(&body.generation));
-        Ok((terminal_turn, item_ids, body))
+        Ok((terminal_turn, item_ids, body, accepted_through))
     })
     .await;
     // Every frame received before close was acknowledged synchronously; the close takes ACK
@@ -595,12 +619,13 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 "paced single-item bridge consumer exceeded its observation budget: {elapsed:?}"
             )),
         };
-        let (terminal_turn, mut item_ids, body) = observation.with_context(|| {
-            format!(
-                "conversation cleanup: close={close:?}; settled={settled}; \
+        let (terminal_turn, mut item_ids, body, mut accepted_through) =
+            observation.with_context(|| {
+                format!(
+                    "conversation cleanup: close={close:?}; settled={settled}; \
                  native_closed={native_closed}; producer_joined={producer_joined}"
-            )
-        })?;
+                )
+            })?;
         close?;
         ensure!(settled, "conversation owner did not settle after close");
         ensure!(
@@ -645,18 +670,22 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 }
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(
-                        batch.placement == BridgeChatPlacement::Append && batch.before.is_none()
+                        batch.placement == BridgeChatPlacement::Append
+                            && batch.before.is_none()
+                            && batch.from_seq.is_some_and(|from| from < batch.through_seq)
                     );
-                    for entry in batch.entries {
-                        let BridgeChatEntry::Item(item) = entry else {
-                            continue;
-                        };
+                    accepted_through = batch.through_seq;
+                    for item in batch.entries {
                         ensure!(
-                            item_ids.insert(item.id.clone()),
-                            "trailing Main repeated item {}",
-                            item.id
+                            item_ids.insert(item.record_id.clone()),
+                            "trailing Main repeated completion {}",
+                            item.record_id
                         );
                     }
+                }
+                BridgeConversationEvent::Activity { snapshot } => {
+                    ensure!(snapshot.revision > 0);
+                    ensure!(snapshot.completed_through == accepted_through);
                 }
                 event => anyhow::bail!("unexpected trailing event: {event:?}"),
             }

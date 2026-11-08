@@ -297,12 +297,23 @@ final class _DraftConnection extends ScriptedConversationFeed {
     required super.states,
     ChatBatch? initial,
   }) : super(initial: initial ?? chatSet(messages: const []));
-  Future<void> emitItem(TimelineItem item) async {
+  int _completedThrough = 1;
+  Future<void> emitItem(CompletedEntry item) async {
+    final from = _completedThrough++;
+    final entry = CompletedEntry(
+      recordId: item.recordId,
+      completionSeq: _completedThrough,
+      run: CompletionRunPosition(startSeq: _completedThrough, ordinal: 1),
+      mainPresentation: item.mainPresentation,
+      atom: item.atom,
+    );
     await deliver(
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: ([item]).map(ItemChatEntry.new).toList(),
+          fromSeq: from,
+          throughSeq: _completedThrough,
+          entries: [entry],
         ),
       ),
     );
@@ -311,6 +322,8 @@ final class _DraftConnection extends ScriptedConversationFeed {
   Future<void> emitTurn(StudioTurnView turn) => deliver(
     ConversationStateEvent(
       frame: ThreadSnapshotFrame(
+        schemaVersion: 17,
+        completedHistoryVersion: 1,
         workspace: _workspace(
           revision: turn.revision,
           turn: turn,
@@ -364,6 +377,7 @@ ThreadWorkspace _workspace({
   ThreadStorageStateView? storage,
   StudioThread? thread,
 }) => ThreadWorkspace(
+  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
   thread: thread ?? _thread(),
   revision: revision,
   interactions: const [],
@@ -1855,19 +1869,22 @@ void main() {
       expect(operation.state.value.durable, isFalse);
       final terminal = chatMessage(
         id: 'turn-item',
+        seq: 2,
         body: '{"inputId":"${input.inputId}","completion":"normal"}',
       );
       await transport.window.deliver(
         ConversationChatEvent(
           batch: ChatBatch(
             placement: ChatPlacement.append,
-            entries: ([terminal]).map(ItemChatEntry.new).toList(),
+            fromSeq: 1,
+            throughSeq: 2,
+            entries: ([terminal]).toList(),
           ),
         ),
       );
       expect(
-        consumer.batches.last.entries.whereType<ItemChatEntry>().map(
-          (entry) => entry.item,
+        consumer.batches.last.entries.cast<CompletedEntry>().map(
+          (entry) => entry,
         ),
         [terminal],
       );

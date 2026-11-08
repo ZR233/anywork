@@ -2,9 +2,9 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ChatEntry, ChatPlacement, ChatScope, ContentOwner, ContentRange, ContentRef, ContentTarget,
-    ObservedResourceKind, PayloadData, ReadDemand, ThreadSubscriptionRequest,
-    ThreadSubscriptionUpdate, ThreadWorkspaceMode, TimelineItem, TimelineItemKind,
+    ChatAtomKind, ChatPlacement, ChatScope, CompletedEntry, ContentOwner, ContentRange, ContentRef,
+    ContentTarget, MainPresentation, ObservedResourceKind, PayloadData, ReadDemand,
+    ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -51,7 +51,7 @@ async fn public_bytes(
 
 #[derive(Debug, PartialEq)]
 struct MainHistoryItem {
-    item: Box<TimelineItem>,
+    item: CompletedEntry,
     envelope: Option<serde_json::Value>,
     bodies: Vec<Vec<u8>>,
 }
@@ -78,29 +78,31 @@ async fn public_history(
                 break *batch;
             }
         };
-        ensure!(batch.placement == ChatPlacement::Set && batch.current.is_some());
+        ensure!(batch.placement == ChatPlacement::Set && batch.from_seq.is_none());
+        batch.validate_for(&ChatScope::Main)?;
         let mut pages = Vec::new();
         loop {
             let mut page = Vec::new();
-            for entry in batch.entries {
-                let ChatEntry::Item(mut item) = entry else {
-                    anyhow::bail!("Main delivered a raw member/source instead of a Timeline Item");
-                };
+            for mut item in batch.entries {
                 let mut bodies = Vec::new();
-                let envelope = if item.kind == TimelineItemKind::WorkGroup {
+                let envelope = if matches!(
+                    item.main_presentation,
+                    MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
+                ) {
                     ensure!(
-                        item.payload.is_none()
-                            && item.content_item_id.is_none()
-                            && item.contents.is_empty(),
-                        "Main work group carried member payload/body content"
+                        matches!(item.atom.payload, Some(PayloadData::Deferred { .. }))
+                            && item.run.is_some(),
+                        "Main work representative did not stay Deferred"
                     );
                     None
                 } else {
-                    let owner = item
-                        .content_item_id
-                        .as_deref()
-                        .context("Main text/status content owner")?;
-                    let raw = match item.payload.as_ref().context("completed Main payload")? {
+                    let owner = item.record_id.as_str();
+                    let raw = match item
+                        .atom
+                        .payload
+                        .as_ref()
+                        .context("completed Main payload")?
+                    {
                         PayloadData::Inline { bytes } => bytes.clone(),
                         PayloadData::Deferred {
                             reference,
@@ -120,6 +122,7 @@ async fn public_history(
                         let key = body["key"].as_str().context("body key")?;
                         let len = body["byteLength"].as_u64().context("body length")?;
                         let reference = &item
+                            .atom
                             .contents
                             .iter()
                             .find(|content| {
@@ -149,7 +152,7 @@ async fn public_history(
                     }
                     // Compare the decoded envelope, not its legal Inline/Deferred transport form.
                     // All other fields of the original Main Item remain part of history equality.
-                    item.payload = None;
+                    item.atom.payload = None;
                     Some(value)
                 };
                 page.push(MainHistoryItem {
@@ -163,14 +166,15 @@ async fn public_history(
                 break;
             };
             batch = reader.load_older(&before, demand).await?;
-            ensure!(batch.placement == ChatPlacement::Prepend && batch.current.is_none());
+            ensure!(batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none());
+            batch.validate_for(&ChatScope::Main)?;
             ensure!(
                 batch.before.as_ref() != Some(&before),
                 "history continuation did not advance"
             );
         }
         let identities: std::collections::HashSet<_> =
-            pages.iter().map(|entry| &entry.item.id).collect();
+            pages.iter().map(|entry| &entry.item.record_id).collect();
         ensure!(identities.len() == pages.len());
         Ok(pages)
     }
@@ -943,7 +947,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         let original_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
             original_page.iter().any(|entry| {
-                entry.item.kind == TimelineItemKind::Text
+                entry.item.atom.kind == ChatAtomKind::Text
                     && entry
                         .bodies
                         .iter()
@@ -961,7 +965,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 thread_id: root.thread.id.clone(),
             })
             .await?;
-        let Some(ThreadSubscriptionUpdate::Snapshot { snapshot }) =
+        let Some(ThreadSubscriptionUpdate::Snapshot { snapshot, .. }) =
             tokio::time::timeout(Duration::from_secs(20), subscription.recv())
                 .await
                 .context("missing-worktree history initial frame was not delivered")??

@@ -1,67 +1,61 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation_encoding.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
 void main() {
-  final first = chatMessage(id: 'z-first');
-  final second = chatMessage(id: 'a-second');
-  final atom = fixtureMember('real-member');
-  const state = ChatSourceState(
-    source: ForegroundTurnChatSource(turnId: 'turn'),
-    lifecycle: ActiveChatSource(),
-    started: null,
-    ended: null,
-  );
-  final atomEntry = ChatAtomEntry(atom);
-  const sourceEntry = ChatSourceEntry(state);
-
   test(
-    'item access retains empty batches and exact producer order and objects',
+    'completion envelopes preserve producer order, payload and run position',
     () {
-      expect(
-        ChatBatch(placement: ChatPlacement.set, entries: []).items,
-        isEmpty,
-      );
+      final first = chatMessage(id: 'z-first', seq: 7);
+      final second = chatMessage(id: 'a-second', seq: 9);
+      final entries = [first, second];
       final batch = ChatBatch(
-        placement: ChatPlacement.prepend,
-        entries: [ItemChatEntry(first), ItemChatEntry(second)],
+        placement: ChatPlacement.append,
+        entries: entries,
+        fromSeq: 6,
+        throughSeq: 11,
       );
-      expect(batch.items, orderedEquals([same(first), same(second)]));
+      entries.clear();
+      expect(batch.entries, orderedEquals([same(first), same(second)]));
+      expect(() => batch.entries.clear(), throwsUnsupportedError);
+      final encoded = completedEntryToJson(first);
+      expect(encoded['recordId'], 'z-first');
+      expect(encoded['completionSeq'], 7);
+      expect(encoded['run'], {'startSeq': 7, 'ordinal': 1});
+      expect(encoded['mainPresentation'], 'single');
+      expect(encoded['atom'], chatAtomToJson(first.atom));
     },
   );
 
-  for (final placement in ChatPlacement.values) {
-    test(
-      'item access rejects every non-Item variant before yielding a partial $placement batch',
-      () {
-        for (final entries in <List<ChatEntry>>[
-          [atomEntry],
-          [sourceEntry],
-          [ItemChatEntry(first), atomEntry],
-          [sourceEntry, ItemChatEntry(second)],
-          [ItemChatEntry(first), sourceEntry, ItemChatEntry(second)],
-        ]) {
-          final batch = ChatBatch(placement: placement, entries: entries);
-          expect(() => batch.items, throwsStateError);
-        }
-      },
-    );
-  }
-
   test(
-    'member/Children Atom and Source batches remain legal and fully observable',
+    'run reference binds the database and index version with value equality',
     () {
-      final batch = ChatBatch(
-        placement: ChatPlacement.append,
-        entries: [sourceEntry, atomEntry],
+      const reference = CompletionRunRef(
+        databaseId: 'db',
+        indexVersion: 1,
+        startSeq: 7,
       );
       expect(
-        batch.entries,
-        orderedEquals([same(sourceEntry), same(atomEntry)]),
+        reference,
+        const CompletionRunRef(databaseId: 'db', indexVersion: 1, startSeq: 7),
       );
-      expect(batch.atoms.single, same(atom));
-      expect(() => batch.items, throwsStateError);
+      expect(
+        reference,
+        isNot(
+          const CompletionRunRef(
+            databaseId: 'other',
+            indexVersion: 1,
+            startSeq: 7,
+          ),
+        ),
+      );
+      expect(completionRunRefToJson(reference), {
+        'databaseId': 'db',
+        'indexVersion': 1,
+        'startSeq': 7,
+      });
     },
   );
 }

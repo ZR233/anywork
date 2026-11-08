@@ -10,8 +10,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
 use pl_protocol::{
-    ChatBatch, ChatPlacement, ChatScope, InteractionRequest, InteractionStatus, ReadDemand,
-    ThreadNotification, ThreadSnapshot, ThreadSubscriptionUpdate,
+    ChatBatch, ChatPlacement, ChatScope, ContentOwner, ContentTarget, InteractionRequest,
+    InteractionStatus, ReadDemand, ThreadBusinessRefs, ThreadNotification, ThreadSnapshot,
+    ThreadSubscriptionUpdate,
 };
 use reqwest::redirect::Policy as RedirectPolicy;
 use std::sync::Arc;
@@ -35,6 +36,7 @@ pub(crate) struct ThreadWatch {
     events: u32,
     thread_id: String,
     interactions: Vec<InteractionRequest>,
+    business_refs: Option<ThreadBusinessRefs>,
     revision: Option<u64>,
     saw_snapshot: bool,
     saw_chat: bool,
@@ -98,6 +100,7 @@ impl ThreadWatch {
             events: 0,
             thread_id: thread_id.to_owned(),
             interactions: Vec::new(),
+            business_refs: None,
             revision: None,
             saw_snapshot: false,
             saw_chat: false,
@@ -116,6 +119,32 @@ impl ThreadWatch {
                 self.saw_snapshot,
                 "thread SSE delivered a notification before the snapshot"
             );
+        }
+    }
+
+    /// Wait for State to supply a concrete business resource reference. This
+    /// never substitutes Activity, Chat, or an empty collection for absence.
+    pub async fn wait_business_refs(
+        &mut self,
+        budget: Duration,
+        predicate: impl Fn(&ThreadBusinessRefs) -> bool,
+        phase: &'static str,
+    ) -> Result<ThreadBusinessRefs> {
+        let deadline = Instant::now() + budget;
+        loop {
+            if let Some(references) = self.business_refs.as_ref()
+                && predicate(references)
+            {
+                return Ok(references.clone());
+            }
+            match self
+                .next_frame(deadline)
+                .await
+                .map_err(|error| anyhow!("{phase}: {error:#}"))?
+            {
+                WatchFrame::Snapshot(_) | WatchFrame::BusinessRefs => {}
+                WatchFrame::Interaction(_) => {}
+            }
         }
     }
 
@@ -188,19 +217,35 @@ impl ThreadWatch {
             match event.event.as_str() {
                 "snapshot" => {
                     let update: ThreadSubscriptionUpdate = decode(&event.data, "snapshot")?;
-                    let ThreadSubscriptionUpdate::Snapshot { snapshot } = update else {
+                    let ThreadSubscriptionUpdate::Snapshot {
+                        completed_history_version,
+                        snapshot,
+                    } = update
+                    else {
                         bail!("thread SSE snapshot frame carried a different update");
                     };
+                    ensure!(
+                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        "thread SSE completed history version {completed_history_version} is unsupported"
+                    );
                     ensure!(
                         snapshot.thread.id == self.thread_id,
                         "thread SSE snapshot belonged to another Thread"
                     );
+                    ensure!(
+                        snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+                        "thread SSE schema version {} is unsupported; expected {}",
+                        snapshot.schema_version,
+                        pl_protocol::THREAD_SCHEMA_VERSION
+                    );
+                    validate_business_refs(&snapshot.business_refs)?;
                     ensure!(
                         !self.saw_snapshot,
                         "thread SSE delivered a second snapshot without a reconnect"
                     );
                     self.saw_snapshot = true;
                     self.revision = Some(snapshot.revision);
+                    self.business_refs = Some(snapshot.business_refs.clone());
                     ensure!(
                         snapshot
                             .interactions
@@ -253,6 +298,11 @@ impl ThreadWatch {
                                 None => self.interactions.push(interaction.clone()),
                             }
                             return Ok(WatchFrame::Interaction(Box::new(interaction)));
+                        }
+                        ThreadNotification::BusinessRefsChanged { references } => {
+                            validate_business_refs(&references)?;
+                            self.business_refs = Some(references.clone());
+                            return Ok(WatchFrame::BusinessRefs);
                         }
                         _ => continue,
                     }
@@ -308,9 +358,39 @@ impl ThreadWatch {
     }
 }
 
+fn validate_business_refs(references: &ThreadBusinessRefs) -> Result<()> {
+    if let Some(interactions) = &references.interactions {
+        ensure!(
+            !interactions.database_id.is_empty() && interactions.collection == "interactions",
+            "State interaction reference is not a canonical interactions collection"
+        );
+    }
+    if let Some(plan) = &references.plan
+        && let Some(document) = &plan.document
+    {
+        ensure!(
+            !document.database_id.is_empty()
+                && matches!(
+                    &document.target,
+                    ContentTarget::Body {
+                        owner: ContentOwner::Current {
+                            domain,
+                            id,
+                            revision,
+                        },
+                        key,
+                    } if domain == "plan" && id == "document" && *revision == plan.revision && key == "document"
+                ),
+            "State Plan reference did not match its exact current document version"
+        );
+    }
+    Ok(())
+}
+
 enum WatchFrame {
     Snapshot(Box<ThreadSnapshot>),
     Interaction(Box<InteractionRequest>),
+    BusinessRefs,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(data: &str, kind: &str) -> Result<T> {

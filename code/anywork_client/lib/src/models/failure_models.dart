@@ -49,7 +49,11 @@ enum StudioFailureReason {
   staleInteraction,
 
   /// 目标会话已归档：只读，拒绝继续、发送、停止与交互决议。
-  threadArchived;
+  threadArchived,
+  staleContent,
+
+  /// Native 内容或 State 版本缺失、不受支持；code 仍为 protocol。
+  protocolVersionMismatch;
 
   /// Canonical camelCase 标签。
   String get label => name;
@@ -65,6 +69,8 @@ enum StudioFailureReason {
     'executionInProgress' => StudioFailureReason.executionInProgress,
     'interactionNotHosted' => StudioFailureReason.interactionNotHosted,
     'staleInteraction' => StudioFailureReason.staleInteraction,
+    'staleContent' => StudioFailureReason.staleContent,
+    'protocolVersionMismatch' => StudioFailureReason.protocolVersionMismatch,
     'threadArchived' => StudioFailureReason.threadArchived,
     _ => null,
   };

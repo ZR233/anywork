@@ -1,11 +1,20 @@
 import '../../models.dart';
 
+const threadSchemaVersion = 17;
+
 sealed class ThreadStreamFrame {
   const ThreadStreamFrame();
 }
 
 final class ThreadSnapshotFrame extends ThreadStreamFrame {
-  const ThreadSnapshotFrame({required this.workspace});
+  const ThreadSnapshotFrame({
+    required this.workspace,
+    required this.completedHistoryVersion,
+    required this.schemaVersion,
+  });
+
+  final int? completedHistoryVersion;
+  final int? schemaVersion;
 
   /// 当前内存状态与实时事实；不携带 Timeline 条目，历史由分页 API 提供。
   final ThreadWorkspace workspace;
@@ -68,6 +77,11 @@ final class ThreadStorageUpdate extends ThreadWorkspaceUpdate {
   const ThreadStorageUpdate({required this.storage});
 
   final ThreadStorageStateView? storage;
+}
+
+final class ThreadBusinessRefsUpdate extends ThreadWorkspaceUpdate {
+  const ThreadBusinessRefsUpdate({required this.references});
+  final ThreadBusinessRefs references;
 }
 
 final class ThreadInteractionUpdate extends ThreadWorkspaceUpdate {

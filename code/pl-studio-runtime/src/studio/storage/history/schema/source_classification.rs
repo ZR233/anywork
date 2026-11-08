@@ -1,5 +1,5 @@
 //! Named content upgrade; original payloads and reliable fact positions are immutable.
-use super::super::conversation::timeline;
+use super::legacy_timeline_store as timeline;
 use super::*;
 use pl_protocol::{ChatAtom, ChatAtomKind};
 

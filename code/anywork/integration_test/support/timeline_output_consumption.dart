@@ -125,12 +125,12 @@ final class TimelineOutputConsumption {
     _sealedEnds += 1;
   }
 
-  Future<void> _readGroup(TimelineItem item) async {
+  Future<void> _readRun(TimelineDisplayUnit unit) async {
     const demand = ReadDemand(maxItems: 1, maxBytes: 64 * 1024);
     final content = await _within(
-      conversations.openGroupMembers(
+      conversations.openRun(
         threadId: lease.threadId,
-        reference: item.members!,
+        reference: unit.run!.reference,
         demand: demand,
       ),
     );
@@ -152,22 +152,23 @@ final class TimelineOutputConsumption {
       int? laterOrder;
       while (true) {
         // Prepend reads walk backwards; check order without retaining old pages.
-        for (final atom in page.atoms.toList().reversed) {
-          expectSync(atom.source, item.source);
+        for (final atom in page.entries.reversed.map((entry) => entry.atom)) {
+          expectSync(atom.source, unit.entry.atom.source);
           expectSync(atom.turnId, turnId);
           expectSync(atom.lifecycle, isA<TerminalChatAtom>());
           expectSync(
             (atom.lifecycle as TerminalChatAtom).outcome,
             ChatTerminalOutcome.completed,
           );
-          expectSync(atom.sourceOrder, isNotNull);
+          expectSync(atom.completionSeq, isNotNull);
           if (laterOrder != null) {
-            expectSync(atom.sourceOrder, lessThan(laterOrder));
+            expectSync(atom.completionSeq, lessThan(laterOrder));
           }
-          laterOrder = atom.sourceOrder;
+          laterOrder = atom.completionSeq;
           members += 1;
-          if (atom.kind == ChatAtomKind.text ||
-              atom.kind == ChatAtomKind.reasoning) {
+          if ((atom.kind == ChatAtomKind.text ||
+                  atom.kind == ChatAtomKind.reasoning) &&
+              !_outputs.contains(atom.completionItemId)) {
             await _readFrozen(scope, atom.completionItemId!, atom.contents);
           }
         }
@@ -178,7 +179,11 @@ final class TimelineOutputConsumption {
         expectSync(page.placement, ChatPlacement.prepend);
         expectSync(page.before, isNot(before));
       }
-      expectSync(members, item.summary!.memberCount);
+      expectSync(
+        members,
+        greaterThanOrEqualTo(unit.entry.run!.ordinal),
+        reason: 'Run opens at its own cut, which may be newer than Main',
+      );
       expectSync(content.currentAttemptId, attempt);
       expectSync(content.state.value, isA<ChatReady<bool>>());
     } catch (error, stack) {
@@ -221,35 +226,40 @@ final class TimelineOutputConsumption {
     final source = ForegroundTurnChatSource(turnId: turnId);
     final admitted = <String, int>{};
     final positions = <int, String>{};
-    Future<void> consume(TimelineItem item) async {
-      final position = item.position!;
-      if (admitted.containsKey(item.id)) {
-        expectSync(admitted[item.id], position);
+    Future<void> consume(TimelineDisplayUnit unit) async {
+      final item = unit.entry;
+      final position = item.completionSeq;
+      if (admitted[unit.id] == position) {
         return;
       }
+      if (admitted[unit.id] case final previous?) {
+        expectSync(position, greaterThan(previous));
+      }
       expectSync(positions.containsKey(position), isFalse);
-      admitted[item.id] = position;
-      positions[position] = item.id;
-      if (item.source == source) {
-        expectSync(item.turnId, turnId);
-        if (item.kind == TimelineItemKind.workGroup) {
-          await _readGroup(item);
-        } else if (item.atomKind == ChatAtomKind.text) {
-          expectSync(item.outcome, ChatTerminalOutcome.completed);
-          await _readFrozen(_scope, item.contentItemId!, item.contents);
+      admitted[unit.id] = position;
+      positions[position] = item.recordId;
+      if (item.atom.source == source) {
+        expectSync(item.atom.turnId, turnId);
+        if (unit.run != null) {
+          await _readRun(unit);
+        } else if (item.atom.kind == ChatAtomKind.text) {
+          expectSync(
+            (item.atom.lifecycle as TerminalChatAtom).outcome,
+            ChatTerminalOutcome.completed,
+          );
+          await _readFrozen(_scope, item.recordId, item.atom.contents);
         }
       }
     }
 
     while (true) {
       _checkOriginal();
-      TimelineItem? next;
+      TimelineDisplayUnit? next;
       for (final message in lease.controller.messages) {
         final unit =
             message.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
-        if (!admitted.containsKey(unit.id)) {
-          expectSync(unit.live, isFalse);
-          next = unit.item;
+        if (admitted[unit.id] != unit.entry.completionSeq) {
+          next = unit;
           break;
         }
       }
@@ -264,12 +274,12 @@ final class TimelineOutputConsumption {
         continue;
       }
       final turn = session.state.lastTurn;
-      final current = lease.content.current.value;
+      final activity = lease.content.activity.value;
       if (turn?.turnId == turnId &&
           turn?.state is CompletedStudioTurnState &&
-          current != null &&
-          current.activeTurn == null &&
-          current.items.isEmpty) {
+          activity != null &&
+          !activity.executionPresent &&
+          activity.entries.isEmpty) {
         break;
       }
       // Drain already admitted bodies before requesting another layout. A
@@ -410,6 +420,11 @@ final class TimelineOutputConsumption {
 }
 
 final class _MemberSet implements ConversationBatchConsumer {
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    // Every scope carries Activity. The SDK owns its through barrier; this
+    // one-page historical observer has no activity presentation or reducer.
+  }
   final batch = Completer<ChatBatch>();
 
   @override

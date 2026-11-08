@@ -317,6 +317,7 @@ pub(super) fn convert(
     }
     Ok(ChatItem::complete(
         ChatDraft {
+            read_hint: pl_core::chat::ChatReadHint::Hidden,
             metadata: Arc::from([]),
             item_id: id.into(),
             query_class: class.into(),
@@ -325,6 +326,7 @@ pub(super) fn convert(
             contents: Arc::new(contents),
         },
         seq,
+        None,
     ))
 }
 
@@ -417,7 +419,7 @@ pub(in super::super) struct LegacyActiveMember {
 
 pub(in super::super) async fn active_members(
     db: &impl ConnectionTrait,
-    current: &pl_protocol::CurrentProjection,
+    current: &crate::studio::storage::history::schema::legacy_timeline_types::CurrentProjection,
 ) -> Result<Vec<LegacyActiveMember>> {
     use pl_protocol::{ContentOwner, ContentRef, ContentTarget};
     #[derive(Deserialize)]

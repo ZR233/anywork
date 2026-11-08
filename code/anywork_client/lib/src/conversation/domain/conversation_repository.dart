@@ -21,9 +21,9 @@ abstract interface class ConversationRepository {
   /// Opens an independently owned member window for [reference].
   ///
   /// Its consumer, continuation and close lifecycle never replace Main state.
-  Future<ConversationContent> openGroupMembers({
+  Future<ConversationContent> openRun({
     required String threadId,
-    required TimelineMembersRef reference,
+    required CompletionRunRef reference,
     required ReadDemand demand,
   });
   Future<CloseReport> close({DateTime? deadline});
@@ -35,7 +35,7 @@ abstract interface class ConversationSession {
   ThreadSessionState get state;
   ValueObservation<ThreadSessionState> get source;
   ConversationContent get content;
-  ValueObservation<CurrentProjection?> get current;
+  ValueObservation<ActivitySnapshot?> get activity;
   bool get isActive;
   bool get isClosed;
   void refresh();
@@ -44,12 +44,13 @@ abstract interface class ConversationSession {
 
 abstract interface class ConversationBatchConsumer {
   Future<void> applyBatch(ChatBatch batch);
+  Future<void> applyActivity(ActivitySnapshot snapshot);
 }
 
 abstract interface class ConversationContent {
   String get threadId;
   ValueObservation<ChatUiState<bool>> get state;
-  ValueObservation<CurrentProjection?> get current;
+  ValueObservation<ActivitySnapshot?> get activity;
   bool get hasDemand;
   bool get isClosed;
   AttemptId? get currentAttemptId;
@@ -70,6 +71,11 @@ abstract interface class ConversationQueryScope {
   String get threadId;
   int get pendingQueries;
   bool get isActive;
+  Future<ThreadBusinessRefs> readBusinessRefs();
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  });
   Future<ChatBatch> loadOlder({
     required String before,
     required ReadDemand demand,

@@ -1,5 +1,5 @@
 //! One immutable, bounded current head shared by its existing owners, never its bodies.
-use pl_protocol::{CurrentProjection, TimelineItem};
+use pl_protocol::CurrentProjection;
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug)]
@@ -18,15 +18,6 @@ impl FrozenCurrentProjection {
 
     pub fn projection(&self) -> &CurrentProjection {
         &self.projection
-    }
-
-    pub fn with_items(self: &Arc<Self>, items: Vec<TimelineItem>) -> Arc<Self> {
-        if self.projection.items == items {
-            return self.clone();
-        }
-        let mut projection = self.projection.clone();
-        projection.items = items;
-        Self::new(projection)
     }
 
     /// Exact compact JSON length, without any retained-memory accounting fees.

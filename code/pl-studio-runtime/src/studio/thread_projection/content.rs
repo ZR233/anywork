@@ -9,7 +9,7 @@ use pl_protocol::{MessagePresentation, ThreadAttachment};
 use serde::Deserialize;
 
 #[derive(Debug, PartialEq)]
-pub(super) struct InputContent {
+pub(in crate::studio) struct InputContent {
     pub text: String,
     pub attachments: Vec<ThreadAttachment>,
     pub presentation: MessagePresentation,
@@ -17,7 +17,7 @@ pub(super) struct InputContent {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum ContentError {
+pub(in crate::studio) enum ContentError {
     #[error("invalid saved product input")]
     Decode(#[from] serde_json::Error),
     #[error("unsupported saved product input {format} version {version}")]
@@ -55,7 +55,7 @@ struct ContinuationControl {
 }
 
 /// What one saved input projects to.
-pub(super) enum InputView {
+pub(in crate::studio) enum InputView {
     /// Real saved input: the prompt itself, or the hidden answer a decision carries.
     Content(InputContent),
     /// A framework control input that has no user body of its own.
@@ -76,7 +76,7 @@ pub(super) const CONTINUATION_NOTICE: &str = "This session continued after it wa
 /// The classification starts from the typed [`InputPurpose`], never from the payload text: a normal
 /// message that happens to carry the control format is still a message, and it keeps its content
 /// (or its visible raw fallback) instead of turning into a framework notice.
-pub(super) fn input_view(input: &InputRecord) -> Result<InputView, ContentError> {
+pub(in crate::studio) fn input_view(input: &InputRecord) -> Result<InputView, ContentError> {
     if input.input.purpose == InputPurpose::Continuation {
         return control_notice(&input.input.payload);
     }

@@ -120,17 +120,21 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
-      if (unit.item.kind != TimelineItemKind.workGroup) {
+      if (unit.run == null) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (unit.item.contents.isEmpty) const Text('内容状态未知'),
-            for (var index = 0; index < unit.item.contents.length; index++)
+            if (unit.entry.atom.contents.isEmpty) const Text('内容状态未知'),
+            for (
+              var index = 0;
+              index < unit.entry.atom.contents.length;
+              index++
+            )
               widget.contentRangeBuilder?.call(
                     unit.id,
                     'content-$index',
                     '查看内容',
-                    unit.item.contents[index].reference,
+                    unit.entry.atom.contents[index].reference,
                     _contentWitness,
                   ) ??
                   const Text('内容读取尚未就绪'),
@@ -142,7 +146,6 @@ class _ChatItemViewState extends State<ChatItemView> {
         child: TimelineDisplayUnitView(
           key: ValueKey(unit.id),
           unit: unit,
-          executionPresent: false,
           childBuilder: (_) =>
               widget.groupMembersBuilder?.call(unit) ?? const Text('成员读取尚未就绪'),
         ),
@@ -215,7 +218,9 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _text(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      if (item.data['channel'] == 'parentAgent')
+      if (item.atom?.source case InboxMessageChatSource(:final sourceId))
+        Text('来源 · $sourceId')
+      else if (item.data['channel'] == 'parentAgent')
         Text(
           context.l10n.timelineParentAgent,
           key: StudioDriverKeys.parentAgentLabel(item.id),
@@ -311,10 +316,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (identity != null && identity.callId != tool.toolCallId) {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
-      // Main Status owns its declarations on the Item, not a fabricated Atom.
-      final declaredContents = item.displayUnit == null
-          ? item.atom?.contents
-          : item.displayUnit!.item.contents;
+      final declaredContents = item.atom?.contents;
       final contents = declaredContents
           ?.where(
             (content) =>

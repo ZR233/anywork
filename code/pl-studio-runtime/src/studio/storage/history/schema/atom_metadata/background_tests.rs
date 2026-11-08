@@ -34,6 +34,7 @@ impl MigratorTraitSelf for Published {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()))
@@ -226,11 +227,15 @@ async fn background_results_migrate_from_636_and_interrupted_13_14_without_losin
             assert_eq!(handoff.delivery, ChatDeliveryKind::BackgroundHandoff);
         }
         assert_eq!(originals(&db, format >= 13).await?, before);
-        let rows = db.query_one_raw(statement(
-            "SELECT COUNT(*) AS n FROM timeline_items WHERE kind='workGroup' AND json_extract(metadata,'$.source.kind')='backgroundResult'",
-            vec![],
-        )).await?.unwrap();
-        assert_eq!(rows.try_get::<i64>("", "n")?, 1);
+        let run = db.query_one_raw(statement(
+            "SELECT seq,display_run_start,display_run_ordinal FROM conversation_items WHERE item_id=?",
+            vec![order::tool_id(CALL).into()],
+        )).await?.context("background completion")?;
+        assert_eq!(
+            run.try_get::<i64>("", "display_run_start")?,
+            run.try_get::<i64>("", "seq")?
+        );
+        assert_eq!(run.try_get::<i64>("", "display_run_ordinal")?, 1);
         db.close().await?;
     }
     Ok(())

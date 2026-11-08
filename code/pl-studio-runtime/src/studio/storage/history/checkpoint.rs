@@ -293,7 +293,7 @@ pub(super) async fn verify_committed(
             .await?
             .context("durable history has no checkpoint")?;
         ensure!(
-            serde_json::to_value(durable.pruned())? == serde_json::to_value(checkpoint.pruned())?,
+            serde_json::to_value(durable.pruned()?)? == serde_json::to_value(checkpoint.pruned()?)?,
             "retried checkpoint differs from the durable head"
         );
     }
@@ -563,7 +563,7 @@ pub(super) async fn write_head(
     checkpoint: &ThreadCheckpoint,
 ) -> Result<()> {
     let records = &checkpoint.state.context.records;
-    let mut metadata = checkpoint.pruned();
+    let mut metadata = checkpoint.pruned()?;
     metadata.state.context.records = Default::default();
     let payload = serde_json::to_string(&metadata)?;
     let hash = content_hash(payload.as_bytes());
@@ -589,6 +589,21 @@ pub(super) async fn read(
         Ok(serde_json::from_str(payload)?)
     })
     .await
+}
+
+/// Validated original state envelope for product reads. Context records remain with execution
+/// recovery; even a nonempty saved context is never selected or reconstructed here.
+pub(super) async fn read_state_envelope(
+    tx: &impl ConnectionTrait,
+    thread_id: &str,
+) -> Result<Option<Box<ThreadCheckpoint>>> {
+    Ok(
+        read_envelope_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
+            Ok(serde_json::from_str(payload)?)
+        })
+        .await?
+        .map(|envelope| envelope.checkpoint),
+    )
 }
 
 /// The schema step shares every hash, identity, context and fence check with ordinary reads.
@@ -653,28 +668,13 @@ async fn read_with(
     expected_schema: u32,
     decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
 ) -> Result<Option<Box<ThreadCheckpoint>>> {
-    let Some(row) = tx.query_one_raw(statement(
-        "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
-    )).await? else { return Ok(None) };
-    let payload: String = row.try_get("", "payload")?;
-    ensure!(
-        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-        "checkpoint content hash mismatch"
-    );
-    let mut checkpoint = decode(&payload)?;
-    ensure!(
-        checkpoint.thread_id == thread_id
-            && checkpoint.schema_version == expected_schema
-            && checkpoint.is_materialized()
-            && checkpoint.state.context.records.is_empty()
-            && checkpoint.state_revision == checkpoint.state.commit_sequence
-            && integer(checkpoint.state_revision)? == row.try_get::<i64>("", "revision")?
-            && integer(checkpoint.state.context.revision)?
-                == row.try_get::<i64>("", "context_revision")?
-            && integer(checkpoint.history_fence)? == applied_write_seq(tx).await?,
-        "checkpoint identity or history fence mismatch"
-    );
-    let count = usize::try_from(row.try_get::<i64>("", "context_count")?)?;
+    let Some(ValidatedEnvelope {
+        mut checkpoint,
+        context_count: count,
+    }) = read_envelope_with(tx, thread_id, expected_schema, decode).await?
+    else {
+        return Ok(None);
+    };
     let rows = tx
         .query_all_raw(statement(
             "SELECT ordinal,record_id,payload,payload_hash FROM current_context ORDER BY ordinal",
@@ -705,6 +705,44 @@ async fn read_with(
     }
     checkpoint.state.context.records = records.into();
     Ok(Some(checkpoint))
+}
+
+struct ValidatedEnvelope {
+    checkpoint: Box<ThreadCheckpoint>,
+    context_count: usize,
+}
+
+async fn read_envelope_with(
+    tx: &impl ConnectionTrait,
+    thread_id: &str,
+    expected_schema: u32,
+    decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
+) -> Result<Option<ValidatedEnvelope>> {
+    let Some(row) = tx.query_one_raw(statement(
+        "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
+    )).await? else { return Ok(None) };
+    let payload: String = row.try_get("", "payload")?;
+    ensure!(
+        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
+        "checkpoint content hash mismatch"
+    );
+    let checkpoint = decode(&payload)?;
+    ensure!(
+        checkpoint.thread_id == thread_id
+            && checkpoint.schema_version == expected_schema
+            && checkpoint.is_materialized()
+            && checkpoint.state.context.records.is_empty()
+            && checkpoint.state_revision == checkpoint.state.commit_sequence
+            && integer(checkpoint.state_revision)? == row.try_get::<i64>("", "revision")?
+            && integer(checkpoint.state.context.revision)?
+                == row.try_get::<i64>("", "context_revision")?
+            && integer(checkpoint.history_fence)? == applied_write_seq(tx).await?,
+        "checkpoint identity or history fence mismatch"
+    );
+    Ok(Some(ValidatedEnvelope {
+        checkpoint,
+        context_count: usize::try_from(row.try_get::<i64>("", "context_count")?)?,
+    }))
 }
 
 /// Accounting is reliable state, independent from the lossy log writer.

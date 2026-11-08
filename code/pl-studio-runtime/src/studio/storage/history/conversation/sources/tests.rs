@@ -121,15 +121,21 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     let mut item = ChatItem::complete(
         ChatDraft::new("selected", "conversation", Arc::from([255; 8192])),
         1,
+        Some(pl_core::chat::ChatRunPosition {
+            start_seq: 1,
+            ordinal: 1,
+        }),
     );
     item.header.metadata = super::super::tests::metadata("selected");
+    item.header.read_hint = pl_core::chat::ChatReadHint::Single;
     let parent = pl_core::chat::ChatKey::new("turn", "actual-parent")?;
     item.header.parent_id = Some(parent.clone());
     let mut skipped = ChatItem::complete(
         ChatDraft::new("not-selected", "diagnostic", Arc::from([])),
         2,
+        None,
     );
-    skipped.header.metadata = Arc::from(b"invalid unselected metadata".as_slice());
+    skipped.header.metadata = super::super::tests::metadata("not-selected");
     let source = ChatSourceId::Receipt {
         receipt_id: "selected".into(),
     };
@@ -162,6 +168,10 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     current.atoms.push(active);
     let tx = writer.db.begin().await?;
     super::super::append_records(&tx, [&item, &skipped], true).await?;
+    tx.execute_unprepared(
+        "UPDATE conversation_items SET metadata=X'FF' WHERE item_id='not-selected'",
+    )
+    .await?;
     super::super::completed::apply(&tx, 2, &{
         let mut prepared = super::super::current::PreparedCurrent::new(
             crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
@@ -188,7 +198,7 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
             .into(),
             ..Default::default()
         },
-    );
+    )?;
     // The running turn is an independent checkpoint fact, not a saved product current.
     super::super::super::checkpoint::write(&tx, &checkpoint, None, None).await?;
     tx.commit().await?;

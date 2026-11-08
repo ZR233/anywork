@@ -2,13 +2,30 @@
 use super::super::conversation::sources;
 use super::super::{integer, statement};
 use super::legacy_content;
-use crate::studio::thread_projection::FrozenCurrentProjection;
+use super::legacy_timeline_types::CurrentProjection;
+use super::legacy_timeline_types::FrozenCurrentProjection;
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-use pl_protocol::CurrentProjection;
 use sea_orm::ConnectionTrait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+#[cfg(test)]
+pub(in crate::studio::storage::history) async fn read_archived(
+    db: &impl ConnectionTrait,
+) -> Result<CurrentProjection> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT payload FROM completion_boundary_archive_view_state WHERE singleton_id=1",
+            vec![],
+        ))
+        .await?
+        .context("archived current is missing")?;
+    let mut current: CurrentProjection =
+        serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
+    current.execution_present = false;
+    Ok(current)
+}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EntryPayload {
@@ -298,5 +315,62 @@ async fn retire_owner(db: &impl ConnectionTrait, owner: &str) -> Result<()> {
         vec![owner.into()],
     ))
     .await?;
+    Ok(())
+}
+
+/// Frozen pre-schema-18 cold-domain validation used by CompletionBoundary only.
+pub(in crate::studio::storage::history) async fn validate_cold_domains(
+    db: &impl ConnectionTrait,
+) -> Result<()> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT thread_id,database_id,applied_write_seq FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("history identity is missing")?;
+    let mut state = pl_core::thread::ThreadSnapshot::default();
+    if let Some(fields) = db
+        .query_one_raw(statement(
+            "SELECT json_extract(payload,'$.state.extensions.\"studio.plan\"') AS plan,
+                json_extract(payload,'$.state.permissions') AS permissions,
+                json_extract(payload,'$.state.interactions') AS interactions,
+                json_extract(payload,'$.state.turns') AS turns,
+                json_extract(payload,'$.state.tasks') AS tasks,
+                json_extract(payload,'$.state.attempts') AS attempts,
+                json_extract(payload,'$.state.lifecycle') AS lifecycle
+         FROM session_checkpoint WHERE id=1",
+            vec![],
+        ))
+        .await?
+    {
+        macro_rules! domain {
+            ($field:ident) => {
+                if let Some(value) = fields.try_get::<Option<String>>("", stringify!($field))? {
+                    state.$field = serde_json::from_str(&value)?;
+                }
+            };
+        }
+        if let Some(value) = fields.try_get::<Option<String>>("", "plan")? {
+            state.extensions.insert(
+                crate::plan_tool::PLAN_EXTENSION.into(),
+                serde_json::from_str(&value)?,
+            );
+        }
+        domain!(permissions);
+        domain!(interactions);
+        domain!(turns);
+        domain!(tasks);
+        domain!(attempts);
+        if let Some(value) = fields.try_get::<Option<String>>("", "lifecycle")? {
+            state.lifecycle = serde_json::from_str(&value)?;
+        }
+    }
+    let _state = crate::studio::thread_projection::CurrentState::cold(
+        row.try_get("", "database_id")?,
+        row.try_get("", "thread_id")?,
+        u64::try_from(row.try_get::<i64>("", "applied_write_seq")?)?,
+        &state,
+    )?;
     Ok(())
 }

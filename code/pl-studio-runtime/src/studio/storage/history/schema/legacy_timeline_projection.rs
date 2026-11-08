@@ -1,6 +1,7 @@
 //! Frozen published Timeline fold; only named pre-completion migrations select this codec.
 //! The single Studio fold over canonical source facts. Completed members live in
 //! the original store and the incremental member index, never in this accumulator.
+use super::legacy_timeline_types::*;
 use crate::studio::thread_projection::ProjectionError;
 use pl_protocol::*;
 use serde::{Deserialize, Serialize};

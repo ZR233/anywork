@@ -28,6 +28,7 @@ impl MigratorTraitSelf for Published12 {
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
             )
         })
         .filter(|step| {
@@ -111,7 +112,7 @@ fn legacy_checkpoint() -> Result<ThreadCheckpoint> {
             .extensions
             .insert(id.into(), ExtensionRecord { revision, payload });
     }
-    Ok(ThreadCheckpoint::capture(THREAD.into(), 9, state))
+    Ok(ThreadCheckpoint::capture(THREAD.into(), 9, state)?)
 }
 
 async fn seed(db: &DatabaseConnection) -> Result<()> {
@@ -160,6 +161,7 @@ async fn schema12_preserves_checkpoint_route_revision_owner_and_recovery_facts()
             std::sync::Arc::from(b"{\"unknownProducer\":\"retained\"}".as_slice()),
         ),
         1,
+        None,
     );
     super::super::super::conversation::migration::append_published(&db, &completion).await?;
     let before = retained(&db).await?;

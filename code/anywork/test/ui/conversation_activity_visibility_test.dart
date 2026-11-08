@@ -3,22 +3,19 @@ import 'package:anywork/src/features/conversation/timeline/state/conversation_ac
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-CurrentProjection _current() => CurrentProjection(
-  sourceEffectSeq: 1,
-  logicalStatus: ThreadStatusView.running,
+const _status = ThreadActivityView(
+  threadId: 'thread',
+  identity: 'activity',
+  revision: 1,
+  turnId: 'turn',
+  kind: ThreadActivityKind.thinking,
+  summary: '思考中',
+);
+final _activity = ActivitySnapshot(
+  revision: 1,
+  completedThrough: 0,
   executionPresent: true,
-  active: const CurrentActivityHead(
-    id: 'activity',
-    kind: ThreadActivityKind.thinking,
-    summary: '思考中',
-    toolCount: 0,
-    backgroundToolCount: 0,
-  ),
-  sources: const [],
-  items: const [],
-  atoms: const [],
-  previews: const [],
-  collections: const [],
+  entries: const [],
 );
 
 PendingInteraction _userInput({
@@ -61,13 +58,14 @@ PendingInteraction _toolApproval() => const PendingInteraction(
 
 ConversationActivityState? _project(List<PendingInteraction> interactions) =>
     projectConversationActivityState(
-      current: _current(),
+      status: _status,
+      activity: _activity,
       storage: null,
       interactions: interactions,
     );
 
 void main() {
-  test('plan confirmation hides the entire status bar while current remains present', () {
+  test('Plan confirmation uses its State controls without hiding the actual activity snapshot', () {
     final state = _project([
       _userInput(
         id: 'plan',
@@ -75,22 +73,24 @@ void main() {
       ),
     ]);
 
-    expect(state, isNull);
+    expect(state?.view, isNull);
+    expect(state?.activity, same(_activity));
   });
 
-  test('ordinary user questions also hide current activity until resolved', () {
+  test('ordinary questions suppress duplicate status text and preserve unfinished operations', () {
     final state = _project([
       _userInput(id: 'question', questionId: 'ordinary-question'),
     ]);
 
-    expect(state, isNull);
+    expect(state?.view, isNull);
+    expect(state?.activity, same(_activity));
   });
 
-  test('resolved interaction restores the real current activity', () {
+  test('resolved interaction retains the real activity observation', () {
     final state = _project(const []);
 
     expect(state, isNotNull);
-    expect(state!.current, isNotNull);
+    expect(state!.activity, isNotNull);
     expect(state.view!.kind, ConversationActivityKind.thinking);
   });
 
@@ -101,7 +101,7 @@ void main() {
     ]);
 
     expect(state, isNotNull);
-    expect(state!.current, isNotNull);
+    expect(state!.activity, isNotNull);
     expect(state.view!.kind, ConversationActivityKind.thinking);
   });
 }

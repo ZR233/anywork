@@ -68,17 +68,6 @@ ChatAtom chatAtomMessage(
   ),
 );
 
-CurrentProjection chatCurrent({int sequence = 0}) => CurrentProjection(
-  sourceEffectSeq: sequence,
-  logicalStatus: ThreadStatusView.idle,
-  executionPresent: false,
-  sources: const [],
-  atoms: const [],
-  items: const [],
-  previews: const [],
-  collections: const [],
-);
-
 ChatAtom chatEnvelope(
   String id, {
   required String type,
@@ -119,85 +108,124 @@ Map<String, Object?> inlineBody(String key, String text) => {
 };
 
 ChatBatch chatBatch(
-  List<TimelineItem> messages, {
+  List<CompletedEntry> messages, {
   ChatPlacement placement = ChatPlacement.set,
   String? before,
-  CurrentProjection? current,
+  int? fromSeq,
+  int? throughSeq,
 }) => ChatBatch(
   placement: placement,
-  entries: messages.map(ItemChatEntry.new).toList(),
+  entries: messages,
   before: before,
-  current: current,
+  fromSeq:
+      fromSeq ??
+      (placement == ChatPlacement.append && messages.isNotEmpty
+          ? messages.first.completionSeq - 1
+          : null),
+  throughSeq: throughSeq ?? messages.lastOrNull?.completionSeq ?? 0,
 );
 
-/// Explicit text Main item. Atomic member fixtures use chatAtomMessage instead.
-TimelineItem chatMessage(
+CompletedEntry chatMessage(
   String id, {
   String body = '中文 🐱',
-  int? completionSeq,
-}) => TimelineItem(
-  id: id,
-  kind: TimelineItemKind.text,
-  source: ReceiptChatSource(receiptId: id),
-  atomKind: ChatAtomKind.text,
-  delivery: ChatDeliveryKind.independent,
-  textChannel: ThreadTextChannel.finalAnswer,
-  outcome: ChatTerminalOutcome.completed,
-  contentItemId: id,
-  contents: const [],
-  payload: chatAtomMessage(id, body: body).payload,
-  position: completionSeq,
-  admissionClosed: true,
+  int completionSeq = 1,
+}) => CompletedEntry(
+  recordId: id,
+  completionSeq: completionSeq,
+  run: CompletionRunPosition(startSeq: completionSeq, ordinal: 1),
+  mainPresentation: MainPresentation.single,
+  atom: chatAtomMessage(id, body: body, completionSeq: completionSeq),
 );
 
-/// An explicitly independent status fixture, not an atom classification rule.
-TimelineItem statusItem(ChatAtom atom) => TimelineItem(
-  id: atom.id,
-  kind: TimelineItemKind.status,
-  source: atom.source,
-  atomKind: atom.kind,
-  delivery: ChatDeliveryKind.independent,
-  contents: atom.contents,
-  payload: atom.payload,
-  admissionClosed: true,
-);
+CompletedEntry statusItem(ChatAtom atom, {int completionSeq = 1}) =>
+    CompletedEntry(
+      recordId: atom.completionItemId ?? atom.id,
+      completionSeq: completionSeq,
+      run: CompletionRunPosition(startSeq: completionSeq, ordinal: 1),
+      mainPresentation: MainPresentation.single,
+      atom: atom,
+    );
 
-/// Explicit synthetic producer capability; rebuild stories supply a different
-/// opaque generation. Production code never manufactures either value.
-TimelineItem workItem(
+CompletedEntry workItem(
   String id, {
-  bool closed = true,
-  int active = 0,
   int count = 3,
-  int failed = 0,
-  int cancelled = 0,
-  int? start,
-  int? end,
-  String? latestThinkingSummary,
-  String projectionGeneration = 'fixture-projection-generation',
-}) => TimelineItem(
-  id: id,
-  kind: TimelineItemKind.workGroup,
-  source: const ForegroundTurnChatSource(turnId: 'T'),
-  delivery: ChatDeliveryKind.foreground,
-  admissionClosed: closed,
-  contents: const [],
-  members: TimelineMembersRef(
-    databaseId: 'database',
-    projectionVersion: 1,
-    projectionGeneration: projectionGeneration,
-    itemId: id,
+  int? completionSeq,
+  int startSeq = 1,
+  MainPresentation presentation = MainPresentation.foregroundWork,
+  String databaseId = 'database',
+}) {
+  final seq = completionSeq ?? startSeq + count - 1;
+  return CompletedEntry(
+    recordId: id,
+    completionSeq: seq,
+    run: CompletionRunPosition(startSeq: startSeq, ordinal: count),
+    mainPresentation: presentation,
+    atom: ChatAtom(
+      id: id,
+      completionItemId: id,
+      completionSeq: seq,
+      source: const ForegroundTurnChatSource(turnId: 'T'),
+      sourceOrder: null,
+      kind: ChatAtomKind.toolCall,
+      delivery: ChatDeliveryKind.foreground,
+      lifecycle: const TerminalChatAtom(
+        started: null,
+        ended: null,
+        outcome: ChatTerminalOutcome.completed,
+      ),
+      contents: const [],
+      payload: DeferredPayload(
+        reference: ContentRef(
+          databaseId: databaseId,
+          target: ItemPayloadTarget(itemId: id),
+        ),
+        byteLength: 100,
+      ),
+    ),
+  );
+}
+
+ActivitySnapshot chatActivity({
+  int revision = 0,
+  int through = 0,
+  bool executionPresent = false,
+  List<ActivityEntry> entries = const [],
+}) => ActivitySnapshot(
+  revision: revision,
+  completedThrough: through,
+  executionPresent: executionPresent,
+  entries: entries,
+);
+
+/// A complete State baseline for scripted protocol tests, never a runtime.
+ThreadWorkspace chatWorkspace(
+  String threadId, {
+  ThreadBusinessRefs businessRefs = const ThreadBusinessRefs(
+    plan: null,
+    interactions: null,
   ),
-  summary: TimelineGroupSummary(
-    memberCount: count,
-    activeCount: active,
-    failedCount: failed,
-    cancelledCount: cancelled,
-    startedAt: start,
-    finishedAt: end,
-    latestThinkingSummary: latestThinkingSummary,
-    categories: const [
-      TimelineCategoryCount(category: TimelineCategory.thinking, count: 1),
-    ],
+}) => ThreadWorkspace(
+  businessRefs: businessRefs,
+  thread: StudioThread(
+    id: threadId,
+    workspaceId: 'workspace',
+    title: 'Thread',
+    mode: ThreadModeId.simple,
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
+    updatedAt: DateTime.utc(2026),
+    workspacePath: '/workspace',
+  ),
+  revision: 1,
+  interactions: const [],
+  runtime: const ThreadRuntimeView(
+    modelId: 'model',
+    contextTokens: 0,
+    contextWindow: 1,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
   ),
 );

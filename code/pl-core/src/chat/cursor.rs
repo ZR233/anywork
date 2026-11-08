@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 pub const MAX_READ_ITEMS: usize = 4096;
 pub const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
+pub const CHAT_CURSOR_VERSION: u32 = 2;
+pub const CHAT_INDEX_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineEpoch(String);
@@ -72,6 +74,11 @@ pub trait ChatBudget: Send + Sync {
     fn fixed_bytes(&self) -> usize;
     fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize;
     fn manifest_bytes(&self, descriptor: &super::ContentDescriptor) -> usize;
+    /// Header-only read policy, also honored by history adapters before fetching any payload.
+    /// Hosts may deny Inline for selected opaque hints on Records replay (e.g. collapsed tails).
+    fn allow_inline(&self, _header: &ChatItemHeader) -> bool {
+        true
+    }
 }
 
 /// Select before reading payload bytes. None means stop at this item, never skip it for older rows.
@@ -80,7 +87,7 @@ pub fn select_payload(
     remaining: usize,
     budget: &dyn ChatBudget,
 ) -> Option<PayloadMode> {
-    if budget.item_bytes(header, PayloadMode::Inline) <= remaining {
+    if budget.allow_inline(header) && budget.item_bytes(header, PayloadMode::Inline) <= remaining {
         Some(PayloadMode::Inline)
     } else if budget.item_bytes(header, PayloadMode::Deferred) <= remaining {
         Some(PayloadMode::Deferred)
@@ -109,12 +116,35 @@ pub struct ChatPageItem {
     pub payload: PayloadData,
 }
 
-/// Bound to both source epoch and query membership; ceiling stays fixed across old pages.
+/// One bounded completion envelope by stable identity. None ceiling captures the current H.
+/// The immutable epoch qualifies the request; an explicit ceiling excludes future publications.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatItemRequest {
+    pub epoch: TimelineEpoch,
+    pub item_id: String,
+    pub ceiling: Option<u64>,
+    pub demand: ReadDemand,
+}
+
+/// Header-first point read on a NEW history snapshot. Session has already bounded ceiling by
+/// captured D and the requested cut, reserved fixed bytes and limited demand to one envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatHistoryItemRequest {
+    pub item_id: String,
+    pub ceiling: u64,
+    pub demand: ReadDemand,
+}
+
+/// Bound to source epoch, query/selection and index version; ceiling stays fixed across old pages.
+/// Hosts wrap this in their opaque codec binding database/thread/read qualification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatCursor {
+    pub version: u32,
+    pub index_version: u32,
     pub epoch: TimelineEpoch,
     pub query: ChatQuery,
     pub ceiling: u64,
+    /// Exclusive before position; RunHeads uses the earliest returned run's start, not its head seq.
     pub append_seq: u64,
 }
 

@@ -29,6 +29,7 @@ final class ConversationReadScope implements ConversationQueryScope {
   final Future<void> Function(ChatBatch) _applyOlder;
   final Set<Future<void>> _pending = {};
   final Set<_ContentWatch> _watches = {};
+  final Set<_ResourceRead> _resourceReads = {};
   bool _retired = false;
   Future<ChatBatch>? _older;
 
@@ -37,6 +38,16 @@ final class ConversationReadScope implements ConversationQueryScope {
   @override
   int get pendingQueries => _pending.length;
   bool get isSettled => _retired && _pending.isEmpty && _watches.isEmpty;
+
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() =>
+      _run(_reader.readBusinessRefs);
+
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) => _run(() => _reader.readCompleted(recordId: recordId, demand: demand));
 
   @override
   Future<ChatBatch> loadOlder({
@@ -84,39 +95,49 @@ final class ConversationReadScope implements ConversationQueryScope {
   Future<ContentWindow> readContent({
     required ContentRef reference,
     required ContentRange range,
-  }) => _run(() => _reader.readContent(reference: reference, range: range));
+  }) => _run(
+    () => _reader.readContent(reference: reference, range: range),
+    resource: reference,
+  );
 
   @override
   Future<CurrentCollectionPage> pageCurrent({
     required CurrentCollectionRef reference,
     String? continuation,
     required ReadDemand demand,
-  }) => _run(
-    () => _reader.pageCurrent(
+  }) => _run(() async {
+    final page = await _reader.pageCurrent(
       reference: reference,
       continuation: continuation,
       demand: demand,
-    ),
-  );
+    );
+    if (page.revision != reference.revision) throw _staleBusinessResource;
+    return page;
+  }, resource: reference);
 
-  Future<T> _run<T>(Future<T> Function() operation) {
+  Future<T> _run<T>(Future<T> Function() operation, {Object? resource}) {
     if (!isActive) return Future.error(const StaleConversationScope());
+    final qualification = resource == null ? null : _ResourceRead(resource);
+    if (qualification != null) _resourceReads.add(qualification);
     final completion = Completer<T>();
     late final Future<void> joined;
     joined = completion.future
         .then<void>((_) {}, onError: (Object _, StackTrace __) {})
         .whenComplete(() {
           _pending.remove(joined);
+          _resourceReads.remove(qualification);
         });
     _pending.add(joined);
     completion.complete(
       Future<T>.sync(operation).then(
         (value) {
           if (!isActive) throw const StaleConversationScope();
+          if (qualification?.stale ?? false) throw _staleBusinessResource;
           return value;
         },
         onError: (Object error, StackTrace stack) {
           if (!isActive) throw const StaleConversationScope();
+          if (qualification?.stale ?? false) throw _staleBusinessResource;
           Error.throwWithStackTrace(error, stack);
         },
       ),
@@ -139,7 +160,7 @@ final class ConversationReadScope implements ConversationQueryScope {
           return;
         }
         try {
-          final owned = _ContentWatch();
+          final owned = _ContentWatch(reference, output);
           watch = owned;
           _watches.add(owned);
           owned.handle = _reader.watchContent(
@@ -198,6 +219,28 @@ final class ConversationReadScope implements ConversationQueryScope {
       onResume: () => watch?.subscription?.resume(),
     );
     return output.stream;
+  }
+
+  void businessRefsChanged(
+    ThreadBusinessRefs? previous,
+    ThreadBusinessRefs next,
+  ) {
+    final plan = previous?.plan?.document;
+    final interactions = previous?.interactions;
+    bool replaced(Object resource) =>
+        (plan != null && resource == plan && plan != next.plan?.document) ||
+        (interactions != null &&
+            resource == interactions &&
+            interactions != next.interactions);
+    for (final read in _resourceReads) {
+      if (replaced(read.resource)) read.stale = true;
+    }
+    for (final watch in List.of(_watches)) {
+      if (!watch.stopping && replaced(watch.reference)) {
+        watch.output.addError(_staleBusinessResource);
+        unawaited(_finishWatchOutput(watch, watch.output));
+      }
+    }
   }
 
   void _releaseWatch(_ContentWatch watch) {
@@ -334,7 +377,9 @@ final class ConversationReadScope implements ConversationQueryScope {
 }
 
 final class _ContentWatch {
-  _ContentWatch();
+  _ContentWatch(this.reference, this.output);
+  final ContentRef reference;
+  final StreamController<ContentWindow> output;
   final listening = Completer<void>();
   ConversationContentWatch? handle;
   // Owned until both subscription cancellation and original watch join settle.
@@ -355,3 +400,17 @@ final class _ContentWatch {
     ?handleError,
   ];
 }
+
+final class _ResourceRead {
+  _ResourceRead(this.resource);
+  final Object resource;
+  bool stale = false;
+}
+
+const _staleBusinessResource = StudioFailure(
+  code: StudioFailureCode.staleRevision,
+  reason: StudioFailureReason.staleContent,
+  message: 'The requested business resource changed',
+  retryable: false,
+  correlationId: 'client-business-resource-stale',
+);

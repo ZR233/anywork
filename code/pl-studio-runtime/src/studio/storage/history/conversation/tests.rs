@@ -3,7 +3,7 @@ use pl_core::chat::{
     ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatError, ChatQuery, ContentData,
     ContentDescriptor, ContentReadRequest, ContentRef, ReadDemand, TimelineEpoch,
 };
-use sea_orm::{Database, DatabaseConnection, TransactionTrait};
+use sea_orm::{Database, DatabaseConnection};
 
 pub(super) struct Budget;
 impl ChatBudget for Budget {
@@ -41,17 +41,24 @@ pub(super) async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)>
     )
     .await?;
     db.execute_unprepared(sources::CREATE_SCHEMA).await?;
+    db.execute_unprepared(super::super::schema::immutable_completion_runs::CREATE)
+        .await?;
     Ok((dir, db))
 }
 
 fn item(seq: u64, class: &str, payload: &[u8]) -> ChatItem {
-    ChatItem::complete(
-        ChatDraft::new(format!("item:{seq}"), class, Arc::from(payload)),
-        seq,
-    )
+    let mut draft = ChatDraft::new(format!("item:{seq}"), class, Arc::from(payload));
+    draft.metadata = metadata(&draft.item_id);
+    let atom = serde_json::from_slice(&draft.metadata).unwrap();
+    draft.read_hint = crate::studio::runtime::chat_item::native_read_hint_v1(class, &atom);
+    let run = (draft.read_hint != ChatReadHint::Hidden).then_some(ChatRunPosition {
+        start_seq: seq,
+        ordinal: 1,
+    });
+    ChatItem::complete(draft, seq, run)
 }
 
-pub(super) fn metadata(id: &str) -> Arc<[u8]> {
+pub(in crate::studio::storage::history) fn metadata(id: &str) -> Arc<[u8]> {
     serde_json::to_vec(&pl_protocol::ChatAtom {
         id: id.into(),
         completion_item_id: Some(id.into()),
@@ -214,72 +221,19 @@ async fn demand_selects_indexed_scope_and_defers_oversized_payload() -> Result<(
 }
 
 #[tokio::test]
-async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_payload()
--> Result<()> {
-    use pl_protocol::{ChatBatch, ChatEntry, ChatPlacement, ChatScope};
-    // Budget the complete wire envelope, not a synthetic per-row byte constant.
-    // Match the reader's conservative source annotation and JSON byte-array bound;
-    // the opaque fixture payload must never be decoded to make this decision.
-    struct EnvelopeBudget {
-        database_id: String,
-        empty: ChatBatch,
-    }
-    impl EnvelopeBudget {
-        fn entry(&self, header: &ChatItemHeader, mode: PayloadMode) -> Result<ChatEntry> {
-            let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(&header.metadata)?;
-            atom.completion_seq = Some(header.append_seq);
-            atom.payload = Some(match mode {
-                PayloadMode::Inline => pl_protocol::PayloadData::Inline { bytes: Vec::new() },
-                PayloadMode::Deferred => pl_protocol::PayloadData::Deferred {
-                    reference: pl_protocol::ContentRef {
-                        database_id: self.database_id.clone(),
-                        target: pl_protocol::ContentTarget::ItemPayload {
-                            item_id: header.item_id.clone(),
-                        },
-                    },
-                    byte_length: header.byte_length,
-                },
-            });
-            Ok(ChatEntry::Atom(Box::new(atom)))
-        }
-    }
-    impl ChatBudget for EnvelopeBudget {
-        fn fixed_bytes(&self) -> usize {
-            serde_json::to_vec(&self.empty).unwrap().len()
-        }
-        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
-            let base = timeline::entry_bytes(&self.entry(header, mode).unwrap()).unwrap();
-            if mode == PayloadMode::Inline {
-                base + usize::try_from(header.byte_length).unwrap() * 4
-            } else {
-                base
-            }
-        }
-        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
-            unreachable!("this test does not read a content manifest")
-        }
-    }
+async fn cold_scope_budget_fits_completions_without_reserving_state() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store =
         super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget").await?;
     store.prepare_write().await?;
-    let parent = ChatKey::new("turn", "actual-parent")?;
-    let mut records = Vec::new();
-    for seq in 1..=3 {
-        let mut record = item(seq, "conversation", &[255; 2048]);
-        record.header.metadata = metadata(&record.header.item_id);
-        if seq == 2 {
-            record.header.parent_id = Some(parent.clone());
-        }
-        records.push(Arc::new(record));
-    }
+    let record = Arc::new(item(1, "conversation", &[255; 2048]));
     let current = super::super::test_current(1);
     store
         .commit_effect(
             1,
             super::super::EffectCommit {
                 items: &[],
-                completions: &records,
+                completions: std::slice::from_ref(&record),
                 current: &current,
                 rolled_back_turns: &Default::default(),
                 identities: &[],
@@ -292,111 +246,21 @@ async fn cold_scope_budget_fits_exact_item_and_child_envelopes_without_decoding_
             },
         )
         .await?;
-    // The synthetic fixture represents frozen legacy facts, prepared once at
-    // their formal normalization boundary, not a second normal Main algorithm.
-    let connection = store.writer().await?;
-    let tx = connection.db.begin().await?;
-    for record in &records {
-        let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-        atom.completion_seq = Some(record.header.append_seq);
-        tx.execute_raw(statement(
-            "INSERT INTO conversation_atom_facts(effect_seq,suborder,atom_id,phase,fact_order,metadata) VALUES(1,?,?,'terminal',?,?)",
-            vec![integer(record.header.append_seq)?.into(),atom.id.clone().into(),
-                integer(record.header.append_seq)?.into(),serde_json::to_vec(&atom)?.into()],
-        )).await?;
-    }
-    let generation = uuid::Uuid::new_v4().to_string();
-    timeline::complete::rebuild(&tx, &connection.database_id, generation.clone(), 1).await?;
-    tx.commit().await?;
-    // The synthetic legacy fixture is prepared before admitting any consumer.
-    // There is no normal read-triggered rebuild or live maintenance entry.
-    store.state.timeline_generation.send_replace(generation);
-    let budget = EnvelopeBudget {
-        database_id: connection.database_id.clone(),
-        empty: ChatBatch {
-            placement: ChatPlacement::Prepend,
-            entries: Vec::new(),
-            before: Some("cold-budget-continuation".into()),
-            current: None,
-        },
-    };
-    let cold = store
-        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, 256 * 1024), &budget)
-        .await?
-        .unwrap();
-    let page = cold.timeline.context("derived page")?;
-    assert!(cold.page.items.is_empty(), "Main selected atomic records");
-    let [pl_protocol::ChatEntry::Item(latest)] = page.entries.as_slice() else {
-        panic!("Main returned Atom");
-    };
-    assert_eq!(latest.position, Some(2));
-    assert_eq!(latest.content_item_id.as_deref(), Some("item:3"));
-    assert!(matches!(
-        latest.payload,
-        Some(pl_protocol::PayloadData::Deferred { .. })
-    ));
-    let minimum = budget.fixed_bytes() + serde_json::to_vec(&cold.current)?.len() - b"null".len()
-        + timeline::entry_bytes(&page.entries[0])?;
+    let mut query = ChatQuery::new("conversation", None);
+    query.selection = ChatSelection::RunHeads;
     let exact = store
-        .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum), &budget)
+        .cold_conversation(query.clone(), ReadDemand::new(1, 64), &Budget)
         .await?
         .unwrap();
-    assert_eq!(exact.timeline.unwrap().entries, page.entries);
-    let mut main_envelope = budget.empty.clone();
-    main_envelope.entries = page.entries.clone();
-    main_envelope.current = Some(cold.current.clone());
-    assert!(serde_json::to_vec(&main_envelope)?.len() <= minimum);
-    assert!(
-        store
-            .cold_timeline(&ChatScope::Main, ReadDemand::new(1, minimum - 1), &budget)
-            .await
-            .is_err()
-    );
-    let child_minimum =
-        budget.fixed_bytes() + budget.item_bytes(&records[1].header, PayloadMode::Deferred);
-    let query = ChatQuery::new("conversation", Some(parent));
-    let child = store
-        .cold_conversation(query.clone(), ReadDemand::new(1, child_minimum), &budget)
-        .await?
-        .unwrap();
-    assert_eq!(child.page.items.len(), 1);
-    assert_eq!(child.page.items[0].header, records[1].header);
+    assert_eq!(exact.page.items.len(), 1);
+    assert_eq!(exact.page.items[0].header, record.header);
     assert!(matches!(
-        child.page.items[0].payload,
+        exact.page.items[0].payload,
         PayloadData::Deferred { .. }
     ));
-    let mut child_envelope = budget.empty.clone();
-    child_envelope.entries =
-        vec![budget.entry(&child.page.items[0].header, PayloadMode::Deferred)?];
-    assert!(serde_json::to_vec(&child_envelope)?.len() <= child_minimum);
-    assert!(
-        !child.page.exhausted,
-        "a full scoped page conservatively continues without an existence probe"
-    );
-    let short = store
-        .cold_conversation(query.clone(), ReadDemand::new(2, child_minimum), &budget)
-        .await?
-        .unwrap();
-    assert_eq!(short.page.items, child.page.items);
-    assert!(short.page.exhausted, "a short scoped page proves EOF");
-    let end = super::page(
-        &connection.db,
-        &ChatHistoryRequest {
-            query: Some(query.clone()),
-            after: 0,
-            before: Some(records[1].header.append_seq),
-            ceiling: records[2].header.append_seq,
-            demand: ReadDemand::new(1, child_minimum),
-        },
-        &budget,
-        false,
-    )
-    .await?;
-    assert!(end.items.is_empty());
-    assert!(end.exhausted, "an empty scoped continuation proves EOF");
     assert!(
         store
-            .cold_conversation(query, ReadDemand::new(1, child_minimum - 1), &budget)
+            .cold_conversation(query, ReadDemand::new(1, 63), &Budget)
             .await
             .is_err()
     );

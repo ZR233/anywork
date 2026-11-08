@@ -1,8 +1,9 @@
 //! Correct the published atom-metadata representation using durable inbox identities.
 //! Original completions, task deliveries, checkpoints and source positions are not rewritten.
+use super::legacy_completion_projection::lightweight;
+use super::legacy_timeline_store as timeline;
 use super::*;
-use crate::studio::storage::history::conversation::timeline;
-use crate::studio::thread_projection::{order, timeline::lightweight};
+use crate::studio::thread_projection::order;
 use pl_protocol::{ChatAtom, ChatDeliveryKind, ChatSourceId};
 use serde::Deserialize;
 

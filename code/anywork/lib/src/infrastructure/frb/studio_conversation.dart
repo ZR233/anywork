@@ -74,6 +74,12 @@ final class FrbConversationFeed implements ConversationFeed {
                     ),
                   frb_chat_types.BridgeConversationEvent_Chat(:final batch) =>
                     ConversationChatEvent(batch: _chatBatchFromFrb(batch)),
+                  frb_chat_types.BridgeConversationEvent_Activity(
+                    :final snapshot,
+                  ) =>
+                    ConversationActivityEvent(
+                      snapshot: _activitySnapshotFromFrb(snapshot),
+                    ),
                   frb_chat_types.BridgeConversationEvent_Failure(
                     :final error,
                   ) =>

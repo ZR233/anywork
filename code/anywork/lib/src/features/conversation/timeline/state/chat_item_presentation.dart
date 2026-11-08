@@ -94,7 +94,9 @@ final class ChatItemPresentation {
       reference: value.reference,
       byteLength: value.byteLength,
       createdAt: value.createdAt,
-      authorId: value.authorId,
+      authorId: message.source is InboxMessageChatSource
+          ? 'inbox:${(message.source as InboxMessageChatSource).sourceId}'
+          : value.authorId,
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
       atom: message,
@@ -102,14 +104,16 @@ final class ChatItemPresentation {
   }
 
   static ChatItemPresentation forUnit(TimelineDisplayUnit unit) {
-    final item = unit.item;
-    final author = switch (item.textChannel) {
-      ThreadTextChannel.user => 'user',
-      ThreadTextChannel.parentAgent => 'parentAgent',
-      ThreadTextChannel.commentary ||
-      ThreadTextChannel.finalAnswer => 'assistant',
-      null => null,
-    };
+    final item = unit.entry.atom;
+    final author = item.source is InboxMessageChatSource
+        ? 'inbox:${(item.source as InboxMessageChatSource).sourceId}'
+        : switch (item.textChannel) {
+            ThreadTextChannel.user => 'user',
+            ThreadTextChannel.parentAgent => 'parentAgent',
+            ThreadTextChannel.commentary ||
+            ThreadTextChannel.finalAnswer => 'assistant',
+            null => null,
+          };
     final finishedAt = item.finishedAt;
     final time =
         finishedAt != null &&
@@ -117,9 +121,9 @@ final class ChatItemPresentation {
             finishedAt <= 8640000000000
         ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
         : null;
-    if (item.kind == TimelineItemKind.workGroup || item.payload == null) {
+    if (unit.run != null || item.payload == null) {
       return ChatItemPresentation(
-        id: item.id,
+        id: unit.id,
         compatibility: ChatItemCompatibility.current,
         type: 'displayUnit',
         data: const {},
@@ -129,9 +133,9 @@ final class ChatItemPresentation {
         createdAt: time,
       );
     }
-    final value = decodePayload(item.id, item.payload!);
+    final value = decodePayload(unit.id, item.payload!);
     return ChatItemPresentation(
-      id: item.id,
+      id: unit.id,
       compatibility: value.compatibility,
       type: value.type,
       data: value.data,
@@ -144,6 +148,7 @@ final class ChatItemPresentation {
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
       displayUnit: unit,
+      atom: item,
     );
   }
 

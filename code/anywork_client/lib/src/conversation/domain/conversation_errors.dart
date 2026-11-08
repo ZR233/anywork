@@ -1,5 +1,19 @@
 import 'conversation_watermark.dart';
 
+final class ProtocolVersionMismatch implements Exception {
+  const ProtocolVersionMismatch({
+    required this.received,
+    this.supported = 1,
+    this.field = 'completedHistoryVersion',
+  });
+  final int? received;
+  final int supported;
+  final String field;
+  @override
+  String toString() =>
+      'ProtocolVersionMismatch($field=$received, supported=$supported)';
+}
+
 /// The producer explicitly lost observation frames. This is distinct from a
 /// notification whose envelope does not join the current subscription watermark.
 final class ThreadStateLagged implements Exception {

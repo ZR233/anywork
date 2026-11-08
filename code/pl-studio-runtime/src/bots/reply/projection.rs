@@ -1,37 +1,27 @@
-//! Bounded, target-only projection of ordered completed messages and current previews.
+//! Bounded target projection of immutable records and independent Final activity.
 
 use super::content::{
     FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS, ReplyItem, ReplyItemKind,
 };
-use pl_protocol::{
-    ChatPlacement, CurrentContentRole, CurrentProjection, ThreadTextChannel, TurnState,
-};
+use pl_protocol::{ChatPlacement, TurnState};
 
 #[derive(Clone)]
 pub(super) struct ReplyProjection {
-    turn_id: String,
     items: Vec<ReplyItem>,
     covered: bool,
     active: bool,
-    current: Vec<(String, String)>,
+    previews: Vec<(String, String)>,
     observed_terminal: Option<TurnState>,
-    terminal_cut_delivered: bool,
-    current_cut: Option<u64>,
-    current_seen: bool,
 }
 
 impl ReplyProjection {
-    pub(super) fn new(turn_id: &str) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            turn_id: turn_id.into(),
             items: Vec::new(),
             covered: false,
             active: false,
-            current: Vec::new(),
+            previews: Vec::new(),
             observed_terminal: None,
-            terminal_cut_delivered: false,
-            current_cut: None,
-            current_seen: false,
         }
     }
 
@@ -40,14 +30,6 @@ impl ReplyProjection {
         placement: ChatPlacement,
         items: Vec<ReplyItem>,
     ) -> Result<(), FinalError> {
-        // Main group-header updates carry no target reply body. Canonical
-        // completion identities remain immutable in this reply projection.
-        if placement == ChatPlacement::Update {
-            if !items.is_empty() {
-                return Err(gap("reply body received a Main group-header update"));
-            }
-            return Ok(());
-        }
         let existing = if placement == ChatPlacement::Set {
             &[][..]
         } else {
@@ -88,7 +70,7 @@ impl ReplyProjection {
                 self.items = items;
                 self.covered = false;
                 self.active = false;
-                self.current.clear();
+                self.previews.clear();
             }
             ChatPlacement::Append => self.items.extend(items),
             ChatPlacement::Prepend => {
@@ -96,7 +78,6 @@ impl ReplyProjection {
                 all.append(&mut self.items);
                 self.items = all;
             }
-            ChatPlacement::Update => unreachable!("handled before body validation"),
         }
         Ok(())
     }
@@ -105,51 +86,26 @@ impl ReplyProjection {
         self.covered = true;
     }
 
-    pub(super) fn set_current(&mut self, current: CurrentProjection) -> Result<(), FinalError> {
-        // Completed members have already been accepted from this same batch. A concrete
-        // empty snapshot retires the current preview; None is handled by the caller.
-        let mut previews = Vec::new();
-        self.current_seen = true;
-        self.current_cut = (!current
-            .items
-            .iter()
-            .any(|item| item.turn_id.as_deref() == Some(self.turn_id.as_str())))
-        .then_some(current.source_effect_seq);
-        self.terminal_cut_delivered = current.sources.iter().any(|state|
-            matches!(&state.source,pl_protocol::ChatSourceId::ForegroundTurn {turn_id} if turn_id==&self.turn_id)
-                && matches!(state.lifecycle,pl_protocol::ChatSourceLifecycle::Ended {..}))
-            && !current.items.iter().any(|item|item.turn_id.as_deref()==Some(self.turn_id.as_str()));
-        let active = current.execution_present
-            && current
-                .active_turn
-                .as_ref()
-                .is_some_and(|turn| turn.id == self.turn_id);
-        if active {
-            for part in current.previews {
-                // Display role is not an outbound channel. Only the producer's
-                // canonical Final fact can authorize a streaming card preview.
-                if part.role == CurrentContentRole::Response
-                    && part.text_channel == Some(ThreadTextChannel::Final)
-                {
-                    previews.push((part.id, part.text));
-                }
-            }
-        }
+    pub(super) fn set_activity(
+        &mut self,
+        active: bool,
+        previews: Vec<(String, String)>,
+    ) -> Result<(), FinalError> {
         let bytes = previews
             .iter()
             .try_fold(0usize, |size, (_, text)| size.checked_add(text.len()));
         if previews.len() > MAX_TURN_CONTENT_ITEMS
             || bytes.is_none_or(|size| size > MAX_TURN_BODY_BYTES)
         {
-            return Err(gap("current reply preview exceeded its bounded budget"));
+            return Err(gap("active reply preview exceeded its bounded budget"));
         }
-        self.current = previews;
+        self.previews = if active { previews } else { Vec::new() };
         self.active = active;
         Ok(())
     }
 
     pub(super) fn active(&self) -> bool {
-        self.active
+        self.active && self.terminal().is_none()
     }
 
     pub(super) fn validate_budget(&self) -> Result<(), FinalError> {
@@ -158,7 +114,7 @@ impl ReplyProjection {
             .iter()
             .try_fold(0usize, |size, item| size.checked_add(item.preview_bytes()));
         let bytes = self
-            .current
+            .previews
             .iter()
             .filter(|(id, _)| !self.items.iter().any(|item| item.member_id == *id))
             .try_fold(completed.unwrap_or(usize::MAX), |size, (_, text)| {
@@ -166,7 +122,7 @@ impl ReplyProjection {
             });
         if bytes.is_none_or(|size| size > MAX_TURN_BODY_BYTES) {
             return Err(FinalError::Attention(
-                "reply completed/current body budget exceeded".into(),
+                "reply completed/activity body budget exceeded".into(),
             ));
         }
         Ok(())
@@ -174,42 +130,19 @@ impl ReplyProjection {
 
     /// A hint only. The explicit reliable barrier is still required before any final delivery.
     pub(super) fn terminal(&self) -> Option<TurnState> {
-        if self.active || (self.current_seen && self.current_cut.is_none()) {
-            return None;
-        }
-        if self.observed_terminal.is_some()
-            && (!self.terminal_cut_delivered || self.active || self.current_cut.is_none())
-        {
-            return None;
-        }
-        if self.terminal_cut_delivered
-            && !self.active
-            && let Some(state) = &self.observed_terminal
-        {
-            return Some(state.clone());
-        }
-        self.items.iter().rev().find_map(|item| match &item.kind {
+        let receipt = self.items.iter().rev().find_map(|item| match &item.kind {
             ReplyItemKind::Terminal(state) => Some(state.clone()),
             _ => None,
-        })
+        })?;
+        // State is the real execution outcome. The immutable Turn receipt proves
+        // that its completed content prefix has actually reached this consumer.
+        (self.observed_terminal.as_ref() == Some(&receipt)).then_some(receipt)
     }
 
     pub(super) fn observe_terminal(&mut self, state: &TurnState) {
         if state.is_terminal() {
             self.observed_terminal = Some(state.clone());
         }
-    }
-
-    pub(super) fn terminal_cut_to_qualify(&self) -> Option<u64> {
-        (self.covered
-            && self.observed_terminal.is_some()
-            && !self.active
-            && !self.terminal_cut_delivered)
-            .then_some(self.current_cut)
-            .flatten()
-    }
-    pub(super) fn qualify_terminal_cut(&mut self) {
-        self.terminal_cut_delivered = true;
     }
 
     pub(super) fn completed(&self) -> Result<&[ReplyItem], FinalError> {
@@ -240,7 +173,7 @@ impl ReplyProjection {
                 }
             }
         }
-        for (id, preview) in &self.current {
+        for (id, preview) in &self.previews {
             if !self.items.iter().any(|item| item.member_id == *id) {
                 text.push_str(preview);
             }

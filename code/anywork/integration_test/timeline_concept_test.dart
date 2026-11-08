@@ -50,8 +50,10 @@ const _failedPrompt = '保留这段部分结果，再展示供应商失败。';
 const _partial = '已经完成的部分结果必须保留，不能因后续失败而消失。';
 const _overlapPrompt = 'A07：推理尚未结束时开始正文，并保留可读流。';
 const _overlapText = '正文已经开始且可以读取，先前推理稍后才结束。';
-const _emptyTextPrompt = 'A14：空正文开始和结束仍然分开前后两段工作。';
-const _emptyTextAnswer = '空正文没有可见气泡，但前后工作不属于同一段。';
+const _overlapReasoning = '这段推理在正文开始后继续保持活动。';
+const _overlapEarlyReasoning = '后开始的推理 B 已先完成，推理 A 仍在进行。';
+const _emptyTextPrompt = 'A14：空正文开始和结束不分隔前后相邻工作。';
+const _emptyTextAnswer = '空正文没有可见气泡，前后相邻工作仍属于同一段。';
 const _imageCalls = ['concept-image-a', 'concept-image-b', 'concept-image-c'];
 const _imageReasoningCount = 40;
 const _imageMemberCount = 44;
@@ -276,6 +278,7 @@ Future<void> _until(
 typedef _ImageResult = ({
   ChatAtom foreground,
   TimelineDisplayUnit? finalUnit,
+  ChatAtom finalAtom,
   ChatItemPresentation presentation,
 });
 
@@ -301,13 +304,14 @@ final class _ConceptScene {
   // Borrow existing immutable values only. None of these getters opens a query,
   // runs a body read, classifies atoms, or keeps a second presentation list.
   List<TimelineDisplayUnit> get main => observed.main.toList();
-  List<TimelineDisplayUnit> get live => lease.liveUnits.value;
-  Iterable<TimelineItem> get items => main.map((unit) => unit.item);
+  List<ChatAtom> get live =>
+      observed.activity.map((entry) => entry.atom).toList();
+  Iterable<CompletedEntry> get items => observed.entries;
   Iterable<ChatAtom> membersOf(String unitId) => lease.groupDisplays
       .where((display) => display.unitId == unitId)
       .expand((display) => display.atoms);
-  ChatItemPresentation presentation(TimelineItem item) =>
-      ChatItemPresentation.decodePayload(item.id, item.payload!);
+  ChatItemPresentation presentation(CompletedEntry entry) =>
+      ChatItemPresentation.decode(entry.atom);
   bool hasText(String text) =>
       find.textContaining(text, findRichText: true).evaluate().isNotEmpty;
   Finder unitFinder(String id) => find.byWidgetPredicate(
@@ -364,100 +368,67 @@ final class _ConceptScene {
       fixtureGate(tester, provider, stage, release: true);
 
   Future<void> _record(String stage) async {
-    // Observe real metrics after the production View's layout/post-frame work.
-    // This pump does not advance a provider gate or issue a page command.
     await tester.pump();
     expect(tester.takeException(), isNull);
-    Map<String, Object?> unit(TimelineDisplayUnit value) => {
-      'id': value.id,
-      'kind': value.item.kind.name,
-      'live': value.live,
-      'memberCount': value.item.summary?.memberCount,
-      'activeCount': value.item.summary?.activeCount,
-      'membersRef': value.item.members?.itemId,
-      'mountedMemberIds': [for (final atom in membersOf(value.id)) atom.id],
-      'memberWindows': [
-        for (final display in lease.groupDisplays)
-          if (display.unitId == value.id)
-            {
-              'displayIdentity': identityHashCode(display),
-              'isCurrent': display.isCurrent,
-              'expanded': display.expanded,
-              'before': display.before,
-              'loading': display.loading,
-              'error': display.error?.toString(),
-              'atoms': [
-                for (final atom in display.atoms)
-                  {
-                    'id': atom.id,
-                    'kind': atom.kind.name,
-                    'sourceOrder': atom.sourceOrder,
-                    'turnId': atom.turnId,
-                    'attemptId': atom.attemptId,
-                    'completionItemId': atom.completionItemId,
-                    'completionSeq': atom.completionSeq,
-                    'lifecycle': atom.lifecycle.runtimeType.toString(),
-                    if (atom.lifecycle is ActiveChatAtom)
-                      'status': (atom.lifecycle as ActiveChatAtom).status.name,
-                    if (atom.lifecycle is TerminalChatAtom)
-                      'outcome':
-                          (atom.lifecycle as TerminalChatAtom).outcome.name,
-                    if (atom.lifecycle is TerminalChatAtom)
-                      'endedEffectSeq':
-                          (atom.lifecycle as TerminalChatAtom).ended?.effectSeq,
-                    'sourceLifecycle': atom.sourceState?.lifecycle.runtimeType
-                        .toString(),
-                    'sourceEndedEffectSeq': atom.sourceState?.ended?.effectSeq,
-                  },
-              ],
-            },
-      ],
-      'toolCallIds': [
-        for (final atom in membersOf(value.id))
-          if (atom.tool != null) atom.tool!.callId,
-      ],
-      'startedAt': value.item.startedAt,
-      'finishedAt': value.item.finishedAt,
-    };
     _checkpoints.add({
       'stage': stage,
       'ownerGeneration': lease.generation,
       'mainMessageCount': lease.controller.messages.length,
-      'main': main.map(unit).toList(),
-      'live': live.map(unit).toList(),
+      'main': [
+        for (final unit in main)
+          {
+            'id': unit.id,
+            'recordId': unit.entry.recordId,
+            'completionSeq': unit.entry.completionSeq,
+            'presentation': unit.entry.mainPresentation.name,
+            'startSeq': unit.entry.run?.startSeq,
+            'ordinal': unit.entry.run?.ordinal,
+            'mountedMemberIds': [
+              for (final atom in membersOf(unit.id)) atom.id,
+            ],
+          },
+      ],
+      'activity': [
+        for (final atom in live)
+          {
+            'id': atom.id,
+            'kind': atom.kind.name,
+            'lifecycle': atom.lifecycle.runtimeType.toString(),
+          },
+      ],
       'hasOlder': lease.hasOlder,
       'frameObservation': frameObservation(lease),
     });
     report['checkpoints'] = _checkpoints;
-    // Unit IDs and member counts are intentionally different observations.
     expect(main.map((unit) => unit.id).toSet(), hasLength(main.length));
-    expect(
-      main
-          .map((unit) => unit.id)
-          .toSet()
-          .intersection(live.map((unit) => unit.id).toSet()),
-      isEmpty,
-      reason: 'one display unit must not be in both Main and current',
-    );
-    expect(main.every((unit) => !unit.live), isTrue);
+    for (final unit in main.where((unit) => unit.run != null)) {
+      expect(unit.entry.atom.payload, isA<DeferredPayload>());
+      final folded = ChatItemPresentation.forUnit(unit);
+      expect(
+        folded.bodies,
+        isEmpty,
+        reason: 'Main work representatives never inline body bytes',
+      );
+      expect(
+        folded.attachments,
+        isEmpty,
+        reason: 'Folded work cards never materialize attachment data',
+      );
+    }
     for (final view in tester.widgetList<TimelineDisplayUnitView>(
       find.byType(TimelineDisplayUnitView),
     )) {
-      final value = view.unit;
-      if (value.live || value.item.kind != TimelineItemKind.workGroup) continue;
+      final unit = view.unit;
+      if (unit.run == null) continue;
       final header = tester.widget<TimelineActivityRow>(
-        find.byKey(ValueKey('source-unit-header:${value.id}')),
+        observed.groupHeader(unit.id),
       );
-      expect(header.active, isFalse, reason: 'history headers never spin');
-      if (value.item.summary?.startedAt == null ||
-          value.item.summary?.finishedAt == null) {
-        expect(
-          header.label,
-          '工作记录',
-          reason:
-              'an unknown interval is not a fabricated zero-second duration',
-        );
-      }
+      expect(header.active, isFalse);
+      final label =
+          unit.entry.mainPresentation == MainPresentation.backgroundResults
+          ? '后台结果'
+          : '工作记录';
+      expect(header.label, '$label · ${unit.entry.run!.ordinal} 项');
     }
   }
 
@@ -580,7 +551,7 @@ final class _ConceptScene {
       'appliedAppends': target.appliedAppends,
       'batchCounterMeaning': 'Main admitted batches, not IO page counts',
       'residentMainMessages': target.controller.messages.length,
-      'residentLiveItems': target.liveUnits.value.length,
+      'residentLiveItems': target.content.activity.value?.entries.length ?? 0,
       'residentMountedMembers': target.groupDisplays.fold<int>(
         0,
         (count, display) => count + display.atoms.length,
@@ -712,27 +683,21 @@ final class _ConceptScene {
 
   /// Runs only while the existing workgroup gate holds the first active member.
   /// Navigation is production UI, not a second feed or a fabricated Set.
-  Future<TimelineDisplayUnit> reopenActiveWorkgroup() async {
+  Future<ChatAtom> reopenActiveWorkgroup() async {
     final before = lease;
-    final original = live.single;
-    final originalMembers = await observed.openGroup(original.id);
-    final member = originalMembers.atoms.single;
-    final source = original.item.source;
+    final member = live.single;
+    final source = member.source;
     expect(source, isA<ForegroundTurnChatSource>());
     final activeTurnId = (source as ForegroundTurnChatSource).turnId;
-    expect(original.item.summary!.activeCount, 1);
     expect(member.lifecycle, isA<ActiveChatAtom>());
     expect(member.contents, isNotEmpty);
-    expect(before.content.current.value?.activeTurn?.id, activeTurnId);
-    expect(before.content.current.value?.logicalStatus.isActive, isTrue);
+    final state = graph.client.conversations.session(threadId).state;
+    expect(state.activeTurn?.turnId, activeTurnId);
     final originalCurrent = before.currentDisplay!;
     expect(originalCurrent.isCurrent, isTrue);
-    final historyIds = items.map((item) => item.id).toList();
+    final historyIds = items.map((item) => item.recordId).toList();
     expect(historyIds, isNotEmpty);
     expect(historyIds.toSet(), hasLength(historyIds.length));
-
-    // Active parts already use their real item-owned body. Reopening must keep
-    // that member owner/key, not substitute a current domain or a UI group key.
     Object memberBody(ChatAtomContent content) {
       final target = content.reference.target;
       expect(target, isA<BodyContentTarget>());
@@ -749,94 +714,47 @@ final class _ConceptScene {
     }
 
     final bodyIdentities = member.contents.map(memberBody).toList();
-    final selectedThread = before.threadId;
+    final selectedThread = threadId;
     await tap(find.byKey(StudioDriverKeys.settingsOpen));
     await _until(
       tester,
       () => find.byKey(StudioDriverKeys.settingsPage).evaluate().isNotEmpty,
-      'settings page while the original model member remains held',
+      'settings while the original Activity is held',
     );
     await _until(
       tester,
       () => before.isRetired && before.isReleased,
-      'original Main lease retired and all its original query scopes joined',
+      'original Main lease and query scopes joined',
     );
-    // released completes only after unmount, mutations and owned-query close.
-    // Do not read before.queries: that getter would admit another read scope.
     await before.released;
     expect(before.queryCleanupError, isNull);
     expect(originalCurrent.isCurrent, isFalse);
     expect(originalCurrent.windows, isEmpty);
-    expect(originalMembers.isCurrent, isFalse);
-    expect(originalMembers.atoms, isEmpty);
     expect(
       (await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
       )).complete,
       isTrue,
     );
-
     await tap(find.byKey(StudioDriverKeys.settingsBack));
     await openThread(selectedThread);
-    await _until(tester, () {
-      final next = graph.timeline.lease(selectedThread);
-      if (next == null || identical(next, before) || !next.isMounted) {
-        return false;
-      }
-      return next.appliedSets == 1 &&
-          next.currentDisplay?.isCurrent == true &&
-          next.liveUnits.value.any(
-            (unit) =>
-                unit.item.source == source &&
-                unit.id == original.id &&
-                unit.item.members == original.item.members &&
-                unit.item.summary?.activeCount == 1,
-          );
-    }, 'fresh native Set still carries the same active source and member');
-    final after = lease;
-    expect(after.generation, greaterThan(before.generation));
-    expect(after.appliedSets, 1);
-    expect(after.content.current.value?.activeTurn?.id, activeTurnId);
-    expect(after.content.current.value?.logicalStatus.isActive, isTrue);
-    expect(after.currentDisplay!.turnId, activeTurnId);
-    expect(graph.client.selection.state.selectedThreadId, selectedThread);
-    expect(
-      tester
-          .widget<ConversationCurrentConnector>(
-            find.byType(ConversationCurrentConnector),
-          )
-          .units,
-      same(after.liveUnits),
+    await _until(
+      tester,
+      () =>
+          lease.appliedSets == 1 &&
+          live.any((atom) => atom.id == member.id && atom.source == source),
+      'fresh Set and the same independently delivered Activity',
     );
-    expect(live, hasLength(1));
-    final reopened = live.single;
-    expect(reopened.item.source, source);
-    expect(reopened.id, original.id);
-    expect(reopened.item.members, original.item.members);
-    expect(reopened.item.kind, original.item.kind);
-    expect(reopened.live, isTrue);
-    expect(reopened.item.admissionClosed, isFalse);
-    expect(reopened.item.summary!.activeCount, 1);
-    final resumedDisplay = await observed.openGroup(reopened.id);
-    expect(resumedDisplay.atoms, hasLength(1));
-    final resumed = resumedDisplay.atoms.single;
-    expect(resumed.id, member.id);
-    expect(resumed.source, member.source);
+    expect(lease.generation, greaterThan(before.generation));
+    expect(lease.currentDisplay!.turnId, activeTurnId);
+    final resumed = live.singleWhere((atom) => atom.id == member.id);
     expect(resumed.kind, member.kind);
     expect(resumed.sourceOrder, member.sourceOrder);
     expect(resumed.lifecycle, isA<ActiveChatAtom>());
-    expect(
-      (resumed.lifecycle as ActiveChatAtom).status,
-      (member.lifecycle as ActiveChatAtom).status,
-    );
     expect(resumed.contents.map(memberBody), orderedEquals(bodyIdentities));
-    expect(items.map((item) => item.id), orderedEquals(historyIds));
-    expect(items.where((item) => item.contentItemId == member.id), isEmpty);
-    expect(
-      main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
-      isEmpty,
-    );
-    expect(unitFinder(reopened.id), findsOneWidget);
+    expect(items.map((item) => item.recordId), orderedEquals(historyIds));
+    expect(items.where((item) => item.atom.id == member.id), isEmpty);
+    expect(main.where((unit) => unit.run != null), isEmpty);
     report['midstreamReopen'] = {
       'gate': 'workgroup',
       'threadId': selectedThread,
@@ -844,26 +762,17 @@ final class _ConceptScene {
       'memberId': resumed.id,
       'memberKind': resumed.kind.name,
       'oldGeneration': before.generation,
-      'newGeneration': after.generation,
+      'newGeneration': lease.generation,
       'oldLeaseReleased': before.isReleased,
-      'newMainSets': after.appliedSets,
+      'newMainSets': lease.appliedSets,
       'historyItemIds': historyIds,
       'activeContentReferences': [
         for (final content in resumed.contents)
-          {
-            'role': content.role.name,
-            'databaseId': content.reference.databaseId,
-            'key': (content.reference.target as BodyContentTarget).key,
-            'ownerKind': 'item',
-            'ownerId':
-                ((content.reference.target as BodyContentTarget).owner
-                        as ItemContentOwner)
-                    .itemId,
-          },
+          contentReferenceIdentity(content.reference).toString(),
       ],
     };
     await _record('workgroup-reopened');
-    return reopened;
+    return resumed;
   }
 
   Future<void> idle() async {
@@ -883,9 +792,9 @@ final class _ConceptScene {
   Future<void> showUnit(String id) async {
     final unit = observed.unit(id);
     Finder target = observed.itemRow(id);
-    if (unit.item.kind == TimelineItemKind.workGroup) {
+    if (unit.run != null) {
       target = observed.groupHeader(id);
-    } else if (unit.item.atomKind == ChatAtomKind.compaction) {
+    } else if (unit.entry.atom.kind == ChatAtomKind.compaction) {
       target = find.descendant(
         of: target,
         matching: find.text('已完成压缩', findRichText: true),
@@ -915,8 +824,7 @@ final class _ConceptScene {
           tester.allWidgets
               .map(
                 (widget) => switch (widget) {
-                  TimelineDisplayUnitView(:final unit) when !unit.live =>
-                    unit.id,
+                  TimelineDisplayUnitView(:final unit) => unit.id,
                   ChatItemView(:final item) => item.id,
                   _ => null,
                 },
@@ -936,7 +844,7 @@ final class _ConceptScene {
   }
 
   Future<void> expand(TimelineDisplayUnit unit) async {
-    await observed.openGroup(unit.id);
+    await observed.openRun(unit.id);
   }
 
   void _recordMemberInventory(
@@ -945,18 +853,17 @@ final class _ConceptScene {
     TimelineGroupDisplay? original,
     Object? error,
   }) {
-    Map<String, Object?>? reference(TimelineMembersRef? value) => value == null
+    Map<String, Object?>? reference(CompletionRunRef? value) => value == null
         ? null
         : {
-            'itemId': value.itemId,
+            'startSeq': value.startSeq,
             'databaseId': value.databaseId,
-            'projectionVersion': value.projectionVersion,
-            'projectionGeneration': value.projectionGeneration,
+            'indexVersion': value.indexVersion,
           };
     Map<String, Object?> display(TimelineGroupDisplay value) => {
       'unitId': value.unitId,
       'identity': identityHashCode(value),
-      'membersRef': reference(value.membersRef),
+      'runReference': reference(value.runReference),
       'isCurrent': value.isCurrent,
       'expanded': value.expanded,
       'before': value.before,
@@ -971,7 +878,7 @@ final class _ConceptScene {
     for (final element in find.byType(TimelineChildrenConnector).evaluate()) {
       final widget = element.widget as TimelineChildrenConnector;
       if (widget.threadId != lease.threadId ||
-          widget.membersRef == null ||
+          widget.runReference == null ||
           element is! StatefulElement) {
         continue;
       }
@@ -979,7 +886,7 @@ final class _ConceptScene {
       if (state is! TimelineChildrenDisplay) continue;
       windows.add({
         'parentId': state.parentId,
-        'membersRef': reference(widget.membersRef),
+        'runReference': reference(widget.runReference),
         'generation': state.generation,
         'isCurrent': state.isCurrent,
         'ready': state.ready,
@@ -1010,9 +917,9 @@ final class _ConceptScene {
   /// member demands separately from reused windows and Main batch counters.
   Future<List<String>> contentIdentitiesForItem(String id) async {
     final unit = observed.unit(id);
-    if (unit.item.kind != TimelineItemKind.workGroup) {
-      expect(unit.item.contentItemId, isNotNull);
-      return [unit.item.contentItemId!];
+    if (unit.run == null) {
+      expect(unit.entry.recordId, isNotNull);
+      return [unit.entry.recordId];
     }
     final reusedWindow = lease.groupDisplays.any(
       (display) =>
@@ -1021,7 +928,7 @@ final class _ConceptScene {
     TimelineGroupDisplay? original;
     _recordMemberInventory('before-open', id);
     try {
-      final display = await observed.openGroup(id);
+      final display = await observed.openRun(id);
       original = display;
       final ids = <String>{};
       var olderPageCommands = 0;
@@ -1057,7 +964,7 @@ final class _ConceptScene {
           return !display.loading && display.before != before;
         }, 'explicit group member page advanced');
       }
-      expect(ids, hasLength(unit.item.summary!.memberCount));
+      expect(ids, hasLength(unit.entry.run!.ordinal));
       final observations =
           (report['memberPageObservations'] ??= <Map<String, Object?>>[])
               as List<Map<String, Object?>>;
@@ -1072,7 +979,9 @@ final class _ConceptScene {
         'eof': true,
       });
       _recordMemberInventory('eof', id, original: display);
-      return ids.toList();
+      final ordered = display.atoms.map((atom) => atom.id).toList();
+      expect(ordered.toSet(), ids);
+      return ordered;
     } catch (error) {
       _recordMemberInventory('failed', id, original: original, error: error);
       rethrow;
@@ -1080,7 +989,7 @@ final class _ConceptScene {
   }
 
   Future<void> _closeInventoriedGroup(String id) async {
-    if (observed.unit(id).item.kind != TimelineItemKind.workGroup) return;
+    if (observed.unit(id).run == null) return;
     final display = lease.groupDisplays.singleWhere(
       (display) => display.unitId == id,
     );
@@ -1089,7 +998,7 @@ final class _ConceptScene {
     expect(display.before, isNull);
     expect(display.loading, isFalse);
     _recordMemberInventory('eof-before-close', id, original: display);
-    await observed.closeGroup(display);
+    await observed.closeRun(display);
     _recordMemberInventory('closed', id, original: display);
   }
 
@@ -1099,40 +1008,20 @@ final class _ConceptScene {
     TimelineGroupDisplay? original,
   }) {
     final state = graph.client.conversations.session(threadId).state;
-    Map<String, Object?>? turn(StudioTurnView? value) => value == null
-        ? null
-        : {
-            'threadId': value.threadId,
-            'turnId': value.turnId,
-            'status': value.state.status.name,
-            'isTerminal': value.state.isTerminal,
-          };
-    Map<String, Object?> group(TimelineDisplayUnit value) => {
-      'id': value.id,
-      'sourceKind': value.item.source.runtimeType.toString(),
-      if (value.item.source is ForegroundTurnChatSource)
-        'sourceTurnId': (value.item.source as ForegroundTurnChatSource).turnId,
-      'memberCount': value.item.summary!.memberCount,
-      'activeCount': value.item.summary!.activeCount,
-      'failedCount': value.item.summary!.failedCount,
-      'admissionClosed': value.item.admissionClosed,
-      'membersRef': value.item.members?.itemId,
-    };
     report['imageFailure'] = {
       'stage': stage,
       'failure': error.toString(),
       'expectedMemberCount': _imageMemberCount,
-      'activeTurn': turn(state.activeTurn),
-      'lastTurn': turn(state.lastTurn),
-      'currentSourceTurnId': lease.content.current.value?.activeTurn?.id,
-      'mountedCurrentTurnId': lease.currentDisplay?.turnId,
-      'mainWorkGroups': [
-        for (final unit in main)
-          if (unit.item.kind == TimelineItemKind.workGroup) group(unit),
-      ],
-      'liveWorkGroups': [
-        for (final unit in live)
-          if (unit.item.kind == TimelineItemKind.workGroup) group(unit),
+      'activeTurnId': state.activeTurn?.turnId,
+      'lastTurnId': state.lastTurn?.turnId,
+      'activityAtomIds': [for (final atom in live) atom.id],
+      'workRuns': [
+        for (final unit in main.where((unit) => unit.run != null))
+          {
+            'id': unit.id,
+            'startSeq': unit.run!.reference.startSeq,
+            'ordinal': unit.entry.run!.ordinal,
+          },
       ],
     };
     _recordMemberInventory(
@@ -1143,15 +1032,13 @@ final class _ConceptScene {
     );
   }
 
-  /// Borrow only the original foreground window and already admitted Main.
-  /// A missing final result may still arrive; an invalid or duplicate one fails.
   List<_ImageResult> _imageResults(
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) {
-    expect(unit.item.source, isA<ForegroundTurnChatSource>());
-    expect(observed.workFor(unit.item.source), hasLength(1));
-    final turnId = (unit.item.source as ForegroundTurnChatSource).turnId;
+    expect(unit.entry.atom.source, isA<ForegroundTurnChatSource>());
+    expect(observed.workFor(unit.entry.atom.source), hasLength(1));
+    final turnId = (unit.entry.atom.source as ForegroundTurnChatSource).turnId;
     final tools = display.atoms
         .where((atom) => atom.kind == ChatAtomKind.toolCall)
         .toList();
@@ -1174,6 +1061,7 @@ final class _ConceptScene {
     void accept(
       ChatAtom atom,
       TimelineDisplayUnit? finalUnit,
+      ChatAtom finalAtom,
       ChatItemPresentation value,
     ) {
       final tool = toolOf(value);
@@ -1198,12 +1086,13 @@ final class _ConceptScene {
       results.add((
         foreground: atom,
         finalUnit: finalUnit,
+        finalAtom: finalAtom,
         presentation: value,
       ));
     }
 
     for (final atom in tools) {
-      expect(atom.source, unit.item.source);
+      expect(atom.source, unit.entry.atom.source);
       expect(atom.turnId, turnId);
       expect(atom.tool!.name, 'view_image');
       expect(atom.lifecycle, isA<TerminalChatAtom>());
@@ -1220,7 +1109,7 @@ final class _ConceptScene {
                 ? ChatTerminalOutcome.failed
                 : ChatTerminalOutcome.completed,
           );
-          accept(atom, null, value);
+          accept(atom, null, atom, value);
         case ChatDeliveryKind.backgroundHandoff:
           expect(terminal.outcome, ChatTerminalOutcome.transferred);
           expect(tool.statusString, 'backgroundStarted');
@@ -1233,10 +1122,13 @@ final class _ConceptScene {
       }
     }
     expect(tasks.values.toSet(), hasLength(tasks.length));
-    for (final finalUnit in observed.main) {
-      final item = finalUnit.item;
-      if (item.atomKind != ChatAtomKind.toolCall) continue;
-      final value = ChatItemPresentation.forUnit(finalUnit);
+    for (final item in observed.mountedMembers.where(
+      (atom) =>
+          atom.source is BackgroundResultChatSource &&
+          atom.kind == ChatAtomKind.toolCall,
+    )) {
+      final finalUnit = observed.unitForMember(item.id);
+      final value = ChatItemPresentation.decode(item);
       final reading = value.toolCard;
       if (reading is! DecodedToolCard) {
         if (item.turnId == turnId) {
@@ -1251,19 +1143,23 @@ final class _ConceptScene {
         continue;
       }
       expect(item.turnId, turnId);
-      expect(item.kind, TimelineItemKind.status);
+      expect(
+        finalUnit.entry.mainPresentation,
+        MainPresentation.backgroundResults,
+      );
       expect(item.source, isA<BackgroundResultChatSource>());
       expect(item.delivery, ChatDeliveryKind.independent);
-      expect(item.outcome, ChatTerminalOutcome.completed);
-      expect(item.contentItemId, isNotNull);
-      expect(item.contentItemId, isNotEmpty);
-      expect(item.members, isNull);
-      expect(item.summary, isNull);
+      expect(
+        (item.lifecycle as TerminalChatAtom).outcome,
+        ChatTerminalOutcome.completed,
+      );
+      expect(item.completionItemId, isNotNull);
+      expect(item.completionItemId, isNotEmpty);
       expect(tasks.containsKey(tool.toolCallId), isTrue);
       expect(tool.taskId, tasks[tool.toolCallId]);
       final atom = foreground[tool.toolCallId]!;
-      expect(item.contentItemId, isNot(atom.completionItemId));
-      accept(atom, finalUnit, value);
+      expect(item.completionItemId, isNot(atom.completionItemId));
+      accept(atom, finalUnit, item, value);
     }
     return results;
   }
@@ -1272,14 +1168,14 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) {
-    expect(unit.item.source, isA<ForegroundTurnChatSource>());
+    expect(unit.entry.atom.source, isA<ForegroundTurnChatSource>());
     expect(
       lease.groupDisplays.singleWhere((value) => value.unitId == unit.id),
       same(display),
     );
     expect(display.isCurrent, isTrue);
     expect(display.expanded, isTrue);
-    expect(display.membersRef, unit.item.members);
+    expect(display.runReference, unit.run?.reference);
     expect(display.before, isNull);
     expect(display.loading, isFalse);
     expect(display.error, isNull);
@@ -1289,7 +1185,7 @@ final class _ConceptScene {
       hasLength(_imageMemberCount),
     );
     expect(display.atoms.map((atom) => atom.source).toSet(), {
-      unit.item.source,
+      unit.entry.atom.source,
     });
     for (final atom in display.atoms) {
       expect(atom.lifecycle, isA<TerminalChatAtom>());
@@ -1336,24 +1232,18 @@ final class _ConceptScene {
     final results = _imageResults(unit, display);
     expect(results, hasLength(_imageCalls.length + 1));
     expect(
-      unit.item.summary!.failedCount,
-      display.atoms
-          .where(
-            (atom) =>
-                (atom.lifecycle as TerminalChatAtom).outcome ==
-                ChatTerminalOutcome.failed,
-          )
-          .length,
-      reason: 'The foreground summary never counts independent final failures',
+      display.atoms.every((atom) => atom.source == unit.entry.atom.source),
+      isTrue,
+      reason: 'Background final results keep their independent Run',
     );
     final inventories =
         (report['imageMemberInventories'] ??= <Map<String, Object?>>[])
             as List<Map<String, Object?>>;
     inventories.add({
       'itemId': unit.id,
-      'live': unit.live,
+      'completionSeq': unit.entry.completionSeq,
       'displayIdentity': identityHashCode(display),
-      'membersRef': display.membersRef!.itemId,
+      'runStartSeq': display.runReference!.startSeq,
       'eof': true,
       'memberDomain': 'ForegroundMembers',
       'reasoningBodiesVerified': texts.length,
@@ -1362,7 +1252,7 @@ final class _ConceptScene {
           {
             'id': atom.id,
             'kind': atom.kind.name,
-            'sameSource': atom.source == unit.item.source,
+            'sameSource': atom.source == unit.entry.atom.source,
             'turnId': atom.turnId,
             'sourceOrder': atom.sourceOrder,
             'completionItemId': atom.completionItemId,
@@ -1383,24 +1273,16 @@ final class _ConceptScene {
         for (final result in results)
           {
             'domain': result.finalUnit == null
-                ? 'ForegroundMembers'
-                : 'MainStatus',
+                ? 'ForegroundRun'
+                : 'BackgroundRun',
             'foregroundMemberId': result.foreground.id,
             'id': result.presentation.id,
-            'contentItemId':
-                result.finalUnit?.item.contentItemId ??
-                result.foreground.completionItemId,
-            'turnId': result.finalUnit?.item.turnId ?? result.foreground.turnId,
-            'sourceKind':
-                (result.finalUnit?.item.source ?? result.foreground.source)
-                    .runtimeType
-                    .toString(),
-            'delivery':
-                (result.finalUnit?.item.delivery ?? result.foreground.delivery)
-                    .name,
+            'contentItemId': result.finalAtom.completionItemId,
+            'turnId': result.finalAtom.turnId,
+            'sourceKind': result.finalAtom.source.runtimeType.toString(),
+            'delivery': result.finalAtom.delivery.name,
             'outcome':
-                result.finalUnit?.item.outcome?.name ??
-                (result.foreground.lifecycle as TerminalChatAtom).outcome.name,
+                (result.finalAtom.lifecycle as TerminalChatAtom).outcome.name,
             'toolCallId': result.foreground.tool!.callId,
             'taskId':
                 (result.presentation.toolCard as DecodedToolCard).value.taskId,
@@ -1411,9 +1293,7 @@ final class _ConceptScene {
                 .map((body) => body.key)
                 .toList(),
             'contentReferences': [
-              for (final content
-                  in result.finalUnit?.item.contents ??
-                      result.foreground.contents)
+              for (final content in result.finalAtom.contents)
                 {
                   'role': content.role.name,
                   'identity': contentReferenceIdentity(content.reference)
@@ -1458,10 +1338,7 @@ final class _ConceptScene {
                 .evaluate()
                 .isNotEmpty,
       );
-      expect(
-        main.where((unit) => unit.item.kind == TimelineItemKind.workGroup),
-        isEmpty,
-      );
+      expect(main.where((unit) => unit.run != null), isEmpty);
       expect(find.byType(TimelineDisplayUnitView), findsNothing);
       await capture('thinking');
       await _journeyWithCredit(project, () async {
@@ -1540,88 +1417,44 @@ final class _ConceptScene {
     Future<ConversationCreditObservation> Function() openCredit,
   ) async {
     await release('thinking');
-
     await reach(
       'workgroup',
-      () =>
-          live.length == 1 &&
-          live.single.item.summary!.memberCount == 1 &&
-          live.single.item.summary!.categories.single.category ==
-              TimelineCategory.thinking,
+      () => live.length == 1 && live.single.kind == ChatAtomKind.reasoning,
     );
-    var g1 = live.single.id;
-    final source = live.single.item.source;
-    expect(live.single.live, isTrue);
+    final active = live.single;
+    final source = active.source;
+    expect(source, isA<ForegroundTurnChatSource>());
+    expect(active.lifecycle, isA<ActiveChatAtom>());
     expect(
-      tester
-          .widget<ConversationCurrentConnector>(
-            find.byType(ConversationCurrentConnector),
-          )
-          .units,
-      same(lease.liveUnits),
-    );
-    expect(live.single.item.admissionClosed, isFalse);
-    expect(live.single.item.summary!.activeCount, 1);
-    expect(main.where((unit) => unit.id == g1), isEmpty);
-    expect(unitFinder(g1), findsOneWidget);
-    expect(live.single.expansion.expanded, isFalse);
-    expect(
-      lease.groupDisplays.where((display) => display.unitId == g1),
+      lease.groupDisplays,
       isEmpty,
-      reason: '首次呈现的实时工作组默认折叠，不创建成员读取',
+      reason: 'Activity never opens a historical member window',
     );
     report['initialWorkgroupCollapsed'] = true;
     await capture('workgroup');
-    // The projection owns stable item identity across owner replacement.
-    g1 = (await reopenActiveWorkgroup()).id;
-    final openedMembers = lease.groupDisplays.singleWhere(
-      (display) => display.unitId == g1,
-    );
-    await capture('workgroup-reopened');
+    final reopened = await reopenActiveWorkgroup();
+    expect(reopened.id, active.id);
     await release('workgroup');
-
     await reach(
       'group-idle',
-      () => live.any(
-        (unit) =>
-            unit.id == g1 &&
-            unit.item.summary!.memberCount == 4 &&
-            unit.item.summary!.activeCount == 0,
-      ),
-    );
-    final quiet = live.single;
-    await _until(
-      tester,
       () =>
-          membersOf(quiet.id).length == quiet.item.summary!.memberCount &&
-          membersOf(quiet.id)
-              .every((atom) => atom.lifecycle is TerminalChatAtom),
-      'same explicitly opened live member window reaches terminal state',
+          observed.workFor(source).isNotEmpty &&
+          !live.any((atom) => atom.source == source),
+    );
+    final firstRuns = observed.workFor(source).toList();
+    final g1 = firstRuns.first.id;
+    final firstMembers = <ChatAtom>[];
+    for (final unit in firstRuns) {
+      await contentIdentitiesForItem(unit.id);
+      firstMembers.addAll(membersOf(unit.id));
+    }
+    expect(firstMembers, hasLength(4));
+    expect(
+      firstMembers.every((atom) => atom.lifecycle is TerminalChatAtom),
+      isTrue,
     );
     expect(
-      lease.groupDisplays.singleWhere((display) => display.unitId == quiet.id),
-      same(openedMembers),
-      reason: 'member handoff must not replace the explicitly opened display',
-    );
-    expect(openedMembers.isCurrent, isTrue);
-    expect(openedMembers.expanded, isTrue);
-    expect(openedMembers.error, isNull);
-    await _record('same-member-window-terminal');
-    expect(quiet.item.admissionClosed, isFalse);
-    expect(quiet.live, isTrue);
-    final quietHeader = find.byKey(ValueKey('source-unit-header:$g1'));
-    expect(quietHeader, findsOneWidget);
-    final quietRow = tester.widget<TimelineActivityRow>(quietHeader);
-    expect(
-      quietRow.label,
-      '梳理会话共享组件与锁定边界',
-      reason: '成员已终态但执行仍在继续时，工作组标题保留原思考摘要',
-    );
-    expect(quietRow.active, isFalse);
-    expect(quietRow.expanded, isTrue);
-    expect(main.where((unit) => unit.id == g1), isEmpty);
-    expect(
-      membersOf(quiet.id)
+      firstMembers
           .where((atom) => atom.tool != null)
           .map((atom) => atom.tool!.callId),
       unorderedEquals([
@@ -1630,121 +1463,95 @@ final class _ConceptScene {
         'concept-command-b',
       ]),
     );
-    expect(
-      membersOf(quiet.id).every((atom) => atom.lifecycle is TerminalChatAtom),
-      isTrue,
-    );
+    // Already completed members appear before any subsequent text starts.
+    expect(main.any((unit) => unit.id == g1), isTrue);
     await capture('group-idle');
     await release('group-idle');
-
     await reach(
       'text',
       () =>
-          main.any((unit) => unit.id == g1) &&
-          live.any((unit) => unit.item.kind == TimelineItemKind.text) &&
-          hasText(_textA),
+          live.any((atom) => atom.kind == ChatAtomKind.text) && hasText(_textA),
     );
-    expect(main.where((unit) => unit.id == g1), hasLength(1));
-    expect(
-      main.where(
-        (unit) =>
-            unit.item.source == source &&
-            unit.item.kind == TimelineItemKind.text,
-      ),
-      isEmpty,
-    );
-    final a = live.single.id;
-    expect(live.single.item.outcome, isNull);
-    expect(live.single.item.atomKind, ChatAtomKind.text);
-    expect(live.single.item.contents, isNotEmpty);
+    final a = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
+    expect(a.lifecycle, isA<ActiveChatAtom>());
+    expect(a.contents, isNotEmpty);
+    expect(items.where((entry) => entry.atom.id == a.id), isEmpty);
     await capture('text');
     await release('text');
-
     await reach(
       'after-text',
-      () => live.isEmpty && main.any((unit) => unit.id == a),
+      () => live.isEmpty && items.any((entry) => entry.atom.id == a.id),
     );
-    expect(main.where((unit) => unit.id == a), hasLength(1));
+    final aEntry = items.singleWhere((entry) => entry.atom.id == a.id);
+    expect(aEntry.mainPresentation, MainPresentation.single);
     expect(find.byKey(const ValueKey('conversation-activity')), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('conversation-activity')),
-        matching: find.text('思考中'),
-      ),
-      findsOneWidget,
-    );
     await capture('after-text');
     await release('after-text');
-
     await reach(
       'next-group',
-      () =>
-          live.length == 1 &&
-          live.single.item.kind == TimelineItemKind.workGroup,
+      () => live.any((atom) => atom.kind == ChatAtomKind.reasoning),
     );
-    final g2 = live.single.id;
-    expect(g2, isNot(g1));
-    expect(live.single.item.source, source);
-    expect(
-      main.where((unit) => unit.id == g1).single.item.summary!.memberCount,
-      quiet.item.summary!.memberCount,
-    );
-    expect(main.where((unit) => unit.id == g2), isEmpty);
+    expect(live.single.source, source);
+    expect(observed.unit(g1).entry, same(firstRuns.first.entry));
     await capture('next-group');
     await release('next-group');
     await reach(
       'second-group-idle',
       () =>
-          live.length == 1 &&
-          live.single.id == g2 &&
-          live.single.item.summary!.activeCount == 0,
+          live.isEmpty &&
+          observed
+              .workFor(source)
+              .any((unit) => unit.entry.completionSeq > aEntry.completionSeq),
     );
-    expect(live.single.item.admissionClosed, isFalse);
+    final g2 = observed.workFor(source).last.id;
+    expect(g2, isNot(g1));
     final credit = await openCredit();
     await release('second-group-idle');
     await reach(
       'second-text',
       () =>
-          main.any((unit) => unit.id == g2) &&
-          live.length == 1 &&
-          live.single.item.kind == TimelineItemKind.text &&
-          hasText(_textB),
+          live.any((atom) => atom.kind == ChatAtomKind.text) && hasText(_textB),
     );
-    final b = live.single.id;
+    final b = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
     await release('second-text');
     await reach(
       'before-turn-end',
-      () => live.isEmpty && main.any((unit) => unit.id == b),
+      () => live.isEmpty && items.any((entry) => entry.atom.id == b.id),
     );
+    final completedTextB = items.singleWhere((entry) => entry.atom.id == b.id);
+    final core = main
+        .where((unit) => unit.entry.atom.source == source)
+        .toList();
     expect(
-      main.where((unit) => unit.item.source == source).map((unit) => unit.id),
-      orderedEquals([g1, a, g2, b]),
+      core.map((unit) => unit.id),
+      orderedEquals([g1, aEntry.recordId, g2, completedTextB.recordId]),
     );
-    final completedTextB = main.singleWhere((unit) => unit.id == b).item;
+    for (var i = 1; i < core.length; i++) {
+      expect(
+        core[i].entry.completionSeq,
+        greaterThan(core[i - 1].entry.completionSeq),
+      );
+    }
     await _creditAsync(() async {
       await credit.queryCompletedText(completedTextB);
       await credit.observeSuccessors();
-      await credit.verifyClosed(completedTextB.contentItemId!);
+      await credit.verifyClosed(completedTextB.recordId);
     });
     await release('before-turn-end');
     await idle();
-    final firstGroup = main.singleWhere((unit) => unit.id == g1);
     await _until(tester, () {
       final turn = graph.client.conversations.session(threadId).state.lastTurn;
-      return turn != null &&
-          turn.threadId == threadId &&
-          turn.turnId == completedTextB.turnId &&
-          turn.state.isTerminal &&
-          turn.state.status == StudioTurnStatus.completed;
-    }, 'the original successful Turn reaches the Client typed terminal state');
+      return turn?.turnId == completedTextB.atom.turnId &&
+          turn?.state.status == StudioTurnStatus.completed;
+    }, 'the original successful Turn reaches typed terminal state');
     expect(
-      main.where(
-        (unit) =>
-            unit.item.source == firstGroup.item.source &&
-            unit.item.atomKind == ChatAtomKind.turnReceipt,
+      items.where(
+        (entry) =>
+            entry.atom.source == source &&
+            entry.atom.kind == ChatAtomKind.turnReceipt,
       ),
       isEmpty,
-      reason: 'A normal successful Turn does not manufacture a Main receipt',
+      reason: 'Successful Turn must not manufacture a Main receipt',
     );
     final completedTurn = graph.client.conversations
         .session(threadId)
@@ -1757,28 +1564,22 @@ final class _ConceptScene {
       'status': completedTurn.state.status.name,
       'isTerminal': completedTurn.state.isTerminal,
     };
+    final firstGroup = observed.unit(g1);
     await expand(firstGroup);
+    final reason = membersOf(g1)
+        .singleWhere((atom) => atom.kind == ChatAtomKind.reasoning);
+    await observed.revealMember(reason, reference: firstGroup.run!.reference);
     final reasoningBody = find.descendant(
-      of: find.descendant(
-        of: unitFinder(g1),
-        matching: itemFinder(
-          membersOf(firstGroup.id)
-              .singleWhere((atom) => atom.kind == ChatAtomKind.reasoning)
-              .id,
-        ),
-      ),
+      of: observed.memberRow(reason.id),
       matching: find.text('梳理会话共享组件与锁定边界', findRichText: true),
     );
     await _until(
       tester,
       () => reasoningBody.evaluate().length == 1,
-      'reasoning body on first group expansion',
+      'reasoning body on original Run expansion',
     );
-    // Drain this ExpansionTile animation only; active indicators elsewhere need
-    // not settle, and the first-content/fill timing witnesses are unchanged.
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
-    expect(reasoningBody, findsOneWidget);
     expect(reasoningBody.hitTestable(), findsOneWidget);
     final reasoningBounds = tester.getRect(reasoningBody);
     expect(reasoningBounds.width, greaterThan(0));
@@ -1786,14 +1587,11 @@ final class _ConceptScene {
     expect(
       reasoningBounds.intersect(tester.getRect(unitFinder(g1))),
       reasoningBounds,
-      reason: 'The expanded group must not clip its reasoning body',
     );
     expect(
       reasoningBounds.intersect(tester.getRect(find.byKey(lease.chatKey))),
       reasoningBounds,
-      reason: 'The reasoning body must be visible in the timeline viewport',
     );
-    // A work unit is not a Turn container; tool call identities are singular.
     for (final call in [
       'concept-read-call',
       'concept-command-a',
@@ -1814,17 +1612,15 @@ final class _ConceptScene {
       ),
       findsNothing,
     );
-    report['coreOrder'] = [g1, a, g2, b];
-    // Save production item IDs, never infer a parent from member contents.
-    final coreContentIdentities = <List<String>>[];
-    report['coreContentIdentities'] = coreContentIdentities;
-    for (final id in [g1, a, g2, b]) {
-      coreContentIdentities.add(await contentIdentitiesForItem(id));
-      await _closeInventoriedGroup(id);
+    report['coreOrder'] = core.map((unit) => unit.id).toList();
+    final identities = <List<String>>[];
+    report['coreContentIdentities'] = identities;
+    for (final unit in core) {
+      identities.add(await contentIdentitiesForItem(unit.id));
+      await _closeInventoriedGroup(unit.id);
     }
     await capture('core-main');
     await compact();
-
     final input = await submitTimelineConceptImageInput(
       tester,
       graph,
@@ -1833,43 +1629,40 @@ final class _ConceptScene {
     );
     report['imageInput'] = input.toJson();
     TimelineGroupDisplay? imageDisplay;
-    late final TimelineDisplayUnit imageWork;
+    late TimelineDisplayUnit imageWork;
     try {
       await fixtureGate(tester, provider, 'images-ready');
-      final summaryWait = Stopwatch()..start();
       await _until(
         tester,
         () =>
-            live
+            main
                 .where(
                   (unit) =>
-                      unit.item.kind == TimelineItemKind.workGroup &&
-                      unit.item.summary!.memberCount == _imageMemberCount &&
-                      unit.item.summary!.activeCount == 0,
+                      unit.entry.mainPresentation ==
+                          MainPresentation.foregroundWork &&
+                      unit.entry.run!.ordinal == _imageMemberCount,
                 )
                 .length ==
             1,
-        'production state at images-ready',
+        'completed foreground image Run representative',
       );
-      summaryWait.stop();
-      imageWork = live.singleWhere(
-        (unit) => unit.item.kind == TimelineItemKind.workGroup,
+      imageWork = main.singleWhere(
+        (unit) =>
+            unit.entry.mainPresentation == MainPresentation.foregroundWork &&
+            unit.entry.run!.ordinal == _imageMemberCount,
       );
       report['imageWorkItemId'] = imageWork.id;
-      final originalImages = await observed.openGroup(imageWork.id);
-      imageDisplay = originalImages;
+      imageDisplay = await observed.openRun(imageWork.id);
       await contentIdentitiesForItem(imageWork.id);
-      // Only summary/final qualification waits share the original 60 seconds.
-      // The original UI/member EOF operations keep their existing deadlines.
+      await _openBackgroundRuns();
       await _until(
         tester,
         () =>
-            _imageResults(imageWork, originalImages).length ==
+            _imageResults(imageWork, imageDisplay!).length ==
             _imageCalls.length + 1,
-        'all exact final image results in their original domains',
-        timeout: const Duration(seconds: 60) - summaryWait.elapsed,
+        'all exact final image results in independently read Runs',
       );
-      _verifyImageMembers(imageWork, originalImages);
+      _verifyImageMembers(imageWork, imageDisplay);
       await _record('images-ready');
     } catch (error) {
       _recordImageFailure('images-ready', error, original: imageDisplay);
@@ -1884,104 +1677,91 @@ final class _ConceptScene {
       'real image continuation answer',
     );
     await verifyImages(imageWorkItemId: imageWork.id, input: input);
-
     await submit(_failedPrompt);
     await reach(
       'failed-partial',
       () =>
-          live.any((unit) => unit.item.kind == TimelineItemKind.text) &&
+          live.any((atom) => atom.kind == ChatAtomKind.text) &&
           hasText(_partial),
     );
-    final partialItem = live.single.id;
+    final partialAtom = live.single.id;
     await capture('failed-partial');
     await release('failed-partial');
     await idle();
     await _until(
       tester,
-      () => items.any(
-        (item) =>
-            item.id == partialItem &&
-            item.position != null &&
-            item.outcome != null,
-      ),
+      () => items.any((entry) => entry.atom.id == partialAtom),
       'failed partial retained',
     );
+    final partial = items.singleWhere((entry) => entry.atom.id == partialAtom);
     await _until(
       tester,
       () => items.any(
-        (item) =>
-            item.kind == TimelineItemKind.status &&
-            item.atomKind == ChatAtomKind.turnReceipt &&
-            item.payload != null &&
-            (presentation(item).data['outcome'] as Map)['kind'] == 'failed',
+        (entry) =>
+            entry.atom.kind == ChatAtomKind.turnReceipt &&
+            (presentation(entry).data['outcome'] as Map)['kind'] == 'failed',
       ),
-      'independent reliable failed Turn receipt',
+      'independent failed Turn receipt',
     );
     final failure = items.lastWhere(
-      (item) =>
-          item.atomKind == ChatAtomKind.turnReceipt &&
-          (presentation(item).data['outcome'] as Map)['kind'] == 'failed',
+      (entry) =>
+          entry.atom.kind == ChatAtomKind.turnReceipt &&
+          (presentation(entry).data['outcome'] as Map)['kind'] == 'failed',
     );
-    final failureItem = presentation(failure);
-    expect((failureItem.data['outcome'] as Map)['kind'], 'failed');
-    expect(failure.id, isNot(partialItem));
-    await showUnit(partialItem);
+    expect(failure.recordId, isNot(partial.recordId));
+    await showUnit(partial.recordId);
     await _until(
       tester,
       () => hasText(_partial),
       'failed partial still readable',
     );
-    await showUnit(failure.id);
-    final receipt = itemFinder(failure.id);
-    final disclosure = find.descendant(
-      of: receipt,
-      matching: find.byType(TimelineActivityDisclosure),
+    await showUnit(failure.recordId);
+    await tap(
+      find.descendant(
+        of: itemFinder(failure.recordId),
+        matching: find.byType(TimelineActivityDisclosure),
+      ),
     );
-    await tap(disclosure);
     await _until(
       tester,
       () => hasText('concept provider permanent failure'),
       'independent provider failure reason',
     );
     await capture('failed');
-    report['partialItemId'] = partialItem;
-    report['failureItemId'] = failure.id;
-    // A new real input after failure must still traverse the production composer.
+    report['partialItemId'] = partial.recordId;
+    report['failureItemId'] = failure.recordId;
     await overlap();
     await emptyText();
     await idle();
     await capture('idle');
     await _record('journey-complete');
-    report['coreMemberCounts'] = [quiet.item.summary!.memberCount, 1];
+    report['coreMemberCounts'] = [firstMembers.length, 1];
     report['independentScenarioCoverage'] = {
       'questionsAndReceipts': 'question-history (separate strict provider)',
       'normalStopContinue': 'realtime-presentation (separate strict provider)',
     };
   }
 
+  Future<void> _openBackgroundRuns() async {
+    for (final unit
+        in main
+            .where(
+              (unit) =>
+                  unit.entry.mainPresentation ==
+                  MainPresentation.backgroundResults,
+            )
+            .toList()) {
+      await contentIdentitiesForItem(unit.id);
+    }
+  }
+
   Future<void> compact() async {
     final owner = lease;
     final selectedThread = threadId;
-    final currentConnector = find.byWidgetPredicate(
+    final connector = find.byWidgetPredicate(
       (widget) =>
           widget is ConversationCurrentConnector &&
-          identical(widget.content, owner.content) &&
-          identical(widget.units, owner.liveUnits),
-    );
-    List<TimelineItem> activeCompactions() => [
-      for (final item in owner.content.current.value?.items ?? <TimelineItem>[])
-        if (item.kind == TimelineItemKind.status &&
-            item.atomKind == ChatAtomKind.compaction &&
-            item.outcome == null)
-          item,
-    ];
-    Finder currentUnit(TimelineDisplayUnit unit) => find.descendant(
-      of: currentConnector,
-      matching: find.byKey(ValueKey(unit.id)),
-    );
-    Finder currentRows(TimelineDisplayUnit unit) => find.descendant(
-      of: currentUnit(unit),
-      matching: find.byType(TimelineActivityRow),
+          identical(widget.content, owner.content),
     );
     final hover = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await hover.addPointer(
@@ -1999,112 +1779,48 @@ final class _ConceptScene {
     );
     await tap(control);
     await hover.moveTo(Offset.zero);
-    try {
-      await reach('compacting', () {
-        final active = activeCompactions();
-        final units = owner.liveUnits.value;
-        return active.length == 1 &&
-            units.length == 1 &&
-            units.single.id == active.single.id &&
-            currentRows(units.single).evaluate().length == 1;
-      });
-    } on Object {
-      // Preserve each real predicate input before shutdown retires the owner.
-      // This observation starts no read, advances no gate, and relaxes nothing.
-      Map<String, Object?> itemObservation(TimelineItem item) => {
-        'id': item.id,
-        'kind': item.kind.name,
-        'atomKind': item.atomKind?.name,
-        'outcome': item.outcome?.name,
-        'source': '${item.source}',
-      };
-      report['compactionFailure'] = {
-        'sameOwner': identical(lease, owner),
-        'ownerGeneration': owner.generation,
-        'selectedGeneration': lease.generation,
-        'currentConnectorCount': currentConnector.evaluate().length,
-        'activeHead': owner.content.current.value?.active?.kind.name,
-        'currentItems': [
-          for (final item
-              in owner.content.current.value?.items ?? <TimelineItem>[])
-            itemObservation(item),
-        ],
-        'liveUnits': [
-          for (final unit in owner.liveUnits.value)
-            {
-              'id': unit.id,
-              'kind': unit.item.kind.name,
-              'live': unit.live,
-              'item': itemObservation(unit.item),
-              'matchingViewCount': currentUnit(unit).evaluate().length,
-              'matchingRowCount': currentRows(unit).evaluate().length,
-            },
-        ],
-        'currentRows': [
-          for (final row in tester.widgetList<TimelineActivityRow>(
-            find.descendant(
-              of: currentConnector,
-              matching: find.byType(TimelineActivityRow),
-            ),
-          ))
-            {
-              'label': row.label,
-              'active': row.active,
-              'expandable': row.expandable,
-              'icon': row.icon?.codePoint,
-            },
-        ],
-      };
-      rethrow;
-    }
+    await reach(
+      'compacting',
+      () =>
+          live.where((atom) => atom.kind == ChatAtomKind.compaction).length ==
+          1,
+    );
     expect(lease, same(owner));
     expect(threadId, selectedThread);
-    final active = activeCompactions().single;
-    final unit = owner.liveUnits.value.single;
+    final active = live.singleWhere(
+      (atom) => atom.kind == ChatAtomKind.compaction,
+    );
     expect(active.source, isA<OperationChatSource>());
-    expect(active.outcome, isNull);
-    expect(active.position, isNull);
-    expect(unit.item.kind, TimelineItemKind.status);
-    expect(unit.live, isTrue);
-    expect(unit.item.source, active.source);
-    expect(unit.id, active.id);
-    expect(unit.item.outcome, isNull);
-    expect(unit.item.summary, isNull);
-    expect(unit.item.members, isNull);
-    expect(main.where((value) => value.item.source == active.source), isEmpty);
-    expect(currentConnector, findsOneWidget);
-    expect(currentUnit(unit), findsOneWidget);
+    expect(active.lifecycle, isA<ActiveChatAtom>());
+    expect(active.completionSeq, isNull);
+    expect(items.where((entry) => entry.atom.source == active.source), isEmpty);
+    expect(connector, findsOneWidget);
     expect(
       find.descendant(
-        of: currentConnector,
+        of: connector,
         matching: find.byType(ConversationActivityBar),
       ),
       findsOneWidget,
-      reason: '压缩沿用唯一的实时状态栏，不创建第二个面板',
     );
-    expect(
-      find.descendant(
-        of: currentConnector,
-        matching: find.byType(ConversationActivityStatus),
-      ),
-      findsNothing,
+    final rows = find.descendant(
+      of: connector,
+      matching: find.byType(TimelineActivityRow),
     );
-    final rowFinder = currentRows(unit);
-    expect(rowFinder, findsOneWidget);
-    final row = tester.widget<TimelineActivityRow>(rowFinder);
+    await _until(
+      tester,
+      () => rows.evaluate().length == 1,
+      'one active compaction row',
+    );
+    final row = tester.widget<TimelineActivityRow>(rows);
     expect(
       row.label,
-      AppLocalizations.of(tester.element(rowFinder))
-          .conversationActivityCompacting,
+      AppLocalizations.of(tester.element(rows)).conversationActivityCompacting,
     );
     expect(row.icon, Icons.compress_outlined);
     expect(row.active, isTrue);
     expect(row.expandable, isFalse);
     report['compactionCurrent'] = {
       'itemId': active.id,
-      'contentItemId': active.contentItemId,
-      'unitId': unit.id,
-      'unitKind': unit.item.kind.name,
       'operationId': (active.source as OperationChatSource).operationId,
       'rowLabel': row.label,
       'rowActive': row.active,
@@ -2118,60 +1834,47 @@ final class _ConceptScene {
     );
     expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
     await capture('compacting');
-    final prior = items
-        .where((item) => item.atomKind == ChatAtomKind.compaction)
-        .map((item) => item.id)
-        .toSet();
     await release('compacting');
     await _until(
       tester,
       () => items.any(
-        (item) =>
-            item.atomKind == ChatAtomKind.compaction &&
-            !prior.contains(item.id) &&
-            item.outcome == ChatTerminalOutcome.completed &&
-            item.position != null,
+        (entry) =>
+            entry.atom.source == active.source &&
+            entry.atom.kind == ChatAtomKind.compaction,
       ),
       'real completed compaction receipt',
     );
     await idle();
-    final receipt = items
-        .where(
-          (item) =>
-              item.atomKind == ChatAtomKind.compaction &&
-              !prior.contains(item.id),
-        )
-        .single;
-    expect(receipt.outcome, ChatTerminalOutcome.completed);
-    report['compactionItemId'] = receipt.id;
-    final completedUnit = main.singleWhere((unit) => unit.id == receipt.id);
-    expect(completedUnit.item.kind, TimelineItemKind.status);
-    expect(completedUnit.live, isFalse);
-    expect(completedUnit.item.contentItemId, receipt.contentItemId);
-    expect(completedUnit.item.summary, isNull);
-    expect(completedUnit.item.members, isNull);
-    await showUnit(completedUnit.id);
-    await _until(
-      tester,
-      () => hasText('已完成压缩'),
-      'completed compaction on production page',
+    final receipt = items.singleWhere(
+      (entry) =>
+          entry.atom.source == active.source &&
+          entry.atom.kind == ChatAtomKind.compaction,
     );
-    final completedItem = itemFinder(receipt.id);
-    expect(completedItem, findsOneWidget);
+    expect(receipt.mainPresentation, MainPresentation.single);
+    expect(
+      (receipt.atom.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.completed,
+    );
+    report['compactionItemId'] = receipt.recordId;
+    await showUnit(receipt.recordId);
     final completedRows = find.descendant(
-      of: completedItem,
+      of: itemFinder(receipt.recordId),
       matching: find.byType(TimelineActivityRow),
     );
-    expect(completedRows, findsOneWidget);
-    final completedRow = tester.widget<TimelineActivityRow>(completedRows);
+    await _until(
+      tester,
+      () => completedRows.evaluate().length == 1,
+      'completed compaction on production page',
+    );
+    final completed = tester.widget<TimelineActivityRow>(completedRows);
     expect(
-      completedRow.label,
+      completed.label,
       AppLocalizations.of(tester.element(completedRows))
           .timelineContextCompacted,
     );
-    expect(completedRow.icon, Icons.compress_outlined);
-    expect(completedRow.active, isFalse);
-    expect(completedRow.expandable, isFalse);
+    expect(completed.icon, Icons.compress_outlined);
+    expect(completed.active, isFalse);
+    expect(completed.expandable, isFalse);
     await capture('compacted');
   }
 
@@ -2179,335 +1882,440 @@ final class _ConceptScene {
     await submit(_overlapPrompt);
     await reach(
       'a07-reasoning-start',
-      () =>
-          live.length == 1 &&
-          live.single.item.kind == TimelineItemKind.workGroup,
+      () => live.length == 1 && live.single.kind == ChatAtomKind.reasoning,
     );
-    final work = live.single.id;
-    await expand(live.single);
+    final reason = live.single;
     final originalLease = lease;
     final originalController = lease.controller;
     final originalGeneration = lease.generation;
-    final original = lease.groupDisplays.singleWhere(
-      (display) => display.unitId == work,
-    );
-    expect(original.membersRef, isNotNull);
-    final reference = original.membersRef!;
-    final originalIdentity = identityHashCode(original);
-    final reason = membersOf(work).single.id;
-    final source = membersOf(work).single.source;
-    final sourceOrder = membersOf(work).single.sourceOrder;
+    final current = lease.currentDisplay!;
+    final source = reason.source;
     expect(source, isA<ForegroundTurnChatSource>());
     final turnId = (source as ForegroundTurnChatSource).turnId;
-    final handoff = <String, Object?>{
-      'unitId': work,
-      'membersRef': {
-        'itemId': reference.itemId,
-        'databaseId': reference.databaseId,
-        'projectionVersion': reference.projectionVersion,
-        'projectionGeneration': reference.projectionGeneration,
-      },
-      'liveDisplayIdentity': originalIdentity,
-      'leaseIdentity': identityHashCode(originalLease),
-      'controllerIdentity': identityHashCode(originalController),
-      'generation': originalGeneration,
-      'memberId': reason,
-      'sourceTurnId': turnId,
-      'sourceOrder': sourceOrder,
-    };
-    report['a07Handoff'] = handoff;
-    // These getters revoke safely after unmount; unitId/membersRef use widget
-    // and must instead come from the identities frozen while live was mounted.
-    Map<String, Object?> eligibility(TimelineGroupDisplay value) => {
-      'identity': identityHashCode(value),
-      'isCurrent': value.isCurrent,
-      'expanded': value.expanded,
-      'before': value.before,
-      'loading': value.loading,
-      'error': value.error?.toString(),
-      'bodyWindowCount': value.windows.length,
-      'mountedMemberCount': value.atoms.length,
-      'atomSampleLimit': 2,
-      'atoms': [
-        for (final atom in value.atoms.take(2))
-          {
-            'id': atom.id,
-            'sourceMatches': atom.source == source,
-            'sourceOrder': atom.sourceOrder,
-            'turnId': atom.turnId,
-            'attemptId': atom.attemptId,
-            'completionItemId': atom.completionItemId,
-            'completionSeq': atom.completionSeq,
-            'lifecycle': atom.lifecycle.runtimeType.toString(),
-            if (atom.lifecycle case TerminalChatAtom(:final outcome))
-              'outcome': outcome.name,
-          },
-      ],
-    };
-    void expectLiveMember() {
+    void expectActiveReasoning() {
       expect(lease, same(originalLease));
       expect(lease.controller, same(originalController));
       expect(lease.generation, originalGeneration);
-      expect(
-        lease.groupDisplays.singleWhere((display) => display.unitId == work),
-        same(original),
-      );
-      expect(original.isCurrent, isTrue);
-      expect(original.membersRef, reference);
-      final member = original.atoms.single;
-      expect(member.id, reason);
-      expect(member.source, source);
-      expect(member.sourceOrder, sourceOrder);
-      expect(member.lifecycle, isA<ActiveChatAtom>());
+      expect(current.isCurrent, isTrue);
+      final atom = live.singleWhere((atom) => atom.id == reason.id);
+      expect(atom.source, source);
+      expect(atom.sourceOrder, reason.sourceOrder);
+      expect(atom.lifecycle, isA<ActiveChatAtom>());
+      expect(items.where((entry) => entry.atom.id == reason.id), isEmpty);
     }
 
-    expectLiveMember();
-    handoff['liveExpanded'] = eligibility(original);
+    expectActiveReasoning();
     await release('a07-reasoning-start');
     await reach(
-      'a07-text-start',
-      () =>
-          live.length == 2 &&
-          live.any((unit) => unit.item.kind == TimelineItemKind.text) &&
-          hasText('正文已经开始且可以读取，'),
+      'a07-b-terminal',
+      () => items.any(
+        (entry) =>
+            entry.atom.source == source &&
+            entry.atom.kind == ChatAtomKind.reasoning &&
+            entry.atom.id != reason.id,
+      ),
     );
-    final text = live
-        .singleWhere((unit) => unit.item.kind == TimelineItemKind.text)
-        .id;
-    expectLiveMember();
-    expect(membersOf(work).single.lifecycle, isA<ActiveChatAtom>());
-    expect(main.where((unit) => unit.id == work || unit.id == text), isEmpty);
+    expectActiveReasoning();
+    expect(live, hasLength(1));
+    final early = main.singleWhere(
+      (unit) =>
+          unit.entry.atom.source == source &&
+          unit.entry.atom.kind == ChatAtomKind.reasoning,
+    );
+    expect(early.entry.mainPresentation, MainPresentation.foregroundWork);
+    expect(early.entry.run!.ordinal, 1);
+    expect(early.entry.atom.payload, isA<DeferredPayload>());
+    expect(early.entry.atom.lifecycle, isA<TerminalChatAtom>());
+    expect(early.entry.completionSeq, greaterThan(0));
+    expect(main.where((unit) => unit.entry.atom.source == source), [
+      same(early),
+    ], reason: 'B completes into its own Main card while A is still active');
+    await showUnit(early.id);
+    expect(
+      tester
+          .widget<TimelineActivityRow>(observed.groupHeader(early.id))
+          .expanded,
+      isFalse,
+    );
+    expect(
+      lease.groupDisplays.where((display) => display.unitId == early.id),
+      isEmpty,
+    );
+    expect(
+      lease.currentDisplay!.windows.where(
+        (window) => window.id == early.entry.atom.id,
+      ),
+      isEmpty,
+      reason: 'Completed B is not read as an Activity body',
+    );
+    expect(hasText(_overlapEarlyReasoning), isFalse);
+    final earlyDisplay = await observed.openRun(early.id);
+    expect(await contentIdentitiesForItem(early.id), [early.entry.atom.id]);
+    final earlyMember = earlyDisplay.atoms.single;
+    expect(earlyMember.id, early.entry.atom.id);
+    expect(earlyMember.source, source);
+    expect(earlyMember.completionItemId, early.entry.recordId);
+    expect(earlyMember.completionSeq, early.entry.completionSeq);
+    expect(
+      (earlyMember.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.completed,
+    );
+    await observed.revealMember(earlyMember, reference: early.run!.reference);
+    final earlyBody = find.descendant(
+      of: observed.memberRow(earlyMember.id),
+      matching: find.textContaining(_overlapEarlyReasoning, findRichText: true),
+    );
+    await _until(
+      tester,
+      () => earlyBody.evaluate().isNotEmpty,
+      'B body read only after expanding its independent Run',
+    );
+    expectActiveReasoning();
+    expect(lease.controller, same(originalController));
+    await observed.closeRun(earlyDisplay);
+    expect(earlyDisplay.atoms, isEmpty);
+    expect(earlyDisplay.windows, isEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+    expect(hasText(_overlapEarlyReasoning), isFalse);
+    await capture('a07-b-completed-before-text');
+    await release('a07-b-terminal');
+    await reach(
+      'a07-text-start',
+      () => live.length == 2 && hasText('正文已经开始且可以读取，'),
+    );
+    final text = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
+    expectActiveReasoning();
+    expect(items.where((entry) => entry.atom.id == text.id), isEmpty);
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
-    expectLiveMember();
+    expectActiveReasoning();
     await capture('a07-late-reasoning');
     await release('a07-text-readable');
     await reach(
       'a07-text-terminal',
-      () => live.any((unit) => unit.id == text && unit.item.outcome != null),
+      () => items.any((entry) => entry.atom.id == text.id),
     );
-    expectLiveMember();
-    expect(membersOf(work).single.id, reason);
+    expectActiveReasoning();
+    expect(live.where((atom) => atom.id == text.id), isEmpty);
+    final completedText = items.singleWhere(
+      (entry) => entry.atom.id == text.id,
+    );
+    expect(completedText.mainPresentation, MainPresentation.single);
     expect(
-      live.singleWhere((unit) => unit.id == work).item.summary!.activeCount,
-      1,
+      main
+          .where((unit) => unit.entry.atom.source == source)
+          .map((unit) => unit.id),
+      orderedEquals([early.id, completedText.recordId]),
+      reason: 'B is visible before text; unfinished A has no completed card',
     );
-    expect(main.where((unit) => unit.id == text), isEmpty);
+    expect(completedText.completionSeq, greaterThan(early.entry.completionSeq));
+    expect(observed.unit(early.id).entry, same(early.entry));
     await release('a07-text-terminal');
     await reach(
       'a07-reasoning-terminal',
-      () =>
-          main.any((unit) => unit.id == work) &&
-          main.any((unit) => unit.id == text),
+      () => items.any((entry) => entry.atom.id == reason.id),
     );
-    final order = main.map((unit) => unit.id).toList();
-    expect(order.indexOf(work), lessThan(order.indexOf(text)));
-    TimelineGroupDisplay? mainDisplay;
-    Map<String, bool> qualifications() {
-      final unit = main.where((unit) => unit.id == work).singleOrNull;
-      final member = mainDisplay?.atoms.singleOrNull;
-      final terminal = member?.lifecycle;
+    final work = main.singleWhere((unit) => unit.entry.atom.id == reason.id);
+    expect(
+      work.entry.completionSeq,
+      greaterThan(completedText.completionSeq),
+      reason: 'Late reasoning stays after completed text, never reinserted before it',
+    );
+    expect(work.entry.mainPresentation, MainPresentation.foregroundWork);
+    expect(work.id, isNot(early.id));
+    expect(work.run!.reference, isNot(early.run!.reference));
+    expect(
+      main
+          .where((unit) => unit.entry.atom.source == source)
+          .map((unit) => unit.id),
+      orderedEquals([early.id, completedText.recordId, work.id]),
+      reason: 'Late A starts a new Run after text instead of joining B',
+    );
+    expect(observed.unit(early.id).entry, same(early.entry));
+    expect(
+      work.entry.run!.ordinal,
+      1,
+      reason: 'A single completed work item is still a card',
+    );
+    expect(live.where((atom) => atom.id == reason.id), isEmpty);
+    final display = await observed.openRun(work.id);
+    await contentIdentitiesForItem(work.id);
+    final member = display.atoms.single;
+    expect(member.id, reason.id);
+    expect(member.source, source);
+    expect(member.sourceOrder, reason.sourceOrder);
+    expect(member.completionItemId, work.entry.recordId);
+    expect(member.completionSeq, work.entry.completionSeq);
+    expect(
+      (member.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.completed,
+    );
+    expect(lease.controller, same(originalController));
+    await release('a07-reasoning-terminal');
+    await idle();
+    await _until(tester, () {
       final turn = graph.client.conversations.session(threadId).state.lastTurn;
-      final registered = lease.groupDisplays
-          .where((display) => display.unitId == work)
-          .toList();
-      return {
-        'sameLease': identical(lease, originalLease),
-        'sameController': identical(lease.controller, originalController),
-        'sameGeneration': lease.generation == originalGeneration,
-        'mainWorkGroup': unit?.item.kind == TimelineItemKind.workGroup,
-        'mainSource': unit?.item.source == source,
-        'mainReference': unit?.item.members == reference,
-        'mainPosition': unit?.item.position != null && unit?.live == false,
-        'mainSummary':
-            unit?.item.summary?.memberCount == 1 &&
-            unit?.item.summary?.activeCount == 0,
-        'uniqueMountedDisplay':
-            registered.length == 1 &&
-            identical(registered.singleOrNull, mainDisplay),
-        'displayCurrent': mainDisplay?.isCurrent == true,
-        'displayExpanded': mainDisplay?.expanded == true,
-        'displayReference':
-            mainDisplay?.isCurrent == true &&
-            mainDisplay!.membersRef == reference,
-        'memberEof': mainDisplay != null && mainDisplay!.before == null,
-        'memberNotLoading': mainDisplay?.loading == false,
-        'memberNoError': mainDisplay != null && mainDisplay!.error == null,
-        'memberIdentity': member?.id == reason && member?.source == source,
-        'memberSourceOrder': member?.sourceOrder == sourceOrder,
-        'memberCompletion':
-            member?.completionItemId == reason && member?.completionSeq != null,
-        'memberTerminal':
-            terminal is TerminalChatAtom &&
-            terminal.outcome == ChatTerminalOutcome.completed,
-        'typedTurn':
-            turn != null &&
-            turn.threadId == threadId &&
-            turn.turnId == turnId &&
-            turn.state.isTerminal &&
-            turn.state.status == StudioTurnStatus.completed,
-      };
-    }
+      return turn?.turnId == turnId &&
+          turn?.state.status == StudioTurnStatus.completed;
+    }, 'original overlap Turn finishes');
+    report['overlapAtomIds'] = [earlyMember.id, reason.id];
+    Map<String, Object?> identity(TimelineDisplayUnit unit) => {
+      'messageId': unit.id,
+      'recordId': unit.entry.recordId,
+      'completionSeq': unit.entry.completionSeq,
+      'atomId': unit.entry.atom.id,
+      'mainPresentation': unit.entry.mainPresentation.name,
+      if (unit.run case final run?)
+        'run': {
+          'databaseId': run.reference.databaseId,
+          'indexVersion': run.reference.indexVersion,
+          'startSeq': run.reference.startSeq,
+        },
+    };
+    final handoff = <String, Object?>{
+      'completionOrder': [
+        early.entry.recordId,
+        completedText.recordId,
+        work.entry.recordId,
+      ],
+      'completionSeqs': [
+        early.entry.completionSeq,
+        completedText.completionSeq,
+        work.entry.completionSeq,
+      ],
+      'records': [
+        identity(early),
+        identity(observed.unit(completedText.recordId)),
+        identity(work),
+      ],
+      'sourceTurnId': turnId,
+      'earlyBodyReadThroughRun': true,
+      'earlyRunRevokedBeforeText': !earlyDisplay.isCurrent,
+    };
+    report['a07Handoff'] = handoff;
+    await observed.closeRun(display);
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
+    );
+    expect(lease, same(originalLease));
+    expect(lease.controller, same(originalController));
+    expect(lease.generation, originalGeneration);
+    expect(display.isCurrent, isFalse);
+    expect(display.atoms, isEmpty);
+    expect(display.windows, isEmpty);
+    final selectedThread = threadId;
+    await tap(find.byKey(StudioDriverKeys.settingsOpen));
+    await _until(
+      tester,
+      () => originalLease.isRetired && originalLease.isReleased,
+      'A07 original Main lease and member/body queries released on navigation',
+    );
+    await originalLease.released;
+    expect(originalLease.queryCleanupError, isNull);
+    expect(current.isCurrent, isFalse);
+    expect(current.windows, isEmpty);
+    await tap(find.byKey(StudioDriverKeys.settingsBack));
+    await openThread(selectedThread);
+    expect(lease, isNot(same(originalLease)));
+    expect(lease.generation, greaterThan(originalGeneration));
+    await _until(
+      tester,
+      () => lease.appliedSets == 1,
+      'fresh Main Set after the completed A07 selection reopens',
+    );
+    await verifyOverlapHistory(handoff);
+    handoff['selectionReopened'] = {
+      'oldGeneration': originalGeneration,
+      'newGeneration': lease.generation,
+      'oldLeaseReleased': originalLease.isReleased,
+      'mainSets': lease.appliedSets,
+    };
+    await _record('a07-closed');
+  }
 
-    void expectOldRevoked() {
-      if (identical(mainDisplay, original)) return;
-      expect(original.isCurrent, isFalse);
-      expect(original.expanded, isFalse);
-      expect(original.atoms, isEmpty);
-      expect(original.windows, isEmpty);
-    }
-
-    try {
-      await _until(tester, () {
-        final registered = lease.groupDisplays
-            .where((display) => display.unitId == work)
-            .toList();
-        mainDisplay = registered.singleOrNull;
-        if (mainDisplay != null && !identical(mainDisplay, original)) {
-          expectOldRevoked();
-        }
-        return qualifications().entries
-            .where((entry) => entry.key != 'typedTurn')
-            .every((entry) => entry.value);
-      }, 'the existing A07 Main display admits the same completed member');
-      final current = mainDisplay!;
-      final currentIdentity = identityHashCode(current);
-      handoff['mainDisplayIdentity'] = currentIdentity;
-      handoff['sameState'] = identical(current, original);
-      handoff['oldAfterHandoff'] = eligibility(original);
-      handoff['mainAtHandoff'] = eligibility(current);
-      await release('a07-reasoning-terminal');
-      await idle();
-      report['overlapAtomIds'] = [reason];
-      await _until(
-        tester,
-        () => qualifications().values.every((value) => value),
-        'the handed-off A07 Main member and original typed Turn finish',
+  Future<void> verifyOverlapHistory(Map<String, dynamic> saved) async {
+    final records = (saved['records'] as List).cast<Map<String, dynamic>>();
+    expect(records, hasLength(3));
+    final source = ForegroundTurnChatSource(
+      turnId: saved['sourceTurnId'] as String,
+    );
+    final owner = lease;
+    final controller = lease.controller;
+    for (var index = 0; index < records.length; index++) {
+      final savedRecord = records[index];
+      final id = savedRecord['messageId'] as String;
+      final isWork = savedRecord['run'] != null;
+      await reveal(
+        isWork ? observed.groupHeader(id) : observed.itemRow(id),
+        unitId: id,
       );
-      handoff['mainBeforeClose'] = eligibility(current);
-      handoff['qualifications'] = qualifications();
-      final terminalMember = current.atoms.single;
-      report['overlapMemberTerminal'] = {
-        'id': terminalMember.id,
-        'turnId': terminalMember.turnId,
-        'attemptId': terminalMember.attemptId,
-        'completionItemId': terminalMember.completionItemId,
-        'completionSeq': terminalMember.completionSeq,
-        'lifecycle': terminalMember.lifecycle.runtimeType.toString(),
-        'outcome': (terminalMember.lifecycle as TerminalChatAtom).outcome.name,
-      };
-      _recordMemberInventory('a07-before-close', work, original: current);
-      await observed.closeGroup(current);
-      expect(
-        (await graph.client.conversations.retryCleanup(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        )).complete,
-        isTrue,
-      );
-      expect(lease, same(originalLease));
-      expect(lease.controller, same(originalController));
-      expect(lease.generation, originalGeneration);
-      expect(originalLease.isMounted, isTrue);
-      expect(originalLease.isRetired, isFalse);
-      expect(current.isCurrent, isFalse);
-      expect(current.expanded, isFalse);
-      expect(current.atoms, isEmpty);
-      expect(current.before, isNull);
-      expect(current.loading, isFalse);
-      expect(current.error, isNull);
-      expect(current.windows, isEmpty);
-      expectOldRevoked();
-      handoff['mainAfterClose'] = eligibility(current);
-      handoff['oldAfterClose'] = eligibility(original);
-      // The revoked State may be disposed. Use frozen unit/ref evidence above.
-      _recordMemberInventory('a07-closed', work);
-    } catch (error) {
-      final turn = graph.client.conversations.session(threadId).state.lastTurn;
-      handoff['failure'] = {
-        'error': error.toString(),
-        'currentLeaseIdentity': identityHashCode(lease),
-        'currentControllerIdentity': identityHashCode(lease.controller),
-        'currentGeneration': lease.generation,
-        'qualifications': qualifications(),
-        'oldEligibility': eligibility(original),
-        'mainEligibility': mainDisplay == null
-            ? null
-            : eligibility(mainDisplay!),
-        'typedTurn': turn == null
-            ? null
-            : {
-                'threadId': turn.threadId,
-                'turnId': turn.turnId,
-                'status': turn.state.status.name,
-                'isTerminal': turn.state.isTerminal,
-              },
-      };
-      _recordMemberInventory('a07-failed', work, error: error);
-      rethrow;
+      final unit = observed.unit(id);
+      expect(unit.entry.recordId, savedRecord['recordId']);
+      expect(unit.entry.completionSeq, savedRecord['completionSeq']);
+      expect(unit.entry.atom.id, savedRecord['atomId']);
+      expect(unit.entry.atom.source, source);
+      expect(unit.entry.mainPresentation.name, savedRecord['mainPresentation']);
+      if (isWork) {
+        final reference = savedRecord['run'] as Map<String, dynamic>;
+        expect(unit.run!.reference.databaseId, reference['databaseId']);
+        expect(unit.run!.reference.indexVersion, reference['indexVersion']);
+        expect(unit.run!.reference.startSeq, reference['startSeq']);
+        expect(unit.entry.run!.ordinal, 1);
+        expect(unit.entry.atom.payload, isA<DeferredPayload>());
+        expect(await contentIdentitiesForItem(id), [
+          savedRecord['atomId'],
+        ], reason: 'Each saved Run reads its original member to EOF');
+        final display = lease.groupDisplays.singleWhere(
+          (display) => display.unitId == id,
+        );
+        final member = display.atoms.single;
+        expect(member.id, savedRecord['atomId']);
+        expect(member.completionItemId, savedRecord['recordId']);
+        expect(member.completionSeq, savedRecord['completionSeq']);
+        expect(member.source, source);
+        expect(
+          (member.lifecycle as TerminalChatAtom).outcome,
+          ChatTerminalOutcome.completed,
+        );
+        await observed.revealMember(member, reference: unit.run!.reference);
+        final expectedBody = index == 0
+            ? _overlapEarlyReasoning
+            : _overlapReasoning;
+        await _until(
+          tester,
+          () => find
+              .descendant(
+                of: observed.memberRow(member.id),
+                matching: find.textContaining(expectedBody, findRichText: true),
+              )
+              .evaluate()
+              .isNotEmpty,
+          'saved A07 Run member body at $index',
+        );
+        await observed.closeRun(display);
+        expect(display.atoms, isEmpty);
+        expect(display.windows, isEmpty);
+      } else {
+        expect(unit.run, isNull);
+        expect(unit.entry.mainPresentation, MainPresentation.single);
+        await _until(
+          tester,
+          () => find
+              .descendant(
+                of: observed.itemRow(id),
+                matching: find.textContaining(_overlapText, findRichText: true),
+              )
+              .evaluate()
+              .isNotEmpty,
+          'saved A07 completed text body',
+        );
+      }
+      expect(lease, same(owner));
+      expect(lease.controller, same(controller));
+      expect(lease.appliedSets, 1);
     }
+    expect(
+      main
+          .where((unit) => unit.entry.atom.source == source)
+          .map((unit) => unit.id),
+      orderedEquals(records.map((record) => record['messageId'])),
+    );
+    expect(
+      main
+          .where((unit) => unit.entry.atom.source == source)
+          .map((unit) => unit.entry.recordId),
+      orderedEquals(saved['completionOrder'] as List),
+    );
+    expect(
+      main
+          .where((unit) => unit.entry.atom.source == source)
+          .map((unit) => unit.entry.completionSeq),
+      orderedEquals(saved['completionSeqs'] as List),
+    );
+    expect(
+      (await graph.client.conversations.retryCleanup(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      )).complete,
+      isTrue,
+    );
+    report['a07HistoryVerified'] = {
+      'phase': phase,
+      'generation': lease.generation,
+      'completionOrder': saved['completionOrder'],
+      'completionSeqs': saved['completionSeqs'],
+      'runMembersReadToEof': 2,
+      'memberScopesJoined': true,
+    };
   }
 
   Future<void> emptyText() async {
     await submit(_emptyTextPrompt);
-    await reach(
-      'a14-before-empty',
-      () => live.length == 1 && live.single.item.summary!.activeCount == 0,
+    await reach('a14-before-empty', () {
+      final turn = graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn;
+      if (turn == null) return false;
+      return live.isEmpty &&
+          observed
+              .workFor(ForegroundTurnChatSource(turnId: turn.turnId))
+              .any((unit) => unit.entry.run!.ordinal == 1);
+    });
+    final source = ForegroundTurnChatSource(
+      turnId: graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn!
+          .turnId,
     );
-    final before = live.single.id;
+    final before = observed.workFor(source).single;
+    expect(before.entry.run!.ordinal, 1);
     await release('a14-before-empty');
-    await reach('a14-empty-start', () => main.any((unit) => unit.id == before));
-    // Structural empty text is allowed in owner metadata; never an empty bubble.
-    final empty = live.singleWhere(
-      (unit) => unit.item.kind == TimelineItemKind.text,
+    await reach(
+      'a14-empty-start',
+      () => live.any((atom) => atom.kind == ChatAtomKind.text),
     );
-    expect(
-      find.descendant(
-        of: unitFinder(empty.id),
-        matching: find.byType(ChatItemView),
-      ),
-      findsNothing,
-    );
+    final empty = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
+    expect(empty.contentPresent, isFalse);
     await release('a14-empty-start');
     await reach(
       'a14-empty-terminal',
-      () => live.every(
-        (unit) => unit.item.kind == TimelineItemKind.workGroup
-            ? unit.item.summary!.activeCount == 0
-            : unit.item.outcome != null,
-      ),
+      () => !live.any((atom) => atom.id == empty.id),
+    );
+    expect(
+      items.where((entry) => entry.atom.id == empty.id),
+      isEmpty,
+      reason: 'An empty completed body is Hidden and does not divide a Run',
     );
     await release('a14-empty-terminal');
     await reach(
       'a14-after-empty',
-      () => live.any((unit) => unit.item.kind == TimelineItemKind.workGroup),
+      () => observed.workFor(source).single.entry.run!.ordinal == 2,
     );
-    final after = live
-        .singleWhere((unit) => unit.item.kind == TimelineItemKind.workGroup)
-        .id;
-    expect(after, isNot(before));
+    final after = observed.workFor(source).single;
+    expect(after.id, before.id);
+    expect(after.run!.reference, before.run!.reference);
     await capture('a14-empty-separator');
     await release('a14-after-empty');
-    await reach(
-      'a14-text-readable',
-      () => main.any((unit) => unit.id == after) && hasText(_emptyTextAnswer),
-    );
+    await reach('a14-text-readable', () => hasText(_emptyTextAnswer));
     await release('a14-text-readable');
     await reach('a14-before-turn-end', () => live.isEmpty);
-    expect(main.where((unit) => unit.id == before), hasLength(1));
-    expect(main.where((unit) => unit.id == after), hasLength(1));
+    expect(observed.workFor(source), hasLength(1));
     expect(
       itemFinder(empty.id),
       findsNothing,
-      reason: 'structural empty text must not paint an empty bubble',
+      reason: 'Structural empty text must not paint an empty bubble',
     );
     await release('a14-before-turn-end');
     await idle();
-    final emptySeparatorWorkAtomIds = <String>[];
-    report['emptySeparatorWorkAtomIds'] = emptySeparatorWorkAtomIds;
-    for (final id in [before, after]) {
-      emptySeparatorWorkAtomIds.addAll(await contentIdentitiesForItem(id));
-      await _closeInventoriedGroup(id);
-    }
+    final atomIds = await contentIdentitiesForItem(after.id);
+    expect(atomIds, hasLength(2));
+    report['emptySeparatorWorkAtomIds'] = atomIds;
+    await _closeInventoriedGroup(after.id);
   }
 
   Future<void> _verifyImageResult(
@@ -2523,16 +2331,17 @@ final class _ConceptScene {
       expect(
         await observed.revealMember(
           result.foreground,
-          reference: display!.membersRef!,
+          reference: display!.runReference!,
         ),
         same(display),
       );
     } else {
-      await observed.revealItem(finalUnit.item);
+      await observed.revealMember(
+        result.finalAtom,
+        reference: finalUnit.run!.reference,
+      );
     }
-    final card = finalUnit == null
-        ? observed.memberRow(result.foreground.id)
-        : observed.itemRow(finalUnit.id);
+    final card = observed.memberRow(result.finalAtom.id);
     expect(card, findsOneWidget);
     final rendered = tester.widget<ChatItemView>(card).item;
     expect(rendered.id, item.id);
@@ -2540,7 +2349,8 @@ final class _ConceptScene {
       expect(rendered.atom!.id, result.foreground.id);
       expect(rendered.atom!.source, result.foreground.source);
     } else {
-      expect(rendered.displayUnit, same(finalUnit));
+      expect(rendered.atom?.id, result.finalAtom.id);
+      expect(rendered.atom?.source, result.finalAtom.source);
     }
     final details = find.descendant(
       of: card,
@@ -2605,14 +2415,13 @@ final class _ConceptScene {
     // Viewer and UI close too, rather than granting each step a new deadline.
     final readWait = Stopwatch()..start();
     Duration remaining() => const Duration(seconds: 60) - readWait.elapsed;
-    final declarations =
-        (finalUnit?.item.contents ?? result.foreground.contents)
-            .where(
-              (content) =>
-                  content.role == ChatContentRole.toolArguments ||
-                  content.role == ChatContentRole.toolOutput,
-            )
-            .toList();
+    final declarations = result.finalAtom.contents
+        .where(
+          (content) =>
+              content.role == ChatContentRole.toolArguments ||
+              content.role == ChatContentRole.toolOutput,
+        )
+        .toList();
     final bodyConnectors = find.descendant(
       of: card,
       matching: find.byType(TimelineContentRangeConnector),
@@ -2848,16 +2657,19 @@ final class _ConceptScene {
     }
     final imageGroup = main.singleWhere((unit) => unit.id == imageWorkItemId);
     try {
-      expect(imageGroup.item.kind, TimelineItemKind.workGroup);
-      expect(imageGroup.item.summary!.memberCount, _imageMemberCount);
-      expect(imageGroup.item.summary!.activeCount, 0);
-      expect(imageGroup.item.admissionClosed, isTrue);
-      expect(imageGroup.item.members, isNotNull);
+      expect(
+        imageGroup.entry.mainPresentation,
+        MainPresentation.foregroundWork,
+      );
+      expect(imageGroup.entry.run!.ordinal, _imageMemberCount);
+      expect(imageGroup.entry.atom.lifecycle, isA<TerminalChatAtom>());
+      expect(imageGroup.entry.atom.payload, isA<DeferredPayload>());
+      expect(imageGroup.run?.reference, isNotNull);
     } catch (error) {
       _recordImageFailure('read-images-summary', error);
       rethrow;
     }
-    final summary = imageGroup.item.summary!;
+    final representative = imageGroup.entry;
     // A folded item carries summary/ref only, not hidden member/media widgets.
     final mountedBefore = lease.groupDisplays
         .where((display) => display.unitId == imageWorkItemId)
@@ -2865,8 +2677,8 @@ final class _ConceptScene {
     if (mountedBefore == null) {
       expect(membersOf(imageWorkItemId), isEmpty);
     }
-    final display = await observed.openGroup(imageGroup.id);
-    final mainIds = items.map((item) => item.id).toList();
+    final display = await observed.openRun(imageGroup.id);
+    final mainIds = items.map((item) => item.recordId).toList();
     final before = lease.olderCursor;
     expect(before, isNull);
     report['imageMainBaseline'] = {
@@ -2879,12 +2691,13 @@ final class _ConceptScene {
     late final List<_ImageResult> results;
     try {
       await contentIdentitiesForItem(imageGroup.id);
+      await _openBackgroundRuns();
       results = _verifyImageMembers(imageGroup, display);
     } catch (error) {
       _recordImageFailure('read-images', error, original: display);
       rethrow;
     }
-    expect(display.membersRef, imageGroup.item.members);
+    expect(display.runReference, imageGroup.run?.reference);
     expect(lease.olderCursor, before);
     expect(live.map((unit) => unit.id), orderedEquals(liveIds));
     report['ordinaryDetailWindowObserved'] = true;
@@ -2900,14 +2713,14 @@ final class _ConceptScene {
     for (final result in results.where((result) => result.finalUnit == null)) {
       await _verifyImageResult(result, display: display, missing: missing);
     }
-    expect(items.map((item) => item.id), orderedEquals(mainIds));
+    expect(items.map((item) => item.recordId), orderedEquals(mainIds));
     expect(lease.olderCursor, before);
-    final afterMedia = observed.unit(imageWorkItemId).item.summary!;
-    expect(afterMedia.memberCount, summary.memberCount);
-    expect(afterMedia.activeCount, summary.activeCount);
-    expect(afterMedia.failedCount, summary.failedCount);
-    expect(afterMedia.startedAt, summary.startedAt);
-    expect(afterMedia.finishedAt, summary.finishedAt);
+    final afterMedia = observed.unit(imageWorkItemId).entry;
+    expect(
+      afterMedia,
+      same(representative),
+      reason: 'Member/media reads do not replace Main representatives',
+    );
     expect(
       lease.groupDisplays.singleWhere((value) => value.unitId == imageGroup.id),
       same(display),
@@ -2917,7 +2730,7 @@ final class _ConceptScene {
       imageGroup.id,
       original: display,
     );
-    await observed.closeGroup(display);
+    await observed.closeRun(display);
     _recordMemberInventory('media-closed', imageGroup.id, original: display);
     expect(display.atoms, isEmpty);
     expect(display.before, isNull);
@@ -2956,25 +2769,25 @@ final class _ConceptScene {
     for (final result in results.where((result) => result.finalUnit != null)) {
       await _verifyImageResult(result, missing: missing);
     }
-    expect(items.map((item) => item.id), orderedEquals(mainIds));
-    final afterFinals = observed.unit(imageWorkItemId).item.summary!;
-    expect(afterFinals.memberCount, summary.memberCount);
-    expect(afterFinals.activeCount, summary.activeCount);
-    expect(afterFinals.failedCount, summary.failedCount);
-    expect(afterFinals.startedAt, summary.startedAt);
-    expect(afterFinals.finishedAt, summary.finishedAt);
+    expect(items.map((item) => item.recordId), orderedEquals(mainIds));
+    final afterFinals = observed.unit(imageWorkItemId).entry;
+    expect(
+      afterFinals,
+      same(representative),
+      reason: 'Member/media reads do not replace Main representatives',
+    );
     expect(display.atoms, isEmpty);
     expect(display.windows, isEmpty);
     if (input != null) {
       final itemValue = items.singleWhere(
-        (item) => item.source == InputChatSource(inputId: input.inputId),
+        (item) => item.atom.source == InputChatSource(inputId: input.inputId),
       );
-      expect(itemValue.kind, TimelineItemKind.text);
-      expect(itemValue.atomKind, ChatAtomKind.input);
-      expect(itemValue.members, isNull);
+      expect(itemValue.mainPresentation, MainPresentation.single);
+      expect(itemValue.atom.kind, ChatAtomKind.input);
+      expect(observed.unit(itemValue.recordId).run, isNull);
       final item = presentation(itemValue);
-      await showUnit(itemValue.id);
-      final card = itemFinder(itemValue.id);
+      await showUnit(itemValue.recordId);
+      final card = itemFinder(itemValue.recordId);
       try {
         await _until(tester, () {
           for (final view in tester.widgetList<TimelineImageView>(
@@ -2991,7 +2804,7 @@ final class _ConceptScene {
         }, 'three decoded real user input thumbnails');
       } catch (error) {
         report['inputThumbnailFailure'] = {
-          'itemId': itemValue.id,
+          'itemId': itemValue.recordId,
           'cardCount': card.evaluate().length,
           'sameLease': identical(lease, originalLease),
           'error': error.toString(),
@@ -2999,7 +2812,7 @@ final class _ConceptScene {
             for (final view in tester.widgetList<TimelineImageView>(
               find.byType(TimelineImageView, skipOffstage: false),
             ))
-              if (view.itemId == itemValue.id)
+              if (view.itemId == itemValue.recordId)
                 {
                   'attachmentId': view.attachment.id,
                   'active': view.active,
@@ -3052,12 +2865,12 @@ final class _ConceptScene {
     );
     await reveal(target);
     final item = items.singleWhere(
-      (item) => item.source == InputChatSource(inputId: inputId),
+      (item) => item.atom.source == InputChatSource(inputId: inputId),
     );
-    expect(item.id, input['itemId']);
-    expect(item.contentItemId, input['contentItemId']);
-    expect(item.kind, TimelineItemKind.text);
-    expect(item.atomKind, ChatAtomKind.input);
+    expect(item.recordId, input['itemId']);
+    expect(item.recordId, input['contentItemId']);
+    expect(item.mainPresentation, MainPresentation.single);
+    expect(item.atom.kind, ChatAtomKind.input);
     final attachments = presentation(item).attachments;
     expect(
       attachments.map((attachment) => attachment.id),
@@ -3108,12 +2921,12 @@ final class _ConceptScene {
       for (final id in coreIds) main.singleWhere((unit) => unit.id == id),
     ];
     expect(
-      reopenedUnits.map((unit) => unit.item.kind),
+      reopenedUnits.map((unit) => unit.entry.mainPresentation),
       orderedEquals([
-        TimelineItemKind.workGroup,
-        TimelineItemKind.text,
-        TimelineItemKind.workGroup,
-        TimelineItemKind.text,
+        MainPresentation.foregroundWork,
+        MainPresentation.single,
+        MainPresentation.foregroundWork,
+        MainPresentation.single,
       ]),
     );
     expect(reopenedUnits.first.id, isNot(reopenedUnits[2].id));
@@ -3130,6 +2943,7 @@ final class _ConceptScene {
         );
       }
     }
+    await verifyOverlapHistory(saved['a07Handoff'] as Map<String, dynamic>);
     for (final field in [
       'partialItemId',
       'failureItemId',
@@ -3137,8 +2951,11 @@ final class _ConceptScene {
     ]) {
       final id = saved[field] as String;
       await showUnit(id);
-      expect(items.where((item) => item.id == id), hasLength(1));
-      expect(items.singleWhere((item) => item.id == id).position, isNotNull);
+      expect(items.where((item) => item.recordId == id), hasLength(1));
+      expect(
+        items.singleWhere((item) => item.recordId == id).completionSeq,
+        greaterThan(0),
+      );
     }
     report['reopenedInputId'] = inputId;
     report['ownerGeneration'] = lease.generation;

@@ -21,10 +21,11 @@ Future<TestConversationFeed> _open(
   return feed;
 }
 
-ChatBatch _append(String id, {CurrentProjection? current}) => ChatBatch(
+ChatBatch _append(String id) => ChatBatch(
   placement: ChatPlacement.append,
-  entries: [ItemChatEntry(chatMessage(id: id))],
-  current: current,
+  fromSeq: 1,
+  throughSeq: 2,
+  entries: [chatMessage(id: id, seq: 2)],
 );
 
 void main() {
@@ -44,12 +45,10 @@ void main() {
       await consumer.waitForCount(1);
       expect(consumer.batches.single, same(initial));
       expect(ready, isFalse);
-      expect(content.current.value, isNull);
       expect(feed.acknowledgements, isEmpty);
       gate.complete();
       await readiness;
       await feed.acknowledged(1);
-      expect(content.current.value, same(initial.current));
       expect(content.state.value, isA<ChatReady<bool>>());
       expect(feed.eventConsumers, 1);
       expect((await fixture.close()).complete, isTrue);
@@ -68,7 +67,11 @@ void main() {
     // rather than queued or allowed to publish state ahead of the component.
     feed.send(
       ConversationStateEvent(
-        frame: ThreadSnapshotFrame(workspace: _workspace()),
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(),
+        ),
       ),
     );
     await feed.requestCloseStarted.future;
@@ -98,7 +101,8 @@ void main() {
       final ioStarted = Completer<void>();
       final older = ChatBatch(
         placement: ChatPlacement.prepend,
-        entries: [ItemChatEntry(chatMessage(id: 'older'))],
+        throughSeq: 1,
+        entries: [chatMessage(id: 'older')],
       );
       feed.reader.onOlder = (before, demand) async {
         expect(before, 'opaque');
@@ -160,7 +164,8 @@ void main() {
     );
     final older = ChatBatch(
       placement: ChatPlacement.prepend,
-      entries: [ItemChatEntry(chatMessage(id: 'retired-page'))],
+      throughSeq: 1,
+      entries: [chatMessage(id: 'retired-page')],
     );
     reply.complete(older);
     // The SDK reader's await was registered first on this very Future. Its
@@ -198,7 +203,11 @@ void main() {
     final feed = await _open(fixture, consumer);
     await feed.deliver(ConversationChatEvent(batch: chatSet()));
     final scope = fixture.session().content.openScope(generation: 1);
-    final older = ChatBatch(placement: ChatPlacement.prepend, entries: []);
+    final older = ChatBatch(
+      placement: ChatPlacement.prepend,
+      throughSeq: 1,
+      entries: [],
+    );
     feed.reader.onOlder = (_, __) async => older;
     final gate = Completer<void>();
     consumer.onApply = (_) => gate.future;
@@ -267,7 +276,6 @@ void main() {
         expect((await closing).complete, isFalse);
         gate.complete();
         expect((await fixture.client.retryCleanup()).complete, isTrue);
-        expect(fixture.session().current.value, isNull);
         expect(feed.acknowledgements, isEmpty);
       },
     );
@@ -298,7 +306,6 @@ void main() {
     expect(report.complete, isFalse);
     oldGate.complete();
     expect((await content.joinRetired()).complete, isTrue);
-    expect(content.current.value, same(replacement.current));
     expect(first.acknowledgements, isEmpty);
     expect(next.batches, [replacement]);
     expect(second.requestCloseCalls, 0);
@@ -342,7 +349,6 @@ void main() {
       feed.send(ConversationChatEvent(batch: chatSet()));
       expect((await failed as ChatReconnecting<bool>).error, same(failure));
       expect(feed.acknowledgements, isEmpty);
-      expect(fixture.session().current.value, isNull);
       expect((await fixture.close()).complete, isTrue);
     },
   );
@@ -356,10 +362,7 @@ void main() {
     feed.send(ConversationChatEvent(batch: _append('accepted')));
     await feed.requestCloseStarted.future;
     expect(
-      (fixture.consumers['thread']!.batches.last.entries.single
-              as ItemChatEntry)
-          .item
-          .id,
+      (fixture.consumers['thread']!.batches.last.entries.single).recordId,
       'accepted',
     );
     expect(feed.acknowledgements, [1]);
@@ -414,6 +417,7 @@ void main() {
 }
 
 ThreadWorkspace _workspace() => ThreadWorkspace(
+  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
   thread: StudioThread(
     id: 'thread',
     workspaceId: 'workspace',

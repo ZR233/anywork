@@ -7290,20 +7290,15 @@ pub(crate) mod storage_fault_tests {
         // changing the batch submitted below, so omitting accounting still fails this assertion.
         let mut accounting_only = prepared.as_ref().clone();
         accounting_only.current_state = None;
-        accounting_only.current_handoff = None;
         assert_eq!(
             accounting_only.retained_bytes(),
             accounting_only.accounting.retained_bytes()
                 + serde_json::to_vec(accounting_only.current.projection())?.len() as u64
                 + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64
                 + 3 * std::mem::size_of::<usize>() as u64
-                + 128
-                + 256 * accounting_only.current.timeline.len() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
                 + accounting_only.current.operation_bytes()
-                + serde_json::to_vec(accounting_only.current.timeline_update.as_ref())?.len()
-                    as u64
-                + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64,
+                + serde_json::to_vec(accounting_only.current.atom_facts.as_ref())?.len() as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -7366,9 +7361,6 @@ pub(crate) mod storage_fault_tests {
         let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
         let chat = store.chat_session(id).await?;
         let mut projection = live_projection(&sink).await?;
-        // Restore the existing small Timeline recovery before taking the baseline. Loading
-        // that state is not an effect mutation and remains charged after a rejected prepare.
-        projection.initialize_timeline().await?;
         let empty_projection_bytes = projection.retained_bytes();
         let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, 2)?;
         let mut write = ticket(id, 1);
@@ -9405,8 +9397,9 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(chat.durable_seq(), 1);
         assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
         assert_eq!(
-            pl_core::chat::ChatHistory::latest_append_seq(&store.history("lost-ack").await?)
-                .await?,
+            pl_core::chat::ChatHistory::publication_seed(&store.history("lost-ack").await?)
+                .await?
+                .head_seq,
             1,
             "retry must not append a second completion"
         );

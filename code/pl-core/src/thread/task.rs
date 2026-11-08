@@ -88,7 +88,7 @@ impl Owner {
         // The task's own "running" row is part of what the call's reliable output ceiling funds, so
         // it names that reservation instead of needing headroom next to it.
         self.claim_output(id);
-        self.publish();
+        self.publish()?;
         Ok(())
     }
 
@@ -127,7 +127,7 @@ impl Owner {
         record_change(&mut self.state, record);
         // The cancellation row belongs to the same in-flight call: its ceiling funds this fact too.
         self.claim_output(operation);
-        self.publish();
+        self.publish()?;
         token.cancel();
         Ok(TaskCancellationReceipt::Requested)
     }

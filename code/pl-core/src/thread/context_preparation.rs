@@ -374,7 +374,7 @@ impl Owner {
                         || candidate.extensions != self.state.extensions
                     {
                         self.state = candidate;
-                        self.publish();
+                        self.publish()?;
                         self.retain_preparation_storage_error(&mut preparation_storage_error);
                     }
                     replacement_accepted = replaces_context;
@@ -399,7 +399,7 @@ impl Owner {
                     operation_id,
                     outcome,
                 });
-            self.publish();
+            self.publish()?;
             self.state.model_execution = previous_phase;
             self.publish_snapshot();
         }
@@ -446,7 +446,10 @@ impl Owner {
                     turn_id: call.turn_id.clone(),
                     attempt_id: call.attempt_id.clone(),
                 });
-            self.publish();
+            if let Err(error) = self.publish() {
+                let _ = reply.send(Err(error));
+                return;
+            }
         }
         if let Some(error) = self.cold_error.clone() {
             self.state.persistence.resume_required = true;
@@ -488,7 +491,7 @@ impl Owner {
             let mut candidate = self.state.clone();
             extensions::stage_extensions(&mut candidate, mutations)?;
             self.state = candidate;
-            self.publish();
+            self.publish()?;
             self.retain_preparation_storage_error(storage_error);
         }
         Ok(())

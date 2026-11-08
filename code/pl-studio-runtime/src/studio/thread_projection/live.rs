@@ -307,8 +307,6 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) current:
         Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
     pub(in crate::studio) current_state: Option<Arc<super::CurrentState>>,
-    /// Small delivery qualification, released before the final effect enters the writer.
-    pub(in crate::studio) current_handoff: Option<Arc<super::CurrentHandoff>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// The frozen completion records this batch published atomically before the handoff.
@@ -329,8 +327,6 @@ pub(in crate::studio) struct PreparedEffect {
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
         Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
-    /// Top-level Timeline display items this effect newly committed, in history order.
-    pub(in crate::studio) timeline: Vec<pl_protocol::TimelineItem>,
 }
 
 fn review_delivery_facts(
@@ -411,8 +407,11 @@ impl PreparedEffect {
         retained_bytes(&self.items)
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
-            .saturating_add(self.current.pending_index_bytes())
             .saturating_add(self.current.operation_bytes())
+            .saturating_add(
+                serde_json::to_vec(self.current.atom_facts.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
             .saturating_add(
                 serde_json::to_vec(self.current.source_changes.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -422,22 +421,9 @@ impl PreparedEffect {
                     .as_ref()
                     .map_or(0, |state| state.metadata_bytes()),
             )
-            .saturating_add(
-                self.current_handoff
-                    .as_ref()
-                    .map_or(0, |handoff| handoff.retained_bytes()),
-            )
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
             .saturating_add(completions)
-            .saturating_add(self.current.timeline_update.retained_bytes())
-            .saturating_add(self.timeline.iter().fold(0_u64, |bytes, item| {
-                bytes
-                    .saturating_add(
-                        serde_json::to_vec(item).map_or(u64::MAX, |bytes| bytes.len() as u64),
-                    )
-                    .saturating_add(RETAINED_ITEM_OVERHEAD)
-            }))
             .saturating_add(self.completion_drafts.as_ref().map_or(0, |drafts| {
                 drafts.iter().fold(0_u64, |bytes, draft| {
                     bytes
@@ -451,50 +437,6 @@ impl PreparedEffect {
                 })
             }))
     }
-}
-
-/// Retain only the original completion reference in derived publications.
-/// ConversationReader selects Inline/Deferred against the actual frame budget
-/// and reads an eligible envelope through that same original content owner.
-fn timeline_payload(
-    database_id: &str,
-    atom: &pl_protocol::ChatAtom,
-    payload: &[u8],
-) -> pl_protocol::PayloadData {
-    pl_protocol::PayloadData::Deferred {
-        reference: pl_protocol::ContentRef {
-            database_id: database_id.into(),
-            target: pl_protocol::ContentTarget::ItemPayload {
-                item_id: atom
-                    .completion_item_id
-                    .clone()
-                    .unwrap_or_else(|| atom.id.clone()),
-            },
-        },
-        byte_length: payload.len() as u64,
-    }
-}
-
-/// Persisted item form: no transient member ids and no second body copy.
-fn stored_timeline_item(
-    database_id: &str,
-    item: &pl_protocol::TimelineItem,
-) -> pl_protocol::TimelineItem {
-    let mut stored = item.clone();
-    if let Some(pl_protocol::PayloadData::Inline { bytes }) = &item.payload {
-        let target = item
-            .content_item_id
-            .clone()
-            .unwrap_or_else(|| item.id.clone());
-        stored.payload = Some(pl_protocol::PayloadData::Deferred {
-            reference: pl_protocol::ContentRef {
-                database_id: database_id.into(),
-                target: pl_protocol::ContentTarget::ItemPayload { item_id: target },
-            },
-            byte_length: bytes.len() as u64,
-        });
-    }
-    stored
 }
 
 fn completion_bytes(id: &str, payload: &[u8], contents: &pl_core::chat::ChatContents) -> u64 {
@@ -1284,12 +1226,6 @@ pub(in crate::studio) struct LiveProjection {
     order_index: Option<Arc<RuntimeOrderIndex>>,
     execution_history: Option<crate::studio::storage::history::HistoryStore>,
     current: super::current::CurrentOwner,
-    main_through: u64,
-    /// Single Studio Timeline display projection. Live effects, restart recovery
-    /// and derived-data rebuild all run this same fold.
-    timeline: Option<Arc<super::TimelineProjection>>,
-    /// Whether the item order cursor was restored from the derived store.
-    timeline_position_restored: bool,
 }
 
 impl Drop for LiveProjection {
@@ -1328,9 +1264,6 @@ impl LiveProjection {
             order_index: None,
             execution_history: None,
             current: Default::default(),
-            main_through: 0,
-            timeline: None,
-            timeline_position_restored: false,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1360,54 +1293,7 @@ impl LiveProjection {
         self.current
             .bind(database_id)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.ensure_timeline_owner();
         Ok(())
-    }
-
-    async fn ensure_timeline_position(&mut self) -> Result<(), ProjectionError> {
-        if self.timeline_position_restored {
-            return Ok(());
-        }
-        if let Some(history) = self.execution_history.as_ref()
-            && let Some(timeline) = history
-                .timeline_snapshot()
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?
-        {
-            self.timeline = Some(Arc::new(timeline));
-            if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
-                history.timeline_owner(owner);
-            }
-            self.sync_current_items();
-        }
-        self.timeline_position_restored = true;
-        Ok(())
-    }
-
-    fn ensure_timeline_owner(&mut self) {
-        // Allocation/identity is owned by history preparation, never the fold.
-        if self.timeline.is_none()
-            && let (Some(database), Some(history)) =
-                (self.current.database_id(), self.execution_history.as_ref())
-        {
-            let generation = history.timeline_generation_changes().borrow().clone();
-            if !generation.is_empty() {
-                self.timeline = Some(Arc::new(super::TimelineProjection::new(
-                    database.to_owned(),
-                    generation,
-                    0,
-                )));
-            }
-        }
-    }
-    /// Restores the prepared migration head once when this realtime owner is installed.
-    pub(in crate::studio) async fn initialize_timeline(&mut self) -> Result<(), ProjectionError> {
-        self.ensure_timeline_position().await
-    }
-    pub(in crate::studio) fn timeline_generation(&self) -> &str {
-        self.timeline
-            .as_ref()
-            .map_or("", |timeline| timeline.generation())
     }
 
     async fn ensure_database_identity(&mut self) -> Result<(), ProjectionError> {
@@ -1428,7 +1314,6 @@ impl LiveProjection {
                 .bind(database_id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
-        self.ensure_timeline_owner();
         Ok(())
     }
 
@@ -1446,7 +1331,6 @@ impl LiveProjection {
         self.current
             .observe(thread, &ThreadSnapshot::default(), 0, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.sync_current_items();
         Ok(())
     }
     pub(in crate::studio) fn current_activity(&self) -> Option<pl_protocol::ThreadActivity> {
@@ -1471,13 +1355,6 @@ impl LiveProjection {
             .current
             .freeze(thread, state, effect.sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let projection = current
-            .frozen_projection()
-            .with_items(self.current_timeline_items());
-        self.current
-            .adopt_timeline_projection(current.frozen_projection(), &projection);
-        Arc::make_mut(&mut prepared).replace_projection(projection.clone());
-        let current = super::CurrentState::with_projection(current, projection);
         if let Some(attempt) = &effect.attempt
             && matches!(
                 attempt.outcome,
@@ -1493,179 +1370,6 @@ impl LiveProjection {
             ));
         }
         Ok((prepared, current))
-    }
-
-    /// Drains the items this fold step proved ready, in history order, together
-    /// with their bounded persisted form.
-    fn drain_timeline(
-        timeline: &mut super::TimelineProjection,
-    ) -> Result<
-        (
-            Vec<pl_protocol::TimelineItem>,
-            Arc<[crate::studio::storage::history::conversation::current::PreparedTimelineItem]>,
-        ),
-        ProjectionError,
-    > {
-        timeline.commit_ready()?;
-        let database_id = timeline.database_id().to_owned();
-        let committed = timeline.take_committed();
-        let prepared: Vec<_> = committed
-            .iter()
-            .map(|item| {
-                crate::studio::storage::history::conversation::current::PreparedTimelineItem {
-                    item: stored_timeline_item(&database_id, item),
-                }
-            })
-            .collect();
-        Ok((committed, prepared.into()))
-    }
-
-    fn current_timeline_items(&self) -> Vec<pl_protocol::TimelineItem> {
-        self.timeline
-            .as_ref()
-            .map(|timeline| timeline.current_items())
-            .unwrap_or_default()
-    }
-
-    fn sync_current_items(&mut self) {
-        if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
-            history.timeline_owner(owner);
-        }
-        if let Some(current) = self.current.snapshot() {
-            let projection = current
-                .frozen_projection()
-                .with_items(self.current_timeline_items());
-            self.current
-                .adopt_timeline_projection(current.frozen_projection(), &projection);
-        }
-    }
-
-    /// Folds the completions this effect actually published. Drafts that were
-    /// already durable are filtered before this call, so a replayed effect never
-    /// creates a second display item.
-    fn publish_timeline(
-        &mut self,
-        records: &[Arc<ChatItem>],
-        current: &crate::studio::storage::history::conversation::current::PreparedCurrent,
-        starts: &[pl_protocol::ChatEntry],
-    ) -> Result<Option<super::TimelineProjection>, ProjectionError> {
-        use super::timeline::TimelineInput;
-        self.ensure_timeline_owner();
-        // Only the bounded live accumulator is copied, never completed members.
-        // No partial input/position advance escapes on a budget/order failure.
-        let Some(mut timeline) = self.timeline.as_deref().cloned() else {
-            return Ok(None);
-        };
-        let database_id = timeline.database_id().to_owned();
-        let mut inputs = Vec::new();
-        let mut active = BTreeMap::new();
-        for entry in starts {
-            if let pl_protocol::ChatEntry::Atom(atom) = entry {
-                active.insert(atom.id.clone(), atom.as_ref().clone());
-            }
-        }
-        for atom in &current.projection().atoms {
-            active
-                .entry(atom.id.clone())
-                .or_insert_with(|| atom.clone());
-        }
-        for atom in active.into_values() {
-            let thinking_summary = self.current_thinking_summary(&atom);
-            let input = TimelineInput::Atom {
-                atom: Box::new(atom),
-                payload: None,
-                thinking_summary,
-            };
-            inputs.push((input.order(current.projection().source_effect_seq)?, input));
-        }
-        if let Some((attempt, ended)) = &current.recovery_interruption {
-            for atom in timeline.interrupted_model_members(attempt, *ended) {
-                if records
-                    .iter()
-                    .any(|record| record.header.item_id == atom.id)
-                {
-                    continue;
-                }
-                let input = TimelineInput::Atom {
-                    atom: Box::new(atom),
-                    payload: None,
-                    thinking_summary: None,
-                };
-                inputs.push((input.order(current.projection().source_effect_seq)?, input));
-            }
-        }
-        for source in current.source_changes.iter().filter(|source| {
-            matches!(
-                source.lifecycle,
-                pl_protocol::ChatSourceLifecycle::Ended { .. }
-            )
-        }) {
-            let input = TimelineInput::SourceEnd {
-                source: source.clone(),
-            };
-            inputs.push((input.order(current.projection().source_effect_seq)?, input));
-        }
-        for record in records {
-            if record.header.query_class != "conversation" {
-                continue;
-            }
-            let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)
-                .map_err(|error| {
-                ProjectionError::History(format!("invalid published timeline atom: {error}"))
-            })?;
-            atom.completion_seq = Some(record.header.append_seq);
-            let payload = timeline_payload(&database_id, &atom, &record.payload);
-            let thinking_summary =
-                super::timeline::completed_thinking_summary(&atom, &record.contents)?;
-            let input = TimelineInput::Atom {
-                atom: Box::new(atom),
-                payload: Some(payload),
-                thinking_summary,
-            };
-            inputs.push((input.order(current.projection().source_effect_seq)?, input));
-        }
-        inputs.sort_by(|left, right| left.0.cmp(&right.0));
-        for (_, input) in inputs {
-            timeline.apply_input(input)?;
-        }
-        // Canonical inputs alone choose order/boundaries and freeze each start.
-        // The cut's latest mutable heads can additionally carry argument/body
-        // references and Waiting state. Refresh only already-admitted identities;
-        // this is neither another start nor another commit point.
-        for atom in &current.projection().atoms {
-            if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt
-                && !current
-                    .recovery_interruption
-                    .as_ref()
-                    .is_some_and(|(attempt, _)| {
-                        atom.attempt_id.as_ref() == Some(attempt)
-                            && matches!(
-                                atom.kind,
-                                pl_protocol::ChatAtomKind::Text
-                                    | pl_protocol::ChatAtomKind::Reasoning
-                            )
-                    })
-            {
-                timeline.refresh_current(atom, self.current_thinking_summary(atom))?;
-            }
-        }
-        Ok(Some(timeline))
-    }
-
-    fn current_thinking_summary(&self, atom: &pl_protocol::ChatAtom) -> Option<String> {
-        if atom.kind != pl_protocol::ChatAtomKind::Reasoning {
-            return None;
-        }
-        self.previews
-            .get(&atom.id)?
-            .fields
-            .iter()
-            .rev()
-            .find_map(|(key, block)| {
-                matches!(key, BodyKey::Part(PresentationPart::SummaryText(_)))
-                    .then(|| super::activity::thinking_summary_block(block))
-                    .flatten()
-            })
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -1783,12 +1487,7 @@ impl LiveProjection {
                 std::mem::size_of::<(u32, pl_core::model::ModelPartsPrefix, usize)>() as u64
                     + RETAINED_ENTRY_OVERHEAD
             }))
-            .saturating_add(self.current.retained_bytes())
-            .saturating_add(
-                self.timeline
-                    .as_ref()
-                    .map_or(0, |timeline| timeline.retained_bytes()),
-            );
+            .saturating_add(self.current.retained_bytes());
         bytes = bytes
             .saturating_add(
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1845,8 +1544,6 @@ impl LiveProjection {
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         self.ensure_database_identity().await?;
-        self.ensure_timeline_position().await?;
-        let current_before = self.current_before(thread);
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
@@ -1858,28 +1555,21 @@ impl LiveProjection {
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
+        Arc::make_mut(&mut current).atom_facts = provenance.0.into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         // Admission, source ends and terminals are folded together only after
         // reliable retention/publication assigns the original completion seqs.
-        let timeline = Vec::new();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
-            current_handoff: Some(Arc::new(super::CurrentHandoff::new(
-                self.main_through,
-                current_before,
-                current.frozen_projection().clone(),
-                provenance.0.into(),
-            ))),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
             review_delivery,
-            timeline,
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1912,8 +1602,6 @@ impl LiveProjection {
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.ensure_database_identity().await?;
-        self.ensure_timeline_position().await?;
-        let current_before = self.current_before(thread);
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
@@ -1922,41 +1610,22 @@ impl LiveProjection {
             .await?;
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
+        Arc::make_mut(&mut current).atom_facts = provenance.0.into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
-        let timeline = Vec::new();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
-            current_handoff: Some(Arc::new(super::CurrentHandoff::new(
-                self.main_through,
-                current_before,
-                current.frozen_projection().clone(),
-                provenance.0.into(),
-            ))),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
             review_delivery,
-            timeline,
         });
         self.retain(state);
         Ok(prepared)
-    }
-
-    fn current_before(&self, thread: &pl_protocol::Thread) -> Arc<super::FrozenCurrentProjection> {
-        self.current.snapshot().map_or_else(
-            || {
-                super::FrozenCurrentProjection::new(pl_protocol::CurrentProjection::empty(
-                    0,
-                    thread.status,
-                ))
-            },
-            |state| state.frozen_projection().clone(),
-        )
     }
 
     fn retire_effect_source(&self, effect: &ThreadEffectBatch) -> Result<(), ProjectionError> {
@@ -2217,8 +1886,8 @@ impl LiveProjection {
                 ..ExecutionMaterialization::from_item(item)
             });
         }
-        let mut completion_drafts =
-            self.prepare_completion_drafts(effect, &items, &background_ids)?;
+        let completion_drafts =
+            self.prepare_completion_drafts(thread, state, effect, &items, &background_ids)?;
         let current_ids = items
             .iter()
             .map(|item| item.id.as_str())
@@ -2240,7 +1909,8 @@ impl LiveProjection {
             item.ordinal = orders[&item.id];
         }
         items.sort_by_key(|item| item.ordinal);
-        completion_drafts.sort_by_key(|draft| orders[&draft.item_id]);
+        // Execution ordinals still order execution material, but must never
+        // reorder the producer's terminal receipts before Session assigns seq.
         self.turn_failures = turn_failures;
         self.hidden_inputs = hidden_inputs;
         self.adopt_revisions(&existing);
@@ -2275,11 +1945,71 @@ impl LiveProjection {
     /// published.
     fn prepare_completion_drafts(
         &self,
+        thread: &pl_protocol::Thread,
+        state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
         items: &[ThreadItem],
         background_ids: &[(String, String)],
     ) -> Result<Vec<ChatDraft>, ProjectionError> {
         let mut drafts = Vec::new();
+        let database = self
+            .current
+            .database_id()
+            .ok_or_else(|| ProjectionError::History("missing database identity".into()))?;
+        // Completion order within an effect: accepted inputs, accepted inbox,
+        // then its original terminal receipts. All share Session's one allocator.
+        for (index, change) in effect.inputs.iter().enumerate() {
+            if let pl_core::thread::input::InputChange::Accepted(record) = change
+                && let Some(draft) = crate::studio::runtime::chat_item::accepted_input_draft(
+                    thread,
+                    record,
+                    pl_protocol::ChatFactPosition {
+                        effect_seq: effect.sequence,
+                        suborder: u32::try_from(
+                            index.checked_add(1).ok_or(ProjectionError::Count)?,
+                        )
+                        .map_err(|_| ProjectionError::Count)?,
+                    },
+                    effect.committed_at,
+                    database,
+                )?
+            {
+                drafts.push(draft);
+            }
+        }
+        for (index, record) in effect.inbox.iter().enumerate() {
+            // A forwarded final task result is already sealed by its real tool producer.
+            if state
+                .tasks
+                .values()
+                .chain(effect.tasks.iter())
+                .any(|task| task.id == record.message.source_id)
+            {
+                continue;
+            }
+            if let Some(draft) = crate::studio::runtime::chat_item::accepted_inbox_draft(
+                thread,
+                record,
+                pl_protocol::ChatFactPosition {
+                    effect_seq: effect.sequence,
+                    suborder: u32::try_from(
+                        effect
+                            .inputs
+                            .len()
+                            .checked_add(1)
+                            .ok_or(ProjectionError::Count)?
+                            .checked_add(index)
+                            .ok_or(ProjectionError::Count)?,
+                    )
+                    .map_err(|_| ProjectionError::Count)?,
+                },
+                effect.committed_at,
+                database,
+            )? {
+                drafts.push(draft);
+            }
+        }
+
         // An acknowledgement is an explicit Core context fact. Neither a running task nor a
         // task_id alone proves that a background receipt was actually returned.
         if let Some(context) = &effect.context {
@@ -2332,6 +2062,23 @@ impl LiveProjection {
             }
         }
         for item in items {
+            if crate::studio::runtime::chat_item::atom(item).kind
+                == pl_protocol::ChatAtomKind::Input
+                || state.inputs.iter().any(|record| record.input.id == item.id)
+                || effect.inputs.iter().any(|change| match change {
+                    pl_core::thread::input::InputChange::Accepted(record) => {
+                        record.input.id == item.id
+                    }
+                    pl_core::thread::input::InputChange::Transition { id, .. } => id == &item.id,
+                })
+                || state
+                    .inbox
+                    .iter()
+                    .chain(effect.inbox.iter())
+                    .any(|record| super::order::message_id(&record.message.id) == item.id)
+            {
+                continue;
+            }
             if !completion_ready(item)
                 || self.order_index_of()?.is_sealed(&item.id)
                 || matches!(item.state(), ThreadItemState::Inference(_))
@@ -2363,14 +2110,8 @@ impl LiveProjection {
             return Ok(());
         };
         let records = if prepared.completions.is_empty() {
-            let mut drafts = Vec::with_capacity(candidates.len());
-            for draft in candidates {
-                if !self.completion_exists(&draft.item_id).await? {
-                    drafts.push(draft.clone());
-                }
-            }
             let records = chat
-                .publish_batch(drafts)
+                .publish_batch(candidates.clone())
                 .await
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             // The original publication remains owned by this retained batch if
@@ -2384,154 +2125,11 @@ impl LiveProjection {
             self.order_index_of()?
                 .mark_completion(&record.header.item_id, true);
         }
-        let handoff = prepared.current_handoff.clone().ok_or_else(|| {
-            ProjectionError::History("prepared completion has no current handoff".into())
-        })?;
-        let main_through = records
-            .iter()
-            .filter(|record| record.header.query_class == "conversation")
-            .map(|record| record.header.append_seq)
-            .max()
-            .unwrap_or(self.main_through)
-            .max(self.main_through);
-        let exposed = handoff
-            .before()
-            .projection()
-            .previews
-            .iter()
-            .map(|preview| &preview.id)
-            .chain(
-                handoff
-                    .before()
-                    .projection()
-                    .atoms
-                    .iter()
-                    .map(|atom| &atom.id),
-            )
-            .collect::<BTreeSet<_>>();
-        let record_atoms = records
-            .iter()
-            .map(|record| {
-                serde_json::from_slice::<pl_protocol::ChatAtom>(&record.header.metadata)
-                    .map(|atom| (atom, record.header.append_seq))
-                    .map_err(|error| ProjectionError::History(error.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let retirements = exposed
-            .into_iter()
-            .filter_map(|id| {
-                record_atoms
-                    .iter()
-                    .find(|(atom, _)| &atom.id == id)
-                    .map(|(_, through)| super::CurrentRetirement {
-                        item_id: id.clone(),
-                        through: *through,
-                    })
-            })
-            .collect::<Vec<_>>();
-        // The Timeline fold sees only the completions this publication really
-        // produced, and runs after the batch was charged to the reliable queue.
-        let mut candidate =
-            self.publish_timeline(&records, &prepared.current, handoff.entries())?;
-        let (extra_live, extra_stored) = if let Some(timeline) = candidate.as_mut() {
-            Self::drain_timeline(timeline)?
-        } else {
-            (Vec::new(), Arc::from([]))
-        };
-        let mut current_after = prepared.current.as_ref().clone();
-        if !extra_stored.is_empty() {
-            let mut timeline: Vec<_> = current_after.timeline.iter().cloned().collect();
-            timeline.extend(extra_stored.iter().cloned());
-            current_after.timeline = timeline.into();
-        }
-        if !current_after.timeline.is_empty() {
-            current_after.timeline_commit = prepared.sequence;
-        }
-        // A terminal member may change a still-current group/text without
-        // making any display item ready for history.
-        let live_items = candidate
-            .as_ref()
-            .map(|timeline| timeline.current_items())
-            .unwrap_or_default();
-        let mut projection = current_after.projection().clone();
-        projection.items = live_items;
-        if let Some((attempt, _)) = &current_after.recovery_interruption {
-            let ids = self
-                .timeline
-                .as_ref()
-                .map(|timeline| {
-                    timeline.interrupted_model_members(
-                        attempt,
-                        pl_protocol::ChatFactPosition {
-                            effect_seq: prepared.sequence,
-                            suborder: 0,
-                        },
-                    )
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|atom| atom.id)
-                .collect::<BTreeSet<_>>();
-            projection.atoms.retain(|atom| !ids.contains(&atom.id));
-            projection
-                .previews
-                .retain(|preview| !ids.contains(&preview.id));
-            for id in ids {
-                self.atom_starts.remove(&id);
-            }
-        }
-        let after = super::FrozenCurrentProjection::new(projection);
-        current_after.replace_projection(after.clone());
-        if let Some(timeline) = candidate.as_mut() {
-            current_after.timeline_update = Arc::new(timeline.take_update()?);
-            timeline.accept_members(&current_after.timeline_update);
-        }
-        if !current_after.timeline_update.updates().is_empty() {
-            current_after.timeline_commit = prepared.sequence;
-        }
-        let handoff = Arc::new(
-            super::CurrentHandoff::new(
-                main_through,
-                handoff.before().clone(),
-                after.clone(),
-                prepared
-                    .timeline
-                    .iter()
-                    .chain(extra_live.iter())
-                    .cloned()
-                    .map(|item| pl_protocol::ChatEntry::Item(Box::new(item)))
-                    .collect::<Vec<_>>()
-                    .into(),
-            )
-            .with_publication(
-                current_after.timeline_update.generation().to_owned(),
-                current_after.source_changes.clone(),
-                current_after.timeline_update.members().to_vec().into(),
-                retirements.into(),
-            )
-            .with_updates(current_after.timeline_update.updates().to_vec().into()),
-        );
+        // Completion publication is the only history boundary. Current contains actual
+        // activity/interaction state and never needs a display-group retirement suffix.
         let prepared = Arc::make_mut(prepared);
-        self.current
-            .adopt_timeline_projection(prepared.current.frozen_projection(), &after);
-        self.timeline = candidate.map(Arc::new);
-        if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
-            history.timeline_owner(owner);
-        }
-        if !extra_live.is_empty() {
-            prepared.timeline.extend(extra_live);
-        }
-        if let Some(state) = prepared.current_state.take() {
-            prepared.current_state = Some(super::CurrentState::with_projection(state, after));
-        }
-        prepared.current = Arc::new(current_after);
-        if let Some(history) = &self.execution_history {
-            history.timeline_publish(prepared.current.clone());
-        }
         prepared.completions = records;
         prepared.completion_drafts = None;
-        prepared.current_handoff = Some(handoff);
-        self.main_through = main_through;
         Ok(())
     }
 
@@ -2589,23 +2187,6 @@ impl LiveProjection {
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        if let Some(current) = self.current.snapshot() {
-            let summaries = current
-                .projection()
-                .atoms
-                .iter()
-                .filter_map(|atom| {
-                    self.current_thinking_summary(atom)
-                        .map(|summary| (atom.id.clone(), summary))
-                })
-                .collect::<Vec<_>>();
-            if let Some(timeline) = &mut self.timeline {
-                for (id, summary) in summaries {
-                    Arc::make_mut(timeline).refresh_thinking_summary(&id, summary);
-                }
-            }
-        }
-        self.sync_current_items();
         Ok(())
     }
 

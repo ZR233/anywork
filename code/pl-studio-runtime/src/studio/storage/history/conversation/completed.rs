@@ -17,7 +17,8 @@ pub(in super::super) async fn apply(
         ensure!(write.sealed, "independent documents must be complete");
         super::content::write_content(db, &write.content, true).await?;
     }
-    super::sources::apply(db, effect, &prepared.source_changes).await
+    super::sources::apply(db, effect, &prepared.source_changes).await?;
+    super::facts::apply(db, &prepared.atom_facts, effect).await
 }
 
 pub(in super::super) async fn verify(
@@ -30,6 +31,7 @@ pub(in super::super) async fn verify(
         &prepared.source_changes,
     )
     .await?;
+    super::facts::verify(db, &prepared.atom_facts).await?;
     for write in prepared.contents.iter() {
         let manifest = super::content::validate_content(db, &write.content)
             .await?
@@ -54,6 +56,7 @@ pub(in super::super) async fn cold(db: &impl ConnectionTrait) -> Result<Arc<Curr
             "SELECT json_extract(payload,'$.state.extensions.\"studio.plan\"') AS plan,
                 json_extract(payload,'$.state.permissions') AS permissions,
                 json_extract(payload,'$.state.interactions') AS interactions,
+                payload -> '$.state.interactionCollectionRevision' AS interaction_collection_revision,
                 json_extract(payload,'$.state.turns') AS turns,
                 json_extract(payload,'$.state.tasks') AS tasks,
                 json_extract(payload,'$.state.attempts') AS attempts,
@@ -78,6 +81,9 @@ pub(in super::super) async fn cold(db: &impl ConnectionTrait) -> Result<Arc<Curr
         }
         domain!(permissions);
         domain!(interactions);
+        if let Some(revision) = fields.try_get::<Option<String>>("", "interaction_collection_revision")? {
+            state.interaction_collection_revision = serde_json::from_str(&revision)?;
+        }
         domain!(turns);
         domain!(tasks);
         domain!(attempts);
@@ -85,23 +91,75 @@ pub(in super::super) async fn cold(db: &impl ConnectionTrait) -> Result<Arc<Curr
             state.lifecycle = serde_json::from_str(&value)?;
         }
     }
-    let state = CurrentState::cold(
+    // Keep content-only reads on their narrow domain-field path.
+    cold_from_state(
+        db,
         row.try_get("", "database_id")?,
         row.try_get("", "thread_id")?,
         u64::try_from(row.try_get::<i64>("", "applied_write_seq")?)?,
         &state,
-    )?;
-    let head = super::timeline::read_state(db)
+    )
+    .await
+}
+
+pub(in super::super) async fn cold_from_state(
+    db: &impl ConnectionTrait,
+    database: String,
+    thread: String,
+    effect: u64,
+    snapshot: &ThreadSnapshot,
+) -> Result<Arc<CurrentState>> {
+    let state = CurrentState::cold(database.clone(), thread, effect, snapshot)?;
+    validate_business_refs(db, state.projection(), &database).await?;
+    Ok(state)
+}
+
+/// The header and its sealed document directory are checked in the caller's same short snapshot.
+/// Chunks remain range-read responsibilities; no completed body is reconstructed here.
+async fn validate_business_refs(
+    db: &impl ConnectionTrait,
+    projection: &pl_protocol::CurrentProjection,
+    database: &str,
+) -> Result<()> {
+    use pl_protocol::{ContentOwner, ContentTarget};
+    let refs = crate::studio::thread_projection::project_business_refs(projection);
+    if let Some(reference) = &refs.interactions {
+        ensure!(
+            reference.database_id == database && reference.collection == "interactions",
+            pl_core::chat::ChatError::StaleContent
+        );
+    }
+    let Some(plan) = refs.plan else {
+        return Ok(());
+    };
+    let Some(document) = plan.document else {
+        return Ok(());
+    };
+    ensure!(
+        document.database_id == database,
+        pl_core::chat::ChatError::StaleContent
+    );
+    let ContentTarget::Body { owner, key } = &document.target else {
+        anyhow::bail!("current Plan document is not a body reference");
+    };
+    ensure!(
+        matches!(owner, ContentOwner::Current { domain, id, revision }
+        if domain == "plan" && id == "document" && *revision == plan.revision)
+            && key == "document",
+        pl_core::chat::ChatError::StaleContent
+    );
+    let owner = crate::studio::conversation_identity::content_owner_key(owner)?;
+    let row = db
+        .query_one_raw(statement(
+            "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+            vec![owner.as_str().into(), key.clone().into()],
+        ))
         .await?
-        .context("cold content has no recovery cut")?;
-    let timeline =
-        super::timeline::complete::restore(db, &row.try_get::<String>("", "database_id")?, &head)
-            .await?;
-    let mut projection = state.projection().clone();
-    projection.items = timeline.current_items();
-    projection.atoms = timeline.active_atoms();
-    Ok(CurrentState::with_projection(
-        state,
-        crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
-    ))
+        .context("current Plan document manifest is missing; original history preserved")?;
+    let manifest = super::content::manifest(&row.try_get::<Vec<u8>>("", "payload")?)?;
+    ensure!(
+        manifest.sealed && manifest.generation > 0,
+        "current Plan document is not a sealed content resource"
+    );
+    Ok(())
 }

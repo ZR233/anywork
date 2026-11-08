@@ -1,0 +1,941 @@
+//! Frozen schema-17 completion fold, used exclusively by named historical migrations.
+use super::legacy_timeline_types::*;
+use crate::studio::thread_projection::ProjectionError;
+use pl_protocol::*;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::result::Result;
+use std::sync::{Arc, Mutex, OnceLock};
+mod completion;
+mod members;
+pub(in crate::studio) use completion::Frontier;
+use members::Members;
+
+type LiveItems = BTreeMap<u64, LiveItem>;
+
+pub(in crate::studio) const THINKING_SUMMARY_TAIL_BYTES: usize = 4096;
+
+/// A byte range may begin in a UTF-8 character. Discard only that partial
+/// character; malformed accepted text is an error, not a replacement summary.
+pub(in crate::studio) fn thinking_summary_tail(
+    bytes: &[u8],
+) -> Result<Option<String>, ProjectionError> {
+    let start = bytes
+        .iter()
+        .take(3)
+        .take_while(|byte| **byte & 0xc0 == 0x80)
+        .count();
+    let text = std::str::from_utf8(&bytes[start..])
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+    Ok(text
+        .rsplit(['\n', '\r'])
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(512).collect()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct FactKey {
+    effect: u64,
+    suborder: u32,
+    sequence: u64,
+    tie: u64,
+}
+fn position(atom: &ChatAtom, terminal: bool) -> Option<ChatFactPosition> {
+    match atom.lifecycle {
+        ChatAtomLifecycle::Active { started, .. } => started,
+        ChatAtomLifecycle::Terminal { started, ended, .. } => {
+            if terminal {
+                ended.or(started)
+            } else {
+                started.or(ended)
+            }
+        }
+    }
+}
+fn key(atom: &ChatAtom, sequence: Option<u64>, terminal: bool) -> FactKey {
+    let at = position(atom, terminal);
+    FactKey {
+        effect: at.map_or(0, |at| at.effect_seq),
+        suborder: at.map_or(0, |at| at.suborder),
+        sequence: if terminal {
+            sequence.or(atom.source_order)
+        } else {
+            atom.source_order.or(sequence)
+        }
+        .unwrap_or(0),
+        tie: sequence.or(atom.completion_seq).unwrap_or(0),
+    }
+}
+fn outcome(atom: &ChatAtom) -> Option<ChatTerminalOutcome> {
+    match atom.lifecycle {
+        ChatAtomLifecycle::Active { .. } => None,
+        ChatAtomLifecycle::Terminal { outcome, .. } => Some(outcome),
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Text,
+    Work,
+    Status,
+}
+fn classify(atom: &ChatAtom) -> Class {
+    match atom.kind {
+        ChatAtomKind::Input | ChatAtomKind::Text => Class::Text,
+        ChatAtomKind::ToolCall if matches!(atom.source, ChatSourceId::BackgroundResult { .. }) => {
+            Class::Work
+        }
+        ChatAtomKind::Reasoning
+        | ChatAtomKind::ToolCall
+        | ChatAtomKind::FileChange
+        | ChatAtomKind::Skill
+            if matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
+                && atom.delivery != ChatDeliveryKind::Independent =>
+        {
+            Class::Work
+        }
+        _ => Class::Status,
+    }
+}
+fn category(atom: &ChatAtom) -> TimelineCategory {
+    match atom.kind {
+        ChatAtomKind::Reasoning => TimelineCategory::Thinking,
+        ChatAtomKind::FileChange => TimelineCategory::Edit,
+        ChatAtomKind::ToolCall => match atom.tool.as_ref().map(|tool| tool.name.as_str()) {
+            Some("read_file") => TimelineCategory::Read,
+            Some("read_image" | "generate_image" | "show_image") => TimelineCategory::Image,
+            Some("exec") => TimelineCategory::Command,
+            Some("web_search") => TimelineCategory::Search,
+            Some("apply_patch") => TimelineCategory::Edit,
+            Some("wait" | "sleep") => TimelineCategory::Wait,
+            _ => TimelineCategory::Other,
+        },
+        _ => TimelineCategory::Other,
+    }
+}
+/// Frozen metadata only. Active wait presentations belong to mutable member
+/// heads; payload bytes remain with their original content owner.
+pub(in crate::studio) fn lightweight(atom: &ChatAtom) -> ChatAtom {
+    let mut atom = atom.clone();
+    atom.payload = None;
+    atom.wait = None;
+    atom.source_state = None;
+    atom
+}
+/// Same-cut mutable member metadata, including the producer's active wait.
+fn active_head(atom: &ChatAtom) -> ChatAtom {
+    debug_assert!(outcome(atom).is_none());
+    let mut atom = atom.clone();
+    atom.payload = None;
+    atom.source_state = None;
+    atom
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(in crate::studio) struct MemberChange {
+    pub item_id: String,
+    pub member_order: u64,
+    pub atom: ChatAtom,
+    pub payload_bytes: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(in crate::studio) struct TimelineUpdate {
+    facts: Vec<ChatAtom>,
+    members: Vec<MemberChange>,
+    updates: Vec<TimelineItem>,
+    current: Vec<TimelineItem>,
+    recovery: Vec<u8>,
+    next_position: u64,
+    generation: String,
+    /// Final member material moves to the original reliable batch only when its group closes.
+    #[serde(default)]
+    completed_members: Vec<MemberChange>,
+    /// Reliable-fact replay cuts, never serialized open accumulators.
+    #[serde(default)]
+    frontier: Vec<u8>,
+    #[serde(default)]
+    finished_groups: Vec<String>,
+}
+impl TimelineUpdate {
+    pub fn completed_members(&self) -> &[MemberChange] {
+        &self.completed_members
+    }
+    pub fn frontier(&self) -> &[u8] {
+        &self.frontier
+    }
+    pub fn updates(&self) -> &[TimelineItem] {
+        &self.updates
+    }
+    pub fn next_position(&self) -> u64 {
+        self.next_position
+    }
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+}
+impl Default for TimelineUpdate {
+    fn default() -> Self {
+        Self {
+            facts: Vec::new(),
+            members: Vec::new(),
+            updates: Vec::new(),
+            current: Vec::new(),
+            recovery: br#"{"items":[],"active":{}}"#.to_vec(),
+            next_position: 0,
+            generation: String::new(),
+            completed_members: Vec::new(),
+            frontier: Vec::new(),
+            finished_groups: Vec::new(),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveMember {
+    item_id: String,
+    order: u64,
+    atom: ChatAtom,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveItem {
+    source_order: Option<u64>,
+    item: TimelineItem,
+    anchor: FactKey,
+    ready_key: FactKey,
+    last_terminal: Option<FactKey>,
+    active: u32,
+    next_member: u64,
+    last_source_order: Option<u64>,
+    latest_thinking_order: Option<u64>,
+    empty: bool,
+}
+impl LiveItem {
+    fn observe_thinking_summary(&mut self, order: u64, summary: Option<String>) {
+        if let Some(text) = summary.filter(|text| !text.trim().is_empty())
+            && self
+                .latest_thinking_order
+                .is_none_or(|previous| order >= previous)
+            && let Some(summary) = &mut self.item.summary
+        {
+            self.latest_thinking_order = Some(order);
+            summary.latest_thinking_summary = Some(text);
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.active == 0
+            && (self.item.kind != TimelineItemKind::WorkGroup || self.item.admission_closed)
+    }
+    fn source_key(&self) -> (bool, u64, FactKey) {
+        (
+            self.source_order.is_none(),
+            self.source_order.unwrap_or(0),
+            self.anchor,
+        )
+    }
+}
+/// A committed product head, never a cache of its members or canonical bodies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackgroundTail {
+    item: TimelineItem,
+    next_member: u64,
+}
+#[derive(Serialize)]
+struct RecoveryView<'a> {
+    #[serde(serialize_with = "serialize_live_items")]
+    items: &'a LiveItems,
+    active: &'a BTreeMap<String, ActiveMember>,
+}
+fn serialize_live_items<S: serde::Serializer>(
+    items: &LiveItems,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.values())
+}
+type SourceItems = BTreeMap<(bool, u64, FactKey), BTreeSet<u64>>;
+#[derive(Debug, Clone)]
+pub(in crate::studio) struct TimelineProjection {
+    database_id: String,
+    generation: String,
+    next_position: u64,
+    items: LiveItems,
+    item_ids: BTreeMap<String, u64>,
+    sources: BTreeMap<ChatSourceId, SourceItems>,
+    ready: BTreeSet<(FactKey, u64)>,
+    next_item: u64,
+    active: BTreeMap<String, ActiveMember>,
+    committed: Vec<TimelineItem>,
+    background_tail: Option<BackgroundTail>,
+    updates: Vec<TimelineItem>,
+    changes: Vec<MemberChange>,
+    facts: Vec<ChatAtom>,
+    retained_bytes: OnceLock<u64>,
+    members: Arc<Mutex<Members>>,
+    finished_groups: Vec<String>,
+}
+/// One bounded, already-retained effect's canonical inputs. The same six-part
+/// key is used by the durable fact/source merge; every input is a commit point.
+pub(in crate::studio) enum TimelineInput {
+    Atom {
+        atom: Box<ChatAtom>,
+        payload: Option<PayloadData>,
+        thinking_summary: Option<String>,
+    },
+}
+fn overflow() -> ProjectionError {
+    ProjectionError::History("timeline order/count exhausted".into())
+}
+fn add(value: &mut u32) -> Result<(), ProjectionError> {
+    *value = value.checked_add(1).ok_or_else(overflow)?;
+    Ok(())
+}
+pub(in crate::studio) fn extend_background_head(
+    item: &mut TimelineItem,
+    atom: &ChatAtom,
+) -> Result<(), ProjectionError> {
+    let summary = item
+        .summary
+        .as_mut()
+        .ok_or_else(|| ProjectionError::History("background group has no summary".into()))?;
+    add(&mut summary.member_count)?;
+    match outcome(atom) {
+        Some(ChatTerminalOutcome::Failed) => add(&mut summary.failed_count)?,
+        Some(ChatTerminalOutcome::Cancelled) => add(&mut summary.cancelled_count)?,
+        _ => {}
+    }
+    let cat = category(atom);
+    if let Some(count) = summary
+        .categories
+        .iter_mut()
+        .find(|count| count.category == cat)
+    {
+        add(&mut count.count)?;
+    } else {
+        summary.categories.push(TimelineCategoryCount {
+            category: cat,
+            count: 1,
+        });
+        summary.categories.sort_by_key(|count| count.category);
+    }
+    item.finished_at = atom.finished_at;
+    summary.finished_at = atom.finished_at;
+    Ok(())
+}
+impl TimelineProjection {
+    /// Initialized once from the actual committed history tail, never an open snapshot.
+    pub(in crate::studio) fn restore_background_tail(
+        &mut self,
+        item: TimelineItem,
+    ) -> Result<(), ProjectionError> {
+        if item.kind != TimelineItemKind::WorkGroup
+            || !matches!(item.source, ChatSourceId::BackgroundResult { .. })
+            || item.position.and_then(|position| position.checked_add(1))
+                != Some(self.next_position)
+            || !item.admission_closed
+            || item
+                .summary
+                .as_ref()
+                .is_none_or(|summary| summary.member_count == 0 || summary.active_count != 0)
+            || item.members.as_ref().is_none_or(|reference| {
+                reference.database_id != self.database_id
+                    || reference.projection_generation != self.generation
+                    || reference.projection_version != TIMELINE_PROJECTION_VERSION
+                    || reference.item_id != item.id
+            })
+            || item.payload.is_some()
+            || !item.contents.is_empty()
+            || item.content_item_id.is_some()
+        {
+            return Err(ProjectionError::History(
+                "invalid committed background tail".into(),
+            ));
+        }
+        self.background_tail = Some(BackgroundTail {
+            next_member: u64::from(
+                item.summary
+                    .as_ref()
+                    .expect("validated summary")
+                    .member_count,
+            ),
+            item,
+        });
+        self.retained_bytes.take();
+        Ok(())
+    }
+    pub(in crate::studio) fn new(
+        database_id: String,
+        generation: String,
+        next_position: u64,
+    ) -> Self {
+        Self {
+            database_id,
+            generation,
+            next_position,
+            items: LiveItems::new(),
+            item_ids: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            ready: BTreeSet::new(),
+            next_item: 0,
+            active: BTreeMap::new(),
+            committed: Vec::new(),
+            background_tail: None,
+            updates: Vec::new(),
+            changes: Vec::new(),
+            facts: Vec::new(),
+            retained_bytes: OnceLock::new(),
+            members: Arc::new(Mutex::new(Members::default())),
+            finished_groups: Vec::new(),
+        }
+    }
+    fn classify(&self, atom: &ChatAtom) -> Class {
+        classify(atom)
+    }
+    fn excluded(&self, atom: &ChatAtom) -> bool {
+        atom.kind == ChatAtomKind::Inference
+    }
+    pub(in crate::studio) fn apply_input(
+        &mut self,
+        input: TimelineInput,
+    ) -> Result<(), ProjectionError> {
+        match input {
+            TimelineInput::Atom {
+                atom,
+                payload,
+                thinking_summary,
+            } => {
+                if outcome(&atom).is_some() {
+                    let sequence = atom.completion_seq.unwrap_or(0);
+                    self.admit(*atom, Some(sequence), payload, thinking_summary)?;
+                } else {
+                    self.observe_with_summary(&atom, None, thinking_summary)?;
+                }
+            }
+        }
+        self.commit_ready()
+    }
+
+    fn observe_with_summary(
+        &mut self,
+        atom: &ChatAtom,
+        sequence: Option<u64>,
+        thinking_summary: Option<String>,
+    ) -> Result<(), ProjectionError> {
+        // Current is a bounded preview, not a replay stream. Terminal facts enter
+        // exactly once from the original completion publication.
+        if outcome(atom).is_some() || atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom)
+        {
+            return Ok(());
+        }
+        if let Some(member) = self.active.get_mut(&atom.id) {
+            let item = self
+                .item_ids
+                .get(&member.item_id)
+                .and_then(|index| self.items.get_mut(index))
+                .expect("indexed active member item");
+            if atom.kind == ChatAtomKind::Reasoning {
+                self.retained_bytes.take();
+                item.observe_thinking_summary(member.order, thinking_summary);
+            }
+            let next = active_head(atom);
+            if member.atom == next {
+                return Ok(());
+            }
+            self.retained_bytes.take();
+            member.atom = next.clone();
+            if item.item.kind != TimelineItemKind::WorkGroup {
+                item.item.contents = next.contents.clone();
+            }
+            // A mutable active head is not a second start. The first frozen
+            // phase remains immutable even when this update shares its batch.
+            if item.item.kind == TimelineItemKind::WorkGroup {
+                let change = MemberChange {
+                    item_id: member.item_id.clone(),
+                    member_order: member.order,
+                    atom: next,
+                    payload_bytes: None,
+                };
+                self.changes.push(change);
+            }
+            return Ok(());
+        }
+        self.admit(atom.clone(), sequence, None, thinking_summary)
+    }
+
+    fn admit(
+        &mut self,
+        atom: ChatAtom,
+        sequence: Option<u64>,
+        payload: Option<PayloadData>,
+        thinking_summary: Option<String>,
+    ) -> Result<(), ProjectionError> {
+        if self.excluded(&atom) {
+            // Diagnostics cannot admit a member or close the current work segment.
+            return Ok(());
+        }
+        self.retained_bytes.take();
+        let terminal = outcome(&atom).is_some();
+        if atom.kind == ChatAtomKind::TurnReceipt
+            && outcome(&atom) == Some(ChatTerminalOutcome::Completed)
+        {
+            self.facts.push(lightweight(&atom));
+            self.end_source(&atom.source);
+            return Ok(());
+        }
+        if !terminal
+            && atom.kind == ChatAtomKind::ToolCall
+            && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+        {
+            // Result sources may have a frozen start in old canonical history.
+            // Only the actual final result participates in the Main tail run.
+            self.facts.push(lightweight(&atom));
+            return Ok(());
+        }
+        if terminal
+            && atom.kind == ChatAtomKind::ToolCall
+            && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+            && !self.active.contains_key(&atom.id)
+            && self.background_tail.is_some()
+        {
+            return self.append_background_result(atom, payload);
+        }
+        let started = key(&atom, sequence, false);
+        let ended = key(&atom, sequence, true);
+        let existing = self.active.remove(&atom.id);
+        let (index, order, fresh) = if let Some(member) = existing {
+            let index = self.item_ids.get(&member.item_id).copied().ok_or_else(|| {
+                ProjectionError::History("timeline active member lost its item".into())
+            })?;
+            (index, member.order, false)
+        } else {
+            let class = self.classify(&atom);
+            if class != Class::Work {
+                self.close_group_for(&atom.source, started);
+            }
+            let open = (class == Class::Work)
+                .then(|| {
+                    self.sources.get(&atom.source).and_then(|source| {
+                        source
+                            .values()
+                            .flatten()
+                            .filter_map(|index| {
+                                let item = &self.items[index];
+                                (item.item.kind == TimelineItemKind::WorkGroup
+                                    && !item.item.admission_closed
+                                    && atom
+                                        .source_order
+                                        .zip(item.last_source_order)
+                                        .is_none_or(|(a, b)| a >= b))
+                                .then_some(*index)
+                            })
+                            .max()
+                    })
+                })
+                .flatten();
+            let index = match open {
+                Some(index) => index,
+                None => {
+                    let kind = match class {
+                        Class::Text => TimelineItemKind::Text,
+                        Class::Work => TimelineItemKind::WorkGroup,
+                        Class::Status => TimelineItemKind::Status,
+                    };
+                    let prefix = match class {
+                        Class::Text => "text",
+                        Class::Work => "work",
+                        Class::Status => "status",
+                    };
+                    let id = format!("{prefix}:{}", atom.id);
+                    self.insert_item(LiveItem {
+                        source_order: atom.source_order,
+                        item: TimelineItem {
+                            id: id.clone(),
+                            kind,
+                            source: atom.source.clone(),
+                            atom_kind: (class != Class::Work).then_some(atom.kind),
+                            delivery: atom.delivery,
+                            text_channel: atom.text_channel,
+                            turn_id: atom.turn_id.clone(),
+                            started_at: atom.started_at,
+                            finished_at: None,
+                            outcome: None,
+                            summary: (class == Class::Work).then_some(TimelineGroupSummary {
+                                member_count: 0,
+                                active_count: 0,
+                                failed_count: 0,
+                                cancelled_count: 0,
+                                categories: Vec::new(),
+                                started_at: atom.started_at,
+                                finished_at: None,
+                                latest_thinking_summary: None,
+                            }),
+                            members: (class == Class::Work).then(|| TimelineMembersRef {
+                                database_id: self.database_id.clone(),
+                                projection_version: TIMELINE_PROJECTION_VERSION,
+                                projection_generation: self.generation.clone(),
+                                item_id: id,
+                            }),
+                            contents: Vec::new(),
+                            payload: None,
+                            content_item_id: None,
+                            position: None,
+                            admission_closed: false,
+                        },
+                        anchor: started,
+                        ready_key: ended,
+                        last_terminal: None,
+                        active: 0,
+                        next_member: 0,
+                        last_source_order: None,
+                        latest_thinking_order: None,
+                        empty: false,
+                    })?
+                }
+            };
+            let item = self.items.get_mut(&index).expect("indexed live item");
+            let order = item.next_member;
+            item.next_member = order.checked_add(1).ok_or_else(overflow)?;
+            item.last_source_order = atom.source_order.or(item.last_source_order);
+            (index, order, true)
+        };
+        let payload_bytes = match &payload {
+            Some(PayloadData::Inline { bytes }) => Some(bytes.len() as u64),
+            Some(PayloadData::Deferred { byte_length, .. }) => Some(*byte_length),
+            None => None,
+        };
+        let old_ready = self.items[&index].ready_key;
+        self.ready.remove(&(old_ready, index));
+        let item = self.items.get_mut(&index).expect("indexed live item");
+        if atom.kind == ChatAtomKind::Reasoning {
+            item.observe_thinking_summary(order, thinking_summary);
+        }
+        if fresh {
+            add(&mut item.active)?;
+            if let Some(summary) = &mut item.item.summary {
+                add(&mut summary.member_count)?;
+                let cat = category(&atom);
+                if let Some(count) = summary
+                    .categories
+                    .iter_mut()
+                    .find(|count| count.category == cat)
+                {
+                    add(&mut count.count)?;
+                } else {
+                    summary.categories.push(TimelineCategoryCount {
+                        category: cat,
+                        count: 1,
+                    });
+                    summary.categories.sort_by_key(|count| count.category);
+                }
+            }
+        }
+        if terminal {
+            item.active = item.active.checked_sub(1).ok_or_else(overflow)?;
+            item.ready_key = item.ready_key.max(ended);
+            if item.last_terminal.is_none_or(|previous| ended >= previous) {
+                item.last_terminal = Some(ended);
+                item.item.finished_at = atom.finished_at;
+            }
+        } else {
+            self.active.insert(
+                atom.id.clone(),
+                ActiveMember {
+                    item_id: item.item.id.clone(),
+                    order,
+                    atom: active_head(&atom),
+                },
+            );
+        }
+        if let Some(summary) = &mut item.item.summary {
+            summary.active_count = item.active;
+            summary.finished_at = item.item.finished_at;
+            match outcome(&atom) {
+                Some(ChatTerminalOutcome::Failed) => add(&mut summary.failed_count)?,
+                Some(ChatTerminalOutcome::Cancelled) => add(&mut summary.cancelled_count)?,
+                _ => {}
+            }
+            // A background result is its own closed source segment. Its real
+            // terminal can commit independently of any foreground source prefix.
+            if terminal && matches!(atom.source, ChatSourceId::BackgroundResult { .. }) {
+                item.item.admission_closed = true;
+            }
+        } else {
+            item.item.atom_kind = Some(atom.kind);
+            item.item.delivery = atom.delivery;
+            item.item.text_channel = atom.text_channel;
+            item.item.outcome = outcome(&atom);
+            item.item.contents = atom.contents.clone();
+            item.item.content_item_id = atom.completion_item_id.clone();
+            item.item.payload = payload.or(atom.payload.clone());
+            item.empty = atom.content_present == Some(false);
+            item.item.admission_closed = terminal;
+        }
+        self.facts.push(lightweight(&atom));
+        if item.item.kind == TimelineItemKind::WorkGroup {
+            let change = MemberChange {
+                item_id: item.item.id.clone(),
+                member_order: order,
+                atom: if terminal {
+                    lightweight(&atom)
+                } else {
+                    active_head(&atom)
+                },
+                payload_bytes,
+            };
+            self.changes.push(change);
+        }
+        self.refresh_ready(index);
+        Ok(())
+    }
+    fn append_background_result(
+        &mut self,
+        atom: ChatAtom,
+        payload: Option<PayloadData>,
+    ) -> Result<(), ProjectionError> {
+        let tail = self
+            .background_tail
+            .as_mut()
+            .expect("checked background tail");
+        let order = tail.next_member;
+        tail.next_member = order.checked_add(1).ok_or_else(overflow)?;
+        extend_background_head(&mut tail.item, &atom)?;
+        let payload_bytes = match payload.as_ref().or(atom.payload.as_ref()) {
+            Some(PayloadData::Inline { bytes }) => Some(bytes.len() as u64),
+            Some(PayloadData::Deferred { byte_length, .. }) => Some(*byte_length),
+            None => None,
+        };
+        self.changes.push(MemberChange {
+            item_id: tail.item.id.clone(),
+            member_order: order,
+            atom: lightweight(&atom),
+            payload_bytes,
+        });
+        self.facts.push(lightweight(&atom));
+        // Within one undrained effect, publish the latest header only once.
+        if let Some(item) = self
+            .committed
+            .iter_mut()
+            .find(|item| item.id == tail.item.id)
+        {
+            *item = tail.item.clone();
+        } else if let Some(item) = self.updates.iter_mut().find(|item| item.id == tail.item.id) {
+            *item = tail.item.clone();
+        } else {
+            self.updates.push(tail.item.clone());
+        }
+        Ok(())
+    }
+    fn refresh_ready(&mut self, index: u64) {
+        let item = &self.items[&index];
+        let eligible = item.item.kind == TimelineItemKind::Status
+            || self
+                .sources
+                .get(&item.item.source)
+                .and_then(|items| items.first_key_value())
+                .is_some_and(|(key, _)| *key == item.source_key());
+        if eligible && item.ready() {
+            self.ready.insert((item.ready_key, index));
+        }
+    }
+    fn insert_item(&mut self, item: LiveItem) -> Result<u64, ProjectionError> {
+        let index = self.next_item;
+        self.next_item = index.checked_add(1).ok_or_else(overflow)?;
+        if item.item.kind != TimelineItemKind::Status {
+            let key = item.source_key();
+            let source = self.sources.entry(item.item.source.clone()).or_default();
+            if let Some((first, bucket)) = source.first_key_value()
+                && key < *first
+            {
+                for old in bucket {
+                    self.ready.remove(&(self.items[old].ready_key, *old));
+                }
+            }
+            source.entry(key).or_default().insert(index);
+        }
+        self.item_ids.insert(item.item.id.clone(), index);
+        self.items.insert(index, item);
+        self.refresh_ready(index);
+        Ok(index)
+    }
+    fn remove_item(&mut self, index: u64) -> LiveItem {
+        let item = self.items.remove(&index).expect("ready item exists");
+        self.item_ids.remove(&item.item.id);
+        if item.item.kind != TimelineItemKind::Status {
+            let source = self
+                .sources
+                .get_mut(&item.item.source)
+                .expect("indexed source");
+            let key = item.source_key();
+            let bucket = source.get_mut(&key).expect("indexed source position");
+            bucket.remove(&index);
+            if bucket.is_empty() {
+                source.remove(&key);
+                if let Some((_, next)) = source.first_key_value() {
+                    let next: Vec<_> = next.iter().copied().collect();
+                    for index in next {
+                        self.refresh_ready(index);
+                    }
+                } else {
+                    self.sources.remove(&item.item.source);
+                }
+            }
+        }
+        item
+    }
+    fn close_groups(&mut self, source: &ChatSourceId, at: Option<FactKey>) {
+        let indices: Vec<_> = self
+            .sources
+            .get(source)
+            .into_iter()
+            .flat_map(|items| items.values())
+            .flatten()
+            .copied()
+            .collect();
+        for index in indices {
+            let item = self.items.get_mut(&index).expect("indexed source item");
+            if item.item.kind == TimelineItemKind::WorkGroup && !item.item.admission_closed {
+                self.retained_bytes.take();
+                self.ready.remove(&(item.ready_key, index));
+                item.item.admission_closed = true;
+                if let Some(at) = at {
+                    item.ready_key = item.ready_key.max(at);
+                }
+                self.refresh_ready(index);
+            }
+        }
+    }
+    fn close_group_for(&mut self, source: &ChatSourceId, at: FactKey) {
+        self.close_groups(source, Some(at));
+    }
+    pub(in crate::studio) fn end_source(&mut self, source: &ChatSourceId) {
+        self.close_groups(source, None);
+    }
+    pub(in crate::studio) fn commit_ready(&mut self) -> Result<(), ProjectionError> {
+        while let Some(&(ready_key, index)) = self.ready.first() {
+            let item = &self.items[&index];
+            let visible = item.item.kind != TimelineItemKind::Text
+                || (!item.empty
+                    && !(item.item.content_item_id.is_none()
+                        && item.item.outcome == Some(ChatTerminalOutcome::Cancelled)));
+            let next = if visible {
+                Some(
+                    self.next_position
+                        .checked_add(1)
+                        .filter(|next| *next <= i64::MAX as u64)
+                        .ok_or_else(overflow)?,
+                )
+            } else {
+                None
+            };
+            self.ready.remove(&(ready_key, index));
+            self.retained_bytes.take();
+            let mut live = self.remove_item(index);
+            if live.item.kind == TimelineItemKind::WorkGroup {
+                self.finished_groups.push(live.item.id.clone());
+            }
+            if !visible {
+                continue;
+            }
+            live.item.position = Some(self.next_position);
+            live.item.admission_closed = true;
+            self.next_position = next.expect("visible item has a validated position");
+            self.background_tail = (live.item.kind == TimelineItemKind::WorkGroup
+                && matches!(live.item.source, ChatSourceId::BackgroundResult { .. }))
+            .then(|| BackgroundTail {
+                item: live.item.clone(),
+                next_member: live.next_member,
+            });
+            self.committed.push(live.item);
+        }
+        Ok(())
+    }
+    pub(in crate::studio) fn current_items(&self) -> Vec<TimelineItem> {
+        let mut streams: Vec<VecDeque<u64>> = self
+            .sources
+            .values()
+            .map(|items| items.values().flatten().copied().collect())
+            .collect();
+        let mut next = BTreeSet::new();
+        for (stream, items) in streams.iter_mut().enumerate() {
+            if let Some(index) = items.pop_front() {
+                next.insert((self.items[&index].anchor, index, stream));
+            }
+        }
+        for (index, item) in &self.items {
+            if item.item.kind == TimelineItemKind::Status {
+                next.insert((item.anchor, *index, usize::MAX));
+            }
+        }
+        let mut result = Vec::with_capacity(self.items.len());
+        while let Some((_, index, stream)) = next.pop_first() {
+            result.push(self.items[&index].item.clone());
+            if stream != usize::MAX
+                && let Some(index) = streams[stream].pop_front()
+            {
+                next.insert((self.items[&index].anchor, index, stream));
+            }
+        }
+        result
+    }
+    pub(in crate::studio) fn take_committed(&mut self) -> Vec<TimelineItem> {
+        if !self.committed.is_empty() {
+            self.retained_bytes.take();
+        }
+        std::mem::take(&mut self.committed)
+    }
+    fn recovery(&self) -> Result<Vec<u8>, ProjectionError> {
+        let recovery = serde_json::to_vec(&RecoveryView {
+            items: &self.items,
+            active: &self.active,
+        })
+        .map_err(|e| ProjectionError::History(e.to_string()))?;
+        if recovery.len() > CHAT_BATCH_MAX_BYTES as usize {
+            return Err(ProjectionError::History(
+                "timeline recovery exceeds current budget".into(),
+            ));
+        }
+        Ok(recovery)
+    }
+    pub(in crate::studio) fn check_recovery_budget(&self) -> Result<(), ProjectionError> {
+        self.recovery().map(drop)
+    }
+    pub(in crate::studio) fn take_update(&mut self) -> Result<TimelineUpdate, ProjectionError> {
+        let recovery = self.recovery()?;
+        let mut update = self.take_changes();
+        update.current = self.current_items();
+        update.recovery = recovery;
+        update.frontier = self.freeze_frontier()?;
+        Ok(update)
+    }
+    /// Migration drains ordered deltas without freezing the unchanged full head.
+    /// Its caller writes the final complete head in the same migration transaction.
+    pub(in crate::studio) fn take_changes(&mut self) -> TimelineUpdate {
+        if !self.facts.is_empty() || !self.changes.is_empty() || !self.finished_groups.is_empty() {
+            self.retained_bytes.take();
+        }
+        let mut completed_members = self
+            .members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .freeze(&self.finished_groups, &self.changes);
+        completed_members.extend(
+            self.changes
+                .iter()
+                .filter(|member| {
+                    matches!(member.atom.source, ChatSourceId::BackgroundResult { .. })
+                        && matches!(member.atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+                        && !self.finished_groups.contains(&member.item_id)
+                })
+                .cloned(),
+        );
+        TimelineUpdate {
+            facts: std::mem::take(&mut self.facts),
+            members: std::mem::take(&mut self.changes),
+            updates: std::mem::take(&mut self.updates),
+            current: Vec::new(),
+            recovery: Vec::new(),
+            next_position: self.next_position,
+            generation: self.generation.clone(),
+            completed_members,
+            frontier: Vec::new(),
+            finished_groups: std::mem::take(&mut self.finished_groups),
+        }
+    }
+}

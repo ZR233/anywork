@@ -178,6 +178,26 @@ impl ReadOwners {
         fingerprint: Option<&str>,
         cancel: Option<&CancellationToken>,
     ) -> Result<(ConversationReader, ChatBatch)> {
+        self.open_scoped(
+            runtime,
+            session,
+            ChatScope::Main,
+            demand,
+            fingerprint,
+            cancel,
+        )
+        .await
+    }
+
+    async fn open_scoped(
+        &self,
+        runtime: &StudioRuntime,
+        session: &str,
+        scope: ChatScope,
+        demand: ReadDemand,
+        fingerprint: Option<&str>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(ConversationReader, ChatBatch)> {
         let _open = tokio::select! { biased; _=self.stopping.cancelled()=>return Err(stale_scope()),open=self.opens.read()=>open };
         if self.stopping.is_cancelled() {
             return Err(stale_scope());
@@ -190,7 +210,7 @@ impl ReadOwners {
         let feed = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
             _=cancelled(cancel)=>return Err(search_cancelled()),
-            result=runtime.open_conversation_feed(session, ChatScope::Main, demand)=>result?,
+            result=runtime.open_conversation_feed(session, scope, demand)=>result?,
         };
         let reader = feed.reader().clone();
         let resource = Arc::new(ReadResource {
@@ -321,6 +341,8 @@ impl ReadOwners {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReadInput {
     session_id: String,
+    #[schemars(with = "Option<serde_json::Value>")]
+    scope: Option<ChatScope>,
     read_scope: Option<String>,
     before: Option<String>,
     #[schemars(with = "Option<serde_json::Value>")]
@@ -334,6 +356,8 @@ pub(super) struct ReadInput {
     #[schemars(with = "Option<serde_json::Value>")]
     range: Option<ContentRange>,
     #[serde(default)]
+    read_business_refs: bool,
+    #[serde(default)]
     close_read_scope: bool,
 }
 pub(super) fn read_schema() -> serde_json::Value {
@@ -342,7 +366,28 @@ pub(super) fn read_schema() -> serde_json::Value {
         "maxItems":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_READ_MAX_ITEMS},
         "maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
     schema["properties"]["reference"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy the canonical ContentRef from the Chat envelope or manifest unchanged."},{"type":"null"}]});
-    schema["properties"]["collection"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a CurrentCollectionRef from this readScope's Chat.current unchanged; demand and continuation select a bounded page."},{"type":"null"}]});
+    schema["properties"]["scope"] = serde_json::json!({
+        "description": "Select only when opening a scope; omit for Main. Copy a returned run reference unchanged. Children requires a real encoded business parentId, not a display run.",
+        "anyOf": [
+            {"type":"object","required":["kind"],"additionalProperties":false,
+             "properties":{"kind":{"type":"string","enum":["main"]}}},
+            {"type":"object","required":["kind","reference"],"additionalProperties":false,
+             "properties":{"kind":{"type":"string","enum":["run"]},
+                "reference":{"type":"object","required":["databaseId","indexVersion","startSeq"],
+                    "additionalProperties":false,"properties":{
+                        "databaseId":{"type":"string","minLength":1},
+                        "indexVersion":{"type":"integer","enum":[pl_protocol::COMPLETED_READ_INDEX_VERSION]},
+                        "startSeq":{"type":"integer","minimum":1,"maximum":i64::MAX}}}}},
+            {"type":"object","required":["kind","parentId"],"additionalProperties":false,
+             "properties":{"kind":{"type":"string","enum":["children"]},
+                "parentId":{"type":"string","minLength":1}}},
+            {"type":"null"}
+        ]
+    });
+    schema["properties"]["collection"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a canonical CurrentCollectionRef unchanged; demand and continuation select a bounded page."},{"type":"null"}]});
+    schema["properties"]["readBusinessRefs"]["description"] = serde_json::json!(
+        "Read the current Plan and interaction resource heads on this readScope; no demand or content cursor is required."
+    );
     schema["properties"]["range"] = serde_json::json!({"anyOf":[{"type":"object","required":["offset","maxBytes"],"additionalProperties":false,"properties":{
         "offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CONTENT_WINDOW_MAX_BYTES}}},{"type":"null"}]});
     schema
@@ -382,48 +427,149 @@ pub(super) async fn get(
         .get(reader.subscription_id())
         .cloned()
         .ok_or_else(stale_scope)?;
-    let result=async {
-        let current=batch.current.context("Main Set has no current")?;
-        let snapshot=match resource.feed.lock().await.recv().await? {
-            Some(crate::studio::ConversationEvent::State { update })=>match *update {
-                pl_protocol::ThreadSubscriptionUpdate::Snapshot { snapshot }=>snapshot,
-                _=>anyhow::bail!("Get did not receive the registered State baseline"),
-            },
-            _=>anyhow::bail!("Get did not receive the registered State baseline"),
-        };
-        let mut pending=Vec::new();let mut pending_more=false;
-        if let Some(reference)=current.interactions.as_ref() {
-            let page=reader.page_current(reference,None,ReadDemand { max_items:32,max_bytes:64*1024 }).await?;
-            pending_more=page.continuation.is_some();
+    let result = async {
+        let (baseline, activity) = initial_state_activity(&resource, batch.through_seq).await?;
+        // Get is a one-shot business query, including the original small
+        // runtime/activity summary. It does not refresh a GUI subscription.
+        let snapshot = runtime.thread_snapshot(session).await?;
+        ensure!(
+            baseline.thread.id == snapshot.thread.id,
+            "Get state identity conflict"
+        );
+        // A one-shot content tool reads the same domain heads that State
+        // publishes. Activity and history do not confer interaction authority.
+        let references = reader.read_business_refs().await?;
+        let mut pending = Vec::new();
+        let mut pending_more = false;
+        if let Some(reference) = &references.interactions {
+            let page = reader
+                .page_current(
+                    reference,
+                    None,
+                    ReadDemand {
+                        max_items: 32,
+                        max_bytes: 64 * 1024,
+                    },
+                )
+                .await?;
+            pending_more = page.continuation.is_some();
             for entry in page.entries {
-                let interaction=match entry.payload {
-                    pl_protocol::PayloadData::Inline { bytes }=>serde_json::from_slice::<pl_protocol::InteractionRequest>(&bytes).ok(),
-                    pl_protocol::PayloadData::Deferred { .. }=>None,
+                let interaction =
+                    match entry.payload {
+                        pl_protocol::PayloadData::Inline { bytes } => Some(
+                            serde_json::from_slice::<pl_protocol::InteractionRequest>(&bytes)?,
+                        ),
+                        pl_protocol::PayloadData::Deferred { .. } => None,
+                    };
+                let value = if let Some(interaction) = interaction {
+                    let kind = match &interaction.content {
+                        pl_protocol::InteractionContent::UserInput(_) => "userInput",
+                        pl_protocol::InteractionContent::ToolApproval(_) => "toolApproval",
+                    };
+                    serde_json::json!({"interactionId":interaction.interaction_id,"kind":kind,
+                        "revision":interaction.revision,"scope":interaction.scope,
+                        "summary":super::interaction_summary(&interaction.content)})
+                } else {
+                    serde_json::json!({"interactionId":entry.id,"detailsDeferred":true})
                 };
-                let value=if let Some(interaction)=interaction {
-                    let kind=match &interaction.content { pl_protocol::InteractionContent::UserInput(_)=>"userInput",pl_protocol::InteractionContent::ToolApproval(_)=>"toolApproval" };
-                    serde_json::json!({"interactionId":interaction.interaction_id,"kind":kind,"revision":interaction.revision,
-                        "scope":interaction.scope,"summary":super::interaction_summary(&interaction.content)})
-                } else { serde_json::json!({"interactionId":entry.id,"detailsDeferred":true}) };
                 pending.push(value);
             }
         }
-        let execution=batch.entries.into_iter().rev().filter_map(|entry| {
-            let pl_protocol::ChatEntry::Item(item) = entry else { return None; };
-            Some(serde_json::json!({"id":item.id,"kind":item.kind,"turnId":item.turn_id,
-                "startedAt":item.started_at,"finishedAt":item.finished_at,"outcome":item.outcome,"summary":item.summary}))
-        }).take(4).collect::<Vec<_>>();
-        // No ContentRef/collection continuation escapes this short-lived Get qualification.
-        output(&serde_json::json!({"thread":snapshot.thread,"activeTurn":current.active_turn,"activity":current.active,
-            "logicalStatus":current.logical_status,"executionPresent":current.execution_present,
-            "plan":current.plan.map(|plan|serde_json::json!({"revision":plan.revision,"phase":plan.phase})),
+        let execution = batch
+            .entries
+            .into_iter()
+            .rev()
+            .take(4)
+            .map(|entry| {
+                let atom = entry.atom;
+                let outcome = match &atom.lifecycle {
+                    pl_protocol::ChatAtomLifecycle::Terminal { outcome, .. } => Some(*outcome),
+                    pl_protocol::ChatAtomLifecycle::Active { .. } => None,
+                };
+                serde_json::json!({"id":entry.record_id,"kind":atom.kind,"turnId":atom.turn_id,
+                "startedAt":atom.started_at,"finishedAt":atom.finished_at,"outcome":outcome,
+                "mainPresentation":entry.main_presentation,"tool":atom.tool})
+            })
+            .collect::<Vec<_>>();
+        let plan = references
+            .plan
+            .map(|plan| serde_json::json!({"revision":plan.revision,"phase":plan.phase}));
+        output(
+            &serde_json::json!({"thread":snapshot.thread,"activeTurn":snapshot.active_turn,
+            "activity":snapshot.activity,"logicalStatus":snapshot.thread.status,
+            "executionPresent":activity.execution_present,"plan":plan,
             "model":snapshot.model_route,"storage":snapshot.storage,
-            "pending":pending,"pendingHasMore":pending_more,"recentExecution":execution}))
-    }.await;
-    owners.close(reader.subscription_id()).await?;
-    result
+            "pending":pending,"pendingHasMore":pending_more,"recentExecution":execution}),
+        )
+    }
+    .await;
+    operation_and_cleanup(result, owners.close(reader.subscription_id()).await)
 }
 
+async fn initial_state_activity(
+    resource: &ReadResource,
+    through_seq: u64,
+) -> Result<(
+    Box<pl_protocol::ThreadSnapshot>,
+    Arc<pl_protocol::ActivitySnapshot>,
+)> {
+    let mut feed = resource.feed.lock().await;
+    let snapshot =
+        match feed.recv().await? {
+            Some(crate::studio::ConversationEvent::State { update }) => {
+                match *update {
+                    pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                        completed_history_version,
+                        snapshot,
+                    } => {
+                        ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                    pl_protocol::studio::StudioError::new(
+                        pl_protocol::studio::StudioErrorCode::InvalidArgument,
+                        "Unsupported completed history version", false,
+                    ).with_reason(pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+                        serde_json::json!({"expected":pl_protocol::COMPLETED_HISTORY_VERSION,
+                            "actual":completed_history_version})));
+                        ensure!(
+                            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+                            pl_protocol::studio::StudioError::new(
+                                pl_protocol::studio::StudioErrorCode::InvalidArgument,
+                                "Unsupported State schema version",
+                                false,
+                            )
+                            .with_reason(
+                                pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+                                serde_json::json!({"expected":pl_protocol::THREAD_SCHEMA_VERSION,
+                                    "actual":snapshot.schema_version})
+                            )
+                        );
+                        snapshot
+                    }
+                    _ => anyhow::bail!("unsupported or missing completed State baseline"),
+                }
+            }
+            _ => anyhow::bail!("missing registered State baseline"),
+        };
+    loop {
+        match feed.recv().await? {
+            Some(crate::studio::ConversationEvent::Activity { snapshot: activity }) => {
+                ensure!(
+                    activity.completed_through == through_seq,
+                    "initial Activity completion prefix conflict"
+                );
+                return Ok((snapshot, activity));
+            }
+            // Cold/retained real terminal notifications can follow the baseline.
+            Some(crate::studio::ConversationEvent::State { update })
+                if matches!(
+                    *update,
+                    pl_protocol::ThreadSubscriptionUpdate::Notification { .. }
+                ) => {}
+            _ => anyhow::bail!("missing initial Activity snapshot"),
+        }
+    }
+}
+
+#[cfg(test)]
 async fn text_reference(reader: &ConversationReader, item: &str) -> Result<Option<ContentRef>> {
     let page = reader
         .list_contents(
@@ -447,6 +593,10 @@ pub(super) async fn read(
     owners: &ReadOwners,
     args: ReadInput,
 ) -> Result<pl_core::tool::ToolOutput> {
+    ensure!(
+        args.read_scope.is_none() || args.scope.is_none(),
+        "scope is only accepted when opening a read scope"
+    );
     if args.close_read_scope {
         let id = args
             .read_scope
@@ -454,7 +604,17 @@ pub(super) async fn read(
         owners.close_target(&id, &args.session_id).await?;
         return output(&serde_json::json!({"readScope":id,"closed":true}));
     }
-    if args.reference.is_some() {
+    if args.read_business_refs {
+        ensure!(
+            args.reference.is_none()
+                && args.range.is_none()
+                && args.before.is_none()
+                && args.continuation.is_none()
+                && args.item_id.is_none()
+                && args.collection.is_none(),
+            "business head reads do not accept content or page selectors"
+        );
+    } else if args.reference.is_some() {
         ensure!(
             args.range.is_some()
                 && args.before.is_none()
@@ -488,13 +648,37 @@ pub(super) async fn read(
             return Err(stale_scope());
         }
         let (reader, page) = owners
-            .open(runtime, &args.session_id, page_demand, None, None)
+            .open_scoped(
+                runtime,
+                &args.session_id,
+                args.scope.unwrap_or(ChatScope::Main),
+                page_demand,
+                None,
+                None,
+            )
             .await?;
         (reader, Some(page))
     };
     let id = reader.subscription_id();
     let created = initial.is_some();
     let result = async {
+        if args.read_business_refs {
+            let references = reader.read_business_refs().await?;
+            if let Some(batch) = initial {
+                let resource = owners
+                    .readers
+                    .lock()
+                    .await
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(stale_scope)?;
+                let (state, activity) =
+                    initial_state_activity(&resource, batch.through_seq).await?;
+                return output(&serde_json::json!({"readScope":id,"chat":batch,
+                    "state":state,"activity":activity,"businessRefs":references}));
+            }
+            return output(&serde_json::json!({"readScope":id,"businessRefs":references}));
+        }
         if let Some(reference) = args.reference {
             ensure!(
                 args.before.is_none() && args.continuation.is_none() && args.item_id.is_none(),
@@ -543,7 +727,21 @@ pub(super) async fn read(
         } else {
             initial.context("an existing read scope requires before, itemId or reference")?
         };
-        output(&serde_json::json!({"readScope":id,"chat":batch}))
+        if created {
+            let resource = owners
+                .readers
+                .lock()
+                .await
+                .get(id)
+                .cloned()
+                .ok_or_else(stale_scope)?;
+            let (state, activity) = initial_state_activity(&resource, batch.through_seq).await?;
+            output(
+                &serde_json::json!({"readScope":id,"chat":batch,"state":state,"activity":activity}),
+            )
+        } else {
+            output(&serde_json::json!({"readScope":id,"chat":batch}))
+        }
     }
     .await;
     if result.is_err() && created {
@@ -583,6 +781,17 @@ struct Cursor {
     read_scope_id: Option<String>,
     before: Option<String>,
     pending: Option<PendingText>,
+    #[serde(default)]
+    run: Option<RunCursor>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunCursor {
+    read_scope_id: String,
+    before: Option<String>,
+    next_main_before: Option<String>,
+    end_of_session: bool,
+    through_seq: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -595,6 +804,7 @@ struct PendingText {
     utf8_tail: Vec<u8>,
     next_before: Option<String>,
     end_of_session: bool,
+    manifest_continuation: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -643,7 +853,12 @@ pub(super) async fn search(
             ..Default::default()
         },
     };
-    let borrowed = cursor.read_scope_id.clone();
+    let borrowed = cursor
+        .read_scope_id
+        .iter()
+        .chain(cursor.run.iter().map(|run| &run.read_scope_id))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut opened = Vec::new();
     let operation = async {
         let needle = args.query.to_lowercase();
@@ -684,7 +899,7 @@ pub(super) async fn search(
                 .session_id
                 .clone()
                 .context("search session missing")?;
-            let (reader, initial) = match cursor.read_scope_id.as_deref() {
+            let (mut reader, initial) = match cursor.read_scope_id.as_deref() {
                 Some(id) => (
                     owners
                         .get(id, &session_id, Some(&cursor.fingerprint))
@@ -704,8 +919,25 @@ pub(super) async fn search(
                     let id = reader.subscription_id().to_owned();
                     opened.push(id.clone());
                     cursor.read_scope_id = Some(id);
+                    let resource = owners
+                        .readers
+                        .lock()
+                        .await
+                        .get(reader.subscription_id())
+                        .cloned()
+                        .ok_or_else(stale_scope)?;
+                    search_read(cancel, initial_state_activity(&resource, page.through_seq))
+                        .await?;
                     (reader, Some(page))
                 }
+            };
+            let initial = if let Some(run) = &cursor.run {
+                reader = owners
+                    .get(&run.read_scope_id, &session_id, Some(&cursor.fingerprint))
+                    .await?;
+                None
+            } else {
+                initial
             };
             #[cfg(test)]
             search_read(cancel, async {
@@ -716,49 +948,102 @@ pub(super) async fn search(
             })
             .await?;
             if cursor.pending.is_none() {
-                let page = if let Some(page) = initial {
+                let before = cursor
+                    .run
+                    .as_ref()
+                    .and_then(|run| run.before.as_deref())
+                    .or(cursor.before.as_deref());
+                let mut page = if let Some(page) = initial {
                     page
-                } else if let Some(before) = cursor.before.as_deref() {
+                } else if let Some(before) = before {
                     search_read(cancel, reader.load_older(before, demand(1)?)).await?
                 } else {
                     anyhow::bail!("search lost its original exclusive boundary");
                 };
+                if cursor.run.is_none()
+                    && let Some(entry) = page.entries.first()
+                    && matches!(
+                        entry.main_presentation,
+                        pl_protocol::MainPresentation::ForegroundWork
+                            | pl_protocol::MainPresentation::BackgroundResults
+                    )
+                {
+                    let Some(pl_protocol::PayloadData::Deferred { reference, .. }) =
+                        &entry.atom.payload
+                    else {
+                        anyhow::bail!("work representative has no canonical database reference");
+                    };
+                    let run = entry.run.context("work representative has no run index")?;
+                    let (run_reader, first) = owners
+                        .open_scoped(
+                            runtime,
+                            &session_id,
+                            ChatScope::Run {
+                                reference: pl_protocol::CompletionRunRef {
+                                    database_id: reference.database_id.clone(),
+                                    index_version: pl_protocol::COMPLETED_READ_INDEX_VERSION,
+                                    start_seq: run.start_seq,
+                                },
+                            },
+                            demand(1)?,
+                            Some(&cursor.fingerprint),
+                            Some(cancel),
+                        )
+                        .await?;
+                    let id = run_reader.subscription_id().to_owned();
+                    opened.push(id.clone());
+                    let resource = owners
+                        .readers
+                        .lock()
+                        .await
+                        .get(&id)
+                        .cloned()
+                        .ok_or_else(stale_scope)?;
+                    search_read(cancel, initial_state_activity(&resource, first.through_seq))
+                        .await?;
+                    cursor.run = Some(RunCursor {
+                        read_scope_id: id,
+                        before: None,
+                        next_main_before: page.before.clone(),
+                        end_of_session: page.before.is_none(),
+                        through_seq: page.through_seq,
+                    });
+                    reader = run_reader;
+                    page = first;
+                }
                 let end = page.before.is_none();
-                let Some(item) = page.entries.iter().find_map(|entry| match entry {
-                    pl_protocol::ChatEntry::Item(item) if item.content_item_id.is_some() => {
-                        Some(item)
-                    }
-                    _ => None,
+                let Some(item) = page.entries.first().filter(|entry| {
+                    cursor
+                        .run
+                        .as_ref()
+                        .is_none_or(|run| entry.completion_seq <= run.through_seq)
                 }) else {
                     advance(&mut cursor, page.before, end);
                     continue;
                 };
-                let Some(reference) = search_read(
+                let manifest = search_read(
                     cancel,
-                    text_reference(
-                        &reader,
-                        item.content_item_id
-                            .as_deref()
-                            .context("completed item owner")?,
-                    ),
+                    reader.list_contents(&item.record_id, None, demand(1)?),
                 )
-                .await?
-                else {
+                .await?;
+                let Some(content) = manifest.entries.into_iter().next() else {
+                    ensure!(
+                        manifest.continuation.is_none(),
+                        "empty manifest did not advance"
+                    );
                     advance(&mut cursor, page.before, end);
                     continue;
                 };
                 cursor.pending = Some(PendingText {
-                    item_id: item
-                        .content_item_id
-                        .clone()
-                        .context("completed item owner")?,
-                    reference,
+                    item_id: item.record_id.clone(),
+                    reference: content.reference,
                     offset: 0,
                     generation: None,
                     overlap: String::new(),
                     utf8_tail: Vec::new(),
                     next_before: page.before,
                     end_of_session: end,
+                    manifest_continuation: manifest.continuation,
                 });
             }
             let mut pending = cursor.pending.take().context("search text missing")?;
@@ -782,7 +1067,7 @@ pub(super) async fn search(
             );
             pending.generation = Some(window.generation);
             pending.offset += window.bytes.len() as u64;
-            let mut bytes = pending.utf8_tail;
+            let mut bytes = std::mem::take(&mut pending.utf8_tail);
             bytes.extend_from_slice(&window.bytes);
             let (valid, tail) = match std::str::from_utf8(&bytes) {
                 Ok(text) => (text, Vec::new()),
@@ -792,7 +1077,7 @@ pub(super) async fn search(
                 }
                 Err(error) => return Err(error.into()),
             };
-            let text = pending.overlap + valid;
+            let text = std::mem::take(&mut pending.overlap) + valid;
             if let Some(snippet) = matched_snippet(&text, &needle) {
                 matches.push(Match {
                     session_id,
@@ -814,7 +1099,32 @@ pub(super) async fn search(
                 cursor.pending = Some(pending);
             } else {
                 ensure!(tail.is_empty(), "sealed text ends with incomplete UTF-8");
-                advance(&mut cursor, pending.next_before, pending.end_of_session);
+                if let Some(continuation) = pending.manifest_continuation.take() {
+                    let manifest = search_read(
+                        cancel,
+                        reader.list_contents(&pending.item_id, Some(&continuation), demand(1)?),
+                    )
+                    .await?;
+                    ensure!(
+                        manifest.continuation.as_deref() != Some(continuation.as_str()),
+                        "manifest cursor did not advance"
+                    );
+                    if let Some(content) = manifest.entries.into_iter().next() {
+                        pending.reference = content.reference;
+                        pending.offset = 0;
+                        pending.generation = None;
+                        pending.manifest_continuation = manifest.continuation;
+                        cursor.pending = Some(pending);
+                    } else {
+                        ensure!(
+                            manifest.continuation.is_none(),
+                            "empty manifest did not advance"
+                        );
+                        advance(&mut cursor, pending.next_before, pending.end_of_session);
+                    }
+                } else {
+                    advance(&mut cursor, pending.next_before, pending.end_of_session);
+                }
             }
             if matches.len() >= 10 {
                 break;
@@ -835,7 +1145,7 @@ pub(super) async fn search(
                     cursor
                         .read_scope_id
                         .as_deref()
-                        .or(borrowed.as_deref())
+                        .or(borrowed.first().map(String::as_str))
                         .unwrap_or(""),
                 )
                 .await;
@@ -855,24 +1165,28 @@ pub(super) async fn search(
     };
     // Result encoding has succeeded. Commit retirement without cancelling joins. An input cursor
     // is borrowed until this boundary; new scopes belong to this call until its output is returned.
-    let keep = cursor.read_scope_id.as_deref();
+    let keep = cursor
+        .read_scope_id
+        .iter()
+        .chain(cursor.run.iter().map(|run| &run.read_scope_id))
+        .collect::<Vec<_>>();
     let retired = opened
         .iter()
-        .filter(|id| Some(id.as_str()) != keep)
+        .filter(|id| !keep.contains(id))
         .cloned()
         .collect::<Vec<_>>();
     let transferred = opened
         .iter()
-        .filter(|id| Some(id.as_str()) == keep)
+        .filter(|id| keep.contains(id))
         .cloned()
         .collect::<Vec<_>>();
     if let Err(error) = close_scopes(owners, &retired).await {
         return operation_and_cleanup(Err(error), close_scopes(owners, &transferred).await);
     }
-    if let Some(id) = borrowed.as_deref().filter(|id| Some(*id) != keep)
-        && let Err(error) = owners.close(id).await
-    {
-        return operation_and_cleanup(Err(error), close_scopes(owners, &transferred).await);
+    for id in borrowed.iter().filter(|id| !keep.contains(id)) {
+        if let Err(error) = owners.close(id).await {
+            return operation_and_cleanup(Err(error), close_scopes(owners, &transferred).await);
+        }
     }
     Ok(result)
 }
@@ -896,8 +1210,17 @@ async fn close_scopes(owners: &ReadOwners, ids: &[String]) -> Result<()> {
 }
 
 fn advance(cursor: &mut Cursor, before: Option<String>, end: bool) {
-    cursor.before = before;
     cursor.pending = None;
+    if let Some(run) = &mut cursor.run {
+        run.before = before;
+        if !end {
+            return;
+        }
+        let run = cursor.run.take().expect("owned run cursor");
+        advance(cursor, run.next_main_before, run.end_of_session);
+        return;
+    }
+    cursor.before = before;
     if end {
         cursor.session_id = None;
         cursor.read_scope_id = None;

@@ -2,58 +2,61 @@ import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/conversation/data/conversation_content_impl.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 
-import '../support/chat_fixtures.dart' show workItem;
+import '../support/chat_fixtures.dart'
+    show workItem, chatMessage, chatWorkspace;
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
-CurrentProjection _current(int source, {List<TimelineItem> items = const []}) =>
-    CurrentProjection(
-      sourceEffectSeq: source,
-      logicalStatus: ThreadStatusView.idle,
-      executionPresent: false,
-      sources: const [],
-      atoms: const [],
-      items: items,
-      previews: const [],
-      collections: const [],
-    );
-
-ChatBatch _batch(ChatPlacement placement, {int? current, String? before}) =>
+ChatBatch _batch(ChatPlacement placement, {int sequence = 1, String? before}) =>
     ChatBatch(
       placement: placement,
       entries: [
-        ItemChatEntry(
-          TimelineItem(
-            id: '${placement.name}:${current ?? before}',
-            source: const ForegroundTurnChatSource(turnId: 'turn'),
-            kind: TimelineItemKind.status,
-            atomKind: ChatAtomKind.receipt,
-            delivery: ChatDeliveryKind.independent,
-            admissionClosed: true,
-            contents: const [],
-            payload: InlinePayload(bytes: const [123, 125]),
-          ),
-        ),
+        chatMessage('${placement.name}:$sequence', completionSeq: sequence),
       ],
-      current: current == null ? null : _current(current),
       before: before,
+      fromSeq: placement == ChatPlacement.append ? sequence - 1 : null,
+      throughSeq: sequence,
+    );
+ActivitySnapshot _activity(int revision, {bool empty = false}) =>
+    ActivitySnapshot(
+      revision: revision,
+      completedThrough: 1,
+      executionPresent: true,
+      entries: empty
+          ? const []
+          : [
+              ActivityEntry(
+                identity: const ModelPartActivityIdentity(atomId: 'part'),
+                atom: ChatAtom(
+                  id: 'part',
+                  source: const ForegroundTurnChatSource(turnId: 'turn'),
+                  sourceOrder: 1,
+                  kind: ChatAtomKind.text,
+                  delivery: ChatDeliveryKind.foreground,
+                  lifecycle: const ActiveChatAtom(
+                    started: null,
+                    status: ChatActiveStatus.running,
+                  ),
+                  contents: const [],
+                ),
+              ),
+            ],
     );
 
 void main() {
   test('manifest and body queries never ACK a frame or automatically admit history', () async {
     final h = _Harness()..attach();
     final feed = await h.opened();
-    feed.send(
+    feed.sendScenario(
       1,
-      ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+      ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 1)),
     );
-    await feed.ack(1);
+    await feed.ackScenario(1);
     final scope = h.owner.openScope(generation: 1);
     final listing = scope.listContents(
       itemId: 'original-payload',
@@ -91,6 +94,7 @@ void main() {
     expect(feed.reader.loads, 0);
     expect(feed.acks, [
       1,
+      2,
     ], reason: 'Queries do not own feed credit or history admission');
     expect((await h.owner.close()).complete, isTrue);
   });
@@ -101,11 +105,11 @@ void main() {
       () async {
         final h = _Harness()..attach();
         final feed = await h.opened();
-        feed.send(
+        feed.sendScenario(
           1,
-          ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+          ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 1)),
         );
-        await feed.ack(1);
+        await feed.ackScenario(1);
         final scope = h.owner.openScope(generation: 1);
         const reference = ContentRef(
           databaseId: 'database',
@@ -144,46 +148,43 @@ void main() {
         await rejected;
         expect((await close).complete, isTrue);
         expect(h.consumer.batches, hasLength(1));
-        expect(feed.acks, [1]);
+        expect(feed.acks, [1, 2]);
         expect((await h.owner.close()).complete, isTrue);
       },
     );
   }
-  test('real serial ACK does not wait for a work group endpoint, body, expansion or layout', () async {
+  test('real serial ACK accepts an unfinished Run tail immediately without body reads or layout', () async {
     final h = _Harness();
     final controller = InMemoryChatController();
     final presentation = TimelineMessageController(controller, generation: 1);
     h.attach(presentation);
     final feed = await h.opened();
-    feed.send(
+    feed.sendScenario(
       1,
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.set,
-          entries: const [],
-          current: _current(
-            1,
-            items: [workItem('group', closed: false, active: 1, count: 1)],
-          ),
+          entries: [workItem('first', count: 1)],
+          throughSeq: 1,
         ),
       ),
     );
-    await feed.ack(1).timeout(const Duration(seconds: 2));
-    expect(presentation.live.value.single.item.summary!.memberCount, 1);
-    expect(controller.messages, isEmpty);
-    feed.send(
+    await feed.ackScenario(1).timeout(const Duration(seconds: 2));
+    final original = controller.messages.single;
+    feed.sendScenario(
       2,
       ConversationChatEvent(
         batch: ChatBatch(
           placement: ChatPlacement.append,
-          entries: [ItemChatEntry(workItem('group', count: 1))],
-          current: _current(2),
+          entries: [workItem('second', count: 2)],
+          fromSeq: 1,
+          throughSeq: 2,
         ),
       ),
     );
-    await feed.ack(2).timeout(const Duration(seconds: 2));
-    expect(presentation.live.value, isEmpty);
-    expect(controller.messages, hasLength(1));
+    await feed.ackScenario(2).timeout(const Duration(seconds: 2));
+    expect(controller.messages.single.id, original.id);
+    expect(feed.reader.loads, 0);
     expect((await h.owner.close()).complete, isTrue);
     presentation.dispose();
     controller.dispose();
@@ -194,7 +195,10 @@ void main() {
     h.consumer.block = accepting.future;
     h.attach();
     final feed = await h.opened();
-    feed.send(1, ConversationChatEvent(batch: _batch(ChatPlacement.set)));
+    feed.sendScenario(
+      1,
+      ConversationChatEvent(batch: _batch(ChatPlacement.set)),
+    );
     await h.consumer.entered.future;
     final scope = h.owner.openScope(generation: 1);
     final page = scope.loadOlder(before: 'before', demand: _demand);
@@ -222,9 +226,9 @@ void main() {
       h.consumer.block = initialAccepted.future;
       h.attach();
       final feed = await h.opened();
-      feed.send(
+      feed.sendScenario(
         1,
-        ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+        ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 1)),
       );
       await h.consumer.entered.future;
       final query = h.owner.openScope(generation: 1);
@@ -237,8 +241,8 @@ void main() {
       feed.reader.page.complete(_batch(ChatPlacement.prepend, before: 'older'));
       await Future<void>.delayed(Duration.zero);
       expect(h.consumer.batches.length, 1);
-      expect(h.owner.current.value, isNull);
-      expect(feed.acks, isEmpty);
+      expect(h.owner.activity.value, isNull);
+      expect(feed.acks, [1]);
       final pageAccepted = Completer<void>();
       h.consumer.block = pageAccepted.future;
       initialAccepted.complete();
@@ -253,39 +257,40 @@ void main() {
       expect(returned, isFalse);
       pageAccepted.complete();
       expect((await older).before, 'older');
-      expect(h.owner.current.value!.sourceEffectSeq, 1);
-      expect(feed.acks, [1]); // A query is not another transport delivery.
+      expect(h.consumer.batches.first.throughSeq, 1);
+      expect(feed.acks, [1, 2]); // A query is not another transport delivery.
       expect((await h.owner.close()).complete, isTrue);
     },
   );
 
-  test('current is published after acceptance; null retains, empty snapshot clears', () async {
+  test('Activity is published only after actual acceptance and a later empty snapshot clears it', () async {
     final h = _Harness()..attach();
     final feed = await h.opened();
-    feed.send(
+    feed.sendScenario(
       1,
-      ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+      ConversationChatEvent(batch: _batch(ChatPlacement.set)),
     );
-    await h.owner.ready;
-    await feed.ack(1);
+    await feed.ackScenario(1);
+    feed.sendScenario(2, ConversationActivityEvent(snapshot: _activity(1)));
+    await feed.ackScenario(2);
     final gate = Completer<void>();
     h.consumer.block = gate.future;
-    feed.send(
-      2,
-      ConversationChatEvent(batch: _batch(ChatPlacement.append, current: 2)),
-    );
+    feed.sendScenario(3, ConversationActivityEvent(snapshot: _activity(2)));
     await Future<void>.delayed(Duration.zero);
-    expect(h.owner.current.value!.sourceEffectSeq, 1);
-    expect(feed.acks, [1]);
+    expect(h.owner.activity.value!.revision, 1);
+    expect(feed.acks, [1, 2, 3]);
     gate.complete();
-    await feed.ack(2);
-    expect(h.owner.current.value!.sourceEffectSeq, 2);
-    feed.send(3, ConversationChatEvent(batch: _batch(ChatPlacement.append)));
-    await feed.ack(3);
-    expect(h.owner.current.value!.sourceEffectSeq, 2);
+    await feed.ackScenario(3);
+    expect(h.owner.activity.value!.revision, 2);
+    feed.sendScenario(
+      4,
+      ConversationActivityEvent(snapshot: _activity(3, empty: true)),
+    );
+    await feed.ackScenario(4);
+    expect(h.owner.activity.value!.entries, isEmpty);
+    expect(h.consumer.batches, hasLength(1));
     expect((await h.owner.close()).complete, isTrue);
   });
-
   for (final sequence in [0, 1]) {
     test('terminal sequence $sequence is classified without credit or ACK', () async {
       final h = _Harness();
@@ -294,19 +299,19 @@ void main() {
       h.attach();
       final feed = await h.opened();
       if (sequence == 1) {
-        feed.send(
+        feed.sendScenario(
           1,
-          ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+          ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 1)),
         );
         await h.consumer.entered.future;
       }
-      feed.send(sequence, const ConversationClosedEvent());
+      feed.sendScenario(sequence, const ConversationClosedEvent());
       await h.failed.future;
       // Even an accepted component operation cannot publish after this barrier.
       gate.complete();
       expect((await h.owner.close()).complete, isTrue);
-      expect(feed.acks, isEmpty);
-      expect(h.owner.current.value, isNull);
+      expect(feed.acks, [1]);
+      expect(h.owner.activity.value, isNull);
       expect(h.failures.single, isA<ConversationStreamEnded>());
     });
   }
@@ -319,9 +324,9 @@ void main() {
       h.consumer.block = gate.future;
       final lease = h.attach();
       final first = await h.opened();
-      first.send(
+      first.sendScenario(
         1,
-        ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 1)),
+        ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 1)),
       );
       await h.consumer.entered.future;
       lease.cancel();
@@ -330,15 +335,15 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       final second = h.transport.feeds.last;
       expect(identical(first, second), isFalse);
-      second.send(
+      second.sendScenario(
         1,
-        ConversationChatEvent(batch: _batch(ChatPlacement.set, current: 2)),
+        ConversationChatEvent(batch: _batch(ChatPlacement.set, sequence: 2)),
       );
-      await second.ack(1);
+      await second.ackScenario(1);
       gate.complete();
       await h.owner.joinRetired();
-      expect(h.owner.current.value!.sourceEffectSeq, 2);
-      expect(first.acks, isEmpty);
+      expect(next.batches.single.entries.single.completionSeq, 2);
+      expect(first.acks, [1]);
       expect((await h.owner.close()).complete, isTrue);
     },
   );
@@ -354,14 +359,18 @@ void main() {
         (h.transport.scopes.single as ChildrenChatScope).parentId,
         'turn:opaque',
       );
-      feed.send(
+      feed.sendScenario(
         1,
         ConversationChatEvent(
-          batch: ChatBatch(placement: ChatPlacement.set, entries: const []),
+          batch: ChatBatch(
+            placement: ChatPlacement.set,
+            entries: const [],
+            throughSeq: 0,
+          ),
         ),
       );
       await h.owner.ready;
-      expect(h.owner.current.value, isNull);
+      expect(h.owner.activity.value, isNull);
       expect(h.consumer.batches.single.entries, isEmpty);
       expect((await h.owner.close()).complete, isTrue);
     },
@@ -567,6 +576,7 @@ final class _Harness {
   Future<_Feed> opened() async {
     final feed = await transport.opened.future;
     await feed.listening.future;
+    await feed._wireAck(1);
     return feed;
   }
 
@@ -579,6 +589,11 @@ final class _Harness {
 }
 
 final class _Consumer implements ConversationBatchConsumer {
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    await block;
+  }
+
   final batches = <ChatBatch>[];
   final entered = Completer<void>();
   Future<void>? block;
@@ -625,19 +640,36 @@ final class _Feed implements ConversationFeed {
   int closes = 0;
   @override
   Stream<ConversationFrame> get events {
-    if (!listening.isCompleted) listening.complete();
+    if (!listening.isCompleted) {
+      controller.add(
+        ConversationFrame(
+          threadId: threadId,
+          subscriptionId: subscriptionId,
+          deliverySequence: 1,
+          event: ConversationStateEvent(
+            frame: ThreadSnapshotFrame(
+              workspace: chatWorkspace(threadId),
+              completedHistoryVersion: 1,
+              schemaVersion: threadSchemaVersion,
+            ),
+          ),
+        ),
+      );
+      listening.complete();
+    }
     return controller.stream;
   }
 
-  void send(int sequence, ConversationEvent event) => controller.add(
+  void sendScenario(int sequence, ConversationEvent event) => controller.add(
     ConversationFrame(
       threadId: threadId,
       subscriptionId: subscriptionId,
-      deliverySequence: sequence,
+      deliverySequence: sequence + 1,
       event: event,
     ),
   );
-  Future<void> ack(int sequence) => acks.contains(sequence)
+  Future<void> ackScenario(int sequence) => _wireAck(sequence + 1);
+  Future<void> _wireAck(int sequence) => acks.contains(sequence)
       ? Future.value()
       : (waiting[sequence] ??= Completer<void>()).future;
   @override
@@ -658,6 +690,14 @@ final class _Feed implements ConversationFeed {
 }
 
 final class _Reader implements ConversationReader {
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() async =>
+      const ThreadBusinessRefs(plan: null, interactions: null);
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) => throw UnimplementedError('Not part of this read fixture');
   @override
   String get threadId => 'thread';
   final page = Completer<ChatBatch>();

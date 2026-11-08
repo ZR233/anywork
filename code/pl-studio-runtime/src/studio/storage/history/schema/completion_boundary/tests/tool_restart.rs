@@ -15,7 +15,9 @@ use pl_core::{
 
 #[tokio::test]
 async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit() -> Result<()> {
+    eprintln!("tool recovery: creating runtime fixture");
     let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
+    eprintln!("tool recovery: runtime fixture ready");
     let result = async {
         let mut thread = pl_protocol::Thread::from(env.runtime.create_thread(
             &env.project.id, "migrated interrupted tool",
@@ -58,6 +60,7 @@ async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit()
         let original_manifest = rows(&db, "SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM conversation_contents WHERE content_key='tool.arguments'").await?;
         let original_chunks = rows(&db, "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM conversation_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?;
         prepare(&db,THREAD,Preparation::Schema,None).await?;
+        eprintln!("tool recovery: migration committed");
         assert_eq!(originals(&db).await?,before);
         assert_eq!(rows(&db,"SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM completion_boundary_archive_contents WHERE content_key='tool.arguments'").await?,original_manifest);
         assert_eq!(rows(&db,"SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM completion_boundary_archive_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?,original_chunks);
@@ -79,6 +82,7 @@ async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit()
         projection.bind_conversation_identity(database.clone())?;
         projection.seed(vec![item],Default::default());
         projection.restore_current(&chat,&thread,&settled).await?;
+        eprintln!("tool recovery: current restored");
         for effect in &effects {
             // Reattach the original effect's transfer facts, which live snapshots prune.
             settled.deliveries = effect.deliveries.clone();
@@ -98,6 +102,7 @@ async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit()
         drop(projection);
         drop(chat);
         store.close_for_deletion().await?;
+        eprintln!("tool recovery: history closed");
         let store=HistoryStore::open(&path,THREAD).await?;
         let mut recovered = Vec::new();
         while recovered.len() < arguments.len() {
@@ -111,12 +116,16 @@ async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit()
             recovered.extend_from_slice(body.bytes.as_bytes());
         }
         assert_eq!(recovered,arguments.as_bytes());
-        let db=&store.writer().await?.db;
-        assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM completion_boundary_archive_contents WHERE content_key='tool.arguments'").await?,original_manifest);
-        assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM completion_boundary_archive_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?,original_chunks);
-        assert_eq!(originals(db).await?[0][0],before[0][0],"unrelated completed A is unchanged");
+        {
+            let connection = store.writer().await?;
+            let db = &connection.db;
+            assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM completion_boundary_archive_contents WHERE content_key='tool.arguments'").await?,original_manifest);
+            assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM completion_boundary_archive_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?,original_chunks);
+            assert_eq!(originals(db).await?[0][0],before[0][0],"unrelated completed A is unchanged");
+        }
         store.close_for_deletion().await?;
         Ok::<_,anyhow::Error>(())
     }.await;
+    eprintln!("tool recovery: result before runtime shutdown: {result:?}");
     env.finish(result).await
 }

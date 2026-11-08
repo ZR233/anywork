@@ -224,7 +224,7 @@ impl ThreadHandle {
             retry_plan: None,
             published,
         };
-        owner.publish();
+        owner.publish()?;
         owner.publish_snapshot();
         tokio::spawn(owner.run(receiver));
         Ok(Self {
@@ -1087,11 +1087,7 @@ impl ThreadHandle {
         if history_fence > state.commit_sequence {
             return Err(ThreadError::InvalidContext);
         }
-        Ok(ThreadCheckpoint::capture(
-            self.thread_id.clone(),
-            history_fence,
-            state,
-        ))
+        ThreadCheckpoint::capture(self.thread_id.clone(), history_fence, state)
     }
 
     /// Returns the first effect sequence the live window can still serve.

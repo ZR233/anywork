@@ -256,11 +256,19 @@ impl Owner {
                         let pressure = store.pressure(&self.id);
                         pressure.thread_bytes > 0 || pressure.error.is_some()
                     });
-                if idle {
+                let idle = if idle {
                     self.interrupt.begin_close();
                     self.state.lifecycle = ThreadLifecycle::Closing;
-                    self.publish();
-                }
+                    match self.publish() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            self.input_driver.fail(Arc::new(error));
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
                 let _ = reply.send(idle);
             }
 
@@ -364,9 +372,7 @@ impl Owner {
                             self.cancel_turn_tasks(turn_id)
                         });
                         let cancelled = self.interrupt.interrupt();
-                        self.publish();
-                        self.publish_snapshot();
-                        tasks.map(|()| cancelled)
+                        self.publish().and(tasks).map(|()| cancelled)
                     }
                     Some(_) | None => Err(ThreadError::InvalidIdentity),
                 };
@@ -533,11 +539,10 @@ impl Owner {
                         .replace(tools)
                         .map_err(ThreadError::from)
                         .and_then(|()| self.revoke_stale_permissions());
-                    if result.is_ok() {
+                    result.and_then(|()| {
                         self.state.discovered_tools = self.tools.discovery();
-                        self.publish();
-                    }
-                    result
+                        self.publish()
+                    })
                 } else {
                     drop(tools);
                     Err(ThreadError::Closed)

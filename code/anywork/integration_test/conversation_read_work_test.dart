@@ -131,7 +131,7 @@ void main() {
           final mounted = find.byType(ChatItemView).evaluate().length;
           expect(mounted, lessThanOrEqualTo(initial));
           expect(display.hasOlder, isTrue);
-          final ids = observed.main.map((unit) => unit.item.id).toList();
+          final ids = observed.main.map((unit) => unit.id).toList();
           expect(ids, hasLength(display.loadedCount));
           expect(
             observed.mountedMembers,
@@ -146,7 +146,7 @@ void main() {
           expect(display.loadedCount, greaterThan(initial));
           expect(display.olderCursor, isNot(beforeCursor));
           expect(
-            observed.main.map((unit) => unit.item.id).toSet(),
+            observed.main.map((unit) => unit.id).toSet(),
             hasLength(display.loadedCount),
           );
           expect(

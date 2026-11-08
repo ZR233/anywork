@@ -30,7 +30,7 @@ fn complete() -> ModelUsage {
 
 #[test]
 fn legacy_accounting_is_converted_only_at_the_explicit_boundary() {
-    let checkpoint = ThreadCheckpoint::capture("thread".into(), 0, Default::default());
+    let checkpoint = ThreadCheckpoint::capture("thread".into(), 0, Default::default()).unwrap();
     for (schema, timing) in (1..=5).flat_map(|schema| {
         [
             serde_json::json!({}),

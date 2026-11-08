@@ -139,6 +139,7 @@ final class _NativeLifecycleAssembly {
       Platform.environment['ANYWORK_NATIVE_SHUTDOWN_PROMPT'] ?? '';
   final String secondPrompt =
       Platform.environment['ANYWORK_NATIVE_SHUTDOWN_SECOND_PROMPT'] ?? '';
+  DateTime? _inventoryDeadline;
 
   Future<void> run(String phase) async {
     try {
@@ -433,8 +434,18 @@ final class _NativeLifecycleAssembly {
         '${turn.state.status.name}: ${turn.state.reason}',
       );
     }
+    final inputId = turn.inputId;
+    if (inputId == null || inputId.isEmpty) {
+      throw StateError(
+        '$label completed turn ${turn.turnId} has no accepted input identity',
+      );
+    }
     _recordState('$label turn completed');
-    return _SettledTurn(threadId: threadId, turnId: turn.turnId);
+    return _SettledTurn(
+      threadId: threadId,
+      turnId: turn.turnId,
+      inputId: inputId,
+    );
   }
 
   Future<String> _submit(String text) async {
@@ -531,7 +542,7 @@ final class _NativeLifecycleAssembly {
       );
     }
     await File('$output/shutdown-observed-$key.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'threadId': settled.threadId, 'turnId': settled.turnId})}\n',
+      '${const JsonEncoder.withIndent('  ').convert(<String, Object?>{'threadId': settled.threadId, 'turnId': settled.turnId, 'inputId': settled.inputId})}\n',
     );
   }
 
@@ -541,6 +552,7 @@ final class _NativeLifecycleAssembly {
     ) as Map<String, dynamic>;
     final threadId = observed['threadId'] as String;
     final turnId = observed['turnId'] as String;
+    final inputId = observed['inputId'] as String;
     await _awaitSelectedThread();
     if (_threadId != threadId) {
       throw StateError(
@@ -552,9 +564,12 @@ final class _NativeLifecycleAssembly {
       if (turn?.turnId != turnId || turn?.state is! CompletedStudioTurnState) {
         throw StateError('$key did not restore the completed turn $turnId');
       }
+      if (turn!.inputId != inputId) {
+        throw StateError('$key restored Turn $turnId with a different inputId');
+      }
     }
     final inventory = await _inventory(
-      _SettledTurn(threadId: threadId, turnId: turnId),
+      _SettledTurn(threadId: threadId, turnId: turnId, inputId: inputId),
     );
     final expected = jsonDecode(
       await File('$output/shutdown-inventory-$key.json').readAsString(),
@@ -571,11 +586,12 @@ final class _NativeLifecycleAssembly {
   }
 
   Future<List<Map<String, Object?>>> _inventory(_SettledTurn settled) async {
-    // Reliable Items live in the original Main controller. Their current
-    // counterparts retire at handoff; liveUnits is only a diagnostic surface.
+    // Completed entries are read from the original Main controller; Run
+    // members have an independent reader and never become Main messages.
     final deadline = DateTime.now().add(const Duration(seconds: 120));
+    _inventoryDeadline = deadline;
     TimelineDisplayLease? lease;
-    List<TimelineItem> items = const [];
+    List<CompletedEntry> items = const [];
     try {
       while (DateTime.now().isBefore(deadline)) {
         final error = graph.timeline.source.value?.connectionError;
@@ -583,15 +599,13 @@ final class _NativeLifecycleAssembly {
         lease ??= graph.timeline.lease(settled.threadId);
         if (lease != null) {
           _requireInventoryOwner(settled, lease);
-          items = _mainItems(lease)
-              .where((item) => item.turnId == settled.turnId)
-              .toList();
-          if (items.any((item) => _isInventoryFinal(item, settled))) break;
+          items = _mainItems(lease);
+          if (items.any((entry) => _isInventoryFinal(entry, settled))) break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
       if (lease == null ||
-          !items.any((item) => _isInventoryFinal(item, settled))) {
+          !items.any((entry) => _isInventoryFinal(entry, settled))) {
         throw TimeoutException(
           'saved turn ${settled.turnId} has no qualified completed final Main Item; '
           'see shutdown-assembly-$pid.jsonl inventory metadata',
@@ -608,82 +622,176 @@ final class _NativeLifecycleAssembly {
             scope.generation != lease.generation) {
           throw StateError('Saved-turn original Main reader identity changed');
         }
-        final inventory = <Map<String, Object?>>[];
-        for (final item in items) {
-          final itemId = item.contentItemId;
-          if (itemId == null) {
-            if (item.kind == TimelineItemKind.text) {
-              throw StateError(
-                'Saved Main text ${item.id} has no content identity',
-              );
-            }
-            continue;
-          }
+        // Capture one fixed Main cut, then page the original reader to EOF.
+        // loadOlder applies through its original consumer; never splice run
+        // members into Main.
+        while (true) {
           _requireInventoryOwner(settled, lease);
-          final manifest = await scope.listContents(
-            itemId: itemId,
+          final before = lease.olderCursor;
+          if (before == null) break;
+          final batch = await scope.loadOlder(
+            before: before,
             demand: lease.demand,
           );
-          if (manifest.continuation != null) {
-            throw StateError(
-              'Native fixture content inventory exceeded one bounded page',
+          _requireInventoryOwner(settled, lease);
+          final nextBefore = lease.olderCursor;
+          if (nextBefore != batch.before ||
+              nextBefore == before ||
+              batch.before == before) {
+            throw const ConversationContinuityError(
+              'Main history page did not advance',
             );
           }
-          if (item.kind == TimelineItemKind.text &&
-              manifest.entries.where((entry) => entry.key == 'body').length !=
-                  1) {
-            throw StateError('Saved Main text $itemId has no unique body');
+          items = _mainItems(lease);
+        }
+        final unique = <String, CompletedEntry>{
+          for (final entry in items) entry.recordId: entry,
+        };
+        final runHeads = <CompletionRunRef, CompletedEntry>{
+          for (final unit in _mainUnits(lease))
+            if (unit.run != null && unit.entry.atom.turnId == settled.turnId)
+              unit.run!.reference: unit.entry,
+        };
+        final inputEntries = unique.values
+            .where(
+              (entry) =>
+                  entry.atom.source ==
+                  InputChatSource(inputId: settled.inputId),
+            )
+            .toList();
+        if (inputEntries.length != 1 ||
+            inputEntries.single.mainPresentation != MainPresentation.single) {
+          throw StateError(
+            'Expected exactly one Main Single for accepted input '
+            '${settled.inputId}; found ${inputEntries.length}',
+          );
+        }
+        final inventory = <Map<String, Object?>>[];
+        for (final entry in unique.values) {
+          final isTurnEntry = entry.atom.turnId == settled.turnId;
+          final isInputEntry =
+              entry.atom.source == InputChatSource(inputId: settled.inputId);
+          if ((isTurnEntry || isInputEntry) &&
+              entry.mainPresentation == MainPresentation.single) {
+            inventory.addAll(
+              await _inventoryEntry(entry, settled, lease, scope),
+            );
           }
-          for (final entry in manifest.entries) {
-            final target = entry.reference.target;
-            if (target is! BodyContentTarget ||
-                target.owner is! ItemContentOwner ||
-                (target.owner as ItemContentOwner).itemId != itemId ||
-                target.key != entry.key) {
-              throw StateError(
-                'Manifest reference does not own $itemId/${entry.key}',
-              );
-            }
-            final byteLength = switch (jsonDecode(utf8.decode(entry.payload))) {
-              {'byteLength': final int length} when length >= 0 => length,
-              _ => throw StateError('Saved body has no valid byte length'),
-            };
+        }
+        for (final reference in runHeads.keys) {
+          _requireInventoryOwner(settled, lease);
+          ConversationContent? memberContent;
+          Observation? observation;
+          ConversationQueryScope? memberScope;
+          Object? operationError;
+          try {
+            memberContent = await lease.openRun(reference, lease.demand);
             _requireInventoryOwner(settled, lease);
-            final window = await scope.readContent(
-              reference: entry.reference,
-              range: ContentRange(offset: 0, maxBytes: lease.demand.maxBytes),
+            final consumer = _InventoryBatchConsumer();
+            observation = memberContent.attachConsumer(
+              consumer,
+              demand: lease.demand,
             );
-            if (window.offset != 0 ||
-                !window.sealed ||
-                window.availableThrough != byteLength ||
-                window.bytes.length > lease.demand.maxBytes ||
-                window.bytes.length != byteLength) {
-              throw StateError(
-                'Native fixture content is not fully sealed in range: '
-                '$itemId/${entry.key}',
+            memberScope = memberContent.openScope(generation: lease.generation);
+            await memberContent.ready;
+            _requireInventoryOwner(settled, lease);
+            var before = consumer.before;
+            while (before != null) {
+              final batch = await memberScope.loadOlder(
+                before: before,
+                demand: lease.demand,
+              );
+              _requireInventoryOwner(settled, lease);
+              final nextBefore = consumer.before;
+              if (nextBefore != batch.before ||
+                  nextBefore == before ||
+                  batch.before == before) {
+                throw const ConversationContinuityError(
+                  'Run history page did not advance',
+                );
+              }
+              before = nextBefore;
+            }
+            final members = <String, CompletedEntry>{
+              for (final member in consumer.entries)
+                if (member.atom.turnId == settled.turnId)
+                  member.recordId: member,
+            };
+            for (final member in members.values) {
+              inventory.addAll(
+                await _inventoryEntry(member, settled, lease, scope),
               );
             }
-            inventory.add({
-              'timelineItemId': item.id,
-              'itemId': itemId,
-              'source': _inventorySource(item.source),
-              'turnId': item.turnId,
-              'position': item.position,
-              'key': entry.key,
-              'databaseId': entry.reference.databaseId,
-              'channel': item.textChannel?.name,
-              'body': utf8.decode(window.bytes),
+          } catch (error, stack) {
+            operationError = error;
+            Error.throwWithStackTrace(error, stack);
+          } finally {
+            Object? cleanupError;
+            StackTrace? cleanupStack;
+            Future<void> captureCleanup(Future<void> Function() cleanup) async {
+              try {
+                await cleanup();
+              } catch (error, stack) {
+                cleanupError ??= error;
+                cleanupStack ??= stack;
+              }
+            }
+
+            final attachedObservation = observation;
+            if (attachedObservation != null) {
+              await captureCleanup(() async {
+                attachedObservation.cancel();
+              });
+            }
+            final openedScope = memberScope;
+            if (openedScope != null) {
+              openedScope.retire();
+              await captureCleanup(() async {
+                final report = await openedScope.close();
+                if (!report.complete) {
+                  throw StateError('Run query scope did not close: $report');
+                }
+              });
+            }
+            final openedContent = memberContent;
+            if (openedContent != null) {
+              await captureCleanup(() async {
+                final report = await openedContent.close();
+                if (!report.complete) {
+                  throw StateError('Run content did not close: $report');
+                }
+              });
+              await captureCleanup(() async {
+                final report = await openedContent.joinRetired();
+                if (!report.complete) {
+                  throw StateError('Retired Run content did not join: $report');
+                }
+              });
+            }
+            await captureCleanup(() {
+              _requireInventoryOwner(settled, lease!);
+              return Future<void>.value();
             });
+            if (cleanupError != null) {
+              if (operationError != null) {
+                recordDartError(
+                  cleanupError!,
+                  cleanupStack!,
+                  stage: 'native-shutdown-run-cleanup',
+                );
+              } else {
+                Error.throwWithStackTrace(cleanupError!, cleanupStack!);
+              }
+            }
           }
         }
         if (inventory.isEmpty) {
           throw StateError('Native fixture content inventory is empty');
         }
-        inventory.sort(
-          (a, b) => '${a['itemId']}/${a['key']}'.compareTo(
-            '${b['itemId']}/${b['key']}',
-          ),
-        );
+        inventory.sort((a, b) {
+          final record = '${a['recordId']}'.compareTo('${b['recordId']}');
+          return record != 0 ? record : '${a['key']}'.compareTo('${b['key']}');
+        });
         return inventory;
       } finally {
         await lease.closeDetailQueries(scope);
@@ -699,28 +807,42 @@ final class _NativeLifecycleAssembly {
         );
       }
       Error.throwWithStackTrace(error, stack);
+    } finally {
+      _inventoryDeadline = null;
     }
   }
 
-  Iterable<TimelineItem> _mainItems(TimelineDisplayLease lease) sync* {
+  List<TimelineDisplayUnit> _mainUnits(TimelineDisplayLease lease) {
+    final units = <TimelineDisplayUnit>[];
     for (final message in lease.controller.messages) {
       final unit = message.metadata?[timelineDisplayUnitKey];
       if (unit is! TimelineDisplayUnit ||
           message.id != unit.id ||
-          unit.live ||
-          unit.item.position == null) {
+          unit.entry.completionSeq <= 0 ||
+          unit.entry.recordId.isEmpty) {
         throw StateError(
-          'Original Main message ${message.id} has no reliable Item',
+          'Original Main message ${message.id} has no reliable completion',
         );
       }
-      yield unit.item;
+      units.add(unit);
     }
+    return units;
   }
+
+  List<CompletedEntry> _mainItems(TimelineDisplayLease lease) => [
+    for (final unit in _mainUnits(lease)) unit.entry,
+  ];
 
   void _requireInventoryOwner(
     _SettledTurn settled,
     TimelineDisplayLease lease,
   ) {
+    final deadline = _inventoryDeadline;
+    if (deadline != null && !DateTime.now().isBefore(deadline)) {
+      throw TimeoutException(
+        'saved turn ${settled.turnId} inventory exceeded the 120-second deadline',
+      );
+    }
     if (lease.isRetired ||
         lease.isReleased ||
         !identical(graph.timeline.lease(settled.threadId), lease) ||
@@ -731,26 +853,117 @@ final class _NativeLifecycleAssembly {
   }
 
   Map<String, bool> _inventoryPredicates(
-    TimelineItem item,
+    CompletedEntry entry,
     _SettledTurn settled,
-  ) => {
-    'sameTurn': item.turnId == settled.turnId,
-    'sameSource':
-        item.source == ForegroundTurnChatSource(turnId: settled.turnId),
-    'text': item.kind == TimelineItemKind.text,
-    'textAtom': item.atomKind == ChatAtomKind.text,
-    'finalAnswer': item.textChannel == ThreadTextChannel.finalAnswer,
-    'completed': item.outcome == ChatTerminalOutcome.completed,
-    'reliablePosition': item.position != null,
-    'contentIdentity': item.contentItemId != null,
-  };
+  ) {
+    final atom = entry.atom;
+    return {
+      'sameTurn': atom.turnId == settled.turnId,
+      'sameSource':
+          atom.source == ForegroundTurnChatSource(turnId: settled.turnId),
+      'single': entry.mainPresentation == MainPresentation.single,
+      'text': atom.kind == ChatAtomKind.text,
+      'finalAnswer': atom.textChannel == ThreadTextChannel.finalAnswer,
+      'completed':
+          atom.lifecycle is TerminalChatAtom &&
+          (atom.lifecycle as TerminalChatAtom).outcome ==
+              ChatTerminalOutcome.completed,
+      'completionSeq': entry.completionSeq > 0,
+      'contentIdentity': atom.id.isNotEmpty,
+    };
+  }
 
-  bool _isInventoryFinal(TimelineItem item, _SettledTurn settled) =>
-      _inventoryPredicates(item, settled).values.every((value) => value);
+  bool _isInventoryFinal(CompletedEntry entry, _SettledTurn settled) =>
+      _inventoryPredicates(entry, settled).values.every((value) => value);
+
+  Future<List<Map<String, Object?>>> _inventoryEntry(
+    CompletedEntry entry,
+    _SettledTurn settled,
+    TimelineDisplayLease lease,
+    ConversationQueryScope scope,
+  ) async {
+    _requireInventoryOwner(settled, lease);
+    final completed = await scope.readCompleted(
+      recordId: entry.recordId,
+      demand: lease.demand,
+    );
+    _requireInventoryOwner(settled, lease);
+    if (completed.recordId != entry.recordId ||
+        completed.completionSeq != entry.completionSeq ||
+        completed.atom.id != entry.atom.id) {
+      throw StateError(
+        'Completed record identity changed while reading ${entry.recordId}',
+      );
+    }
+    final atom = completed.atom;
+    _requireInventoryOwner(settled, lease);
+    final manifest = await scope.listContents(
+      itemId: atom.id,
+      demand: lease.demand,
+    );
+    _requireInventoryOwner(settled, lease);
+    if (manifest.continuation != null) {
+      throw StateError(
+        'Native fixture content inventory exceeded one bounded page',
+      );
+    }
+    if (atom.kind == ChatAtomKind.text &&
+        manifest.entries.where((item) => item.key == 'body').length != 1) {
+      throw StateError('Saved completion ${atom.id} has no unique body');
+    }
+    final inventory = <Map<String, Object?>>[];
+    for (final item in manifest.entries) {
+      final target = item.reference.target;
+      if (target is! BodyContentTarget ||
+          target.owner is! ItemContentOwner ||
+          (target.owner as ItemContentOwner).itemId != atom.id ||
+          target.key != item.key) {
+        throw StateError(
+          'Manifest reference does not own ${atom.id}/${item.key}',
+        );
+      }
+      final byteLength = switch (jsonDecode(utf8.decode(item.payload))) {
+        {'byteLength': final int length} when length >= 0 => length,
+        _ => throw StateError('Saved body has no valid byte length'),
+      };
+      _requireInventoryOwner(settled, lease);
+      final window = await scope.readContent(
+        reference: item.reference,
+        range: ContentRange(offset: 0, maxBytes: lease.demand.maxBytes),
+      );
+      if (window.offset != 0 ||
+          !window.sealed ||
+          window.availableThrough != byteLength ||
+          window.bytes.length > lease.demand.maxBytes ||
+          window.bytes.length != byteLength) {
+        throw StateError(
+          'Native fixture content is not fully sealed in range: '
+          '${atom.id}/${item.key}',
+        );
+      }
+      inventory.add({
+        'recordId': entry.recordId,
+        'completionSeq': entry.completionSeq,
+        'atomId': atom.id,
+        'source': _inventorySource(atom.source),
+        'turnId': atom.turnId,
+        'key': item.key,
+        'databaseId': item.reference.databaseId,
+        'channel': atom.textChannel?.name,
+        'sealed': true,
+        'body': utf8.decode(window.bytes),
+      });
+    }
+    return inventory;
+  }
 
   Map<String, String> _inventorySource(ChatSourceId source) => switch (source) {
     ForegroundTurnChatSource(:final turnId) => {'foregroundTurn': turnId},
     InputChatSource(:final inputId) => {'input': inputId},
+    InboxMessageChatSource(:final sourceId, :final messageId) => {
+      'inbox': sourceId,
+      'message': messageId,
+    },
     BackgroundResultChatSource(:final messageId) => {
       'backgroundResult': messageId,
     },
@@ -764,34 +977,34 @@ final class _NativeLifecycleAssembly {
     TimelineDisplayLease? lease,
   ) {
     Map<String, Object?> describe(TimelineDisplayUnit unit) {
-      final item = unit.item;
+      final entry = unit.entry;
+      final atom = entry.atom;
       return {
-        'id': item.id,
-        'kind': item.kind.name,
-        'live': unit.live,
-        'source': _inventorySource(item.source),
-        'turnId': item.turnId,
-        'channel': item.textChannel?.name,
-        'outcome': item.outcome?.name,
-        'position': item.position,
-        'contentItemId': item.contentItemId,
-        'contentReferences': [
-          for (final content in item.contents)
-            {
-              'role': content.role.name,
-              'targetKind': content.reference.target.runtimeType.toString(),
-              'itemOwned': switch (content.reference.target) {
-                BodyContentTarget(owner: ItemContentOwner(:final itemId)) =>
-                  itemId == item.contentItemId,
-                _ => false,
-              },
-            },
-        ],
-        'predicates': _inventoryPredicates(item, settled),
+        'recordId': entry.recordId,
+        'completionSeq': entry.completionSeq,
+        'atomId': atom.id,
+        'kind': atom.kind.name,
+        'source': _inventorySource(atom.source),
+        'turnId': atom.turnId,
+        'channel': atom.textChannel?.name,
+        'outcome': switch (atom.lifecycle) {
+          TerminalChatAtom(:final outcome) => outcome.name,
+          _ => null,
+        },
+        'databaseId': switch (atom.payload) {
+          DeferredPayload(:final reference) => reference.databaseId,
+          _ => null,
+        },
+        'mainPresentation': entry.mainPresentation.name,
+        'predicates': _inventoryPredicates(entry, settled),
       };
     }
 
     final readable = lease != null && !lease.isReleased;
+    final activity = graph.client.conversations
+        .existingSession(settled.threadId)
+        ?.activity
+        .value;
     final snapshot = {
       'at': DateTime.now().toUtc().toIso8601String(),
       'pid': pid,
@@ -818,10 +1031,21 @@ final class _NativeLifecycleAssembly {
             else
               {'messageId': message.id, 'unitPresent': false},
       ],
-      'live': [
-        if (readable)
-          for (final unit in lease.liveUnits.value) describe(unit),
-      ],
+      'activity': activity == null
+          ? null
+          : {
+              'revision': activity.revision,
+              'completedThrough': activity.completedThrough,
+              'executionPresent': activity.executionPresent,
+              'entries': [
+                for (final entry in activity.entries)
+                  {
+                    'identity': entry.identity.runtimeType.toString(),
+                    'atomId': entry.atom.id,
+                    'kind': entry.atom.kind.name,
+                  },
+              ],
+            },
     };
     _requireCoord();
     File('$coord/shutdown-assembly-$pid.jsonl').writeAsStringSync(
@@ -923,11 +1147,40 @@ Future<void> _awaitPath(String path, Duration timeout, String label) async {
   throw TimeoutException('timed out waiting for $label', timeout);
 }
 
+final class _InventoryBatchConsumer implements ConversationBatchConsumer {
+  List<CompletedEntry> entries = const [];
+  String? before;
+
+  @override
+  Future<void> applyBatch(ChatBatch batch) async {
+    switch (batch.placement) {
+      case ChatPlacement.set:
+        entries = List.of(batch.entries);
+        before = batch.before;
+      case ChatPlacement.prepend:
+        entries = [...batch.entries, ...entries];
+        before = batch.before;
+      case ChatPlacement.append:
+        entries = [...entries, ...batch.entries];
+    }
+  }
+
+  @override
+  Future<void> applyActivity(ActivitySnapshot snapshot) async {
+    // Feed scope acceptance already enforces the completedThrough barrier.
+  }
+}
+
 class _SettledTurn {
-  const _SettledTurn({required this.threadId, required this.turnId});
+  const _SettledTurn({
+    required this.threadId,
+    required this.turnId,
+    required this.inputId,
+  });
 
   final String threadId;
   final String turnId;
+  final String inputId;
 }
 
 /// Real FRB transport whose shutdown-progress subscription is faulty.

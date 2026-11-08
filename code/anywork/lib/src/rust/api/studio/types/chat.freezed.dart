@@ -351,381 +351,6 @@ as BridgeChatTerminalOutcome,
 }
 
 /// @nodoc
-mixin _$BridgeChatEntry {
-
- Object get field0;
-
-
-
-@override
-bool operator ==(Object other) {
-  final _this = this as BridgeChatEntry;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatEntry&&const DeepCollectionEquality().equals(other.field0, _this.field0));
-}
-
-
-@override
-int get hashCode {
-  final _this = this as BridgeChatEntry;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
-}
-
-@override
-String toString() {
-  final _this = this as BridgeChatEntry;
-  return 'BridgeChatEntry(field0: ${_this.field0})';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeChatEntryCopyWith<$Res>  {
-$BridgeChatEntryCopyWith(BridgeChatEntry _, $Res Function(BridgeChatEntry) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeChatEntry].
-extension BridgeChatEntryPatterns on BridgeChatEntry {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatEntry_Item value)?  item,TResult Function( BridgeChatEntry_Atom value)?  atom,TResult Function( BridgeChatEntry_Source value)?  source,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item() when item != null:
-return item(_that);case BridgeChatEntry_Atom() when atom != null:
-return atom(_that);case BridgeChatEntry_Source() when source != null:
-return source(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatEntry_Item value)  item,required TResult Function( BridgeChatEntry_Atom value)  atom,required TResult Function( BridgeChatEntry_Source value)  source,}){
-final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item():
-return item(_that);case BridgeChatEntry_Atom():
-return atom(_that);case BridgeChatEntry_Source():
-return source(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatEntry_Item value)?  item,TResult? Function( BridgeChatEntry_Atom value)?  atom,TResult? Function( BridgeChatEntry_Source value)?  source,}){
-final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item() when item != null:
-return item(_that);case BridgeChatEntry_Atom() when atom != null:
-return atom(_that);case BridgeChatEntry_Source() when source != null:
-return source(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeTimelineItem field0)?  item,TResult Function( BridgeChatAtom field0)?  atom,TResult Function( BridgeChatSourceState field0)?  source,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item() when item != null:
-return item(_that.field0);case BridgeChatEntry_Atom() when atom != null:
-return atom(_that.field0);case BridgeChatEntry_Source() when source != null:
-return source(_that.field0);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeTimelineItem field0)  item,required TResult Function( BridgeChatAtom field0)  atom,required TResult Function( BridgeChatSourceState field0)  source,}) {final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item():
-return item(_that.field0);case BridgeChatEntry_Atom():
-return atom(_that.field0);case BridgeChatEntry_Source():
-return source(_that.field0);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineItem field0)?  item,TResult? Function( BridgeChatAtom field0)?  atom,TResult? Function( BridgeChatSourceState field0)?  source,}) {final _that = this;
-switch (_that) {
-case BridgeChatEntry_Item() when item != null:
-return item(_that.field0);case BridgeChatEntry_Atom() when atom != null:
-return atom(_that.field0);case BridgeChatEntry_Source() when source != null:
-return source(_that.field0);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeChatEntry_Item extends BridgeChatEntry {
-  const BridgeChatEntry_Item(this.field0): super._();
-
-
-@override final  BridgeTimelineItem field0;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatEntry_ItemCopyWith<BridgeChatEntry_Item> get copyWith => _$BridgeChatEntry_ItemCopyWithImpl<BridgeChatEntry_Item>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatEntry_Item&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeChatEntry.item(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatEntry_ItemCopyWith<$Res> implements $BridgeChatEntryCopyWith<$Res> {
-  factory $BridgeChatEntry_ItemCopyWith(BridgeChatEntry_Item value, $Res Function(BridgeChatEntry_Item) _then) = _$BridgeChatEntry_ItemCopyWithImpl;
-@useResult
-$Res call({
- BridgeTimelineItem field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatEntry_ItemCopyWithImpl<$Res>
-    implements $BridgeChatEntry_ItemCopyWith<$Res> {
-  _$BridgeChatEntry_ItemCopyWithImpl(this._self, this._then);
-
-  final BridgeChatEntry_Item _self;
-  final $Res Function(BridgeChatEntry_Item) _then;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeChatEntry_Item(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeTimelineItem,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeChatEntry_Atom extends BridgeChatEntry {
-  const BridgeChatEntry_Atom(this.field0): super._();
-
-
-@override final  BridgeChatAtom field0;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatEntry_AtomCopyWith<BridgeChatEntry_Atom> get copyWith => _$BridgeChatEntry_AtomCopyWithImpl<BridgeChatEntry_Atom>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatEntry_Atom&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeChatEntry.atom(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatEntry_AtomCopyWith<$Res> implements $BridgeChatEntryCopyWith<$Res> {
-  factory $BridgeChatEntry_AtomCopyWith(BridgeChatEntry_Atom value, $Res Function(BridgeChatEntry_Atom) _then) = _$BridgeChatEntry_AtomCopyWithImpl;
-@useResult
-$Res call({
- BridgeChatAtom field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatEntry_AtomCopyWithImpl<$Res>
-    implements $BridgeChatEntry_AtomCopyWith<$Res> {
-  _$BridgeChatEntry_AtomCopyWithImpl(this._self, this._then);
-
-  final BridgeChatEntry_Atom _self;
-  final $Res Function(BridgeChatEntry_Atom) _then;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeChatEntry_Atom(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeChatAtom,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeChatEntry_Source extends BridgeChatEntry {
-  const BridgeChatEntry_Source(this.field0): super._();
-
-
-@override final  BridgeChatSourceState field0;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatEntry_SourceCopyWith<BridgeChatEntry_Source> get copyWith => _$BridgeChatEntry_SourceCopyWithImpl<BridgeChatEntry_Source>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatEntry_Source&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeChatEntry.source(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatEntry_SourceCopyWith<$Res> implements $BridgeChatEntryCopyWith<$Res> {
-  factory $BridgeChatEntry_SourceCopyWith(BridgeChatEntry_Source value, $Res Function(BridgeChatEntry_Source) _then) = _$BridgeChatEntry_SourceCopyWithImpl;
-@useResult
-$Res call({
- BridgeChatSourceState field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatEntry_SourceCopyWithImpl<$Res>
-    implements $BridgeChatEntry_SourceCopyWith<$Res> {
-  _$BridgeChatEntry_SourceCopyWithImpl(this._self, this._then);
-
-  final BridgeChatEntry_Source _self;
-  final $Res Function(BridgeChatEntry_Source) _then;
-
-/// Create a copy of BridgeChatEntry
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeChatEntry_Source(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeChatSourceState,
-  ));
-}
-
-
-}
-
-/// @nodoc
 mixin _$BridgeChatScope {
 
 
@@ -769,12 +394,12 @@ extension BridgeChatScopePatterns on BridgeChatScope {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatScope_Main value)?  main,TResult Function( BridgeChatScope_GroupMembers value)?  groupMembers,TResult Function( BridgeChatScope_Children value)?  children,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatScope_Main value)?  main,TResult Function( BridgeChatScope_Run value)?  run,TResult Function( BridgeChatScope_Children value)?  children,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeChatScope_Main() when main != null:
-return main(_that);case BridgeChatScope_GroupMembers() when groupMembers != null:
-return groupMembers(_that);case BridgeChatScope_Children() when children != null:
+return main(_that);case BridgeChatScope_Run() when run != null:
+return run(_that);case BridgeChatScope_Children() when children != null:
 return children(_that);case _:
   return orElse();
 
@@ -793,12 +418,12 @@ return children(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatScope_Main value)  main,required TResult Function( BridgeChatScope_GroupMembers value)  groupMembers,required TResult Function( BridgeChatScope_Children value)  children,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatScope_Main value)  main,required TResult Function( BridgeChatScope_Run value)  run,required TResult Function( BridgeChatScope_Children value)  children,}){
 final _that = this;
 switch (_that) {
 case BridgeChatScope_Main():
-return main(_that);case BridgeChatScope_GroupMembers():
-return groupMembers(_that);case BridgeChatScope_Children():
+return main(_that);case BridgeChatScope_Run():
+return run(_that);case BridgeChatScope_Children():
 return children(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -813,12 +438,12 @@ return children(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatScope_Main value)?  main,TResult? Function( BridgeChatScope_GroupMembers value)?  groupMembers,TResult? Function( BridgeChatScope_Children value)?  children,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatScope_Main value)?  main,TResult? Function( BridgeChatScope_Run value)?  run,TResult? Function( BridgeChatScope_Children value)?  children,}){
 final _that = this;
 switch (_that) {
 case BridgeChatScope_Main() when main != null:
-return main(_that);case BridgeChatScope_GroupMembers() when groupMembers != null:
-return groupMembers(_that);case BridgeChatScope_Children() when children != null:
+return main(_that);case BridgeChatScope_Run() when run != null:
+return run(_that);case BridgeChatScope_Children() when children != null:
 return children(_that);case _:
   return null;
 
@@ -836,11 +461,11 @@ return children(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  main,TResult Function( BridgeTimelineMembersRef reference)?  groupMembers,TResult Function( String parentId)?  children,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  main,TResult Function( BridgeCompletionRunRef reference)?  run,TResult Function( String parentId)?  children,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeChatScope_Main() when main != null:
-return main();case BridgeChatScope_GroupMembers() when groupMembers != null:
-return groupMembers(_that.reference);case BridgeChatScope_Children() when children != null:
+return main();case BridgeChatScope_Run() when run != null:
+return run(_that.reference);case BridgeChatScope_Children() when children != null:
 return children(_that.parentId);case _:
   return orElse();
 
@@ -859,11 +484,11 @@ return children(_that.parentId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  main,required TResult Function( BridgeTimelineMembersRef reference)  groupMembers,required TResult Function( String parentId)  children,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  main,required TResult Function( BridgeCompletionRunRef reference)  run,required TResult Function( String parentId)  children,}) {final _that = this;
 switch (_that) {
 case BridgeChatScope_Main():
-return main();case BridgeChatScope_GroupMembers():
-return groupMembers(_that.reference);case BridgeChatScope_Children():
+return main();case BridgeChatScope_Run():
+return run(_that.reference);case BridgeChatScope_Children():
 return children(_that.parentId);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -878,11 +503,11 @@ return children(_that.parentId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  main,TResult? Function( BridgeTimelineMembersRef reference)?  groupMembers,TResult? Function( String parentId)?  children,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  main,TResult? Function( BridgeCompletionRunRef reference)?  run,TResult? Function( String parentId)?  children,}) {final _that = this;
 switch (_that) {
 case BridgeChatScope_Main() when main != null:
-return main();case BridgeChatScope_GroupMembers() when groupMembers != null:
-return groupMembers(_that.reference);case BridgeChatScope_Children() when children != null:
+return main();case BridgeChatScope_Run() when run != null:
+return run(_that.reference);case BridgeChatScope_Children() when children != null:
 return children(_that.parentId);case _:
   return null;
 
@@ -926,23 +551,23 @@ String toString() {
 /// @nodoc
 
 
-class BridgeChatScope_GroupMembers extends BridgeChatScope {
-  const BridgeChatScope_GroupMembers({required this.reference}): super._();
+class BridgeChatScope_Run extends BridgeChatScope {
+  const BridgeChatScope_Run({required this.reference}): super._();
 
 
- final  BridgeTimelineMembersRef reference;
+ final  BridgeCompletionRunRef reference;
 
 /// Create a copy of BridgeChatScope
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeChatScope_GroupMembersCopyWith<BridgeChatScope_GroupMembers> get copyWith => _$BridgeChatScope_GroupMembersCopyWithImpl<BridgeChatScope_GroupMembers>(this, _$identity);
+$BridgeChatScope_RunCopyWith<BridgeChatScope_Run> get copyWith => _$BridgeChatScope_RunCopyWithImpl<BridgeChatScope_Run>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope_GroupMembers&&(identical(other.reference, reference) || other.reference == reference));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope_Run&&(identical(other.reference, reference) || other.reference == reference));
 }
 
 
@@ -953,18 +578,18 @@ int get hashCode {
 
 @override
 String toString() {
-    return 'BridgeChatScope.groupMembers(reference: $reference)';
+    return 'BridgeChatScope.run(reference: $reference)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeChatScope_GroupMembersCopyWith<$Res> implements $BridgeChatScopeCopyWith<$Res> {
-  factory $BridgeChatScope_GroupMembersCopyWith(BridgeChatScope_GroupMembers value, $Res Function(BridgeChatScope_GroupMembers) _then) = _$BridgeChatScope_GroupMembersCopyWithImpl;
+abstract mixin class $BridgeChatScope_RunCopyWith<$Res> implements $BridgeChatScopeCopyWith<$Res> {
+  factory $BridgeChatScope_RunCopyWith(BridgeChatScope_Run value, $Res Function(BridgeChatScope_Run) _then) = _$BridgeChatScope_RunCopyWithImpl;
 @useResult
 $Res call({
- BridgeTimelineMembersRef reference
+ BridgeCompletionRunRef reference
 });
 
 
@@ -972,19 +597,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeChatScope_GroupMembersCopyWithImpl<$Res>
-    implements $BridgeChatScope_GroupMembersCopyWith<$Res> {
-  _$BridgeChatScope_GroupMembersCopyWithImpl(this._self, this._then);
+class _$BridgeChatScope_RunCopyWithImpl<$Res>
+    implements $BridgeChatScope_RunCopyWith<$Res> {
+  _$BridgeChatScope_RunCopyWithImpl(this._self, this._then);
 
-  final BridgeChatScope_GroupMembers _self;
-  final $Res Function(BridgeChatScope_GroupMembers) _then;
+  final BridgeChatScope_Run _self;
+  final $Res Function(BridgeChatScope_Run) _then;
 
 /// Create a copy of BridgeChatScope
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? reference = null,}) {
-  return _then(BridgeChatScope_GroupMembers(
+  return _then(BridgeChatScope_Run(
 reference: null == reference ? _self.reference : reference // ignore: cast_nullable_to_non_nullable
-as BridgeTimelineMembersRef,
+as BridgeCompletionRunRef,
   ));
 }
 
@@ -1103,12 +728,13 @@ extension BridgeChatSourceIdPatterns on BridgeChatSourceId {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatSourceId_ForegroundTurn value)?  foregroundTurn,TResult Function( BridgeChatSourceId_Input value)?  input,TResult Function( BridgeChatSourceId_BackgroundResult value)?  backgroundResult,TResult Function( BridgeChatSourceId_Operation value)?  operation,TResult Function( BridgeChatSourceId_Receipt value)?  receipt,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatSourceId_ForegroundTurn value)?  foregroundTurn,TResult Function( BridgeChatSourceId_Input value)?  input,TResult Function( BridgeChatSourceId_InboxMessage value)?  inboxMessage,TResult Function( BridgeChatSourceId_BackgroundResult value)?  backgroundResult,TResult Function( BridgeChatSourceId_Operation value)?  operation,TResult Function( BridgeChatSourceId_Receipt value)?  receipt,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn() when foregroundTurn != null:
 return foregroundTurn(_that);case BridgeChatSourceId_Input() when input != null:
-return input(_that);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
+return input(_that);case BridgeChatSourceId_InboxMessage() when inboxMessage != null:
+return inboxMessage(_that);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
 return backgroundResult(_that);case BridgeChatSourceId_Operation() when operation != null:
 return operation(_that);case BridgeChatSourceId_Receipt() when receipt != null:
 return receipt(_that);case _:
@@ -1129,12 +755,13 @@ return receipt(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatSourceId_ForegroundTurn value)  foregroundTurn,required TResult Function( BridgeChatSourceId_Input value)  input,required TResult Function( BridgeChatSourceId_BackgroundResult value)  backgroundResult,required TResult Function( BridgeChatSourceId_Operation value)  operation,required TResult Function( BridgeChatSourceId_Receipt value)  receipt,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatSourceId_ForegroundTurn value)  foregroundTurn,required TResult Function( BridgeChatSourceId_Input value)  input,required TResult Function( BridgeChatSourceId_InboxMessage value)  inboxMessage,required TResult Function( BridgeChatSourceId_BackgroundResult value)  backgroundResult,required TResult Function( BridgeChatSourceId_Operation value)  operation,required TResult Function( BridgeChatSourceId_Receipt value)  receipt,}){
 final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn():
 return foregroundTurn(_that);case BridgeChatSourceId_Input():
-return input(_that);case BridgeChatSourceId_BackgroundResult():
+return input(_that);case BridgeChatSourceId_InboxMessage():
+return inboxMessage(_that);case BridgeChatSourceId_BackgroundResult():
 return backgroundResult(_that);case BridgeChatSourceId_Operation():
 return operation(_that);case BridgeChatSourceId_Receipt():
 return receipt(_that);}
@@ -1151,12 +778,13 @@ return receipt(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatSourceId_ForegroundTurn value)?  foregroundTurn,TResult? Function( BridgeChatSourceId_Input value)?  input,TResult? Function( BridgeChatSourceId_BackgroundResult value)?  backgroundResult,TResult? Function( BridgeChatSourceId_Operation value)?  operation,TResult? Function( BridgeChatSourceId_Receipt value)?  receipt,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatSourceId_ForegroundTurn value)?  foregroundTurn,TResult? Function( BridgeChatSourceId_Input value)?  input,TResult? Function( BridgeChatSourceId_InboxMessage value)?  inboxMessage,TResult? Function( BridgeChatSourceId_BackgroundResult value)?  backgroundResult,TResult? Function( BridgeChatSourceId_Operation value)?  operation,TResult? Function( BridgeChatSourceId_Receipt value)?  receipt,}){
 final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn() when foregroundTurn != null:
 return foregroundTurn(_that);case BridgeChatSourceId_Input() when input != null:
-return input(_that);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
+return input(_that);case BridgeChatSourceId_InboxMessage() when inboxMessage != null:
+return inboxMessage(_that);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
 return backgroundResult(_that);case BridgeChatSourceId_Operation() when operation != null:
 return operation(_that);case BridgeChatSourceId_Receipt() when receipt != null:
 return receipt(_that);case _:
@@ -1176,11 +804,12 @@ return receipt(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String turnId)?  foregroundTurn,TResult Function( String inputId)?  input,TResult Function( String messageId)?  backgroundResult,TResult Function( String operationId)?  operation,TResult Function( String receiptId)?  receipt,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String turnId)?  foregroundTurn,TResult Function( String inputId)?  input,TResult Function( String sourceId,  String messageId)?  inboxMessage,TResult Function( String messageId)?  backgroundResult,TResult Function( String operationId)?  operation,TResult Function( String receiptId)?  receipt,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn() when foregroundTurn != null:
 return foregroundTurn(_that.turnId);case BridgeChatSourceId_Input() when input != null:
-return input(_that.inputId);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
+return input(_that.inputId);case BridgeChatSourceId_InboxMessage() when inboxMessage != null:
+return inboxMessage(_that.sourceId,_that.messageId);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
 return backgroundResult(_that.messageId);case BridgeChatSourceId_Operation() when operation != null:
 return operation(_that.operationId);case BridgeChatSourceId_Receipt() when receipt != null:
 return receipt(_that.receiptId);case _:
@@ -1201,11 +830,12 @@ return receipt(_that.receiptId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String turnId)  foregroundTurn,required TResult Function( String inputId)  input,required TResult Function( String messageId)  backgroundResult,required TResult Function( String operationId)  operation,required TResult Function( String receiptId)  receipt,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String turnId)  foregroundTurn,required TResult Function( String inputId)  input,required TResult Function( String sourceId,  String messageId)  inboxMessage,required TResult Function( String messageId)  backgroundResult,required TResult Function( String operationId)  operation,required TResult Function( String receiptId)  receipt,}) {final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn():
 return foregroundTurn(_that.turnId);case BridgeChatSourceId_Input():
-return input(_that.inputId);case BridgeChatSourceId_BackgroundResult():
+return input(_that.inputId);case BridgeChatSourceId_InboxMessage():
+return inboxMessage(_that.sourceId,_that.messageId);case BridgeChatSourceId_BackgroundResult():
 return backgroundResult(_that.messageId);case BridgeChatSourceId_Operation():
 return operation(_that.operationId);case BridgeChatSourceId_Receipt():
 return receipt(_that.receiptId);}
@@ -1222,11 +852,12 @@ return receipt(_that.receiptId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String turnId)?  foregroundTurn,TResult? Function( String inputId)?  input,TResult? Function( String messageId)?  backgroundResult,TResult? Function( String operationId)?  operation,TResult? Function( String receiptId)?  receipt,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String turnId)?  foregroundTurn,TResult? Function( String inputId)?  input,TResult? Function( String sourceId,  String messageId)?  inboxMessage,TResult? Function( String messageId)?  backgroundResult,TResult? Function( String operationId)?  operation,TResult? Function( String receiptId)?  receipt,}) {final _that = this;
 switch (_that) {
 case BridgeChatSourceId_ForegroundTurn() when foregroundTurn != null:
 return foregroundTurn(_that.turnId);case BridgeChatSourceId_Input() when input != null:
-return input(_that.inputId);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
+return input(_that.inputId);case BridgeChatSourceId_InboxMessage() when inboxMessage != null:
+return inboxMessage(_that.sourceId,_that.messageId);case BridgeChatSourceId_BackgroundResult() when backgroundResult != null:
 return backgroundResult(_that.messageId);case BridgeChatSourceId_Operation() when operation != null:
 return operation(_that.operationId);case BridgeChatSourceId_Receipt() when receipt != null:
 return receipt(_that.receiptId);case _:
@@ -1366,6 +997,76 @@ class _$BridgeChatSourceId_InputCopyWithImpl<$Res>
 @pragma('vm:prefer-inline') $Res call({Object? inputId = null,}) {
   return _then(BridgeChatSourceId_Input(
 inputId: null == inputId ? _self.inputId : inputId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChatSourceId_InboxMessage extends BridgeChatSourceId {
+  const BridgeChatSourceId_InboxMessage({required this.sourceId, required this.messageId}): super._();
+
+
+ final  String sourceId;
+ final  String messageId;
+
+/// Create a copy of BridgeChatSourceId
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChatSourceId_InboxMessageCopyWith<BridgeChatSourceId_InboxMessage> get copyWith => _$BridgeChatSourceId_InboxMessageCopyWithImpl<BridgeChatSourceId_InboxMessage>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatSourceId_InboxMessage&&(identical(other.sourceId, sourceId) || other.sourceId == sourceId)&&(identical(other.messageId, messageId) || other.messageId == messageId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,sourceId,messageId);
+}
+
+@override
+String toString() {
+    return 'BridgeChatSourceId.inboxMessage(sourceId: $sourceId, messageId: $messageId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChatSourceId_InboxMessageCopyWith<$Res> implements $BridgeChatSourceIdCopyWith<$Res> {
+  factory $BridgeChatSourceId_InboxMessageCopyWith(BridgeChatSourceId_InboxMessage value, $Res Function(BridgeChatSourceId_InboxMessage) _then) = _$BridgeChatSourceId_InboxMessageCopyWithImpl;
+@useResult
+$Res call({
+ String sourceId, String messageId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChatSourceId_InboxMessageCopyWithImpl<$Res>
+    implements $BridgeChatSourceId_InboxMessageCopyWith<$Res> {
+  _$BridgeChatSourceId_InboxMessageCopyWithImpl(this._self, this._then);
+
+  final BridgeChatSourceId_InboxMessage _self;
+  final $Res Function(BridgeChatSourceId_InboxMessage) _then;
+
+/// Create a copy of BridgeChatSourceId
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? sourceId = null,Object? messageId = null,}) {
+  return _then(BridgeChatSourceId_InboxMessage(
+sourceId: null == sourceId ? _self.sourceId : sourceId // ignore: cast_nullable_to_non_nullable
+as String,messageId: null == messageId ? _self.messageId : messageId // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }
@@ -2526,12 +2227,13 @@ extension BridgeConversationEventPatterns on BridgeConversationEvent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeConversationEvent_State value)?  state,TResult Function( BridgeConversationEvent_Chat value)?  chat,TResult Function( BridgeConversationEvent_Failure value)?  failure,TResult Function( BridgeConversationEvent_Closed value)?  closed,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeConversationEvent_State value)?  state,TResult Function( BridgeConversationEvent_Chat value)?  chat,TResult Function( BridgeConversationEvent_Activity value)?  activity,TResult Function( BridgeConversationEvent_Failure value)?  failure,TResult Function( BridgeConversationEvent_Closed value)?  closed,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State() when state != null:
 return state(_that);case BridgeConversationEvent_Chat() when chat != null:
-return chat(_that);case BridgeConversationEvent_Failure() when failure != null:
+return chat(_that);case BridgeConversationEvent_Activity() when activity != null:
+return activity(_that);case BridgeConversationEvent_Failure() when failure != null:
 return failure(_that);case BridgeConversationEvent_Closed() when closed != null:
 return closed(_that);case _:
   return orElse();
@@ -2551,12 +2253,13 @@ return closed(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeConversationEvent_State value)  state,required TResult Function( BridgeConversationEvent_Chat value)  chat,required TResult Function( BridgeConversationEvent_Failure value)  failure,required TResult Function( BridgeConversationEvent_Closed value)  closed,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeConversationEvent_State value)  state,required TResult Function( BridgeConversationEvent_Chat value)  chat,required TResult Function( BridgeConversationEvent_Activity value)  activity,required TResult Function( BridgeConversationEvent_Failure value)  failure,required TResult Function( BridgeConversationEvent_Closed value)  closed,}){
 final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State():
 return state(_that);case BridgeConversationEvent_Chat():
-return chat(_that);case BridgeConversationEvent_Failure():
+return chat(_that);case BridgeConversationEvent_Activity():
+return activity(_that);case BridgeConversationEvent_Failure():
 return failure(_that);case BridgeConversationEvent_Closed():
 return closed(_that);}
 }
@@ -2572,12 +2275,13 @@ return closed(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeConversationEvent_State value)?  state,TResult? Function( BridgeConversationEvent_Chat value)?  chat,TResult? Function( BridgeConversationEvent_Failure value)?  failure,TResult? Function( BridgeConversationEvent_Closed value)?  closed,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeConversationEvent_State value)?  state,TResult? Function( BridgeConversationEvent_Chat value)?  chat,TResult? Function( BridgeConversationEvent_Activity value)?  activity,TResult? Function( BridgeConversationEvent_Failure value)?  failure,TResult? Function( BridgeConversationEvent_Closed value)?  closed,}){
 final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State() when state != null:
 return state(_that);case BridgeConversationEvent_Chat() when chat != null:
-return chat(_that);case BridgeConversationEvent_Failure() when failure != null:
+return chat(_that);case BridgeConversationEvent_Activity() when activity != null:
+return activity(_that);case BridgeConversationEvent_Failure() when failure != null:
 return failure(_that);case BridgeConversationEvent_Closed() when closed != null:
 return closed(_that);case _:
   return null;
@@ -2596,11 +2300,12 @@ return closed(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeThreadSubscriptionUpdate update)?  state,TResult Function( BridgeChatBatch batch)?  chat,TResult Function( BridgeError error)?  failure,TResult Function()?  closed,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeThreadSubscriptionUpdate update)?  state,TResult Function( BridgeChatBatch batch)?  chat,TResult Function( BridgeActivitySnapshot snapshot)?  activity,TResult Function( BridgeError error)?  failure,TResult Function()?  closed,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State() when state != null:
 return state(_that.update);case BridgeConversationEvent_Chat() when chat != null:
-return chat(_that.batch);case BridgeConversationEvent_Failure() when failure != null:
+return chat(_that.batch);case BridgeConversationEvent_Activity() when activity != null:
+return activity(_that.snapshot);case BridgeConversationEvent_Failure() when failure != null:
 return failure(_that.error);case BridgeConversationEvent_Closed() when closed != null:
 return closed();case _:
   return orElse();
@@ -2620,11 +2325,12 @@ return closed();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeThreadSubscriptionUpdate update)  state,required TResult Function( BridgeChatBatch batch)  chat,required TResult Function( BridgeError error)  failure,required TResult Function()  closed,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeThreadSubscriptionUpdate update)  state,required TResult Function( BridgeChatBatch batch)  chat,required TResult Function( BridgeActivitySnapshot snapshot)  activity,required TResult Function( BridgeError error)  failure,required TResult Function()  closed,}) {final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State():
 return state(_that.update);case BridgeConversationEvent_Chat():
-return chat(_that.batch);case BridgeConversationEvent_Failure():
+return chat(_that.batch);case BridgeConversationEvent_Activity():
+return activity(_that.snapshot);case BridgeConversationEvent_Failure():
 return failure(_that.error);case BridgeConversationEvent_Closed():
 return closed();}
 }
@@ -2640,11 +2346,12 @@ return closed();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeThreadSubscriptionUpdate update)?  state,TResult? Function( BridgeChatBatch batch)?  chat,TResult? Function( BridgeError error)?  failure,TResult? Function()?  closed,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeThreadSubscriptionUpdate update)?  state,TResult? Function( BridgeChatBatch batch)?  chat,TResult? Function( BridgeActivitySnapshot snapshot)?  activity,TResult? Function( BridgeError error)?  failure,TResult? Function()?  closed,}) {final _that = this;
 switch (_that) {
 case BridgeConversationEvent_State() when state != null:
 return state(_that.update);case BridgeConversationEvent_Chat() when chat != null:
-return chat(_that.batch);case BridgeConversationEvent_Failure() when failure != null:
+return chat(_that.batch);case BridgeConversationEvent_Activity() when activity != null:
+return activity(_that.snapshot);case BridgeConversationEvent_Failure() when failure != null:
 return failure(_that.error);case BridgeConversationEvent_Closed() when closed != null:
 return closed();case _:
   return null;
@@ -2793,6 +2500,74 @@ class _$BridgeConversationEvent_ChatCopyWithImpl<$Res>
   return _then(BridgeConversationEvent_Chat(
 batch: null == batch ? _self.batch : batch // ignore: cast_nullable_to_non_nullable
 as BridgeChatBatch,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeConversationEvent_Activity extends BridgeConversationEvent {
+  const BridgeConversationEvent_Activity({required this.snapshot}): super._();
+
+
+ final  BridgeActivitySnapshot snapshot;
+
+/// Create a copy of BridgeConversationEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeConversationEvent_ActivityCopyWith<BridgeConversationEvent_Activity> get copyWith => _$BridgeConversationEvent_ActivityCopyWithImpl<BridgeConversationEvent_Activity>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeConversationEvent_Activity&&(identical(other.snapshot, snapshot) || other.snapshot == snapshot));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,snapshot);
+}
+
+@override
+String toString() {
+    return 'BridgeConversationEvent.activity(snapshot: $snapshot)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeConversationEvent_ActivityCopyWith<$Res> implements $BridgeConversationEventCopyWith<$Res> {
+  factory $BridgeConversationEvent_ActivityCopyWith(BridgeConversationEvent_Activity value, $Res Function(BridgeConversationEvent_Activity) _then) = _$BridgeConversationEvent_ActivityCopyWithImpl;
+@useResult
+$Res call({
+ BridgeActivitySnapshot snapshot
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeConversationEvent_ActivityCopyWithImpl<$Res>
+    implements $BridgeConversationEvent_ActivityCopyWith<$Res> {
+  _$BridgeConversationEvent_ActivityCopyWithImpl(this._self, this._then);
+
+  final BridgeConversationEvent_Activity _self;
+  final $Res Function(BridgeConversationEvent_Activity) _then;
+
+/// Create a copy of BridgeConversationEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? snapshot = null,}) {
+  return _then(BridgeConversationEvent_Activity(
+snapshot: null == snapshot ? _self.snapshot : snapshot // ignore: cast_nullable_to_non_nullable
+as BridgeActivitySnapshot,
   ));
 }
 

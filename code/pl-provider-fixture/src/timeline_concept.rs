@@ -21,8 +21,9 @@ pub const FAILED_PROMPT: &str = "保留这段部分结果，再展示供应商�
 pub const PARTIAL_TEXT: &str = "已经完成的部分结果必须保留，不能因后续失败而消失。";
 pub const OVERLAP_PROMPT: &str = "A07：推理尚未结束时开始正文，并保留可读流。";
 pub const OVERLAP_TEXT: &str = "正文已经开始且可以读取，先前推理稍后才结束。";
-pub const EMPTY_TEXT_PROMPT: &str = "A14：空正文开始和结束仍然分开前后两段工作。";
-pub const EMPTY_TEXT_ANSWER: &str = "空正文没有可见气泡，但前后工作不属于同一段。";
+pub const OVERLAP_EARLY_REASONING: &str = "后开始的推理 B 已先完成，推理 A 仍在进行。";
+pub const EMPTY_TEXT_PROMPT: &str = "A14：空正文开始和结束不分隔前后相邻工作。";
+pub const EMPTY_TEXT_ANSWER: &str = "空正文没有可见气泡，前后相邻工作仍属于同一段。";
 pub const REQUIRED_STEPS: usize = 9;
 // Distinct production assets, copied by the isolated harness for ONE input.
 // All are below production's 2000px / 5MiB base64 normalization limits;
@@ -43,6 +44,7 @@ const INPUT_IMAGES: [(&str, &str); 3] = [
 ];
 const OVERLAP_STAGES: &[&str] = &[
     "a07-reasoning-start",
+    "a07-b-terminal",
     "a07-text-start",
     "a07-text-readable",
     "a07-text-terminal",
@@ -70,6 +72,7 @@ pub const STAGES: &[&str] = &[
     "images-ready",
     "failed-partial",
     "a07-reasoning-start",
+    "a07-b-terminal",
     "a07-text-start",
     "a07-text-readable",
     "a07-text-terminal",
@@ -336,8 +339,8 @@ impl Control {
             .collect()
     }
 
-    /// A07 uses one real response: text is readable while the earlier reasoning
-    /// identity remains active, and even text terminal precedes reasoning terminal.
+    /// A07 holds A open while B completes, then completes text and finally A.
+    /// Every boundary is a provider lifecycle event, not a display projection.
     fn overlap_step(&self, step: usize) -> Step {
         let head = "正文已经开始且可以读取，";
         let tail = "先前推理稍后才结束。";
@@ -356,11 +359,16 @@ impl Control {
                             "这段推理在正文开始后继续保持活动。",
                         ),
                     ],
-                    text_start("concept-a07-text", 1, head),
                     vec![
-                        json!({"type":"response.output_text.delta","output_index":1,"item_id":"concept-a07-text","content_index":0,"delta":tail}),
+                        reasoning_start("concept-a07-reason-b", 1),
+                        reasoning_delta("concept-a07-reason-b", 1, OVERLAP_EARLY_REASONING),
+                        reasoning_done("concept-a07-reason-b", 1, OVERLAP_EARLY_REASONING),
                     ],
-                    vec![text_done("concept-a07-text", 1, OVERLAP_TEXT)],
+                    text_start("concept-a07-text", 2, head),
+                    vec![
+                        json!({"type":"response.output_text.delta","output_index":2,"item_id":"concept-a07-text","content_index":0,"delta":tail}),
+                    ],
+                    vec![text_done("concept-a07-text", 2, OVERLAP_TEXT)],
                     vec![reasoning_done(
                         "concept-a07-reason",
                         0,

@@ -9,6 +9,7 @@ import '../../observation/latest_value.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/content_state.dart';
 import '../domain/conversation_repository.dart';
+import '../domain/conversation_errors.dart';
 import 'conversation_read_scope.dart';
 
 /// Owns feed admission, delivery, ACK and actual retirement, but no history window.
@@ -31,12 +32,12 @@ final class ConversationContentImpl implements ConversationContent {
   final void Function(AttemptId) onAttempt;
   final ChatScope scope;
   final ReadDemand? initialDemand;
-  final LatestValue<CurrentProjection?> _projection = LatestValue(null);
+  final LatestValue<ActivitySnapshot?> _activity = LatestValue(null);
   final LatestValue<ChatUiState<bool>> _state;
   @override
   ValueObservation<ChatUiState<bool>> get state => _state;
   @override
-  ValueObservation<CurrentProjection?> get current => _projection;
+  ValueObservation<ActivitySnapshot?> get activity => _activity;
   final Map<AttemptId, _Attempt> _attempts = {};
   final Set<ConversationReadScope> _scopes = {};
   _Attempt? _current;
@@ -217,6 +218,7 @@ final class ConversationContentImpl implements ConversationContent {
         _state.publish(ChatFailed<bool>(threadId, error: a.error!));
       }
       if (a.failure != null &&
+          a.retryable &&
           !_closed &&
           _demand &&
           a.demandVersion == _demandVersion &&
@@ -267,9 +269,26 @@ final class ConversationContentImpl implements ConversationContent {
       if (!_eligible(a, a.consumer)) return;
       switch (frame.event) {
         case ConversationStateEvent(:final frame):
+          if (frame case ThreadSnapshotFrame(
+            :final completedHistoryVersion,
+            :final schemaVersion,
+          )) {
+            if (completedHistoryVersion != 1) {
+              throw ProtocolVersionMismatch(received: completedHistoryVersion);
+            }
+            if (schemaVersion != threadSchemaVersion) {
+              throw ProtocolVersionMismatch(
+                received: schemaVersion,
+                supported: threadSchemaVersion,
+                field: 'threadSchemaVersion',
+              );
+            }
+          }
           onState(a.id, frame);
         case ConversationChatEvent(:final batch):
           await _deliver(a, a.consumer, batch);
+        case ConversationActivityEvent(:final snapshot):
+          await _deliverActivity(a, a.consumer, snapshot);
         case ConversationFailureEvent() || ConversationClosedEvent():
           throw const ConversationContinuityError('unexpected terminal');
       }
@@ -317,16 +336,119 @@ final class ConversationContentImpl implements ConversationContent {
   }) async {
     bool eligible() => _eligible(a, lease) && (queryScope?.isActive ?? true);
     if (!eligible()) return;
-    await lease.consumer.applyBatch(batch);
+    _validateBatch(a, batch, query: queryScope != null);
+    // Empty Append advances only the checked prefix; it inserts no messages.
+    if (batch.placement != ChatPlacement.append || batch.entries.isNotEmpty) {
+      await lease.consumer.applyBatch(batch);
+    }
     // Never consult a new selection/consumer after component acceptance.
     if (!eligible()) return;
-    if (scope is MainChatScope && batch.current != null) {
-      _projection.publish(batch.current);
+    if (batch.placement != ChatPlacement.prepend) {
+      a.through = batch.throughSeq;
+      a.hasSet = true;
+      final previous = a.activity;
+      if (previous != null) {
+        final retired = batch.entries
+            .map(completedActivityIdentity)
+            .whereType<ActivityIdentity>()
+            .toSet();
+        final remaining = previous.entries
+            .where((entry) => !retired.contains(entry.identity))
+            .toList();
+        if (remaining.length != previous.entries.length) {
+          final next = ActivitySnapshot(
+            revision: previous.revision,
+            completedThrough: batch.throughSeq,
+            executionPresent: previous.executionPresent,
+            entries: remaining,
+          );
+          await lease.consumer.applyActivity(next);
+          if (!eligible()) return;
+          a.activity = next;
+          _activity.publish(next);
+        }
+      }
     }
     if (!eligible()) return;
     if (batch.placement == ChatPlacement.set) {
       _retries = 0;
       _state.publish(ChatReady<bool>(threadId, true));
+    }
+  }
+
+  void _validateBatch(_Attempt a, ChatBatch batch, {required bool query}) {
+    final validPlacement = switch (batch.placement) {
+      ChatPlacement.set => !query && !a.hasSet && batch.fromSeq == null,
+      ChatPlacement.prepend => query && a.hasSet && batch.fromSeq == null,
+      ChatPlacement.append =>
+        !query &&
+            a.hasSet &&
+            batch.before == null &&
+            batch.fromSeq == a.through &&
+            batch.throughSeq > a.through,
+    };
+    var previous = batch.fromSeq ?? 0;
+    var valid = validPlacement && batch.throughSeq >= 0;
+    for (final entry in batch.entries) {
+      valid =
+          valid &&
+          entry.recordId.isNotEmpty &&
+          entry.completionSeq > previous &&
+          entry.completionSeq <= batch.throughSeq &&
+          entry.atom.lifecycle is TerminalChatAtom &&
+          (entry.atom.completionItemId == null ||
+              entry.atom.completionItemId == entry.recordId) &&
+          (entry.atom.completionSeq == null ||
+              entry.atom.completionSeq == entry.completionSeq);
+      previous = entry.completionSeq;
+      if (scope is MainChatScope) {
+        valid =
+            valid &&
+            entry.run != null &&
+            entry.mainPresentation != MainPresentation.hidden;
+      }
+      if (scope case RunChatScope(:final reference)) {
+        valid = valid && entry.run?.startSeq == reference.startSeq;
+      }
+    }
+    if (!valid) {
+      throw const ConversationContinuityError('invalid completion batch');
+    }
+  }
+
+  Future<void> _deliverActivity(
+    _Attempt a,
+    _ConsumerLease lease,
+    ActivitySnapshot snapshot,
+  ) async {
+    if (!a.hasSet) {
+      throw const ConversationContinuityError(
+        'activity before completion baseline',
+      );
+    }
+    if (snapshot.completedThrough < a.through ||
+        snapshot.revision <= a.activityRevision)
+      return;
+    if (snapshot.completedThrough != a.through) {
+      throw const ConversationContinuityError('activity completion barrier');
+    }
+    await lease.consumer.applyActivity(snapshot);
+    if (!_eligible(a, lease)) return;
+    a.activityRevision = snapshot.revision;
+    a.activity = snapshot;
+    _activity.publish(snapshot);
+  }
+
+  /// Only affected read resources retire; feed/history/draft ownership stays intact.
+  void businessRefsChanged(
+    AttemptId attemptId,
+    ThreadBusinessRefs? previous,
+    ThreadBusinessRefs next,
+  ) {
+    final attempt = _attempts[attemptId];
+    if (attempt == null || !_live(attempt) || previous == next) return;
+    for (final scope in List.of(attempt.scopes)) {
+      scope.businessRefsChanged(previous, next);
     }
   }
 
@@ -366,7 +488,13 @@ final class ConversationContentImpl implements ConversationContent {
   void _failAttempt(_Attempt a, Object error) {
     if (!_live(a)) return;
     a.failure = error;
-    final exhausted = _retries >= const RetryPolicy().delays.length;
+    final versionMismatch =
+        error is ProtocolVersionMismatch ||
+        (error is StudioFailure &&
+            error.reason == StudioFailureReason.protocolVersionMismatch);
+    final exhausted =
+        versionMismatch || _retries >= const RetryPolicy().delays.length;
+    a.retryable = !versionMismatch;
     onFailure(a.id, error, exhausted);
     if (!_live(a)) return;
     _state.publish(
@@ -552,6 +680,11 @@ final class _Attempt {
   final Set<Future<void>> pending = {};
   Future<void> serial = Future.value();
   bool terminal = false;
+  bool hasSet = false;
+  bool retryable = true;
+  int through = 0;
+  int activityRevision = -1;
+  ActivitySnapshot? activity;
   int received = 0;
   int acked = 0;
   bool acking = false;

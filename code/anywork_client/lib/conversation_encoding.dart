@@ -78,77 +78,20 @@ Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
   if (wait.messagesReady != null) 'messagesReady': wait.messagesReady,
 };
 
-Map<String, Object?> chatEntryToJson(ChatEntry entry) => switch (entry) {
-  ItemChatEntry(:final item) => {
-    'kind': 'item',
-    'value': timelineItemToJson(item),
-  },
-  ChatAtomEntry(:final atom) => {'kind': 'atom', 'value': chatAtomToJson(atom)},
-  ChatSourceEntry(:final state) => {
-    'kind': 'source',
-    'value': chatSourceStateToJson(state),
-  },
+Map<String, Object?> completedEntryToJson(CompletedEntry entry) => {
+  'recordId': entry.recordId,
+  'completionSeq': entry.completionSeq,
+  'run': entry.run == null
+      ? null
+      : {'startSeq': entry.run!.startSeq, 'ordinal': entry.run!.ordinal},
+  'mainPresentation': entry.mainPresentation.name,
+  'atom': chatAtomToJson(entry.atom),
 };
 
-Map<String, Object?> timelineMembersRefToJson(TimelineMembersRef reference) => {
+Map<String, Object?> completionRunRefToJson(CompletionRunRef reference) => {
   'databaseId': reference.databaseId,
-  'projectionVersion': reference.projectionVersion,
-  'projectionGeneration': reference.projectionGeneration,
-  'itemId': reference.itemId,
-};
-
-Map<String, Object?> timelineItemToJson(TimelineItem item) => {
-  'id': item.id,
-  'kind': item.kind.name,
-  'source': chatSourceIdToJson(item.source),
-  if (item.atomKind != null) 'atomKind': item.atomKind!.name,
-  'delivery': item.delivery.name,
-  if (item.outcome != null) 'outcome': item.outcome!.name,
-  if (item.textChannel != null)
-    'textChannel': _threadTextChannelToJson(item.textChannel!),
-  if (item.turnId != null) 'turnId': item.turnId,
-  'startedAt': item.startedAt,
-  'finishedAt': item.finishedAt,
-  if (item.summary case final summary?)
-    'summary': {
-      'memberCount': summary.memberCount,
-      'activeCount': summary.activeCount,
-      'failedCount': summary.failedCount,
-      'cancelledCount': summary.cancelledCount,
-      'latestThinkingSummary': summary.latestThinkingSummary,
-      'categories': [
-        for (final category in summary.categories)
-          {'category': category.category.name, 'count': category.count},
-      ],
-      'startedAt': summary.startedAt,
-      'finishedAt': summary.finishedAt,
-    },
-  if (item.members case final reference?)
-    'members': timelineMembersRefToJson(reference),
-  if (item.contents.isNotEmpty)
-    'contents': [
-      for (final content in item.contents)
-        {
-          'role': content.role.name,
-          'reference': contentRefToJson(content.reference),
-        },
-    ],
-  if (item.payload case final payload?) 'payload': chatPayloadToJson(payload),
-  if (item.contentItemId != null) 'contentItemId': item.contentItemId,
-  'position': item.position,
-  'admissionClosed': item.admissionClosed,
-};
-
-/// Encodes a current preview using the same canonical channel names as items.
-Map<String, Object?> currentContentPreviewToJson(
-  CurrentContentPreview preview,
-) => {
-  'id': preview.id,
-  'role': preview.role.name,
-  if (preview.textChannel != null)
-    'textChannel': _threadTextChannelToJson(preview.textChannel!),
-  'text': preview.text,
-  'reference': contentRefToJson(preview.reference),
+  'indexVersion': reference.indexVersion,
+  'startSeq': reference.startSeq,
 };
 
 /// Counts the canonical UTF-8 entry, including the discriminant and envelope.
@@ -164,6 +107,11 @@ Map<String, Object?> chatSourceIdToJson(ChatSourceId source) =>
         'turnId': turnId,
       },
       InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
+      InboxMessageChatSource(:final sourceId, :final messageId) => {
+        'kind': 'inboxMessage',
+        'sourceId': sourceId,
+        'messageId': messageId,
+      },
       BackgroundResultChatSource(:final messageId) => {
         'kind': 'backgroundResult',
         'messageId': messageId,

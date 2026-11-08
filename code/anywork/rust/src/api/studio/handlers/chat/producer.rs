@@ -94,6 +94,9 @@ fn convert(event: ConversationEvent) -> Result<BridgeConversationEvent, BridgeEr
         ConversationEvent::Chat { batch } => BridgeConversationEvent::Chat {
             batch: Box::new(chat::batch(*batch)),
         },
+        ConversationEvent::Activity { snapshot } => BridgeConversationEvent::Activity {
+            snapshot: Box::new(chat::activity((*snapshot).clone())),
+        },
     })
 }
 
@@ -212,8 +215,9 @@ mod tests {
     use super::*;
     use crate::api::studio::types::{
         BridgeChatAtom, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatBatch,
-        BridgeChatDeliveryKind, BridgeChatEntry, BridgeChatPlacement, BridgeChatSourceId,
-        BridgeChatTerminalOutcome, BridgeErrorCode, BridgePayloadData,
+        BridgeChatDeliveryKind, BridgeChatPlacement, BridgeChatSourceId, BridgeChatTerminalOutcome,
+        BridgeCompletedEntry, BridgeCompletionRunPosition, BridgeErrorCode, BridgeMainPresentation,
+        BridgePayloadData,
     };
 
     fn data(payload_bytes: usize) -> BridgeConversationFrame {
@@ -224,37 +228,47 @@ mod tests {
             event: BridgeConversationEvent::Chat {
                 batch: Box::new(BridgeChatBatch {
                     placement: BridgeChatPlacement::Append,
-                    entries: vec![BridgeChatEntry::Atom(Box::new(BridgeChatAtom {
-                        id: "member".into(),
-                        completion_item_id: Some("frozen-completion".into()),
-                        completion_seq: Some(3),
-                        source: BridgeChatSourceId::BackgroundResult {
-                            message_id: "source".into(),
-                        },
-                        source_state: None,
-                        source_order: Some(2),
-                        kind: BridgeChatAtomKind::ToolCall,
-                        delivery: BridgeChatDeliveryKind::BackgroundHandoff,
-                        lifecycle: BridgeChatAtomLifecycle::Terminal {
-                            started: None,
-                            ended: None,
-                            outcome: BridgeChatTerminalOutcome::Transferred,
-                        },
-                        turn_id: None,
-                        attempt_id: None,
-                        tool: None,
-                        wait: None,
-                        text_channel: None,
-                        content_present: None,
-                        started_at: None,
-                        finished_at: None,
-                        contents: Vec::new(),
-                        payload: Some(BridgePayloadData::Inline {
-                            bytes: vec![b'x'; payload_bytes],
+                    entries: vec![BridgeCompletedEntry {
+                        record_id: "frozen-completion".into(),
+                        completion_seq: 3,
+                        run: Some(BridgeCompletionRunPosition {
+                            start_seq: 3,
+                            ordinal: 1,
                         }),
-                    }))],
+                        main_presentation: BridgeMainPresentation::Single,
+                        atom: BridgeChatAtom {
+                            id: "member".into(),
+                            completion_item_id: Some("frozen-completion".into()),
+                            completion_seq: Some(3),
+                            source: BridgeChatSourceId::ForegroundTurn {
+                                turn_id: "turn".into(),
+                            },
+                            source_state: None,
+                            source_order: Some(2),
+                            kind: BridgeChatAtomKind::Text,
+                            delivery: BridgeChatDeliveryKind::Foreground,
+                            lifecycle: BridgeChatAtomLifecycle::Terminal {
+                                started: None,
+                                ended: None,
+                                outcome: BridgeChatTerminalOutcome::Completed,
+                            },
+                            turn_id: None,
+                            attempt_id: None,
+                            tool: None,
+                            wait: None,
+                            text_channel: None,
+                            content_present: None,
+                            started_at: None,
+                            finished_at: None,
+                            contents: Vec::new(),
+                            payload: Some(BridgePayloadData::Inline {
+                                bytes: vec![b'x'; payload_bytes],
+                            }),
+                        },
+                    }],
                     before: None,
-                    current: None,
+                    from_seq: Some(2),
+                    through_seq: 3,
                 }),
             },
         }

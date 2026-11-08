@@ -44,7 +44,7 @@ void main() {
     final original = owner.queryScope;
     final collection = CurrentCollectionRef(
       databaseId: 'database',
-      collection: 'tools',
+      collection: 'interactions',
       revision: 1,
     );
     const demand = ReadDemand(maxItems: 1, maxBytes: 64 * 1024);
@@ -211,7 +211,7 @@ final class _Content implements ConversationContent {
   final source = LatestValue<ChatUiState<bool>>(
     const ChatReady<bool>('thread', true),
   );
-  final projection = LatestValue<CurrentProjection?>(null);
+  final projection = LatestValue<ActivitySnapshot?>(null);
   final scopes = <_Scope>[];
   AttemptId attempt = const AttemptId(1);
   Future<CurrentCollectionPage> Function(
@@ -226,7 +226,7 @@ final class _Content implements ConversationContent {
   @override
   ValueObservation<ChatUiState<bool>> get state => source;
   @override
-  ValueObservation<CurrentProjection?> get current => projection;
+  ValueObservation<ActivitySnapshot?> get activity => projection;
   @override
   bool get hasDemand => true;
   @override
@@ -258,6 +258,14 @@ final class _Content implements ConversationContent {
 }
 
 final class _Scope implements ConversationQueryScope {
+  @override
+  Future<ThreadBusinessRefs> readBusinessRefs() async =>
+      const ThreadBusinessRefs(plan: null, interactions: null);
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) => throw UnimplementedError('This fixture only reads content windows');
   _Scope(this.generation, {this.onPage, this.onRead});
   final Future<CurrentCollectionPage> Function(
     CurrentCollectionRef,

@@ -21,6 +21,7 @@ void main() {
     );
     final malformed = fixtureItem(
       id: 'malformed',
+      seq: 3,
       payload: InlinePayload(bytes: bytes),
     );
     const reference = ContentRef(
@@ -29,22 +30,28 @@ void main() {
     );
     final deferred = fixtureItem(
       id: 'large',
+      seq: 4,
       payload: DeferredPayload(reference: reference, byteLength: 1000000),
     );
     final batch = ChatBatch(
       placement: ChatPlacement.append,
-      entries: ([unknown, malformed, deferred]).map(ItemChatEntry.new).toList(),
+      fromSeq: 1,
+      throughSeq: 4,
+      entries: ([unknown, malformed, deferred]).toList(),
     );
     await feed.deliver(ConversationChatEvent(batch: batch));
     final accepted = fixture.consumers['thread']!.batches.last;
     final atoms = accepted.entries
-        .whereType<ItemChatEntry>()
-        .map((entry) => entry.item)
+        .cast<CompletedEntry>()
+        .map((entry) => entry)
         .toList();
     expect(accepted, same(batch));
     expect(atoms, [unknown, malformed, deferred]);
-    expect((atoms[1].payload as InlinePayload).bytes, bytes);
-    expect((atoms[2].payload as DeferredPayload).reference, same(reference));
+    expect((atoms[1].atom.payload as InlinePayload).bytes, bytes);
+    expect(
+      (atoms[2].atom.payload as DeferredPayload).reference,
+      same(reference),
+    );
     expect(feed.acknowledgements, [1, 2]);
     expect((await fixture.close()).complete, isTrue);
   });
@@ -64,7 +71,9 @@ void main() {
         }
         final batch = ChatBatch(
           placement: ChatPlacement.append,
-          entries: ([chatMessage(id: 'wrong')]).map(ItemChatEntry.new).toList(),
+          fromSeq: 1,
+          throughSeq: 2,
+          entries: ([chatMessage(id: 'wrong', seq: 2)]).toList(),
         );
         if (mismatch == 'credit') {
           feed.send(ConversationChatEvent(batch: batch));
@@ -102,10 +111,12 @@ void main() {
     final feed = await fixture.open(initial: initial, demand: _demand);
     final append = ChatBatch(
       placement: ChatPlacement.append,
+      fromSeq: 1,
+      throughSeq: 3,
       entries: ([
-        chatMessage(id: 'one'),
-        chatMessage(id: 'two'),
-      ]).map(ItemChatEntry.new).toList(),
+        chatMessage(id: 'one', seq: 2),
+        chatMessage(id: 'two', seq: 3),
+      ]).toList(),
     );
     await feed.deliver(ConversationChatEvent(batch: append));
     final batches = fixture.consumers['thread']!.batches;
@@ -117,8 +128,8 @@ void main() {
       reason: 'Append carries no cursor replacement',
     );
     expect(
-      batches.last.entries.whereType<ItemChatEntry>().map(
-        (entry) => entry.item.id,
+      batches.last.entries.cast<CompletedEntry>().map(
+        (entry) => entry.recordId,
       ),
       ['one', 'two'],
     );

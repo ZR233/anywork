@@ -1,7 +1,7 @@
 //! Upgrade the two published TimelineItems layouts through a separate named step.
 //! Earlier Applied records, source facts, item order and projection generation stay intact.
+use super::legacy_timeline_store as timeline;
 use super::*;
-use crate::studio::storage::history::conversation::timeline;
 
 pub(super) struct MemberReadMetadata;
 

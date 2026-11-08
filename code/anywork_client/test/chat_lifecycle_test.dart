@@ -7,12 +7,67 @@ import 'support/timeline_transport.dart';
 
 const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
-ChatBatch _appendMessage(String id) => ChatBatch(
+ChatBatch _appendMessage(String id, {int from = 1}) => ChatBatch(
   placement: ChatPlacement.append,
-  entries: [ItemChatEntry(chatMessage(id: id))],
+  fromSeq: from,
+  throughSeq: from + 1,
+  entries: [chatMessage(id: id, seq: from + 1)],
 );
 
 void main() {
+  for (final label in <String?>[
+    'protocolVersionMismatch',
+    null,
+    'someFutureReason',
+  ]) {
+    test(
+      'backend Protocol reason=$label controls version retry without parsing text',
+      () async {
+        final timers = _RetryTimers();
+        await runZoned(() async {
+          final fixture = ConversationFixture();
+          final feed = await fixture.open(demand: _demand);
+          await fixture.transport.productTopicOpened(
+            const ThreadMcpTopic(threadId: 'thread'),
+          );
+          // Settle the unrelated MCP stability timer before inspecting retries.
+          await timers.fireNext();
+          final content = fixture.session().content;
+          final failure = StudioFailure(
+            code: StudioFailureCode.protocol,
+            reason: StudioFailureReason.fromLabel(label),
+            message: 'ProtocolVersionMismatch',
+            retryable: false,
+            correlationId: 'backend-content-version',
+            detailsJson: label == null ? null : '{"reason":"$label"}',
+          );
+          final stopped = content.state.waitFor(
+            (state) =>
+                state is ChatFailed<bool> || state is ChatReconnecting<bool>,
+          );
+          feed.send(ConversationFailureEvent(failure: failure));
+          final state = await stopped;
+          expect((await content.joinRetired()).complete, isTrue);
+          expect(feed.acknowledgements, [1]);
+          if (label == 'protocolVersionMismatch') {
+            expect((state as ChatFailed<bool>).error, same(failure));
+            expect(timers.hasPending, isFalse);
+            expect(fixture.transport.opens, hasLength(1));
+          } else {
+            expect((state as ChatReconnecting<bool>).error, same(failure));
+            expect(timers.hasPending, isTrue);
+            await timers.fireNext();
+            await fixture.transport.opened(1);
+            fixture.transport.opens[1].result.complete(
+              TestConversationFeed(subscriptionId: 'protocol-retry'),
+            );
+          }
+          expect((await fixture.close()).complete, isTrue);
+        }, zoneSpecification: timers.specification);
+      },
+    );
+  }
+
   test('Main and multiple independently expanded details read and close concurrently', () async {
     final fixture = ConversationFixture();
     final main = await fixture.open(demand: _demand);
@@ -393,7 +448,9 @@ void main() {
       await oldA.ackStarted(2);
       // A following native frame may arrive after ACK starts, before Dart's
       // acknowledge Future settles; it still belongs to this original attempt.
-      oldA.send(ConversationChatEvent(batch: _appendMessage('item-99')));
+      oldA.send(
+        ConversationChatEvent(batch: _appendMessage('item-99', from: 2)),
+      );
       await fixture.consumers['A']!.waitForCount(3);
       final scope = content.openScope(generation: 1);
       final pageReply = Completer<ChatBatch>();
@@ -451,7 +508,7 @@ void main() {
         reason: 'The retired query still owns its future',
       );
       pageReply.complete(
-        ChatBatch(placement: ChatPlacement.prepend, entries: []),
+        ChatBatch(placement: ChatPlacement.prepend, throughSeq: 1, entries: []),
       );
       await reading;
       expect((await closing).complete, isTrue);
@@ -744,7 +801,7 @@ void main() {
       expect(
         consumer.batches.last,
         isA<ChatBatch>().having(
-          (batch) => (batch.entries.single as ItemChatEntry).item.id,
+          (batch) => (batch.entries.single).recordId,
           'message identity',
           'item-9',
         ),

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_encoding.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -60,11 +58,22 @@ void main() {
   };
   test('canonical entry preserves Unicode, distinct payload identity and FrozenNone', () {
     final value = atom(InlinePayload(bytes: [0, 34, 255]));
-    expect(chatEntryToJson(ChatAtomEntry(value)), inlineEntry);
+    expect(chatAtomToJson(value), inlineEntry['value']);
     expect(chatAtomToJson(value).containsKey('sourceState'), isFalse);
-    final encoded = jsonEncode(inlineEntry);
-    expect(chatAtomEntryEncodedLength(value), utf8.encode(encoded).length);
-    expect(chatAtomEntryEncodedLength(value), greaterThan(encoded.length));
+    final entry = CompletedEntry(
+      recordId: '实际载荷',
+      completionSeq: 7,
+      run: const CompletionRunPosition(startSeq: 1, ordinal: 7),
+      mainPresentation: MainPresentation.foregroundWork,
+      atom: value,
+    );
+    expect(completedEntryToJson(entry), {
+      'recordId': '实际载荷',
+      'completionSeq': 7,
+      'run': {'startSeq': 1, 'ordinal': 7},
+      'mainPresentation': 'foregroundWork',
+      'atom': inlineEntry['value'],
+    });
   });
   test(
     'same-cut source annotation and Deferred retain the original capability',
@@ -98,11 +107,7 @@ void main() {
           },
         },
       };
-      expect(chatEntryToJson(ChatAtomEntry(value)), expected);
-      expect(
-        chatAtomEntryEncodedLength(value),
-        utf8.encode(jsonEncode(expected)).length,
-      );
+      expect(chatAtomToJson(value), expected['value']);
     },
   );
 }

@@ -57,7 +57,7 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   ConversationContent get content => _content;
   @override
-  ValueObservation<CurrentProjection?> get current => _content.current;
+  ValueObservation<ActivitySnapshot?> get activity => _content.activity;
   @override
   bool get isActive => _content.hasDemand;
   @override
@@ -120,7 +120,15 @@ final class ConversationSessionImpl implements ConversationSession {
           directoryRow: _identity,
         );
         final eligible = _eligibleResync(attemptId);
+        final previousRefs = state.businessRefs;
         _source.publish(candidate);
+        if (identical(state, candidate)) {
+          _content.businessRefsChanged(
+            attemptId,
+            previousRefs,
+            candidate.businessRefs!,
+          );
+        }
         if (identical(state, candidate)) _publishCurrentInputFacts(candidate);
         if (eligible != null &&
             identical(_resync, eligible) &&
@@ -151,7 +159,15 @@ final class ConversationSessionImpl implements ConversationSession {
             );
           case ThreadFrameDecision.apply:
             final candidate = applyThreadNotificationState(state, frame);
+            final previousRefs = state.businessRefs;
             _source.publish(candidate);
+            if (identical(state, candidate)) {
+              _content.businessRefsChanged(
+                attemptId,
+                previousRefs,
+                candidate.businessRefs!,
+              );
+            }
             if (identical(state, candidate))
               _publishCurrentInputFacts(candidate);
         }

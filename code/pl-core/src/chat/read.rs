@@ -3,9 +3,27 @@
 
 use crate::chat::*;
 use std::{
+    collections::BTreeMap,
     ops::Bound::{Excluded, Included, Unbounded},
     sync::Arc,
 };
+
+/// The host can use the same policy on Records catch-up. Only Single may inline on Main.
+pub(crate) struct RunHeadBudget<'a>(pub &'a dyn ChatBudget);
+impl ChatBudget for RunHeadBudget<'_> {
+    fn fixed_bytes(&self) -> usize {
+        self.0.fixed_bytes()
+    }
+    fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
+        self.0.item_bytes(header, mode)
+    }
+    fn manifest_bytes(&self, descriptor: &ContentDescriptor) -> usize {
+        self.0.manifest_bytes(descriptor)
+    }
+    fn allow_inline(&self, header: &ChatItemHeader) -> bool {
+        header.read_hint == ChatReadHint::Single && self.0.allow_inline(header)
+    }
+}
 
 struct Selection {
     records: Vec<(Arc<ChatItem>, PayloadMode)>,
@@ -15,7 +33,7 @@ struct Selection {
 }
 
 fn select_records<'a>(
-    records: impl Iterator<Item = &'a Arc<ChatItem>>,
+    mut records: impl Iterator<Item = &'a Arc<ChatItem>>,
     demand: ReadDemand,
     budget: &dyn ChatBudget,
 ) -> Selection {
@@ -25,10 +43,14 @@ fn select_records<'a>(
         exhausted: false,
         candidates: 0,
     };
-    for record in records {
+    loop {
         if selection.remaining.max_items == 0 || selection.remaining.max_bytes == 0 {
             return selection;
         }
+        let Some(record) = records.next() else {
+            selection.exhausted = true;
+            return selection;
+        };
         selection.candidates += 1;
         let Some(mode) = select_payload(&record.header, selection.remaining.max_bytes, budget)
         else {
@@ -38,9 +60,32 @@ fn select_records<'a>(
         selection.remaining.max_items -= 1;
         selection.records.push((record.clone(), mode));
     }
-    // Exact count/byte fills deliberately keep conservative continuation; no lookahead is required.
-    selection.exhausted = selection.remaining.max_items > 0 && selection.remaining.max_bytes > 0;
-    selection
+}
+
+fn select_run_heads(
+    index: Option<&BTreeMap<u64, Arc<ChatItem>>>,
+    lower: u64,
+    mut upper: u64,
+    demand: ReadDemand,
+    budget: &dyn ChatBudget,
+) -> Selection {
+    // Each lookup jumps to start-1. Never enumerate the members of a run, even across D.
+    let records = std::iter::from_fn(|| {
+        if upper <= lower {
+            return None;
+        }
+        let (_, record) = index?
+            .range((Excluded(lower), Included(upper)))
+            .next_back()?;
+        upper = record
+            .header
+            .run
+            .expect("visible index contains runs")
+            .start_seq
+            - 1;
+        Some(record)
+    });
+    select_records(records, demand, budget)
 }
 
 fn project(records: Vec<(Arc<ChatItem>, PayloadMode)>) -> Vec<ChatPageItem> {
@@ -80,11 +125,14 @@ fn validate_history(
     page: &ChatHistoryPage,
     request: &ChatHistoryRequest,
     budget: &dyn ChatBudget,
+    run_heads: bool,
 ) -> Result<ReadDemand, ChatError> {
     let mut remaining = request.demand;
     let mut previous = request.after;
+    let mut previous_run_end = None;
     for item in &page.items {
         let header = &item.header;
+        header.validate_run()?;
         if header.append_seq <= previous
             || header.append_seq > request.ceiling
             || (request.query.is_none() && header.append_seq != previous + 1)
@@ -98,6 +146,22 @@ fn validate_history(
             || header.item_id.is_empty()
         {
             return Err(ChatError::Conflict(header.item_id.clone()));
+        }
+        if matches!(item.payload, PayloadData::Inline(_)) && !budget.allow_inline(header) {
+            return Err(ChatError::Conflict(
+                "history inlined a header-only payload".into(),
+            ));
+        }
+        if run_heads {
+            let run = header
+                .run
+                .ok_or_else(|| ChatError::Conflict("hidden run head".into()))?;
+            if previous_run_end.is_some_and(|end| run.start_seq <= end) {
+                return Err(ChatError::Conflict(
+                    "overlapping run representatives".into(),
+                ));
+            }
+            previous_run_end = Some(header.append_seq);
         }
         match &item.payload {
             PayloadData::Inline(bytes) if bytes.len() as u64 == header.byte_length => {}
@@ -137,16 +201,110 @@ impl Session {
         }
     }
 
+    /// Read one completion envelope without materializing its contents manifest. Capture the epoch,
+    /// H/D and pending Arc together before any history IO; a miss never re-reads newer RAM state.
+    pub async fn read_item(
+        &self,
+        request: ChatItemRequest,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ChatPageItem>, ChatError> {
+        self.validate_epoch(&request.epoch)?;
+        if request.item_id.is_empty() {
+            return Err(ChatError::InvalidArgument("empty item identity".into()));
+        }
+        let demand = ReadDemand {
+            max_items: 1,
+            ..reserve(request.demand, budget)?
+        };
+        self.ensure_initialized().await?;
+        let (ceiling, durable, pending) = self.with_timeline(|state| {
+            self.validate_epoch(&request.epoch)?;
+            let ceiling = request.ceiling.unwrap_or(state.head);
+            if ceiling > state.head {
+                return Err(ChatError::InvalidArgument(
+                    "ceiling exceeds published head".into(),
+                ));
+            }
+            Ok((
+                ceiling,
+                state.durable.min(ceiling),
+                state.pending_record(&request.item_id),
+            ))
+        })?;
+        if let Some(record) = pending {
+            if record.header.append_seq > ceiling {
+                return Ok(None);
+            }
+            let mode =
+                select_payload(&record.header, demand.max_bytes, budget).ok_or_else(|| {
+                    ChatError::InvalidDemand("demand cannot hold the item envelope".into())
+                })?;
+            return Ok(Some(ChatPageItem {
+                header: record.header.clone(),
+                payload: match mode {
+                    PayloadMode::Inline => PayloadData::Inline(record.payload.clone()),
+                    PayloadMode::Deferred => PayloadData::Deferred {
+                        item_id: record.header.item_id.clone(),
+                        byte_length: record.header.byte_length,
+                    },
+                },
+            }));
+        }
+        if durable == 0 {
+            return Ok(None);
+        }
+        let history_request = ChatHistoryItemRequest {
+            item_id: request.item_id,
+            ceiling: durable,
+            demand,
+        };
+        let Some(item) = self.0.history.read_item(&history_request, budget).await? else {
+            return Ok(None);
+        };
+        item.header.validate_run()?;
+        if item.header.item_id != history_request.item_id
+            || item.header.append_seq > history_request.ceiling
+        {
+            return Err(ChatError::Conflict(
+                "history returned an out-of-cut item identity".into(),
+            ));
+        }
+        match &item.payload {
+            PayloadData::Inline(bytes)
+                if budget.allow_inline(&item.header)
+                    && bytes.len() as u64 == item.header.byte_length => {}
+            PayloadData::Deferred {
+                item_id,
+                byte_length,
+            } if item_id == &item.header.item_id && *byte_length == item.header.byte_length => {}
+            _ => return Err(ChatError::Conflict("invalid item payload envelope".into())),
+        }
+        if budget.item_bytes(&item.header, item.payload.mode()) > demand.max_bytes {
+            return Err(ChatError::Overloaded(
+                "history exceeded item envelope demand".into(),
+            ));
+        }
+        Ok(Some(item))
+    }
+
     pub async fn page(
         &self,
         request: ChatPageRequest,
         budget: &dyn ChatBudget,
     ) -> Result<ChatPage, ChatError> {
         request.query.validate()?;
+        let run_budget = RunHeadBudget(budget);
+        let budget: &dyn ChatBudget = if request.query.selection == ChatSelection::RunHeads {
+            &run_budget
+        } else {
+            budget
+        };
         let demand = reserve(request.demand, budget)?;
         if let Some(before) = &request.before {
             self.validate_epoch(&before.epoch)?;
             if before.query != request.query
+                || before.version != CHAT_CURSOR_VERSION
+                || before.index_version != CHAT_INDEX_VERSION
                 || request
                     .ceiling
                     .is_some_and(|ceiling| ceiling != before.ceiling)
@@ -183,6 +341,8 @@ impl Session {
                     exhausted: true,
                     candidates: 0,
                 }
+            } else if request.query.selection == ChatSelection::RunHeads {
+                select_run_heads(records, state.durable, upper, demand, budget)
             } else {
                 select_records(
                     records.into_iter().flat_map(|index| {
@@ -195,7 +355,16 @@ impl Session {
                     budget,
                 )
             };
-            Ok((head, state.durable.min(head), selection))
+            let sql_upper = if request.query.selection == ChatSelection::RunHeads {
+                selection
+                    .records
+                    .last()
+                    .and_then(|(record, _)| record.header.run)
+                    .map_or(upper, |run| upper.min(run.start_seq - 1))
+            } else {
+                upper
+            };
+            Ok((head, state.durable.min(head).min(sql_upper), selection))
         })?;
         tracing::debug!(
             target: "conversation_work",
@@ -223,7 +392,12 @@ impl Session {
                 demand: selected.remaining,
             };
             let page = self.0.history.page(&history_request, budget).await?;
-            validate_history(&page, &history_request, budget)?;
+            validate_history(
+                &page,
+                &history_request,
+                budget,
+                request.query.selection == ChatSelection::RunHeads,
+            )?;
             stored_exhausted = page.exhausted;
             stored_items = page.items;
         }
@@ -238,10 +412,16 @@ impl Session {
             None
         } else {
             stored_items.first().map(|item| ChatCursor {
+                version: CHAT_CURSOR_VERSION,
+                index_version: CHAT_INDEX_VERSION,
                 epoch: self.epoch(),
-                query: request.query,
+                query: request.query.clone(),
                 ceiling: head,
-                append_seq: item.header.append_seq,
+                append_seq: if request.query.selection == ChatSelection::RunHeads {
+                    item.header.run.expect("validated run head").start_seq
+                } else {
+                    item.header.append_seq
+                },
             })
         };
         Ok(ChatPage {
@@ -253,6 +433,7 @@ impl Session {
     }
 
     /// Bounded internal replay from a fixed epoch/position. Filtered sequences may have gaps.
+    /// RunHeads replay delivers EVERY visible completion, never just the newest representative.
     pub async fn completed_after(
         &self,
         after: ChatCompletionCursor,
@@ -265,6 +446,15 @@ impl Session {
         if let Some(query) = &query {
             query.validate()?;
         }
+        let run_budget = RunHeadBudget(budget);
+        let budget: &dyn ChatBudget = if query
+            .as_ref()
+            .is_some_and(|query| query.selection == ChatSelection::RunHeads)
+        {
+            &run_budget
+        } else {
+            budget
+        };
         let demand = reserve(demand, budget)?;
         self.ensure_initialized().await?;
         let (head, durable, captured) = self.with_timeline(|state| {
@@ -302,7 +492,7 @@ impl Session {
                 demand: remaining,
             };
             let stored = self.0.history.page_after(&request, budget).await?;
-            remaining = validate_history(&stored, &request, budget)?;
+            remaining = validate_history(&stored, &request, budget, false)?;
             if !stored.exhausted {
                 if stored.items.is_empty() {
                     return Err(ChatError::InvalidDemand(

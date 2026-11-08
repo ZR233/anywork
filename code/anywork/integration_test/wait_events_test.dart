@@ -196,8 +196,10 @@ void main() {
     await scene.submit('[[wait_cancel]]');
     await scene.until(
       () =>
-          scene.lease.content.current.value?.active?.latestTool?.callId
-              .startsWith('cancel-wait-t') ==
+          scene.lease.content.activity.value?.entries.any(
+            (entry) =>
+                entry.atom.tool?.callId.startsWith('cancel-wait-t') == true,
+          ) ==
           true,
       'original wait call in the canonical current head',
     );
@@ -211,7 +213,7 @@ void main() {
       stopped,
       ChatTerminalOutcome.cancelled,
     );
-    expect(stoppedReceipt.atomKind, ChatAtomKind.turnReceipt);
+    expect(stoppedReceipt.atom.kind, ChatAtomKind.turnReceipt);
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -336,8 +338,8 @@ final class _Scene {
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
       // State proves completion; Main must separately accept this source and
       // mount its original viewport within this same wait budget before reveal.
-      if (!observed.items.any((item) => item.source == source) ||
-          observed.live.any((unit) => unit.item.source == source)) {
+      if (!observed.entries.any((item) => item.atom.source == source) ||
+          observed.activity.any((entry) => entry.atom.source == source)) {
         return false;
       }
       final mainScrollable = find.byWidgetPredicate(
@@ -347,16 +349,18 @@ final class _Scene {
       );
       if (mainScrollable.evaluate().length != 1) return false;
       if (outcome == StudioTurnStatus.cancelled) {
-        final receipts = observed.items
+        final receipts = observed.entries
             .where(
               (item) =>
-                  item.source == source &&
-                  item.kind == TimelineItemKind.status &&
-                  item.atomKind == ChatAtomKind.turnReceipt,
+                  item.atom.source == source &&
+                  item.mainPresentation == MainPresentation.single &&
+                  item.atom.kind == ChatAtomKind.turnReceipt,
             )
             .toList();
         expect(receipts.length, lessThanOrEqualTo(1));
-        return receipts.singleOrNull?.outcome == ChatTerminalOutcome.cancelled;
+        return (receipts.singleOrNull?.atom.lifecycle as TerminalChatAtom?)
+                ?.outcome ==
+            ChatTerminalOutcome.cancelled;
       }
       return true;
     }, '${outcome.name} Turn');
@@ -378,20 +382,20 @@ final class _Scene {
     return original;
   }
 
-  Future<TimelineItem> turnReceipt(
+  Future<CompletedEntry> turnReceipt(
     StudioTurnView turn,
     ChatTerminalOutcome outcome,
   ) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
-    final receipt = observed.items.singleWhere(
+    final receipt = observed.entries.singleWhere(
       (item) =>
-          item.source == source &&
-          item.kind == TimelineItemKind.status &&
-          item.atomKind == ChatAtomKind.turnReceipt,
+          item.atom.source == source &&
+          item.mainPresentation == MainPresentation.single &&
+          item.atom.kind == ChatAtomKind.turnReceipt,
     );
-    expect(receipt.outcome, outcome);
-    final payload = receipt.payload;
+    expect((receipt.atom.lifecycle as TerminalChatAtom).outcome, outcome);
+    final payload = receipt.atom.payload;
     final byteLength = payload is InlinePayload
         ? payload.bytes.length
         : payload is DeferredPayload
@@ -399,18 +403,19 @@ final class _Scene {
         : null;
     final reason =
         'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${receipt.id}, '
+        'presentation within the original frame =${receipt.recordId}, '
         'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload is InlinePayload, isTrue, reason: reason);
     expect(
-      ChatItemPresentation.forUnit(observed.unit(receipt.id)).compatibility,
+      ChatItemPresentation.forUnit(observed.unit(receipt.recordId))
+          .compatibility,
       ChatItemCompatibility.current,
       reason: reason,
     );
     await observed.revealItem(receipt);
     final rendered = tester
-        .widget<ChatItemView>(observed.itemRow(receipt.id))
+        .widget<ChatItemView>(observed.itemRow(receipt.recordId))
         .item;
     expect(
       rendered.compatibility,
@@ -431,7 +436,7 @@ final class _Scene {
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
     final groups = observed.workFor(source).toList();
     expect(groups, isNotEmpty);
-    await observed.openSourceGroups(source);
+    await observed.openSourceRuns(source);
     final matches = observed.mountedMembers
         .where(
           (atom) =>
@@ -462,7 +467,7 @@ final class _Scene {
         'byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload, isA<InlinePayload>(), reason: reason);
-    final reference = observed.unitForMember(atom.id).item.members!;
+    final reference = observed.unitForMember(atom.id).run!.reference;
     final display = await observed.revealMember(atom, reference: reference);
     expect(display.expanded, isTrue);
     expect(
@@ -519,18 +524,17 @@ final class _Scene {
       }
       _submittedTurnId ??= turn.turnId;
       return turn.turnId == _submittedTurnId &&
-          observed.live.any(
-            (unit) =>
-                unit.item.kind == TimelineItemKind.workGroup &&
-                unit.item.source ==
-                    ForegroundTurnChatSource(turnId: turn.turnId),
+          observed.activity.any(
+            (entry) =>
+                entry.atom.source ==
+                ForegroundTurnChatSource(turnId: turn.turnId),
           );
     }, 'live work item with explicit member reference');
     final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
-    await observed.openSourceGroups(source);
     await until(
       () =>
-          observed.mountedMembers
+          observed.activity
+              .map((entry) => entry.atom)
               .where(
                 (atom) =>
                     atom.source == source &&
@@ -540,14 +544,15 @@ final class _Scene {
           1,
       'exact live wait atom',
     );
-    final atom = observed.mountedMembers.singleWhere(
-      (atom) =>
-          atom.source == source && atom.tool?.callId.startsWith(prefix) == true,
-    );
-    final unit = observed.unitForMember(atom.id);
+    final atom = observed.activity
+        .map((entry) => entry.atom)
+        .singleWhere(
+          (atom) =>
+              atom.source == source &&
+              atom.tool?.callId.startsWith(prefix) == true,
+        );
     expect(atom.lifecycle, isA<ActiveChatAtom>());
     expect(atom.wait?.state, ThreadWaitStateView.waiting);
-    await observed.openGroup(unit.id);
     final panel = find.byWidgetPredicate(
       (widget) =>
           widget is TimelineWaitPanel &&
@@ -559,7 +564,8 @@ final class _Scene {
       'typed production Waiting panel',
     );
     expect(
-      observed.mountedMembers
+      observed.activity
+          .map((entry) => entry.atom)
           .singleWhere((member) => member.id == atom.id)
           .lifecycle,
       isA<ActiveChatAtom>(),

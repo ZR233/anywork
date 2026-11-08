@@ -28,18 +28,18 @@ final class TimelineConceptImageInput {
   final String inputId;
   final List<AttachmentDraftView> drafts;
 
-  /// Call with the TimelineItem and attachment refs from ONE Main message.
+  /// Call with the completed entry and attachment refs from ONE Main message.
   /// Returns identities to archive alongside the later layout assertions.
   Map<String, Object?> verifyItem(
-    TimelineItem item,
+    CompletedEntry item,
     List<ThreadAttachmentView> attachments,
   ) {
-    expect(item.kind, TimelineItemKind.text);
-    expect(item.atomKind, ChatAtomKind.input);
-    expect(item.source, InputChatSource(inputId: inputId));
-    expect(item.contentItemId, isNotNull);
-    expect(item.contentItemId, isNotEmpty);
-    expect(item.position, isNotNull);
+    expect(item.mainPresentation, MainPresentation.single);
+    expect(item.atom.kind, ChatAtomKind.input);
+    expect(item.atom.source, InputChatSource(inputId: inputId));
+    expect(item.recordId, isNotNull);
+    expect(item.recordId, isNotEmpty);
+    expect(item.completionSeq, greaterThan(0));
     expect(attachments, hasLength(3));
     expect(attachments.map((item) => item.id).toSet(), hasLength(3));
     for (var index = 0; index < attachments.length; index++) {
@@ -54,8 +54,8 @@ final class TimelineConceptImageInput {
     }
     return {
       ...toJson(),
-      'itemId': item.id,
-      'contentItemId': item.contentItemId,
+      'itemId': item.recordId,
+      'contentItemId': item.recordId,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
     };
   }
@@ -64,7 +64,7 @@ final class TimelineConceptImageInput {
   /// No dependency on an in-flight owner/key/Driver DTO contract.
   Map<String, Object?> verifyHorizontalLayout(
     WidgetTester tester, {
-    required TimelineItem item,
+    required CompletedEntry item,
     required List<ThreadAttachmentView> attachments,
     required Finder itemFinder,
     required Finder Function(String resourceId) thumbnailFinder,
