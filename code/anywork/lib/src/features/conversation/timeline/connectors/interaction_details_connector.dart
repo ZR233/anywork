@@ -36,36 +36,41 @@ class _InteractionDetailsState extends State<InteractionDetailsConnector> {
     final reference = widget.reference;
     final content = widget.content;
     final generation = _generation;
-    return ExpansionTile(
-      title: const Text('交互详情'),
-      maintainState: false,
-      onExpansionChanged: (value) {
-        if (!value) {
-          _retire?.call();
-          _generation = Object();
-        }
-        setState(() => _expanded = value);
-      },
-      children: [
-        if (_expanded)
-          _InteractionPageReader(
-            key: ValueKey((
-              generation,
-              content,
-              content.currentAttemptId,
-              currentCollectionIdentity(reference),
-            )),
-            content: widget.content,
-            reference: widget.reference,
-            isCurrent: () =>
-                _expanded &&
-                identical(_generation, generation) &&
-                identical(widget.content, content) &&
-                widget.reference == reference &&
-                widget.isCurrent(),
-            registerRetirement: (retire) => _retire = retire,
-          ),
-      ],
+    // The composer footer paints above Scaffold's Material. Give the outer and
+    // deferred ExpansionTiles a shared ink surface above that opaque decoration.
+    return Material(
+      type: MaterialType.transparency,
+      child: ExpansionTile(
+        title: const Text('交互详情'),
+        maintainState: false,
+        onExpansionChanged: (value) {
+          if (!value) {
+            _retire?.call();
+            _generation = Object();
+          }
+          setState(() => _expanded = value);
+        },
+        children: [
+          if (_expanded)
+            _InteractionPageReader(
+              key: ValueKey((
+                generation,
+                content,
+                content.currentAttemptId,
+                currentCollectionIdentity(reference),
+              )),
+              content: widget.content,
+              reference: widget.reference,
+              isCurrent: () =>
+                  _expanded &&
+                  identical(_generation, generation) &&
+                  identical(widget.content, content) &&
+                  widget.reference == reference &&
+                  widget.isCurrent(),
+              registerRetirement: (retire) => _retire = retire,
+            ),
+        ],
+      ),
     );
   }
 }

@@ -107,7 +107,15 @@ Widget _host(Widget child) => MaterialApp(
   locale: const Locale('zh'),
   localizationsDelegates: AppLocalizations.localizationsDelegates,
   supportedLocales: AppLocalizations.supportedLocales,
-  home: Scaffold(body: SingleChildScrollView(child: child)),
+  home: Scaffold(
+    body: Builder(
+      builder: (context) => DecoratedBox(
+        // Match the opaque composer footer between Scaffold and the details.
+        decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface),
+        child: SingleChildScrollView(child: child),
+      ),
+    ),
+  ),
 );
 Future<void> _frames(WidgetTester tester) async {
   await tester.pump();
@@ -177,12 +185,15 @@ Future<_Content> _openDeferred(WidgetTester tester, int byteLength) async {
       ),
     ),
   );
+  expect(tester.takeException(), isNull);
   await tester.tap(find.text('交互详情'));
   await _frames(tester);
+  expect(tester.takeException(), isNull);
   content.reader.pages.single.$3.complete(_deferredPage(byteLength));
   await _frames(tester);
   await tester.tap(find.text('查看完整交互详情'));
   await _frames(tester);
+  expect(tester.takeException(), isNull);
   return content;
 }
 
@@ -519,11 +530,13 @@ void main() {
           ),
         ),
       );
+      expect(tester.takeException(), isNull);
       expect(content.activity.value, isNull);
       expect(content.reader.pages, isEmpty);
       await tester.ensureVisible(find.text('交互详情'));
       await tester.tap(find.text('交互详情'));
       await _frames(tester);
+      expect(tester.takeException(), isNull);
       expect(content.reader.pages.single.$1, refs.interactions);
       content.reader.pages.single.$3.complete(_page(1, '查询的公开问题'));
       await _frames(tester);
@@ -531,6 +544,7 @@ void main() {
       expect(find.text('交互详情格式无效'), findsNothing);
       expect(find.textContaining('不可展示的'), findsNothing);
       expect(find.text('敏感问题内容已隐藏'), findsOneWidget);
+      expect(tester.takeException(), isNull);
       expect(
         tester
             .widgetList<TextField>(find.byType(TextField))
@@ -550,6 +564,7 @@ void main() {
       await tester.tap(submit);
       await _frames(tester);
       expect(decisions, 1);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await content.join();
     },
