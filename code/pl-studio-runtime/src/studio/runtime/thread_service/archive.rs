@@ -22,6 +22,92 @@ enum ArchivePurpose {
     Delete,
 }
 
+fn merge_removal_root(
+    target: &mut ThreadArchiveOperation,
+    source: &ThreadArchiveOperation,
+    root: &str,
+) -> Result<()> {
+    for member in source
+        .members
+        .iter()
+        .filter(|member| member.root_id == root)
+    {
+        if let Some(original) = target
+            .members
+            .iter_mut()
+            .find(|original| original.thread_id == member.thread_id)
+        {
+            ensure!(
+                original.workspace_id == member.workspace_id
+                    && original.parent_id == member.parent_id
+                    && original.root_id == member.root_id
+                    && original.host_session == member.host_session
+                    && original.execution == member.execution,
+                "归档与删除的原会话绑定不一致"
+            );
+            original.host_cleaned |= member.host_cleaned;
+            original.execution_cleaned |= member.execution_cleaned;
+        } else {
+            target.members.push(member.clone());
+        }
+    }
+    for member in source
+        .private_members
+        .iter()
+        .filter(|member| member.identity.root_id == root)
+    {
+        if let Some(original) = target
+            .private_members
+            .iter_mut()
+            .find(|original| original.identity.thread_id == member.identity.thread_id)
+        {
+            ensure!(
+                original.identity == member.identity
+                    && original.host_session == member.host_session,
+                "归档与删除的原准备身份不一致"
+            );
+            if original.binding == PreparationBinding::Unbound {
+                original.binding = member.binding.clone();
+            } else if member.binding != PreparationBinding::Unbound {
+                ensure!(
+                    original.binding == member.binding,
+                    "归档与删除的原准备绑定不一致"
+                );
+            }
+        } else {
+            target.private_members.push(member.clone());
+        }
+    }
+    let ids = target.thread_ids();
+    for entry in source
+        .worktrees
+        .iter()
+        .filter(|entry| ids.contains(&entry.lease.owner_thread_id))
+    {
+        if let Some(original) = target
+            .worktrees
+            .iter_mut()
+            .find(|original| original.lease.owner_thread_id == entry.lease.owner_thread_id)
+        {
+            ensure!(
+                original.identity == entry.identity
+                    && (original.common_dir.is_none()
+                        || entry.common_dir.is_none()
+                        || original.common_dir == entry.common_dir),
+                "归档与删除的原工作树绑定不一致"
+            );
+            if original.common_dir.is_none() {
+                original.common_dir = entry.common_dir.clone();
+            }
+            original.removal_started |= entry.removal_started;
+            original.cleaned |= entry.cleaned;
+        } else {
+            target.worktrees.push(entry.clone());
+        }
+    }
+    Ok(())
+}
+
 impl StudioRuntime {
     pub(super) async fn freeze_thread_archive(
         &self,
@@ -29,8 +115,11 @@ impl StudioRuntime {
         threads: &[ThreadRecord],
         admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
-        self.freeze_archive_scope(scope, threads, admitted, ArchivePurpose::Preserve)
-            .await
+        let operation = self
+            .freeze_archive_scope(scope, threads, admitted, ArchivePurpose::Preserve)
+            .await?;
+        self.store.save_thread_archive(&operation).await?;
+        Ok(operation)
     }
 
     pub(super) async fn freeze_thread_removal(
@@ -50,7 +139,41 @@ impl StudioRuntime {
         admitted: &[PreparationIdentity],
         purpose: ArchivePurpose,
     ) -> Result<ThreadArchiveOperation> {
-        let previous = self.store.thread_archive(&scope).await?;
+        let mut previous = self.store.thread_archive(&scope).await?;
+        let archives = self.store.thread_archives().await?;
+        if purpose == ArchivePurpose::Preserve {
+            for deletion in self.store.thread_deletes().await? {
+                if deletion.phase == crate::studio::store::thread_delete::DeletePhase::Published {
+                    continue;
+                }
+                let overlaps = match &scope {
+                    ArchiveScope::Thread(root) => *root == deletion.root_id,
+                    ArchiveScope::Workspace(workspace) => deletion
+                        .members
+                        .iter()
+                        .any(|member| member.identity.workspace_id == *workspace),
+                };
+                ensure!(!overlaps, "会话永久删除尚未完成，请先重试删除");
+            }
+        } else if let ArchiveScope::Thread(root) = &scope {
+            let mut original = previous.take().unwrap_or(ThreadArchiveOperation {
+                scope: scope.clone(),
+                revision: 0,
+                members: Vec::new(),
+                private_members: Vec::new(),
+                worktrees: Vec::new(),
+                phase: ArchivePhase::Sealed,
+            });
+            // A permanent deletion takes over the original bindings and cleanup progress,
+            // including private members no longer present in the directory or registry.
+            original.phase = ArchivePhase::Sealed;
+            for source in &archives {
+                if matches!(source.scope, ArchiveScope::Workspace(_)) {
+                    merge_removal_root(&mut original, source, root)?;
+                }
+            }
+            previous = Some(original);
+        }
         let mut catalog_projection = threads.to_vec();
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
@@ -125,8 +248,13 @@ impl StudioRuntime {
                 "archive gained a member after durable save confirmation"
             );
         }
-        for pending in self.store.thread_archives().await? {
+        for pending in archives {
             if pending.phase != ArchivePhase::Published && pending.scope != scope {
+                if purpose == ArchivePurpose::Delete
+                    && matches!(pending.scope, ArchiveScope::Workspace(_))
+                {
+                    continue; // Responsibility moves atomically with the deletion seal below.
+                }
                 ensure!(
                     !pending
                         .thread_ids()
@@ -143,9 +271,18 @@ impl StudioRuntime {
             .map(|operation| operation.members.clone())
             .unwrap_or_default();
         for identity in &admitted {
-            self.store
-                .begin_thread_preparation(identity.clone())
-                .await?;
+            if purpose == ArchivePurpose::Delete {
+                self.store
+                    .begin_removal_preparation(
+                        identity.clone(),
+                        threads.iter().any(|thread| thread.id == identity.thread_id),
+                    )
+                    .await?;
+            } else {
+                self.store
+                    .begin_thread_preparation(identity.clone())
+                    .await?;
+            }
         }
         for thread in threads {
             let preparation = self.store.thread_preparation(&thread.id).await?;
@@ -265,9 +402,15 @@ impl StudioRuntime {
             {
                 // A live captured admission cannot start physical preparation before this same
                 // typed original-owner record commits. This is not absence-based recovery.
-                self.store
-                    .begin_thread_preparation(identity.clone())
-                    .await?;
+                if purpose == ArchivePurpose::Delete {
+                    self.store
+                        .begin_removal_preparation(identity.clone(), false)
+                        .await?;
+                } else {
+                    self.store
+                        .begin_thread_preparation(identity.clone())
+                        .await?;
+                }
                 private_identities.push(identity.clone());
             }
         }
@@ -433,7 +576,6 @@ impl StudioRuntime {
             worktrees,
             phase,
         };
-        self.store.save_thread_archive(&operation).await?;
         Ok(operation)
     }
 

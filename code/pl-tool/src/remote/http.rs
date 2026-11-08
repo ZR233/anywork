@@ -53,6 +53,7 @@ impl RemoteHttpResponse {
             let chunk = chunk?;
             if out.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(RemoteClientError::Remote {
+                    removal_effect: None,
                     code: RemoteErrorCode::ResourceExhausted,
                     message: format!("remote HTTP response body exceeds {max_bytes} bytes"),
                 });
@@ -73,6 +74,7 @@ impl RemoteClient {
             .map_err(|error| RemoteClientError::Protocol(error.to_string()))?;
         if head_payload.is_empty() || head_payload.len() > REMOTE_HTTP_HEAD_MAX_BYTES {
             return Err(RemoteClientError::Remote {
+                removal_effect: None,
                 code: RemoteErrorCode::InvalidRequest,
                 message: format!(
                     "remote HTTP request head length {} is outside 1..={REMOTE_HTTP_HEAD_MAX_BYTES}",
@@ -137,6 +139,7 @@ impl RemoteClient {
                     self.notify_wire_detached(generation, error.message.clone());
                 }
                 Err(RemoteClientError::Remote {
+                    removal_effect: error.removal_effect,
                     code: error.code,
                     message: error.message,
                 })

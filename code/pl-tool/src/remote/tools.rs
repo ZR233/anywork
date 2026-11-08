@@ -180,7 +180,8 @@ impl RemoteWorkspaceMutationTool {
                 None,
                 matches!(input.mode, DeleteMode::RecursiveDirectory),
             )
-            .await?;
+            .await
+            .map_err(super::workspace::remote_file_error)?;
         Ok(format!("Deleted {}", input.path))
     }
 
@@ -208,7 +209,8 @@ impl RemoteWorkspaceMutationTool {
             }
             self.backend
                 .remove_path(input.to.clone(), None, target.is_dir)
-                .await?;
+                .await
+                .map_err(super::workspace::remote_file_error)?;
         }
         if moving {
             self.backend

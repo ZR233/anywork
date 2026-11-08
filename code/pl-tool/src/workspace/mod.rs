@@ -11,7 +11,7 @@ pub use layout::{
     prepare_worktree_pool,
 };
 pub use session_files::SessionFiles;
-pub use session_temp::SessionTempBackend;
+pub use session_temp::{SessionRemovalError, SessionTempBackend};
 mod path_policy;
 pub mod path_safety;
 pub use path_policy::{PathAccess, ToolPathPolicy};

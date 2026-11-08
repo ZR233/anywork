@@ -515,6 +515,38 @@ pub(super) fn encode_record(record: &CallLogRecord) -> Result<(String, bool)> {
 }
 
 /// 解析一行版本化 JSONL 记录；损坏的行返回错误而不猜测内容。
+/// Deletion and locator repair consume identities only, never validate disposable bodies.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CallLogLocator {
+    pub thread_id: String,
+    pub call_id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub root_thread_id: Option<String>,
+    #[serde(default)]
+    pub revision: i64,
+    #[serde(default)]
+    pub recorded_at: i64,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl From<&CallLogRecord> for CallLogLocator {
+    fn from(record: &CallLogRecord) -> Self {
+        Self {
+            thread_id: record.thread_id.clone(),
+            call_id: record.call_id.clone(),
+            kind: record.kind.clone(),
+            root_thread_id: record.root_thread_id.clone(),
+            revision: record.revision,
+            recorded_at: record.recorded_at,
+            truncated: record.truncated,
+        }
+    }
+}
+
+/// 解析一行版本化 JSONL 记录；损坏的行返回错误而不猜测内容。
 pub(super) fn decode_record(line: &str) -> Result<CallLogRecord> {
     ensure!(
         line.len() <= CALL_LOG_RECORD_MAX_BYTES,

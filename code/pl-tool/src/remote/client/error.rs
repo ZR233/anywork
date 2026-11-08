@@ -60,6 +60,7 @@ pub enum RemoteClientError {
     Remote {
         code: pl_protocol::remote::RemoteErrorCode,
         message: String,
+        removal_effect: Option<pl_protocol::remote::RemoteRemovalEffect>,
     },
 }
 

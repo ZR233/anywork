@@ -165,6 +165,13 @@ impl StudioStore {
         &self,
         identity: PreparationIdentity,
     ) -> Result<()> {
+        if let Some(previous) = self.thread_preparation(&identity.thread_id).await? {
+            ensure!(
+                previous.identity == identity,
+                "preparation original owner changed"
+            );
+            return Ok(());
+        }
         // Existing root restoration already has reliable history. Never relabel it as a
         // never-attached private creation merely because this activation has not attached yet.
         let published_root = identity.parent_id.is_none()
@@ -174,6 +181,16 @@ impl StudioStore {
                 .checkpoint()
                 .await?
                 .is_some();
+        self.begin_removal_preparation(identity, published_root)
+            .await
+    }
+
+    /// Deletion already owns directory/preparation identities and must not open cold history.
+    pub(in crate::studio) async fn begin_removal_preparation(
+        &self,
+        identity: PreparationIdentity,
+        published: bool,
+    ) -> Result<()> {
         let transaction = self.database().begin().await?;
         if let Some(previous) =
             load_object::<ThreadPreparationRecord>(&transaction, &identity.thread_id).await?
@@ -193,7 +210,7 @@ impl StudioStore {
                 stopped: false,
                 deletion_stopped: false,
                 retired: false,
-                published: published_root,
+                published,
             };
             value.validate_owner(&value.identity.thread_id)?;
             put_object(

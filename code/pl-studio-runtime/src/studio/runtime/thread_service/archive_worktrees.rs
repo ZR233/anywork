@@ -60,7 +60,7 @@ impl StudioRuntime {
                 ensure!(*original == common, "archive repository identity changed");
             }
             let removal = leases.begin_workspace_cleanup(owner, &entry.identity, None)?;
-            let (site, registered) = manager.child_cleanup_site(&handle).await?;
+            let (site, registered) = manager.removal_site(&handle).await?;
             if entry.cleaned || current.state == WorktreeLeaseState::Cleaned {
                 ensure!(
                     site.is_none() && !registered,
@@ -87,9 +87,8 @@ impl StudioRuntime {
                     // removal_started durable, so restart cannot remove a replacement checkout.
                     if crate::studio::thread_factory::worktree_removal_definitely_refused(&error)
                         && let Some(original) = &site
-                        && let Ok((Some(remaining), true)) =
-                            manager.child_cleanup_site(&handle).await
-                        && remaining.head == original.head
+                        && let Ok((Some(remaining), true)) = manager.removal_site(&handle).await
+                        && remaining == *original
                     {
                         operation.worktrees[index].removal_started = false;
                         operation.changed()?;

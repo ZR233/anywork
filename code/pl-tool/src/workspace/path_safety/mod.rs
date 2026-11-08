@@ -27,6 +27,8 @@ pub enum PathSafetyError {
         operation: &'static str,
         path: PathBuf,
         source: std::io::Error,
+        /// True only after recursive removal may have changed the directory.
+        removal_started: bool,
     },
 }
 
@@ -36,6 +38,7 @@ impl PathSafetyError {
             operation,
             path: path.to_path_buf(),
             source,
+            removal_started: false,
         }
     }
 }
@@ -533,6 +536,5 @@ fn lexical_comparison_path(path: &Path) -> PathBuf {
 
 #[cfg(windows)]
 mod windows {
-    pub(super) const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
     pub(super) const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 }

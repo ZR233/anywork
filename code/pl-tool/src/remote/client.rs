@@ -279,6 +279,7 @@ impl RemoteClient {
             .resize(connection_cost(allocation))
         {
             return Err(RemoteClientError::Remote {
+                removal_effect: None,
                 code: RemoteErrorCode::ResourceExhausted,
                 message: "replacement connection credit unavailable".into(),
             });
@@ -315,6 +316,7 @@ impl RemoteClient {
             Err(_) => {
                 wire.close().await?;
                 return Err(RemoteClientError::Remote {
+                    removal_effect: None,
                     code: RemoteErrorCode::OutcomeUnknown,
                     message: "helper attachment receipt was not confirmed before its deadline"
                         .into(),
@@ -360,15 +362,17 @@ impl RemoteClient {
                     Ok(Ok(reply)) if matches!(reply.response, RemoteResponse::Ack) => Ok(()),
                     Ok(Ok(reply)) => Err(response_error(reply.response)),
                     Ok(Err(error)) => Err(error.into()),
-                    Err(_) => Err(RemoteClientError::Remote { code: RemoteErrorCode::OutcomeUnknown,
+                    Err(_) => Err(RemoteClientError::Remote { removal_effect: None, code: RemoteErrorCode::OutcomeUnknown,
                         message: "helper cleanup did not confirm before the shutdown deadline; its lease still owns pending resources".into() }),
                 }
             }
             _ if self.attachment_expired() => Err(RemoteClientError::Remote {
+                removal_effect: None,
                 code: RemoteErrorCode::SessionExpired,
                 message: "helper lease expired; physical cleanup is no longer observable".into(),
             }),
             _ => Err(RemoteClientError::Remote {
+                removal_effect: None,
                 code: RemoteErrorCode::OutcomeUnknown,
                 message: "helper cleanup cannot be confirmed on a detached transport".into(),
             }),
@@ -462,6 +466,7 @@ impl RemoteClient {
             .budget
             .try_reserve(bytes)
             .ok_or_else(|| RemoteClientError::Remote {
+                removal_effect: None,
                 code: RemoteErrorCode::ResourceExhausted,
                 message: "directory page resource grant exhausted".into(),
             })
@@ -1011,6 +1016,7 @@ async fn perform(
                 }
                 if not_started_generation == Some(generation) {
                     return Err(RemoteClientError::Remote {
+                        removal_effect: None,
                         code: RemoteErrorCode::OutcomeUnknown,
                         message: "operation cannot make progress on the current attachment".into(),
                     });
@@ -1121,6 +1127,7 @@ async fn perform(
     };
     match response {
         RemoteResponse::Error(error) => Err(RemoteClientError::Remote {
+            removal_effect: error.removal_effect,
             code: error.code,
             message: error.message,
         }),
@@ -1153,6 +1160,7 @@ async fn ready(inner: &RemoteClientInner) -> Result<(u64, WireClient), RemoteCli
                     _ = inner.stopped.cancelled() => return Err(RemoteClientError::Disconnected),
                     changed = state.changed() => { if changed.is_err() { return Err(RemoteClientError::Disconnected); } },
                     _ = tokio::time::sleep_until(deadline) => return Err(RemoteClientError::Remote {
+                        removal_effect: None,
                         code: RemoteErrorCode::SessionExpired, message: "helper attachment lease expired".into() }),
                 }
             }
@@ -1189,6 +1197,7 @@ fn monitor(inner: &Arc<RemoteClientInner>, generation: u64, wire: WireClient) {
 fn response_error(response: RemoteResponse) -> RemoteClientError {
     match response {
         RemoteResponse::Error(error) => RemoteClientError::Remote {
+            removal_effect: error.removal_effect,
             code: error.code,
             message: error.message,
         },

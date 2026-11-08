@@ -1684,6 +1684,23 @@ async fn index_record(
     location: &log::AppendedRecord,
     truncated: bool,
 ) -> Result<()> {
+    index_locator(
+        db,
+        &event::CallLogLocator::from(record),
+        content_hash,
+        location,
+        truncated,
+    )
+    .await
+}
+
+async fn index_locator(
+    db: &impl ConnectionTrait,
+    record: &event::CallLogLocator,
+    content_hash: &str,
+    location: &log::AppendedRecord,
+    truncated: bool,
+) -> Result<()> {
     db.execute_raw(statement(
         "INSERT INTO call_log_index(
             thread_id,call_id,kind,revision,content_hash,segment,offset,length,truncated,recorded_at)
@@ -1965,6 +1982,74 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn permanent_delete_uses_identity_without_decoding_unrelated_diagnostic_body()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store.writer.log.lock().await.close();
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT segment FROM call_log_index WHERE thread_id='neighbor'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        let segment: String = row.try_get("", "segment")?;
+        let path = temp.path().join("logs").join(&segment);
+        let original = tokio::fs::read_to_string(&path).await?;
+        let mut changed = String::new();
+        let mut expected = String::new();
+        for line in original.lines() {
+            let mut value: serde_json::Value = serde_json::from_str(line)?;
+            if value["threadId"] == "neighbor" {
+                // Valid identity, deliberately incompatible disposable diagnostic and usage.
+                value["diagnostic"] = serde_json::json!({"futureBody": true});
+                value["usage"] = serde_json::json!("unreadable diagnostic projection");
+                let line = serde_json::to_string(&value)?;
+                assert!(event::decode_record(&line).is_err());
+                expected.push_str(&line);
+                expected.push('\n');
+                changed.push_str(&line);
+            } else {
+                changed.push_str(line);
+            }
+            changed.push('\n');
+        }
+        tokio::fs::write(&path, changed).await?;
+        store.delete_threads(&["deleted".into()]).await?;
+        assert_eq!(tokio::fs::read_to_string(&path).await?, expected);
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT thread_id,offset,length,content_hash FROM call_log_index WHERE segment=?",
+                vec![segment.into()],
+            ))
+            .await?;
+        assert!(!rows.is_empty());
+        let bytes = expected.as_bytes();
+        for row in rows {
+            assert_eq!(row.try_get::<String>("", "thread_id")?, "neighbor");
+            let offset = row.try_get::<i64>("", "offset")? as usize;
+            let length = row.try_get::<i64>("", "length")? as usize;
+            assert_eq!(
+                row.try_get::<String>("", "content_hash")?,
+                pl_core::context::content_hash(&bytes[offset..offset + length])
+            );
+        }
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn permanent_delete_calls_failed_segment_repair_retries_before_next_write() -> Result<()>
     {
         permanent_delete_calls_failed_segment_repair(false).await
@@ -2146,6 +2231,13 @@ mod storage_fault_tests {
         } else {
             store
         };
+        // Deletion itself repairs an already-replaced segment without a later writer.
+        if !restart {
+            store.delete_threads(&["deleted".into()]).await?;
+            let recovered = indexed_bodies(&store).await?;
+            assert_eq!(recovered.len(), 1);
+            assert_eq!(recovered[0].thread_id, "neighbor");
+        }
         // Repair precedes identity deduplication: retrying the same neighbor billing must
         // not append it again or replay its performance sample.
         store

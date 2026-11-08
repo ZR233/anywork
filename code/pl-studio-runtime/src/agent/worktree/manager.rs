@@ -293,6 +293,20 @@ impl WorktreeManager {
         ))
     }
 
+    /// Forced lifecycle deletion needs identity and retry provenance, never a content scan.
+    pub(crate) async fn removal_site(
+        &self,
+        handle: &WorktreeHandle,
+    ) -> Result<(Option<String>, bool), WorktreeError> {
+        let (exists, registered) = self.inspect_identity(handle).await?;
+        let head = if exists {
+            Some(self.backend.resolve_head(&handle.path).await?)
+        } else {
+            None
+        };
+        Ok((head, registered))
+    }
+
     pub(crate) async fn validate_child_delivery(
         &self,
         request: &WorktreeRetirementRequest,
@@ -414,12 +428,6 @@ impl WorktreeManager {
                     policy == WorktreeCleanupPolicy::Discard,
                 )
                 .await?;
-            let (exists, registered) = self.inspect_identity(handle).await?;
-            if exists || registered {
-                return Err(WorktreeError::IdentityMismatch(
-                    "Git removal left a checkout or registration; cleanup is incomplete".into(),
-                ));
-            }
         }
         Ok(())
     }

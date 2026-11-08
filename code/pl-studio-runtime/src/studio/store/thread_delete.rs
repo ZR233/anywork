@@ -102,38 +102,115 @@ impl PersistedStudioObject for ThreadDeleteOperation {
 }
 
 impl StudioStore {
+    /// Transfers only this root's original archive responsibility with the deletion seal.
+    /// No cancellation or physical removal may precede this transaction's commit.
+    pub(in crate::studio) async fn save_thread_removal_scope(
+        &self,
+        archive: &super::thread_archive::ThreadArchiveOperation,
+        deletion: &ThreadDeleteOperation,
+    ) -> Result<()> {
+        use super::thread_archive::{ArchiveScope, ThreadArchiveOperation};
+        use sea_orm::TransactionTrait;
+        archive.validate_owner(&archive.scope.key())?;
+        deletion.validate_owner(&deletion.root_id)?;
+        ensure!(
+            archive.scope == ArchiveScope::Thread(deletion.root_id.clone()),
+            "delete archive scope mismatch"
+        );
+        let actual = archive
+            .thread_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(
+            actual == deletion.thread_ids.iter().cloned().collect(),
+            "delete archive member mismatch"
+        );
+        let workspace = &deletion
+            .members
+            .first()
+            .context("delete scope is empty")?
+            .identity
+            .workspace_id;
+        ensure!(
+            deletion
+                .members
+                .iter()
+                .all(|member| &member.identity.workspace_id == workspace),
+            "delete scope crosses workspaces"
+        );
+        let scope = ArchiveScope::Workspace(workspace.clone());
+        let tx = self.database().begin().await?;
+        let now = crate::studio::unix_seconds();
+        if let Some(mut source) = load_object::<ThreadArchiveOperation>(&tx, &scope.key()).await? {
+            let before = source.thread_ids();
+            source
+                .members
+                .retain(|member| member.root_id != deletion.root_id);
+            source
+                .private_members
+                .retain(|member| member.identity.root_id != deletion.root_id);
+            let remaining = source.thread_ids();
+            let transferred = before
+                .iter()
+                .filter(|id| !remaining.contains(id))
+                .collect::<Vec<_>>();
+            ensure!(
+                transferred
+                    .iter()
+                    .all(|id| deletion.thread_ids.contains(id)),
+                "delete transfer lost an original archive member"
+            );
+            if !transferred.is_empty() {
+                source
+                    .worktrees
+                    .retain(|entry| !transferred.contains(&&entry.lease.owner_thread_id));
+                source.changed()?;
+                source.validate_owner(&scope.key())?;
+                put_object(&tx, &scope.key(), &source, now).await?;
+            }
+        }
+        put_object(&tx, &archive.scope.key(), archive, now).await?;
+        put_object(&tx, &deletion.root_id, deletion, now).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub(in crate::studio) async fn delete_thread_product_data(
         &self,
         operation: &ThreadDeleteOperation,
     ) -> Result<()> {
-        use super::thread_archive::{ArchivePhase, ArchiveScope};
+        use super::thread_archive::ArchiveScope;
         use sea_orm::{ConnectionTrait, DatabaseBackend, Statement, TransactionTrait};
-        // An archived project can retain responsibilities for other roots. Remove only this
-        // tree's members, preserving that scope and its unrelated cleanup progress.
-        for mut archive in self.thread_archives().await? {
-            if archive.scope == ArchiveScope::Thread(operation.root_id.clone()) {
-                continue;
-            }
-            let before = archive.thread_ids().len();
-            archive
-                .members
-                .retain(|member| !operation.thread_ids.contains(&member.thread_id));
-            archive
-                .private_members
-                .retain(|member| !operation.thread_ids.contains(&member.identity.thread_id));
-            archive
-                .worktrees
-                .retain(|member| !operation.thread_ids.contains(&member.lease.owner_thread_id));
-            if archive.thread_ids().len() != before {
-                ensure!(
-                    archive.phase == ArchivePhase::Published,
-                    "another unfinished archive owns part of the deleted tree"
-                );
-                archive.changed()?;
-                self.save_thread_archive(&archive).await?;
+        let tx = self.database().begin().await?;
+        // A deletion already in Removing when this build starts may predate the
+        // transfer transaction. Its published project projection still needs retirement.
+        if let Some(member) = operation.members.first() {
+            use super::thread_archive::{ArchivePhase, ThreadArchiveOperation};
+            let scope = ArchiveScope::Workspace(member.identity.workspace_id.clone());
+            if let Some(mut source) =
+                load_object::<ThreadArchiveOperation>(&tx, &scope.key()).await?
+            {
+                let before = source.thread_ids().len();
+                source
+                    .members
+                    .retain(|member| !operation.thread_ids.contains(&member.thread_id));
+                source
+                    .private_members
+                    .retain(|member| !operation.thread_ids.contains(&member.identity.thread_id));
+                if source.thread_ids().len() != before {
+                    ensure!(
+                        source.phase == ArchivePhase::Published,
+                        "未完成的项目归档尚未转交原删除责任"
+                    );
+                    source.worktrees.retain(|entry| {
+                        !operation.thread_ids.contains(&entry.lease.owner_thread_id)
+                    });
+                    source.changed()?;
+                    source.validate_owner(&scope.key())?;
+                    put_object(&tx, &scope.key(), &source, crate::studio::unix_seconds()).await?;
+                }
             }
         }
-        let tx = self.database().begin().await?;
         for id in &operation.thread_ids {
             tx.execute_raw(Statement::from_sql_and_values(
                 DatabaseBackend::Sqlite,
