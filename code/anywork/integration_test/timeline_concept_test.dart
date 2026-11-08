@@ -266,10 +266,11 @@ Future<void> _until(
     fail('No remaining wait budget for $description');
   }
   final clock = Stopwatch()..start();
-  while (!ready()) {
-    if (clock.elapsed > deadline) {
+  while (true) {
+    if (clock.elapsed >= deadline) {
       fail('Timed out waiting for $description');
     }
+    if (ready()) return;
     await tester.pump(const Duration(milliseconds: 16));
     expect(tester.takeException(), isNull);
   }
@@ -1117,7 +1118,22 @@ final class _ConceptScene {
   /// Explicit UI member demand to EOF. Retain only observed IDs for archived
   /// evidence, not raw atoms or a second group projection. Record explicit
   /// member demands separately from reused windows and Main batch counters.
-  Future<List<String>> contentIdentitiesForItem(String id) async {
+  Future<List<String>> contentIdentitiesForItem(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Reading original Run identities requires a positive deadline');
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out reading original Run identities $id');
+      }
+      return value;
+    }
+
     final unit = observed.unit(id);
     if (unit.run == null) {
       expect(unit.entry.recordId, isNotNull);
@@ -1130,41 +1146,28 @@ final class _ConceptScene {
     TimelineGroupDisplay? original;
     _recordMemberInventory('before-open', id);
     try {
-      final display = await observed.openRun(id);
+      final display = await observed.openRun(id, timeout: remaining());
       original = display;
       final ids = <String>{};
       var olderPageCommands = 0;
       while (true) {
-        await _until(tester, () {
-          expect(display.isCurrent, isTrue);
-          expect(display.expanded, isTrue);
-          if (display.error case final error?) throw error;
-          return !display.loading;
-        }, 'original group member window is ready');
+        await _until(
+          tester,
+          () {
+            expect(display.isCurrent, isTrue);
+            expect(display.expanded, isTrue);
+            if (display.error case final error?) throw error;
+            return !display.loading;
+          },
+          'original group member window is ready',
+          timeout: remaining(),
+        );
         ids.addAll(display.atoms.map((atom) => atom.id));
         if (display.before == null) break;
-        final before = display.before;
-        final older = find.descendant(
-          of: observed.groupRow(id),
-          matching: find.byKey(const ValueKey('timeline-children-load-older')),
-        );
         // SDK admission precedes the frame that installs the enabled control.
         // Keep the original window and cursor while waiting for that same UI.
-        await _until(tester, () {
-          expect(display.isCurrent, isTrue);
-          expect(display.before, before);
-          if (display.error case final error?) throw error;
-          final matches = older.evaluate().length;
-          expect(matches, lessThanOrEqualTo(1));
-          return matches == 1 &&
-              tester.widget<TextButton>(older).onPressed != null;
-        }, 'enabled original group pagination control');
-        await observed.tap(older);
+        await observed.loadOlderRunPage(display, timeout: remaining());
         olderPageCommands++;
-        await _until(tester, () {
-          if (display.error case final error?) throw StateError('$error');
-          return !display.loading && display.before != before;
-        }, 'explicit group member page advanced');
       }
       expect(ids, hasLength(unit.entry.run!.ordinal));
       final observations =
@@ -1339,6 +1342,8 @@ final class _ConceptScene {
         continue;
       }
       final tool = reading.value;
+      expect(tool.toolCallId, item.tool!.callId);
+      expect(tool.name, item.tool!.name);
       if (item.turnId != turnId &&
           !foreground.containsKey(tool.toolCallId) &&
           !tasks.containsValue(tool.taskId)) {
@@ -1351,9 +1356,12 @@ final class _ConceptScene {
       );
       expect(item.source, isA<BackgroundResultChatSource>());
       expect(item.delivery, ChatDeliveryKind.independent);
+      expect(item.lifecycle, isA<TerminalChatAtom>());
       expect(
         (item.lifecycle as TerminalChatAtom).outcome,
-        ChatTerminalOutcome.completed,
+        tool.toolCallId == 'concept-image-failed'
+            ? ChatTerminalOutcome.failed
+            : ChatTerminalOutcome.completed,
       );
       expect(item.completionItemId, isNotNull);
       expect(item.completionItemId, isNotEmpty);
@@ -1856,14 +1864,7 @@ final class _ConceptScene {
       report['imageWorkItemId'] = imageWork.id;
       imageDisplay = await observed.openRun(imageWork.id);
       await contentIdentitiesForItem(imageWork.id);
-      await _openBackgroundRuns();
-      await _until(
-        tester,
-        () =>
-            _imageResults(imageWork, imageDisplay!).length ==
-            _imageCalls.length + 1,
-        'all exact final image results in independently read Runs',
-      );
+      await _awaitImageResults(imageWork, imageDisplay);
       _verifyImageMembers(imageWork, imageDisplay);
       await _record('images-ready');
     } catch (error) {
@@ -2072,16 +2073,61 @@ final class _ConceptScene {
     }
   }
 
-  Future<void> _openBackgroundRuns() async {
-    for (final unit
-        in main
-            .where(
-              (unit) =>
-                  unit.entry.mainPresentation ==
-                  MainPresentation.backgroundResults,
-            )
-            .toList()) {
-      await contentIdentitiesForItem(unit.id);
+  Future<void> _awaitImageResults(
+    TimelineDisplayUnit unit,
+    TimelineGroupDisplay display, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Waiting for final image results requires a positive deadline');
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out waiting for all exact final image results');
+      }
+      return value;
+    }
+
+    Iterable<TimelineDisplayUnit> backgroundRuns() => main.where(
+      (value) =>
+          value.entry.mainPresentation == MainPresentation.backgroundResults,
+    );
+
+    bool hasReadRun(TimelineDisplayUnit run) {
+      final current = lease.groupDisplays
+          .where((value) => value.unitId == run.id)
+          .singleOrNull;
+      if (current?.error case final error?) throw StateError('$error');
+      return current?.isCurrent == true &&
+          current?.expanded == true &&
+          current?.runReference == run.run!.reference &&
+          current?.loading == false &&
+          current?.before == null &&
+          current?.atoms.length == run.entry.run!.ordinal;
+    }
+
+    while (true) {
+      remaining();
+      // A representative is only a Main anchor. Read each real background Run
+      // to EOF, then qualify its members by their own call/task/turn identities.
+      final handedOff = display.atoms.any(
+        (atom) => atom.delivery == ChatDeliveryKind.backgroundHandoff,
+      );
+      if (handedOff) {
+        for (final run in backgroundRuns().toList()) {
+          await contentIdentitiesForItem(run.id, timeout: remaining());
+        }
+      }
+      final results = _imageResults(unit, display);
+      remaining();
+      if (results.length == _imageCalls.length + 1 &&
+          (!handedOff || backgroundRuns().every(hasReadRun))) {
+        return;
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
     }
   }
 
@@ -3135,7 +3181,7 @@ final class _ConceptScene {
     late final List<_ImageResult> results;
     try {
       await contentIdentitiesForItem(imageGroup.id);
-      await _openBackgroundRuns();
+      await _awaitImageResults(imageGroup, display);
       results = _verifyImageMembers(imageGroup, display);
     } catch (error) {
       _recordImageFailure('read-images', error, original: display);

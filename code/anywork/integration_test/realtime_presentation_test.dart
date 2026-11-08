@@ -237,9 +237,6 @@ void main() {
       await scene.completed(answer: 'realtime long command complete');
       await scene.closeLatestTurnGroups();
 
-      final priorParallelItems = scene.observed.entries
-          .map((item) => item.recordId)
-          .toSet();
       await scene.submit('Realtime parallel tools');
       await fixtureGate(tester, provider, _parallelObserverStage);
       final parallelObserver = await scene.prepareToolObserver(
@@ -271,15 +268,12 @@ void main() {
       );
       await capturePresentation(tester, 'realtime-parallel-running.png');
       await scene.completed(answer: 'realtime parallel tools complete');
-      await scene.verifyExecReceipts(priorParallelItems, const {
+      await scene.verifyExecReceipts(const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
         'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
       }, turnId: parallelObserver.turnId);
       await scene.closeLatestTurnGroups();
 
-      final priorHostCwdItems = scene.observed.entries
-          .map((item) => item.recordId)
-          .toSet();
       await scene.submit('Realtime host cwd command');
       await fixtureGate(tester, provider, _hostCwdObserverStage);
       final hostObserver = await scene.prepareToolObserver(
@@ -299,7 +293,7 @@ void main() {
       final hostCwdTurnId = hostObserver.turnId;
       await capturePresentation(tester, 'realtime-host-cwd-running.png');
       await scene.completed(answer: 'realtime host cwd complete');
-      await scene.verifyExecReceipts(priorHostCwdItems, const {
+      await scene.verifyExecReceipts(const {
         'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
       }, turnId: hostCwdTurnId);
       await scene.closeLatestTurnGroups();
@@ -928,6 +922,12 @@ final class _RealtimeScene {
       if (metadata.entry.mainPresentation ==
           MainPresentation.backgroundResults) {
         expect(member.source, isA<BackgroundResultChatSource>());
+        expect(member.delivery, ChatDeliveryKind.independent);
+        expect(member.lifecycle, isA<TerminalChatAtom>());
+        expect(
+          (member.lifecycle as TerminalChatAtom).outcome,
+          ChatTerminalOutcome.completed,
+        );
       } else {
         expect(member.source, metadata.entry.atom.source);
       }
@@ -1366,13 +1366,13 @@ final class _RealtimeScene {
   }
 
   Future<void> verifyExecReceipts(
-    Set<String> priorItemIds,
     Map<String, String> expected, {
     required String turnId,
   }) async {
     final source = ForegroundTurnChatSource(turnId: turnId);
     final associatedTasks = <String, String>{};
     final observations = <Map<String, Object?>>[];
+    final openedBackgroundRuns = <String>{};
     final clock = Stopwatch()..start();
     Map<String, Object?>? lastObservation;
     String? previousObservation;
@@ -1384,11 +1384,24 @@ final class _RealtimeScene {
         ? {'kind': 'backgroundResult', 'messageId': value.messageId}
         : {'kind': value.runtimeType.toString()};
 
-    Iterable<TimelineDisplayUnit> backgroundGroups() => observed.main.where(
+    Iterable<TimelineDisplayUnit> backgroundRuns() => observed.main.where(
       (unit) =>
-          !priorItemIds.contains(unit.entry.recordId) &&
           unit.entry.mainPresentation == MainPresentation.backgroundResults,
     );
+
+    bool hasReadRun(TimelineDisplayUnit run) {
+      final display = lease.groupDisplays
+          .where((value) => value.unitId == run.id)
+          .singleOrNull;
+      if (display?.error case final error?) throw StateError('$error');
+      return openedBackgroundRuns.contains(run.id) &&
+          display?.isCurrent == true &&
+          display?.expanded == true &&
+          display?.runReference == run.run!.reference &&
+          display?.loading == false &&
+          display?.before == null &&
+          display?.atoms.length == run.entry.run!.ordinal;
+    }
 
     List<_ExecReceipt> targets() {
       final result = <_ExecReceipt>[];
@@ -1398,6 +1411,8 @@ final class _RealtimeScene {
         'turnId': turnId,
         'candidates': candidates,
         'finalCounts': counts,
+        'backgroundRunAnchors': <Map<String, Object?>>[],
+        'memberCallTaskMapping': <Map<String, Object?>>[],
         'complete': false,
       };
       lastObservation = {
@@ -1506,14 +1521,21 @@ final class _RealtimeScene {
         final backgroundResult =
             atom.source is BackgroundResultChatSource &&
             atom.delivery == ChatDeliveryKind.independent;
+        if (atom.source is BackgroundResultChatSource) {
+          expect(atom.delivery, ChatDeliveryKind.independent);
+          expect(terminal.outcome, ChatTerminalOutcome.completed);
+          expect(
+            observed.unitForRun(reference).entry.mainPresentation,
+            MainPresentation.backgroundResults,
+          );
+        }
         final taskAssociated =
             tool.taskId != null &&
             associatedTasks[tool.toolCallId] == tool.taskId;
         final finalResult =
             atom.kind == ChatAtomKind.toolCall &&
-            ((atom.source == source &&
-                    atom.delivery == ChatDeliveryKind.foreground) ||
-                (backgroundResult && taskAssociated)) &&
+            backgroundResult &&
+            taskAssociated &&
             terminal.outcome == ChatTerminalOutcome.completed &&
             tool.name == 'exec' &&
             tool.statusString == 'succeeded' &&
@@ -1527,6 +1549,35 @@ final class _RealtimeScene {
           counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
         }
       }
+      snapshot['backgroundRunAnchors'] = [
+        for (final run in backgroundRuns())
+          {
+            'id': run.id,
+            'databaseId': run.run!.reference.databaseId,
+            'indexVersion': run.run!.reference.indexVersion,
+            'startSeq': run.run!.reference.startSeq,
+            'ordinal': run.entry.run!.ordinal,
+            'opened': openedBackgroundRuns.contains(run.id),
+          },
+      ];
+      snapshot['memberCallTaskMapping'] = [
+        for (final candidate in candidates)
+          if (candidate.containsKey('callId'))
+            {
+              for (final key in const [
+                'callId',
+                'taskId',
+                'turnId',
+                'source',
+                'delivery',
+                'groupId',
+                'status',
+                'exitCode',
+                'finalResult',
+              ])
+                if (candidate.containsKey(key)) key: candidate[key],
+            },
+      ];
       snapshot['associatedTasks'] = Map<String, String>.of(associatedTasks);
       snapshot['complete'] = true;
       lastObservation = {
@@ -1543,32 +1594,88 @@ final class _RealtimeScene {
 
     var receipts = <_ExecReceipt>[];
     try {
-      await observed.openSourceRuns(source);
-      await until(
-        () {
-          targets();
-          final terminalCalls = observed.mountedMembers
-              .where(
-                (atom) =>
-                    atom.source == source &&
-                    atom.turnId == turnId &&
-                    atom.lifecycle is TerminalChatAtom,
-              )
-              .map((atom) => atom.tool?.callId)
-              .toSet();
-          return terminalCalls.containsAll(expected.keys) &&
-              backgroundGroups().fold<int>(
-                    0,
-                    (count, unit) => count + unit.entry.run!.ordinal,
-                  ) >=
-                  associatedTasks.length;
-        },
-        'original exec terminals and independently admitted background groups',
-      );
-      for (final group in backgroundGroups().toList()) {
-        await observed.openRun(group.id);
+      Duration remaining() {
+        final value = const Duration(seconds: 60) - clock.elapsed;
+        if (value <= Duration.zero) {
+          fail(
+            'Timed out waiting for original exec terminals and each '
+            'independently sourced final result: ${jsonEncode(lastObservation)}',
+          );
+        }
+        return value;
       }
-      receipts = targets();
+
+      Future<void> readRun(TimelineDisplayUnit unit) async {
+        final display = await observed.openRun(unit.id, timeout: remaining());
+        while (true) {
+          await observed.until(
+            () {
+              expect(display.isCurrent, isTrue);
+              expect(display.expanded, isTrue);
+              expect(display.runReference, unit.run!.reference);
+              if (display.error case final error?) throw StateError('$error');
+              return !display.loading;
+            },
+            'original receipt Run page is ready',
+            timeout: remaining(),
+          );
+          if (display.before == null) break;
+          await observed.loadOlderRunPage(display, timeout: remaining());
+        }
+        expect(display.atoms, hasLength(unit.entry.run!.ordinal));
+        expect(
+          display.atoms.map((atom) => atom.id).toSet(),
+          hasLength(display.atoms.length),
+        );
+      }
+
+      for (final run in observed.workFor(source).toList()) {
+        await readRun(run);
+      }
+      while (true) {
+        remaining();
+        targets();
+        // Main representatives do not qualify members. Discover new Runs on
+        // every pass and read their exact pages before counting final receipts.
+        for (final run in backgroundRuns().toList()) {
+          if (!hasReadRun(run)) {
+            await readRun(run);
+            openedBackgroundRuns.add(run.id);
+          }
+        }
+        receipts = targets();
+        final terminalCalls = observed.mountedMembers
+            .where(
+              (atom) =>
+                  atom.source == source &&
+                  atom.turnId == turnId &&
+                  atom.lifecycle is TerminalChatAtom,
+            )
+            .map((atom) => atom.tool?.callId)
+            .whereType<String>()
+            .toSet();
+        final finalCounts = {
+          for (final call in expected.keys)
+            call: receipts.where((receipt) {
+              final tool = (receipt.value.toolCard as DecodedToolCard).value;
+              return tool.toolCallId == call;
+            }).length,
+        };
+        expect(
+          finalCounts.values.where((count) => count > 1),
+          isEmpty,
+          reason: 'Each exact background task must produce one final receipt',
+        );
+        remaining();
+        if (terminalCalls.containsAll(expected.keys) &&
+            associatedTasks.keys.toSet().containsAll(expected.keys) &&
+            backgroundRuns().every(hasReadRun) &&
+            finalCounts.values.every((count) => count == 1)) {
+          break;
+        }
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
     } finally {
       final output = Directory(
         Platform.environment['ANYWORK_REALTIME_OUTPUT']!,

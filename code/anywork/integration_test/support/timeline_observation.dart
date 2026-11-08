@@ -14,6 +14,37 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Finds the current title inside one exact header without resolving the header
+/// again for every candidate. A clock may replace a custom label during a pump.
+Finder timelineGroupTitleFinder(
+  WidgetTester tester,
+  Finder header, {
+  bool skipOffstage = true,
+  VoidCallback? validateOwner,
+}) => find.descendant(
+  of: header,
+  matching: find.byElementPredicate((element) {
+    TimelineActivityRow? row;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget case final TimelineActivityRow value) {
+        row = value;
+        return false;
+      }
+      return true;
+    });
+    final current = row;
+    if (current == null) return false;
+    final widget = element.widget;
+    final labelWidget = current.labelWidget;
+    final matches = labelWidget == null
+        ? widget is Text && widget.data == current.label
+        : identical(widget, labelWidget);
+    if (matches) validateOwner?.call();
+    return matches;
+  }, skipOffstage: skipOffstage),
+  skipOffstage: skipOffstage,
+);
+
 /// UI operations and synchronous borrows of the production presentation owner.
 /// No copied group/current list, payload fallback, query, or test-owned reducer.
 final class TimelineObservation {
@@ -91,19 +122,30 @@ final class TimelineObservation {
   Finder _groupTitle(String id, {bool skipOffstage = true}) {
     final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
+    final originalLease = lease;
+    final originalController = originalLease.controller;
+    final originalGeneration = originalLease.generation;
     // The header's Align/Row can have its centre in a Spacer, outside its
     // children's hit path. Target the real title inside this exact unit, not
     // the disclosure's body or another group's identically labelled header.
-    return find.descendant(
-      of: header,
-      matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is Text &&
-            widget.data == tester.widget<TimelineActivityRow>(header).label,
-        skipOffstage: skipOffstage,
-      ),
+    final title = timelineGroupTitleFinder(
+      tester,
+      header,
       skipOffstage: skipOffstage,
+      validateOwner: () {
+        final current = lease;
+        if (!identical(current, originalLease) ||
+            originalLease.isRetired ||
+            originalLease.isReleased ||
+            !originalLease.isMounted ||
+            !identical(current.controller, originalController) ||
+            current.generation != originalGeneration) {
+          fail('Timeline owner changed while resolving Run title $id');
+        }
+      },
     );
+    expect(title, findsOneWidget);
+    return title;
   }
 
   Future<void> until(
@@ -111,11 +153,15 @@ final class TimelineObservation {
     String description, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
+    if (timeout <= Duration.zero) {
+      fail('Waiting for $description requires a positive deadline');
+    }
     final clock = Stopwatch()..start();
-    while (!ready()) {
-      if (clock.elapsed > timeout) {
+    while (true) {
+      if (clock.elapsed >= timeout) {
         fail('Timed out waiting for $description');
       }
+      if (ready()) return;
       await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
     }
@@ -127,12 +173,15 @@ final class TimelineObservation {
     bool Function()? isActive,
     Duration timeout = const Duration(seconds: 60),
   }) async {
+    if (timeout <= Duration.zero) {
+      fail('Tapping a production control requires a positive deadline');
+    }
     if (isActive?.call() == false) return;
     expect(target, findsOneWidget);
     final clock = Stopwatch()..start();
     while (true) {
       if (isActive?.call() == false) return;
-      if (clock.elapsed > timeout) {
+      if (clock.elapsed >= timeout) {
         fail('Timed out waiting for hittable production control');
       }
       if (target.hitTestable().evaluate().length == 1) break;
@@ -145,9 +194,15 @@ final class TimelineObservation {
       await tester.pump();
       expect(tester.takeException(), isNull);
       if (isActive?.call() == false) return;
+      if (clock.elapsed >= timeout) {
+        fail('Timed out waiting for hittable production control');
+      }
       if (target.hitTestable().evaluate().length == 1) break;
       await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
+    }
+    if (clock.elapsed >= timeout) {
+      fail('Timed out waiting for hittable production control');
     }
     await tester.tap(target);
     await tester.pump();
@@ -466,7 +521,7 @@ final class TimelineObservation {
       Map<String, Object?>? pointer,
     }) async {
       requireOriginal();
-      if (clock.elapsed > deadline) {
+      if (clock.elapsed >= deadline) {
         stop('Main reveal exceeded its original deadline');
       }
       phase = kind;
@@ -502,14 +557,14 @@ final class TimelineObservation {
             : description;
         stop('Main reveal encountered a layout/framework error');
       }
-      if (clock.elapsed > deadline) {
+      if (clock.elapsed >= deadline) {
         stop('Main reveal exceeded its original deadline');
       }
     }
 
     while (true) {
       requireOriginal();
-      if (clock.elapsed > deadline) {
+      if (clock.elapsed >= deadline) {
         stop('Main did not reveal the requested canonical row');
       }
       if (canonical.evaluate().isNotEmpty) {
@@ -779,7 +834,22 @@ final class TimelineObservation {
     return indices.toList()..sort();
   }
 
-  Future<TimelineGroupDisplay> openRun(String id) async {
+  Future<TimelineGroupDisplay> openRun(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Opening a timeline Run requires a positive deadline');
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out opening timeline Run $id');
+      }
+      return value;
+    }
+
     final originalLease = lease;
     final value = unit(id);
     final originalController = lease.controller;
@@ -787,26 +857,38 @@ final class TimelineObservation {
     final mainSets = lease.appliedSets;
     expect(value.run, isNotNull);
     final header = groupHeader(id);
-    await reveal(header, id);
+    await reveal(header, id, timeout: remaining());
     expect(header, findsOneWidget);
     if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(_groupTitle(id));
+      await tap(_groupTitle(id), timeout: remaining());
     }
     TimelineGroupDisplay? display;
-    await until(() {
-      display = lease.groupDisplays
-          .where((display) => display.unitId == id)
-          .singleOrNull;
-      if (display?.error case final error?) throw StateError('$error');
-      // Main and Run are delivered independently. Keep the bound,
-      // but qualify both observed views before accepting this open.
-      return display?.isCurrent == true &&
-          display?.expanded == true &&
-          display!.atoms.isNotEmpty &&
-          display!.atoms.length <= unit(id).entry.run!.ordinal;
-    }, 'mounted original ordinary group $id');
+    await until(
+      () {
+        display = lease.groupDisplays
+            .where((display) => display.unitId == id)
+            .singleOrNull;
+        if (display?.error case final error?) throw StateError('$error');
+        // Main and Run are delivered independently. Keep the bound,
+        // but qualify both observed views before accepting this open.
+        return display?.isCurrent == true &&
+            display?.expanded == true &&
+            display!.atoms.isNotEmpty &&
+            display!.atoms.length <= unit(id).entry.run!.ordinal;
+      },
+      'mounted original ordinary Run $id',
+      timeout: remaining(),
+    );
+    remaining();
     expect(display!.atoms, isNotEmpty);
     expect(display!.runReference, value.run!.reference);
+    if (value.entry.mainPresentation == MainPresentation.backgroundResults) {
+      for (final atom in display!.atoms) {
+        expect(atom.source, isA<BackgroundResultChatSource>());
+        expect(atom.delivery, ChatDeliveryKind.independent);
+        expect(atom.lifecycle, isA<TerminalChatAtom>());
+      }
+    }
     expect(
       display!.atoms.map((atom) => atom.id).toSet(),
       hasLength(display!.atoms.length),
@@ -824,6 +906,70 @@ final class TimelineObservation {
       reason: 'group expansion must not replace the original Main Set',
     );
     return display!;
+  }
+
+  /// Demand one older page through the exact mounted Run's production control.
+  /// The caller owns the total budget across opening, paging and qualification.
+  Future<void> loadOlderRunPage(
+    TimelineGroupDisplay display, {
+    required Duration timeout,
+  }) async {
+    if (timeout <= Duration.zero) {
+      fail('Loading a Run page requires a positive deadline');
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out loading original Run page ${display.unitId}');
+      }
+      return value;
+    }
+
+    final originalLease = lease;
+    final reference = unit(display.unitId).run!.reference;
+    final before = display.before;
+    expect(before, isNotNull);
+    void requireOriginal() {
+      expect(lease, same(originalLease));
+      expect(display.isCurrent, isTrue);
+      expect(display.expanded, isTrue);
+      expect(display.runReference, reference);
+      expect(
+        lease.groupDisplays.singleWhere(
+          (value) => value.unitId == display.unitId,
+        ),
+        same(display),
+      );
+      if (display.error case final error?) throw StateError('$error');
+    }
+
+    final older = find.descendant(
+      of: groupRow(display.unitId),
+      matching: find.byKey(const ValueKey('timeline-children-load-older')),
+    );
+    await until(
+      () {
+        requireOriginal();
+        expect(display.before, before);
+        final matches = older.evaluate().length;
+        expect(matches, lessThanOrEqualTo(1));
+        return matches == 1 &&
+            tester.widget<TextButton>(older).onPressed != null;
+      },
+      'enabled original Run pagination control',
+      timeout: remaining(),
+    );
+    await tap(older, timeout: remaining());
+    await until(
+      () {
+        requireOriginal();
+        return !display.loading && display.before != before;
+      },
+      'explicit original Run page advanced',
+      timeout: remaining(),
+    );
+    remaining();
   }
 
   Future<void> revealItem(
