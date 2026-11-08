@@ -57,7 +57,11 @@ void main() {
     tester,
   ) async {
     var taps = 0;
-    final header = find.byType(TimelineActivityRow);
+    var headerCandidates = 0;
+    final header = find.byElementPredicate((element) {
+      headerCandidates++;
+      return element.widget is TimelineActivityRow;
+    });
     await tester.pumpWidget(
       _host(
         InkWell(
@@ -71,6 +75,13 @@ void main() {
       ),
     );
     final title = timelineGroupTitleFinder(tester, header);
+    headerCandidates = 0;
+    expect(title.evaluate(), hasLength(1));
+    expect(
+      headerCandidates,
+      lessThanOrEqualTo(tester.allElements.length * 2),
+      reason: 'one title evaluation must not resolve the header per candidate',
+    );
     expect(title, findsOneWidget);
     final before = tester.widget<TimelineActivityRow>(header).labelWidget;
     expect(before, isA<TimelineReasoningSummary>());

@@ -24,13 +24,28 @@ Finder timelineGroupTitleFinder(
   VoidCallback? validateOwner,
 }) => find.descendant(
   of: header,
-  matching: find.byWidgetPredicate((widget) {
-    validateOwner?.call();
-    final row = tester.widget<TimelineActivityRow>(header);
-    final labelWidget = row.labelWidget;
-    return labelWidget == null
-        ? widget is Text && widget.data == row.label
+  matching: find.byElementPredicate((element) {
+    // A matching Finder is evaluated across the tree, not only descendants of
+    // `of`. Resolving `header` here would rescan the whole tree per candidate.
+    // Borrow the nearest row directly; descendant intersection below still
+    // restricts the result to the exact requested header.
+    TimelineActivityRow? row;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget case final TimelineActivityRow value) {
+        row = value;
+        return false;
+      }
+      return true;
+    });
+    final current = row;
+    if (current == null) return false;
+    final widget = element.widget;
+    final labelWidget = current.labelWidget;
+    final matches = labelWidget == null
+        ? widget is Text && widget.data == current.label
         : identical(widget, labelWidget);
+    if (matches) validateOwner?.call();
+    return matches;
   }, skipOffstage: skipOffstage),
   skipOffstage: skipOffstage,
 );
