@@ -894,6 +894,270 @@ fn input_record(id: &str, seq: u64) -> Result<pl_core::thread::input::InputRecor
     })
 }
 
+/// B06: all three producers share one real effect and Session allocation.
+#[tokio::test]
+async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequence() -> Result<()> {
+    use pl_core::{
+        chat::ChatHistory,
+        context::{
+            AgentMessageKind, ContextContent, ContextRecord, ContextSnapshot, ContextSource,
+        },
+        model::ModelToolCall,
+        thread::{
+            ToolDelivery, ToolOutcome,
+            inbox::{InboxRecord, ThreadMessage},
+            input::InputChange,
+            task::{TaskRecord, TaskStatus},
+        },
+    };
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        h.thread.parent_thread_id = Some("mixed-parent".into());
+        // Original tool projection has a stable call-identity order within one
+        // effect. Start the lexically later call first, in a separate effect,
+        // so B -> A terminals are provably not execution-ordinal order.
+        let task = |call: &str, sequence| TaskRecord {
+            id: format!("task-{call}"),
+            call_id: call.into(),
+            tool_id: "exec".into(),
+            turn_id: "mixed-turn".into(),
+            revision: 1,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(sequence),
+        };
+        let a = task("z-started-first", 1);
+        let b = task("a-started-second", 2);
+        let context = |task: &TaskRecord| ContextRecord {
+            id: format!("request-{}", task.call_id),
+            turn_id: Some(task.turn_id.clone()),
+            source: ContextSource::Assistant,
+            content: vec![],
+            tool_calls: vec![ModelToolCall {
+                call_id: task.call_id.clone(),
+                tool_id: task.tool_id.clone(),
+                arguments: OpaquePayload::text("{}"),
+                presentation_contract: None,
+                rejection: None,
+            }],
+        };
+        let mut state = CoreSnapshot::default();
+        for (index, started) in [a.clone(), b.clone()].into_iter().enumerate() {
+            let sequence = index as u64 + 1;
+            let record = context(&started);
+            let mut records = state.context.records.to_vec();
+            records.push(record.clone());
+            state.context = ContextSnapshot {
+                revision: sequence,
+                records: records.into(),
+            };
+            state.tasks.insert(started.id.clone(), started.clone());
+            state.commit_sequence = sequence;
+            let effect = ThreadEffectBatch {
+                thread_id: h.thread.id.clone(),
+                sequence,
+                committed_at: sequence as i64,
+                context: Some(pl_core::thread::journal::ContextChange::Append {
+                    revision: sequence,
+                    records: vec![record].into(),
+                }),
+                tasks: vec![started].into(),
+                ..Default::default()
+            };
+            let prepared = admit(&mut h, &state, &effect).await?;
+            assert!(prepared.completions.is_empty());
+            h.save(&prepared).await?;
+        }
+        let mut feed = env
+            .runtime
+            .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+            .await?;
+        assert!(chat(&mut feed).await?.entries.is_empty());
+        activity(&mut feed).await?;
+
+        let mut input = input_record("mixed-input", 3)?;
+        input.ordinal = 1;
+        let inbox = InboxRecord {
+            sequence: 1,
+            message: ThreadMessage {
+                id: "mixed-message".into(),
+                source_id: "agent:mixed-parent".into(),
+                kind: AgentMessageKind::Task,
+                payload: OpaquePayload::text("可信父消息的原文📨"),
+                context: vec![],
+            },
+        };
+        let mut terminal_b = b.clone();
+        terminal_b.revision = 2;
+        terminal_b.status = TaskStatus::Succeeded;
+        let mut terminal_a = a.clone();
+        terminal_a.revision = 2;
+        terminal_a.status = TaskStatus::Succeeded;
+        let deliveries: Arc<[_]> = [&terminal_b, &terminal_a]
+            .into_iter()
+            .map(|task| ToolDelivery {
+                target: Default::default(),
+                call_id: task.call_id.clone(),
+                tool_id: task.tool_id.clone(),
+                output: pl_core::tool::ToolOutput::new(
+                    OpaquePayload::text(format!("原终态字节:{}", task.call_id)),
+                    vec![],
+                ),
+                delivered_context: vec![ContextContent::Text {
+                    text: format!("result:{}", task.call_id).into(),
+                }],
+                outcome: ToolOutcome::Succeeded,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        state.commit_sequence = 3;
+        state.inputs = vec![input.clone()].into();
+        state.input_ordinal = 1;
+        state.inbox = vec![inbox.clone()].into();
+        state.inbox_sequence = 1;
+        state.tasks = [terminal_b.clone(), terminal_a.clone()]
+            .into_iter()
+            .map(|task| (task.id.clone(), task))
+            .collect();
+        state.deliveries = deliveries.clone();
+        let effect = ThreadEffectBatch {
+            thread_id: h.thread.id.clone(),
+            sequence: 3,
+            committed_at: 3,
+            inputs: vec![InputChange::Accepted(input)].into(),
+            inbox: vec![inbox.clone()].into(),
+            tasks: vec![terminal_b, terminal_a].into(),
+            deliveries,
+            ..Default::default()
+        };
+        let prepared = admit(&mut h, &state, &effect).await?;
+        let expected = [
+            "mixed-input".to_owned(),
+            crate::studio::thread_projection::order::message_id(&inbox.message.id),
+            crate::studio::thread_projection::order::tool_id(&b.call_id),
+            crate::studio::thread_projection::order::tool_id(&a.call_id),
+        ];
+        let ordinal = |id: &str| {
+            prepared
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .expect("original tool item")
+                .ordinal
+        };
+        assert!(ordinal(&expected[3]) < ordinal(&expected[2]));
+        assert_eq!(prepared.completions.len(), 4);
+        for (index, record) in prepared.completions.iter().enumerate() {
+            assert_eq!(record.header.item_id, expected[index]);
+            assert_eq!(record.header.append_seq, index as u64 + 1);
+        }
+        let input_atom: ChatAtom =
+            serde_json::from_slice(&prepared.completions[0].header.metadata)?;
+        let inbox_atom: ChatAtom =
+            serde_json::from_slice(&prepared.completions[1].header.metadata)?;
+        assert!(
+            matches!(input_atom.source, ChatSourceId::Input { ref input_id }
+            if input_id == "mixed-input")
+        );
+        assert!(
+            matches!(inbox_atom.source, ChatSourceId::InboxMessage { ref source_id, ref message_id }
+            if source_id == "agent:mixed-parent" && message_id == &inbox.message.id)
+        );
+        for (record, task) in prepared.completions[2..].iter().zip([&b, &a]) {
+            let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+            assert_eq!(atom.kind, ChatAtomKind::ToolCall);
+            assert_eq!(
+                atom.tool.context("typed tool identity")?.call_id,
+                task.call_id
+            );
+        }
+        let live = chat(&mut feed).await?;
+        assert_eq!(live.placement, ChatPlacement::Append);
+        assert_eq!((live.from_seq, live.through_seq), (Some(0), 4));
+        assert_eq!(
+            live.entries
+                .iter()
+                .map(|entry| &entry.record_id)
+                .collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(activity(&mut feed).await?.completed_through, 4);
+        let frozen = prepared.completions.clone();
+        let replay = admit(&mut h, &state, &effect).await?;
+        assert_eq!(h.session.head_seq(), 4);
+        for record in replay.completions.iter() {
+            assert!(
+                frozen
+                    .iter()
+                    .any(|original| original.as_ref() == record.as_ref())
+            );
+        }
+        // Already sealed tools need not be regenerated. Repeating the complete
+        // original frozen write also exercises the actual writer's replay.
+        assert_eq!(activity(&mut feed).await?.completed_through, 4);
+        h.save(&prepared).await?;
+        h.save(&prepared).await?;
+        assert_eq!(h.session.head_seq(), 4);
+        assert_eq!(h.session.durable_seq(), 4);
+        for record in frozen.iter() {
+            assert_eq!(
+                ChatHistory::item(&h.history, &record.header.item_id)
+                    .await?
+                    .context("durable frozen record")?,
+                **record,
+                "identity, seq, metadata, payload and content bytes changed"
+            );
+        }
+        feed.close().await?;
+        feed.reader().close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .retire(&h.source);
+        let mut cold = env
+            .runtime
+            .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+            .await?;
+        let baseline = chat(&mut cold).await?;
+        assert_eq!(baseline.placement, ChatPlacement::Set);
+        assert_eq!(baseline.through_seq, 4);
+        assert_eq!(
+            baseline
+                .entries
+                .iter()
+                .map(|entry| &entry.record_id)
+                .collect::<Vec<_>>(),
+            [0, 1, 3].map(|index| &expected[index]).to_vec()
+        );
+        for record in frozen.iter() {
+            let item = cold
+                .reader()
+                .read_completed(&record.header.item_id, demand())
+                .await?;
+            assert_eq!(item.record_id, record.header.item_id);
+            assert_eq!(item.completion_seq, record.header.append_seq);
+            let bytes = match item.atom.payload {
+                Some(PayloadData::Inline { bytes }) => bytes,
+                Some(PayloadData::Deferred {
+                    reference,
+                    byte_length,
+                    ..
+                }) => binding_content(cold.reader(), &reference, byte_length).await?,
+                None => Vec::new(),
+            };
+            assert_eq!(bytes.as_slice(), record.payload.as_ref());
+        }
+        assert!(env.runtime.threads.observed_thread(&h.thread.id).is_none());
+        cold.close().await?;
+        cold.reader().close().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
 /// B01/B02/B03/B04/B06/B07: accepted facts share one completed sequence;
 /// consumption and execution association cannot rewrite them later.
 #[tokio::test]

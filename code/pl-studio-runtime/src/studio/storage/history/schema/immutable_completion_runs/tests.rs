@@ -242,6 +242,26 @@ async fn latest_original_seq(db: &impl ConnectionTrait) -> Result<u64> {
 }
 
 #[tokio::test]
+async fn applied_missing_run_column_is_rejected_without_repairing_originals() -> Result<()> {
+    let (_dir, db) = fixture().await?;
+    seed(&db, 2).await?;
+    migrate(&db).await?;
+    let originals = original_bytes(&db).await?;
+    db.execute_unprepared("ALTER TABLE conversation_items DROP COLUMN display_run_ordinal")
+        .await?;
+    assert!(migrate(&db).await.is_err());
+    assert!(validate(&db).await.is_err());
+    assert!(
+        !SchemaManager::new(&db)
+            .has_column("conversation_items", "display_run_ordinal")
+            .await?
+    );
+    assert_eq!(version(&db).await?, 18);
+    assert_eq!(original_bytes(&db).await?, originals);
+    Ok(())
+}
+
+#[tokio::test]
 async fn post_boundary_summary_requires_complete_original_or_archived_text_before_drop()
 -> Result<()> {
     use super::super::legacy_timeline_types::{
