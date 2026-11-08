@@ -397,7 +397,15 @@ pub(in super::super) async fn append_published(
         vec![integer(h.append_seq)?.into(),h.item_id.clone().into(),h.query_class.clone().into(),
             h.parent_id.as_ref().map(|key|key.as_str().to_owned()).into(),item.payload.to_vec().into()],
     )).await?;
-    write_contents(db, &h.item_id, &item.contents).await
+    let owner = ChatKey::new("item", &h.item_id)?;
+    for (key, content) in item.contents.iter() {
+        ensure!(
+            key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
+            "published completion has a foreign content owner"
+        );
+        super::super::schema::legacy_content::write_content(db, content, true).await?;
+    }
+    Ok(())
 }
 
 /// Frozen schema-13 member directory, separate from its four-content preview window.

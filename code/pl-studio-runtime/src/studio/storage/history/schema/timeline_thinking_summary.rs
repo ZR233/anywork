@@ -64,6 +64,7 @@ mod tests {
                         TIMELINE_THINKING_SUMMARY
                             | SOURCE_CLASSIFICATION
                             | TIMELINE_BACKGROUND_TAIL
+                            | COMPLETION_BOUNDARY
                     )
                 })
                 .collect()

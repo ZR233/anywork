@@ -1352,6 +1352,59 @@ void main() {
   );
 
   testWidgets(
+    'restored interrupted reasoning renders cancelled without opening content',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      await tester.pumpWidget(
+        _host(
+          TimelineMemberAtom(
+            atom: ChatAtom(
+              id: 'restored-interrupted-reasoning',
+              source: _source,
+              sourceOrder: 1,
+              kind: ChatAtomKind.reasoning,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const TerminalChatAtom(
+                started: ChatFactPosition(effectSeq: 2, suborder: 0),
+                ended: ChatFactPosition(effectSeq: 8, suborder: 0),
+                outcome: ChatTerminalOutcome.cancelled,
+              ),
+              contents: const [],
+            ),
+            content: content,
+            isActive: () => true,
+            images: images,
+            readAttachment: null,
+          ),
+        ),
+      );
+
+      final reasoning = find.byType(TimelineReasoningView);
+      final row = tester.widget<TimelineActivityRow>(
+        find.descendant(
+          of: reasoning,
+          matching: find.byType(TimelineActivityRow),
+        ),
+      );
+      expect(reasoning, findsOneWidget);
+      expect(row.label, '思考已取消');
+      expect(row.active, isFalse);
+      expect(row.icon, Icons.stop_circle_outlined);
+      expect(row.expandable, isFalse);
+      expect(find.byType(ExpansionTile), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(content.scopes, isEmpty);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(content.scopes, isEmpty);
+    },
+  );
+
+  testWidgets(
     'typed wait uses member atom, never tool-name or generic Running inference',
     (tester) async {
       final content = _Content();

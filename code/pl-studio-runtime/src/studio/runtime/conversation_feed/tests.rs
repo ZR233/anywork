@@ -5,8 +5,10 @@ use pl_provider_fixture::{Protocol, Reply, ReplyStage, RequestMatch, Step};
 use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
+mod allocation;
 mod atoms;
 mod coalescing;
+mod cut_cost;
 mod payload;
 mod qualification;
 mod scheduling;
@@ -1175,9 +1177,8 @@ async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_ded
             ));
         }
         let (events, state) = tokio::sync::broadcast::channel(1);
-        feed.state = Some(DeliveryReceiver::new(
+        feed.state = Some(super::super::thread_observation::StateReceiver::new(
             state,
-            Arc::new(tokio::sync::Notify::new()),
             Default::default(),
         ));
         feed.state_turn = true;

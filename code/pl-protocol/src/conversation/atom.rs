@@ -125,8 +125,11 @@ pub struct ChatAtom {
     /// Stable member/part identity, including the active-to-completed handoff.
     pub id: String,
     /// The original frozen completion may be a distinct background-started receipt.
+    /// Absent when a real recovery interruption ends a started model member
+    /// without a provider completion receipt; never fabricate an empty completion.
     pub completion_item_id: Option<String>,
-    /// Actual completion publication order; absent before completion.
+    /// Actual completion publication order; absent before completion and for a
+    /// recovery-interrupted member that has no completion receipt.
     pub completion_seq: Option<u64>,
     pub source: ChatSourceId,
     /// Actual source state at this read cut, not frozen into completion metadata.
@@ -155,7 +158,8 @@ pub struct ChatAtom {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_present: Option<bool>,
     pub contents: Vec<ChatAtomContent>,
-    /// Absent for an active fact. Frozen payload ownership stays with the original item.
+    /// Absent for an active fact or a recovery-interrupted model member without
+    /// a completion receipt. Frozen payload ownership stays with the original item.
     pub payload: Option<PayloadData>,
 }
 

@@ -71,6 +71,7 @@ pub(in super::super) async fn read_content(
                 }
             })?;
             let manifest = super::content::manifest(&payload)?;
+            ensure!(manifest.sealed, ChatError::StaleContent);
             validate_range(request, manifest.byte_length, manifest.generation)?;
             let end = request.offset
                 + (manifest.byte_length - request.offset).min(request.max_bytes as u64);

@@ -209,6 +209,16 @@ impl Harness {
         index: u64,
         publish_cut: bool,
     ) -> Result<Arc<PreparedEffect>> {
+        self.prepare_background_result_and_text(index, publish_cut, false, false)
+            .await
+    }
+    async fn prepare_background_result_and_text(
+        &mut self,
+        index: u64,
+        publish_cut: bool,
+        separator: bool,
+        launch: bool,
+    ) -> Result<Arc<PreparedEffect>> {
         use pl_core::{
             context::{
                 AgentMessageKind, ContextContent, ContextRecord, ContextSnapshot, ContextSource,
@@ -229,14 +239,22 @@ impl Harness {
             call_id: call.clone(),
             tool_id: "exec".into(),
             turn_id: turn.clone(),
-            revision: 2,
-            status: TaskStatus::Succeeded,
+            revision: if launch { 1 } else { 2 },
+            status: if launch {
+                TaskStatus::Running
+            } else {
+                TaskStatus::Succeeded
+            },
             cancel_requested: false,
             acknowledgement: Some(TaskAcknowledgement {
                 record_id: format!("ack-{index}"),
                 context_revision: 1,
             }),
-            started_sequence: Some(self.sequence),
+            started_sequence: Some(if separator {
+                self.sequence - 1
+            } else {
+                self.sequence
+            }),
         };
         let delivery = ToolDelivery {
             target: Default::default(),
@@ -258,6 +276,8 @@ impl Harness {
                 context: vec![],
             },
         };
+        let deliveries: Arc<[_]> = if launch { vec![] } else { vec![delivery] }.into();
+        let inbox: Arc<[_]> = if launch { vec![] } else { vec![inbox] }.into();
         let state = CoreSnapshot {
             context: ContextSnapshot {
                 revision: 1,
@@ -277,8 +297,8 @@ impl Harness {
                 .into(),
             },
             tasks: [(task.id.clone(), task.clone())].into_iter().collect(),
-            deliveries: vec![delivery.clone()].into(),
-            inbox: vec![inbox.clone()].into(),
+            deliveries: deliveries.clone(),
+            inbox: inbox.clone(),
             ..Default::default()
         };
         let effect = ThreadEffectBatch {
@@ -286,8 +306,20 @@ impl Harness {
             sequence: self.sequence,
             committed_at: self.sequence as i64 + 10,
             tasks: vec![task].into(),
-            deliveries: vec![delivery].into(),
-            inbox: vec![inbox].into(),
+            deliveries,
+            inbox,
+            model_member_starts: if separator {
+                vec![start("separator", false)]
+            } else {
+                vec![]
+            }
+            .into(),
+            model_members: if separator {
+                vec![finish("separator", false, "visible separator")?]
+            } else {
+                vec![]
+            }
+            .into(),
             ..Default::default()
         };
         let (_, mut prepared) = self
@@ -302,6 +334,197 @@ impl Harness {
         }
         Ok(prepared)
     }
+}
+
+#[tokio::test]
+async fn background_tail_reopen_appends_to_same_head_and_unrelated_effect_preserves_facts()
+-> Result<()> {
+    use crate::studio::storage::history::HistoryStore;
+    use sea_orm::{ConnectionTrait, Database};
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let first = h.background_result(1).await?;
+        h.save(&first).await?;
+        let path = env
+            .runtime
+            .store
+            .registered_session_paths(&h.thread.id)?
+            .history_database();
+        let cold = HistoryStore::open(&path, &h.thread.id).await?;
+        cold.prepare_conversation_read().await?;
+        let before = read_all_timeline(&cold, ChatScope::Main, 8).await?;
+        let ChatEntry::Item(original) = &before[0] else {
+            panic!("group")
+        };
+        let original = original.as_ref().clone();
+        let second = h.background_result(2).await?;
+        let pending = read_all_timeline(&h.history, ChatScope::Main, 8).await?;
+        let ChatEntry::Item(updated) = &pending[0] else {
+            panic!("updated group")
+        };
+        assert_eq!(updated.id, original.id);
+        assert_eq!(updated.position, original.position);
+        assert_eq!(updated.members, original.members);
+        assert_eq!(updated.summary.as_ref().unwrap().member_count, 2);
+        assert_eq!(read_all_timeline(&cold, ChatScope::Main, 8).await?, before);
+        h.save(&second).await?;
+        assert_eq!(read_all_timeline(&cold, ChatScope::Main, 8).await?, pending);
+        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        db.execute_unprepared(
+            "CREATE TRIGGER reject_unrelated_head BEFORE UPDATE ON timeline_items
+             BEGIN SELECT RAISE(ABORT,'unrelated effect rewrote completed head'); END;
+             CREATE TRIGGER reject_unrelated_fact BEFORE UPDATE ON conversation_atom_facts
+             BEGIN SELECT RAISE(ABORT,'unrelated effect rewrote original fact'); END;",
+        )
+        .await?;
+        let unrelated = h.effect(vec![], vec![]).await?;
+        assert!(unrelated.current.timeline_update.updates().is_empty());
+        assert!(unrelated.timeline.is_empty());
+        h.save(&unrelated).await?;
+        assert_eq!(read_all_timeline(&cold, ChatScope::Main, 8).await?, pending);
+        db.execute_unprepared(
+            "DROP TRIGGER reject_unrelated_head; DROP TRIGGER reject_unrelated_fact;",
+        )
+        .await?;
+        db.close().await?;
+        cold.close_for_deletion().await?;
+
+        // A fresh HistoryStore and original LiveProjection binding exercise the
+        // ordinary reopen path, without the old RAM or pending tail owner.
+        h.history = HistoryStore::open(&path, &h.thread.id).await?;
+        h.history.prepare_conversation_read().await?;
+        let mut projection = LiveProjection::new();
+        projection.bind_execution_history(
+            env.runtime
+                .store
+                .thread_persistence()
+                .history_channel(&h.thread.id)
+                .order_index(),
+            h.history.clone(),
+        )?;
+        projection.bind_conversation_identity(
+            h.history
+                .conversation_database_id()
+                .await?
+                .context("database")?,
+        )?;
+        projection.observe_test_current(&h.thread, vec![])?;
+        h.projection = projection;
+        let third = h.background_result(3).await?;
+        assert!(third.timeline.is_empty());
+        let update = &third.current.timeline_update.updates()[0];
+        assert_eq!(update.id, original.id);
+        assert_eq!(update.position, original.position);
+        assert_eq!(update.source, original.source);
+        assert_eq!(update.members, original.members);
+        assert_eq!(update.summary.as_ref().unwrap().member_count, 3);
+        h.save(&third).await?;
+        let saved = read_all_timeline(&h.history, ChatScope::Main, 8).await?;
+        assert_eq!(saved.len(), 1);
+        let ChatEntry::Item(saved) = &saved[0] else {
+            panic!("saved head")
+        };
+        assert_eq!(saved.as_ref(), update);
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .retire(&h.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn background_update_precedes_visible_separator_in_one_real_effect() -> Result<()> {
+    let env = support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let first = h.background_result(1).await?;
+        h.save(&first).await?;
+        let launch = h
+            .prepare_background_result_and_text(2, true, false, true)
+            .await?;
+        h.save(&launch).await?;
+        let mut main = env
+            .runtime
+            .open_conversation_feed(
+                &h.thread.id,
+                ChatScope::Main,
+                ReadDemand {
+                    max_items: 1,
+                    ..demand()
+                },
+            )
+            .await?;
+        let initial = chat(&mut main).await?;
+        let ChatEntry::Item(group) = &initial.entries[0] else {
+            panic!("group")
+        };
+        let prepared = h
+            .prepare_background_result_and_text(2, true, true, false)
+            .await?;
+        assert_eq!(prepared.current.timeline_update.updates().len(), 1);
+        let update = chat(&mut main).await?;
+        assert_eq!(update.placement, ChatPlacement::Update);
+        assert!(update.current.is_none() && update.before.is_none());
+        let ChatEntry::Item(updated) = &update.entries[0] else {
+            panic!("updated")
+        };
+        assert_eq!(updated.id, group.id);
+        assert_eq!(updated.summary.as_ref().unwrap().member_count, 2);
+        let append = chat(&mut main).await?;
+        assert_eq!(append.placement, ChatPlacement::Append);
+        let ChatEntry::Item(separator) = &append.entries[0] else {
+            panic!("separator")
+        };
+        assert_eq!(separator.kind, TimelineItemKind::Text);
+        assert_eq!(separator.position, Some(1));
+        h.save(&prepared).await?;
+        let saved = read_all_timeline(&h.history, ChatScope::Main, 8).await?;
+        let Some(PayloadData::Inline { bytes }) = &separator.payload else {
+            panic!("small separator payload should be inline on delivery")
+        };
+        let reference = ContentRef {
+            database_id: group
+                .members
+                .as_ref()
+                .context("group reference")?
+                .database_id
+                .clone(),
+            target: ContentTarget::ItemPayload {
+                item_id: separator
+                    .content_item_id
+                    .clone()
+                    .context("separator completion")?,
+            },
+        };
+        assert_eq!(
+            binding_content(main.reader(), &reference, bytes.len() as u64).await?,
+            *bytes
+        );
+        let mut stored_separator = separator.clone();
+        stored_separator.payload = Some(PayloadData::Deferred {
+            reference,
+            byte_length: bytes.len() as u64,
+        });
+        assert_eq!(
+            saved,
+            vec![
+                ChatEntry::Item(updated.clone()),
+                ChatEntry::Item(stored_separator)
+            ]
+        );
+        main.close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .retire(&h.source);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 #[tokio::test]

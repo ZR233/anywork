@@ -41,8 +41,8 @@ use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
 /// Fixed bound on the frames one subscriber may fall behind the projection owner.
 ///
-/// The original publisher waits for actual reads at this bound. Owner closure
-/// revokes outward delivery before joining observation and storage responsibilities.
+/// Slow State receivers lose continuity at this bound; they never delay the owner.
+/// Reliable conversation cuts have their own capacity and actual-read responsibility.
 const LIVE_FEED_FRAMES: usize = 512;
 
 /// One output of a Thread's single realtime projection owner.
@@ -93,6 +93,45 @@ pub(super) struct RuntimeStateCut {
     pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
 }
 
+/// A bounded State observation, cancelled with its owner.
+///
+/// This carries Tokio's explicit lag errors without taking responsibility for reliable delivery
+/// capacity. A slow observer must resynchronize; it cannot hold up effect handoff or storage.
+pub(in crate::studio) struct StateReceiver {
+    receiver: broadcast::Receiver<ThreadLiveEvent>,
+    closed: tokio_util::sync::CancellationToken,
+}
+
+impl StateReceiver {
+    pub(super) fn new(
+        receiver: broadcast::Receiver<ThreadLiveEvent>,
+        closed: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self { receiver, closed }
+    }
+
+    /// Captures the queued observation prefix without consuming it or reserving capacity.
+    pub(super) fn len(&self) -> usize {
+        self.receiver.len()
+    }
+
+    pub(super) async fn recv(&mut self) -> Result<ThreadLiveEvent, broadcast::error::RecvError> {
+        // The owner can retain the Sender while draining storage. Revocation must wake a parked
+        // reader and win over buffered frames so neither consumer delivers after owner closure.
+        tokio::select! { biased;
+            _ = self.closed.cancelled() => Err(broadcast::error::RecvError::Closed),
+            result = self.receiver.recv() => result,
+        }
+    }
+
+    pub(super) fn try_recv(&mut self) -> Result<ThreadLiveEvent, broadcast::error::TryRecvError> {
+        if self.closed.is_cancelled() {
+            return Err(broadcast::error::TryRecvError::Closed);
+        }
+        self.receiver.try_recv()
+    }
+}
+
 /// The realtime projection feed of one Thread.
 ///
 /// The Thread's observation worker is its only producer, and it publishes into the shared chat
@@ -101,7 +140,6 @@ pub(super) struct RuntimeStateCut {
 pub(in crate::studio) struct ThreadLiveFeed {
     delivery_closed: tokio_util::sync::CancellationToken,
     events: broadcast::Sender<ThreadLiveEvent>,
-    event_capacity: Arc<Notify>,
     /// The Thread's authoritative typed storage state, published by this owner only.
     ///
     /// The projection owner is the one place that derives it from the owner snapshot and the
@@ -174,7 +212,6 @@ impl ThreadLiveFeed {
             conversation: publication::ConversationPublication::new(delivery_closed.clone()),
             delivery_closed,
             events,
-            event_capacity: Arc::new(Notify::new()),
             storage,
             last_turn,
             owner_progress,
@@ -201,21 +238,8 @@ impl ThreadLiveFeed {
             .clone()
     }
 
-    pub(in crate::studio) fn subscribe(&self) -> DeliveryReceiver<ThreadLiveEvent> {
-        DeliveryReceiver::new(
-            self.events.subscribe(),
-            self.event_capacity.clone(),
-            self.delivery_closed.clone(),
-        )
-    }
-    async fn wait_event_capacity(&self) {
-        publication::wait_capacity(
-            &self.events,
-            LIVE_FEED_FRAMES,
-            &self.event_capacity,
-            &self.delivery_closed,
-        )
-        .await;
+    pub(in crate::studio) fn subscribe(&self) -> StateReceiver {
+        StateReceiver::new(self.events.subscribe(), self.delivery_closed.clone())
     }
 
     /// Watches the newest terminal Turn this owner projected, so a subscriber that registers after
@@ -1199,7 +1223,6 @@ impl LiveOwner {
             &thread,
             &config.config,
         )?;
-        feed.wait_event_capacity().await;
         feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: catalog.revision,
@@ -1479,13 +1502,6 @@ impl LiveOwner {
         }
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.mode == HandoffMode::Live)
-        {
-            self.feed.wait_event_capacity().await;
-        }
         if let Some(pending) = &self.pending
             && pending.mode == HandoffMode::Live
         {
@@ -1865,7 +1881,6 @@ impl LiveOwner {
         }
         runtime.updated_at = crate::studio::unix_seconds();
         runtime.usage.updated_at = runtime.updated_at;
-        self.feed.wait_event_capacity().await;
         self.qualification_revision = qualification_revision;
         self.model_route_published.clone_from(&model_route);
         let runtime = self.runtime_published.insert(runtime);
@@ -1890,7 +1905,6 @@ impl LiveOwner {
         if !activity_changed {
             return;
         }
-        self.feed.wait_event_capacity().await;
         self.activity_published = activity;
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
@@ -4404,6 +4418,309 @@ mod storage_fault_tests {
         })
     }
 
+    /// Opens the production owner without a competing worker; writes still use the real admission
+    /// channel, projection, retained handoff and writer.
+    async fn state_observation_owner(
+        fixture: &ObservationFixture,
+        thread: &pl_protocol::Thread,
+        channel: &Arc<HistoryChannel>,
+    ) -> Result<(ThreadHandle, Arc<ThreadLiveFeed>, LiveOwner)> {
+        let handle = ThreadHandle::resume_without_model(thread.id.clone(), None)?;
+        let snapshot = handle.snapshot();
+        let (progress, owner_progress) = watch::channel(Progress::default());
+        let state = Arc::new(WorkerState {
+            deletion: Default::default(),
+            join_failure: Default::default(),
+            terminal_transfer: Default::default(),
+            progress,
+            retry: Notify::new(),
+            channel: channel.clone(),
+            reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            observed_before_execution: true,
+            pending_hook: None,
+        });
+        let feed = Arc::new(ThreadLiveFeed::new(
+            None,
+            owner_progress,
+            Default::default(),
+        ));
+        let live = LiveOwner::open(
+            &fixture.services,
+            &handle,
+            &snapshot,
+            thread.clone(),
+            feed.clone(),
+            state,
+            None,
+        )
+        .await?;
+        Ok((handle, feed, live))
+    }
+
+    #[tokio::test]
+    async fn a_lagging_state_receiver_does_not_block_live_handoff_or_durability() -> Result<()> {
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("state-observation-lag");
+        register_test_thread(&fixture.store, &thread).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let result = async {
+            let mut slow = feed.subscribe();
+            let mut fast = feed.subscribe();
+            let mut cancelled_read = Box::pin(fast.recv());
+            assert!(futures::poll!(cancelled_read.as_mut()).is_pending());
+            drop(cancelled_read);
+            let count = u64::try_from(LIVE_FEED_FRAMES)? + 2;
+            let (mut committed, mut runtimes, mut activities) = (0, 0, 0);
+            // No conversation subscriber: only State is allowed to lag. The production reliable
+            // cut wait still runs on every owner handoff.
+            for sequence in 1..=count {
+                let running = sequence % 2 != 0;
+                let turn_id = format!("state-turn-{}", sequence.div_ceil(2));
+                let turn = TurnRecord {
+                    input_id: None,
+                    turn_id: turn_id.clone(),
+                    state: if running {
+                        TurnState::Running
+                    } else {
+                        TurnState::Interrupted
+                    },
+                    model_steps: 0,
+                    elapsed_ms: None,
+                };
+                let snapshot = ThreadSnapshot {
+                    commit_sequence: sequence,
+                    observation_revision: sequence,
+                    turns: Arc::from([turn.clone()]),
+                    execution: running.then(|| pl_core::thread::ActiveExecution {
+                        id: format!("execution:{turn_id}"),
+                        phase: pl_core::thread::ExecutionPhase::Running,
+                        turn_id: Some(turn_id),
+                    }),
+                    ..Default::default()
+                };
+                let write = ThreadWrite {
+                    effect: Arc::new(ThreadEffectBatch {
+                        thread_id: thread.id.clone(),
+                        sequence,
+                        committed_at: i64::try_from(sequence)?,
+                        turn: Some(turn),
+                        ..Default::default()
+                    }),
+                    checkpoint: ThreadCheckpoint::capture_transfer(
+                        thread.id.clone(),
+                        sequence,
+                        snapshot.clone(),
+                    ),
+                    output_claim: None,
+                };
+                sink.admit(&thread.id, write)?;
+                let admitted = channel.next_unprojected().context("admitted owner write")?;
+                assert_eq!(admitted.effect.sequence, sequence);
+                // Only a deadlock referee: no read advances the slow cursor, and no timer or
+                // artificial send advances the production chain.
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    live.advance(&fixture.services, &thread.id, &admitted)
+                        .await?;
+                    live.stream(&snapshot).await
+                })
+                .await
+                .context("State lag blocked a successor effect")??;
+                assert_eq!(channel.handoff_ticket(), sequence);
+                assert!(live.pending.is_none());
+
+                // The fast receiver retains every fact and its original observation qualification.
+                loop {
+                    match fast.try_recv() {
+                        Ok(ThreadLiveEvent::Committed {
+                            sequence: delivered,
+                            ..
+                        }) => {
+                            assert_eq!(delivered, sequence);
+                            committed += 1;
+                        }
+                        Ok(ThreadLiveEvent::Runtime {
+                            observation_revision,
+                            ..
+                        }) => {
+                            assert_eq!(observation_revision, sequence);
+                            runtimes += 1;
+                        }
+                        Ok(ThreadLiveEvent::Activity {
+                            observation_revision,
+                            activity,
+                        }) => {
+                            assert_eq!(observation_revision, sequence);
+                            assert_eq!(activity.is_some(), running);
+                            activities += 1;
+                        }
+                        Err(broadcast::error::TryRecvError::Empty) => break,
+                        other => anyhow::bail!("fast State receiver lost qualification: {other:?}"),
+                    }
+                }
+            }
+            assert_eq!((committed, runtimes, activities), (count, count, count));
+            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, count)).await??;
+            assert_eq!(
+                fixture.store.history(&thread.id).await?.watermark().await?,
+                count
+            );
+            // Inspect lag only after durability: polling slow cannot be what released handoff/save.
+            assert!(matches!(
+                slow.try_recv(),
+                Err(broadcast::error::TryRecvError::Lagged(dropped))
+                    if dropped == count * 3 - u64::try_from(LIVE_FEED_FRAMES)?
+            ));
+
+            // Both consumer roles use this adapter. Close wakes both pending reads even while
+            // the feed's Sender stays alive, and takes priority over slow's remaining frames.
+            let mut other = feed.subscribe();
+            let mut first_wait = Box::pin(fast.recv());
+            let mut second_wait = Box::pin(other.recv());
+            assert!(futures::poll!(first_wait.as_mut()).is_pending());
+            assert!(futures::poll!(second_wait.as_mut()).is_pending());
+            feed.delivery_closed.cancel();
+            assert!(matches!(
+                first_wait.await,
+                Err(broadcast::error::RecvError::Closed)
+            ));
+            assert!(matches!(
+                second_wait.await,
+                Err(broadcast::error::RecvError::Closed)
+            ));
+            assert!(matches!(
+                slow.try_recv(),
+                Err(broadcast::error::TryRecvError::Closed)
+            ));
+            Ok(())
+        }
+        .await;
+        drop(live);
+        handle.close().await?;
+        drop(sink);
+        channel.stop_and_join().await?;
+        fixture.writer.shutdown().await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn question_cut_registration_during_pending_handoff_keeps_frozen_state() -> Result<()> {
+        use pl_core::thread::interactions::InteractionState;
+
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("state-pending-registration");
+        register_test_thread(&fixture.store, &thread).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let result = async {
+            let call_id = "state-pending-question";
+            // The tool's existing body is fixture input; the question itself is introduced only by
+            // the real owner advance below, then frozen, charged and handed to the real writer.
+            live.projection.seed(
+                vec![ThreadItem::new(
+                    crate::studio::thread_projection::order::tool_id(call_id),
+                    thread.id.clone(),
+                    "state-pending-turn".into(),
+                    1,
+                    1,
+                    10,
+                    10,
+                    ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                        pl_protocol::ThreadToolInvocation::new(
+                            call_id.into(),
+                            "request_user_input".into(),
+                            "{\"questions\":[]}".into(),
+                        ),
+                        pl_protocol::ThreadToolState::Running(
+                            pl_protocol::RunningThreadTool::new(String::new()),
+                        ),
+                    )),
+                )],
+                Default::default(),
+            );
+            let (hook, mut entered, control) = PendingPhaseHook::new();
+            live.pending_hook = Some(hook);
+            let (_, mut write) = terminal_turn_write(&thread, "state-pending-turn")?;
+            let mut pending = qa_record(call_id, 1, InteractionState::Pending)?;
+            pending.request.turn_id = "state-pending-turn".into();
+            let local_interaction_id = pending.request.id.clone();
+            let interaction_id =
+                crate::thread_assembler::encode_interaction_key(&thread.id, &local_interaction_id);
+            let effect = Arc::make_mut(&mut write.effect);
+            effect.committed_at = 11;
+            effect.interactions = Arc::from([pending.clone()]);
+            write.checkpoint.state.interactions.insert(local_interaction_id, pending);
+            sink.admit(&thread.id, write)?;
+            let admitted = channel.next_unprojected().context("admitted question")?;
+            assert!(!feed.has_subscribers());
+            let mut advance = Box::pin(live.advance(&fixture.services, &thread.id, &admitted));
+            tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::select! {
+                    sequence = entered.recv() => {
+                        assert_eq!(sequence.context("pending phase entered")?, 1);
+                        Ok(())
+                    }
+                    result = advance.as_mut() => {
+                        result?;
+                        anyhow::bail!("handoff escaped its pending gate")
+                    }
+                }
+            }).await??;
+            assert_eq!(channel.handoff_ticket(), 0);
+            assert!(feed.last_turn().borrow().is_none());
+            // Register State before capturing the conversation cut, as the consumer does. Current
+            // is already published, but Committed and the terminal watch still owe reliable prepare.
+            let mut receiver = feed.subscribe();
+            let cut = feed.conversation();
+            let source = cut.source.as_ref().context("captured pending cut")?;
+            assert_eq!(
+                source.current.projection().source_effect_seq,
+                1
+            );
+            assert!(source.current.interactions().iter().any(|interaction| {
+                interaction.interaction_id == interaction_id
+                    && interaction.status() == pl_protocol::InteractionStatus::Pending
+            }));
+            assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+            control.send_replace(Some(Ok(())));
+            tokio::time::timeout(Duration::from_secs(3), advance).await??;
+            match receiver.try_recv()? {
+                ThreadLiveEvent::Committed { sequence, changes } => {
+                    assert_eq!(sequence, 1);
+                    assert_eq!(
+                        changes.iter().filter(|change| matches!(
+                            change,
+                            LiveEvent::Interaction(interaction)
+                                if interaction.interaction_id == interaction_id
+                                    && interaction.status() == pl_protocol::InteractionStatus::Pending
+                        )).count(),
+                        1
+                    );
+                }
+                other => anyhow::bail!("late State registration lost its frozen question: {other:?}"),
+            }
+            assert!(feed.last_turn().borrow().is_some());
+            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, 1)).await??;
+            assert_eq!(fixture.store.history(&thread.id).await?.watermark().await?, 1);
+            Ok(())
+        }
+        .await;
+        drop(live);
+        handle.close().await?;
+        drop(sink);
+        channel.stop_and_join().await?;
+        fixture.writer.shutdown().await?;
+        result
+    }
+
     /// A real parent activation: the parent gets a real handle with the real storage attached and
     /// a route no turn ever calls, so the child's terminal report is delivered to a real receiver.
     struct ParentActivation {
@@ -5033,7 +5350,6 @@ mod storage_fault_tests {
             crate::studio::thread_projection::FrozenCurrentProjection::new(
                 pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
             ),
-            Arc::from([]),
             Arc::from([]),
         );
         history

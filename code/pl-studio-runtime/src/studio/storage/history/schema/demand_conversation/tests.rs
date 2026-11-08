@@ -4,6 +4,17 @@ use sea_orm_migration::MigratorTraitSelf;
 
 const THREAD: &str = "demand-migration";
 
+async fn fixture_current(db: &impl ConnectionTrait) -> Result<CurrentProjection> {
+    if completion_boundary::applied(db).await? {
+        Ok(conversation::completed::cold(db)
+            .await?
+            .projection()
+            .clone())
+    } else {
+        super::super::legacy_current::read(db).await
+    }
+}
+
 struct Published11;
 impl MigratorTraitSelf for Published11 {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
@@ -22,6 +33,7 @@ impl MigratorTraitSelf for Published11 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| {
@@ -53,6 +65,7 @@ impl MigratorTraitSelf for Published12 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| {
@@ -278,7 +291,7 @@ async fn formal_schema12_preserves_nonempty_unknown_records_and_identity() -> Re
         .try_get::<String>("", "database_id")?,
         before
     );
-    assert!(!conversation::current::read(&db).await?.execution_present);
+    assert!(!fixture_current(&db).await?.execution_present);
     prepare_published12(&db).await?;
     assert_eq!(conversation::latest_append_seq(&db).await?, 3);
     Ok(())
@@ -475,14 +488,13 @@ async fn formal_migration_rejects_malformed_nullable_provenance_and_retries() ->
 
 #[tokio::test]
 async fn formal_current_entries_validate_one_ordered_composite_unique_constraint() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-    store.prepare_write().await?;
-    let db = &store.writer().await?.db;
+    let (_dir, db) = source().await?;
+    prepare_published12(&db).await?;
+    let db = &db;
     assert_eq!(
         version(db).await?,
-        HISTORY_SCHEMA_VERSION,
-        "the real new-store migration must finish"
+        12,
+        "the published current-entry layout is checked at its own migration boundary"
     );
     for (collection, position, id) in [("a", 1i64, "same"), ("a", 2, "other"), ("b", 1, "same")] {
         db.execute_raw(statement(
@@ -686,7 +698,7 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         2,
     ))];
     fn history<'a>(
-        current: &'a PreparedCurrent,
+        current: &'a crate::studio::storage::history::conversation::current::PreparedCurrent,
         completions: &'a [Arc<pl_core::chat::ChatItem>],
         empty: &'a std::collections::BTreeSet<String>,
     ) -> EffectCommit<'a> {
@@ -738,7 +750,7 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
             .is_none()
     );
     assert_eq!(
-        conversation::current::read(&store.reader().await?.unwrap().db)
+        fixture_current(&store.reader().await?.unwrap().db)
             .await?
             .source_effect_seq,
         0
@@ -769,7 +781,7 @@ async fn production_batch_commits_context_completions_and_current_as_one_prefix(
         2
     );
     assert_eq!(
-        conversation::current::read(&store.reader().await?.unwrap().db)
+        fixture_current(&store.reader().await?.unwrap().db)
             .await?
             .source_effect_seq,
         2

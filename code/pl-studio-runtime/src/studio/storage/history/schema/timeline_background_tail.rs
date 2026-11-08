@@ -66,8 +66,26 @@ mod tests {
             .migrations()
             .into_iter()
             .filter(|step| {
-                step.name() != TIMELINE_BACKGROUND_TAIL && !is_lifecycle_migration(step.name())
+                !matches!(step.name(), TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY)
+                    && !is_lifecycle_migration(step.name())
             })
+            .collect()
+        }
+    }
+
+    // Stop at the published grouping boundary so this regression independently
+    // proves its layout, original Applied records and retry behavior.
+    struct Published17;
+    impl MigratorTraitSelf for Published17 {
+        fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+            Migrator {
+                thread_id: THREAD.into(),
+                execution_identity: None,
+                bot_root: None,
+            }
+            .migrations()
+            .into_iter()
+            .take_while(|step| step.name() != COMPLETION_BOUNDARY)
             .collect()
         }
     }
@@ -159,11 +177,7 @@ mod tests {
             "CREATE TRIGGER reject_tail_marker BEFORE UPDATE OF schema_version ON history_meta
              WHEN NEW.schema_version=17 BEGIN SELECT RAISE(ABORT,'injected tail marker failure'); END;"
         ).await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
+        assert!(Published17.up(&db, None).await.is_err());
         assert_eq!(version(&db).await?, 16);
         assert_eq!(migration_records(&db).await?, old_ledger);
         assert_eq!(
@@ -172,7 +186,7 @@ mod tests {
         );
         db.execute_unprepared("DROP TRIGGER reject_tail_marker")
             .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        Published17.up(&db, None).await?;
         assert_eq!(version(&db).await?, 17);
         let page =
             conversation::timeline::page_rows(&db, &ChatScope::Main, None, 100, 3, 8, &[]).await?;
@@ -199,7 +213,7 @@ mod tests {
         assert_eq!(facts, stored_facts);
         db.close().await?;
         let reopened = connect(&path, SqliteFileMode::ReadWrite).await?;
-        prepare(&reopened, THREAD, Preparation::Schema, None).await?;
+        Published17.up(&reopened, None).await?;
         assert_eq!(migration_records(&reopened).await?, ledger);
         assert_eq!(
             conversation::timeline::page_rows(&reopened, &ChatScope::Main, None, 100, 3, 8, &[])

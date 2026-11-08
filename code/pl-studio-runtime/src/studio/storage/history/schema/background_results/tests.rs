@@ -33,6 +33,7 @@ impl MigratorTraitSelf for Published {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)
@@ -237,6 +238,7 @@ async fn background_results_migrate_from_636_and_interrupted_13_14_without_losin
 }
 
 async fn snapshot(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+    let completed = completion_boundary::applied(db).await?;
     let mut values = Vec::new();
     for sql in [
         "SELECT json_array(seq,item_id,hex(metadata)) AS value FROM conversation_items ORDER BY seq",
@@ -247,7 +249,16 @@ async fn snapshot(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         "SELECT hex(payload) AS value FROM conversation_view_state",
         "SELECT json_array(version,applied_at) AS value FROM seaql_migrations ORDER BY version",
     ] {
-        for row in db.query_all_raw(statement(sql, vec![])).await? {
+        let sql = if completed {
+            sql.replace("kind,location,position", "kind,'history',position")
+                .replace(
+                    "FROM conversation_view_state",
+                    "FROM completion_boundary_archive_view_state",
+                )
+        } else {
+            sql.to_owned()
+        };
+        for row in db.query_all_raw(statement(&sql, vec![])).await? {
             values.push(row.try_get("", "value")?);
         }
     }
@@ -361,7 +372,7 @@ async fn existing_15_correction_preserves_live_facts_rolls_back_and_reopens_with
         "CREATE TRIGGER reject_repeat_metadata BEFORE UPDATE ON conversation_items BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
          CREATE TRIGGER reject_repeat_facts BEFORE UPDATE ON conversation_atom_facts BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
          CREATE TRIGGER reject_repeat_rebuild BEFORE DELETE ON timeline_items BEGIN SELECT RAISE(ABORT,'repeat rebuild'); END;
-         CREATE TRIGGER reject_repeat_current BEFORE UPDATE ON conversation_view_state BEGIN SELECT RAISE(ABORT,'repeat current'); END;"
+         CREATE TRIGGER reject_repeat_current BEFORE UPDATE ON completion_boundary_archive_view_state BEGIN SELECT RAISE(ABORT,'repeat current'); END;"
     ).await?;
     db.close().await?;
     let store = HistoryStore::open(&path, THREAD).await?;

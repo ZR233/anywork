@@ -4,6 +4,172 @@ use pl_protocol::{
     ContentTarget, ThreadTextChannel,
 };
 
+fn indexed_sources(count: u64) -> (TimelineProjection, Vec<ChatAtom>) {
+    let mut timeline = fold();
+    let heads = (0..count)
+        .map(|index| {
+            let mut atom = active(
+                &format!("reasoning-{index}"),
+                ChatAtomKind::Reasoning,
+                1,
+                pos(index + 1, 0),
+                Vec::new(),
+            );
+            atom.source = ChatSourceId::ForegroundTurn {
+                turn_id: format!("turn-{index}"),
+            };
+            atom.turn_id = Some(format!("turn-{index}"));
+            timeline.observe(&atom, None).unwrap();
+            atom
+        })
+        .collect();
+    (timeline, heads)
+}
+
+fn assert_source_independent_visits(phase: &str, samples: &[(usize, usize)]) {
+    eprintln!("{phase}: (live items, actual accesses) = {samples:?}");
+    let baseline = samples[0].1;
+    assert!(baseline > 0, "{phase}: no actual LiveItem access observed");
+    for (items, visits) in samples {
+        assert_eq!(
+            *visits, baseline,
+            "{phase}: actual LiveItem accesses grew with unrelated sources \
+             (live items={items}, samples={samples:?})"
+        );
+    }
+}
+
+#[test]
+fn active_member_updates_visit_fixed_live_items_across_sources() {
+    let mut summary_samples = Vec::new();
+    let mut metadata_samples = Vec::new();
+    for count in [1_u64, 16, 64] {
+        let (mut timeline, heads) = indexed_sources(count);
+        // The last-created source is the worst case for the original forward
+        // values_mut().find / values().any scans, even with an indexed get first.
+        let mut target = heads.last().unwrap().clone();
+        let item_id = timeline.active[&target.id].item_id.clone();
+        let index = timeline.item_ids[&item_id];
+        timeline.items.reset_visits();
+        timeline
+            .observe_with_summary(&target, None, Some("摘要变化，头不变".into()))
+            .unwrap();
+        let visits = timeline.items.visits();
+        summary_samples.push((timeline.items.len(), visits));
+        assert_eq!(
+            timeline.items[&index]
+                .item
+                .summary
+                .as_ref()
+                .unwrap()
+                .latest_thinking_summary
+                .as_deref(),
+            Some("摘要变化，头不变")
+        );
+
+        target.contents = content();
+        timeline.items.reset_visits();
+        timeline.observe(&target, None).unwrap();
+        let visits = timeline.items.visits();
+        metadata_samples.push((timeline.items.len(), visits));
+        assert_eq!(timeline.changes.last().unwrap().atom.contents, content());
+        assert_eq!(timeline.active[&target.id].item_id, item_id);
+        assert_eq!(timeline.items.len(), count as usize);
+    }
+    assert_source_independent_visits("summary with unchanged head", &summary_samples);
+    assert_source_independent_visits("changed active member metadata", &metadata_samples);
+}
+
+#[test]
+fn new_work_admission_visits_fixed_live_items_across_sources() {
+    let mut samples = Vec::new();
+    for count in [1_u64, 16, 64] {
+        let (mut timeline, heads) = indexed_sources(count);
+        // The earliest-created source is the worst case for the original
+        // reverse scan of all live items. Only this source's group qualifies.
+        let target = &heads[0];
+        let item_id = timeline.active[&target.id].item_id.clone();
+        let mut next = active(
+            "next-member",
+            ChatAtomKind::Reasoning,
+            2,
+            pos(count + 1, 0),
+            Vec::new(),
+        );
+        next.source = target.source.clone();
+        next.turn_id = target.turn_id.clone();
+        timeline.items.reset_visits();
+        timeline.observe(&next, None).unwrap();
+        let visits = timeline.items.visits();
+        samples.push((timeline.items.len(), visits));
+        assert_eq!(timeline.active[&next.id].item_id, item_id);
+        assert_eq!(timeline.items.len(), count as usize);
+    }
+    // Includes the normal admission/update accesses, not just candidate lookup.
+    assert_source_independent_visits("new Work admission", &samples);
+}
+
+#[test]
+fn live_item_observer_preserves_serde_and_counts_both_iterator_directions() {
+    let (mut timeline, _) = indexed_sources(3);
+    let canonical: BTreeMap<_, _> = timeline
+        .items
+        .iter()
+        .map(|(index, item)| (*index, item.clone()))
+        .collect();
+    let expected_json = serde_json::to_vec(&canonical).unwrap();
+    timeline.items.reset_visits();
+    {
+        let mut values = timeline.items.values_mut();
+        assert!(values.next().is_some());
+        assert!(values.next_back().is_some());
+        assert_eq!(values.len(), 1);
+    }
+    assert_eq!(timeline.items.visits(), 2);
+    timeline.items.reset_visits();
+    let reverse: Vec<_> = timeline
+        .items
+        .iter()
+        .rev()
+        .map(|(index, _)| *index)
+        .collect();
+    assert_eq!(reverse, vec![2, 1, 0]);
+    assert_eq!(timeline.items.visits(), 3);
+    assert_eq!(serde_json::to_vec(&timeline.items).unwrap(), expected_json);
+    assert_eq!(
+        serde_json::to_vec(&timeline.items.clone()).unwrap(),
+        expected_json
+    );
+}
+
+#[test]
+fn work_admission_uses_latest_creation_index_with_unordered_source_keys() {
+    let mut timeline = fold();
+    let mut first = active(
+        "first-group",
+        ChatAtomKind::ToolCall,
+        100,
+        pos(1, 0),
+        content(),
+    );
+    timeline.observe(&first, None).unwrap();
+    let older = timeline.active[&first.id].item_id.clone();
+    first.id = "newer-group".into();
+    first.source_order = Some(10);
+    timeline.observe(&first, None).unwrap();
+    let newer = timeline.active[&first.id].item_id.clone();
+    assert_ne!(older, newer);
+
+    // The source index sorts the older group's 100 after the newer group's 10.
+    // Both qualify for 200; the original reverse-creation scan chooses newer.
+    let mut next = first;
+    next.id = "admitted-member".into();
+    next.source_order = Some(200);
+    timeline.observe(&next, None).unwrap();
+    assert_eq!(timeline.active[&next.id].item_id, newer);
+    assert_eq!(timeline.items.len(), 2);
+}
+
 fn pos(effect: u64, suborder: u32) -> ChatFactPosition {
     ChatFactPosition {
         effect_seq: effect,
@@ -139,6 +305,8 @@ fn background_tail_updates_across_effects_restore_and_invisible_facts() {
     assert_eq!(update.members().len(), 2);
     let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
     restored.restore_recovery(update.recovery()).unwrap();
+    assert!(restored.background_tail.is_none());
+    restored.restore_background_tail(first.clone()).unwrap();
     for index in [3, 4] {
         // Neither a source end nor diagnostics nor a genuinely empty text item
         // is another visible committed item.
@@ -219,6 +387,7 @@ fn background_tail_recovery_remains_bounded_after_many_results_and_rejects_bad_p
             .apply_input(result_input(background_tool(index)))
             .unwrap();
         timeline.take_committed();
+        let tail = timeline.background_tail.as_ref().unwrap().item.clone();
         let update = timeline.take_update().unwrap();
         assert_eq!(update.next_position(), 1);
         assert!(
@@ -227,17 +396,15 @@ fn background_tail_recovery_remains_bounded_after_many_results_and_rejects_bad_p
         );
         let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
         restored.restore_recovery(update.recovery()).unwrap();
+        assert!(restored.background_tail.is_none());
+        restored.restore_background_tail(tail).unwrap();
         timeline = restored;
     }
     assert_eq!(timeline.background_tail.as_ref().unwrap().next_member, 512);
-    let mut recovery: Recovery = serde_json::from_slice(&timeline.recovery().unwrap()).unwrap();
-    recovery.background_tail.as_mut().unwrap().item.position = Some(1);
+    let mut tail = timeline.background_tail.as_ref().unwrap().item.clone();
+    tail.position = Some(1);
     let mut restored = TimelineProjection::new("db".into(), timeline.generation().into(), 1);
-    assert!(
-        restored
-            .restore_recovery(&serde_json::to_vec(&recovery).unwrap())
-            .is_err()
-    );
+    assert!(restored.restore_background_tail(tail).is_err());
 }
 
 fn status(id: &str, order: u64, started: ChatFactPosition, ended: ChatFactPosition) -> ChatAtom {
@@ -570,46 +737,6 @@ fn completed_summary_reads_only_bounded_summary_roles_and_handles_utf8_tail() {
             .count(),
         512
     );
-}
-
-#[test]
-fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
-    let mut timeline = fold();
-    timeline.published_classification();
-    timeline
-        .complete(
-            terminal(
-                "old-unknown",
-                ChatAtomKind::Unknown,
-                1,
-                pos(1, 0),
-                pos(1, 1),
-                vec![],
-            ),
-            1,
-            None,
-        )
-        .unwrap();
-    timeline
-        .complete(
-            terminal(
-                "work",
-                ChatAtomKind::Reasoning,
-                2,
-                pos(2, 0),
-                pos(2, 1),
-                vec![],
-            ),
-            2,
-            None,
-        )
-        .unwrap();
-    timeline.end_source(&source());
-    timeline.commit_ready().unwrap();
-    let items = timeline.take_committed();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
-    assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
 }
 
 #[test]
@@ -993,7 +1120,7 @@ fn legacy_member_restore_invalidates_projection_retention() {
     assert_projection_retention(&timeline);
 }
 
-// The persisted shape before retention caching, including its canonical field order.
+// Canonical field order of the frozen transport and commit material.
 fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
     #[derive(Serialize)]
     struct CanonicalUpdate<'a> {
@@ -1004,6 +1131,9 @@ fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
         recovery: &'a [u8],
         next_position: u64,
         generation: &'a str,
+        completed_members: &'a [MemberChange],
+        frontier: &'a [u8],
+        finished_groups: &'a [String],
     }
     serde_json::to_vec(&CanonicalUpdate {
         facts: update.facts(),
@@ -1013,6 +1143,9 @@ fn canonical_update_bytes(update: &TimelineUpdate) -> Vec<u8> {
         recovery: update.recovery(),
         next_position: update.next_position(),
         generation: update.generation(),
+        completed_members: update.completed_members(),
+        frontier: update.frontier(),
+        finished_groups: &update.finished_groups,
     })
     .unwrap()
 }
@@ -1808,4 +1941,71 @@ fn active_head_updates_never_rewrite_the_frozen_start_phase() {
         ChatAtomLifecycle::Terminal { .. }
     ));
     assert!(restored.active.is_empty());
+}
+
+// Historical decode helpers belong to tests, not to the normal projection API.
+impl TimelineProjection {
+    /// Formal legacy normalization: a frozen source ordinal proves structural
+    /// admission, not a historical start event. The stored input remains the
+    /// original terminal metadata; no fabricated start/time is saved as a fact.
+    pub(in crate::studio) fn admit_legacy_header(
+        &mut self,
+        atom: &ChatAtom,
+    ) -> Result<(), ProjectionError> {
+        if atom.kind == ChatAtomKind::TurnReceipt || self.excluded(atom) {
+            return Ok(());
+        }
+        let mut header = lightweight(atom);
+        let started = match atom.lifecycle {
+            ChatAtomLifecycle::Active { started, .. }
+            | ChatAtomLifecycle::Terminal { started, .. } => started,
+        };
+        header.lifecycle = ChatAtomLifecycle::Active {
+            started,
+            status: ChatActiveStatus::Running,
+        };
+        header.finished_at = None;
+        header.completion_item_id = None;
+        header.completion_seq = None;
+        header.content_present = None;
+        self.admit(header, atom.completion_seq, None, None)?;
+        if outcome(atom).is_some() && self.classify(atom) == Class::Work {
+            // A legacy header is not a real active fact. Keep only the group's
+            // unresolved count; its member association is already an incremental
+            // SQLite row and is restored one at a time for the actual terminal.
+            self.retained_bytes.take();
+            self.active.remove(&atom.id);
+        }
+        Ok(())
+    }
+    pub(in crate::studio) fn restore_legacy_member(
+        &mut self,
+        item_id: String,
+        order: u64,
+        atom: &ChatAtom,
+    ) -> Result<(), ProjectionError> {
+        if self.active.contains_key(&atom.id) {
+            return Ok(());
+        }
+        if !self
+            .item_ids
+            .get(&item_id)
+            .and_then(|index| self.items.get(index))
+            .is_some_and(|item| item.active > 0)
+        {
+            return Err(ProjectionError::History(
+                "legacy terminal has no unresolved item".into(),
+            ));
+        }
+        self.retained_bytes.take();
+        self.active.insert(
+            atom.id.clone(),
+            ActiveMember {
+                item_id,
+                order,
+                atom: lightweight(atom),
+            },
+        );
+        Ok(())
+    }
 }

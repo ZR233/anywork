@@ -402,7 +402,7 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
     .await?;
     db.execute_unprepared(
         "CREATE TABLE batch_current_applied(sequence INTEGER NOT NULL); \
-         CREATE TRIGGER observe_batch_current AFTER UPDATE ON conversation_view_state \
+         CREATE TRIGGER observe_batch_current AFTER UPDATE ON completion_boundary_archive_view_state \
          BEGIN INSERT INTO batch_current_applied(sequence) \
          VALUES(json_extract(CAST(NEW.payload AS TEXT), '$.sourceEffectSeq')); END",
     )
@@ -532,8 +532,8 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
         .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(
         applied,
-        [3],
-        "ordered mutations remain complete, while the batch writes only its final current header"
+        Vec::<i64>::new(),
+        "ordered domain mutations remain complete, but neither the batch nor its replay updates archived current"
     );
     let generation = status.borrow().fault_generation;
     drop(gate);

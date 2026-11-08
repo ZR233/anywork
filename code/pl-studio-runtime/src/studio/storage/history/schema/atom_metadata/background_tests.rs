@@ -33,6 +33,7 @@ impl MigratorTraitSelf for Published {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()))

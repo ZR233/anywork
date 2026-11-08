@@ -8,12 +8,13 @@ mod read_work_tests;
 mod tests;
 use super::current::{PreparedCurrent, PreparedTimelineItem};
 use super::*;
-use crate::studio::thread_projection::{
-    TimelineProjection,
-    timeline::{
-        THINKING_SUMMARY_TAIL_BYTES, TimelineInput, TimelineUpdate, lightweight,
-        thinking_summary_tail,
-    },
+#[path = "timeline/complete.rs"]
+pub(in crate::studio) mod complete;
+use crate::studio::storage::history::schema::legacy_timeline_projection::{
+    TimelineInput, TimelineProjection, TimelineUpdate,
+};
+use crate::studio::thread_projection::timeline::{
+    THINKING_SUMMARY_TAIL_BYTES, lightweight, thinking_summary_tail,
 };
 use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
@@ -419,57 +420,6 @@ fn validate_unqualified(current: &PreparedCurrent) -> Result<()> {
     Ok(())
 }
 
-/// Validate and write every immutable/member delta while advancing the transaction-local head.
-pub(in super::super) async fn apply_delta(
-    db: &impl ConnectionTrait,
-    database: &str,
-    current: &PreparedCurrent,
-    head: &mut ProjectionState,
-) -> Result<()> {
-    ensure!(
-        current.history_items().next().is_none()
-            || current.timeline_commit == current.projection().source_effect_seq,
-        "timeline publication is not bound to its source effect"
-    );
-    if current.timeline_update.generation().is_empty() {
-        validate_unqualified(current)?;
-        return Ok(());
-    }
-    ensure!(
-        head.generation == current.timeline_update.generation(),
-        "retired timeline generation cannot write"
-    );
-    let mut expected = head.next_position;
-    for entry in current.timeline.iter() {
-        ensure!(
-            entry.item.position == Some(expected),
-            "timeline history prefix is not contiguous"
-        );
-        expected = expected.checked_add(1).context("timeline order overflow")?;
-    }
-    ensure!(
-        current.timeline_update.next_position() == expected,
-        "timeline recovery order differs from history prefix"
-    );
-    for item in current.timeline_update.updates() {
-        ensure!(
-            item.position.is_some_and(|position| position < expected),
-            "background update has no existing position"
-        );
-    }
-    save_changes(
-        db,
-        database,
-        &current.timeline_update,
-        &current.timeline,
-        current.projection().source_effect_seq,
-        true,
-    )
-    .await?;
-    head.next_position = expected;
-    head.source_effect_seq = current.projection().source_effect_seq;
-    Ok(())
-}
 pub(in super::super) async fn verify(
     db: &impl ConnectionTrait,
     database: &str,
@@ -490,7 +440,7 @@ pub(in super::super) async fn verify(
     {
         let row = db
             .query_one_raw(statement(
-                "SELECT metadata FROM timeline_items WHERE item_id=? AND location='history'",
+                "SELECT metadata FROM timeline_items WHERE item_id=?",
                 vec![item.id.clone().into()],
             ))
             .await?
@@ -522,23 +472,24 @@ pub(in super::super) async fn verify(
             "retried canonical atom fact differs"
         );
     }
-    for member in current.timeline_update.members() {
-        if let Some(completion) = &member.atom.completion_item_id {
-            let row = db.query_one_raw(statement(
-                "SELECT member_id,completion_item_id,payload_bytes FROM timeline_item_members WHERE item_id=? AND member_order=?",
-                vec![member.item_id.clone().into(), integer(member.member_order)?.into()],
-            )).await?.context("retried terminal member missing")?;
-            ensure!(
-                row.try_get::<String>("", "member_id")? == member.atom.id
-                    && row.try_get::<String>("", "completion_item_id")? == *completion
-                    && row
-                        .try_get::<Option<i64>>("", "payload_bytes")?
-                        .map(u64::try_from)
-                        .transpose()?
-                        == member.payload_bytes,
-                "retried terminal member differs"
-            );
-        }
+    for member in current.timeline_update.completed_members() {
+        let row = db.query_one_raw(statement(
+            "SELECT member_id,completion_item_id,payload_bytes,metadata FROM timeline_item_members WHERE item_id=? AND member_order=?",
+            vec![member.item_id.clone().into(), integer(member.member_order)?.into()],
+        )).await?.context("retried completed member is missing")?;
+        ensure!(
+            row.try_get::<String>("", "member_id")? == member.atom.id
+                && row.try_get::<Option<String>>("", "completion_item_id")?
+                    == member.atom.completion_item_id
+                && row
+                    .try_get::<Option<i64>>("", "payload_bytes")?
+                    .map(u64::try_from)
+                    .transpose()?
+                    == member.payload_bytes
+                && row.try_get::<Vec<u8>>("", "metadata")?
+                    == serde_json::to_vec(&lightweight(&member.atom))?,
+            "retried completed member differs"
+        );
     }
     Ok(())
 }
@@ -607,7 +558,7 @@ pub(in super::super) async fn normalize_legacy(db: &impl ConnectionTrait) -> Res
             }
         }
     }
-    let current = super::current::read(db).await?;
+    let current = super::super::schema::legacy_current::read(db).await?;
     for atom in &current.atoms {
         if let ChatAtomLifecycle::Active { started, .. } = atom.lifecycle {
             if started.is_some() {
@@ -758,7 +709,7 @@ async fn rebuild_with_classification(
         (1..=128).contains(&batch_size),
         "timeline replay batch is outside its bounded window"
     );
-    let mut current: CurrentProjection = super::current::read(db).await?;
+    let mut current: CurrentProjection = super::super::schema::legacy_current::read(db).await?;
     db.execute_unprepared("DELETE FROM timeline_item_members; DELETE FROM timeline_items;")
         .await?;
     let candidate = uuid::Uuid::new_v4().to_string();
@@ -965,7 +916,7 @@ pub(in crate::studio) async fn page_rows(
 ) -> Result<Vec<(u64, pl_protocol::ChatEntry)>> {
     let (sql, values) = match scope {
         pl_protocol::ChatScope::Main => (
-            "SELECT position AS ordering,item_id,kind,projection_version,metadata FROM timeline_items WHERE location='history' AND position<? AND position<? AND commit_seq<=? ORDER BY position DESC LIMIT ?",
+            "SELECT position AS ordering,item_id,kind,projection_version,metadata FROM timeline_items WHERE position<? AND position<? AND commit_seq<=? ORDER BY position DESC LIMIT ?",
             vec![
                 integer(before.unwrap_or(ceiling))?.into(),
                 integer(ceiling)?.into(),

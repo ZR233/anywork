@@ -51,7 +51,7 @@ final class TimelineMemberController implements ConversationBatchConsumer {
     final messages = [for (final atom in atoms) _message(atom)];
     if (batch.placement == ChatPlacement.set) {
       await controller.setMessages(messages, animated: false);
-    } else {
+    } else if (messages.isNotEmpty) {
       final inserted = <Message>[];
       final loadedById = <String, Message>{};
       for (final message in controller.messages) {

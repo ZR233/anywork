@@ -8,6 +8,8 @@ use super::{
     thread_observation::{ConversationCut, ConversationSource, DeliveryReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
+mod read;
+use read::{CutMeasure, entry_json_bytes};
 #[cfg(test)]
 mod tests;
 use anyhow::{Result, ensure};
@@ -33,7 +35,7 @@ pub struct ConversationFeed {
     pending: VecDeque<ThreadSubscriptionUpdate>,
     cuts: Option<DeliveryReceiver<Arc<ConversationCut>>>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    state: Option<DeliveryReceiver<ThreadLiveEvent>>,
+    state: Option<super::thread_observation::StateReceiver>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
     last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
@@ -41,6 +43,7 @@ pub struct ConversationFeed {
     cut: Option<Arc<ConversationCut>>,
     cut_entry: usize,
     cut_entries: Option<Vec<(ChatPlacement, ChatEntry)>>,
+    cut_measure: Option<CutMeasure>,
     cut_appended: usize,
     main_loaded_through: u64,
     main_tail: Option<TimelineItem>,
@@ -457,6 +460,7 @@ impl StudioRuntime {
             cut: None,
             cut_entry: 0,
             cut_entries: None,
+            cut_measure: None,
             cut_appended: 0,
             main_loaded_through: read_ceiling,
             main_tail,
@@ -511,7 +515,9 @@ impl ConversationFeed {
         self.storage = None;
         self.last_turn = None;
         self.cut = None;
+        self.cut_entry = 0;
         self.cut_entries = None;
+        self.cut_measure = None;
         self.initial = None;
         self.pending.clear();
         self.current = None;
@@ -717,7 +723,10 @@ impl ConversationFeed {
                 self.state_turn = false;
                 // Scan the captured prefix before delivery so adjacent live Runtime observations
                 // can replace the pending tail. Never chase events published after this check began.
-                let queued = self.state.as_ref().map_or(0, DeliveryReceiver::len);
+                let queued = self
+                    .state
+                    .as_ref()
+                    .map_or(0, super::thread_observation::StateReceiver::len);
                 for _ in 0..queued {
                     match self
                         .state
@@ -749,6 +758,8 @@ impl ConversationFeed {
                 if cut.serial <= self.seen_serial {
                     self.cut = None;
                     self.cut_entries = None;
+                    self.cut_measure = None;
+                    self.cut_entry = 0;
                     self.cut_appended = 0;
                     continue;
                 }
@@ -845,6 +856,7 @@ impl ConversationFeed {
                                     .map(ChatEntry::Source),
                             );
                         }
+                        self.cut_measure = Some(CutMeasure::new(&cut.handoff, &candidates, main)?);
                         let mut deliveries = Vec::new();
                         if main {
                             for item in cut.handoff.updates() {
@@ -911,19 +923,20 @@ impl ConversationFeed {
                         .as_ref()
                         .expect("captured member/item frame");
                     let total = candidates.len();
+                    let mut measure = self.cut_measure.expect("captured cut measurement");
                     let mut product = ChatBatch {
                         placement: candidates
                             .get(self.cut_entry)
                             .map_or(ChatPlacement::Append, |(placement, _)| *placement),
                         entries: Vec::new(),
                         before: None,
-                        current: main
-                            .then(|| cut.handoff.projection_after_items(self.cut_appended)),
+                        current: None,
                     };
                     if product.placement == ChatPlacement::Update {
                         product.current = None;
                     }
                     let mut next = self.cut_entry;
+                    let mut entries_bytes = 0_usize;
                     let mut appended = self.cut_appended;
                     for (placement, entry) in candidates
                         .iter()
@@ -933,17 +946,40 @@ impl ConversationFeed {
                         if *placement != product.placement {
                             break;
                         }
-                        product.entries.push(entry.clone());
-                        let after = appended + usize::from(*placement == ChatPlacement::Append);
-                        product.current = (main && product.placement != ChatPlacement::Update)
-                            .then(|| cut.handoff.projection_after_items(after));
-                        self.reader
-                            .inline_timeline_payloads(&mut product, self.demand)
+                        let original_bytes = entry_json_bytes(entry)?;
+                        let after = if main && *placement == ChatPlacement::Append {
+                            measure.after_entry(entry, original_bytes)?
+                        } else {
+                            measure
+                        };
+                        let tentative_bytes = entries_bytes
+                            .checked_add(original_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting overflow"))?;
+                        let without = after
+                            .frame_bytes_for(
+                                tentative_bytes,
+                                product.entries.len() + 1,
+                                product.placement,
+                            )?
+                            .checked_sub(original_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting underflow"))?;
+                        let mut candidate = entry.clone();
+                        // A legal Inline can be smaller than its Deferred reference.
+                        // Try this candidate before deciding that the frame is full.
+                        let candidate_bytes = self
+                            .reader
+                            .inline_timeline_entry(
+                                &mut candidate,
+                                original_bytes,
+                                without,
+                                self.demand,
+                            )
                             .await?;
-                        if product.encoded_len()? > self.demand.max_bytes as usize {
-                            product.entries.pop();
-                            product.current = (main && product.placement != ChatPlacement::Update)
-                                .then(|| cut.handoff.projection_after_items(appended));
+                        if without
+                            .checked_add(candidate_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat frame accounting overflow"))?
+                            > self.demand.max_bytes as usize
+                        {
                             ensure!(
                                 !product.entries.is_empty(),
                                 core::ChatError::InvalidDemand(
@@ -952,24 +988,41 @@ impl ConversationFeed {
                             );
                             break;
                         }
+                        entries_bytes = entries_bytes
+                            .checked_add(candidate_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("chat entry accounting overflow"))?;
+                        product.entries.push(candidate);
+                        measure = after;
                         next += 1;
-                        appended = after;
+                        appended += usize::from(*placement == ChatPlacement::Append);
                     }
+                    let placement = product.placement;
+                    product.current = (main && placement != ChatPlacement::Update)
+                        .then(|| cut.handoff.projection_after_items(appended));
+                    let product = if !product.entries.is_empty() || product.current != self.current
+                    {
+                        Some(self.reader.finish_batch(product, self.demand)?)
+                    } else {
+                        None
+                    };
+                    // No delivery/cut state advances before final qualification and
+                    // real encoding of the annotated source facts succeed.
                     self.cut_entry = next;
+                    self.cut_measure = Some(measure);
                     self.cut_appended = appended;
                     // Update changes only a loaded header. The original Append
                     // frame (possibly empty) still publishes currentAfter and
                     // qualifies the reliable cut/ACK after all header changes.
-                    if next == total && product.placement != ChatPlacement::Update {
+                    if next == total && placement != ChatPlacement::Update {
                         self.delivered = cut.head;
                         self.seen_serial = cut.serial;
                         self.cut = None;
                         self.cut_entry = 0;
                         self.cut_entries = None;
+                        self.cut_measure = None;
                         self.cut_appended = 0;
                     }
-                    if !product.entries.is_empty() || product.current != self.current {
-                        let product = self.reader.finish_batch(product, self.demand)?;
+                    if let Some(product) = product {
                         if main {
                             for entry in &product.entries {
                                 if let ChatEntry::Item(item) = entry {
@@ -1034,6 +1087,7 @@ impl ConversationFeed {
                 self.seen_serial = cut.serial;
                 self.cut = None;
                 self.cut_entry = 0;
+                self.cut_measure = None;
                 continue;
             }
             if let Some(cuts) = self.cuts.as_mut() {

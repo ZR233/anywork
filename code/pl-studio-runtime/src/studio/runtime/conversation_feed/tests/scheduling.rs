@@ -112,9 +112,8 @@ async fn body_only_progress_preserves_state_and_chat_scheduling_opportunities() 
         let snapshot = state_snapshot(&mut feed).await?;
         let mut turn = snapshot.active_turn.context("running Turn baseline")?;
         let (events, state) = broadcast::channel(16);
-        feed.state = Some(DeliveryReceiver::new(
+        feed.state = Some(super::super::super::thread_observation::StateReceiver::new(
             state,
-            Arc::new(tokio::sync::Notify::new()),
             CancellationToken::new(),
         ));
         let head = harness

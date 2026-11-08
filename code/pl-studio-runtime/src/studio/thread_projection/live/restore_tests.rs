@@ -12,7 +12,7 @@ use pl_core::{
     thread::{AttemptOutcome, AttemptStatus, RequestAttempt, TurnRecord, TurnState},
 };
 
-async fn save(
+pub(super) async fn save(
     history: &HistoryStore,
     effect: &ThreadEffectBatch,
     prepared: &PreparedEffect,
@@ -45,7 +45,6 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
     use pl_protocol::{
         ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
         ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
-        ThreadActivityKind,
     };
 
     let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
@@ -148,15 +147,16 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
             assert!(active.completion_seq.is_none() && active.payload.is_none());
             save(&history, &effect, &prepared).await?;
             drop(projection);
-            // The original persisted current suffices; no canonical business item was saved at start.
+            // The reliable Started fact suffices; no current snapshot or business item was saved.
             let saved = history
                 .conversation_current()
                 .await?
                 .context("saved current")?;
             assert_eq!(saved.atoms, vec![active.clone()]);
-            assert_eq!(
-                saved.active.as_ref().context("saved head")?.kind,
-                ThreadActivityKind::Compacting
+            assert!(!saved.execution_present);
+            assert!(
+                saved.active.is_none(),
+                "cold facts do not claim a resident execution phase"
             );
             let mut restored = LiveProjection::new();
             restored.bind_execution_history(channel.order_index(), history.clone())?;
@@ -263,17 +263,17 @@ enum Settlement {
 }
 
 #[tokio::test]
-async fn restored_multiwindow_generation_is_ready_for_immediate_completion() -> anyhow::Result<()> {
+async fn cold_completion_uses_its_full_receipt_without_restoring_progress() -> anyhow::Result<()> {
     immediate_settlement(Settlement::Completed).await
 }
 
 #[tokio::test]
-async fn restored_multiwindow_generation_is_ready_for_immediate_failure() -> anyhow::Result<()> {
+async fn resident_failure_freezes_its_accepted_prefix_only_at_terminal() -> anyhow::Result<()> {
     immediate_settlement(Settlement::Failed).await
 }
 
 #[tokio::test]
-async fn restored_multiwindow_generation_is_ready_for_immediate_cancellation() -> anyhow::Result<()>
+async fn resident_cancellation_freezes_its_accepted_prefix_only_at_terminal() -> anyhow::Result<()>
 {
     immediate_settlement(Settlement::Cancelled).await
 }
@@ -385,14 +385,10 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
             prepared = next;
         }
         let saved_atom = prepared.current.projection().atoms[0].clone();
-        let saved_content = prepared
-            .current
-            .contents
-            .iter()
-            .find(|write| write.content.descriptor.key.key == "body")
-            .context("saved body")?
-            .content
-            .clone();
+        assert!(prepared.current.contents.is_empty());
+        let saved_content = prepared.current_state.as_ref().context("current owner")?
+            .contents().values().find(|content| content.descriptor.key.key == "body")
+            .context("active body")?.content();
         assert_eq!(saved_content.descriptor.generation, 3);
         assert_eq!(saved_content.descriptor.byte_length, 150_000);
         let receipt = ModelMemberReceipt {
@@ -482,13 +478,18 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
         };
         state.commit_sequence = effect.sequence;
         let restored_chat = Session::new(history.clone(), TimelineEpoch::new("after-activation")?);
-        let restored_channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let mut restored = LiveProjection::new();
-        restored.bind_execution_history(restored_channel.order_index(), history.clone())?;
-        restored.bind_conversation_identity(database)?;
-        restored
-            .restore_current(&restored_chat, &thread, &state)
-            .await?;
+        let mut restored = if matches!(settlement, Settlement::Completed) {
+            let mut owner = LiveProjection::new();
+            // The Runtime's original index owns execution placement, independently of
+            // this dropped/re-created product projection and its discarded progress.
+            owner.bind_execution_history(channel.order_index(), history.clone())?;
+            owner.bind_conversation_identity(database)?;
+            owner.restore_current(&restored_chat, &thread, &state).await?;
+            assert!(owner.current_state().context("restored current")?.contents().is_empty());
+            owner
+        } else {
+            projection
+        };
         let restored_snapshot = restored.current_state();
 
         // Nothing warms the restored owner between restore_current and its first reliable effect.
@@ -512,84 +513,35 @@ async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
             .publish_prepared(&restored_chat, &mut completed)
             .await?;
         save(&history, &effect, &completed).await?;
-        assert_eq!(content.descriptor, saved_content.descriptor);
+        let expected_generation = if matches!(settlement, Settlement::Completed) { 1 } else { 3 };
+        assert_eq!(content.descriptor.generation, expected_generation);
         assert_eq!(content.data.range(0, 150_000)?.as_bytes(), body.as_bytes());
-        let snapshot = restored_snapshot.context("restore returned without a current snapshot")?;
-        assert_eq!(snapshot.projection().source_effect_seq, 5);
-        assert_eq!(
-            snapshot.projection().atoms.as_slice(),
-            std::slice::from_ref(&saved_atom)
-        );
-        let handoff = completed.current_handoff.as_ref().context("handoff")?;
-        assert!(Arc::ptr_eq(
-            handoff.before(),
-            snapshot.frozen_projection()
-        ));
-        assert_eq!(handoff.before().projection(), snapshot.projection());
-        assert_eq!(handoff.after().projection().source_effect_seq, 6);
-        assert!(handoff.after().projection().atoms.is_empty());
-        assert!(completed.current.timeline_update.facts().iter().all(|atom|
-            !matches!(atom.lifecycle,pl_protocol::ChatAtomLifecycle::Active {..})),
-            "activation fabricated a reliable start");
-        assert!(handoff.entries().iter().all(|entry|matches!(entry,pl_protocol::ChatEntry::Item(_))),
-            "Main handoff leaked raw activation facts");
-        assert!(handoff.entries().iter().any(|entry|matches!(entry,pl_protocol::ChatEntry::Item(item)
-            if item.content_item_id.as_deref()==Some(saved_atom.id.as_str()))),
-            "restored completion lost its original content owner");
-        let completed_atom = completed
-            .completions
-            .iter()
+        let completed_atom = completed.completions.iter()
             .map(|record| serde_json::from_slice::<pl_protocol::ChatAtom>(&record.header.metadata))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .find(|atom| atom.id == saved_atom.id)
-            .context("settled atom")?;
-        assert_eq!(completed_atom.contents, saved_atom.contents);
+            .collect::<Result<Vec<_>, _>>()?.into_iter()
+            .find(|atom| atom.id == saved_atom.id).context("settled atom")?;
         assert_eq!(completed_atom.source, saved_atom.source);
         assert_eq!(completed_atom.source_order, saved_atom.source_order);
-        assert_eq!(completed_atom.started_at, saved_atom.started_at);
-        assert!(matches!(completed_atom.lifecycle,
-            pl_protocol::ChatAtomLifecycle::Terminal { outcome, started, .. }
-                if outcome == expected_outcome && matches!(saved_atom.lifecycle,
-                    pl_protocol::ChatAtomLifecycle::Active { started: old, .. } if old == started)));
+        assert!(matches!(completed_atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {outcome,..}
+            if outcome == expected_outcome));
         assert!(completed_atom.source_state.is_none());
-        let restored_content = snapshot
-            .contents()
-            .get(&saved_content.descriptor.key)
-            .context("restored owner body")?
-            .content();
-        assert_eq!(restored_content.descriptor, saved_content.descriptor);
-        assert_eq!(
-            restored_content.data.range(0, 150_000)?.as_bytes(),
-            body.as_bytes()
-        );
+        if matches!(settlement, Settlement::Completed) {
+            let snapshot = restored_snapshot.context("restored current")?;
+            assert!(snapshot.projection().previews.is_empty());
+            assert!(snapshot.contents().is_empty());
+        }
         let mut bytes = Vec::new();
         while bytes.len() < body.len() {
-            let window = ChatHistory::read_content(
-                &history,
-                &ContentReadRequest {
-                    epoch: restored_chat.epoch(),
-                    reference: pl_core::chat::ContentRef::Body(
-                        saved_content.descriptor.key.clone(),
-                    ),
-                    offset: bytes.len() as u64,
-                    max_bytes: 64 * 1024,
-                    generation: Some(3),
-                },
-            )
-            .await?;
-            assert_eq!(window.generation, 3);
+            let window = ChatHistory::read_content(&history, &ContentReadRequest {
+                epoch: restored_chat.epoch(), reference: pl_core::chat::ContentRef::Body(content.descriptor.key.clone()),
+                offset: bytes.len() as u64, max_bytes: 64 * 1024, generation: Some(expected_generation),
+            }).await?;
             assert_eq!(window.available_through, 150_000);
             assert!(window.sealed);
             assert!(!window.bytes.as_bytes().is_empty());
             bytes.extend_from_slice(window.bytes.as_bytes());
         }
         assert_eq!(bytes, body.as_bytes());
-        assert!(
-            restored.restore_current(&restored_chat, &thread, &state).await.is_err(),
-            "activation restored twice"
-        );
-        eprintln!("restore immediate {settlement:?}: publication=Ok commit=Ok bytes=150000 generation=3 refs=unchanged");
         Ok(())
     }
     .await;

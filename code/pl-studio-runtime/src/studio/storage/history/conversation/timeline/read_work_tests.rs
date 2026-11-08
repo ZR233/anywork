@@ -1,6 +1,7 @@
 //! A19 storage work, not UI latency or physical IO. All data is synthetic.
 use super::*;
 use crate::studio::storage::history::{EffectCommit, HistoryStore, TimelinePage};
+use crate::studio::thread_projection::TimelineProjection;
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{
     ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatHistory, ChatItem, ChatKey,
@@ -152,7 +153,7 @@ impl Phase {
         assert!(
             self.sql
                 .keys()
-                .any(|sql| { sql.contains("FROM timeline_items WHERE location='history'") }),
+                .any(|sql| { sql.contains("FROM timeline_items WHERE") }),
             "Main must hit the saved summary index"
         );
         for sql in self.sql.keys() {
@@ -216,7 +217,6 @@ async fn commit(
     let mut prepared = PreparedCurrent::new(
         crate::studio::thread_projection::FrozenCurrentProjection::new(current),
         Arc::from([]),
-        Arc::from([]),
     );
     prepared.timeline_commit = if timeline.is_empty() { 0 } else { effect };
     prepared.timeline = timeline.into();
@@ -240,6 +240,7 @@ async fn commit(
             },
         )
         .await?;
+    projection.accept_members(&prepared.timeline_update);
     Ok(())
 }
 
@@ -303,7 +304,7 @@ impl Fixture {
         let sql = phase
             .sql
             .keys()
-            .find(|sql| sql.contains("FROM timeline_items WHERE location='history'"))
+            .find(|sql| sql.contains("FROM timeline_items WHERE"))
             .context("missing actual Main query template")?;
         let rows = self
             .store
@@ -328,8 +329,8 @@ impl Fixture {
         ensure!(
             details
                 .iter()
-                .any(|detail| detail.contains("timeline_items_by_location_position")),
-            "Main query must seek its location/position index: {details:?}"
+                .any(|detail| detail.contains("sqlite_autoindex_timeline_items_2 (position")),
+            "Main query must seek the completed-only UNIQUE position index, not scan history: {details:?}"
         );
         ensure!(
             details
@@ -380,11 +381,11 @@ impl Fixture {
         let directory = tempfile::tempdir()?;
         let mut store = HistoryStore::open(&directory.path().join("history.sqlite"), "a19").await?;
         store.prepare_write().await?;
-        let (database, generation, next, _) = store
+        let mut projection = store
             .timeline_snapshot()
             .await?
             .context("initialized Timeline")?;
-        let mut projection = TimelineProjection::new(database.clone(), generation, next);
+        let database = projection.database_id().to_owned();
         for index in 0..count {
             let id = member_id(index);
             let effect = index as u64 + 1;
@@ -867,15 +868,29 @@ async fn a19_large_folded_group_uses_constant_main_sql_and_independent_member_bo
 
     // Exercise the private migration primitive on an exclusively owned fixture,
     // not a repair API on a running Thread. All source facts and bodies remain.
-    fixture.store.writer().await?.db.execute_unprepared(
-        "DROP TABLE timeline_item_members; DROP TABLE timeline_items; DROP TABLE timeline_projection_state;"
-    ).await?;
+    fixture
+        .store
+        .writer()
+        .await?
+        .db
+        .execute_unprepared(
+            "DROP TABLE timeline_item_members; DROP TABLE timeline_items;
+         DROP INDEX conversation_facts_by_source_position;
+         DROP INDEX conversation_legacy_ends_by_source;",
+        )
+        .await?;
     fixture.metrics.begin()?;
     {
         let connection = fixture.store.writer().await?;
         let tx = connection.db.begin().await?;
-        tx.execute_unprepared(CREATE_DERIVED_SCHEMA).await?;
-        rebuild(&tx, &connection.database_id).await?;
+        tx.execute_unprepared(complete::CREATE).await?;
+        complete::rebuild(
+            &tx,
+            &connection.database_id,
+            uuid::Uuid::new_v4().to_string(),
+            fixture.effect,
+        )
+        .await?;
         tx.commit().await?;
     }
     let rebuild = fixture.metrics.end()?;

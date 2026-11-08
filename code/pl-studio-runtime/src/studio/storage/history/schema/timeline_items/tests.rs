@@ -1,7 +1,7 @@
 use super::super::super::HistoryStore;
 use super::*;
 use crate::studio::storage::history::conversation;
-use crate::studio::thread_projection::{TimelineProjection, timeline::TimelineInput};
+use crate::studio::thread_projection::timeline::TimelineInput;
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
@@ -33,6 +33,7 @@ impl MigratorTraitSelf for Published13 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -58,6 +59,7 @@ impl MigratorTraitSelf for Published14 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -76,7 +78,7 @@ impl MigratorTraitSelf for Published16 {
         }
         .migrations()
         .into_iter()
-        .filter(|step| step.name() != TIMELINE_BACKGROUND_TAIL)
+        .filter(|step| !matches!(step.name(), TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY))
         .collect()
     }
 }
@@ -103,8 +105,8 @@ async fn database_id(db: &impl ConnectionTrait) -> Result<String> {
 }
 
 async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Result<()> {
-    use conversation::current::{
-        CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, PreparedCurrent,
+    use crate::studio::storage::history::schema::legacy_current::{
+        CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent,
     };
 
     let identity = database_id(db).await?;
@@ -229,10 +231,10 @@ async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Resul
             payload: serde_json::to_vec(&body)?.into(),
         }));
     }
-    conversation::current::apply(
+    crate::studio::storage::history::schema::legacy_current::apply(
         db,
         4,
-        &PreparedCurrent::new(
+        &LegacyCurrent::new(
             crate::studio::thread_projection::FrozenCurrentProjection::new(current),
             changes.into(),
             contents.into(),
@@ -245,6 +247,7 @@ async fn seed_schema13(path: &std::path::Path, db: &DatabaseConnection) -> Resul
 }
 
 async fn source_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+    let completed = completion_boundary::applied(db).await?;
     let mut facts = Vec::new();
     // This byte oracle does not decode/re-encode source rows through the migration or fold.
     // Only schema_version and the derived current.items are expected to change on success.
@@ -263,13 +266,22 @@ async fn source_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
          FROM conversation_contents ORDER BY owner_key,content_key",
         "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS fact
          FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset",
-        "SELECT json_array(collection,position,entry_id,hex(payload)) AS fact
-         FROM conversation_view_entries ORDER BY collection,position",
+        if completed {
+            "SELECT json_array(collection,position,entry_id,hex(payload)) AS fact
+             FROM completion_boundary_archive_view_entries ORDER BY collection,position"
+        } else {
+            "SELECT json_array(collection,position,entry_id,hex(payload)) AS fact
+             FROM conversation_view_entries ORDER BY collection,position"
+        },
         "SELECT json_array(source_key,started_effect,started_suborder,ended_effect,ended_suborder,
                            active_observed,ended_observed,outcome) AS fact
          FROM conversation_sources ORDER BY source_key",
     ] {
-        for row in db.query_all_raw(statement(query, vec![])).await? {
+        let query = if completed {
+            query.replace("FROM conversation_contents ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
+                .replace("FROM conversation_content_chunks ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
+        } else { query.to_owned() };
+        for row in db.query_all_raw(statement(&query, vec![])).await? {
             facts.push(row.try_get("", "fact")?);
         }
     }
@@ -288,6 +300,7 @@ async fn migration_records(db: &impl ConnectionTrait) -> Result<Vec<String>> {
 }
 
 async fn derived_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+    let completed = completion_boundary::applied(db).await?;
     let mut facts = Vec::new();
     for query in [
         "SELECT json_array(item_id,kind,location,position,commit_seq,hex(metadata),projection_version) AS fact
@@ -299,7 +312,12 @@ async fn derived_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS fact
          FROM conversation_atom_facts ORDER BY effect_seq,suborder,fact_order,atom_id,phase",
     ] {
-        for row in db.query_all_raw(statement(query, vec![])).await? {
+        let query = if completed {
+            query.replace("FROM timeline_items ", "FROM completion_boundary_archive_timeline_items ")
+                .replace("FROM timeline_item_members ", "FROM completion_boundary_archive_timeline_members ")
+                .replace("FROM timeline_projection_state ", "FROM completion_boundary_archive_projection_state ")
+        } else {query.to_owned()};
+        for row in db.query_all_raw(statement(&query, vec![])).await? {
             facts.push(row.try_get("", "fact")?);
         }
     }
@@ -365,7 +383,7 @@ async fn schema14() -> Result<(tempfile::TempDir, std::path::PathBuf, Vec<String
         None,
     )
     .await?;
-    let cut = conversation::current::read(&db).await?;
+    let cut = crate::studio::storage::history::schema::legacy_current::read(&db).await?;
     assert_eq!(cut.atoms.len(), 3);
     assert!(
         cut.items.is_empty(),
@@ -385,8 +403,13 @@ async fn schema14() -> Result<(tempfile::TempDir, std::path::PathBuf, Vec<String
 }
 
 async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
+    let current_table = if completion_boundary::applied(db).await? {
+        "completion_boundary_archive_view_state"
+    } else {
+        "conversation_view_state"
+    };
     db.execute_unprepared(
-        "CREATE TRIGGER reject_atom_insert BEFORE INSERT ON conversation_atom_facts
+        &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON conversation_atom_facts
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
          CREATE TRIGGER reject_atom_update BEFORE UPDATE ON conversation_atom_facts
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
@@ -407,11 +430,13 @@ async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
          CREATE TRIGGER reject_state_insert BEFORE INSERT ON timeline_projection_state
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
          CREATE TRIGGER reject_state_update BEFORE UPDATE ON timeline_projection_state
+           WHEN NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='completion_boundary_archive_view_state')
+             OR EXISTS(SELECT 1 FROM seaql_migrations WHERE version='m20261109_000001_history_completion_boundary')
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
          CREATE TRIGGER reject_state_delete BEFORE DELETE ON timeline_projection_state
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote recovery'); END;
-         CREATE TRIGGER reject_current_update BEFORE UPDATE ON conversation_view_state
-           BEGIN SELECT RAISE(ABORT,'Applied migration rewrote current'); END;",
+         CREATE TRIGGER reject_current_update BEFORE UPDATE ON {current_table}
+           BEGIN SELECT RAISE(ABORT,'Applied migration rewrote current'); END;"),
     )
     .await?;
     Ok(())
@@ -426,25 +451,33 @@ async fn group_members(
         .members
         .as_ref()
         .context("complete member directory")?;
-    timeline::validate_members_ref(db, database, &timeline::generation(db).await?, reference)
-        .await?;
     let count = group
         .summary
         .as_ref()
         .context("group summary")?
         .member_count;
-    let rows = timeline::page_rows(
-        db,
-        &ChatScope::GroupMembers {
-            reference: reference.clone(),
-        },
-        None,
-        u64::from(count),
-        4,
-        usize::try_from(count)? + 1,
-        &[],
-    )
-    .await?;
+    let limit = usize::try_from(count)? + 1;
+    let rows = if let Some(rows) =
+        timeline::complete::open_member_rows(db, reference, None, u64::from(count), 4, limit)
+            .await?
+    {
+        rows
+    } else {
+        timeline::validate_members_ref(db, database, &timeline::generation(db).await?, reference)
+            .await?;
+        timeline::page_rows(
+            db,
+            &ChatScope::GroupMembers {
+                reference: reference.clone(),
+            },
+            None,
+            u64::from(count),
+            4,
+            limit,
+            &[],
+        )
+        .await?
+    };
     assert_eq!(rows.len(), usize::try_from(count)?);
     rows.into_iter()
         .rev()
@@ -514,18 +547,52 @@ async fn assert_migrated_content(
         assert_eq!(atom.source_order, Some(u64::try_from(index)? + 4));
         assert!(atom.completion_item_id.is_none());
         assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
-        assert_eq!(atom.contents.len(), 1);
-        assert_body(
-            db,
-            &atom.contents[0].reference,
-            &atom.id,
-            "part.reasoningText.0",
-            format!("活动正文 {} 🦀", index + 1).as_bytes(),
-        )
-        .await?;
+        assert!(
+            atom.contents.is_empty(),
+            "cold reads never activate old previews"
+        );
+        // Archive-only inspection: these references are not normal reader authority.
+        let row = db.query_one_raw(statement(
+            "SELECT metadata FROM completion_boundary_archive_timeline_members WHERE member_id=?",
+            vec![atom.id.clone().into()],
+        )).await?.context("archived member")?;
+        let archived: ChatAtom = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+        assert_eq!(archived.contents.len(), 1);
+        assert_eq!(archived.id, atom.id);
+        let expected = format!("活动正文 {} 🦀", index + 1);
+        assert_eq!(
+            archived.contents[0].reference.target,
+            ContentTarget::Body {
+                owner: ContentOwner::Item {
+                    item_id: atom.id.clone()
+                },
+                key: "part.reasoningText.0".into(),
+            }
+        );
+        let chunks = db
+            .query_all_raw(statement(
+                "SELECT byte_offset,data FROM completion_boundary_archive_content_chunks
+             WHERE owner_key=? AND content_key='part.reasoningText.0' ORDER BY byte_offset",
+                vec![
+                    pl_core::chat::ChatKey::new("item", &atom.id)?
+                        .as_str()
+                        .into(),
+                ],
+            ))
+            .await?;
+        let mut bytes = Vec::new();
+        for chunk in chunks {
+            assert_eq!(
+                chunk.try_get::<i64>("", "byte_offset")?,
+                i64::try_from(bytes.len())?
+            );
+            bytes.extend(chunk.try_get::<Vec<u8>>("", "data")?);
+        }
+        assert_eq!(bytes, expected.as_bytes());
     }
 
-    let (_, _, next, _) = store.timeline_snapshot().await?.context("Timeline head")?;
+    let restored = store.timeline_snapshot().await?.context("Timeline head")?;
+    let next = restored.next_position();
     assert_eq!(next, 2);
     let mut history = timeline::page_rows(db, &ChatScope::Main, None, next, 4, 3, &[]).await?;
     history.reverse();
@@ -685,7 +752,7 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
         store.prepare_conversation_read().await?;
         assert_migrated_content(&store).await?;
         let latest = migration_records(&store.writer().await?.db).await?;
-        assert_eq!(latest.len(), upgraded_ledger.len() + 1);
+        assert_eq!(latest.len(), upgraded_ledger.len() + 2);
         assert!(upgraded_ledger.iter().all(|record| latest.contains(record)));
         store.close_for_deletion().await?;
     }
@@ -921,16 +988,17 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 4,
-        "content preparation records the four named timeline/content upgrades, not lifecycle migrations"
+        original_ledger.len() + 5,
+        "content preparation records the five named timeline/content upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
                 SOURCE_CLASSIFICATION.into(),
+                COMPLETION_BOUNDARY.into(),
                 TIMELINE_BACKGROUND_TAIL.into(),
             ],
         ))
@@ -944,6 +1012,7 @@ async fn formal_migration_round_trip() -> Result<()> {
             TIMELINE_ITEMS,
             SOURCE_CLASSIFICATION,
             TIMELINE_THINKING_SUMMARY,
+            COMPLETION_BOUNDARY,
             TIMELINE_BACKGROUND_TAIL
         ]
     );
@@ -969,18 +1038,26 @@ async fn formal_migration_round_trip() -> Result<()> {
     let (current, members) = assert_migrated_content(&migrated).await?;
     let original_cut: CurrentProjection = serde_json::from_slice(&original_current)?;
     let mut expected_current = original_cut;
-    expected_current.items = current.items.clone();
+    let archived_current: CurrentProjection = serde_json::from_slice(
+        &db.query_one_raw(statement(
+            "SELECT payload FROM completion_boundary_archive_view_state WHERE singleton_id=1",
+            vec![],
+        ))
+        .await?
+        .context("archived current")?
+        .try_get::<Vec<u8>>("", "payload")?,
+    )?;
+    expected_current.items = archived_current.items.clone();
     assert_eq!(
-        current, expected_current,
-        "migration may add Timeline items but cannot rewrite the rest of the saved cut"
+        archived_current, expected_current,
+        "migration archives the legacy cut without rewriting its non-Timeline material"
     );
 
-    let (identity, generation, next, recovery) = migrated
+    let mut restored = migrated
         .timeline_snapshot()
         .await?
         .context("migration recovery")?;
-    let mut restored = TimelineProjection::new(identity, generation.clone(), next);
-    restored.restore_recovery(&recovery)?;
+    let generation = restored.generation().to_owned();
     assert_eq!(restored.current_items(), current.items);
     let mut terminal = members[0].clone();
     let started = match terminal.lifecycle {

@@ -1191,6 +1191,9 @@ impl Fact {
     }
 }
 
+#[cfg(test)]
+#[path = "live/completion_tests.rs"]
+mod completion_boundary_tests;
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 mod provenance;
 #[cfg(test)]
@@ -1284,7 +1287,7 @@ pub(in crate::studio) struct LiveProjection {
     main_through: u64,
     /// Single Studio Timeline display projection. Live effects, restart recovery
     /// and derived-data rebuild all run this same fold.
-    timeline: Option<super::TimelineProjection>,
+    timeline: Option<Arc<super::TimelineProjection>>,
     /// Whether the item order cursor was restored from the derived store.
     timeline_position_restored: bool,
 }
@@ -1366,14 +1369,15 @@ impl LiveProjection {
             return Ok(());
         }
         if let Some(history) = self.execution_history.as_ref()
-            && let Some((database, generation, next, bytes)) = history
+            && let Some(timeline) = history
                 .timeline_snapshot()
                 .await
                 .map_err(|error| ProjectionError::History(error.to_string()))?
         {
-            let mut timeline = super::TimelineProjection::new(database, generation, next);
-            timeline.restore_recovery(&bytes)?;
-            self.timeline = Some(timeline);
+            self.timeline = Some(Arc::new(timeline));
+            if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
+                history.timeline_owner(owner);
+            }
             self.sync_current_items();
         }
         self.timeline_position_restored = true;
@@ -1388,11 +1392,11 @@ impl LiveProjection {
         {
             let generation = history.timeline_generation_changes().borrow().clone();
             if !generation.is_empty() {
-                self.timeline = Some(super::TimelineProjection::new(
+                self.timeline = Some(Arc::new(super::TimelineProjection::new(
                     database.to_owned(),
                     generation,
                     0,
-                ));
+                )));
             }
         }
     }
@@ -1453,7 +1457,7 @@ impl LiveProjection {
         &mut self,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
-        sequence: u64,
+        effect: &ThreadEffectBatch,
     ) -> Result<
         (
             Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
@@ -1465,7 +1469,7 @@ impl LiveProjection {
         self.sync_provenance()?;
         let (mut prepared, current) = self
             .current
-            .freeze(thread, state, sequence, active)
+            .freeze(thread, state, effect.sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         let projection = current
             .frozen_projection()
@@ -1474,7 +1478,20 @@ impl LiveProjection {
             .adopt_timeline_projection(current.frozen_projection(), &projection);
         Arc::make_mut(&mut prepared).replace_projection(projection.clone());
         let current = super::CurrentState::with_projection(current, projection);
-        Arc::make_mut(&mut prepared).replay_current = Some(current.clone());
+        if let Some(attempt) = &effect.attempt
+            && matches!(
+                attempt.outcome,
+                pl_core::thread::AttemptOutcome::Interrupted
+            )
+        {
+            Arc::make_mut(&mut prepared).recovery_interruption = Some((
+                attempt.attempt_id.clone(),
+                pl_protocol::ChatFactPosition {
+                    effect_seq: effect.sequence,
+                    suborder: 0,
+                },
+            ));
+        }
         Ok((prepared, current))
     }
 
@@ -1506,11 +1523,14 @@ impl LiveProjection {
     fn current_timeline_items(&self) -> Vec<pl_protocol::TimelineItem> {
         self.timeline
             .as_ref()
-            .map(super::TimelineProjection::current_items)
+            .map(|timeline| timeline.current_items())
             .unwrap_or_default()
     }
 
     fn sync_current_items(&mut self) {
+        if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
+            history.timeline_owner(owner);
+        }
         if let Some(current) = self.current.snapshot() {
             let projection = current
                 .frozen_projection()
@@ -1533,7 +1553,7 @@ impl LiveProjection {
         self.ensure_timeline_owner();
         // Only the bounded live accumulator is copied, never completed members.
         // No partial input/position advance escapes on a budget/order failure.
-        let Some(mut timeline) = self.timeline.clone() else {
+        let Some(mut timeline) = self.timeline.as_deref().cloned() else {
             return Ok(None);
         };
         let database_id = timeline.database_id().to_owned();
@@ -1557,6 +1577,22 @@ impl LiveProjection {
                 thinking_summary,
             };
             inputs.push((input.order(current.projection().source_effect_seq)?, input));
+        }
+        if let Some((attempt, ended)) = &current.recovery_interruption {
+            for atom in timeline.interrupted_model_members(attempt, *ended) {
+                if records
+                    .iter()
+                    .any(|record| record.header.item_id == atom.id)
+                {
+                    continue;
+                }
+                let input = TimelineInput::Atom {
+                    atom: Box::new(atom),
+                    payload: None,
+                    thinking_summary: None,
+                };
+                inputs.push((input.order(current.projection().source_effect_seq)?, input));
+            }
         }
         for source in current.source_changes.iter().filter(|source| {
             matches!(
@@ -1597,7 +1633,19 @@ impl LiveProjection {
         // references and Waiting state. Refresh only already-admitted identities;
         // this is neither another start nor another commit point.
         for atom in &current.projection().atoms {
-            if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt {
+            if atom.kind != pl_protocol::ChatAtomKind::TurnReceipt
+                && !current
+                    .recovery_interruption
+                    .as_ref()
+                    .is_some_and(|(attempt, _)| {
+                        atom.attempt_id.as_ref() == Some(attempt)
+                            && matches!(
+                                atom.kind,
+                                pl_protocol::ChatAtomKind::Text
+                                    | pl_protocol::ChatAtomKind::Reasoning
+                            )
+                    })
+            {
                 timeline.refresh_current(atom, self.current_thinking_summary(atom))?;
             }
         }
@@ -1739,7 +1787,7 @@ impl LiveProjection {
             .saturating_add(
                 self.timeline
                     .as_ref()
-                    .map_or(0, super::TimelineProjection::retained_bytes),
+                    .map_or(0, |timeline| timeline.retained_bytes()),
             );
         bytes = bytes
             .saturating_add(
@@ -1809,7 +1857,7 @@ impl LiveProjection {
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         // Admission, source ends and terminals are folded together only after
         // reliable retention/publication assigns the original completion seqs.
@@ -1873,7 +1921,7 @@ impl LiveProjection {
         self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)
             .await?;
         self.retire_effect_source(effect)?;
-        let (mut current, current_state) = self.freeze_current(thread, state, effect.sequence)?;
+        let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let timeline = Vec::new();
         let prepared = Arc::new(PreparedEffect {
@@ -2403,12 +2451,40 @@ impl LiveProjection {
         // making any display item ready for history.
         let live_items = candidate
             .as_ref()
-            .map(super::TimelineProjection::current_items)
+            .map(|timeline| timeline.current_items())
             .unwrap_or_default();
-        let after = current_after.frozen_projection().with_items(live_items);
+        let mut projection = current_after.projection().clone();
+        projection.items = live_items;
+        if let Some((attempt, _)) = &current_after.recovery_interruption {
+            let ids = self
+                .timeline
+                .as_ref()
+                .map(|timeline| {
+                    timeline.interrupted_model_members(
+                        attempt,
+                        pl_protocol::ChatFactPosition {
+                            effect_seq: prepared.sequence,
+                            suborder: 0,
+                        },
+                    )
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|atom| atom.id)
+                .collect::<BTreeSet<_>>();
+            projection.atoms.retain(|atom| !ids.contains(&atom.id));
+            projection
+                .previews
+                .retain(|preview| !ids.contains(&preview.id));
+            for id in ids {
+                self.atom_starts.remove(&id);
+            }
+        }
+        let after = super::FrozenCurrentProjection::new(projection);
         current_after.replace_projection(after.clone());
         if let Some(timeline) = candidate.as_mut() {
             current_after.timeline_update = Arc::new(timeline.take_update()?);
+            timeline.accept_members(&current_after.timeline_update);
         }
         if !current_after.timeline_update.updates().is_empty() {
             current_after.timeline_commit = prepared.sequence;
@@ -2438,14 +2514,16 @@ impl LiveProjection {
         let prepared = Arc::make_mut(prepared);
         self.current
             .adopt_timeline_projection(prepared.current.frozen_projection(), &after);
-        self.timeline = candidate;
+        self.timeline = candidate.map(Arc::new);
+        if let (Some(history), Some(owner)) = (&self.execution_history, &self.timeline) {
+            history.timeline_owner(owner);
+        }
         if !extra_live.is_empty() {
             prepared.timeline.extend(extra_live);
         }
         if let Some(state) = prepared.current_state.take() {
             prepared.current_state = Some(super::CurrentState::with_projection(state, after));
         }
-        current_after.replay_current = prepared.current_state.clone();
         prepared.current = Arc::new(current_after);
         if let Some(history) = &self.execution_history {
             history.timeline_publish(prepared.current.clone());
@@ -2523,7 +2601,7 @@ impl LiveProjection {
                 .collect::<Vec<_>>();
             if let Some(timeline) = &mut self.timeline {
                 for (id, summary) in summaries {
-                    timeline.refresh_thinking_summary(&id, summary);
+                    Arc::make_mut(timeline).refresh_thinking_summary(&id, summary);
                 }
             }
         }

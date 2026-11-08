@@ -23,6 +23,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {
@@ -59,6 +60,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {
@@ -100,6 +102,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | TIMELINE_THINKING_SUMMARY
                     | TIMELINE_BACKGROUND_TAIL
                     | SOURCE_CLASSIFICATION
+                    | COMPLETION_BOUNDARY
             )
         })
         .filter(|migration| {

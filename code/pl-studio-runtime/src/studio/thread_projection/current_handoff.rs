@@ -30,6 +30,10 @@ pub(in crate::studio) struct CurrentHandoff {
 }
 
 impl CurrentHandoff {
+    /// Feed-local cut accounting: five scalar words and its optional-state tag.
+    /// Reserve it with the existing handoff; no additional queue or credit.
+    pub const DELIVERY_MEASURE_BYTES: usize = 6 * std::mem::size_of::<usize>();
+
     pub fn new(
         main_through: u64,
         before: Arc<FrozenCurrentProjection>,
@@ -108,6 +112,7 @@ impl CurrentHandoff {
             // filling the bounded metadata after publish cannot reduce this charge.
             self.before.projection().previews.iter().fold(
                 projections
+                    .saturating_add(Self::DELIVERY_MEASURE_BYTES as u64)
                     .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
                     .saturating_add(
                         serde_json::to_vec(&(

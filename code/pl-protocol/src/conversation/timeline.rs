@@ -137,8 +137,10 @@ pub struct TimelineItem {
     pub content_item_id: Option<String>,
     /// `item_order` once the item entered history; `None` while still current.
     pub position: Option<u64>,
-    /// Admission is closed by a real following boundary. A closed item can still
-    /// have running members and is not yet history.
+    /// No more active members are admitted from the original source. A closed
+    /// foreground item may still await running members before entering history.
+    /// An independent background-result tail can append completed results via
+    /// `ChatPlacement::Update`; this flag does not freeze its derived summary.
     pub admission_closed: bool,
 }
 

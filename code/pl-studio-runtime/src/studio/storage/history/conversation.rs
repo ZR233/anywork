@@ -9,8 +9,9 @@ use pl_core::chat::{
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 use std::{collections::BTreeMap, sync::Arc};
 
+pub(in crate::studio) mod completed;
 #[path = "conversation/content.rs"]
-mod content;
+pub(in crate::studio::storage::history) mod content;
 #[path = "conversation/current.rs"]
 pub(in crate::studio) mod current;
 #[path = "conversation/migration.rs"]
