@@ -275,7 +275,8 @@ Future<void> _until(
 
 typedef _ImageResult = ({
   ChatAtom foreground,
-  TimelineDisplayUnit? finalUnit,
+  ChatAtom atom,
+  TimelineDisplayUnit? finalGroup,
   ChatItemPresentation presentation,
 });
 
@@ -1126,6 +1127,33 @@ final class _ConceptScene {
       'lastTurn': turn(state.lastTurn),
       'currentSourceTurnId': lease.content.current.value?.activeTurn?.id,
       'mountedCurrentTurnId': lease.currentDisplay?.turnId,
+      'foregroundTools': [
+        for (final atom in original?.atoms ?? const <ChatAtom>[])
+          if (atom.kind == ChatAtomKind.toolCall)
+            {
+              'id': atom.id,
+              'callId': atom.tool?.callId,
+              'turnId': atom.turnId,
+              'delivery': atom.delivery.name,
+              'completionItemId': atom.completionItemId,
+              'outcome': atom.lifecycle is TerminalChatAtom
+                  ? (atom.lifecycle as TerminalChatAtom).outcome.name
+                  : null,
+            },
+      ],
+      'backgroundMembers': [
+        for (final atom
+            in observed.mountedMembers
+                .where((atom) => atom.source is BackgroundResultChatSource)
+                .take(8))
+          {
+            'id': atom.id,
+            'callId': atom.tool?.callId,
+            'turnId': atom.turnId,
+            'delivery': atom.delivery.name,
+            'completionItemId': atom.completionItemId,
+          },
+      ],
       'mainWorkGroups': [
         for (final unit in main)
           if (unit.item.kind == TimelineItemKind.workGroup) group(unit),
@@ -1143,7 +1171,7 @@ final class _ConceptScene {
     );
   }
 
-  /// Borrow only the original foreground window and already admitted Main.
+  /// Borrow only the original foreground window and mounted background groups.
   /// A missing final result may still arrive; an invalid or duplicate one fails.
   List<_ImageResult> _imageResults(
     TimelineDisplayUnit unit,
@@ -1172,13 +1200,14 @@ final class _ConceptScene {
     }
 
     void accept(
+      ChatAtom foregroundAtom,
       ChatAtom atom,
-      TimelineDisplayUnit? finalUnit,
+      TimelineDisplayUnit? finalGroup,
       ChatItemPresentation value,
     ) {
       final tool = toolOf(value);
       expect(tool.name, 'view_image');
-      expect(tool.toolCallId, atom.tool!.callId);
+      expect(tool.toolCallId, foregroundAtom.tool!.callId);
       expect(
         results.where(
           (result) => result.foreground.tool!.callId == tool.toolCallId,
@@ -1196,8 +1225,9 @@ final class _ConceptScene {
         expect(value.attachments, hasLength(1));
       }
       results.add((
-        foreground: atom,
-        finalUnit: finalUnit,
+        foreground: foregroundAtom,
+        atom: atom,
+        finalGroup: finalGroup,
         presentation: value,
       ));
     }
@@ -1220,7 +1250,7 @@ final class _ConceptScene {
                 ? ChatTerminalOutcome.failed
                 : ChatTerminalOutcome.completed,
           );
-          accept(atom, null, value);
+          accept(atom, atom, null, value);
         case ChatDeliveryKind.backgroundHandoff:
           expect(terminal.outcome, ChatTerminalOutcome.transferred);
           expect(tool.statusString, 'backgroundStarted');
@@ -1233,39 +1263,86 @@ final class _ConceptScene {
       }
     }
     expect(tasks.values.toSet(), hasLength(tasks.length));
-    for (final finalUnit in observed.main) {
-      final item = finalUnit.item;
-      if (item.atomKind != ChatAtomKind.toolCall) continue;
-      final value = ChatItemPresentation.forUnit(finalUnit);
+    for (final atom in observed.mountedMembers) {
+      if (atom.kind != ChatAtomKind.toolCall ||
+          atom.source is! BackgroundResultChatSource) {
+        continue;
+      }
+      final value = ChatItemPresentation.decode(atom);
       final reading = value.toolCard;
       if (reading is! DecodedToolCard) {
-        if (item.turnId == turnId) {
-          fail('Image Turn Main result ${item.id} has no decoded tool card');
+        if (atom.turnId == turnId) {
+          fail('Image background member ${atom.id} has no decoded tool card');
         }
         continue;
       }
       final tool = reading.value;
-      if (item.turnId != turnId &&
+      if (atom.turnId != turnId &&
           !foreground.containsKey(tool.toolCallId) &&
           !tasks.containsValue(tool.taskId)) {
         continue;
       }
-      expect(item.turnId, turnId);
-      expect(item.kind, TimelineItemKind.status);
-      expect(item.source, isA<BackgroundResultChatSource>());
-      expect(item.delivery, ChatDeliveryKind.independent);
-      expect(item.outcome, ChatTerminalOutcome.completed);
-      expect(item.contentItemId, isNotNull);
-      expect(item.contentItemId, isNotEmpty);
-      expect(item.members, isNull);
-      expect(item.summary, isNull);
+      expect(atom.turnId, turnId);
+      expect(atom.delivery, ChatDeliveryKind.independent);
+      expect(atom.lifecycle, isA<TerminalChatAtom>());
+      expect(
+        (atom.lifecycle as TerminalChatAtom).outcome,
+        tool.toolCallId == 'concept-image-failed'
+            ? ChatTerminalOutcome.failed
+            : ChatTerminalOutcome.completed,
+      );
+      expect(atom.completionItemId, isNotNull);
+      expect(atom.completionItemId, isNotEmpty);
       expect(tasks.containsKey(tool.toolCallId), isTrue);
       expect(tool.taskId, tasks[tool.toolCallId]);
-      final atom = foreground[tool.toolCallId]!;
-      expect(item.contentItemId, isNot(atom.completionItemId));
-      accept(atom, finalUnit, value);
+      final original = foreground[tool.toolCallId]!;
+      expect(atom.completionItemId, isNot(original.completionItemId));
+      final group = lease.groupDisplays.singleWhere(
+        (display) => display.atoms.any((member) => member.id == atom.id),
+      );
+      accept(original, atom, observed.unit(group.unitId), value);
     }
     return results;
+  }
+
+  Future<void> _awaitImageResults(
+    TimelineDisplayUnit unit,
+    TimelineGroupDisplay display, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final left = timeout - clock.elapsed;
+      if (left <= Duration.zero) {
+        fail(
+          'Timed out waiting for all exact final image results in their original domains',
+        );
+      }
+      return left;
+    }
+
+    while (true) {
+      remaining();
+      // The Main group's source/turn is only its first member's anchor.
+      // Open real groups, then match each final member's call/task/turn below.
+      if (display.atoms.any(
+        (atom) => atom.delivery == ChatDeliveryKind.backgroundHandoff,
+      )) {
+        for (final group
+            in observed.main
+                .where(
+                  (unit) =>
+                      unit.item.kind == TimelineItemKind.workGroup &&
+                      unit.item.source is BackgroundResultChatSource,
+                )
+                .toList()) {
+          await observed.openGroup(group.id, timeout: remaining());
+        }
+      }
+      if (_imageResults(unit, display).length == _imageCalls.length + 1) return;
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
   }
 
   List<_ImageResult> _verifyImageMembers(
@@ -1382,25 +1459,16 @@ final class _ConceptScene {
       'finalResults': [
         for (final result in results)
           {
-            'domain': result.finalUnit == null
+            'domain': result.finalGroup == null
                 ? 'ForegroundMembers'
-                : 'MainStatus',
+                : 'BackgroundMembers',
             'foregroundMemberId': result.foreground.id,
             'id': result.presentation.id,
-            'contentItemId':
-                result.finalUnit?.item.contentItemId ??
-                result.foreground.completionItemId,
-            'turnId': result.finalUnit?.item.turnId ?? result.foreground.turnId,
-            'sourceKind':
-                (result.finalUnit?.item.source ?? result.foreground.source)
-                    .runtimeType
-                    .toString(),
-            'delivery':
-                (result.finalUnit?.item.delivery ?? result.foreground.delivery)
-                    .name,
-            'outcome':
-                result.finalUnit?.item.outcome?.name ??
-                (result.foreground.lifecycle as TerminalChatAtom).outcome.name,
+            'contentItemId': result.atom.completionItemId,
+            'turnId': result.atom.turnId,
+            'sourceKind': result.atom.source.runtimeType.toString(),
+            'delivery': result.atom.delivery.name,
+            'outcome': (result.atom.lifecycle as TerminalChatAtom).outcome.name,
             'toolCallId': result.foreground.tool!.callId,
             'taskId':
                 (result.presentation.toolCard as DecodedToolCard).value.taskId,
@@ -1411,9 +1479,7 @@ final class _ConceptScene {
                 .map((body) => body.key)
                 .toList(),
             'contentReferences': [
-              for (final content
-                  in result.finalUnit?.item.contents ??
-                      result.foreground.contents)
+              for (final content in result.atom.contents)
                 {
                   'role': content.role.name,
                   'identity': contentReferenceIdentity(content.reference)
@@ -1861,12 +1927,9 @@ final class _ConceptScene {
       await contentIdentitiesForItem(imageWork.id);
       // Only summary/final qualification waits share the original 60 seconds.
       // The original UI/member EOF operations keep their existing deadlines.
-      await _until(
-        tester,
-        () =>
-            _imageResults(imageWork, originalImages).length ==
-            _imageCalls.length + 1,
-        'all exact final image results in their original domains',
+      await _awaitImageResults(
+        imageWork,
+        originalImages,
         timeout: const Duration(seconds: 60) - summaryWait.elapsed,
       );
       _verifyImageMembers(imageWork, originalImages);
@@ -2517,31 +2580,20 @@ final class _ConceptScene {
   }) async {
     final item = result.presentation;
     final tool = (item.toolCard as DecodedToolCard).value;
-    final finalUnit = result.finalUnit;
-    if (finalUnit == null) {
-      expect(display, isNotNull);
-      expect(
-        await observed.revealMember(
-          result.foreground,
-          reference: display!.membersRef!,
-        ),
-        same(display),
-      );
-    } else {
-      await observed.revealItem(finalUnit.item);
-    }
-    final card = finalUnit == null
-        ? observed.memberRow(result.foreground.id)
-        : observed.itemRow(finalUnit.id);
+    final finalGroup = result.finalGroup;
+    final owner = finalGroup == null
+        ? display!
+        : await observed.openGroup(finalGroup.id);
+    expect(
+      await observed.revealMember(result.atom, reference: owner.membersRef!),
+      same(owner),
+    );
+    final card = observed.memberRow(result.atom.id);
     expect(card, findsOneWidget);
     final rendered = tester.widget<ChatItemView>(card).item;
     expect(rendered.id, item.id);
-    if (finalUnit == null) {
-      expect(rendered.atom!.id, result.foreground.id);
-      expect(rendered.atom!.source, result.foreground.source);
-    } else {
-      expect(rendered.displayUnit, same(finalUnit));
-    }
+    expect(rendered.atom!.id, result.atom.id);
+    expect(rendered.atom!.source, result.atom.source);
     final details = find.descendant(
       of: card,
       matching: find.byType(TimelineToolDetails),
@@ -2605,14 +2657,13 @@ final class _ConceptScene {
     // Viewer and UI close too, rather than granting each step a new deadline.
     final readWait = Stopwatch()..start();
     Duration remaining() => const Duration(seconds: 60) - readWait.elapsed;
-    final declarations =
-        (finalUnit?.item.contents ?? result.foreground.contents)
-            .where(
-              (content) =>
-                  content.role == ChatContentRole.toolArguments ||
-                  content.role == ChatContentRole.toolOutput,
-            )
-            .toList();
+    final declarations = result.atom.contents
+        .where(
+          (content) =>
+              content.role == ChatContentRole.toolArguments ||
+              content.role == ChatContentRole.toolOutput,
+        )
+        .toList();
     final bodyConnectors = find.descendant(
       of: card,
       matching: find.byType(TimelineContentRangeConnector),
@@ -2719,7 +2770,9 @@ final class _ConceptScene {
       final failure = <String, Object?>{
         'toolId': tool.id,
         'toolCallId': tool.toolCallId,
-        'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainStatus',
+        'delivery': finalGroup == null
+            ? 'ForegroundMembers'
+            : 'BackgroundMembers',
         'error': error.toString(),
       };
       report['imageResultUiFailure'] = failure;
@@ -2806,7 +2859,7 @@ final class _ConceptScene {
         (report['imageResultUi'] ??= <Map<String, Object?>>[])
             as List<Map<String, Object?>>;
     observations.add({
-      'domain': finalUnit == null ? 'ForegroundMembers' : 'MainStatus',
+      'domain': finalGroup == null ? 'ForegroundMembers' : 'BackgroundMembers',
       'foregroundMemberId': result.foreground.id,
       'rowId': item.id,
       'toolCallId': tool.toolCallId,
@@ -2879,6 +2932,7 @@ final class _ConceptScene {
     late final List<_ImageResult> results;
     try {
       await contentIdentitiesForItem(imageGroup.id);
+      await _awaitImageResults(imageGroup, display);
       results = _verifyImageMembers(imageGroup, display);
     } catch (error) {
       _recordImageFailure('read-images', error, original: display);
@@ -2897,7 +2951,7 @@ final class _ConceptScene {
             .single
             .id,
     ];
-    for (final result in results.where((result) => result.finalUnit == null)) {
+    for (final result in results.where((result) => result.finalGroup == null)) {
       await _verifyImageResult(result, display: display, missing: missing);
     }
     expect(items.map((item) => item.id), orderedEquals(mainIds));
@@ -2951,9 +3005,9 @@ final class _ConceptScene {
       reason: 'late member delivery cannot restore folded body',
     );
     expect(display.windows, isEmpty);
-    // Independent results keep their own Main rows and resource owners. Close
-    // the original member scope first; it cannot close these cards for us.
-    for (final result in results.where((result) => result.finalUnit != null)) {
+    // Independent results keep their own background member resource owners.
+    // Closing the foreground member scope cannot close these cards for us.
+    for (final result in results.where((result) => result.finalGroup != null)) {
       await _verifyImageResult(result, missing: missing);
     }
     expect(items.map((item) => item.id), orderedEquals(mainIds));

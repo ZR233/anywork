@@ -1005,10 +1005,10 @@ mod tests {
         assert_eq!(published.projection().source_effect_seq, 1);
         drop(state);
         drop(published);
-        drop(prepared); // A reliable prepared cut now also owns the complete replay material.
+        drop(prepared);
         assert!(
-            prior_body.upgrade().is_some(),
-            "observation must not release the last reliable preparation baseline"
+            prior_body.upgrade().is_none(),
+            "transport-only current bodies must not survive their last reader"
         );
         owner.freeze(
             &thread,
@@ -1112,6 +1112,7 @@ mod tests {
                 + serde_json::to_vec(handoff.after().projection())?.len() as u64
                 + serde_json::to_vec(&(
                     handoff.entries().as_ref(),
+                    handoff.updates(),
                     handoff.members().as_ref(),
                     handoff.sources().as_ref(),
                 ))?
@@ -1136,7 +1137,7 @@ mod tests {
             super::super::CurrentHandoff::new(1, before.clone(), before.clone(), entries.clone());
         let canonical = serde_json::to_vec(before.projection())?;
         let cache = 3 * std::mem::size_of::<OnceLock<u64>>() as u64
-            + 6 * std::mem::size_of::<usize>() as u64;
+            + 12 * std::mem::size_of::<usize>() as u64;
         let original = original_handoff_bytes(&handoff)? + cache;
         assert_eq!(handoff.retained_bytes(), original);
         let published = handoff.clone().with_publication(
@@ -1184,6 +1185,15 @@ mod tests {
             expected,
             "retirement reserve must not shrink to the filled retirement count"
         );
+        let updated = published
+            .clone()
+            .with_updates(update.current().to_vec().into());
+        assert_eq!(
+            updated.retained_bytes(),
+            original_handoff_bytes(&updated)? + cache
+        );
+        assert!(updated.retained_bytes() > expected);
+        assert_eq!(published.retained_bytes(), expected);
         assert_eq!(handoff.retained_bytes(), original);
         assert!(handoff.projection_generation().is_empty());
         assert!(handoff.sources().is_empty() && handoff.members().is_empty());
@@ -1245,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_progress_indexes_only_at_the_first_read_or_reliable_handoff() -> Result<()> {
+    fn collapsed_progress_defers_indexes_and_freeze_reuses_reader_index() -> Result<()> {
         let mut owner = CurrentOwner::default();
         owner.bind("database".into())?;
         let thread = Thread::placeholder("thread");
@@ -1288,13 +1298,20 @@ mod tests {
             Arc::ptr_eq(&accepted, &content.content()),
             "two readers built distinct indexes for one owner version"
         );
-        let (prepared, _) = owner.freeze(
+        let (prepared, frozen) = owner.freeze(
             &thread,
             &state,
             2,
             [("active".into(), BodyKey::Body, appended.clone(), 1, None)],
         )?;
-        assert!(Arc::ptr_eq(&accepted, &prepared.contents[0].content));
+        assert!(
+            prepared.contents.is_empty(),
+            "active transport bodies must not enter the reliable SQLite domain"
+        );
+        assert!(Arc::ptr_eq(
+            &accepted,
+            &frozen.contents.values().next().unwrap().content()
+        ));
         let generation = accepted.descriptor.generation;
         let replacement = owner.observe(
             &thread,

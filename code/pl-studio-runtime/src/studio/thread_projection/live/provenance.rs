@@ -49,7 +49,7 @@ impl LiveProjection {
             .watermark()
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let sources = self
+        let mut sources = self
             .timeline
             .as_ref()
             .map(|timeline| {
@@ -60,6 +60,19 @@ impl LiveProjection {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
+        // A Turn can have a durable start without any display member. Include the bounded
+        // checkpoint and execution seed identities, not just sources visible in current items.
+        sources.extend(
+            state
+                .turns
+                .iter()
+                .map(|turn| &turn.turn_id)
+                .chain(self.facts.values().map(|fact| &fact.turn_id))
+                .filter(|turn_id| !turn_id.is_empty())
+                .map(|turn_id| ChatSourceId::ForegroundTurn {
+                    turn_id: turn_id.clone(),
+                }),
+        );
         if !sources.is_empty() {
             for source in history
                 .conversation_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
