@@ -15,6 +15,7 @@ import '../views/timeline_view.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
+import 'timeline_canonical_payload_connector.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -189,6 +190,15 @@ class _TimelineConnectorBody extends ConsumerWidget {
       threadId: threadId,
       view: view,
       controls: lease,
+      canonicalPresentationBuilder: (item, render) =>
+          TimelineCanonicalPayloadConnector(
+            key: ValueKey((lease.generation, item.id)),
+            item: item,
+            content: lease.content,
+            retirement: lease.retirement,
+            isActive: active,
+            render: render,
+          ),
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
         threadId: threadId,

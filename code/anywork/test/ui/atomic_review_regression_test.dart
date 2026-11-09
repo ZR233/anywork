@@ -395,7 +395,7 @@ void main() {
               payload: const DeferredPayload(
                 reference: ContentRef(
                   databaseId: 'database',
-                  target: ItemPayloadTarget(itemId: 'original-payload'),
+                  target: ItemPayloadTarget(itemId: 'R'),
                 ),
                 byteLength: 100000,
               ),
@@ -406,9 +406,6 @@ void main() {
         await _frames(tester);
         deliver(opened.single);
         await tester.pump();
-        final open = find.text('按需查看原文 · 100000 字节');
-        await tester.tap(open);
-        await tester.pump();
         final old = content.scopes.single;
         await _toggle(tester, unit);
         expect(old.isActive, isFalse);
@@ -417,19 +414,17 @@ void main() {
         await _frames(tester);
         deliver(opened.last);
         await tester.pump();
-        await tester.tap(open);
-        await tester.pump();
         final fresh = content.scopes.last;
         expect(fresh, isNot(same(old)));
         if (staleError) {
-          old.read.completeError(StateError('旧正文失败'));
+          old.completed.completeError(StateError('旧正文失败'));
         } else {
-          old.read.complete(_window('迟到正文'));
+          old.completed.complete(_completedReasoning('迟到正文'));
         }
         await tester.pump();
         expect(find.text('迟到正文'), findsNothing);
         expect(find.textContaining('旧正文失败'), findsNothing);
-        fresh.read.complete(_window('新正文'));
+        fresh.completed.complete(_completedReasoning('新正文'));
         await tester.pump();
         expect(find.text('新正文'), findsOneWidget);
         await _dispose(tester, unit, content);
@@ -502,6 +497,18 @@ final class _Scope extends Fake implements ConversationQueryScope {
   bool isActive = true;
   final watch = StreamController<ContentWindow>.broadcast();
   final read = Completer<ContentWindow>();
+  final completed = Completer<CompletedEntry>();
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) {
+    expect(recordId, 'R');
+    expect(demand.maxItems, 1);
+    expect(demand.maxBytes, 64 * 1024);
+    return completed.future;
+  }
+
   @override
   Stream<ContentWindow> watchContent({
     required ContentRef reference,
@@ -521,6 +528,14 @@ final class _Scope extends Fake implements ConversationQueryScope {
     return CloseReport();
   }
 }
+
+CompletedEntry _completedReasoning(String text) => CompletedEntry(
+  recordId: 'R',
+  completionSeq: 71,
+  run: null,
+  mainPresentation: MainPresentation.foregroundWork,
+  atom: _reasoning(payload: _message('R', text).payload),
+);
 
 ChatAtom _message(String id, String summary) => ChatAtom(
   id: id,

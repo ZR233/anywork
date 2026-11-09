@@ -17,6 +17,11 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_scroll_intent.dart';
 
+typedef CanonicalPresentationBuilder = Widget Function(
+  ChatItemPresentation item,
+  Widget Function(ChatItemPresentation) render,
+);
+
 /// Pure view: immutable presentation state, typed actions and borrowed UI-only
 /// controllers. Media, detail and platform actions are injected by Connector.
 class TimelineView extends StatefulWidget {
@@ -41,6 +46,7 @@ class TimelineView extends StatefulWidget {
     this.onContentLayout,
     this.isDisplayActive,
     this.groupMembersBuilder,
+    this.canonicalPresentationBuilder,
   });
   final String threadId;
   final TimelineSessionViewState view;
@@ -62,6 +68,7 @@ class TimelineView extends StatefulWidget {
   onContentLayout;
   final bool Function()? isDisplayActive;
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
+  final CanonicalPresentationBuilder? canonicalPresentationBuilder;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -514,19 +521,33 @@ class _TimelineViewState extends State<TimelineView> {
                                         index, {
                                         required bool isSentByMe,
                                         MessageGroupStatus? groupStatus,
-                                      }) => ChatItemView(
-                                        item: chatItemPresentationOf(message)!,
-                                        bodyBuilder: _body,
-                                        contentRangeBuilder:
-                                            widget.contentRangeBuilder,
-                                        attachmentBuilder:
-                                            widget.attachmentBuilder,
-                                        monotonicMicros: widget.monotonicMicros,
-                                        onContentLayout: widget.onContentLayout,
-                                        isDisplayActive: widget.isDisplayActive,
-                                        groupMembersBuilder:
-                                            widget.groupMembersBuilder,
-                                      ),
+                                      }) {
+                                        Widget render(
+                                          ChatItemPresentation item,
+                                        ) => ChatItemView(
+                                          item: item,
+                                          bodyBuilder: _body,
+                                          contentRangeBuilder:
+                                              widget.contentRangeBuilder,
+                                          attachmentBuilder:
+                                              widget.attachmentBuilder,
+                                          monotonicMicros:
+                                              widget.monotonicMicros,
+                                          onContentLayout:
+                                              widget.onContentLayout,
+                                          isDisplayActive:
+                                              widget.isDisplayActive,
+                                          groupMembersBuilder:
+                                              widget.groupMembersBuilder,
+                                        );
+                                        final item = chatItemPresentationOf(
+                                          message,
+                                        )!;
+                                        return widget
+                                                .canonicalPresentationBuilder
+                                                ?.call(item, render) ??
+                                            render(item);
+                                      },
                                 ),
                               ),
                             ),

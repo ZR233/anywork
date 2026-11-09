@@ -50,6 +50,24 @@ final class ChatItemPresentation {
   final ChatAtom? atom;
   late final ToolCardReading toolCard = readToolCard(this);
 
+  ChatItemPresentation resolvePayload(InlinePayload payload) {
+    final value = decodePayload(id, payload);
+    return ChatItemPresentation(
+      id: id,
+      compatibility: value.compatibility,
+      type: value.type,
+      data: value.data,
+      bodies: value.bodies,
+      raw: value.raw,
+      createdAt: createdAt ?? value.createdAt,
+      authorId: authorId == 'unknown' ? value.authorId : authorId,
+      presentationContract: value.presentationContract,
+      diagnostic: value.diagnostic,
+      displayUnit: displayUnit,
+      atom: atom,
+    );
+  }
+
   /// Structural empty text still exists in owner metadata. Deferred/unknown
   /// content is never assumed empty.
   bool get isKnownEmptyText =>

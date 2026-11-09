@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
@@ -766,9 +765,12 @@ void main() {
           expect(before, 'old-before');
           return oldPage.future;
         };
-        transport.feed.reader.onContent = (_, range) async {
+        transport.feed.reader.onCompleted = (id, demand) async {
+          expect(id, 'deferred');
+          expect(demand.maxItems, 1);
+          expect(demand.maxBytes, 64 * 1024);
           oldReads++;
-          return _window('old body', range);
+          return memberEntry(_deferred(body: 'old body'));
         };
         await tester.pumpWidget(
           MaterialApp(
@@ -792,7 +794,6 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.tap(find.text('按需查看原文 · 100000 字节'));
         await pumpClientUntil(
           tester,
           () => oldReads == 1,
@@ -830,9 +831,12 @@ void main() {
           newLoads++;
           return newPage.future;
         };
-        replacement.reader.onContent = (_, range) async {
+        replacement.reader.onCompleted = (id, demand) async {
+          expect(id, 'deferred');
+          expect(demand.maxItems, 1);
+          expect(demand.maxBytes, 64 * 1024);
           newReads++;
-          return _window('new body', range);
+          return memberEntry(_deferred(body: 'new body'));
         };
         await tester.pump();
         expect(
@@ -860,7 +864,6 @@ void main() {
         await tester.tap(newLoad);
         await tester.pump();
         expect(newLoads, 1);
-        await tester.tap(find.text('按需查看原文 · 100000 字节'));
         await pumpClientUntil(
           tester,
           () => newReads == 1,
@@ -948,7 +951,7 @@ Message _controllerMessage(ChatAtom item) {
   );
 }
 
-ChatAtom _deferred() => ChatAtom(
+ChatAtom _deferred({String? body}) => ChatAtom(
   id: 'deferred',
   source: const ReceiptChatSource(receiptId: 'deferred'),
   sourceOrder: null,
@@ -960,20 +963,15 @@ ChatAtom _deferred() => ChatAtom(
     outcome: ChatTerminalOutcome.completed,
   ),
   contents: const [],
-  payload: const DeferredPayload(
-    reference: ContentRef(
-      databaseId: 'database',
-      target: ItemPayloadTarget(itemId: 'deferred'),
-    ),
-    byteLength: 100000,
-  ),
-);
-ContentWindow _window(String text, ContentRange range) => ContentWindow(
-  offset: range.offset,
-  bytes: utf8.encode(text),
-  generation: 'g',
-  availableThrough: 100000,
-  sealed: true,
+  payload: body != null
+      ? main_fixtures.chatMessage(id: 'deferred', body: body).atom.payload
+      : const DeferredPayload(
+          reference: ContentRef(
+            databaseId: 'database',
+            target: ItemPayloadTarget(itemId: 'deferred'),
+          ),
+          byteLength: 100000,
+        ),
 );
 
 final class _RecordingRepository extends Fake

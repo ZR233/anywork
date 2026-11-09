@@ -23,6 +23,7 @@ import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
+import 'timeline_canonical_payload_connector.dart';
 
 class TimelineMemberAtom extends StatefulWidget {
   const TimelineMemberAtom({
@@ -57,7 +58,8 @@ class TimelineMemberAtom extends StatefulWidget {
 class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     implements TimelineMemberDisplay {
   ConversationCurrentOwner? _localOwner;
-  ConversationCurrentOwner? get _owner => widget.disclosure?.owner ?? _localOwner;
+  ConversationCurrentOwner? get _owner =>
+      widget.disclosure?.owner ?? _localOwner;
   set _owner(ConversationCurrentOwner? value) {
     final disclosure = widget.disclosure;
     if (disclosure == null) {
@@ -66,6 +68,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       disclosure.owner = value;
     }
   }
+
   ConversationQueryScope? _scope;
   Object _rangeQualification = Object();
   final Set<TimelineCurrentWindowDisplay> _rangeDisplays = {};
@@ -93,9 +96,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       disclosure.expanded = value;
     }
   }
+
   bool get _active =>
       mounted &&
       !_retired &&
+      !(widget.disclosure?.retired ?? false) &&
       !(widget.retirement?.value ?? false) &&
       widget.isActive();
   bool _readActive(String key) =>
@@ -122,7 +127,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     // Folding revokes reads immediately, but is not permanent member retirement.
     if ((widget.retirement?.value ?? false)) {
       _retireRanges();
-      if (widget.disclosure == null || widget.disclosure!.retired) _closeBodies();
+      if (widget.disclosure == null || widget.disclosure!.retired) {
+        _closeBodies();
+      }
     } else if (widget.atom.kind != ChatAtomKind.toolCall &&
         widget.atom.payload == null) {
       _observe();
@@ -268,8 +275,12 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           .join(' ');
       final atom = widget.atom;
       final row = TimelineReasoningView(
-        summary: !widget.executionPresent && atom.lifecycle is ActiveChatAtom && summary.isEmpty
-          ? '上次思考尚未恢复' : summary,
+        summary:
+            !widget.executionPresent &&
+                atom.lifecycle is ActiveChatAtom &&
+                summary.isEmpty
+            ? '上次思考尚未恢复'
+            : summary,
         startedAt: atom.startedAt,
         finishedAt: atom.finishedAt,
         running: widget.executionPresent && atom.lifecycle is ActiveChatAtom,
@@ -317,8 +328,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       bool qualified() =>
           _readActive('attachments') &&
           identical(qualification, _rangeQualification);
-      final view = ChatItemView(
-        item: ChatItemPresentation.decode(atom),
+      Widget render(ChatItemPresentation item) => ChatItemView(
+        item: item,
         initiallyExpanded: _expanded,
         monotonicMicros: widget.monotonicMicros,
         onContentLayout: widget.onContentLayout,
@@ -354,7 +365,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           );
         },
       );
-      return _response(view);
+      return _response(
+        TimelineCanonicalPayloadConnector(
+          item: ChatItemPresentation.decode(atom),
+          content: widget.content,
+          retirement: widget.retirement,
+          isActive: () => _active,
+          render: render,
+        ),
+      );
     }
     if (atom.kind == ChatAtomKind.reasoning) return _reasoning();
     if (atom.tool case final tool?) {
@@ -409,7 +428,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   Widget _response(Widget body) {
     final atom = widget.atom;
-    if (!widget.executionPresent || atom.kind != ChatAtomKind.text || atom.lifecycle is! ActiveChatAtom) {
+    if (!widget.executionPresent ||
+        atom.kind != ChatAtomKind.text ||
+        atom.lifecycle is! ActiveChatAtom) {
       return body;
     }
     return ConversationResponseView(startedAt: atom.startedAt, child: body);
