@@ -5,7 +5,6 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/composer_primary_action.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/desktop_drop_adapter.dart';
@@ -94,7 +93,7 @@ class PromptComposerView extends StatefulWidget {
     this.stopCommand,
     this.queuedStopStartedAtMs,
     this.selectorBar,
-    this.settingsMenu,
+    this.creationCard = false,
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
@@ -155,7 +154,7 @@ class PromptComposerView extends StatefulWidget {
   final VoidCallback? onStop;
   final VoidCallback? onContinue;
   final Widget? selectorBar;
-  final Widget? settingsMenu;
+  final bool creationCard;
 
   /// 起始页正文由调用方持有。传入后不再用 [composer.draft] 覆盖输入框。
   final TextEditingController? textController;
@@ -501,7 +500,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
       borderColor: _dragging
           ? colors.primary
           : colors.outlineVariant.withValues(alpha: 0.86),
-      radius: StudioRadii.lg,
+      radius: widget.creationCard ? 12 : 14,
       shadow: false,
       padding: widget.compact
           ? const EdgeInsets.fromLTRB(12, 6, 10, 6)
@@ -599,29 +598,54 @@ class PromptComposerViewState extends State<PromptComposerView> {
             blocker: blocker,
             continuationNote: showContinuationNote ? continuationNote : null,
           ),
-          Row(
-            children: [
-              AttachmentMenu(
-                enabled: attachmentEnabled,
-                localCapabilities: localCapabilities,
-                remoteCapabilities: remoteCapabilities,
-                onPickLocal: _pickLocalAttachments,
-                onAddUrl: _showUrlDialog,
+          if (_primaryActionStatus(context, action) case final status?)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: status,
               ),
-              if (widget.settingsMenu != null) widget.settingsMenu!,
-              const SizedBox(width: 6),
-              Expanded(
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 2,
-                  runSpacing: 4,
-                  children: [?widget.selectorBar],
+            ),
+          LayoutBuilder(
+            builder: (context, constraints) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (constraints.maxWidth < 540 && widget.selectorBar != null)
+                  widget.selectorBar!,
+                Row(
+                  children: [
+                    AttachmentMenu(
+                      enabled: attachmentEnabled,
+                      localCapabilities: localCapabilities,
+                      remoteCapabilities: remoteCapabilities,
+                      onPickLocal: _pickLocalAttachments,
+                      onAddUrl: _showUrlDialog,
+                    ),
+                    if (constraints.maxWidth >= 680)
+                      Text(
+                        'Shift + Enter',
+                        style: Theme.of(context).textTheme.labelSmall
+                            ?.copyWith(color: colors.onSurfaceVariant),
+                      ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Wrap(
+                        alignment: WrapAlignment.end,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 2,
+                        runSpacing: 4,
+                        children: [
+                          if (constraints.maxWidth >= 540) ?widget.selectorBar,
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _primaryActionButton(context, action),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              ..._primaryActionButton(context, action),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -768,14 +792,14 @@ class PromptComposerViewState extends State<PromptComposerView> {
   /// 唯一主按钮：停止、发送并继续、继续、正在停止、正在继续或普通发送。
   ///
   /// 中断态与清理态用可见文字表达，不依赖 tooltip；空输入继续只由这里的按钮发起。
-  List<Widget> _primaryActionButton(
+  Widget? _primaryActionStatus(
     BuildContext context,
     ComposerPrimaryAction action,
   ) {
     final colors = Theme.of(context).colorScheme;
     final labelStyle = Theme.of(context).textTheme.labelMedium
         ?.copyWith(color: colors.onSurfaceVariant);
-    final statusLabel = switch (action.kind) {
+    return switch (action.kind) {
       ComposerPrimaryActionKind.stopping => Text(
         context.l10n.composerStopping,
         key: StudioDriverKeys.composerStopping,
@@ -785,23 +809,20 @@ class PromptComposerViewState extends State<PromptComposerView> {
         context.l10n.composerContinuing,
         style: labelStyle,
       ),
+      ComposerPrimaryActionKind.continueConversation => Text(
+        context.l10n.composerContinue,
+        style: labelStyle,
+      ),
       _ => null,
     };
-    if (action.kind == ComposerPrimaryActionKind.continueConversation) {
-      final enabled = action.enabled && widget.enabled;
-      return [
-        if (statusLabel != null) ...[statusLabel, const SizedBox(width: 8)],
-        Tooltip(
-          message: context.l10n.composerContinueTooltip,
-          child: FilledButton.icon(
-            key: StudioDriverKeys.composerContinue,
-            icon: const Icon(Icons.play_arrow_rounded, size: 18),
-            label: Text(context.l10n.composerContinue),
-            onPressed: enabled ? widget.onContinue : null,
-          ),
-        ),
-      ];
-    }
+  }
+
+  /// 每种主动作占用同一个圆按钮槽，状态说明不挤占配置工具栏。
+  Widget _primaryActionButton(
+    BuildContext context,
+    ComposerPrimaryAction action,
+  ) {
+    final colors = Theme.of(context).colorScheme;
     final stopping = action.kind == ComposerPrimaryActionKind.stopping;
     final sendKind =
         action.kind == ComposerPrimaryActionKind.send ||
@@ -827,7 +848,8 @@ class PromptComposerViewState extends State<PromptComposerView> {
       ),
       ComposerPrimaryActionKind.continuing =>
         StudioDriverKeys.composerContinuing,
-      ComposerPrimaryActionKind.continueConversation ||
+      ComposerPrimaryActionKind.continueConversation =>
+        StudioDriverKeys.composerContinue,
       ComposerPrimaryActionKind.readOnly => const ValueKey(
         'composer-submit-disabled',
       ),
@@ -850,43 +872,45 @@ class PromptComposerViewState extends State<PromptComposerView> {
         // 停止请求在途：进度只表示「请求已发出」，不表示已进入清理。它与主动作
         // 种类无关——运行中有草稿时按钮是「发送并继续」，此刻同样禁用并显示进度。
         (_stopPending && !_stopUnconfirmed);
-    return [
-      if (statusLabel != null) ...[statusLabel, const SizedBox(width: 8)],
-      IconButton.filled(
-        key: key,
-        tooltip: tooltip,
-        style: IconButton.styleFrom(
-          fixedSize: const Size.square(40),
-          shape: const CircleBorder(),
-          backgroundColor: action.kind == ComposerPrimaryActionKind.stop
-              ? colors.surfaceContainerHighest
-              : colors.primary,
-          foregroundColor: action.kind == ComposerPrimaryActionKind.stop
-              ? colors.onSurface
-              : colors.onPrimary,
-          disabledBackgroundColor: colors.surfaceContainerHighest,
-          disabledForegroundColor: colors.onSurface.withValues(alpha: 0.32),
-        ),
-        icon: busy
-            ? const SizedBox.square(
-                key: StudioDriverKeys.composerPending,
-                dimension: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : Icon(
-                action.kind == ComposerPrimaryActionKind.stop
-                    ? Icons.stop_rounded
-                    : Icons.arrow_upward_rounded,
-              ),
-        onPressed: !enabled
-            ? null
-            : action.kind == ComposerPrimaryActionKind.stop
-            ? widget.onStop
-            : sendKind
-            ? _submit
-            : null,
+    return IconButton.filled(
+      key: key,
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        fixedSize: const Size.square(40),
+        shape: const CircleBorder(),
+        backgroundColor: action.kind == ComposerPrimaryActionKind.stop
+            ? colors.surfaceContainerHighest
+            : colors.primary,
+        foregroundColor: action.kind == ComposerPrimaryActionKind.stop
+            ? colors.onSurface
+            : colors.onPrimary,
+        disabledBackgroundColor: colors.surfaceContainerHighest,
+        disabledForegroundColor: colors.onSurface.withValues(alpha: 0.32),
       ),
-    ];
+      icon: busy
+          ? const SizedBox.square(
+              key: StudioDriverKeys.composerPending,
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              action.kind == ComposerPrimaryActionKind.stop
+                  ? Icons.stop_rounded
+                  : action.kind ==
+                        ComposerPrimaryActionKind.continueConversation
+                  ? Icons.play_arrow_rounded
+                  : Icons.arrow_upward_rounded,
+            ),
+      onPressed: !enabled
+          ? null
+          : action.kind == ComposerPrimaryActionKind.stop
+          ? widget.onStop
+          : action.kind == ComposerPrimaryActionKind.continueConversation
+          ? widget.onContinue
+          : sendKind
+          ? _submit
+          : null,
+    );
   }
 
   Future<void> _showUrlDialog() async {

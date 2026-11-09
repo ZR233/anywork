@@ -21,7 +21,7 @@ import '../../../status/session_selectors.dart';
 import '../view_models/composer_view_model.dart';
 import '../state/composer_view_state.dart';
 import '../../interactions/connectors/child_interaction_connector.dart';
-import 'session_settings_connector.dart';
+import 'start_environment_connector.dart';
 import '../views/composer_support_views.dart';
 import '../views/composer_dock_view.dart';
 import '../views/start_page_composer_view.dart';
@@ -112,7 +112,9 @@ class ComposerDockConnector extends ConsumerWidget {
 }
 
 class StartPageComposerDockConnector extends ConsumerWidget {
-  const StartPageComposerDockConnector({super.key});
+  const StartPageComposerDockConnector({this.onAddProject, super.key});
+
+  final VoidCallback? onAddProject;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -121,14 +123,20 @@ class StartPageComposerDockConnector extends ConsumerWidget {
     return _StartPageComposerBody(
       key: ValueKey<String>(workspaceId ?? ''),
       workspaceId: workspaceId,
+      onAddProject: onAddProject,
     );
   }
 }
 
 class _StartPageComposerBody extends ConsumerStatefulWidget {
-  const _StartPageComposerBody({required this.workspaceId, super.key});
+  const _StartPageComposerBody({
+    required this.workspaceId,
+    this.onAddProject,
+    super.key,
+  });
 
   final String? workspaceId;
+  final VoidCallback? onAddProject;
 
   @override
   ConsumerState<_StartPageComposerBody> createState() =>
@@ -226,59 +234,63 @@ class _StartPageComposerBodyState
       ],
     );
     return StartPageComposerView(
-      composer: composer,
-      controller: _draft,
-      pasteTargetId: widget.workspaceId,
-      targetDiagnostic: target,
-      additionalDiagnostics: additional,
-      enabled: projection.canEdit,
-      blocker: projection.recoveryIssue == null
-          ? null
-          : ComposerRecoveryBlocker(projection.recoveryIssue!),
-      submissionLocked: projection.submitting,
-      inputCapabilities: model?.inputCapabilities ?? const [],
-      selectorBar: selectorBar,
-      settingsMenu: workspaceId == null
-          ? null
-          : SessionSettingsConnector(
-              workspaceId: workspaceId,
-              enabled: selectorsEnabled,
-            ),
-      onChanged: _updateDraft,
-      onSubmit: () => unawaited(_submit()),
-      onPasteClipboard: (pasteText, supportsImages, isCurrent) =>
-          _pasteClipboardFromConnector(
-            context,
-            ref.read(clipboardImageReaderProvider),
-            pasteText,
-            supportsImages,
-            isCurrent: isCurrent,
-            onPasteImage: _pasteImage,
-            onReportFailure: _reportFailure,
-          ),
-      onPasteImage: _pasteImage,
-      onReportFailure: _reportFailure,
-      onPickLocalAttachments: (capabilities, isCurrent) =>
-          _pickAttachmentsFromConnector(
-            capabilities,
-            _addLocal,
-            _reportFailure,
-            isCurrent: () =>
-                context.mounted &&
-                isCurrent() &&
-                widget.workspaceId == workspaceId,
-            pickPaths: ref.read(attachmentPathPickerProvider),
-          ),
-      onDropAttachments: (files, isCurrent) => _dropAttachmentsFromConnector(
-        files,
-        _addLocal,
-        _reportFailure,
-        isCurrent: () =>
-            context.mounted && isCurrent() && widget.workspaceId == workspaceId,
+      environmentBar: StartEnvironmentConnector(
+        workspaceId: workspaceId,
+        enabled: !projection.submitting,
+        onAddProject: widget.onAddProject,
       ),
-      onAddLocal: _addLocal,
-      onAddUrl: _addUrl,
-      onRemoveAttachment: _removeAttachment,
+      composer: PromptComposerView(
+        creationCard: true,
+        composer: composer,
+        textController: _draft,
+        pasteTargetId: widget.workspaceId,
+        targetDiagnostic: target,
+        additionalDiagnostics: additional,
+        enabled: projection.canEdit,
+        blocker: projection.recoveryIssue == null
+            ? null
+            : ComposerRecoveryBlocker(projection.recoveryIssue!),
+        submissionLocked: projection.submitting,
+        inputCapabilities: model?.inputCapabilities ?? const [],
+        selectorBar: selectorBar,
+        onChanged: _updateDraft,
+        onSubmit: () => unawaited(_submit()),
+        onPasteClipboard: (pasteText, supportsImages, isCurrent) =>
+            _pasteClipboardFromConnector(
+              context,
+              ref.read(clipboardImageReaderProvider),
+              pasteText,
+              supportsImages,
+              isCurrent: isCurrent,
+              onPasteImage: _pasteImage,
+              onReportFailure: _reportFailure,
+            ),
+        onPasteImage: _pasteImage,
+        onReportFailure: _reportFailure,
+        onPickLocalAttachments: (capabilities, isCurrent) =>
+            _pickAttachmentsFromConnector(
+              capabilities,
+              _addLocal,
+              _reportFailure,
+              isCurrent: () =>
+                  context.mounted &&
+                  isCurrent() &&
+                  widget.workspaceId == workspaceId,
+              pickPaths: ref.read(attachmentPathPickerProvider),
+            ),
+        onDropAttachments: (files, isCurrent) => _dropAttachmentsFromConnector(
+          files,
+          _addLocal,
+          _reportFailure,
+          isCurrent: () =>
+              context.mounted &&
+              isCurrent() &&
+              widget.workspaceId == workspaceId,
+        ),
+        onAddLocal: _addLocal,
+        onAddUrl: _addUrl,
+        onRemoveAttachment: _removeAttachment,
+      ),
     );
   }
 

@@ -220,6 +220,8 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
                 }
               : widget.onBlockedTap,
           style: TextButton.styleFrom(
+            overlayColor: canSelect ? null : Colors.transparent,
+            enabledMouseCursor: canSelect ? null : SystemMouseCursors.basic,
             padding: EdgeInsets.zero,
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,

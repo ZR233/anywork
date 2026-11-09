@@ -991,9 +991,7 @@ class _StudioStartPage extends ConsumerWidget {
                     vertical: 32,
                   ),
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      maxWidth: StudioLayout.conversationWidth,
-                    ),
+                    constraints: const BoxConstraints(maxWidth: 760),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1004,6 +1002,22 @@ class _StudioStartPage extends ConsumerWidget {
                             key: ValueKey(preparation.inputId),
                             project: project,
                             preparation: preparation,
+                            onUseLocalDirectory:
+                                preparation.phase ==
+                                        NewThreadPreparationPhase.failed &&
+                                    preparation.workspaceMode ==
+                                        ThreadWorkspaceMode.worktree &&
+                                    projection.workspaceMode ==
+                                        ThreadWorkspaceMode.worktree
+                                ? () => ref
+                                      .read(anyworkClientProvider)
+                                      .drafts
+                                      .startDraft
+                                      .setWorkspaceMode(
+                                        project.id,
+                                        ThreadWorkspaceMode.local,
+                                      )
+                                : null,
                           )
                         else ...[
                           Text(
@@ -1028,7 +1042,10 @@ class _StudioStartPage extends ConsumerWidget {
                           ),
                         ],
                         const SizedBox(height: 28),
-                        const StartPageComposerDockConnector(),
+                        StartPageComposerDockConnector(
+                          onAddProject: () =>
+                              unawaited(showAddProjectDialog(context)),
+                        ),
                       ],
                     ),
                   ),

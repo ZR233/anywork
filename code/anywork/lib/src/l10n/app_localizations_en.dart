@@ -5525,7 +5525,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get delegationPreferenceLabel => 'Automatic preference';
 
   @override
-  String get delegationProfile => 'Fixed Profile';
+  String get delegationProfile => 'Fixed configuration template';
 
   @override
   String get delegationAutomatic => 'Automatic model selection';
@@ -5541,7 +5541,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get delegationOnlyAutomatic =>
-      'Only applies to automatic model selection. The value is kept in fixed Profile mode.';
+      'Only applies to automatic model selection. The value is kept in fixed configuration template mode.';
 
   @override
   String get delegationEconomyHint =>
@@ -6242,4 +6242,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String timelineGroupActiveCount(int count) {
     return '$count running';
   }
+
+  @override
+  String get composerNoProject => 'No project';
+
+  @override
+  String get composerProjectSearch => 'Search projects, paths or SSH';
+
+  @override
+  String get composerNewProject => 'New project…';
+
+  @override
+  String get composerFixedLocalDirectory => 'Fixed local directory';
+
+  @override
+  String get composerWorktreeHint =>
+      'Create an isolated worktree from Git HEAD';
+
+  @override
+  String get composerLocalDirectoryHint => 'Use the project directory directly';
+
+  @override
+  String get composerEnvironmentLocked =>
+      'Preparing the session; settings cannot be changed yet';
+
+  @override
+  String get composerEffortUnsupported =>
+      'The current model does not support reasoning effort';
 }
