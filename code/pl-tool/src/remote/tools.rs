@@ -10,7 +10,7 @@ use pl_core::{
     },
 };
 use pl_protocol::{PureError, Result};
-use pl_tool_filesystem::{MutationBackend, MutationError};
+use pl_tool_filesystem::{MutationBackend, MutationError, PathCollision};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -179,6 +179,17 @@ impl RemoteMutationCapability {
         }
         Ok(())
     }
+    async fn prepare_destination(&self, path: &str, collision: PathCollision) -> Result<()> {
+        match collision {
+            PathCollision::FailIfExists => {
+                if self.stat(path).await?.is_some() {
+                    return Err(tool_error(self.tool, "destination already exists"));
+                }
+                Ok(())
+            }
+            PathCollision::Overwrite => self.replace_destination(path).await,
+        }
+    }
 }
 impl MutationBackend for RemoteMutationCapability {
     type Error = PureError;
@@ -236,15 +247,18 @@ impl MutationBackend for RemoteMutationCapability {
             .await
             .map_err(super::workspace::remote_file_error)
     }
-    async fn copy(&self, from: &String, to: &String) -> Result<()> {
+    async fn copy(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
         let recursive = self.is_directory(from).await?;
-        self.replace_destination(to).await?;
+        // The helper's copy/rename protocol has no atomic no-clobber flag:
+        // recheck here, never delete for FailIfExists, and retain that known
+        // check-to-operation race rather than claim exclusion across clients.
+        self.prepare_destination(to, collision).await?;
         self.backend
             .copy_path(from.clone(), to.clone(), None, recursive)
             .await
     }
-    async fn rename(&self, from: &String, to: &String) -> Result<()> {
-        self.replace_destination(to).await?;
+    async fn rename(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
+        self.prepare_destination(to, collision).await?;
         self.backend
             .rename_path(from.clone(), to.clone(), None)
             .await

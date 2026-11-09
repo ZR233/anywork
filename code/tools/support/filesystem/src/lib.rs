@@ -87,7 +87,14 @@ pub trait WriteBackend: Send + Sync {
 ///
 /// Resolution and writable checks retain the host's path/symlink policy.
 /// Primitive mutations retain backend-specific replacement and notification
-/// semantics; tools own delete-mode and destination-collision validation.
+/// semantics; tools own delete-mode and initial destination-collision validation.
+/// Copy/rename must also honor the explicit collision policy at their mutation
+/// boundary: an observed destination under `FailIfExists` is an error and must
+/// never enter a replacement/deletion path. `Overwrite` alone permits replacement.
+///
+/// An existence check followed by a physical operation is not atomic no-clobber.
+/// Implementations must document that remaining race rather than promise atomic
+/// exclusion when their underlying filesystem/transport cannot provide it.
 pub trait MutationBackend: Send + Sync {
     type Error: StdError + Send + Sync + 'static;
     type Path: Send + Sync;
@@ -125,11 +132,13 @@ pub trait MutationBackend: Send + Sync {
         &self,
         from: &Self::Path,
         to: &Self::Path,
+        collision: PathCollision,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn rename(
         &self,
         from: &Self::Path,
         to: &Self::Path,
+        collision: PathCollision,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 

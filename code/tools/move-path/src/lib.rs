@@ -42,7 +42,7 @@ impl<B: MutationBackend + 'static> TypedTool for MovePathTool<B> {
             ));
         }
         backend
-            .rename(&from, &to)
+            .rename(&from, &to, input.collision)
             .await
             .map_err(MutationError::Backend)?;
         Ok(format!(

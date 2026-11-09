@@ -12,6 +12,23 @@ pub(super) struct LocalMutationCapability {
     workspace: ToolWorkspace,
 }
 
+impl LocalMutationCapability {
+    async fn check_destination(
+        &self,
+        path: &PathBuf,
+        collision: PathCollision,
+        tool: &str,
+    ) -> Result<()> {
+        if collision == PathCollision::FailIfExists && tokio::fs::try_exists(path).await? {
+            return Err(tool_error(
+                tool,
+                MutationError::<PureError>::DestinationExists(path.display().to_string()),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl MutationBackend for LocalMutationCapability {
     type Error = PureError;
     type Path = PathBuf;
@@ -56,18 +73,22 @@ impl MutationBackend for LocalMutationCapability {
         self.workspace.notify_deleted(path).await;
         Ok(())
     }
-    async fn copy(&self, from: &PathBuf, to: &PathBuf) -> Result<()> {
+    async fn copy(&self, from: &PathBuf, to: &PathBuf, collision: PathCollision) -> Result<()> {
         if let Some(parent) = to.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // This recheck is not atomic with the OS operation; it must not be
+        // represented as cross-process no-clobber.
+        self.check_destination(to, collision, "copy_path").await?;
         tokio::fs::copy(from, to).await?;
         self.workspace.notify_changed(to).await;
         Ok(())
     }
-    async fn rename(&self, from: &PathBuf, to: &PathBuf) -> Result<()> {
+    async fn rename(&self, from: &PathBuf, to: &PathBuf, collision: PathCollision) -> Result<()> {
         if let Some(parent) = to.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        self.check_destination(to, collision, "move_path").await?;
         tokio::fs::rename(from, to).await?;
         self.workspace.notify_deleted(from).await;
         self.workspace.notify_changed(to).await;
@@ -163,3 +184,7 @@ pub fn copy_path_tool_definition() -> pl_agent_tool::ToolDefinition {
 pub fn move_path_tool_definition() -> pl_agent_tool::ToolDefinition {
     pl_tool_move_path::definition::<LocalMutationCapability>()
 }
+
+#[cfg(test)]
+#[path = "mutation_tests.rs"]
+mod tests;

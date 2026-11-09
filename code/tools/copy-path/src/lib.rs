@@ -39,7 +39,7 @@ impl<B: MutationBackend + 'static> TypedTool for CopyPathTool<B> {
             ));
         }
         backend
-            .copy(&from, &to)
+            .copy(&from, &to, input.collision)
             .await
             .map_err(MutationError::Backend)?;
         Ok(format!(

@@ -27,6 +27,15 @@ impl Files {
     fn parent(path: &Path) -> io::Result<()> {
         fs::create_dir_all(path.parent().unwrap())
     }
+    fn check_collision(path: &Path, collision: PathCollision) -> io::Result<()> {
+        if collision == PathCollision::FailIfExists && path.try_exists()? {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination already exists",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl WriteBackend for Files {
@@ -111,12 +120,19 @@ impl MutationBackend for Files {
             fs::remove_dir(path)
         }
     }
-    async fn copy(&self, from: &PathBuf, to: &PathBuf) -> io::Result<()> {
+    async fn copy(&self, from: &PathBuf, to: &PathBuf, collision: PathCollision) -> io::Result<()> {
         Self::parent(to)?;
+        Self::check_collision(to, collision)?;
         fs::copy(from, to).map(|_| ())
     }
-    async fn rename(&self, from: &PathBuf, to: &PathBuf) -> io::Result<()> {
+    async fn rename(
+        &self,
+        from: &PathBuf,
+        to: &PathBuf,
+        collision: PathCollision,
+    ) -> io::Result<()> {
         Self::parent(to)?;
+        Self::check_collision(to, collision)?;
         fs::rename(from, to)
     }
 }
