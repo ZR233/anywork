@@ -91,6 +91,7 @@ mod tests {
         )
         .handle();
         for resources in [false, true] {
+            let schema_tag = resources.to_string();
             let mut updates = runtime.subscribe();
             runtime
                 .reconcile(BTreeMap::from([(
@@ -105,7 +106,7 @@ mod tests {
                                 if resources { "0" } else { "1" }.into(),
                             ),
                             ("MCP_BINDING_RESULTS".into(), "1".into()),
-                            ("MCP_SCHEMA_TAG".into(), resources.to_string()),
+                            ("MCP_SCHEMA_TAG".into(), schema_tag.clone()),
                         ]),
                         Some(root.path().to_string_lossy().into_owned()),
                         pl_tool::mcp::config::McpExecutionContext::Host,
@@ -116,7 +117,7 @@ mod tests {
                 loop {
                     let lease = runtime.acquire_turn_lease().await?;
                     if lease.tools().first().is_some_and(|tool| {
-                        tool.input_schema["description"] == resources.to_string()
+                        tool.input_schema["description"].as_str() == Some(schema_tag.as_str())
                     }) {
                         return anyhow::Ok(lease);
                     }
