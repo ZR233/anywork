@@ -18,6 +18,12 @@ pl-tool-delete-path = { workspace = true }
 pl-tool-copy-path = { workspace = true }
 pl-tool-move-path = { workspace = true }
 pl-tool-filesystem = { workspace = true }
+pl-tool-exec = { workspace = true }
+pl-tool-write-stdin = { workspace = true }
+pl-tool-lsp-capabilities = { workspace = true }
+pl-tool-lsp-query = { workspace = true }
+pl-tool-process = { workspace = true }
+pl-tool-lsp-support = { workspace = true }
 getrandom = { workspace = true }
 h2 = { workspace = true }
 http = { workspace = true }

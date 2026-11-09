@@ -9,7 +9,7 @@ pub struct DrainingCommandProcess {
 }
 
 impl DrainingCommandProcess {
-    pub(super) fn new(result: CommandProcessFinalResult) -> Self {
+    pub fn new(result: CommandProcessFinalResult) -> Self {
         Self { result }
     }
 
@@ -17,7 +17,7 @@ impl DrainingCommandProcess {
         &self.result
     }
 
-    pub(super) fn record_output_error(&mut self, message: String) {
+    pub fn record_output_error(&mut self, message: String) {
         if let CommandProcessFinalResult::Succeeded { exit_code } = self.result {
             self.result = CommandProcessFinalResult::Failed {
                 failure: CommandProcessFailure::Output {

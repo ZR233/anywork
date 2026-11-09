@@ -1,0 +1,13 @@
+[package]
+name = "pl-tool-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-output = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }

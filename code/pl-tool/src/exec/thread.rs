@@ -1,7 +1,7 @@
 //! Command execution through the opaque Thread contract.
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
-use pl_core::context::{ContextContent, OpaquePayload, ResourceReference};
+use pl_core::context::{OpaquePayload, ResourceReference};
 use pl_core::thread::cold::{
     ColdStoreError, OutputRepair, OutputRetryFuture, OutputRetryObligation, OutputRetryOutcome,
     OutputStorageFault, StorageFaultKind,
@@ -12,7 +12,7 @@ use pl_core::tool::{
 };
 use sha2::{Digest, Sha256};
 
-use super::{DEFAULT_TIMEOUT_SECS, MAX_MODEL_BODY_BYTES};
+use super::MAX_MODEL_BODY_BYTES;
 use crate::command::{
     CommandBackend,
     process_manager::{
@@ -20,6 +20,8 @@ use crate::command::{
         CommandProcessManager, CommandStartRequest,
     },
 };
+use pl_tool_exec::ExecOutcome;
+use pl_tool_process::{InputRequest, InputTarget, ProcessExecutor, ProcessInput, ProcessRequest};
 
 /// Host-selected command scope. Dynamic input cannot grant workspace escape.
 #[derive(Debug, Clone, Copy)]
@@ -259,81 +261,44 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let input = super::parse_and_validate_stdin_input(input.content())
-            .map_err(super::ExecInputError::into_tool_error)?;
-        let access = context
-            .tasks
-            .as_ref()
-            .ok_or_else(|| ToolError::new(ExecFailure::InvalidInput))?;
-        let target = access.get(&input.task_id).map_err(ToolError::new)?;
-        if target.tool_id == super::TOOL_EXEC
-            && target.status != pl_core::thread::task::TaskStatus::Running
-            && input.chars.is_empty()
-            && input.close_stdin
-        {
-            let receipt = serde_json::json!({"targetTaskId": target.id, "status": target.status, "acceptedBytes": 0, "deliveryPending": false, "detail": "Target is terminal; historical stdin close state is unavailable. No input was sent and no process was started."});
-            let text = serde_json::to_string(&receipt).map_err(ToolError::new)?;
-            let payload =
-                OpaquePayload::new("pl.tool.stdin", 2, text.clone()).map_err(ToolError::new)?;
-            return Ok(ToolOutput::new(
-                payload,
-                vec![ContextContent::Text {
-                    text: Arc::from(text),
-                }],
-            ));
-        }
-        if target.tool_id != super::TOOL_EXEC
-            || target.status != pl_core::thread::task::TaskStatus::Running
-            || target.cancel_requested
-        {
-            return Err(super::output::stdin_unavailable(&target));
-        }
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
-        }
-        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_BODY_BYTES);
-        let target_task_id = input.task_id.clone();
-        let snapshot = self
-            .processes
-            .write_stdin(crate::command::process_manager::CommandWriteRequest {
-                process_id: safe_identity(&target.call_id),
-                cancellation: context.cancellation.clone(),
-                close_stdin: input.close_stdin,
-                chars: input.chars,
-                yield_time: Duration::ZERO,
-                max_output_chars: input
-                    .max_output_chars
-                    .unwrap_or(MAX_MODEL_BODY_BYTES)
-                    .min(MAX_MODEL_BODY_BYTES),
-            })
-            .await
-            .map_err(ToolError::new)?;
-        let cancelled = matches!(
-            snapshot
-                .input_receipt
-                .as_ref()
-                .map(|receipt| receipt.outcome),
-            Some(crate::command::CommandInputOutcome::Cancelled)
-        );
-        let failed = matches!(
-            snapshot
-                .input_receipt
-                .as_ref()
-                .map(|receipt| receipt.outcome),
-            Some(
-                crate::command::CommandInputOutcome::Partial
-                    | crate::command::CommandInputOutcome::Failed
+        let tool = pl_tool_write_stdin::WriteStdinTool::new(self.definition.clone());
+        let result = tool
+            .execute(
+                input.content().to_owned(),
+                pl_tool_write_stdin::StdinContext {
+                    processes: ThreadInputPort {
+                        processes: self.processes.clone(),
+                        tasks: context.tasks.clone(),
+                    },
+                    cancellation: context.cancellation.clone(),
+                },
             )
-        );
-        let output =
-            super::output::projection(&snapshot, &[], &context, requested, Some(&target_task_id))?;
-        if cancelled {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output));
+            .await
+            .map_err(|error| match error {
+                pl_tool_write_stdin::StdinError::InvalidInput(error) => {
+                    super::ExecInputError(error).into_tool_error()
+                }
+                pl_tool_write_stdin::StdinError::Process(error) => error,
+                pl_tool_write_stdin::StdinError::Cancelled => {
+                    ToolError::new(pl_core::thread::ThreadError::Cancelled)
+                }
+                pl_tool_write_stdin::StdinError::Encoding(error) => ToolError::new(error),
+            })?;
+        let outcome = match &result {
+            pl_tool_write_stdin::StdinResult::Terminal { receipt_json } => {
+                return super::output::receipt_output("pl.tool.stdin", receipt_json.clone());
+            }
+            pl_tool_write_stdin::StdinResult::Observed { outcome, .. } => *outcome,
+        };
+        let text = result
+            .encode(super::output::current_receipt(&context))
+            .map_err(ToolError::new)?;
+        let output = super::output::receipt_output("pl.tool.exec", text)?;
+        match outcome {
+            pl_tool_write_stdin::InputOutcome::Complete => Ok(output),
+            pl_tool_write_stdin::InputOutcome::Cancelled => Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)),
+            pl_tool_write_stdin::InputOutcome::Incomplete => Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output)),
         }
-        if failed {
-            return Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output));
-        }
-        Ok(output)
     }
 }
 
@@ -387,21 +352,18 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let input = super::parse_and_validate_exec_input(input.content())
-            .map_err(super::ExecInputError::into_tool_error)?
-            .into_input();
-        let requested = input.max_output_chars.unwrap_or(MAX_MODEL_BODY_BYTES);
         let task_id = safe_identity(&context.call_id);
-        let max_output_chars = input
-            .max_output_chars
-            .unwrap_or(MAX_MODEL_BODY_BYTES)
-            .min(MAX_MODEL_BODY_BYTES);
         let (observer, previews, failures) = super::progress::ExecOutputObserver::channel();
-        let execution = self.processes.run_task(
-            &task_id,
-            CommandStartRequest {
-                command: input.command,
-                cwd: input.cwd,
+        let tool = pl_tool_exec::ExecTool::new(self.definition.clone());
+        let execution = tool.execute(
+            input.content().to_owned(),
+            pl_tool_exec::ExecContext {
+                process: ThreadCommandPort {
+                    processes: self.processes.clone(),
+                    task_id: task_id.clone(),
+                    thread_id: context.thread_id.clone(),
+                    observer,
+                },
                 allow_workspace_escape: match self.access {
                     CommandAccess::WorkspaceOnly => false,
                     CommandAccess::HostGranted => true,
@@ -409,14 +371,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                         .grant
                         .contains(crate::approval::HOST_WORKSPACE_ACCESS),
                 },
-                timeout: Duration::from_secs(input.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECS)),
-                yield_time: Duration::ZERO,
-                max_output_chars,
-                session_id: context.thread_id.clone(),
-                tool_id: task_id.clone(),
-                call_id: task_id.clone(),
-                cancellation_token: Some(context.cancellation.clone()),
-                output_observer: Some(observer),
+                cancellation: context.cancellation.clone(),
             },
         );
         // Report a capture failure through the running call's reliable channel the moment the reader
@@ -436,8 +391,9 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             async move {
                 let mut failures = failures;
                 while let Some(failure) = failures.recv().await {
-                    let Some(snapshot) =
-                        processes.snapshot(&report_task_id, max_output_chars).await
+                    let Some(snapshot) = processes
+                        .snapshot(&report_task_id, MAX_MODEL_BODY_BYTES)
+                        .await
                     else {
                         continue;
                     };
@@ -463,7 +419,13 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
         let result = super::progress::drive(execution, previews, context.tasks.as_ref()).await;
         reporter.abort();
         let _ = reporter.await;
-        let mut snapshot = result.map_err(|error| super::output::start_error(error, &context))?;
+        let mut result = result.map_err(|error| match error {
+            pl_tool_exec::ExecError::InvalidInput(error) => {
+                super::ExecInputError(error).into_tool_error()
+            }
+            pl_tool_exec::ExecError::Process(error) => super::output::start_error(error, &context),
+        })?;
+        let snapshot = &mut result.snapshot;
         // Build the typed output fault the moment the capture failed and report it through the running
         // call's reliable channel *before* the archive and projection, so other model/tool admission is
         // blocked immediately instead of only when this call unwinds. A write or read failure keeps its
@@ -484,7 +446,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                     self.processes.backend(),
                     &context.thread_id,
                     &context.call_id,
-                    &snapshot,
+                    snapshot,
                     stream,
                 )
             {
@@ -495,7 +457,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 &*self.processes.backend(),
                 &*self.archive,
                 &context.thread_id,
-                &snapshot,
+                snapshot,
                 stream,
             )
             .await
@@ -511,7 +473,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                         self.processes.backend(),
                         &context.thread_id,
                         &context.call_id,
-                        &snapshot,
+                        snapshot,
                         stream,
                     );
                     if let Some(fault) = error.source.downcast_ref::<OutputStorageFault>() {
@@ -527,7 +489,11 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 }
             }
         }
-        let output = super::output::projection(&snapshot, &resources, &context, requested, None)?;
+        let snapshot = &result.snapshot;
+        let text = result
+            .encode(&resources, super::output::current_receipt(&context))
+            .map_err(ToolError::new)?;
+        let output = super::output::archived_output(text, &resources)?;
         if let Some(error) = archive_error {
             if matches!(
                 snapshot.state.final_result(),
@@ -539,32 +505,15 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             }
             return Err(error.with_output(output));
         }
-        match snapshot.state.final_result() {
-            // A user cancellation wins over a capture failure: the process was stopped on purpose, so
-            // the result stays cancelled even if a concurrent capture write also failed.
-            Some(CommandProcessFinalResult::Cancelled) => {
+        match result.outcome() {
+            ExecOutcome::Cancelled => {
                 Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output))
             }
-            // A capture failure outranks a healthy exit. The process may have exited before its last
-            // capture write or flush failed, so checking the typed reason (not only `Failed`) keeps a
-            // truncated capture from being reported as success.
-            _ if capture_fault.is_some() => {
-                // The command's durable capture could not continue. Report it through the typed
-                // storage boundary core owns instead of as a plain tool error, so the Thread latches
-                // the exact category and pauses further admission; the bytes already captured ride
-                // along as the observed output.
-                let fault = capture_fault.expect("checked to be present");
+            ExecOutcome::CaptureFailed => {
+                let fault = capture_fault.expect("capture failure carries its host storage fault");
                 Err(ToolError::new((*fault).clone()).with_output(output))
             }
-            // 命中单命令落盘上限是一条预期终止：命令是按自己声明的上限被停下的，已写出的部分照常
-            // 保留并归档，但它有自己的 typed 结果，不与 timeout、退出码失败或模型输出截断共用分类，
-            // 也不走可靠保存故障的那条暂停/义务路径。
-            Some(CommandProcessFinalResult::Failed { .. })
-                if snapshot.output_limit_exceeded().is_some() =>
-            {
-                let limit = snapshot
-                    .output_limit_exceeded()
-                    .expect("checked to be present");
+            ExecOutcome::OutputLimit(limit) => {
                 Err(ToolError::new(ExecFailure::OutputLimitExceeded {
                     limit_bytes: limit.limit_bytes,
                     charged_bytes: limit.charged_bytes,
@@ -572,13 +521,11 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 })
                 .with_output(output))
             }
-            Some(CommandProcessFinalResult::Succeeded { .. }) => Ok(output),
-            Some(
-                CommandProcessFinalResult::Failed { .. } | CommandProcessFinalResult::TimedOut,
-            )
-            | None => {
-                Err(ToolError::new(ExecFailure::Process(snapshot.message)).with_output(output))
-            }
+            ExecOutcome::Succeeded => Ok(output),
+            ExecOutcome::Failed => Err(ToolError::new(ExecFailure::Process(
+                result.snapshot.message,
+            ))
+            .with_output(output)),
         }
     }
 }
@@ -677,12 +624,83 @@ fn safe_identity(id: &str) -> String {
     format!("task-{}", hex::encode(digest))
 }
 
-pub fn write_stdin_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json("write_stdin",
-                "Write text to the original exec receipt taskId. closeStdin=true sends EOF after text; empty chars is valid only for EOF. A blocked write returns its own task receipt: cancel that input task to stop writing without stopping exec, then query its result. Accepted bytes and remote ACKs are distinct: never resend accepted input after cancellation. Wait for the input task before actions that require completed delivery.", pl_agent_tool::typed::input_schema_for::<crate::exec::WriteStdinInput>()).expect("static tool definition")
+// The capability only admits/drives one physical operation; validation, planning and
+// result shaping live in the independent tools. No second manager is constructed.
+struct ThreadCommandPort<B: CommandBackend> {
+    processes: Arc<CommandProcessManager<B>>,
+    task_id: String,
+    thread_id: String,
+    observer: Arc<dyn crate::command::CommandOutputObserver>,
 }
-
-pub fn exec_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json("exec",
-                "Execute one independent shell (cwd defaults to workspace root). timeoutSeconds is the total admission-to-exit budget and remains active after a task receipt. maxOutputChars caps combined stdout+stderr text at 65536 UTF-8 bytes; metadata, JSON escaping and protocol wrappers are additional. Results distinguish execution, capture and archive facts. stdoutFile/stderrFile are exact workspace-root-relative paths: read them with cwd omitted or set to '.', even when the original command used another cwd. Never reconstruct paths or repeat side effects to recover output; query the original receipt.", pl_agent_tool::typed::input_schema_for::<crate::exec::ExecInput>()).expect("static tool definition")
+impl<B: CommandBackend> ProcessExecutor for ThreadCommandPort<B> {
+    type Error = crate::command::CommandRunError;
+    async fn run(&self, request: ProcessRequest) -> Result<CommandOutputSnapshot, Self::Error> {
+        self.processes
+            .run_task(
+                &self.task_id,
+                CommandStartRequest {
+                    command: request.command,
+                    cwd: request.cwd,
+                    allow_workspace_escape: request.allow_workspace_escape,
+                    timeout: request.timeout,
+                    yield_time: Duration::ZERO,
+                    max_output_chars: request.max_output_bytes,
+                    session_id: self.thread_id.clone(),
+                    tool_id: self.task_id.clone(),
+                    call_id: self.task_id.clone(),
+                    cancellation_token: Some(request.cancellation),
+                    output_observer: Some(self.observer.clone()),
+                },
+            )
+            .await
+    }
+}
+struct ThreadInputPort<B: CommandBackend> {
+    processes: Arc<CommandProcessManager<B>>,
+    tasks: Option<pl_core::thread::TaskAccess>,
+}
+impl<B: CommandBackend> ProcessInput for ThreadInputPort<B> {
+    type Target = String;
+    type Error = ToolError;
+    fn resolve(&self, receipt: &str, terminal_eof: bool) -> Result<InputTarget<String>, ToolError> {
+        let access = self
+            .tasks
+            .as_ref()
+            .ok_or_else(|| ToolError::new(ExecFailure::InvalidInput))?;
+        let target = access.get(receipt).map_err(ToolError::new)?;
+        if target.tool_id == super::TOOL_EXEC
+            && target.status != pl_core::thread::task::TaskStatus::Running
+            && terminal_eof
+        {
+            let status = serde_json::to_value(target.status).map_err(ToolError::new)?;
+            let status = status
+                .as_str()
+                .expect("task status serializes as a string")
+                .to_owned();
+            return Ok(InputTarget::Terminal { status });
+        }
+        if target.tool_id != super::TOOL_EXEC
+            || target.status != pl_core::thread::task::TaskStatus::Running
+            || target.cancel_requested
+        {
+            return Err(super::output::stdin_unavailable(&target));
+        }
+        Ok(InputTarget::Live(safe_identity(&target.call_id)))
+    }
+    async fn write(
+        &self,
+        request: InputRequest<String>,
+    ) -> Result<CommandOutputSnapshot, ToolError> {
+        self.processes
+            .write_stdin(crate::command::CommandWriteRequest {
+                process_id: request.target,
+                chars: request.chars,
+                close_stdin: request.close_stdin,
+                cancellation: request.cancellation,
+                yield_time: Duration::ZERO,
+                max_output_chars: request.max_output_bytes,
+            })
+            .await
+            .map_err(ToolError::new)
+    }
 }

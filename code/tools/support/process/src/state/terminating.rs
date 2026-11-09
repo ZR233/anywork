@@ -9,7 +9,7 @@ pub struct TerminatingCommandProcess {
 }
 
 impl TerminatingCommandProcess {
-    pub(super) fn new(reason: CommandTerminationReason) -> Self {
+    pub fn new(reason: CommandTerminationReason) -> Self {
         Self { reason }
     }
 

@@ -4265,10 +4265,16 @@ dependencies = [
  "pl-tool-copy-path",
  "pl-tool-create-directory",
  "pl-tool-delete-path",
+ "pl-tool-exec",
  "pl-tool-filesystem",
+ "pl-tool-lsp-capabilities",
+ "pl-tool-lsp-query",
+ "pl-tool-lsp-support",
  "pl-tool-move-path",
+ "pl-tool-process",
  "pl-tool-stat-path",
  "pl-tool-write-file",
+ "pl-tool-write-stdin",
  "process-wrap",
  "reqwest",
  "rmcp",
@@ -4326,6 +4332,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-exec"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-process",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pl-tool-filesystem"
 version = "0.1.0"
 dependencies = [
@@ -4335,11 +4353,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-lsp-capabilities"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-lsp-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-lsp-query"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-lsp-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-lsp-support"
+version = "0.1.0"
+dependencies = [
+ "pl-output",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tokio-util",
+]
+
+[[package]]
 name = "pl-tool-move-path"
 version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
  "pl-tool-filesystem",
+]
+
+[[package]]
+name = "pl-tool-process"
+version = "0.1.0"
+dependencies = [
+ "pl-output",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.21",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4359,6 +4422,18 @@ dependencies = [
  "pl-tool-filesystem",
  "schemars 1.2.3",
  "serde",
+]
+
+[[package]]
+name = "pl-tool-write-stdin"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-process",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

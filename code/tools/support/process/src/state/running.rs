@@ -9,17 +9,17 @@ pub struct RunningCommandProcess {
 }
 
 impl RunningCommandProcess {
-    pub(super) fn healthy() -> Self {
+    pub fn healthy() -> Self {
         Self {
             health: CommandProcessHealth::Healthy,
         }
     }
 
-    pub(super) fn health(&self) -> &CommandProcessHealth {
+    pub fn health(&self) -> &CommandProcessHealth {
         &self.health
     }
 
-    pub(super) fn record_output_error(&mut self, message: String) {
+    pub fn record_output_error(&mut self, message: String) {
         self.health = CommandProcessHealth::OutputFailed { message };
     }
 }

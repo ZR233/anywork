@@ -22,6 +22,12 @@ members = [
     "code/tools/copy-path",
     "code/tools/move-path",
     "code/tools/support/filesystem",
+    "code/tools/exec",
+    "code/tools/write-stdin",
+    "code/tools/lsp-capabilities",
+    "code/tools/lsp-query",
+    "code/tools/support/process",
+    "code/tools/support/lsp",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -170,6 +176,12 @@ pl-tool-delete-path = { path = "code/tools/delete-path" }
 pl-tool-copy-path = { path = "code/tools/copy-path" }
 pl-tool-move-path = { path = "code/tools/move-path" }
 pl-tool-filesystem = { path = "code/tools/support/filesystem" }
+pl-tool-exec = { path = "code/tools/exec" }
+pl-tool-write-stdin = { path = "code/tools/write-stdin" }
+pl-tool-lsp-capabilities = { path = "code/tools/lsp-capabilities" }
+pl-tool-lsp-query = { path = "code/tools/lsp-query" }
+pl-tool-process = { path = "code/tools/support/process" }
+pl-tool-lsp-support = { path = "code/tools/support/lsp" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
