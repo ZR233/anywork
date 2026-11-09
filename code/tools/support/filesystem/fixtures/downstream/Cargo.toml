@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "filesystem-downstream"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pl-agent-tool = { path = "../../../../../pl-agent-tool", features = ["typed"] }
+pl-patch = { path = "../../../../../pl-patch" }
+pl-tool-filesystem = { path = "../.." }
+pl-tool-apply-patch = { path = "../../../../apply-patch" }
+pl-tool-stat-path = { path = "../../../../stat-path" }
+pl-tool-write-file = { path = "../../../../write-file" }
+pl-tool-create-directory = { path = "../../../../create-directory" }
+pl-tool-delete-path = { path = "../../../../delete-path" }
+pl-tool-copy-path = { path = "../../../../copy-path" }
+pl-tool-move-path = { path = "../../../../move-path" }
+serde_json = "1"
+tempfile = "3"
+futures = "0.3"

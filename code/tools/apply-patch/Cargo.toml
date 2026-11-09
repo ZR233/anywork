@@ -1,0 +1,10 @@
+[package]
+name = "pl-tool-apply-patch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-agent-tool = { workspace = true }
+pl-patch = { workspace = true }
+serde = { workspace = true }

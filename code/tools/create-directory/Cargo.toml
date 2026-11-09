@@ -1,0 +1,9 @@
+[package]
+name = "pl-tool-create-directory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-agent-tool = { workspace = true, features = ["typed"] }
+pl-tool-filesystem = { workspace = true }

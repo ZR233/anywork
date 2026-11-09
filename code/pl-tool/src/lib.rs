@@ -1,5 +1,9 @@
 //! Explicitly installed tools. Thread execution and lifecycle mechanisms belong to pl-core.
 
+// Shared integration fixtures can also exercise crate-private transport leases.
+#[cfg(test)]
+extern crate self as pl_tool;
+
 pub mod image;
 pub mod image_card;
 pub mod image_generation;

@@ -1,5 +1,8 @@
 //! Path metadata projection shared by local and remote Thread tools.
-use super::{WorkspaceFileBackend, WorkspaceFileStatRequest};
+use super::{
+    WorkspaceFileBackend,
+    independent::{FileCapability, granted_backend},
+};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -22,24 +25,9 @@ impl<B: WorkspaceFileBackend + 'static> ThreadStatPathTool<B> {
     }
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Receipt {
-    path: String,
-    exists: bool,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    kind: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    len: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    readonly: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    modified_at: Option<i64>,
-}
-
 impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadStatPathTool<B> {
-    const NAME: &'static str = THREAD_STAT_PATH_TOOL_NAME;
-    const DESCRIPTION: &'static str = THREAD_STAT_PATH_TOOL_DESCRIPTION;
+    const NAME: &'static str = <pl_tool_stat_path::StatPathTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
+    const DESCRIPTION: &'static str = <pl_tool_stat_path::StatPathTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
     type Args = crate::file::PathInput;
     type Context = pl_core::tool::opaque::CallContext;
     type Output = pl_core::tool::ToolOutput;
@@ -54,39 +42,11 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
 
-        let granted = self.backend.for_grant(&context.grant);
-        let backend = granted.as_ref().unwrap_or(self.backend.as_ref());
-        let stat = backend
-            .stat_optional(WorkspaceFileStatRequest {
-                path: input.path.clone(),
-                cwd: None,
-            })
+        let backend = granted_backend(&self.backend, &context.grant);
+        let receipt = pl_tool_stat_path::StatPathTool::new()
+            .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
-        let receipt = match stat {
-            Some(stat) => Receipt {
-                path: stat.path,
-                exists: true,
-                kind: Some(if stat.is_file {
-                    "file"
-                } else if stat.is_dir {
-                    "directory"
-                } else {
-                    "other"
-                }),
-                len: stat.len,
-                readonly: stat.readonly,
-                modified_at: stat.modified_at,
-            },
-            None => Receipt {
-                path: input.path,
-                exists: false,
-                kind: None,
-                len: None,
-                readonly: None,
-                modified_at: None,
-            },
-        };
         let content = serde_json::to_string(&receipt).map_err(ToolError::new)?;
         Ok(ToolOutput::new(
             OpaquePayload::new("pl.tool.path-stat", 1, content.clone()).map_err(ToolError::new)?,
@@ -98,14 +58,5 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_stat_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        THREAD_STAT_PATH_TOOL_NAME,
-        THREAD_STAT_PATH_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<crate::file::PathInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_stat_path::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
 }
-
-const THREAD_STAT_PATH_TOOL_NAME: &str = "stat_path";
-const THREAD_STAT_PATH_TOOL_DESCRIPTION: &str =
-    "Return metadata for a workspace path, or exists: false when the path is absent.";

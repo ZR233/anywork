@@ -4261,6 +4261,14 @@ dependencies = [
  "pl-protocol",
  "pl-remote-helper",
  "pl-skill-core",
+ "pl-tool-apply-patch",
+ "pl-tool-copy-path",
+ "pl-tool-create-directory",
+ "pl-tool-delete-path",
+ "pl-tool-filesystem",
+ "pl-tool-move-path",
+ "pl-tool-stat-path",
+ "pl-tool-write-file",
  "process-wrap",
  "reqwest",
  "rmcp",
@@ -4280,6 +4288,77 @@ dependencies = [
  "which",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pl-tool-apply-patch"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-patch",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-copy-path"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+]
+
+[[package]]
+name = "pl-tool-create-directory"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+]
+
+[[package]]
+name = "pl-tool-delete-path"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-filesystem"
+version = "0.1.0"
+dependencies = [
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-move-path"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+]
+
+[[package]]
+name = "pl-tool-stat-path"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-write-file"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-filesystem",
+ "schemars 1.2.3",
+ "serde",
 ]
 
 [[package]]

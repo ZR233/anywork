@@ -1,5 +1,8 @@
 //! One dynamic write-file contract across local and worker-backed workspaces.
-use super::{WorkspaceFileBackend, WorkspaceFileWriteRequest};
+use super::{
+    WorkspaceFileBackend,
+    independent::{FileCapability, granted_backend},
+};
 use crate::{file::WriteFileInput, workspace::ToolWorkspace};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -25,17 +28,9 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
     }
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Receipt {
-    path: String,
-    mode: crate::workspace::WriteMode,
-    bytes_written: usize,
-}
-
 impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadWriteFileTool<B> {
-    const NAME: &'static str = THREAD_WRITE_FILE_TOOL_NAME;
-    const DESCRIPTION: &'static str = THREAD_WRITE_FILE_TOOL_DESCRIPTION;
+    const NAME: &'static str = <pl_tool_write_file::WriteFileTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
+    const DESCRIPTION: &'static str = <pl_tool_write_file::WriteFileTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
     type Args = WriteFileInput;
     type Context = pl_core::tool::opaque::CallContext;
     type Output = pl_core::tool::ToolOutput;
@@ -57,20 +52,9 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let granted = self.backend.for_grant(&context.grant);
-        let backend = granted.as_ref().unwrap_or(self.backend.as_ref());
-        let receipt = Receipt {
-            path: input.path.clone(),
-            mode: input.mode,
-            bytes_written: input.content.len(),
-        };
-        backend
-            .write_text(WorkspaceFileWriteRequest {
-                mode: input.mode,
-                path: input.path,
-                cwd: None,
-                content: input.content,
-            })
+        let backend = granted_backend(&self.backend, &context.grant);
+        let receipt = pl_tool_write_file::WriteFileTool::new()
+            .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
         let payload = OpaquePayload::new(
@@ -92,14 +76,5 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_write_file_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        THREAD_WRITE_FILE_TOOL_NAME,
-        THREAD_WRITE_FILE_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<WriteFileInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_write_file::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
 }
-
-const THREAD_WRITE_FILE_TOOL_NAME: &str = "write_file";
-const THREAD_WRITE_FILE_TOOL_DESCRIPTION: &str =
-    "Write exact UTF-8 text to a workspace file using create, overwrite, or append mode.";

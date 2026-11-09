@@ -10,6 +10,14 @@ docker-tools = []
 
 [dependencies]
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
+pl-tool-apply-patch = { workspace = true }
+pl-tool-stat-path = { workspace = true }
+pl-tool-write-file = { workspace = true }
+pl-tool-create-directory = { workspace = true }
+pl-tool-delete-path = { workspace = true }
+pl-tool-copy-path = { workspace = true }
+pl-tool-move-path = { workspace = true }
+pl-tool-filesystem = { workspace = true }
 getrandom = { workspace = true }
 h2 = { workspace = true }
 http = { workspace = true }

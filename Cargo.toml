@@ -14,6 +14,14 @@ members = [
     "code/pl-core",
     "code/pl-dev-support",
     "code/pl-tool",
+    "code/tools/apply-patch",
+    "code/tools/stat-path",
+    "code/tools/write-file",
+    "code/tools/create-directory",
+    "code/tools/delete-path",
+    "code/tools/copy-path",
+    "code/tools/move-path",
+    "code/tools/support/filesystem",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -154,6 +162,14 @@ pl-skill-core = { path = "code/pl-skill-core" }
 pl-core = { path = "code/pl-core" }
 pl-dev-support = { path = "code/pl-dev-support" }
 pl-tool = { path = "code/pl-tool" }
+pl-tool-apply-patch = { path = "code/tools/apply-patch" }
+pl-tool-stat-path = { path = "code/tools/stat-path" }
+pl-tool-write-file = { path = "code/tools/write-file" }
+pl-tool-create-directory = { path = "code/tools/create-directory" }
+pl-tool-delete-path = { path = "code/tools/delete-path" }
+pl-tool-copy-path = { path = "code/tools/copy-path" }
+pl-tool-move-path = { path = "code/tools/move-path" }
+pl-tool-filesystem = { path = "code/tools/support/filesystem" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }

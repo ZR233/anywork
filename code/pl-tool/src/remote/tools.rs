@@ -1,11 +1,7 @@
-use std::sync::Arc;
-
-use crate::tool_error;
-use pl_protocol::Result;
-
-use crate::file::{CopyMoveInput, DeleteMode, DeletePathInput, PathCollision, PathInput};
-use crate::workspace::ToolWorkspace;
-use pl_agent_tool::typed::{decode_json, input_schema_for};
+//! SSH transport/policy adaptation for the same independent filesystem tools.
+use super::RemoteWorkspaceFileBackend;
+use crate::{tool_error, workspace::ToolWorkspace};
+use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -13,8 +9,9 @@ use pl_core::{
         opaque::{CallContext, ToolError},
     },
 };
-
-use super::RemoteWorkspaceFileBackend;
+use pl_protocol::{PureError, Result};
+use pl_tool_filesystem::{MutationBackend, MutationError};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RemoteWorkspaceMutationTool {
@@ -22,12 +19,6 @@ pub struct RemoteWorkspaceMutationTool {
     kind: RemoteMutationKind,
     backend: Arc<RemoteWorkspaceFileBackend>,
     workspace: ToolWorkspace,
-}
-
-impl RemoteWorkspaceMutationTool {
-    fn name(&self) -> &str {
-        self.kind.name()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,15 +30,9 @@ pub enum RemoteMutationKind {
 }
 
 impl RemoteMutationKind {
-    pub fn definition(self) -> pl_agent_tool::ToolDefinition {
-        pl_agent_tool::ToolDefinition::json(self.name(), self.description(), self.schema())
-            .expect("static mutation definition")
-    }
-
     pub fn all() -> &'static [Self] {
         &[Self::CreateDirectory, Self::Delete, Self::Copy, Self::Move]
     }
-
     fn name(self) -> &'static str {
         match self {
             Self::CreateDirectory => "create_directory",
@@ -56,24 +41,29 @@ impl RemoteMutationKind {
             Self::Move => "move_path",
         }
     }
-
-    fn description(self) -> &'static str {
-        match self {
+    pub fn definition(self) -> pl_agent_tool::ToolDefinition {
+        let definition = match self {
+            Self::CreateDirectory => {
+                pl_tool_create_directory::definition::<RemoteMutationCapability>()
+            }
+            Self::Delete => pl_tool_delete_path::definition::<RemoteMutationCapability>(),
+            Self::Copy => pl_tool_copy_path::definition::<RemoteMutationCapability>(),
+            Self::Move => pl_tool_move_path::definition::<RemoteMutationCapability>(),
+        };
+        // Retain transport-specific model guidance; the domain owns the schema.
+        let description = match self {
             Self::CreateDirectory => "Create a directory inside the workspace.",
             Self::Delete => {
                 "Delete a workspace file, empty directory, or recursive directory using an explicit mode."
             }
             Self::Copy => "Copy a file inside the workspace.",
             Self::Move => "Move or rename a file or directory inside the workspace.",
-        }
-    }
-
-    fn schema(self) -> serde_json::Value {
-        match self {
-            Self::CreateDirectory => input_schema_for::<PathInput>(),
-            Self::Delete => input_schema_for::<DeletePathInput>(),
-            Self::Copy | Self::Move => input_schema_for::<CopyMoveInput>(),
-        }
+        };
+        let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
+            unreachable!("file mutations have JSON input");
+        };
+        pl_agent_tool::ToolDefinition::json(definition.name(), description, schema.clone())
+            .expect("static file mutation definition")
     }
 }
 
@@ -91,39 +81,13 @@ impl RemoteWorkspaceMutationTool {
             workspace,
         }
     }
-    async fn execute_input(&self, input: &str) -> std::result::Result<ToolOutput, ToolError> {
-        self.workspace
-            .ensure_workspace_writable()
-            .map_err(ToolError::new)?;
-        let _guard = self.workspace.write_lock().await;
-
-        let text = match self.kind {
-            RemoteMutationKind::CreateDirectory => self
-                .create_directory(decode_json(input).map_err(ToolError::new)?)
-                .await
-                .map_err(ToolError::new)?,
-            RemoteMutationKind::Delete => self
-                .delete(decode_json(input).map_err(ToolError::new)?)
-                .await
-                .map_err(ToolError::new)?,
-            RemoteMutationKind::Copy => self
-                .copy_or_move(decode_json(input).map_err(ToolError::new)?, false)
-                .await
-                .map_err(ToolError::new)?,
-            RemoteMutationKind::Move => self
-                .copy_or_move(decode_json(input).map_err(ToolError::new)?, true)
-                .await
-                .map_err(ToolError::new)?,
-        };
-        Ok(text_result(text))
-    }
 }
-impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
-    type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
 
+impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
     fn definition(&self) -> &pl_agent_tool::ToolDefinition {
         &self.definition
     }
@@ -136,99 +100,157 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let input = input.content();
-        self.execute_input(input).await
+        self.workspace
+            .ensure_workspace_writable()
+            .map_err(ToolError::new)?;
+        let _guard = self.workspace.write_lock().await;
+        let backend = RemoteMutationCapability {
+            backend: self.backend.clone(),
+            workspace: self.workspace.clone(),
+            tool: self.kind.name(),
+        };
+        let text = match self.kind {
+            RemoteMutationKind::CreateDirectory => {
+                pl_tool_create_directory::CreateDirectoryTool::new()
+                    .execute(
+                        decode_json(input.content()).map_err(ToolError::new)?,
+                        backend,
+                    )
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            RemoteMutationKind::Delete => pl_tool_delete_path::DeletePathTool::new()
+                .execute(
+                    decode_json(input.content()).map_err(ToolError::new)?,
+                    backend,
+                )
+                .await
+                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
+            RemoteMutationKind::Copy => pl_tool_copy_path::CopyPathTool::new()
+                .execute(
+                    decode_json(input.content()).map_err(ToolError::new)?,
+                    backend,
+                )
+                .await
+                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
+            RemoteMutationKind::Move => pl_tool_move_path::MovePathTool::new()
+                .execute(
+                    decode_json(input.content()).map_err(ToolError::new)?,
+                    backend,
+                )
+                .await
+                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
+        };
+        Ok(ToolOutput::new(
+            OpaquePayload::text(text.clone()),
+            vec![ContextContent::Text { text: text.into() }],
+        ))
     }
 }
 
-impl RemoteWorkspaceMutationTool {
-    async fn create_directory(&self, input: PathInput) -> Result<String> {
-        self.workspace
-            .ensure_relative_path_writable(None, &input.path)?;
-        self.backend
-            .create_directory(input.path.clone(), None)
-            .await?;
-        Ok(format!("Created directory {}", input.path))
-    }
+fn remote_mutation_error(tool: &str, error: MutationError<PureError>) -> ToolError {
+    ToolError::new(match error {
+        MutationError::Backend(error) => error,
+        MutationError::RequiresDirectory => tool_error(tool, "delete mode requires a directory"),
+        MutationError::DestinationExists(_) => tool_error(tool, "destination already exists"),
+        error => tool_error(tool, error),
+    })
+}
 
-    async fn delete(&self, input: DeletePathInput) -> Result<String> {
-        self.workspace
-            .ensure_relative_path_writable(None, &input.path)?;
-        let stat = self
-            .backend
-            .stat_optional(input.path.clone(), None)
-            .await
-            .map_err(super::workspace::remote_file_error)?
-            .ok_or_else(|| tool_error(self.name(), "path does not exist"))?;
-        match (stat.is_dir, input.mode) {
-            (false, DeleteMode::File)
-            | (true, DeleteMode::EmptyDirectory)
-            | (true, DeleteMode::RecursiveDirectory) => {}
-            (false, DeleteMode::EmptyDirectory | DeleteMode::RecursiveDirectory) => {
-                return Err(tool_error(self.name(), "delete mode requires a directory"));
-            }
-            (true, DeleteMode::File) => {
-                return Err(tool_error(
-                    self.name(),
-                    "delete mode file cannot delete a directory",
-                ));
-            }
-        }
-        self.backend
-            .remove_path(
-                input.path.clone(),
-                None,
-                matches!(input.mode, DeleteMode::RecursiveDirectory),
-            )
-            .await
-            .map_err(super::workspace::remote_file_error)?;
-        Ok(format!("Deleted {}", input.path))
-    }
+struct RemoteMutationCapability {
+    backend: Arc<RemoteWorkspaceFileBackend>,
+    workspace: ToolWorkspace,
+    tool: &'static str,
+}
 
-    async fn copy_or_move(&self, input: CopyMoveInput, moving: bool) -> Result<String> {
-        if moving {
-            self.workspace
-                .ensure_relative_path_writable(None, &input.from)?;
-        }
-        self.workspace
-            .ensure_relative_path_writable(None, &input.to)?;
-        let source = self
-            .backend
-            .stat_optional(input.from.clone(), None)
+impl RemoteMutationCapability {
+    async fn stat(&self, path: &str) -> Result<Option<crate::workspace_file::WorkspaceFileStat>> {
+        self.backend
+            .stat_optional(path.to_string(), None)
             .await
-            .map_err(super::workspace::remote_file_error)?
-            .ok_or_else(|| tool_error(self.name(), "source does not exist"))?;
-        if let Some(target) = self
-            .backend
-            .stat_optional(input.to.clone(), None)
-            .await
-            .map_err(super::workspace::remote_file_error)?
-        {
-            if matches!(input.collision, PathCollision::FailIfExists) {
-                return Err(tool_error(self.name(), "destination already exists"));
-            }
+            .map_err(super::workspace::remote_file_error)
+    }
+    async fn replace_destination(&self, path: &str) -> Result<()> {
+        if let Some(target) = self.stat(path).await? {
             self.backend
-                .remove_path(input.to.clone(), None, target.is_dir)
+                .remove_path(path.to_string(), None, target.is_dir)
                 .await
                 .map_err(super::workspace::remote_file_error)?;
         }
-        if moving {
-            self.backend
-                .rename_path(input.from.clone(), input.to.clone(), None)
-                .await?;
-            Ok(format!("Moved {} to {}", input.from, input.to))
-        } else {
-            self.backend
-                .copy_path(input.from.clone(), input.to.clone(), None, source.is_dir)
-                .await?;
-            Ok(format!("Copied {} to {}", input.from, input.to))
+        Ok(())
+    }
+}
+impl MutationBackend for RemoteMutationCapability {
+    type Error = PureError;
+    type Path = String;
+    async fn resolve_existing(&self, path: &str) -> Result<String> {
+        if self.tool == "delete_path" || self.tool == "move_path" {
+            self.workspace.ensure_relative_path_writable(None, path)?;
         }
+        self.stat(path).await?.ok_or_else(|| {
+            tool_error(
+                self.tool,
+                if self.tool == "delete_path" {
+                    "path does not exist"
+                } else {
+                    "source does not exist"
+                },
+            )
+        })?;
+        Ok(path.to_string())
+    }
+    async fn resolve_for_write(&self, path: &str) -> Result<String> {
+        self.workspace.ensure_relative_path_writable(None, path)?;
+        Ok(path.to_string())
+    }
+    fn ensure_writable(&self, path: &String) -> Result<()> {
+        self.workspace.ensure_relative_path_writable(None, path)
+    }
+    fn display_path(&self, path: &String) -> String {
+        path.clone()
+    }
+    fn diagnostic_path(&self, path: &String) -> String {
+        path.clone()
+    }
+    async fn is_directory(&self, path: &String) -> Result<bool> {
+        self.stat(path)
+            .await?
+            .map(|stat| stat.is_dir)
+            .ok_or_else(|| tool_error(self.tool, "path does not exist"))
+    }
+    async fn exists(&self, path: &String) -> Result<bool> {
+        Ok(self.stat(path).await?.is_some())
+    }
+    async fn create_directory(&self, path: &String) -> Result<()> {
+        self.backend.create_directory(path.clone(), None).await
+    }
+    async fn remove_file(&self, path: &String) -> Result<()> {
+        self.backend
+            .remove_path(path.clone(), None, false)
+            .await
+            .map_err(super::workspace::remote_file_error)
+    }
+    async fn remove_directory(&self, path: &String, recursive: bool) -> Result<()> {
+        self.backend
+            .remove_path(path.clone(), None, recursive)
+            .await
+            .map_err(super::workspace::remote_file_error)
+    }
+    async fn copy(&self, from: &String, to: &String) -> Result<()> {
+        let recursive = self.is_directory(from).await?;
+        self.replace_destination(to).await?;
+        self.backend
+            .copy_path(from.clone(), to.clone(), None, recursive)
+            .await
+    }
+    async fn rename(&self, from: &String, to: &String) -> Result<()> {
+        self.replace_destination(to).await?;
+        self.backend
+            .rename_path(from.clone(), to.clone(), None)
+            .await
     }
 }
 
-fn text_result(text: String) -> ToolOutput {
-    ToolOutput::new(
-        OpaquePayload::text(text.clone()),
-        vec![ContextContent::Text { text: text.into() }],
-    )
-}
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tests;
