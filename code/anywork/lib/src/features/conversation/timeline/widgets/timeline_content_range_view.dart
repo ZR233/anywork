@@ -14,9 +14,15 @@ class TimelineBodyReadIntent extends InheritedWidget {
   const TimelineBodyReadIntent({
     required super.child,
     this.summary = false,
+    this.bodyBuilder,
     super.key,
   });
   final bool summary;
+  final Widget Function(String text)? bodyBuilder;
+  static Widget Function(String text)? bodyBuilderOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
+          ?.bodyBuilder;
   static bool of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>() !=
       null;
@@ -27,7 +33,7 @@ class TimelineBodyReadIntent extends InheritedWidget {
       false;
   @override
   bool updateShouldNotify(TimelineBodyReadIntent oldWidget) =>
-      summary != oldWidget.summary;
+      summary != oldWidget.summary || bodyBuilder != oldWidget.bodyBuilder;
 }
 
 /// Pure presentation for one already-admitted bounded content window.
@@ -52,6 +58,7 @@ class TimelineContentRangeView extends StatelessWidget {
     required this.witness,
     this.window,
     this.error,
+    this.bodyBuilder,
   });
 
   final String itemId;
@@ -64,6 +71,7 @@ class TimelineContentRangeView extends StatelessWidget {
   final bool canRead;
   final ContentWindow? window;
   final Object? error;
+  final Widget Function(String text)? bodyBuilder;
   final ValueChanged<bool> onExpansionChanged;
   final VoidCallback? onNext;
   final VoidCallback? onCopy;
@@ -80,6 +88,7 @@ class TimelineContentRangeView extends StatelessWidget {
         window != null &&
         window.bytes.isNotEmpty &&
         end < window.availableThrough;
+    final showRange = !disclosed || hasNext || (window?.offset ?? 0) > 0;
     final contents = <Widget>[
       if (loading) const LinearProgressIndicator(minHeight: 1),
       if (error != null)
@@ -88,7 +97,7 @@ class TimelineContentRangeView extends StatelessWidget {
           style: context.text.bodySmall?.copyWith(color: context.colors.error),
         ),
       if (window != null) ...[
-        if (!disclosed || hasNext || window.offset > 0)
+        if (showRange)
           Text(
             '字节 ${window.offset}–$end / ${window.availableThrough}',
             style: context.text.labelSmall?.copyWith(
@@ -96,39 +105,51 @@ class TimelineContentRangeView extends StatelessWidget {
             ),
           ),
         const SizedBox(height: 4),
-        // A bounded window may end inside a UTF-8 code point. This is
-        // a raw byte-range viewer, not a business payload decoder.
+        // Decode only this admitted window; never accumulate the full body.
         witness(
           text,
-          Text(
-            text,
-            key: StudioDriverKeys.timelineContentWindow(itemId, contentKey),
-            softWrap: true,
-          ),
+          bodyBuilder == null
+              ? Text(
+                  text,
+                  key: StudioDriverKeys.timelineContentWindow(
+                    itemId,
+                    contentKey,
+                  ),
+                  softWrap: true,
+                )
+              : KeyedSubtree(
+                  key: StudioDriverKeys.timelineContentWindow(
+                    itemId,
+                    contentKey,
+                  ),
+                  child: bodyBuilder!(text),
+                ),
         ),
-        const SizedBox(height: 4),
-        Wrap(
-          spacing: 4,
-          children: [
-            TextButton(
-              key: StudioDriverKeys.timelineContentCopyWindow(
-                itemId,
-                contentKey,
-              ),
-              onPressed: active && !loading ? onCopy : null,
-              child: const Text('复制当前段'),
-            ),
-            if (hasNext)
+        if (bodyBuilder == null || showRange) ...[
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 4,
+            children: [
               TextButton(
-                key: StudioDriverKeys.timelineContentNextWindow(
+                key: StudioDriverKeys.timelineContentCopyWindow(
                   itemId,
                   contentKey,
                 ),
-                onPressed: active && !loading ? onNext : null,
-                child: const Text('下一段'),
+                onPressed: active && !loading ? onCopy : null,
+                child: const Text('复制当前段'),
               ),
-          ],
-        ),
+              if (hasNext)
+                TextButton(
+                  key: StudioDriverKeys.timelineContentNextWindow(
+                    itemId,
+                    contentKey,
+                  ),
+                  onPressed: active && !loading ? onNext : null,
+                  child: const Text('下一段'),
+                ),
+            ],
+          ),
+        ],
       ],
     ];
     return TimelineActivityTileTheme(

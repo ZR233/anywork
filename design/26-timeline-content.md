@@ -135,6 +135,8 @@ plan=None 表示真无 Plan，Some/document=None 表示有 Plan 但真无文档�
 
 listContents 取得 manifest，readContent 按 range 返回窗口，watchContent 观察有界当前窗口，pageCurrent 读取 revision 绑定的真实业务集合。它们不是聊天列表，不强制塞入 ChatBatch。ContentRef 区分原 ItemPayload 与 Body，绑定库/资格；按 offset 索引只读目标和必要边界块，不能先拼全文再切片。窗口保留 offset、bytes、generation、availableThrough、sealed。
 
+可见文本正文的展示不由长度或 Inline/Deferred 传输方式决定：挂载的正文直接读取有界窗口，复用普通消息的 Markdown、选择/复制、自动换行及安全链接/媒体策略，不增加正文键名或字节数折叠栏。一个窗口已包含完整正文时不显示范围导航；超出窗口仍明确显示范围和下一段操作，不自动累计无限全文。工作卡、工具和思考详情的语义折叠保持不变，只有其已展开内容才取得读取资格；原始 ItemPayload/诊断查看器仍按原始内容展示，不将 JSON 信封误当作 Markdown 正文。
+
 交互详情是结构化请求，不把单个正文窗口当成完整 JSON。对 Deferred 的一个交互请求，UI 在原独立查询资格内以窗口读取、累计最多1 MiB完整信封后才解码；超过预算明确报告该详情资源过大，不截断伪装成功，也不显示原始 JSON。窗口之间须保持引用、generation、总长度与 sealed 条件一致，按字节累计后统一解码 UTF-8；引用换代、折叠或关闭立即撤销资格并汇合在途读取。显示与复制均只允许 canonical 解码和敏感字段过滤后的公开内容，不提供原始交互信封的“复制当前段”、下载或错误回显旁路。普通正文窗口的分段复制行为不因此改变。
 
 有 item 身份的正文从 active 沿用同一内容 owner，完成 seal 移交原共享块/manifest，不改名复制全文。追加不换 generation，替换才换；非 item 当前文档绑定原域/id/revision，过期 StaleContent。manifest 由 producer 显式提交，不解析未知 payload 找引用。正文、媒体和敏感/redacted 权限保持；完成内容随原件保留，活动内容随原 owner 退役并允许已接纳短读结束。
