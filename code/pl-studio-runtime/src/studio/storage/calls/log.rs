@@ -205,7 +205,7 @@ impl CallLog {
         if rotate {
             self.sync_pending().await?;
             self.current = None;
-            self.open_segment(day).await?;
+            self.open_segment(day, false).await?;
             let outcome = self.cleanup_budget(now, len).await;
             removed.extend(outcome.removed);
         }
@@ -352,39 +352,94 @@ impl CallLog {
     ) -> Result<()> {
         self.sync_pending().await?;
         self.current.take();
-        let mut segments = list_segments(&self.dir).await?;
+        let mut segments = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => read_segments(entries).await?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(
+                    decision = "treat_missing_directory_as_empty",
+                    reason = "log_directory_missing",
+                    "call-log directory is absent during permanent deletion"
+                );
+                Vec::new()
+            }
+            Err(error) => return Err(error.into()),
+        };
         segments.sort_by_key(|segment| (segment.day, segment.seq));
+        let newest_segment = segments
+            .last()
+            .map(|segment| (segment.name.clone(), segment.day));
         self.total_bytes = segments.iter().map(|segment| segment.len).sum();
+        let mut newest_tail_protected = false;
         for segment in segments {
             ensure!(
                 segment.len <= SEGMENT_MAX_BYTES,
                 "oversized diagnostic segment"
             );
             let path = self.dir.join(&segment.name);
-            let bytes = tokio::fs::read(&path).await?;
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::warn!(
+                        decision = "skip_missing_segment",
+                        reason = "segment_missing",
+                        segment = %segment.name,
+                        "call-log segment disappeared before deletion"
+                    );
+                    let tx = db.begin().await?;
+                    super::prune_index(&tx, std::slice::from_ref(&segment.name)).await?;
+                    tx.commit().await?;
+                    self.total_bytes = self.total_bytes.saturating_sub(segment.len);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             let mut retained = Vec::with_capacity(bytes.len());
             let mut locators = Vec::new();
-            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-                ensure!(
-                    line.last() == Some(&b'\n'),
-                    "incomplete call record during permanent deletion"
-                );
-                let record: event::CallLogLocator =
-                    serde_json::from_slice(&line[..line.len() - 1])?;
-                ensure!(
-                    !record.thread_id.is_empty(),
-                    "call record has no deletion identity"
-                );
-                if !ids.contains(&record.thread_id)
-                    && !record
-                        .root_thread_id
-                        .as_ref()
-                        .is_some_and(|id| ids.contains(id))
-                {
-                    let offset = retained.len();
-                    retained.extend_from_slice(line);
-                    locators.push((record, offset, line.len() - 1));
+            let mut offset = 0usize;
+            for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+                let line_number = index + 1;
+                let complete = line.last() == Some(&b'\n');
+                let record = if complete {
+                    deletion_locator(&line[..line.len() - 1], &segment.name, line_number, offset)
+                } else {
+                    warn_unindexed_line(
+                        &segment.name,
+                        line_number,
+                        offset,
+                        "incomplete_record",
+                        None,
+                        None,
+                    );
+                    if !newest_tail_protected
+                        && let Some((_, newest_day)) = newest_segment
+                            .as_ref()
+                            .filter(|(name, _)| name == &segment.name)
+                    {
+                        let day = event::record_day(crate::studio::unix_seconds()).max(*newest_day);
+                        // Establish the later durable segment before pruning locators or replacing
+                        // this file, so a failed index commit cannot expose its unknown tail to
+                        // ordinary startup tail repair.
+                        self.open_durable_empty_segment(day).await?;
+                        newest_tail_protected = true;
+                    }
+                    None
+                };
+                match record {
+                    Some(record)
+                        if !ids.contains(&record.thread_id)
+                            && !record
+                                .root_thread_id
+                                .as_ref()
+                                .is_some_and(|id| ids.contains(id)) =>
+                    {
+                        let retained_offset = retained.len();
+                        retained.extend_from_slice(line);
+                        locators.push((record, retained_offset, line.len() - 1));
+                    }
+                    Some(_) => {}
+                    None => retained.extend_from_slice(line),
                 }
+                offset += line.len();
             }
             let changed = retained != bytes;
             if changed || self.unindexed_segments.contains(&segment.name) {
@@ -440,25 +495,33 @@ impl CallLog {
             let tx = db.begin().await?;
             super::prune_index(&tx, std::slice::from_ref(&segment)).await?;
             let mut offset = 0usize;
-            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-                ensure!(
-                    line.last() == Some(&b'\n'),
-                    "incomplete call record during locator repair"
-                );
-                let text = std::str::from_utf8(&line[..line.len() - 1])?;
-                let record: event::CallLogLocator = serde_json::from_str(text)?;
-                super::index_locator(
-                    &tx,
-                    &record,
-                    &pl_core::context::content_hash(text.as_bytes()),
-                    &AppendedRecord {
-                        segment: segment.clone(),
-                        offset: offset as u64,
-                        length: text.len() as u64,
-                    },
-                    record.truncated,
-                )
-                .await?;
+            for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+                if line.last() == Some(&b'\n') {
+                    let text = &line[..line.len() - 1];
+                    if let Some(record) = deletion_locator(text, &segment, index + 1, offset) {
+                        super::index_locator(
+                            &tx,
+                            &record,
+                            &pl_core::context::content_hash(text),
+                            &AppendedRecord {
+                                segment: segment.clone(),
+                                offset: offset as u64,
+                                length: text.len() as u64,
+                            },
+                            record.truncated,
+                        )
+                        .await?;
+                    }
+                } else {
+                    warn_unindexed_line(
+                        &segment,
+                        index + 1,
+                        offset,
+                        "incomplete_record",
+                        None,
+                        None,
+                    );
+                }
                 offset += line.len();
             }
             tx.commit().await?;
@@ -482,11 +545,18 @@ impl CallLog {
             );
             let bytes = tokio::fs::read(self.dir.join(&segment.name)).await?;
             let mut offset = 0usize;
-            for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+            for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
                 if line.last() != Some(&b'\n') {
                     break;
                 }
-                let text = std::str::from_utf8(&line[..line.len() - 1])?;
+                let record_bytes = &line[..line.len() - 1];
+                let Some(_locator) =
+                    deletion_locator(record_bytes, &segment.name, index + 1, offset)
+                else {
+                    offset += line.len();
+                    continue;
+                };
+                let text = std::str::from_utf8(record_bytes)?;
                 let record = event::decode_record(text)?;
                 super::index_record(
                     &tx,
@@ -525,7 +595,18 @@ impl CallLog {
         Ok(())
     }
 
-    async fn open_segment(&mut self, day: i64) -> Result<()> {
+    async fn open_durable_empty_segment(&mut self, day: i64) -> Result<()> {
+        self.open_segment(day, true).await?;
+        self.current
+            .as_mut()
+            .expect("durable segment opened above")
+            .file
+            .sync_data()
+            .await?;
+        Ok(())
+    }
+
+    async fn open_segment(&mut self, day: i64, durable_create: bool) -> Result<()> {
         tokio::fs::create_dir_all(&self.dir).await?;
         let seq = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -534,11 +615,27 @@ impl CallLog {
         #[cfg(feature = "benchmarks")]
         self.observation
             .increment(observation::Metric::JsonlSegmentOpen);
-        let file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(&path)
-            .await?;
+        let file = if durable_create {
+            let durable_path = path.clone();
+            tokio::task::spawn_blocking(move || {
+                pl_tool::workspace::write_file_with_mode(
+                    &durable_path,
+                    &[],
+                    pl_tool::workspace::WriteMode::Create,
+                )
+            })
+            .await??;
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .await?
+        } else {
+            tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .append(true)
+                .open(&path)
+                .await?
+        };
         let bytes = file.metadata().await?.len();
         self.total_bytes = self.total_bytes.saturating_add(bytes);
         self.current = Some(Segment {
@@ -552,28 +649,91 @@ impl CallLog {
     }
 }
 
+fn deletion_locator(
+    bytes: &[u8],
+    segment: &str,
+    line: usize,
+    offset: usize,
+) -> Option<event::CallLogLocator> {
+    let record = match serde_json::from_slice::<event::CallLogLocator>(bytes) {
+        Ok(record) => record,
+        Err(error) => {
+            let (parse_line, parse_column) = (error.line(), error.column());
+            let reason = match error.classify() {
+                serde_json::error::Category::Io => "json_io",
+                serde_json::error::Category::Syntax => "json_syntax",
+                serde_json::error::Category::Data => "json_data",
+                serde_json::error::Category::Eof => "json_eof",
+            };
+            warn_unindexed_line(
+                segment,
+                line,
+                offset,
+                reason,
+                Some(parse_line),
+                Some(parse_column),
+            );
+            return None;
+        }
+    };
+    if record.thread_id.is_empty() {
+        warn_unindexed_line(segment, line, offset, "empty_thread_id", None, None);
+        return None;
+    }
+    Some(record)
+}
+
+fn warn_unindexed_line(
+    segment: &str,
+    line: usize,
+    offset: usize,
+    reason: &'static str,
+    parse_line: Option<usize>,
+    parse_column: Option<usize>,
+) {
+    tracing::warn!(
+        decision = "preserve_and_skip_index",
+        reason,
+        segment,
+        line,
+        offset,
+        parse_line,
+        parse_column,
+        "skipping unidentifiable call-log record"
+    );
+}
+
 fn is_expired(day: i64, now: i64) -> bool {
     // The cutoff day can contain records newer than the exact retention deadline.
     day < event::record_day(now.saturating_sub(LOG_RETENTION_SECONDS))
 }
 
 async fn list_segments(dir: &Path) -> Result<Vec<SegmentInfo>> {
+    read_segments(tokio::fs::read_dir(dir).await?).await
+}
+
+async fn read_segments(mut entries: tokio::fs::ReadDir) -> Result<Vec<SegmentInfo>> {
     let mut segments = Vec::new();
-    let mut entries = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some((day, seq)) = parse_segment_name(&name) else {
-            continue;
-        };
-        let len = entry.metadata().await?.len();
-        segments.push(SegmentInfo {
-            day,
-            seq,
-            name,
-            len,
-        });
+        if let Some(segment) = read_segment_entry(entry).await? {
+            segments.push(segment);
+        }
     }
     Ok(segments)
+}
+
+async fn read_segment_entry(entry: tokio::fs::DirEntry) -> Result<Option<SegmentInfo>> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let Some((day, seq)) = parse_segment_name(&name) else {
+        return Ok(None);
+    };
+    let len = entry.metadata().await?.len();
+    Ok(Some(SegmentInfo {
+        day,
+        seq,
+        name,
+        len,
+    }))
 }
 
 fn parse_segment_name(name: &str) -> Option<(i64, u64)> {
@@ -610,6 +770,31 @@ async fn repair_tail(path: &Path) -> Result<u64> {
 mod storage_fault_tests {
     use super::*;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn missing_segment_metadata_remains_distinct_from_missing_directory() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let segment_path = temp.path().join("calls-0000000001-000001.jsonl");
+        tokio::fs::write(&segment_path, b"{}\n").await?;
+        let mut entries = tokio::fs::read_dir(temp.path()).await?;
+        let entry = entries
+            .next_entry()
+            .await?
+            .context("expected the segment directory entry")?;
+        tokio::fs::remove_file(segment_path).await?;
+
+        let error = match read_segment_entry(entry).await {
+            Ok(_) => anyhow::bail!("missing segment metadata unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+            "entry metadata must preserve its NotFound error: {error:#}"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn rolling_log_bounds_disk_repairs_tail_and_retries_failed_cleanup() -> Result<()> {

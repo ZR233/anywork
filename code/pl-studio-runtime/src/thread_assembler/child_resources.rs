@@ -268,13 +268,19 @@ impl super::SessionRuntime {
         self.close_prepared_resources(id, &pending.workspace.native_resources())
             .await?;
         let services = { self.0.state().agent_services.clone() };
+        let has_preparation = if let Some(services) = &services {
+            if purpose == super::ClosePurpose::Delete {
+                services.store.thread_preparation_for_deletion(id).await
+            } else {
+                services.store.thread_preparation(id).await
+            }
+            .map_err(retirement_error)?
+            .is_some()
+        } else {
+            false
+        };
         if let Some(services) = &services
-            && services
-                .store
-                .thread_preparation(id)
-                .await
-                .map_err(retirement_error)?
-                .is_some()
+            && has_preparation
         {
             if purpose == super::ClosePurpose::Delete {
                 services
@@ -299,12 +305,7 @@ impl super::SessionRuntime {
         };
         let retain_disposition = async {
             if let Some(services) = &services
-                && services
-                    .store
-                    .thread_preparation(id)
-                    .await
-                    .map_err(retirement_error)?
-                    .is_some()
+                && has_preparation
             {
                 use crate::studio::store::thread_preparation::PreparationDisposition;
                 services
@@ -353,12 +354,7 @@ impl super::SessionRuntime {
             return Err(error);
         }
         if let Some(services) = services
-            && services
-                .store
-                .thread_preparation(id)
-                .await
-                .map_err(retirement_error)?
-                .is_some()
+            && has_preparation
         {
             services
                 .store

@@ -73,18 +73,19 @@ impl SessionRuntime {
         let Some(services) = services else {
             return Ok(());
         };
-        let Some(record) = services
-            .store
-            .thread_preparation(id)
-            .await
-            .map_err(preparation_storage_error)?
-        else {
+        let record = if purpose == ClosePurpose::Delete {
+            services.store.thread_preparation_for_deletion(id).await
+        } else {
+            services.store.thread_preparation(id).await
+        }
+        .map_err(preparation_storage_error)?;
+        let Some(record) = record else {
             return Ok(());
         };
         if record.published {
             return Ok(());
         }
-        if record.save == PreparationSave::Unattached {
+        if purpose == ClosePurpose::Delete || record.save == PreparationSave::Unattached {
             // The stopped factory (including an unwound factory) and its scope have now joined.
             // No unconfirmed core/storage producer remains before the durable stop ACK.
             self.confirm_preparation_close_for_purpose(id, false, purpose)
@@ -238,14 +239,16 @@ impl SessionRuntime {
         purpose: ClosePurpose,
     ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
-        if let Some(services) = services
-            && services
-                .store
-                .thread_preparation(id)
-                .await
-                .map_err(preparation_storage_error)?
-                .is_some_and(|record| !record.published)
-        {
+        if let Some(services) = services {
+            let record = if purpose == ClosePurpose::Delete {
+                services.store.thread_preparation_for_deletion(id).await
+            } else {
+                services.store.thread_preparation(id).await
+            }
+            .map_err(preparation_storage_error)?;
+            if !record.is_some_and(|record| !record.published) {
+                return Ok(());
+            }
             if purpose == ClosePurpose::Delete {
                 services
                     .store

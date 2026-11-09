@@ -16,6 +16,12 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 #[path = "delete_required_tests.rs"]
 mod required;
 
+#[path = "delete_aux_tests.rs"]
+mod auxiliary;
+
+#[path = "delete_recovery_tests.rs"]
+mod recovery;
+
 #[tokio::test]
 async fn permanent_delete_preflight_failure_retries_without_repairing_history() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -42,6 +48,15 @@ async fn permanent_delete_preflight_failure_retries_without_repairing_history() 
     let public = crate::error_mapping::studio_error_from_anyhow_ref(&error);
     assert!(public.message.contains("删除执行端目录"), "{public}");
     let operation = runtime.store.thread_delete(&root.id).await?.unwrap();
+    assert!(
+        operation
+            .members
+            .iter()
+            .find(|member| member.identity.thread_id == root.id)
+            .unwrap()
+            .host_deleted,
+        "an independent host directory must finish after execution preflight fails"
+    );
     assert!(
         !operation
             .members
