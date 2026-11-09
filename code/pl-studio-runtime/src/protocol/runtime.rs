@@ -50,6 +50,8 @@ pub struct StudioLspHealth {
 #[serde(rename_all = "camelCase")]
 pub struct StudioLspServer {
     pub id: String,
+    pub configuration_path: Option<String>,
+    pub phase: String,
     pub display_name: String,
     #[serde(default)]
     pub extensions: Vec<String>,

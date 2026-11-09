@@ -3,12 +3,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::client::{DiagnosticSink, LspClient};
+use crate::client::LspClient;
 use crate::query::{LspQuery, LspQueryOperation};
 
 use super::{
-    LspAvailabilityKind, LspResult, LspRoutingError, LspRuntimeError, LspRuntimeRegistry,
-    ResolvedLspServer, workspace_key,
+    LspResult, LspRoutingError, LspRuntimeError, LspRuntimeRegistry, ResolvedLspServer,
+    workspace_key,
 };
 
 impl LspRuntimeRegistry {
@@ -32,12 +32,10 @@ impl LspRuntimeRegistry {
                 workspace_root.display()
             ))
         })?;
-        let diagnostics = workspace.diagnostics.clone();
-        let host = workspace.host.clone();
         let server = workspace.servers.get_mut(&server_id).ok_or_else(|| {
             LspRuntimeError::Unavailable(format!("LSP server not configured: {server_id}"))
         })?;
-        if server.availability_kind != LspAvailabilityKind::Available {
+        if !server.healthy() {
             return Err(LspRuntimeError::Unavailable(
                 server
                     .availability_message
@@ -52,34 +50,22 @@ impl LspRuntimeRegistry {
             )));
         }
         let resolved = server.resolved.clone();
-        let client = match &server.client {
-            Some(client) => client.clone(),
-            None => {
-                let sink = DiagnosticSink::new(
-                    resolved.id.clone(),
-                    resolved.workspace_root.clone(),
-                    diagnostics,
-                    self.updates.clone(),
-                    host.as_ref()
-                        .map_or(crate::host::LspPathStyle::Native, |host| host.path_style()),
-                );
-                let client = Arc::new(LspClient::new(
-                    resolved.clone(),
-                    server.driver.clone(),
-                    sink,
-                    host,
-                ));
-                server.client = Some(client.clone());
-                client
-            }
-        };
+        let client = server
+            .client
+            .clone()
+            .ok_or_else(|| LspRuntimeError::Unavailable("LSP server is not ready".into()))?;
+        if !client.supports(query.operation) {
+            return Err(LspRuntimeError::InvalidQuery(format!(
+                "LSP server {server_id} did not negotiate {}",
+                query.operation.as_str()
+            )));
+        }
         Ok((server_id, resolved, client))
     }
 
     pub(crate) async fn workspace_root_for_query(&self, query: &LspQuery) -> LspResult<PathBuf> {
         let state = self.state.lock().await;
         if let Some(path) = query.file_path.as_deref() {
-            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             return state
                 .workspaces
                 .keys()
@@ -140,7 +126,7 @@ impl LspRuntimeRegistry {
             .servers
             .values()
             .filter(|server| {
-                server.availability_kind != LspAvailabilityKind::Disabled
+                server.healthy()
                     && server
                         .resolved
                         .language_ids
@@ -183,10 +169,7 @@ impl LspRuntimeRegistry {
                 workspace
                     .servers
                     .iter()
-                    .filter(|(_, server)| {
-                        server.availability_kind != LspAvailabilityKind::Disabled
-                            && server.resolved.matches_path(path)
-                    })
+                    .filter(|(_, server)| server.healthy() && server.resolved.matches_path(path))
                     .map(|(server_id, _)| server_id.clone())
                     .collect::<Vec<_>>()
             })
@@ -219,7 +202,13 @@ impl LspRuntimeRegistry {
             .ok_or_else(|| {
                 LspRuntimeError::Unavailable(format!("LSP server not configured: {server_id}"))
             })?;
-        if server.resolved.supports(operation) {
+        if server.healthy()
+            && server.resolved.supports(operation)
+            && server
+                .client
+                .as_ref()
+                .is_some_and(|client| client.supports(operation))
+        {
             Ok(())
         } else {
             Err(LspRuntimeError::InvalidQuery(format!(
@@ -256,12 +245,12 @@ impl LspRuntimeRegistry {
             .get(&workspace_root)
             .into_iter()
             .flat_map(|workspace| workspace.servers.values())
+            .filter(|server| server.healthy())
             .filter_map(|server| server.client.clone())
             .collect()
     }
 
     async fn workspace_root_for_path(&self, path: &Path) -> Option<PathBuf> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         self.state
             .lock()
             .await
@@ -276,7 +265,7 @@ impl LspRuntimeRegistry {
 fn available_language_ids(workspace: &super::LspWorkspaceState) -> String {
     let mut languages = Vec::new();
     for server in workspace.servers.values() {
-        if server.availability_kind == LspAvailabilityKind::Available {
+        if server.healthy() {
             languages.extend(server.resolved.language_ids.iter().cloned());
         }
     }

@@ -37,12 +37,7 @@ class _Header extends ConsumerWidget {
                 Tooltip(
                   message: context.l10n.delegationFrozen,
                   child: Text(
-                    context.delegationSummary(
-                      DelegationSettingsView(
-                        mode: thread.delegationMode,
-                        preference: thread.delegationPreference,
-                      ),
-                    ),
+                    '${thread.workspaceMode == ThreadWorkspaceMode.worktree ? context.l10n.composerWorkspaceModeWorktree : context.l10n.composerWorkspaceModeLocal} · ${context.delegationSummary(DelegationSettingsView(mode: thread.delegationMode, preference: thread.delegationPreference))}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelSmall,

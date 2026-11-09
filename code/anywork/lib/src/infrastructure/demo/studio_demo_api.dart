@@ -6334,15 +6334,6 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<LspStateSnapshot> repairLspServer(
-    String workspaceId,
-    String serverId,
-  ) async {
-    _lspRevision += 1;
-    return _lspWriteResult();
-  }
-
-  @override
   Future<LspStateSnapshot> resetLspServer(
     String workspaceId,
     String serverId,
@@ -6871,6 +6862,8 @@ class DemoStudioTransport extends StudioTransport
             LspServerStateView(
               id: 'rust-analyzer',
               displayName: 'rust-analyzer',
+              configurationPath: '.anywork/lsp/rust-analyzer.toml',
+              phase: 'ready',
               state: LspAvailableState(
                 checkedAt: 0,
                 diagnosticCount: 0,

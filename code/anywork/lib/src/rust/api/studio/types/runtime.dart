@@ -409,6 +409,8 @@ class BridgeLspHealthDto {
 
 class BridgeLspServerDto {
   final String id;
+  final String? configurationPath;
+  final String phase;
   final String displayName;
   final List<String> extensions;
   final List<String> languageIds;
@@ -416,6 +418,8 @@ class BridgeLspServerDto {
 
   const BridgeLspServerDto({
     required this.id,
+    this.configurationPath,
+    required this.phase,
     required this.displayName,
     required this.extensions,
     required this.languageIds,
@@ -425,6 +429,8 @@ class BridgeLspServerDto {
   @override
   int get hashCode =>
       id.hashCode ^
+      configurationPath.hashCode ^
+      phase.hashCode ^
       displayName.hashCode ^
       extensions.hashCode ^
       languageIds.hashCode ^
@@ -436,6 +442,8 @@ class BridgeLspServerDto {
       other is BridgeLspServerDto &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          configurationPath == other.configurationPath &&
+          phase == other.phase &&
           displayName == other.displayName &&
           extensions == other.extensions &&
           languageIds == other.languageIds &&

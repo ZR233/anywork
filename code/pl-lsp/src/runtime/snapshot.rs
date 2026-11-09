@@ -1,85 +1,68 @@
-//! 只读 snapshot：read 路径只克隆 owner 已发布的状态。
-
-use std::path::Path;
-
+//! Snapshot reads only clone already-published owner state; no I/O or lifecycle work.
+use super::{LspRuntimeRegistry, LspServerSnapshot, workspace_key};
 use crate::client::LspClientRuntimeStatus;
-
-use super::LspServerSnapshot;
-
-use super::request::diagnostic_counts;
-use super::{LspRuntimeRegistry, workspace_key};
-
+use std::path::Path;
 impl LspRuntimeRegistry {
-    pub async fn snapshots_for_workspace(
-        &self,
-        workspace_root: impl AsRef<Path>,
-    ) -> Vec<LspServerSnapshot> {
-        let workspace_root = workspace_key(workspace_root.as_ref());
-        let workspace = {
+    pub async fn snapshots_for_workspace(&self, root: impl AsRef<Path>) -> Vec<LspServerSnapshot> {
+        let root = workspace_key(root.as_ref());
+        let (members, errors) = {
             let state = self.state.lock().await;
-            state.workspaces.get(&workspace_root).map(|workspace| {
-                (
-                    workspace.diagnostics.clone(),
-                    workspace
-                        .servers
-                        .values()
-                        .map(|server| (server.resolved.id.clone(), server.client.clone()))
-                        .collect::<Vec<_>>(),
-                )
-            })
+            let Some(workspace) = state.workspaces.get(&root) else {
+                return Vec::new();
+            };
+            (
+                workspace
+                    .servers
+                    .values()
+                    .map(|server| {
+                        (
+                            server.snapshot(0),
+                            server.client.clone(),
+                            server.healthy().then(|| server.diagnostics.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                workspace.errors.clone(),
+            )
         };
-        let Some((diagnostics, clients)) = workspace else {
-            return Vec::new();
-        };
-        let diagnostics = diagnostics.lock().await;
-        let diagnostic_counts = diagnostic_counts(&diagnostics);
-        drop(diagnostics);
-        let state = self.state.lock().await;
-        let Some(workspace) = state.workspaces.get(&workspace_root) else {
-            return Vec::new();
-        };
-        let mut snapshots = workspace
-            .servers
-            .values()
-            .map(|server| {
-                server.snapshot(*diagnostic_counts.get(&server.resolved.id).unwrap_or(&0))
-            })
-            .collect::<Vec<_>>();
-        drop(state);
-        for snapshot in &mut snapshots {
-            let client = clients
-                .iter()
-                .find(|(server_id, _)| server_id == &snapshot.id)
-                .and_then(|(_, client)| client.clone());
+        let mut snapshots = Vec::with_capacity(members.len() + errors.len());
+        for (mut snapshot, client, diagnostics) in members {
+            if let Some(diagnostics) = diagnostics {
+                snapshot.diagnostic_count = diagnostics.lock().await.values().map(Vec::len).sum();
+            }
             if let Some(client) = client {
-                apply_client_status(snapshot, client.runtime_status().await);
+                apply_client_status(&mut snapshot, client.runtime_status().await);
+            }
+            snapshots.push(snapshot);
+        }
+        snapshots.extend(errors);
+        snapshots
+    }
+    pub async fn snapshots(&self) -> Vec<LspServerSnapshot> {
+        let mut snapshots = Vec::new();
+        for partition in self.partition_views() {
+            let roots: Vec<_> = partition
+                .state
+                .lock()
+                .await
+                .workspaces
+                .keys()
+                .cloned()
+                .collect();
+            for root in roots {
+                snapshots.extend(partition.snapshots_for_workspace(root).await);
             }
         }
         snapshots
     }
-
-    pub async fn snapshots(&self) -> Vec<LspServerSnapshot> {
-        let workspace_roots = self
-            .state
-            .lock()
-            .await
-            .workspaces
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut output = Vec::new();
-        for workspace_root in workspace_roots {
-            output.extend(self.snapshots_for_workspace(workspace_root).await);
-        }
-        output
-    }
 }
-
 fn apply_client_status(snapshot: &mut LspServerSnapshot, status: LspClientRuntimeStatus) {
     snapshot.activity_kind = status.activity_kind;
     snapshot.activity_title = status.activity_title;
     snapshot.activity_message = status.activity_message;
     snapshot.activity_percentage = status.activity_percentage;
-    snapshot.last_error = status.last_error;
-    snapshot.last_error_at = status.last_error_at;
+    if status.last_error.is_some() {
+        snapshot.last_error = status.last_error;
+        snapshot.last_error_at = status.last_error_at;
+    }
 }

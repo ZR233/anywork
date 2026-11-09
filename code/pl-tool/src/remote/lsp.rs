@@ -7,7 +7,6 @@ use pl_lsp::host::{
     LspHostSpawnRequest,
 };
 
-use crate::shell::shell_quote_word;
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadBytesRequest};
 
 use super::RemoteWorkspaceHost;
@@ -65,6 +64,7 @@ impl LspHostBackend for RemoteWorkspaceHost {
     fn list_directory<'a>(
         &'a self,
         path: &'a Path,
+        max_entries: usize,
     ) -> BoxFuture<'a, Result<Vec<String>, LspHostError>> {
         async move {
             let path = self.relative_path(path)?;
@@ -72,6 +72,11 @@ impl LspHostBackend for RemoteWorkspaceHost {
             let mut names = Vec::new();
             while let Some(entry) = reader.next().await.map_err(host_error)? {
                 if !entry.is_symlink {
+                    if names.len() == max_entries {
+                        return Err(LspHostError::new(format!(
+                            "LSP directory exceeds {max_entries} entries"
+                        )));
+                    }
                     names.push(entry.name);
                 }
             }
@@ -85,15 +90,22 @@ impl LspHostBackend for RemoteWorkspaceHost {
         request: LspHostSpawnRequest,
     ) -> BoxFuture<'a, Result<LspHostProcess, LspHostError>> {
         async move {
-            let command = std::iter::once(request.program)
-                .chain(request.args)
-                .map(|part| shell_quote_word(&part))
-                .collect::<Vec<_>>()
-                .join(" ");
             let cwd = self.relative_path(&request.cwd)?;
             let mut process = self
                 .commands
-                .spawn_stream(request.process_id.clone(), command, cwd)
+                .spawn_protocol(super::command::RemoteProtocolSpawnRequest {
+                    process_id: request.process_id,
+                    program: request.program,
+                    arguments: request.args,
+                    environment: request.env,
+                    remove_environment: Vec::new(),
+                    cwd,
+                    start_control: Some(crate::command::CommandStartControl::new(
+                        request.deadline,
+                        request.cancellation,
+                        Default::default(),
+                    )),
+                })
                 .await
                 .map_err(host_error)?;
             let stdin = process.take_stdin();

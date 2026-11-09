@@ -2775,22 +2775,56 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsLspTitle => '语言服务器';
 
   @override
-  String get settingsLspSubtitle => '显示项目最近一次语言服务器状态，可刷新、探测、修复或重置。';
+  String get settingsLspSubtitle => '查看语言服务器配置来源、生命周期阶段和运行状态。';
 
   @override
   String get settingsLspRefresh => '刷新';
 
   @override
-  String get settingsLspProbe => '探测';
-
-  @override
-  String get settingsLspRepair => '修复';
+  String get settingsLspReload => '重载并初始化';
 
   @override
   String get settingsLspReset => '重置';
 
   @override
   String get settingsLspResetWorkspace => '重置工作区';
+
+  @override
+  String get settingsLspConfigurationMissing => '未找到配置文件';
+
+  @override
+  String settingsLspConfigurationHint(Object id) {
+    return '请在 .anywork/lsp/$id.toml 中配置服务器。';
+  }
+
+  @override
+  String settingsLspPhase(Object phase) {
+    return '阶段：$phase';
+  }
+
+  @override
+  String get settingsLspPhaseLoading => '加载配置';
+
+  @override
+  String get settingsLspPhaseProbing => '探测中';
+
+  @override
+  String get settingsLspPhaseStarting => '启动中';
+
+  @override
+  String get settingsLspPhaseInitializing => '初始化中';
+
+  @override
+  String get settingsLspPhaseReady => '就绪';
+
+  @override
+  String get settingsLspPhaseFailed => '失败';
+
+  @override
+  String get settingsLspPhaseStopped => '已停止';
+
+  @override
+  String get settingsLspPhaseDisabled => '已禁用';
 
   @override
   String get settingsLspActivityIndexing => '正在索引';
@@ -2802,7 +2836,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsLspEmptyTitle => '没有语言服务器';
 
   @override
-  String get settingsLspEmptyMessage => '打开受支持的项目后，系统会自动关联相应的语言服务器。';
+  String get settingsLspEmptyMessage => '添加 LSP 配置文件后，系统会加载并初始化相应的语言服务器。';
 
   @override
   String get settingsSecurityTitle => '安全';
@@ -5263,7 +5297,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get delegationPreferenceLabel => '自动选模偏好';
 
   @override
-  String get delegationProfile => '固定 Profile';
+  String get delegationProfile => '固定配置模板';
 
   @override
   String get delegationAutomatic => '自动选模';
@@ -5278,7 +5312,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get delegationFast => '快速';
 
   @override
-  String get delegationOnlyAutomatic => '仅自动选模时生效；固定 Profile 模式下保留该值。';
+  String get delegationOnlyAutomatic => '仅自动选模时生效；固定配置模板模式下保留该值。';
 
   @override
   String get delegationEconomyHint => '满足任务能力与质量要求后，优先降低预计整体成本；未知价格不当免费。';
@@ -5922,4 +5956,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String timelineGroupActiveCount(int count) {
     return '$count 进行中';
   }
+
+  @override
+  String get composerNoProject => '无项目';
+
+  @override
+  String get composerProjectSearch => '搜索项目、路径或 SSH';
+
+  @override
+  String get composerNewProject => '新建项目…';
+
+  @override
+  String get composerFixedLocalDirectory => '固定本地目录';
+
+  @override
+  String get composerWorktreeHint => '从 Git HEAD 创建隔离工作树';
+
+  @override
+  String get composerLocalDirectoryHint => '直接使用项目目录';
+
+  @override
+  String get composerEnvironmentLocked => '正在准备会话，暂时无法更改';
+
+  @override
+  String get composerEffortUnsupported => '当前模型不支持思考强度';
 }

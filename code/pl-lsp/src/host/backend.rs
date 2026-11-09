@@ -18,12 +18,17 @@ pub struct LspHostFileStat {
 }
 
 /// 启动 language server 所需的传输中立参数。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct LspHostSpawnRequest {
     pub process_id: String,
     pub program: String,
     pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
     pub cwd: PathBuf,
+    /// The host must use this token and deadline through its existing supervised
+    /// startup API, retaining ownership until cancellation is acknowledged.
+    pub cancellation: tokio_util::sync::CancellationToken,
+    pub deadline: tokio::time::Instant,
 }
 
 /// 宿主进程的最终退出状态。
@@ -37,12 +42,25 @@ pub struct LspHostProcessExit {
 #[error("{message}")]
 pub struct LspHostError {
     message: String,
+    reclaimed_start_failure: bool,
 }
 
 impl LspHostError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            reclaimed_start_failure: false,
+        }
+    }
+
+    /// A typed business-start failure observed only after the supervisor has
+    /// actually exited, with no business process or cleanup failure remaining.
+    /// This remains an error when observing startup, but is not a failed reclaim.
+    /// Hosts must not use this constructor for transport or cleanup failures.
+    pub fn reclaimed_start_failure(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reclaimed_start_failure: true,
         }
     }
 }
@@ -124,6 +142,9 @@ impl LspHostProcess {
     }
 
     pub(crate) async fn terminate(&mut self) -> Result<(), LspHostError> {
+        if self.startup_failure().is_some() {
+            return Ok(());
+        }
         if matches!(self.terminate, ProcessTermination::Unrequested(_)) {
             let previous = std::mem::replace(&mut self.terminate, ProcessTermination::Sent);
             self.terminate = match previous {
@@ -138,7 +159,20 @@ impl LspHostProcess {
             pending.await;
             self.terminate = ProcessTermination::Sent;
         }
-        self.wait().await.map(|_| ())
+        match self.wait().await {
+            Ok(_) => Ok(()),
+            Err(error) if error.reclaimed_start_failure => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn startup_failure(&self) -> Option<&str> {
+        match &self.wait {
+            ProcessWait::Finished(Err(error)) if error.reclaimed_start_failure => {
+                Some(&error.message)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -164,10 +198,12 @@ pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
         path: &'a Path,
     ) -> BoxFuture<'a, Result<Option<LspHostFileStat>, LspHostError>>;
 
-    /// 列出 workspace 内目录第一层的文件名。
+    /// 列出 workspace 内目录第一层的文件名；超出上限返回可观察错误，
+    /// 宿主不得先无界收集目录再截断。
     fn list_directory<'a>(
         &'a self,
         path: &'a Path,
+        max_entries: usize,
     ) -> BoxFuture<'a, Result<Vec<String>, LspHostError>>;
 
     /// 启动一个 stdio language server；进程树生命周期由宿主维护。
@@ -182,4 +218,59 @@ pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
 pub enum LspPathStyle {
     Native,
     Posix,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn terminal_start_failure_is_still_observable_but_is_already_reclaimed() {
+        let mut process = LspHostProcess::new(
+            None,
+            None,
+            None,
+            async {
+                Err(LspHostError::reclaimed_start_failure(
+                    "business process launch failed (OS error Some(2))",
+                ))
+            },
+            || {
+                Box::pin(async {
+                    panic!("an already-reclaimed process must not be terminated again");
+                })
+            },
+        );
+        assert!(
+            process
+                .wait()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("OS error Some(2)")
+        );
+        process.terminate().await.unwrap();
+        process.terminate().await.unwrap();
+        assert!(
+            process.wait().await.is_err(),
+            "startup failure must not become a successful execution result"
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_failure_is_not_reclassified_by_its_message() {
+        let mut process = LspHostProcess::new(
+            None,
+            None,
+            None,
+            async {
+                Err(LspHostError::new(
+                    "business process launch failed (OS error Some(2))",
+                ))
+            },
+            || Box::pin(async {}),
+        );
+        assert!(process.terminate().await.is_err());
+        assert!(process.terminate().await.is_err());
+    }
 }

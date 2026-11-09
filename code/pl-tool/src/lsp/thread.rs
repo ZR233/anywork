@@ -9,7 +9,7 @@ use pl_core::{
 };
 use pl_lsp::{query::LspQuery, runtime::LspRuntimeRegistry};
 use pl_tool_lsp::support::{
-    CapabilityReader, LspContext, Operation, QueryRequest, QueryResult, QueryService,
+    CapabilityReader, LspContext, Operation, QueryRequest, QueryResult, QueryService, StatusReader,
 };
 use std::sync::Arc;
 
@@ -24,6 +24,10 @@ pub enum LspPathBinding {
 }
 
 impl LspPathBinding {
+    pub fn workspace_root(&self) -> &std::path::Path {
+        self.workspace().root()
+    }
+
     fn workspace(&self) -> &ToolWorkspace {
         match self {
             Self::Local(workspace) | Self::Remote { workspace, .. } => workspace,
@@ -68,6 +72,7 @@ impl LspPathBinding {
 /// Stable LSP tool operations; current service readiness is returned as data, not inserted into schemas.
 #[derive(Debug, Clone, Copy)]
 pub enum LspToolKind {
+    Status,
     Capabilities,
     Query,
 }
@@ -76,6 +81,7 @@ impl LspToolKind {
     /// Stable model declaration for this operation.
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
+            Self::Status => pl_tool_lsp::status::lsp_status_definition(),
             Self::Capabilities => pl_tool_lsp::capabilities::lsp_capabilities_definition(),
             Self::Query => pl_tool_lsp::query::lsp_query_definition(),
         }
@@ -115,6 +121,7 @@ impl ThreadLspTool {
         prepared: pl_core::tool::opaque::PreparedRegistration,
     ) -> Registration {
         let contract = match self.kind {
+            LspToolKind::Status => "builtin.lsp_status@1",
             LspToolKind::Capabilities => "builtin.lsp_capabilities@1",
             LspToolKind::Query => "builtin.lsp_query@1",
         };
@@ -161,6 +168,19 @@ impl pl_agent_tool::Tool for ThreadLspTool {
             cancellation: context.cancellation,
         };
         let (encoded, text) = match self.kind {
+            LspToolKind::Status => {
+                let tool = pl_tool_lsp::status::LspStatusTool::new(self.definition.clone());
+                let result = tool
+                    .execute(input.content().to_owned(), domain_context)
+                    .await
+                    .map_err(|error| match error {
+                        pl_tool_lsp::status::StatusError::Cancelled => {
+                            ToolError::new(pl_core::thread::ThreadError::Cancelled)
+                        }
+                        error => ToolError::new(error),
+                    })?;
+                result.encode().map_err(ToolError::new)?
+            }
             LspToolKind::Capabilities => {
                 let tool =
                     pl_tool_lsp::capabilities::LspCapabilitiesTool::new(self.definition.clone());
@@ -205,6 +225,45 @@ struct ThreadLspPort {
     registry: LspRuntimeRegistry,
     paths: LspPathBinding,
     grant: pl_core::tool::execution_policy::ExecutionGrant,
+}
+impl StatusReader for ThreadLspPort {
+    type Error = ToolError;
+
+    async fn status(&self) -> Result<pl_tool_lsp::support::WorkspaceStatus, ToolError> {
+        let root = self.paths.workspace().root();
+        let servers = self.registry.snapshots_for_workspace(root).await;
+        Ok(pl_tool_lsp::support::WorkspaceStatus {
+            workspace_root: root.display().to_string(),
+            configuration_directory: root.join(".anywork/lsp").display().to_string(),
+            servers: servers
+                .into_iter()
+                .map(|server| pl_tool_lsp::support::ServerStatus {
+                    id: server.id,
+                    display_name: server.display_name,
+                    language_ids: server.language_ids,
+                    configuration_path: server.configuration_path,
+                    phase: match server.phase {
+                        pl_lsp::runtime::LspLifecyclePhase::Loading => "loading",
+                        pl_lsp::runtime::LspLifecyclePhase::Probing => "probing",
+                        pl_lsp::runtime::LspLifecyclePhase::Starting => "starting",
+                        pl_lsp::runtime::LspLifecyclePhase::Initializing => "initializing",
+                        pl_lsp::runtime::LspLifecyclePhase::Ready => "ready",
+                        pl_lsp::runtime::LspLifecyclePhase::Failed => "failed",
+                        pl_lsp::runtime::LspLifecyclePhase::Stopped => "stopped",
+                        pl_lsp::runtime::LspLifecyclePhase::Disabled => "disabled",
+                    }
+                    .to_owned(),
+                    availability: server.availability_kind.as_str().to_owned(),
+                    message: server.availability_message,
+                    activity: server.activity_kind.as_str().to_owned(),
+                    activity_title: server.activity_title,
+                    activity_message: server.activity_message,
+                    activity_percentage: server.activity_percentage,
+                    last_error: server.last_error,
+                })
+                .collect(),
+        })
+    }
 }
 impl CapabilityReader for ThreadLspPort {
     type Error = ToolError;

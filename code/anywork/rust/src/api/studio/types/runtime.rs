@@ -342,6 +342,8 @@ pub struct BridgeLspHealthDto {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeLspServerDto {
     pub id: String,
+    pub configuration_path: Option<String>,
+    pub phase: String,
     pub display_name: String,
     pub extensions: Vec<String>,
     pub language_ids: Vec<String>,

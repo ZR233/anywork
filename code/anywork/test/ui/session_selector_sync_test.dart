@@ -18,6 +18,9 @@ import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/connectors/start_environment_connector.dart';
+import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
@@ -102,15 +105,16 @@ void main() {
     );
   });
 
-  Widget harness(Widget child) => UncontrolledProviderScope(
-    container: container,
-    child: MaterialApp(
-      locale: const Locale('zh'),
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      home: Scaffold(body: Center(child: child)),
-    ),
-  );
+  Widget harness(Widget child, {Locale locale = const Locale('zh')}) =>
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          locale: locale,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: Center(child: child)),
+        ),
+      );
 
   Future<void> closeStartPageFixture(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
@@ -145,6 +149,129 @@ void main() {
       (widget) => widget is Semantics && widget.properties.selected == true,
     ),
   );
+
+  for (final language in ['zh', 'en']) {
+    testWidgets('环境菜单本地化 $language：目标、工作区、分发与锁定说明使用当前语言', (tester) async {
+      final locale = Locale(language);
+      final l10n = await AppLocalizations.delegate.load(locale);
+      final originalId = container
+          .read(selectionStoreProvider)
+          .selectedProjectId!;
+      await tester.pumpWidget(
+        harness(const StartPageComposerDockConnector(), locale: locale),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('start-project-search')),
+            )
+            .decoration!
+            .hintText,
+        l10n.composerProjectSearch,
+      );
+      expect(find.text(l10n.composerNoProject), findsOneWidget);
+      expect(find.text(l10n.composerNewProject), findsOneWidget);
+      if (language == 'en') expect(find.text('无项目'), findsNothing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
+      await tester.pumpAndSettle();
+      expect(find.text(l10n.composerWorktreeHint), findsOneWidget);
+      expect(find.text(l10n.composerLocalDirectoryHint), findsOneWidget);
+      await tester.tap(
+        find.byKey(
+          StudioDriverKeys.sessionWorkspaceModeOption(
+            ThreadWorkspaceMode.worktree.id,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        graph.client.drafts.startDraft.state
+            .forProject(originalId)
+            .workspaceMode,
+        ThreadWorkspaceMode.worktree,
+      );
+
+      await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+      await tester.pumpAndSettle();
+      expect(find.text(l10n.delegationProfile), findsWidgets);
+      expect(find.text(l10n.delegationOnlyAutomatic), findsOneWidget);
+      expect(
+        tester
+            .widget<MenuItemButton>(
+              find.byKey(
+                StudioDriverKeys.delegationPreferenceOption(
+                  'draft',
+                  DelegationPreference.economy,
+                ),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(find.byType(SubmenuButton), findsNothing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('start-project-standalone')));
+      await pumpClientUntil(
+        tester,
+        () =>
+            container.read(selectionStoreProvider).selectedProjectId !=
+            originalId,
+        'localized standalone target',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(l10n.composerNoProject), findsOneWidget);
+      expect(find.text(l10n.composerFixedLocalDirectory), findsOneWidget);
+
+      await tester.pumpWidget(
+        harness(
+          StartEnvironmentConnector(
+            workspaceId: container
+                .read(selectionStoreProvider)
+                .selectedProjectId,
+            enabled: false,
+          ),
+          locale: locale,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byTooltip(l10n.composerEnvironmentLocked), findsNWidgets(2));
+      expect(
+        tester
+            .widget<TextButton>(
+              find.byKey(const ValueKey('start-project-selector')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      await tester.pumpWidget(
+        harness(
+          const ReasoningEffortSelector(
+            accounts: [],
+            accountId: '',
+            modelId: '',
+            effort: null,
+          ),
+          locale: locale,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(l10n.settingsUsageUnsupported), findsOneWidget);
+      expect(find.byTooltip(l10n.composerEffortUnsupported), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await closeStartPageFixture(tester);
+    });
+  }
 
   testWidgets('切换会话模式后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
     final simpleKey = StudioDriverKeys.sessionModeOption(
@@ -496,8 +623,11 @@ void main() {
       '新会话正文',
     );
 
-    final settingsTrigger = tester.widget<IconButton>(
-      find.byKey(StudioDriverKeys.sessionSettings),
+    final settingsTrigger = tester.widget<TextButton>(
+      find.descendant(
+        of: find.byKey(StudioDriverKeys.sessionSettings),
+        matching: find.byType(TextButton),
+      ),
     );
     expect(
       settingsTrigger.onPressed,
@@ -505,8 +635,6 @@ void main() {
       reason:
           'Demo must deliver the canonical mode catalog to enable selectors',
     );
-    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
-    await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
     await tester.pumpAndSettle();
     final worktreeKey = StudioDriverKeys.sessionWorkspaceModeOption(
@@ -521,6 +649,227 @@ void main() {
           .workspaceMode,
       ThreadWorkspaceMode.worktree,
     );
+
+    // 创建栏是外层，输入状态机与运行期共用同一个组件。
+    expect(find.byType(PromptComposerView), findsOneWidget);
+    expect(find.byKey(const ValueKey('start-creation-card')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('start-creation-card'))).width,
+      760,
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubmenuButton), findsNothing);
+    await tester.tap(
+      find.byKey(
+        StudioDriverKeys.delegationModeOption(
+          'draft',
+          DelegationMode.automatic,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        StudioDriverKeys.delegationPreferenceOption(
+          'draft',
+          DelegationPreference.economy,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final configured = container
+        .read(startSessionControllerProvider)
+        .forProject(workspaceId);
+    expect(configured.delegationModeOverride, DelegationMode.automatic);
+    expect(
+      configured.delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+    expect(find.text('自动选模 · 经济'), findsOneWidget);
+    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        StudioDriverKeys.delegationModeOption('draft', DelegationMode.profile),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+    await tester.pumpAndSettle();
+    final preference = tester.widget<MenuItemButton>(
+      find.byKey(
+        StudioDriverKeys.delegationPreferenceOption(
+          'draft',
+          DelegationPreference.economy,
+        ),
+      ),
+    );
+    expect(preference.onPressed, isNull);
+    expect(
+      container
+          .read(startSessionControllerProvider)
+          .forProject(workspaceId)
+          .delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+  });
+
+  testWidgets('创建栏切换项目与无项目时恢复各自草稿和配置，不迁移正文', (tester) async {
+    final firstId = container.read(selectionStoreProvider).selectedProjectId!;
+    graph.client.drafts.attachments.seedNewThreadIfEmpty(
+      firstId,
+      const ComposerThreadState.idle(
+        attachments: [
+          AttachmentDraftView(
+            id: 'project-attachment',
+            modality: AttachmentModalityView.file,
+            mediaType: 'text/plain',
+            filename: 'project-context.txt',
+            byteSize: 12,
+          ),
+        ],
+      ),
+    );
+    var addProjectCalls = 0;
+    await tester.pumpWidget(
+      harness(
+        StartPageComposerDockConnector(onAddProject: () => addProjectCalls++),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final input = find.byKey(StudioDriverKeys.composerInput);
+    await tester.enterText(input, '项目自己的草稿');
+    graph.client.drafts.startDraft.setWorkspaceMode(
+      firstId,
+      ThreadWorkspaceMode.worktree,
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+    await tester.pumpAndSettle();
+    final search = find.byKey(const ValueKey('start-project-search'));
+    await tester.enterText(search, '不存在的项目');
+    await tester.pumpAndSettle();
+    expect(find.byKey(ValueKey('start-project-$firstId')), findsNothing);
+    await tester.enterText(search, '');
+    await tester.pumpAndSettle();
+    expect(find.byKey(ValueKey('start-project-$firstId')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('start-project-add')));
+    await tester.pumpAndSettle();
+    expect(addProjectCalls, 1);
+    expect(container.read(selectionStoreProvider).selectedProjectId, firstId);
+    expect(tester.widget<TextField>(input).controller!.text, '项目自己的草稿');
+    await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('start-project-standalone')));
+    await pumpClientUntil(
+      tester,
+      () => container.read(selectionStoreProvider).selectedProjectId != firstId,
+      'select standalone target',
+    );
+    await tester.pumpAndSettle();
+    final standaloneId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
+    expect(standaloneId, isNot(firstId));
+    expect(tester.widget<TextField>(input).controller!.text, isEmpty);
+    expect(find.text('project-context.txt'), findsNothing);
+    expect(find.text('固定本地目录'), findsOneWidget);
+    await tester.enterText(input, '无项目自己的草稿');
+
+    await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('start-project-$firstId')));
+    await pumpClientUntil(
+      tester,
+      () => container.read(selectionStoreProvider).selectedProjectId == firstId,
+      'restore project target',
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(input).controller!.text, '项目自己的草稿');
+    expect(find.text('project-context.txt'), findsOneWidget);
+    expect(
+      container
+          .read(startSessionControllerProvider)
+          .forProject(firstId)
+          .workspaceMode,
+      ThreadWorkspaceMode.worktree,
+    );
+    expect(
+      container
+          .read(startSessionControllerProvider)
+          .forProject(standaloneId)
+          .text,
+      '无项目自己的草稿',
+    );
+
+    await tester.tap(find.byKey(const ValueKey('start-project-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('start-project-standalone')));
+    await pumpClientUntil(
+      tester,
+      () =>
+          container.read(selectionStoreProvider).selectedProjectId ==
+          standaloneId,
+      'restore standalone target',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      container.read(selectionStoreProvider).selectedProjectId,
+      standaloneId,
+    );
+    expect(tester.widget<TextField>(input).controller!.text, '无项目自己的草稿');
+    expect(find.text('project-context.txt'), findsNothing);
+    await closeStartPageFixture(tester);
+  });
+
+  testWidgets('窄窗长名称及两倍文字时输入、选择器与主按钮不发生布局溢出', (tester) async {
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
+    await pumpClientFuture(
+      tester,
+      transport.renameProject(workspaceId, '一个非常非常长的项目名称用于检验换行和截断行为'),
+      'rename long project',
+    );
+    tester.view.physicalSize = const Size(360, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          locale: const Locale('zh'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: TextScaler.linear(2)),
+            child: child!,
+          ),
+          home: const Scaffold(
+            body: SingleChildScrollView(
+              child: StartPageComposerDockConnector(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(StudioDriverKeys.composerInput), '窄窗草稿');
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(StudioDriverKeys.composerSubmit), findsOneWidget);
+    final sendRect = tester.getRect(
+      find.byKey(StudioDriverKeys.composerSubmit),
+    );
+    expect(sendRect.left, greaterThanOrEqualTo(0));
+    expect(sendRect.right, lessThanOrEqualTo(360));
+    expect(find.byType(StartEnvironmentView), findsOneWidget);
   });
 
   testWidgets('起始页Recovery诊断完整可滚动且附件错误不被遮蔽', (tester) async {
@@ -669,12 +1018,34 @@ void main() {
         reason:
             'an unmodified Enter must share the send button submission path',
       );
+      for (final key in [
+        const ValueKey('start-project-selector'),
+        StudioDriverKeys.sessionWorkspaceMode,
+        StudioDriverKeys.sessionSettings,
+      ]) {
+        final target = find.byKey(key);
+        final button = tester.widget<TextButton>(
+          tester.widget(target) is TextButton
+              ? target
+              : find.descendant(of: target, matching: find.byType(TextButton)),
+        );
+        expect(button.onPressed, isNull, reason: '创建在途时冻结目标和外层配置');
+      }
+      expect(tester.widget<TextField>(input).enabled, isTrue);
+      await tester.enterText(input, '准备时编辑的下一条草稿');
+      await tester.pump();
       await pumpClientFuture(
         tester,
         graph.client.drafts.startDraft.source.waitFor(
           (state) => !state.submitting,
         ),
         'Enter submission terminal',
+      );
+      expect(
+        graph.client.drafts.startDraft.state
+            .forProject(graph.client.selection.state.selectedProjectId!)
+            .text,
+        '准备时编辑的下一条草稿',
       );
       final createdThreadId = graph.client.selection.state.selectedThreadId!;
       await pumpClientFuture(
@@ -946,6 +1317,15 @@ void main() {
       expect(running.isBusy, isTrue, reason: '提交受理后 Turn 进入运行态');
       final stopButton = find.byKey(StudioDriverKeys.composerStop);
       expect(stopButton, findsOneWidget, reason: '草稿清空后停止按钮必须出现');
+      final lockedGeometry = {
+        for (final key in [
+          StudioDriverKeys.sessionMode,
+          StudioDriverKeys.model,
+          StudioDriverKeys.reasoningEffort,
+        ])
+          key: tester.getRect(find.byKey(key)),
+      };
+      expect(find.byIcon(Icons.lock), findsNothing);
 
       await tester.tap(stopButton);
       await tester.pumpAndSettle();
@@ -954,6 +1334,11 @@ void main() {
           .read(composerDockViewModelProvider(threadId))
           .requireValue;
       expect(stopped.isBusy, isFalse, reason: '停止必须等到 canonical 终态，不是 ACK');
+      for (final entry in lockedGeometry.entries) {
+        final unlocked = tester.getRect(find.byKey(entry.key));
+        expect(unlocked.left, entry.value.left, reason: '配置解锁不改变横向位置');
+        expect(unlocked.size, entry.value.size, reason: '配置解锁保留触发器几何');
+      }
       expect(
         stopped.hasActiveWorkflow,
         isTrue,

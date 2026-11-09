@@ -39,27 +39,17 @@ impl RpcClient {
         let id = RequestId::from(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
-        if self
-            .outbound
-            .send(Request::new(id.clone(), method.to_string(), params).into())
-            .await
-            .is_err()
-        {
-            self.pending.lock().await.remove(&id);
-            return Err(LspRuntimeError::Unavailable(
-                "LSP writer channel closed".to_string(),
-            ));
-        }
-        match tokio::time::timeout(timeout, receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(LspRuntimeError::Unavailable(format!(
-                "LSP request channel closed for {method}"
-            ))),
-            Err(_) => {
-                self.pending.lock().await.remove(&id);
-                Err(LspRuntimeError::Timeout(method.to_string()))
-            }
-        }
+        let result = tokio::time::timeout(timeout, async {
+            self.outbound
+                .send(Request::new(id.clone(), method.to_string(), params).into())
+                .await?;
+            receiver.await.map_err(|_| {
+                LspRuntimeError::Unavailable(format!("LSP request channel closed for {method}"))
+            })?
+        })
+        .await;
+        self.pending.lock().await.remove(&id);
+        result.unwrap_or_else(|_| Err(LspRuntimeError::Timeout(method.to_string())))
     }
 
     pub(crate) async fn notify(&self, method: &str, params: Value) -> LspResult<()> {
@@ -91,6 +81,8 @@ impl RpcClient {
     }
 
     async fn send(&self, message: Message) -> LspResult<()> {
-        self.outbound.send(message).await
+        tokio::time::timeout(Duration::from_secs(30), self.outbound.send(message))
+            .await
+            .map_err(|_| LspRuntimeError::Timeout("LSP notification write".into()))?
     }
 }

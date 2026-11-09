@@ -2930,22 +2930,56 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLspSubtitle =>
-      'Last-known project language server status and explicit lifecycle commands.';
+      'View language server configuration sources, lifecycle phases, and runtime status.';
 
   @override
   String get settingsLspRefresh => 'Refresh';
 
   @override
-  String get settingsLspProbe => 'Probe';
-
-  @override
-  String get settingsLspRepair => 'Repair';
+  String get settingsLspReload => 'Reload and initialize';
 
   @override
   String get settingsLspReset => 'Reset';
 
   @override
   String get settingsLspResetWorkspace => 'Reset workspace';
+
+  @override
+  String get settingsLspConfigurationMissing => 'Configuration file not found';
+
+  @override
+  String settingsLspConfigurationHint(Object id) {
+    return 'Configure this server in .anywork/lsp/$id.toml.';
+  }
+
+  @override
+  String settingsLspPhase(Object phase) {
+    return 'Phase: $phase';
+  }
+
+  @override
+  String get settingsLspPhaseLoading => 'Loading configuration';
+
+  @override
+  String get settingsLspPhaseProbing => 'Probing';
+
+  @override
+  String get settingsLspPhaseStarting => 'Starting';
+
+  @override
+  String get settingsLspPhaseInitializing => 'Initializing';
+
+  @override
+  String get settingsLspPhaseReady => 'Ready';
+
+  @override
+  String get settingsLspPhaseFailed => 'Failed';
+
+  @override
+  String get settingsLspPhaseStopped => 'Stopped';
+
+  @override
+  String get settingsLspPhaseDisabled => 'Disabled';
 
   @override
   String get settingsLspActivityIndexing => 'Indexing';
@@ -2958,7 +2992,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLspEmptyMessage =>
-      'Activate a supported project to create language server membership.';
+      'Add an LSP configuration file to load and initialize a language server.';
 
   @override
   String get settingsSecurityTitle => 'Security';
@@ -5558,7 +5592,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get delegationPreferenceLabel => 'Automatic preference';
 
   @override
-  String get delegationProfile => 'Fixed Profile';
+  String get delegationProfile => 'Fixed configuration template';
 
   @override
   String get delegationAutomatic => 'Automatic model selection';
@@ -5574,7 +5608,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get delegationOnlyAutomatic =>
-      'Only applies to automatic model selection. The value is kept in fixed Profile mode.';
+      'Only applies to automatic model selection. The value is kept in fixed configuration template mode.';
 
   @override
   String get delegationEconomyHint =>
@@ -6275,4 +6309,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String timelineGroupActiveCount(int count) {
     return '$count running';
   }
+
+  @override
+  String get composerNoProject => 'No project';
+
+  @override
+  String get composerProjectSearch => 'Search projects, paths or SSH';
+
+  @override
+  String get composerNewProject => 'New project…';
+
+  @override
+  String get composerFixedLocalDirectory => 'Fixed local directory';
+
+  @override
+  String get composerWorktreeHint =>
+      'Create an isolated worktree from Git HEAD';
+
+  @override
+  String get composerLocalDirectoryHint => 'Use the project directory directly';
+
+  @override
+  String get composerEnvironmentLocked =>
+      'Preparing the session; settings cannot be changed yet';
+
+  @override
+  String get composerEffortUnsupported =>
+      'The current model does not support reasoning effort';
 }

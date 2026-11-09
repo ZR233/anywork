@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use pl_lsp::runtime::{
-    LspActivityKind, LspAvailabilityKind, LspRuntimeRegistry, LspServerSnapshot,
+    LspActivityKind, LspAvailabilityKind, LspLifecyclePhase, LspRuntimeRegistry, LspServerSnapshot,
 };
 use pl_protocol::{
     ObservedResource, ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation,
@@ -15,6 +15,14 @@ use crate::{
     LspUnavailable, ProductEventBus, StudioLspHealth, StudioLspServer, StudioLspServerState,
     StudioLspStateSnapshot,
 };
+
+/// Stable execution endpoint, independent of transport reconnects and worker fd leases.
+pub(crate) fn execution_endpoint(ssh_alias: Option<&str>) -> String {
+    match ssh_alias {
+        Some(alias) => format!("ssh:{alias}"),
+        None => "local".to_owned(),
+    }
+}
 
 /// LSP published state 的唯一 owner。
 #[derive(Clone)]
@@ -167,12 +175,27 @@ pub(super) async fn health(registry: &LspRuntimeRegistry) -> StudioLspHealth {
             .map(|server| StudioLspServer {
                 state: lsp_server_state(&server, observed_at),
                 id: server.id,
+                configuration_path: server.configuration_path,
+                phase: lsp_lifecycle_phase(server.phase).to_string(),
                 display_name: server.display_name,
                 extensions: server.extensions,
                 language_ids: server.language_ids,
             })
             .collect(),
         active_lsp_servers,
+    }
+}
+
+fn lsp_lifecycle_phase(phase: LspLifecyclePhase) -> &'static str {
+    match phase {
+        LspLifecyclePhase::Loading => "loading",
+        LspLifecyclePhase::Probing => "probing",
+        LspLifecyclePhase::Starting => "starting",
+        LspLifecyclePhase::Initializing => "initializing",
+        LspLifecyclePhase::Ready => "ready",
+        LspLifecyclePhase::Failed => "failed",
+        LspLifecyclePhase::Stopped => "stopped",
+        LspLifecyclePhase::Disabled => "disabled",
     }
 }
 
@@ -227,9 +250,6 @@ fn lsp_server_state(server: &LspServerSnapshot, observed_at: i64) -> StudioLspSe
         }
         LspAvailabilityKind::MissingCommand => {
             unavailable_lsp_state(server, observed_at, "lspCommandMissing")
-        }
-        LspAvailabilityKind::MissingServerComponent(_) => {
-            unavailable_lsp_state(server, observed_at, "lspComponentMissing")
         }
     }
 }

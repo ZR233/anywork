@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::builtin::builtin_rust_analyzer;
 use super::{LspServerDefinition, LspUserServerConfig};
 use crate::driver::LspServerDriver;
 
@@ -34,7 +33,7 @@ pub enum LspCatalogError {
     },
 }
 
-/// 内置定义与用户配置合并后的 server catalog。
+/// 显式提供的服务器定义集合；空集合不包含任何默认服务器。
 #[derive(Clone, Default)]
 pub struct LspServerCatalog {
     servers: BTreeMap<String, LspCatalogServer>,
@@ -54,16 +53,10 @@ impl LspServerCatalog {
         Self::default()
     }
 
-    pub fn builtin() -> Self {
-        let mut catalog = Self::empty();
-        let _ = catalog.insert(builtin_rust_analyzer());
-        catalog
-    }
-
     pub fn with_user_servers(
         user_servers: &BTreeMap<String, LspUserServerConfig>,
     ) -> Result<Self, LspCatalogError> {
-        let mut catalog = Self::builtin();
+        let mut catalog = Self::empty();
         for (server_id, config) in user_servers {
             catalog.insert_checked(config.to_catalog_server(server_id))?;
         }

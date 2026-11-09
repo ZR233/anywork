@@ -216,6 +216,11 @@ impl StudioThreadFactory {
             .backend
             .is_some()
             .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
+        let lsp = self.services.lsp_runtime.execution_scope(
+            &crate::studio::runtime::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
+        );
+        // File backends, semantic tools and status must retain the same endpoint view.
+        let workspace = workspace.with_lsp_runtime(Some(lsp.clone()));
         let root = workspace.root().to_owned();
         let remote = if verified_local.is_some() {
             if project.ssh_alias.is_some() {
@@ -347,7 +352,7 @@ impl StudioThreadFactory {
             StudioWorkspaceTools {
                 binding,
                 store,
-                helper_source,
+                helper_source: helper_source.clone(),
                 host_scratch: self
                     .services
                     .store
@@ -456,6 +461,45 @@ impl StudioThreadFactory {
             reviewer,
         };
         if config.runtime.tool_capabilities.lsp {
+            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
+                Some(host) => Some(Arc::new(host.clone())),
+                None => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        match crate::worker_assets::local_worker(helper_source.clone()).await {
+                            Ok(worker) => pl_tool::lsp::LocalLspHostBackend::new(
+                                root.clone(),
+                                worker,
+                            )
+                            .map(|host| {
+                                Some(Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
+                            })
+                            .unwrap_or_else(|error| {
+                                tracing::warn!(%error, "LSP host preparation failed");
+                                None
+                            }),
+                            Err(error) => pl_tool::lsp::LocalLspHostBackend::unavailable(
+                                root.clone(),
+                                format!("LSP supervised worker preparation failed: {error}"),
+                            )
+                            .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
+                            .ok(),
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        None
+                    }
+                }
+            };
+            let defaults = remote
+                .is_none()
+                .then(|| self.services.store.paths().home().join("lsp/host"));
+            lsp.configure_workspace_from_directory(&root, host, defaults)
+                .await;
+            if matches!(&preparation, CatalogPreparation::Refresh { .. }) {
+                lsp.refresh_workspace_configuration(&root).await;
+            }
             let paths = match &remote {
                 Some(host) => pl_tool::lsp::LspPathBinding::Remote {
                     workspace: workspace.clone(),
@@ -463,7 +507,7 @@ impl StudioThreadFactory {
                 },
                 None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
             };
-            tools = tools.with_lsp(self.services.lsp_runtime.clone(), paths)?;
+            tools = tools.with_lsp(lsp.clone(), paths).await?;
         }
         if thread_id == root_thread_id {
             tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;

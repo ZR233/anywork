@@ -1472,16 +1472,36 @@
   "settingsMcpEmptyTitle": "No MCP servers",
   "settingsMcpEmptyMessage": "Configured MCP servers will appear here.",
   "settingsLspTitle": "Language servers",
-  "settingsLspSubtitle": "Last-known project language server status and explicit lifecycle commands.",
+  "settingsLspSubtitle": "View language server configuration sources, lifecycle phases, and runtime status.",
   "settingsLspRefresh": "Refresh",
-  "settingsLspProbe": "Probe",
-  "settingsLspRepair": "Repair",
+  "settingsLspReload": "Reload and initialize",
   "settingsLspReset": "Reset",
   "settingsLspResetWorkspace": "Reset workspace",
+  "settingsLspConfigurationMissing": "Configuration file not found",
+  "settingsLspConfigurationHint": "Configure this server in .anywork/lsp/{id}.toml.",
+  "@settingsLspConfigurationHint": {
+    "placeholders": {
+      "id": {}
+    }
+  },
+  "settingsLspPhase": "Phase: {phase}",
+  "@settingsLspPhase": {
+    "placeholders": {
+      "phase": {}
+    }
+  },
+  "settingsLspPhaseLoading": "Loading configuration",
+  "settingsLspPhaseProbing": "Probing",
+  "settingsLspPhaseStarting": "Starting",
+  "settingsLspPhaseInitializing": "Initializing",
+  "settingsLspPhaseReady": "Ready",
+  "settingsLspPhaseFailed": "Failed",
+  "settingsLspPhaseStopped": "Stopped",
+  "settingsLspPhaseDisabled": "Disabled",
   "settingsLspActivityIndexing": "Indexing",
   "settingsLspActivityBusy": "Busy",
   "settingsLspEmptyTitle": "No language servers",
-  "settingsLspEmptyMessage": "Activate a supported project to create language server membership.",
+  "settingsLspEmptyMessage": "Add an LSP configuration file to load and initialize a language server.",
   "settingsSecurityTitle": "Security",
   "settingsSecuritySubtitle": "Choose the default approval posture for this workspace.",
   "settingsSecurityModeSubtitle": "Tool execution permission is fixed to full access; workspace and worktree boundaries are not relaxed.",
@@ -2760,12 +2780,12 @@
   "delegationDefaultPreference": "Default automatic preference",
   "delegationModeLabel": "Delegation mode",
   "delegationPreferenceLabel": "Automatic preference",
-  "delegationProfile": "Fixed Profile",
+  "delegationProfile": "Fixed configuration template",
   "delegationAutomatic": "Automatic model selection",
   "delegationEconomy": "Economy",
   "delegationBalanced": "Balanced",
   "delegationFast": "Fast",
-  "delegationOnlyAutomatic": "Only applies to automatic model selection. The value is kept in fixed Profile mode.",
+  "delegationOnlyAutomatic": "Only applies to automatic model selection. The value is kept in fixed configuration template mode.",
   "delegationEconomyHint": "Prefer lower expected total cost while meeting task capability and quality needs. Unknown prices are not free.",
   "delegationBalancedHint": "Balance task fit, recent evaluations, cost, and completion time without lowering quality requirements.",
   "delegationFastHint": "Prefer shorter overall completion time while meeting capability, quality, and review requirements.",
@@ -3027,5 +3047,13 @@
   "timelineGroupCompletedCount": "{count} completed",
   "@timelineGroupCompletedCount": {"placeholders": {"count": {"type": "int"}}},
   "timelineGroupActiveCount": "{count} running",
-  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}}
+  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
+  "composerNoProject": "No project",
+  "composerProjectSearch": "Search projects, paths or SSH",
+  "composerNewProject": "New project…",
+  "composerFixedLocalDirectory": "Fixed local directory",
+  "composerWorktreeHint": "Create an isolated worktree from Git HEAD",
+  "composerLocalDirectoryHint": "Use the project directory directly",
+  "composerEnvironmentLocked": "Preparing the session; settings cannot be changed yet",
+  "composerEffortUnsupported": "The current model does not support reasoning effort"
 }

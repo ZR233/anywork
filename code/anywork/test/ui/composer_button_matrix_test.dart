@@ -685,7 +685,7 @@ void main() {
     );
     expect(
       tester
-          .widget<FilledButton>(find.byKey(StudioDriverKeys.composerContinue))
+          .widget<IconButton>(find.byKey(StudioDriverKeys.composerContinue))
           .onPressed,
       isNull,
       reason: 'canonical 阻塞仍决定准入',
@@ -883,7 +883,7 @@ void main() {
     );
     expect(
       tester
-          .widget<FilledButton>(find.byKey(StudioDriverKeys.composerContinue))
+          .widget<IconButton>(find.byKey(StudioDriverKeys.composerContinue))
           .onPressed,
       isNull,
       reason: '准入仍只由 canonical 阻塞决定',

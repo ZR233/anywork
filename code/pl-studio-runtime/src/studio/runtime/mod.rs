@@ -34,7 +34,7 @@ mod delegation_models;
 mod directory_observation;
 mod history;
 mod lifecycle;
-mod lsp_state;
+pub(in crate::studio) mod lsp_state;
 mod mcp_api;
 mod mode_definitions;
 mod model_catalog;

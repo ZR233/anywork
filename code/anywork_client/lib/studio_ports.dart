@@ -342,7 +342,6 @@ abstract class StudioTransport
   });
   Future<LspStateSnapshot> readLspState();
   Future<LspStateSnapshot> probeLspServer(String workspaceId);
-  Future<LspStateSnapshot> repairLspServer(String workspaceId, String serverId);
   Future<LspStateSnapshot> resetLspServer(String workspaceId, String serverId);
   Future<LspStateSnapshot> resetLspWorkspace(String workspaceId);
 

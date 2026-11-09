@@ -125,6 +125,10 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
                 }
               : widget.onBlockedTap,
           style: TextButton.styleFrom(
+            overlayColor: widget.enabled ? null : Colors.transparent,
+            enabledMouseCursor: widget.enabled
+                ? null
+                : SystemMouseCursors.basic,
             padding: EdgeInsets.zero,
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -428,9 +432,6 @@ class ReasoningEffortSelector extends StatelessWidget {
             currentModel?.descriptor,
             null,
           );
-    if (selectedEffort == null && efforts.isEmpty) {
-      return const SizedBox.shrink();
-    }
     final unavailable =
         selectedEffort == null || !efforts.contains(selectedEffort);
     final label = unavailable
@@ -445,7 +446,11 @@ class ReasoningEffortSelector extends StatelessWidget {
         blockedReason == null;
     return _QuietSelectorMenu<String>(
       key: StudioDriverKeys.reasoningEffort,
-      tooltip: blockedReason ?? context.l10n.statusReasoningEffort,
+      tooltip:
+          blockedReason ??
+          (efforts.isEmpty
+              ? context.l10n.composerEffortUnsupported
+              : context.l10n.statusReasoningEffort),
       enabled: selectionEnabled,
       // 与模型选择器同一规则：禁用必须解释，不能静默吞掉点击。
       onBlockedTap: blockedReason != null
@@ -470,11 +475,14 @@ class ReasoningEffortSelector extends StatelessWidget {
             child: Text(effort),
           ),
       ],
-      child: StudioMenuLabel(
-        key: StudioDriverKeys.reasoningEffortLabel,
-        label: label,
-        enabled: selectionEnabled,
-        maxWidth: 140,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 96),
+        child: StudioMenuLabel(
+          key: StudioDriverKeys.reasoningEffortLabel,
+          label: efforts.isEmpty ? context.l10n.settingsUsageUnsupported : label,
+          enabled: selectionEnabled,
+          maxWidth: 140,
+        ),
       ),
     );
   }

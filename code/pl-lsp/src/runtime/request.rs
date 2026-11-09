@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use serde_json::Value;
 
 use crate::client::uri::file_uri;
 use crate::client::{LspClient, with_content_modified_retries};
-use crate::query::{LspDiagnostic, LspQuery, LspQueryOperation};
+use crate::query::{LspQuery, LspQueryOperation};
 
 use super::{LspResult, LspRuntimeError, ResolvedLspServer};
 
@@ -235,16 +234,4 @@ pub(crate) fn extensions_for_language(
     } else {
         Vec::new()
     }
-}
-
-pub(crate) fn diagnostic_counts(
-    diagnostics: &HashMap<String, Vec<LspDiagnostic>>,
-) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-    for values in diagnostics.values() {
-        for diagnostic in values {
-            *counts.entry(diagnostic.server_id.clone()).or_insert(0) += 1;
-        }
-    }
-    counts
 }

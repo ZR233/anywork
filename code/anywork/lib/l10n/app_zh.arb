@@ -1014,16 +1014,36 @@
   "settingsMcpEmptyTitle": "没有 MCP 服务器",
   "settingsMcpEmptyMessage": "已配置的 MCP 服务器会显示在这里。",
   "settingsLspTitle": "语言服务器",
-  "settingsLspSubtitle": "显示项目最近一次语言服务器状态，可刷新、探测、修复或重置。",
+  "settingsLspSubtitle": "查看语言服务器配置来源、生命周期阶段和运行状态。",
   "settingsLspRefresh": "刷新",
-  "settingsLspProbe": "探测",
-  "settingsLspRepair": "修复",
+  "settingsLspReload": "重载并初始化",
   "settingsLspReset": "重置",
   "settingsLspResetWorkspace": "重置工作区",
+  "settingsLspConfigurationMissing": "未找到配置文件",
+  "settingsLspConfigurationHint": "请在 .anywork/lsp/{id}.toml 中配置服务器。",
+  "@settingsLspConfigurationHint": {
+    "placeholders": {
+      "id": {}
+    }
+  },
+  "settingsLspPhase": "阶段：{phase}",
+  "@settingsLspPhase": {
+    "placeholders": {
+      "phase": {}
+    }
+  },
+  "settingsLspPhaseLoading": "加载配置",
+  "settingsLspPhaseProbing": "探测中",
+  "settingsLspPhaseStarting": "启动中",
+  "settingsLspPhaseInitializing": "初始化中",
+  "settingsLspPhaseReady": "就绪",
+  "settingsLspPhaseFailed": "失败",
+  "settingsLspPhaseStopped": "已停止",
+  "settingsLspPhaseDisabled": "已禁用",
   "settingsLspActivityIndexing": "正在索引",
   "settingsLspActivityBusy": "忙碌",
   "settingsLspEmptyTitle": "没有语言服务器",
-  "settingsLspEmptyMessage": "打开受支持的项目后，系统会自动关联相应的语言服务器。",
+  "settingsLspEmptyMessage": "添加 LSP 配置文件后，系统会加载并初始化相应的语言服务器。",
   "settingsSecurityTitle": "安全",
   "settingsSecuritySubtitle": "选择此工作区默认审批姿态。",
   "settingsSecurityModeSubtitle": "工具执行权限固定为完全访问；工作区与 worktree 边界不因此放宽。",
@@ -2201,12 +2221,12 @@
   "delegationDefaultPreference": "默认自动选模偏好",
   "delegationModeLabel": "分发模式",
   "delegationPreferenceLabel": "自动选模偏好",
-  "delegationProfile": "固定 Profile",
+  "delegationProfile": "固定配置模板",
   "delegationAutomatic": "自动选模",
   "delegationEconomy": "经济",
   "delegationBalanced": "平衡",
   "delegationFast": "快速",
-  "delegationOnlyAutomatic": "仅自动选模时生效；固定 Profile 模式下保留该值。",
+  "delegationOnlyAutomatic": "仅自动选模时生效；固定配置模板模式下保留该值。",
   "delegationEconomyHint": "满足任务能力与质量要求后，优先降低预计整体成本；未知价格不当免费。",
   "delegationBalancedHint": "综合任务适配、近期评价、成本与完成时间，不降低质量要求。",
   "delegationFastHint": "满足能力、质量与审查要求后，优先缩短整体完成时间。",
@@ -2408,5 +2428,13 @@
   "timelineGroupCompletedCount": "{count} 完成",
   "@timelineGroupCompletedCount": {"placeholders": {"count": {"type": "int"}}},
   "timelineGroupActiveCount": "{count} 进行中",
-  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}}
+  "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
+  "composerNoProject": "无项目",
+  "composerProjectSearch": "搜索项目、路径或 SSH",
+  "composerNewProject": "新建项目…",
+  "composerFixedLocalDirectory": "固定本地目录",
+  "composerWorktreeHint": "从 Git HEAD 创建隔离工作树",
+  "composerLocalDirectoryHint": "直接使用项目目录",
+  "composerEnvironmentLocked": "正在准备会话，暂时无法更改",
+  "composerEffortUnsupported": "当前模型不支持思考强度"
 }
