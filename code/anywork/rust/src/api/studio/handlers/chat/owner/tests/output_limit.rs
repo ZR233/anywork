@@ -11,8 +11,7 @@ use super::*;
 use crate::api::studio::types::{
     BridgeActivityIdentity, BridgeActivitySnapshot, BridgeChatAtomKind, BridgeChatAtomLifecycle,
     BridgeChatContentRole, BridgeChatPlacement, BridgeContentOwner, BridgeContentRange,
-    BridgeContentRef, BridgeContentTarget, BridgeContentWindow, BridgeThreadNotification,
-    BridgeThreadSubscriptionUpdate, BridgeTurnState,
+    BridgeContentRef, BridgeContentTarget, BridgeContentWindow,
 };
 
 /// `gui_streaming_output_reply(1, 1)` streams one item of 128000 reference tokens as " a" pairs.
@@ -111,38 +110,6 @@ async fn next_frame(
     );
     *sent = frame.delivery_sequence;
     Ok(frame)
-}
-
-fn inspect_state(
-    update: &BridgeThreadSubscriptionUpdate,
-    terminal: &mut Option<String>,
-) -> Result<()> {
-    let BridgeThreadSubscriptionUpdate::Notification { notification } = update else {
-        return Ok(());
-    };
-    match &notification.notification {
-        BridgeThreadNotification::TurnCompleted { turn } => {
-            // Only the followup Turn is tracked; the subscription may still replay the
-            // initial Turn's historical completion notification.
-            if turn.input_id.as_deref() == Some("input-bridge-live") {
-                ensure!(
-                    matches!(turn.state, BridgeTurnState::Completed { .. }),
-                    "real output Turn failed: {:?}",
-                    turn.state
-                );
-                ensure!(
-                    terminal.replace(turn.id.clone()).is_none(),
-                    "duplicate typed terminal for Turn {}",
-                    turn.id
-                );
-            }
-        }
-        BridgeThreadNotification::Lagged { dropped } => {
-            anyhow::bail!("Main subscription lagged and dropped {dropped} notifications");
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn running_execution<'a>(snapshot: &'a ThreadSnapshot, turn_id: &str) -> Option<&'a str> {
@@ -361,17 +328,18 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
         inner: Arc::clone(&owner),
     };
     let mut port = start_port(&owner).await;
+    let state_feed = env
+        .runtime
+        .open_conversation_state_feed(&env.thread_id)
+        .await?;
+    let state_owner = managed_state(state_feed);
+    let mut state_port = start_port(&state_owner).await;
     let mut sent = 0;
     let observation = tokio::time::timeout(Duration::from_secs(120), async {
         // Reliable Main first: the initial real Set must arrive before the followup is submitted.
-        let mut ignored_terminal = None;
         let initial = loop {
             let frame = next_frame(&owner, &mut port, &mut sent).await?;
             match frame.event {
-                BridgeConversationEvent::State { update } => {
-                    inspect_state(&update, &mut ignored_terminal)?;
-                    owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
-                }
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(batch.placement == BridgeChatPlacement::Set);
                     ensure!(batch.from_seq.is_none());
@@ -416,18 +384,16 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
         let observe =
             async {
                 let result = async {
-                let mut terminal = None;
                 let mut retired = false;
                 let mut handed_off: Option<LiveBodyTarget> = None;
                 let mut appended: Vec<(String, Option<String>)> = Vec::new();
                 let mut activity_revision = 0;
-                while terminal.is_none() || !retired {
-                    let frame = next_frame(&owner, &mut port, &mut sent).await?;
+                let mut last_activity = None;
+                while !retired {
+                    let frame = next_frame(&owner, &mut port, &mut sent).await.with_context(|| {
+                        format!("content wait: retired={retired}; activity_revision={activity_revision}; last_activity={last_activity:?}")
+                    })?;
                     match frame.event {
-                        BridgeConversationEvent::State { update } => {
-                            inspect_state(&update, &mut terminal)?;
-                            owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
-                        }
                         BridgeConversationEvent::Chat { batch } => {
                             let batch = *batch;
                             ensure!(
@@ -463,6 +429,7 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                             ensure!(snapshot.completed_through == accepted_through,
                                 "Activity crossed its checked completion prefix");
                             activity_revision = snapshot.revision;
+                            last_activity = Some((snapshot.execution_present, snapshot.entries.len()));
                             if let Some(target) = live_body_target(&snapshot)? {
                                 if let Some(previous) = &handed_off {
                                     ensure!(
@@ -478,20 +445,23 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                                     handed_off = Some(target);
                                 }
                             }
-                            retired = handed_off.as_ref().is_some_and(|target| {
-                                !snapshot.execution_present
-                                    && !snapshot.entries.iter().any(|entry| {
-                                        entry.atom.turn_id.as_deref()
-                                            == Some(target.turn_id.as_str())
-                                    })
-                            });
+                            if let Some(target) = &handed_off {
+                                retired = !snapshot.entries.iter().any(|entry| {
+                                    matches!(&entry.identity,
+                                        BridgeActivityIdentity::ModelPart { atom_id }
+                                            if atom_id == &target.display_id)
+                                });
+                                if retired {
+                                    ensure!(appended.iter().any(|(id, _)| id == &target.display_id),
+                                        "Activity member retired before its completion prefix was accepted");
+                                }
+                            }
                             owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                         }
                         event => anyhow::bail!("unexpected live event: {event:?}"),
                     }
                 }
                 Ok((
-                    terminal.context("typed terminal vanished")?,
                     handed_off.context("Main retired without a live body target")?,
                     appended,
                 ))
@@ -501,10 +471,15 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
                 result
             };
         // The one-time identity transfer is synchronous; both owners stay joined on any failure.
-        let (main, body) = tokio::join!(observe, consume);
-        let (terminal_turn, target, appended) =
+        let (main, body, state) = tokio::join!(
+            observe,
+            consume,
+            super::live::observe_stopped_execution(&state_owner, &mut state_port),
+        );
+        let (target, appended) =
             main.with_context(|| format!("continuous body result: {body:?}"))?;
         let body = body?;
+        let terminal_turn = state?;
         ensure!(body.bytes == BODY_BYTES);
         ensure!(
             body.target.turn_id == terminal_turn,
@@ -609,6 +584,7 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
     // precedence, so already-published trailing frames cannot be acknowledged afterwards.
     let acknowledged_prefix = sent;
     let close = facade.close().await;
+    let state_close = state_owner.close().await;
     let settled = owner.is_settled();
     let native_closed = owner.native.lock().await.is_none();
     let producer_joined = owner.producer.lock().await.task.is_none();
@@ -660,14 +636,6 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
             );
             sent = frame.delivery_sequence;
             match frame.event {
-                BridgeConversationEvent::State { update } => {
-                    let mut trailing = None;
-                    inspect_state(&update, &mut trailing)?;
-                    ensure!(
-                        trailing.is_none_or(|turn| turn == terminal_turn),
-                        "another Turn completed after the streamed terminal"
-                    );
-                }
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(
                         batch.placement == BridgeChatPlacement::Append
@@ -728,6 +696,6 @@ async fn output_limit_single_item_streams_body_while_original_turn_runs() -> Res
         );
         Ok(())
     };
-    let tail = tail.await;
+    let tail = tail.await.and(state_close.map_err(anyhow::Error::from));
     env.finish(tail).await
 }

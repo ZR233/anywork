@@ -9,6 +9,7 @@ export 'src/models/chat_models.dart';
 export 'src/models/collection_extensions.dart';
 export 'src/models/command_receipts.dart';
 export 'src/models/composer_models.dart';
+export 'src/models/composer_submission_models.dart';
 export 'src/models/conversation_activity_models.dart';
 export 'src/models/delegation_models.dart';
 export 'src/models/failure_models.dart';

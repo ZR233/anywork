@@ -63,21 +63,16 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
         harness.effect(vec![], vec![]).await?;
         let mut feed = env
             .runtime
-            .open_conversation_feed(&harness.thread.id, ChatScope::Main, demand())
+            .open_conversation_state_feed(&harness.thread.id)
             .await?;
-        assert_eq!(chat(&mut feed).await?.placement, ChatPlacement::Set);
         let snapshot = state_snapshot(&mut feed).await?;
-        completed_runs::activity(&mut feed).await?;
         let mut turn = snapshot.active_turn.context("running Turn baseline")?;
-        let base_revision = feed.state_revision;
-        let effect_floor = feed.state_effect_floor;
+        let base_revision = feed.revision;
+        let effect_floor = feed.applied;
         let runtime_floor = feed.runtime_floor.0.max(feed.runtime_floor.1);
         let (events, state) = broadcast::channel(64);
-        feed.state = Some(super::super::super::thread_observation::StateReceiver::new(
-            state,
-            CancellationToken::new(),
-        ));
-        feed.state_turn = true;
+        feed.state = Some(StateReceiver::new(state, CancellationToken::new()));
+
         let mut expected = Vec::new();
         for (index, (turn_id, attempt_id, usage_state)) in [
             ("turn-a", "attempt-a", Live),
@@ -150,15 +145,15 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
             }
         }
         for (index, notification_expected) in expected.iter().enumerate() {
-            let Some(ConversationEvent::State { update }) = feed.recv().await? else {
+            let Some(update) = feed.recv().await? else {
                 bail!("missing ordered State frame {index}");
             };
             if index == 0 {
                 assert_eq!(feed.state.as_ref().unwrap().len(), 0, "scan stopped early");
                 assert_eq!(feed.pending.len(), expected.len() - 1);
-                assert_eq!(feed.state_revision, base_revision + expected.len() as u64);
+                assert_eq!(feed.revision, base_revision + expected.len() as u64);
             }
-            let ThreadSubscriptionUpdate::Notification { notification } = *update else {
+            let ThreadSubscriptionUpdate::Notification { notification } = update else {
                 bail!("unexpected State snapshot");
             };
             assert_eq!(notification.base_revision, base_revision + index as u64);
@@ -170,16 +165,16 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
         // A successful tail replacement refreshes time, but keeps both envelope revisions
         // and the subscription watermark. Compare the whole payload, including model_route.
         let first = runtime_update(&harness.thread.id, "tail-turn", "tail-attempt", Live, 20)?;
-        feed.notification(first)?;
+        feed.enqueue(first)?;
         let Some(ThreadSubscriptionUpdate::Notification { notification: tail }) =
             feed.pending.back_mut()
         else {
             bail!("missing pending tail");
         };
         tail.emitted_at = -1;
-        let revisions = (tail.base_revision, tail.revision, feed.state_revision);
+        let revisions = (tail.base_revision, tail.revision, feed.revision);
         let latest = runtime_update(&harness.thread.id, "tail-turn", "tail-attempt", Live, 21)?;
-        feed.notification(latest.clone())?;
+        feed.enqueue(latest.clone())?;
         assert_eq!(feed.pending.len(), 1);
         let Some(ThreadSubscriptionUpdate::Notification { notification: tail }) =
             feed.pending.back()
@@ -189,11 +184,10 @@ async fn bounded_scan_coalesces_live_runtime_without_crossing_state_or_identity_
         assert_eq!(tail.notification, latest);
         assert!(tail.emitted_at >= 0);
         assert_eq!(
-            (tail.base_revision, tail.revision, feed.state_revision),
+            (tail.base_revision, tail.revision, feed.revision),
             revisions
         );
         feed.close().await?;
-        feed.reader().close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -212,73 +206,60 @@ async fn bounded_scan_preserves_budget_and_raw_channel_failures() -> Result<()> 
         for case in ["replacement-bytes", "pending-frames", "lagged", "closed"] {
             let mut feed = env
                 .runtime
-                .open_conversation_feed(&thread.id, ChatScope::Main, demand())
+                .open_conversation_state_feed(&thread.id)
                 .await?;
-            let _set = chat(&mut feed).await?;
             let _snapshot = state_snapshot(&mut feed).await?;
-            completed_runs::activity(&mut feed).await?;
-            let revision = feed.state_revision;
+            let revision = feed.revision;
             let floor = feed.runtime_floor.0.max(feed.runtime_floor.1);
             let (events, state) = broadcast::channel(if case == "lagged" { 2 } else { 128 });
-            feed.state = Some(super::super::super::thread_observation::StateReceiver::new(
+            feed.state = Some(StateReceiver::new(
                 state,
                 CancellationToken::new(),
             ));
-            feed.state_turn = true;
-            let frames = match case {
-                "replacement-bytes" => 2,
-                "pending-frames" => 65,
-                "lagged" => 3,
-                "closed" => 0,
-                _ => unreachable!(),
-            };
-            for sequence in 1..=frames {
-                let mut notification = runtime_update(
-                    &thread.id,
-                    "bounded-turn",
-                    "bounded-attempt",
-                    if case == "replacement-bytes" {
-                        Live
-                    } else {
-                        Authoritative
-                    },
-                    sequence,
-                )?;
-                if case == "replacement-bytes"
-                    && sequence == 2
-                    && let ThreadNotification::ThreadRuntimeUpdated { runtime, .. } =
-                        &mut notification
-                {
-                    runtime.progress = Some("x".repeat(1024 * 1024));
+
+            if case == "pending-frames" {
+                for sequence in 1..=PENDING_FRAMES as u64 + 1 {
+                    feed.enqueue(runtime_update(&thread.id, "bounded-turn", "bounded-attempt", Authoritative, sequence)?)?;
                 }
-                events.send(runtime_event(&notification, floor + sequence))?;
-            }
-            drop(events);
-            let error = feed.recv().await.expect_err(case);
-            assert_eq!(
-                error
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
-                    .and_then(|error| error.reason()),
-                Some("conversationResyncRequired"),
-                "{case}: {error:#}"
-            );
-            assert!(
-                feed.reader().ensure().is_err(),
-                "{case} kept the old read lease"
-            );
-            if case == "replacement-bytes" {
-                assert_eq!(
-                    feed.state_revision,
-                    revision + 1,
-                    "replacement spent a revision"
-                );
-            }
-            if case == "lagged" {
-                assert!(error.to_string().contains("state try_recv lagged"));
+                let update = feed.recv().await?.context("overflow must publish Lagged")?;
+                assert!(matches!(update, ThreadSubscriptionUpdate::Notification { notification }
+                    if notification.epoch == 2
+                        && matches!(notification.notification, ThreadNotification::Lagged { dropped } if dropped == PENDING_FRAMES as u64)));
+            } else {
+                let frames = match case {
+                    "replacement-bytes" => 2,
+                    "lagged" => 3,
+                    "closed" => 0,
+                    _ => unreachable!(),
+                };
+                for sequence in 1..=frames {
+                    let mut notification = runtime_update(&thread.id, "bounded-turn", "bounded-attempt", Live, sequence)?;
+                    if case == "replacement-bytes" && sequence == 2
+                        && let ThreadNotification::ThreadRuntimeUpdated { runtime, .. } = &mut notification {
+                        runtime.progress = Some("x".repeat(PENDING_BYTES));
+                    }
+                    events.send(runtime_event(&notification, floor + sequence))?;
+                }
+                drop(events);
+                match case {
+                    "replacement-bytes" => {
+                        let error = feed.recv().await.expect_err(case);
+                        assert_eq!(error.downcast_ref::<pl_protocol::studio::StudioError>().and_then(|error| error.reason()), Some("conversationResyncRequired"));
+                        assert!(feed.cancellation_token().is_cancelled());
+                        assert_eq!(feed.revision, revision + 1, "replacement spent a revision");
+                    }
+                    "lagged" => {
+                        let update = feed.recv().await?.context("channel loss must publish Lagged")?;
+                        assert!(matches!(update, ThreadSubscriptionUpdate::Notification { notification }
+                            if notification.epoch == 2
+                                && matches!(notification.notification, ThreadNotification::Lagged { dropped: 1 })));
+                    }
+                    "closed" => assert!(feed.recv().await?.is_none()),
+                    _ => unreachable!(),
+                }
             }
             feed.close().await?;
-            feed.reader().close().await?;
-        }
+            }
         Ok::<_, anyhow::Error>(())
     }
     .await;

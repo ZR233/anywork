@@ -467,12 +467,6 @@ pub enum ThreadSubscriptionUpdate {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadSubscriptionRequest {
-    pub thread_id: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTurnPage {

@@ -25,6 +25,8 @@
 
 完成封存模块从本次可靠 Accepted/inbox 材料和原提交时间生成 draft，复用原内容及附件 manifest；不提供绕过鉴权/终态的公开 append_history。隐藏续接、内部控制和诊断沿原资格隐藏，公开答案/计划决议仍由原唯一回执产生。GUI 命令回执只结算操作，不再手动插入历史；保存 ACK 只推进 D。执行历史 ThreadItem 继续反映输入消费/Turn 状态，不把其后续可变值当作原完成输入重新发布。
 
+客户端发送回显不是完成历史：沿 [25.8.1](./25-frontend-state.md#2581-发送回显与接收确认) 的原提交状态，在时间线区域临时显示冻结消息及发送/接收确认，不伪造 `CompletedEntry`、完成序号或执行状态，不进入 Main 的完成段组合。原消费者应用同身份规范输入后由正式卡片接管；命令成功、保存进度或下一 Turn 启动均不是等待回显出现的条件。后端仍按原提交顺序校验和发布，不为视觉响应绕过身份冲突、附件资源准备、存储背压或旧 Turn 的安全收束。
+
 ### 模型成员的可靠封口与交接
 
 独立成员终态通过原可靠 producer/effect 路径接纳，不能被可合并 progress 吞掉，也不能等整个 attempt 结束。记录发布即进入历史并退出相应实际活动；不保留整组整体移动的视觉保证。真实 Plan、待决交互及配置继续由原 State/领域 owner 管理，不以活动消失或完成正文替代业务决议。
@@ -109,7 +111,7 @@ ActivitySnapshot 含 revision、completed_through、execution_present、entries�
 冷打开没有执行 owner 时保持摘要为空；客户端不得仅凭 `execution_present` 猜测阶段，
 也不以较早摘要清除或复活已经完成的内容。
 
-Frame 保留 thread/subscription/delivery sequence 与有界信用，事件为 Chat、Activity、State、Failure、Closed。首个 State/握手声明 completedHistoryVersion=1；不支持明确 ProtocolVersionMismatch，不双解码。ACK 在实际串行接纳完成且原 lease 有效后推进，不等布局、query、详情或 SQLite。低层已读位置不冒充外层 ACK；连续性丢失关闭原资格，新句柄以 Set 重同步。
+状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，内容通道交付 Chat、Activity、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
 
 ### 业务引用由 State 交付
 
