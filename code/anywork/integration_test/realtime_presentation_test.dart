@@ -28,6 +28,7 @@ import 'package:anywork/src/features/settings/statistics/view_models/statistics_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/studio_code_block.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter/material.dart';
@@ -716,10 +717,23 @@ final class _RealtimeScene {
       atom,
       timeout: remaining(),
     );
+    final outputLabel = AppLocalizations.of(tester.element(backgroundRow))
+        .timelineToolOutput;
+    final backgroundOutput = find.descendant(
+      of: backgroundRow,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is StudioCodeBlock && widget.language == outputLabel,
+      ),
+    );
+    await until(
+      () => backgroundOutput.evaluate().length == 1,
+      'the exact canonical tool output section',
+      timeout: remaining(),
+    );
     await until(
       () => find
           .descendant(
-            of: backgroundRow,
+            of: backgroundOutput,
             matching: find.textContaining(
               'realtime-parallel-a-line-05',
               findRichText: true,
@@ -744,7 +758,7 @@ final class _RealtimeScene {
     // The foreground disclosure can resize Main after its first reveal.
     await _revealTextFragment(
       tester,
-      backgroundRow,
+      backgroundOutput,
       'realtime-parallel-a-line-05',
     );
     remaining();
@@ -818,7 +832,7 @@ final class _RealtimeScene {
       expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
       _expectTextFragmentVisible(
         tester,
-        backgroundRow,
+        backgroundOutput,
         'realtime-parallel-a-line-05',
         hitTestable: true,
       );
