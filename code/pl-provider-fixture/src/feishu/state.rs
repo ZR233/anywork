@@ -119,6 +119,8 @@ pub(crate) struct ImState {
     pub groups: Vec<GroupChat>,
     pub history: Vec<HistoryMessage>,
     pub send: VecDeque<SendDisposition>,
+    pub upload: VecDeque<SendDisposition>,
+    pub upload_hang: HangGate,
     pub send_seq: u64,
     pub hang: HangGate,
     /// Directory response timing only. Independent from the send and token
@@ -519,6 +521,8 @@ impl Inner {
                     sender_id_type: "open_id".into(),
                 }],
                 send: VecDeque::from([SendDisposition::Succeed]),
+                upload: VecDeque::new(),
+                upload_hang: HangGate::new(),
                 send_seq: 0,
                 hang: HangGate::new(),
                 chat_list_hang: HangGate::new(),

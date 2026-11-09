@@ -80,7 +80,17 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         source_state: None,
         source_order: (item.ordinal > 0).then_some(item.ordinal),
         kind,
-        delivery: ChatDeliveryKind::Foreground,
+        delivery: match item.state() {
+            // Explicit user output is not implementation work to hide in a folded Run.
+            // Keep the original Turn source and let the existing Independent rule classify it.
+            ThreadItemState::Tool(tool)
+                if tool.invocation().presentation_contract()
+                    == Some(pl_tool::file_display::FILE_DISPLAY_PRESENTATION) =>
+            {
+                ChatDeliveryKind::Independent
+            }
+            _ => ChatDeliveryKind::Foreground,
+        },
         lifecycle: if item.is_terminal() {
             ChatAtomLifecycle::Terminal {
                 started: None,

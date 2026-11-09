@@ -94,9 +94,15 @@ void main() {
       ),
     );
     expect(find.text(filename), findsOneWidget);
-    expect(find.text('text/plain · 123 B'), findsOneWidget);
-    expect(find.text('视频'), findsOneWidget);
-    expect(find.text('video/mp4 · 456 B'), findsOneWidget);
+    expect(find.byTooltip(filename), findsOneWidget);
+    expect(find.text('video/mp4'), findsOneWidget);
+    final fileBounds = tester.getRect(find.text(filename));
+    final videoBounds = tester.getRect(find.text('video/mp4'));
+    expect(
+      videoBounds.top,
+      greaterThan(fileBounds.bottom),
+      reason: '窄窗文件自然换行，文件名不得相互重叠',
+    );
     for (final tile in tester.widgetList<ListTile>(find.byType(ListTile))) {
       expect(tile.onTap, isNull);
     }

@@ -105,6 +105,15 @@ struct FrozenSendClaim {
     expected_config_revision: u64,
 }
 
+fn file_delivery_cancelled() -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Unavailable,
+        "file delivery cancelled before ledger admission",
+        true,
+        None,
+    )
+}
+
 /// `crate::studio::new_id` 形态 `前缀-微秒hex-序号hex` 的 UTF-8 上界：
 /// 两段 u64 各最多 16 个十六进制字符，再加两个分隔符。
 fn generated_id_bytes(prefix: &str) -> usize {
@@ -457,6 +466,106 @@ impl BotRuntime {
         .await
     }
 
+    /// Feishu binding implementation detail: credentials, authorization and its
+    /// existing send ledger. Generic channel dispatch must use ChannelOutputBinding.
+    pub(super) async fn send_file_as(
+        &self,
+        operation_id: String,
+        target: crate::channel_output::ChannelTarget,
+        file: crate::channel_output::FileDelivery,
+        bytes: Vec<u8>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<SendRecord, FeishuError> {
+        use crate::channel_output::ChannelRegistry;
+        let managed = self.managed(&target.account_id).await?;
+        // The shared ManagedBot survives config updates and overlapping reply leases.
+        // A successor must read the ledger only after its predecessor has drained.
+        let acquisition = managed.file_delivery.lock();
+        tokio::pin!(acquisition);
+        let _file_delivery = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(file_delivery_cancelled()),
+            guard = std::future::poll_fn(|cx| {
+                let polled = std::future::Future::poll(acquisition.as_mut(), cx);
+                // Observe a real pending acquisition, not merely a task that was spawned.
+                #[cfg(test)]
+                if polled.is_pending() {
+                    managed.file_delivery_waiting.notify_one();
+                }
+                polled
+            }) => guard,
+        };
+        if cancel.is_cancelled() {
+            return Err(file_delivery_cancelled());
+        }
+        let initial = super::files::initial_record(operation_id, target, file)?;
+        if let Some(existing) = managed.store.load_send(&initial.operation_id).await? {
+            super::storage::verify_send_identity(
+                &existing,
+                &initial.operation_id,
+                &initial.bot_id,
+                &initial.chat_id,
+                &initial.content_hash,
+            )?;
+            super::files::validate_record(&existing)?;
+            self.authorize_replay_source(&managed, &SendAuthority::AutoReply)
+                .await?;
+            if !super::files::resumable(&existing) {
+                return Ok(existing);
+            }
+        }
+        let config = managed.config.lock().await.clone();
+        let membership = self
+            .prepare_chat_access(&managed, &config, &initial.chat_id)
+            .await?;
+        let token = self.token(&managed, &config).await?;
+        let facts_bytes = super::storage::segment_facts_bytes(&initial.segments)?;
+        let frozen_bytes = send_claim_freeze_bytes(
+            &initial,
+            &SendAuthority::AutoReply,
+            &config.feishu().app_id,
+            &config.workspace_id,
+            facts_bytes,
+            0,
+        )?;
+        let frozen = FrozenSendClaim {
+            managed: managed.clone(),
+            record: initial.clone(),
+            membership,
+            authority: SendAuthority::AutoReply,
+            app_id: config.feishu().app_id.clone(),
+            workspace_id: config.workspace_id,
+            expected_config_revision: config.config_revision,
+        };
+        let worker = self.clone();
+        let (existing, _) = self
+            .submit_occupancy(frozen_bytes, move |budget| async move {
+                worker.claim_send_owned(frozen, budget).await
+            })
+            .await?;
+        let record = existing.unwrap_or(initial);
+        let mut registry = ChannelRegistry::default();
+        // Platform assembly only. The delivery driver and tool know no platform names.
+        registry
+            .register(
+                "feishu".into(),
+                super::protocol::files::FeishuFileAdapter {
+                    http: self.inner.http.clone(),
+                    token,
+                },
+            )
+            .map_err(|error| super::files::local_error(error.to_string()))?;
+        super::files::deliver(
+            &registry,
+            &managed.store,
+            record,
+            bytes,
+            &managed.send_rate,
+            cancel,
+        )
+        .await
+    }
+
     pub(crate) async fn send_message_as(
         &self,
         operation_id: String,
@@ -507,6 +616,7 @@ impl BotRuntime {
                 status: SendRecordStatus::Unknown,
                 platform_message_id: None,
                 diagnostic: None,
+                file_delivery: None,
             })
             .collect::<Vec<_>>();
         let initial = SendRecord {

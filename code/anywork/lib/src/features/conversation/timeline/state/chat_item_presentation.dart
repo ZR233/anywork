@@ -50,6 +50,15 @@ final class ChatItemPresentation {
   final ChatAtom? atom;
   late final ToolCardReading toolCard = readToolCard(this);
 
+  bool get presentsFiles {
+    if (type != 'tool' || presentationContract != 'builtin.show_files@1') {
+      return false;
+    }
+    final state = chatObject(data['state'], 'state');
+    return state['kind'] == 'succeeded' ||
+        (state['kind'] == 'failed' && body('tool.output-artifacts') != null);
+  }
+
   /// Structural empty text still exists in owner metadata. Deferred/unknown
   /// content is never assumed empty.
   bool get isKnownEmptyText =>

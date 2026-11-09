@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../../app/theme/studio_semantic_colors.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import 'plan_document_theme.dart';
+import 'markdown_document_body.dart';
 
 /// Dock 计划详情的展示状态。运行态来自 [PlanRuntimePhase]；历史决定
 /// `cancelled`/`resolved` 只出现在时间线回执，不进入当前 dock。
@@ -131,20 +131,8 @@ class _PlanDetailViewState extends State<PlanDetailView> {
           ],
         ),
       );
-      final body = Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: SizedBox(
-            width: double.infinity,
-            child: Padding(
-              padding: EdgeInsets.all(constraints.maxWidth < 520 ? 20 : 24),
-              child: widget.body == null
-                  ? const _PlanEmptyBody()
-                  : PlanDocumentTheme(child: widget.body!),
-            ),
-          ),
-        ),
+      final body = MarkdownDocumentBody(
+        child: widget.body ?? const _PlanEmptyBody(),
       );
       Widget scroll(Widget child) => Scrollbar(
         controller: _scroll,

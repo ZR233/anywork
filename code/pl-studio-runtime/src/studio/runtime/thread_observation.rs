@@ -919,7 +919,7 @@ impl ThreadObservations {
         previous.push(observation);
     }
 
-    async fn synchronize(&self, id: Option<&str>) -> Result<()> {
+    pub(super) async fn synchronize(&self, id: Option<&str>) -> Result<()> {
         self.0.projector.writer.retry_now();
         let observations: Vec<_> = self
             .0

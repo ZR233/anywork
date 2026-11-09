@@ -448,6 +448,12 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
         resources: _images,
         readAttachment: widget.readAttachment,
         isActive: active,
+        readContent: (reference, range) => _scope(
+          content,
+          controller,
+          attempt,
+          generation,
+        ).readContent(reference: reference, range: range),
       ),
     );
     return Column(

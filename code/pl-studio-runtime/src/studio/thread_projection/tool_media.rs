@@ -62,6 +62,29 @@ fn rejected(message: &str) -> ProjectionError {
 /// an already delivered attachment is not duplicated; one that names the same identity with a
 /// different reference or modality contradicts the delivered fact and is rejected.
 fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, ProjectionError> {
+    if let Some(receipt) =
+        pl_tool::file_display::saved_file_display_receipt(delivery.output.payload())
+            .map_err(ProjectionError::ToolMedia)?
+    {
+        // Preserve every selected entry, even when several entries share one resource.
+        return Ok(receipt
+            .files
+            .into_iter()
+            .filter_map(|file| match file {
+                pl_tool::file_display::FileDisplayResult::Ready {
+                    resource,
+                    filename,
+                    modality,
+                    ..
+                } => Some(ArchivedToolMedia {
+                    reference: resource,
+                    filename: Some(filename),
+                    modality,
+                }),
+                pl_tool::file_display::FileDisplayResult::Failed { .. } => None,
+            })
+            .collect());
+    }
     let receipt = pl_tool::image::saved_view_image_receipt(delivery.output.payload())
         .map_err(ProjectionError::ToolMedia)?;
     let mut attachments = Vec::new();

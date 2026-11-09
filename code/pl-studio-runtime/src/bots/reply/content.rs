@@ -44,15 +44,24 @@ pub(super) struct ReplyItem {
 
 #[derive(Clone)]
 pub(super) enum ReplyItemKind {
-    Final { body: Body, preview: String },
+    Final {
+        body: Body,
+        preview: String,
+    },
     Terminal(TurnState),
     Interaction(String),
+    Files {
+        call_id: String,
+        receipt: pl_tool::file_display::FileDisplayReceipt,
+        byte_length: usize,
+    },
 }
 
 impl ReplyItem {
     pub(super) fn preview_bytes(&self) -> usize {
         match &self.kind {
             ReplyItemKind::Final { body, .. } => body.byte_length as usize,
+            ReplyItemKind::Files { byte_length, .. } => *byte_length,
             _ => 0,
         }
     }
@@ -129,11 +138,25 @@ pub(super) async fn decode_entry(
     {
         return Err(gap("deferred reply payload identity conflict"));
     }
+    // Metadata only selects candidates; it does not authorize delivery. Avoid
+    // fetching arbitrary tool logs (which can be much larger than the reply budget).
+    // A candidate still needs its actual frozen output receipt decoded below.
+    if atom.kind == ChatAtomKind::ToolCall
+        && (atom
+            .tool
+            .as_ref()
+            .is_none_or(|tool| tool.name != pl_tool::file_display::TOOL_SHOW_FILES)
+            || atom.turn_id.as_deref() != Some(turn_id)
+            || !matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id: source } if source == turn_id))
+    {
+        return Ok(None);
+    }
     // Main also includes work now. Its known domain is sufficient to skip
     // unrelated payloads; Unknown never grants permission to omit a possible Final.
     if !matches!(
         atom.kind,
         ChatAtomKind::Text
+            | ChatAtomKind::ToolCall
             | ChatAtomKind::Interaction
             | ChatAtomKind::Plan
             | ChatAtomKind::TurnReceipt
@@ -269,6 +292,7 @@ async fn decode_envelope(
     let expected = match atom.kind {
         ChatAtomKind::Text => Some("text"),
         ChatAtomKind::Interaction => Some("tool"),
+        ChatAtomKind::ToolCall => Some("tool"),
         ChatAtomKind::Plan => Some("plan"),
         ChatAtomKind::TurnReceipt => Some("turn"),
         ChatAtomKind::Unknown => None,
@@ -356,6 +380,64 @@ async fn decode_envelope(
             ReplyItemKind::Terminal(state)
         }
         "tool" => {
+            if atom.kind == ChatAtomKind::ToolCall
+                && atom
+                    .tool
+                    .as_ref()
+                    .is_some_and(|tool| tool.name == pl_tool::file_display::TOOL_SHOW_FILES)
+                && envelope.data["invocation"]["presentationContract"].as_str()
+                    == Some(pl_tool::file_display::FILE_DISPLAY_PRESENTATION)
+                && envelope.data["state"]["kind"].as_str() == Some("succeeded")
+                && matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id } if turn_id == target)
+            {
+                let call_id = envelope.data["invocation"]["toolCallId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| gap("file display lacks frozen tool call identity"))?;
+                let mut artifacts = envelope
+                    .bodies
+                    .iter()
+                    .filter(|body| body.key == "tool.output-artifacts");
+                let body = artifacts
+                    .next()
+                    .ok_or_else(|| gap("file display lacks reliable output artifacts"))?;
+                if artifacts.next().is_some() {
+                    return Err(gap("file display has duplicate artifact bodies"));
+                }
+                body.validate(id)?;
+                let bytes = body.read(reader, true).await?;
+                let artifacts: Vec<serde_json::Value> = serde_json::from_str(&bytes)
+                    .map_err(|error| gap(&format!("malformed display artifacts: {error}")))?;
+                let mut receipt = None;
+                for artifact in artifacts {
+                    // The producer adds this explicit ContextContent wrapper only after
+                    // decoding the actual output payload. Bare resources and opaque model
+                    // context are not display authorization.
+                    if artifact["kind"].as_str() != Some("opaque") {
+                        continue;
+                    }
+                    let payload: pl_core::context::OpaquePayload =
+                        serde_json::from_value(artifact["payload"].clone()).map_err(|error| {
+                            gap(&format!("invalid saved display payload: {error}"))
+                        })?;
+                    if let Some(saved) = pl_tool::file_display::saved_file_display_receipt(&payload)
+                        .map_err(|error| gap(&format!("invalid file display receipt: {error}")))?
+                        && receipt.replace(saved).is_some()
+                    {
+                        return Err(gap("file display has multiple saved receipts"));
+                    }
+                }
+                let receipt = receipt.ok_or_else(|| gap("file display has no verified receipt"))?;
+                return Ok(Some(ReplyItem {
+                    member_id: atom.id.clone(),
+                    id: id.into(),
+                    kind: ReplyItemKind::Files {
+                        call_id: call_id.into(),
+                        receipt,
+                        byte_length: body.byte_length as usize,
+                    },
+                }));
+            }
             let Some(input) = envelope
                 .data
                 .get("userInput")

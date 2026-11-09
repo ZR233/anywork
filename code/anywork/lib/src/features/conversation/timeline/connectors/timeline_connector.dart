@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/conversation.dart';
@@ -256,6 +257,17 @@ class _TimelineConnectorBodyState
     }
     bool active() =>
         identical(owner.lease(threadId), lease) && !lease.isRetired;
+    // The reader may outlive this row and its WidgetRef when the shell opens
+    // a document. Authority belongs to the original display lease.
+    final readAttachmentBytes = ref
+        .read(anyworkClientProvider)
+        .readAttachmentBytes;
+    Future<Uint8List> readAttachment(String id) async {
+      if (!active()) throw const StaleConversationScope();
+      final bytes = await readAttachmentBytes(threadId, id);
+      if (!active()) throw const StaleConversationScope();
+      return bytes;
+    }
 
     final plan = widget.planConfirmation;
     return TimelineView(
@@ -267,8 +279,7 @@ class _TimelineConnectorBodyState
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
         threadId: threadId,
-        readAttachment: (id) =>
-            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        readAttachment: readAttachment,
         monotonicMicros: () => owner.monotonicMicros,
         onContentLayout: (itemId, micros) {
           if (active()) owner.recordContentLayout(lease, itemId, micros);
@@ -316,9 +327,15 @@ class _TimelineConnectorBodyState
         key: ValueKey((lease.generation, item.id)),
         item: item,
         resources: lease.imageResources,
-        readAttachment: (id) =>
-            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        readAttachment: readAttachment,
         isActive: active,
+        readContent: (reference, range) {
+          final scope = lease.queries;
+          if (!active() || scope == null) {
+            return Future.error(const StaleConversationScope());
+          }
+          return scope.readContent(reference: reference, range: range);
+        },
       ),
       onLink: link,
       isSafeLink: (url) => safeExternalWebUrl(url) != null,

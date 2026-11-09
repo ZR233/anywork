@@ -169,6 +169,10 @@ pub(in crate::bots) struct CardStream {
     pub recovery_used: bool,
     pub recovery: Option<CardRecovery>,
     pub diagnostic: Option<BotDiagnostic>,
+    /// File delivery is independent of card success; retain its attention outcome
+    /// across a crash between the terminal card confirmation and inbound completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_delivery_diagnostic: Option<String>,
 }
 
 impl CardStream {
@@ -190,6 +194,7 @@ impl CardStream {
             recovery_used: false,
             recovery: None,
             diagnostic: None,
+            file_delivery_diagnostic: None,
         }
     }
 

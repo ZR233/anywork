@@ -26,6 +26,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 - native helper 原样通过 ToolOutput 和已有 ToolError，包括 observed_output；禁止再次 ToolError::new 包装已有错误。副作用后失败用 with_output 保存观测，不提交迟到控制。
 - 普通 JSON helper 仅在 handler 成功后编码一次，同一文本构造 application/json@1 payload 与 Text context；不使用 Opaque context，也不猜测 content/message/path。编码失败保留 JsonOutputError 的阶段与 serde source，明确可能已有副作用，不重执行。
 - 完整 payload 与实际 delivered_context 分别保存；预览、命令 capture 或临时路径不能冒充可靠资源。重开只读原保存材料，不按当前 Args/Output 重新解码或调用当前渲染器。
+- 需要专用产品呈现时，明确完整回执进入哪个公开正文／artifact 及其版本化封装；`ToolOutput.payload` 不会自动出现在界面可读的模型结果文本中。产品投影保留回执，不为让界面取到内容而把业务回执注入模型上下文。
 - 结束 Turn、CAS、交互、发现、等待和取消必须显式注册授权并返回类型化控制。JSON 字段、名称、schema 或 MCP annotations 都不授予权限。Note/Todo/Skill 状态从 CallContext 冻结扩展计算候选，不维护第二份可写状态。
 
 ## 生命周期与执行边界
@@ -41,5 +42,7 @@ MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等�
 先编译公开 API 示例再迁移相应生产路径。新库无特性、typed、typed+macros、重命名下游及必要 compile-fail 分别验证，workspace 特性合并不证明基础消费方独立。
 
 按风险复用真实 Thread 的注册替换、冻结授权、控制、取消和关闭证明，不以 Tool::execute 直调替代。新 binding 的持久化证明应穿过 Thread、原 writer、close/join 与重开冷读，核对原字节、完整 delivery、错误、展示 marker 与不重执行；MCP 用真实本地 peer，Linux-only 零用例不算覆盖。
+
+跨语言回执测试使用生产序列化的实际封装，核对外层标签、版本及内层编码。`OpaquePayload.content` 是 UTF-8 字符串，即使内容是 JSON，也不能在客户端夹具中直接替换成对象；专用解码器先验证字符串，再按所属格式解析。分别手写两端看似一致的对象夹具不能证明互通。
 
 人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不以固定延时、放宽断言或强制生产前台化制造成功。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。

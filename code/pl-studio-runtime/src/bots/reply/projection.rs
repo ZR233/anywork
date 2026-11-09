@@ -159,6 +159,17 @@ impl ReplyProjection {
         })
     }
 
+    pub(super) fn file_displays(
+        &self,
+    ) -> impl Iterator<Item = (&str, &pl_tool::file_display::FileDisplayReceipt)> {
+        self.items.iter().filter_map(|item| match &item.kind {
+            ReplyItemKind::Files {
+                call_id, receipt, ..
+            } if self.covered => Some((call_id.as_str(), receipt)),
+            _ => None,
+        })
+    }
+
     pub(super) fn preview(&self) -> Option<String> {
         if !self.covered {
             return None;

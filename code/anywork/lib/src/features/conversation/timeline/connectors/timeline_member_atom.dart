@@ -322,11 +322,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
     if (atom.payload != null) {
       final qualification = _rangeQualification;
+      final presentation = ChatItemPresentation.decode(atom);
       bool qualified() =>
-          _readActive('attachments') &&
+          (presentation.presentationContract == 'builtin.show_files@1'
+              ? _active
+              : _readActive('attachments')) &&
           identical(qualification, _rangeQualification);
       final view = ChatItemView(
-        item: ChatItemPresentation.decode(atom),
+        item: presentation,
         bodyBuilder: _body,
         initiallyExpanded: _expanded,
         monotonicMicros: widget.monotonicMicros,
@@ -338,6 +341,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           resources: widget.images,
           readAttachment: widget.readAttachment,
           isActive: qualified,
+          readContent: (reference, range) {
+            if (!qualified()) {
+              return Future.error(const StaleConversationScope());
+            }
+            return (_scope ??= widget.content.openScope(
+              generation: 1,
+            )).readContent(reference: reference, range: range);
+          },
         ),
         contentRangeBuilder: (id, key, label, reference, witness) {
           final qualification = _rangeQualification;

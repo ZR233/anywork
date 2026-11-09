@@ -7,6 +7,7 @@
 mod card;
 mod cardkit;
 mod control;
+mod files;
 mod guard;
 mod http;
 mod observe;
@@ -124,6 +125,9 @@ impl FeishuPeer {
                 "/open-apis/im/v1/messages",
                 get(http::message_list).post(http::message_send),
             )
+            .route("/open-apis/im/v1/images", post(files::upload))
+            .route("/open-apis/im/v1/files", post(files::upload))
+            .layer(axum::extract::DefaultBodyLimit::max(31 * 1024 * 1024))
             .route("/open-apis/cardkit/v1/cards", post(cardkit::card_create))
             .route(
                 "/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",

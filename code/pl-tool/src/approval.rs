@@ -157,6 +157,20 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
         "write_file" | "stat_path" | "view_image" | "create_directory" | "delete_path" => {
             argument_path(arguments, "path").into_iter().collect()
         }
+        "show_files" => {
+            serde_json::from_value::<crate::file_display::ShowFilesInput>(arguments.clone())
+                .map(|input| {
+                    input
+                        .files
+                        .into_iter()
+                        .filter_map(|source| match source {
+                            crate::file_display::ShowFileSource::Workspace { path } => Some(path),
+                            crate::file_display::ShowFileSource::Attachment { .. } => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
         "lsp_query" => argument_path(arguments, "filePath").into_iter().collect(),
         "copy_path" | "move_path" => ["from", "to"]
             .into_iter()
