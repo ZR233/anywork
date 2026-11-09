@@ -1,31 +1,11 @@
 //! Shared exact-byte media retention and frozen model projection for tools.
 pub use pl_core::context::{ContextContent, ResourceReference};
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
+pub use pl_tool_media_support::{
+    ImageOutputLimits, Media as ToolMedia, MediaKind as ToolMediaKind,
+    PreparedImage as PreparedToolImage,
+};
 use std::sync::Arc;
-
-/// Media semantics supplied by tools, without provider protocols or message authority.
-#[derive(Debug, Clone, Copy)]
-pub enum ToolMediaKind {
-    Image,
-    Audio,
-    Blob,
-}
-
-/// Exact received bytes. The resource host must retain them before returning a reference.
-#[derive(Debug)]
-pub struct ToolMedia {
-    pub kind: ToolMediaKind,
-    pub bytes: Arc<[u8]>,
-    pub media_type: String,
-    pub model_image: Option<PreparedToolImage>,
-}
-
-/// An image normalized under the originating prepared model's advertised bounds.
-#[derive(Debug)]
-pub struct PreparedToolImage {
-    pub bytes: Arc<[u8]>,
-    pub media_type: String,
-}
 
 /// Durable material and the actual model-visible media projection selected by the host.
 #[derive(Debug)]
@@ -41,6 +21,39 @@ pub trait ToolMediaHost: Send + Sync + std::fmt::Debug + 'static {
         &self,
         media: ToolMedia,
     ) -> impl std::future::Future<Output = Result<RetainedToolMedia, ToolError>> + Send;
+}
+
+/// Product resource and delivery adaptation; neither representation enters independent tools.
+pub(crate) struct DomainMediaHost<H>(pub(crate) Arc<H>);
+
+impl<H: ToolMediaHost> pl_tool_media_support::MediaHost for DomainMediaHost<H> {
+    type Reference = ResourceReference;
+    type Projection = Vec<ContextContent>;
+    type Error = ToolError;
+
+    async fn retain(
+        &self,
+        media: ToolMedia,
+    ) -> Result<pl_tool_media_support::Retained<Self::Reference, Self::Projection>, ToolError> {
+        let bytes = media.bytes.clone();
+        let retained = self.0.retain(media).await?;
+        retained.reference.verify(&bytes).map_err(ToolError::new)?;
+        Ok(pl_tool_media_support::Retained {
+            reference: retained.reference,
+            projection: retained.context,
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct DomainSource(#[source] Box<dyn std::error::Error + Send + Sync>);
+
+pub(crate) fn domain_error(source: Box<dyn std::error::Error + Send + Sync>) -> ToolError {
+    match source.downcast::<ToolError>() {
+        Ok(error) => *error,
+        Err(source) => ToolError::new(DomainSource(source)),
+    }
 }
 
 pub(crate) fn image_limits(

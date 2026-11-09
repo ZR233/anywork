@@ -10,8 +10,8 @@ use crate::workspace::path_safety::{
 
 use super::util::category_path;
 use super::{
-    ALLOWED_SUPPORT_DIRS, SKILL_FILE_NAME, SkillFile, SkillFrontmatter, SkillInvocationPolicy,
-    SkillMetadata, SkillProviderId, SkillResourceBase, SkillSourceKind,
+    ALLOWED_SUPPORT_DIRS, SKILL_FILE_NAME, SkillFile, SkillInvocationPolicy, SkillMetadata,
+    SkillProviderId, SkillResourceBase, SkillSourceKind,
 };
 
 pub fn list_support_files(skill_dir: &Path) -> Result<Vec<SkillFile>> {
@@ -96,30 +96,9 @@ pub fn validate_skill_document(
     content: &str,
     expected_name: Option<&str>,
 ) -> Result<SkillMetadata> {
-    let frontmatter = parse_frontmatter(content)?;
-    super::validate_skill_name(&frontmatter.name)?;
+    let frontmatter = pl_tool_skill::support::validate_document(content, expected_name)
+        .map_err(skill_core_error)?;
     let description = frontmatter.description.trim();
-    if description.is_empty() {
-        return Err(PureError::ConfigError(
-            "skill description must not be empty".to_string(),
-        ));
-    }
-    if description.chars().count() > 1024 {
-        return Err(PureError::ConfigError(
-            "skill description must be at most 1024 characters".to_string(),
-        ));
-    }
-    if let Some(expected_name) = expected_name
-        && !frontmatter.name.eq_ignore_ascii_case(expected_name)
-    {
-        return Err(PureError::ConfigError(format!(
-            "skill frontmatter name '{}' does not match target '{}'",
-            frontmatter.name, expected_name
-        )));
-    }
-    if let Some(category) = &frontmatter.category {
-        let _ = category_path(category)?;
-    }
     Ok(SkillMetadata {
         name: frontmatter.name,
         description: description.to_string(),
@@ -192,19 +171,6 @@ pub(super) fn metadata_from_content(
         path: metadata.path.clone(),
     };
     Ok(metadata)
-}
-
-pub(super) fn parse_frontmatter(content: &str) -> Result<SkillFrontmatter> {
-    pl_skill_core::parse_skill_frontmatter(content)
-        .map(|frontmatter| SkillFrontmatter {
-            name: frontmatter.name,
-            description: frontmatter.description,
-            category: frontmatter.category,
-            platforms: frontmatter.platforms,
-            disable_model_invocation: frontmatter.disable_model_invocation,
-            user_invocable: frontmatter.user_invocable,
-        })
-        .map_err(skill_core_error)
 }
 
 pub(super) struct SkillFileScan {

@@ -5,32 +5,13 @@ mod thread;
 pub use pl_core::context::ResourceReference;
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
 pub use pl_protocol::AttachmentModality;
+pub use pl_tool_media::show_files::{Input as ShowFilesInput, Source as ShowFileSource};
 pub use thread::ThreadShowFilesTool;
 
 pub const TOOL_SHOW_FILES: &str = "show_files";
 pub const FILE_DISPLAY_FORMAT: &str = "pl.tool.files";
 pub const FILE_DISPLAY_VERSION: u32 = 1;
 pub const FILE_DISPLAY_PRESENTATION: &str = "builtin.show_files@1";
-const DESCRIPTION: &str = "Display an ordered selection of workspace files or this Thread's archived attachments to the user. Workspace files are archived exactly (maximum 50 MiB each); partial failures are reported in order. This does not read file contents into model context or require image input support. Use view_image to inspect an image yourself. Optional caption is trimmed and limited to 240 characters.";
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShowFilesInput {
-    pub files: Vec<ShowFileSource>,
-    pub caption: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum ShowFileSource {
-    Workspace { path: String },
-    Attachment { attachment_id: String },
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -98,7 +79,7 @@ pub fn saved_file_display_receipt(
 pub fn thread_show_files_tool_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json(
         TOOL_SHOW_FILES,
-        DESCRIPTION,
+        pl_tool_media::show_files::DESCRIPTION,
         pl_agent_tool::typed::input_schema_for::<ShowFilesInput>(),
     )
     .expect("static tool definition")

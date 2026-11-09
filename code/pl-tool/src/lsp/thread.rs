@@ -1,5 +1,4 @@
 //! Dynamic LSP invocation without a product session or mutable tool call context.
-use super::{LspCapabilitiesInput, LspQueryInput};
 use crate::workspace::ToolWorkspace;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -9,6 +8,9 @@ use pl_core::{
     },
 };
 use pl_lsp::{query::LspQuery, runtime::LspRuntimeRegistry};
+use pl_tool_lsp::support::{
+    CapabilityReader, LspContext, Operation, QueryRequest, QueryResult, QueryService,
+};
 use std::sync::Arc;
 
 /// Paths belong to the physical service host selected during Thread assembly.
@@ -30,39 +32,36 @@ impl LspPathBinding {
 
     async fn resolve(
         &self,
-        mut query: LspQuery,
+        path: std::path::PathBuf,
+        operation: pl_lsp::query::LspQueryOperation,
         grant: &pl_core::tool::execution_policy::ExecutionGrant,
-    ) -> Result<LspQuery, ToolError> {
-        if let Some(path) = query.file_path.take() {
-            let operation = query.operation;
-            let resolved = match self {
-                Self::Local(workspace) => {
-                    let root = workspace.root().to_owned();
-                    let host_access = workspace.workspace().boundary().allows_host_paths()
-                        && grant.contains(crate::approval::HOST_WORKSPACE_ACCESS);
-                    tokio::task::spawn_blocking(move || {
-                        let policy =
-                            crate::workspace::ToolPathPolicy::new(root, host_access, "lsp_query")?;
-                        let display = path.display().to_string();
-                        if operation.requires_file() {
-                            policy.resolve_existing_path(&path, &display)
-                        } else {
-                            policy.resolve_existing_or_parent_path(&path, &display)
-                        }
-                    })
+    ) -> Result<std::path::PathBuf, ToolError> {
+        let resolved = match self {
+            Self::Local(workspace) => {
+                let root = workspace.root().to_owned();
+                let host_access = workspace.workspace().boundary().allows_host_paths()
+                    && grant.contains(crate::approval::HOST_WORKSPACE_ACCESS);
+                tokio::task::spawn_blocking(move || {
+                    let policy =
+                        crate::workspace::ToolPathPolicy::new(root, host_access, "lsp_query")?;
+                    let display = path.display().to_string();
+                    if operation.requires_file() {
+                        policy.resolve_existing_path(&path, &display)
+                    } else {
+                        policy.resolve_existing_or_parent_path(&path, &display)
+                    }
+                })
+                .await
+                .map_err(ToolError::new)?
+                .map_err(ToolError::new)?
+            }
+            Self::Remote { files, .. } => {
+                crate::remote::resolve_lsp_query_path(files, &path, operation)
                     .await
                     .map_err(ToolError::new)?
-                    .map_err(ToolError::new)?
-                }
-                Self::Remote { files, .. } => {
-                    crate::remote::resolve_lsp_query_path(files, &path, operation)
-                        .await
-                        .map_err(ToolError::new)?
-                }
-            };
-            query.file_path = Some(resolved);
-        }
-        Ok(query)
+            }
+        };
+        Ok(resolved)
     }
 }
 
@@ -77,16 +76,8 @@ impl LspToolKind {
     /// Stable model declaration for this operation.
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::Capabilities => pl_agent_tool::ToolDefinition::json(
-                "lsp_capabilities",
-                "List language IDs, query operations and readiness for this workspace.",
-                pl_agent_tool::typed::input_schema_for::<LspCapabilitiesInput>(),
-            ).expect("valid tool definition"),
-            Self::Query => pl_agent_tool::ToolDefinition::json(
-                "lsp_query",
-                "Query workspace language services for definitions, references, hover, symbols, call hierarchy or diagnostics. Discover supported languages with lsp_capabilities.",
-                pl_agent_tool::typed::input_schema_for::<LspQueryInput>(),
-            ).expect("valid tool definition"),
+            Self::Capabilities => pl_tool_lsp::capabilities::lsp_capabilities_definition(),
+            Self::Query => pl_tool_lsp::query::lsp_query_definition(),
         }
     }
 }
@@ -160,54 +151,44 @@ impl pl_agent_tool::Tool for ThreadLspTool {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        let encoded = match self.kind {
+        let service = ThreadLspPort {
+            registry: self.registry.clone(),
+            paths: self.paths.clone(),
+            grant: context.grant,
+        };
+        let domain_context = LspContext {
+            service,
+            cancellation: context.cancellation,
+        };
+        let (encoded, text) = match self.kind {
             LspToolKind::Capabilities => {
-                let _: LspCapabilitiesInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                let result = self
-                    .registry
-                    .capabilities_for_workspace(self.paths.workspace().root())
-                    .await;
-                serde_json::to_string(&result).map_err(ToolError::new)?
+                let tool =
+                    pl_tool_lsp::capabilities::LspCapabilitiesTool::new(self.definition.clone());
+                let result = tool
+                    .execute(input.content().to_owned(), domain_context)
+                    .await
+                    .map_err(|error| match error {
+                        pl_tool_lsp::capabilities::CapabilitiesError::Cancelled => {
+                            ToolError::new(pl_core::thread::ThreadError::Cancelled)
+                        }
+                        error => ToolError::new(error),
+                    })?;
+                result.encode().map_err(ToolError::new)?
             }
             LspToolKind::Query => {
-                let input: LspQueryInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                let language = input.language_id.clone();
-                let query = self
-                    .paths
-                    .resolve(
-                        LspQuery {
-                            operation: input.operation,
-                            file_path: input.file_path,
-                            line: input.line,
-                            character: input.character,
-                            query: input.query,
-                            max_results: input.max_results,
-                            language_id: Some(input.language_id),
-                        },
-                        &context.grant,
-                    )
-                    .await?;
-                if context.cancellation.is_cancelled() {
-                    return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
-                }
-                let result = self
-                    .registry
-                    .query_in_workspace(self.paths.workspace().root(), query)
+                let tool = pl_tool_lsp::query::LspQueryTool::new(self.definition.clone());
+                let result = tool
+                    .execute(input.content().to_owned(), domain_context)
                     .await
-                    .map_err(|source| ToolError::new(QueryFailure { language, source }))?;
-                serde_json::to_string(&result).map_err(ToolError::new)?
+                    .map_err(|error| match error {
+                        pl_tool_lsp::query::QueryError::Cancelled => {
+                            ToolError::new(pl_core::thread::ThreadError::Cancelled)
+                        }
+                        pl_tool_lsp::query::QueryError::Path(error) => error,
+                        error => ToolError::new(error),
+                    })?;
+                result.encode().map_err(ToolError::new)?
             }
-        };
-        let preview = pl_output::bounded_text(&encoded, 12 * 1024, 0);
-        let text = if preview.truncated {
-            format!(
-                "{}\n[LSP preview omitted {} bytes; full result retained in history.]",
-                preview.text, preview.bytes_omitted
-            )
-        } else {
-            preview.text
         };
         Ok(ToolOutput::new(
             OpaquePayload::new("pl.tool.lsp", 1, encoded).map_err(ToolError::new)?,
@@ -218,12 +199,87 @@ impl pl_agent_tool::Tool for ThreadLspTool {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "LSP query for languageId `{language}` failed: {source}; lsp_capabilities lists current service readiness"
-)]
-struct QueryFailure {
-    language: String,
-    #[source]
-    source: pl_lsp::runtime::LspRuntimeError,
+// This adapter holds the existing registry and invocation grant. Tools cannot
+// start/close servers, replace the registry, or manufacture a path grant.
+struct ThreadLspPort {
+    registry: LspRuntimeRegistry,
+    paths: LspPathBinding,
+    grant: pl_core::tool::execution_policy::ExecutionGrant,
+}
+impl CapabilityReader for ThreadLspPort {
+    type Error = ToolError;
+    async fn capabilities(&self) -> Result<pl_tool_lsp::support::Capabilities, ToolError> {
+        let result = self
+            .registry
+            .capabilities_for_workspace(self.paths.workspace().root())
+            .await;
+        Ok(pl_tool_lsp::support::Capabilities {
+            servers: result
+                .servers
+                .into_iter()
+                .map(|server| pl_tool_lsp::support::ServerCapabilities {
+                    id: server.id,
+                    display_name: server.display_name,
+                    language_ids: server.language_ids,
+                    operations: server.operations,
+                    availability: server.availability,
+                    ready: server.ready,
+                })
+                .collect(),
+        })
+    }
+}
+impl QueryService for ThreadLspPort {
+    type Error = ToolError;
+    async fn resolve_path(
+        &self,
+        path: std::path::PathBuf,
+        operation: Operation,
+    ) -> Result<std::path::PathBuf, ToolError> {
+        self.paths
+            .resolve(path, host_operation(operation), &self.grant)
+            .await
+    }
+    async fn query(&self, request: QueryRequest) -> Result<QueryResult, ToolError> {
+        let operation = request.operation;
+        let result = self
+            .registry
+            .query_in_workspace(
+                self.paths.workspace().root(),
+                LspQuery {
+                    operation: host_operation(operation),
+                    file_path: request.file_path,
+                    line: request.line,
+                    character: request.character,
+                    query: request.query,
+                    max_results: request.max_results,
+                    language_id: Some(request.language_id),
+                },
+            )
+            .await
+            .map_err(ToolError::new)?;
+        Ok(QueryResult {
+            success: result.success,
+            operation,
+            server_id: result.server_id,
+            result: result.result,
+            result_count: result.result_count,
+            file_count: result.file_count,
+        })
+    }
+}
+fn host_operation(operation: Operation) -> pl_lsp::query::LspQueryOperation {
+    use pl_lsp::query::LspQueryOperation as Host;
+    match operation {
+        Operation::GoToDefinition => Host::GoToDefinition,
+        Operation::FindReferences => Host::FindReferences,
+        Operation::Hover => Host::Hover,
+        Operation::DocumentSymbol => Host::DocumentSymbol,
+        Operation::WorkspaceSymbol => Host::WorkspaceSymbol,
+        Operation::GoToImplementation => Host::GoToImplementation,
+        Operation::PrepareCallHierarchy => Host::PrepareCallHierarchy,
+        Operation::IncomingCalls => Host::IncomingCalls,
+        Operation::OutgoingCalls => Host::OutgoingCalls,
+        Operation::Diagnostics => Host::Diagnostics,
+    }
 }

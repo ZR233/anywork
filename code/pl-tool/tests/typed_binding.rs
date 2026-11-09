@@ -419,7 +419,13 @@ async fn dynamic_note_adapter_retains_argument_types_paths_and_trailing_source()
 struct UnreachableBotHost;
 
 impl pl_tool::bots::BotSessionHost for UnreachableBotHost {
-    async fn list_bots(&self, _: &str) -> Result<ToolOutput, ToolError> {
+    type Error = std::io::Error;
+    type Connection = ();
+    type Conversation = ();
+    type Message = ();
+    type Segment = ();
+    type Receipt = ();
+    async fn list_bots(&self, _: &str) -> Result<Vec<pl_tool::bots::Bot<()>>, std::io::Error> {
         panic!("argument failure entered a business handler")
     }
     async fn list_conversations(
@@ -428,14 +434,14 @@ impl pl_tool::bots::BotSessionHost for UnreachableBotHost {
         _: String,
         _: Option<String>,
         _: Option<u32>,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<pl_tool::bots::Page<()>, std::io::Error> {
         panic!("argument failure entered a business handler")
     }
     async fn read_messages(
         &self,
         _: &str,
-        _: pl_tool::bots::ReadMessagesInput,
-    ) -> Result<ToolOutput, ToolError> {
+        _: pl_tool::bots::ReadMessages,
+    ) -> Result<pl_tool::bots::Page<()>, std::io::Error> {
         panic!("argument failure entered a business handler")
     }
     async fn send_message(
@@ -445,7 +451,7 @@ impl pl_tool::bots::BotSessionHost for UnreachableBotHost {
         _: String,
         _: String,
         _: String,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<pl_tool::bots::Sent<(), ()>, std::io::Error> {
         panic!("argument failure entered a business handler")
     }
 }

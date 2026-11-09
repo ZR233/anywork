@@ -400,7 +400,10 @@ impl StudioThreadTools {
     >(
         mut self,
         binding: StudioGitBinding<B, P>,
-    ) -> Result<Self, ThreadAssemblyError> {
+    ) -> Result<Self, ThreadAssemblyError>
+    where
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         if !self.capabilities.git {
             return Ok(self);
         }

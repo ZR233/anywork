@@ -77,7 +77,7 @@ fn receipt_file(payload: &OpaquePayload, id: &str) -> Result<Option<FileDisplayR
     {
         return Ok(Some(FileDisplayResult::Ready {
             resource: receipt.original,
-            filename: super::thread::filename(&receipt.path),
+            filename: pl_tool_media::show_files::filename(&receipt.path),
             modality: AttachmentModality::Image,
             // Old paths were caller-supplied and are not verified local locators.
             origin: FileDisplayOrigin::Archive,

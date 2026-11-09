@@ -1,93 +1,22 @@
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use pl_patch::{PatchBackend, PatchError, PatchFileChange, PatchPathDisplay, PatchResult};
+use pl_patch::{PatchBackend, PatchError, PatchPathDisplay, PatchResult};
 use pl_protocol::{PureError, Result};
-use serde::Serialize;
 
 use super::backend::*;
 use super::schema::TOOL_APPLY_PATCH;
 use crate::tool_error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspacePatchOutput {
-    pub cwd: String,
-    pub added: Vec<String>,
-    pub updated: Vec<String>,
-    pub deleted: Vec<String>,
-    pub moved: Vec<WorkspacePatchMove>,
-    pub changed_files: Vec<String>,
-    pub stdout: String,
-    pub stderr: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-}
+use pl_tool_filesystem::apply_patch::PatchOutput;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspacePatchMove {
-    pub from: String,
-    pub to: String,
-}
-
-pub async fn apply_patch_to_backend<B>(
-    backend: &B,
-    cwd: String,
-    patch: &str,
-) -> Result<WorkspacePatchOutput>
+pub async fn apply_patch_to_backend<B>(backend: &B, cwd: String, patch: &str) -> Result<PatchOutput>
 where
     B: WorkspaceFileBackend,
 {
     let patch_backend = WorkspacePatchBackend { backend, cwd: &cwd };
-    let outcome = pl_patch::apply_patch(patch, &patch_backend)
+    pl_tool_filesystem::apply_patch::apply_patch(&patch_backend, cwd.clone(), patch)
         .await
-        .map_err(|error| tool_error(TOOL_APPLY_PATCH, error.into_message()))?;
-    let summary = outcome.summary(&patch_backend);
-    let mut added = Vec::new();
-    let mut updated = Vec::new();
-    let mut deleted = Vec::new();
-    let mut moved = Vec::new();
-    let mut changed_files = BTreeSet::new();
-
-    for change in outcome.file_changes() {
-        match change {
-            PatchFileChange::Add { path } => {
-                let path = patch_backend.display_path(&path);
-                changed_files.insert(path.clone());
-                added.push(path);
-            }
-            PatchFileChange::Update { path } => {
-                let path = patch_backend.display_path(&path);
-                changed_files.insert(path.clone());
-                updated.push(path);
-            }
-            PatchFileChange::Delete { path } => {
-                let path = patch_backend.display_path(&path);
-                changed_files.insert(path.clone());
-                deleted.push(path);
-            }
-            PatchFileChange::Move { source, target } => {
-                let from = patch_backend.display_path(&source);
-                let to = patch_backend.display_path(&target);
-                changed_files.insert(from.clone());
-                changed_files.insert(to.clone());
-                moved.push(WorkspacePatchMove { from, to });
-            }
-        }
-    }
-
-    Ok(WorkspacePatchOutput {
-        cwd,
-        added,
-        updated,
-        deleted,
-        moved,
-        changed_files: changed_files.into_iter().collect(),
-        stdout: "apply_patch completed".to_string(),
-        stderr: String::new(),
-        summary,
-    })
+        .map_err(|error| tool_error(TOOL_APPLY_PATCH, error.into_message()))
 }
 
 #[derive(Debug)]

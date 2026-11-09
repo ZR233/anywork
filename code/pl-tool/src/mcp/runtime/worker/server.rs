@@ -17,6 +17,7 @@ use crate::mcp::ConnectedMcp;
 use crate::mcp::config::EffectiveMcpServerConfig;
 use crate::mcp::config::McpServerConfig;
 use crate::mcp::config::McpServerSourceKind;
+use crate::mcp::config::{McpExecutionContext, McpServerTransport};
 use crate::mcp::health::McpAvailabilityKind;
 use crate::mcp::naming::assign_exposed_tool_names;
 use crate::unix_seconds;
@@ -26,6 +27,8 @@ pub(super) struct RuntimeGeneration {
     pub(super) servers: BTreeMap<String, RuntimeServer>,
     pub(super) leases: usize,
     pub(super) retired: bool,
+    pub(super) authorization: pl_core::tool::opaque::ToolAuthorization,
+    authorization_scope: AuthorizationScope,
 }
 
 impl RuntimeGeneration {
@@ -35,7 +38,82 @@ impl RuntimeGeneration {
             servers: BTreeMap::new(),
             leases: 0,
             retired: false,
+            authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
+            authorization_scope: AuthorizationScope::default(),
         }
+    }
+
+    /// Called only by the serial worker at publication, never on a retired generation.
+    pub(super) fn freeze_authorization(&mut self, previous: &Self) {
+        let scope = AuthorizationScope::from_servers(&self.servers);
+        if scope == previous.authorization_scope {
+            self.authorization = previous.authorization.clone();
+        }
+        self.authorization_scope = scope;
+    }
+}
+
+/// Private, non-serialized and deliberately without Debug: it includes credential bindings.
+#[derive(Default, PartialEq, Eq)]
+struct AuthorizationScope {
+    servers: BTreeMap<String, AuthorizedServer>,
+    resource_assignments: BTreeSet<String>,
+}
+
+#[derive(PartialEq, Eq)]
+struct AuthorizedServer {
+    source: McpServerSourceKind,
+    transport: McpServerTransport,
+    command: Option<String>,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    cwd: Option<String>,
+    url: Option<String>,
+    headers: BTreeMap<String, String>,
+    bearer_token: Option<String>,
+    bearer_token_env_var: Option<String>,
+    execution_context: McpExecutionContext,
+    effect: Option<ToolEffect>,
+    /// Actual frozen dispatch identities, not schema or remote presentation hints.
+    tools: BTreeMap<String, String>,
+}
+
+impl AuthorizationScope {
+    fn from_servers(servers: &BTreeMap<String, RuntimeServer>) -> Self {
+        let mut scope = Self::default();
+        for (id, server) in servers {
+            if server.availability != McpAvailabilityKind::Available {
+                continue;
+            }
+            let configured = &server.configured;
+            let target = &configured.config;
+            scope.servers.insert(
+                id.clone(),
+                AuthorizedServer {
+                    source: configured.source_kind,
+                    transport: target.transport,
+                    command: target.command.clone(),
+                    args: target.args.clone(),
+                    env: target.env.clone(),
+                    cwd: target.cwd.clone(),
+                    url: target.url.clone(),
+                    headers: target.headers.clone(),
+                    bearer_token: configured.bearer_token.clone(),
+                    bearer_token_env_var: target.bearer_token_env_var.clone(),
+                    execution_context: configured.execution_context.clone(),
+                    effect: server.tool_effect,
+                    tools: server
+                        .tools
+                        .iter()
+                        .map(|tool| (tool.exposed_name.clone(), tool.raw_name.clone()))
+                        .collect(),
+                },
+            );
+            if server.supports_resources {
+                scope.resource_assignments.insert(id.clone());
+            }
+        }
+        scope
     }
 }
 
@@ -53,6 +131,7 @@ pub(super) fn reset_failed(scope: &McpResetScope, generation: &RuntimeGeneration
 }
 
 pub(super) struct RuntimeServer {
+    configured: EffectiveMcpServerConfig,
     pub(super) descriptor: McpServerDescriptor,
     pub(super) fingerprint: u64,
     pub(super) availability: McpAvailabilityKind,
@@ -69,6 +148,7 @@ pub(super) struct RuntimeServer {
 }
 
 pub(super) struct AvailableRuntimeServer {
+    pub(super) configured: EffectiveMcpServerConfig,
     pub(super) descriptor: McpServerDescriptor,
     pub(super) fingerprint: u64,
     pub(super) session: Arc<ConnectedMcp>,
@@ -83,6 +163,7 @@ pub(super) struct AvailableRuntimeServer {
 impl Clone for RuntimeServer {
     fn clone(&self) -> Self {
         Self {
+            configured: self.configured.clone(),
             descriptor: self.descriptor.clone(),
             fingerprint: self.fingerprint,
             availability: self.availability,
@@ -101,6 +182,16 @@ impl Clone for RuntimeServer {
 }
 
 impl RuntimeServer {
+    /// The fingerprint is only a cache prefilter, never the equality proof for a binding.
+    pub(super) fn matches_config(&self, next: &EffectiveMcpServerConfig) -> bool {
+        self.configured.config == next.config
+            && self.configured.status_kind == next.status_kind
+            && self.configured.source_kind == next.source_kind
+            && self.configured.bearer_token == next.bearer_token
+            && self.configured.execution_context == next.execution_context
+            && self.configured.tool_effect == next.tool_effect
+    }
+
     pub(super) fn terminal(
         config: &EffectiveMcpServerConfig,
         fingerprint: u64,
@@ -108,6 +199,7 @@ impl RuntimeServer {
         message: Option<String>,
     ) -> Self {
         Self {
+            configured: config.clone(),
             descriptor: server_descriptor(config),
             fingerprint,
             availability,
@@ -126,6 +218,7 @@ impl RuntimeServer {
 
     pub(super) fn available(input: AvailableRuntimeServer) -> Self {
         Self {
+            configured: input.configured,
             descriptor: input.descriptor,
             fingerprint: input.fingerprint,
             availability: McpAvailabilityKind::Available,
@@ -146,10 +239,12 @@ impl RuntimeServer {
         descriptor: McpServerDescriptor,
         fingerprint: u64,
         error: String,
-        config: McpServerConfig,
+        configured: EffectiveMcpServerConfig,
         redactor: McpErrorRedactor,
     ) -> Self {
         Self {
+            config: configured.config.clone(),
+            configured,
             descriptor,
             fingerprint,
             availability: McpAvailabilityKind::Unavailable,
@@ -160,7 +255,6 @@ impl RuntimeServer {
             tools: Vec::new(),
             supports_resources: false,
             request_timeout: PROBE_TIMEOUT,
-            config,
             tool_effect: None,
             redactor,
         }
@@ -182,11 +276,8 @@ pub(super) fn assign_tool_descriptors(servers: &mut BTreeMap<String, RuntimeServ
             .map(|definition| {
                 let annotations = serialize_optional(&definition.annotations);
                 let safety_hints = McpToolSafetyHints::parse(annotations.as_ref());
-                // server 配置显式声明的 effect 优先；否则只有 readOnlyHint=true
-                // 推导为 Read。destructiveHint 不映射写 effect，保持保守 None。
-                let effect = server.tool_effect.or({
-                    (safety_hints.read_only_hint == Some(true)).then_some(ToolEffect::Read)
-                });
+                // Remote display hints never grant local read/programmatic privileges.
+                let effect = server.tool_effect;
                 McpRuntimeToolDescriptor {
                     server_id: server.descriptor.id.clone(),
                     raw_name: definition.name.to_string(),

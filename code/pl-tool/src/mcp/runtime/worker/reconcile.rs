@@ -89,6 +89,7 @@ pub(super) async fn prepare_generation(
             )),
             McpServerStatusKind::Enabled => reusable.remove(&server_id).filter(|server| {
                 server.fingerprint == fingerprint
+                    && server.matches_config(&config)
                     && server.availability == McpAvailabilityKind::Available
             }),
         };
@@ -119,14 +120,13 @@ async fn connect_server(
     cancel: CancellationToken,
 ) -> RuntimeServer {
     let descriptor = server_descriptor(&config);
-    let server_config = config.config.clone();
     let redactor = McpErrorRedactor::new(&config);
     if cancel.is_cancelled() {
         return RuntimeServer::unavailable(
             descriptor,
             fingerprint,
             "MCP generation preparation was cancelled".to_string(),
-            server_config,
+            config,
             redactor,
         );
     }
@@ -162,7 +162,7 @@ async fn connect_server(
                         "MCP health check timed out after {} seconds",
                         startup_timeout.as_secs()
                     ),
-                    server_config,
+                    config,
                     redactor,
                 );
             }
@@ -170,7 +170,7 @@ async fn connect_server(
                 descriptor,
                 fingerprint,
                 redactor.redact(error.to_string()),
-                server_config,
+                config,
                 redactor,
             );
         }
@@ -187,7 +187,7 @@ async fn connect_server(
                 descriptor,
                 fingerprint,
                 "MCP generation preparation was cancelled".to_string(),
-                server_config,
+                config,
                 redactor,
             );
             unavailable.session = Some(session);
@@ -200,9 +200,10 @@ async fn connect_server(
             definitions: filter_tool_definitions(tools, &config.config),
             supports_resources,
             request_timeout,
-            config: server_config,
+            config: config.config.clone(),
             tool_effect: config.tool_effect,
             redactor,
+            configured: config,
         }),
         Some(Ok(Err(error))) => {
             let close_failed = if let Err(close_error) = session.close().await {
@@ -215,13 +216,8 @@ async fn connect_server(
                 false
             };
             let message = redactor.redact(error.to_string());
-            let mut unavailable = RuntimeServer::unavailable(
-                descriptor,
-                fingerprint,
-                message,
-                server_config,
-                redactor,
-            );
+            let mut unavailable =
+                RuntimeServer::unavailable(descriptor, fingerprint, message, config, redactor);
             if close_failed {
                 unavailable.session = Some(session);
             }
@@ -244,7 +240,7 @@ async fn connect_server(
                     "MCP tool discovery timed out after {} seconds",
                     startup_timeout.as_secs()
                 ),
-                server_config,
+                config,
                 redactor,
             );
             if close_failed {

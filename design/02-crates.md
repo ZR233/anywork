@@ -9,6 +9,7 @@ pl-studio-bridge / pl-studio-server → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-model → pl-core
 pl-tool → pl-core / pl-model
+pl-tool → 独立工具 crate → pl-agent-tool / 最小领域支持
 pl-core / pl-model / pl-tool / pl-studio-runtime → pl-agent-tool
 pl-agent-tool（macros 特性）→ pl-agent-tool-macros
 pl-lsp → pl-remote-helper
@@ -18,6 +19,8 @@ pl-trace → pl-core
 核心依赖约束如下：
 - `pl-model` 不依赖 `pl-tool`；`pl-tool` 消费 `pl-model` 已解析的账号能力与模型路由。
 - `pl-agent-tool` 拥有供应商无关的可执行工具声明与消费接口，基础特性不依赖其他 Anywork crate、RMCP、Tokio 或网络运行时；可选 `typed` 特性增加 Serde/Schemars 作者适配，可选 `macros` 特性增加薄过程宏。`pl-agent-tool-macros` 不反向依赖接口库。core 与 model 只启用基础消费契约，原生作者所在的 tool 与 Studio 显式启用作者特性。
+- 独立工具按能力家族组成 crate，同家族工具用模块组织，拥有各自声明、参数校验、领域执行编排与结果；不机械按每个工具名称拆包。MCP 动态工具与资源门面同属 MCP 家族，不按远端目录名称创建静态包。家族及其独立支持层不得直接或传递依赖 `pl-tool`、`pl-core`、`pl-model` 或 Studio；必要的算法、SDK 与领域能力接口不属于宿主依赖。产品 DTO、注册、授权、任务交付与历史保存不进入独立工具的公开契约。
+- `pl-tool` 是 Anywork 工具宿主适配及运行基础设施，不是独立工具的依赖入口。它将冻结的调用事实和受限能力传给工具，并将领域结果适配为内核输出；配置、凭据解析、工作区选择、持久化及产品事件仍归 Studio。共享支持只承载实际复用的文件、进程、媒体或服务能力，不建立通用产品上下文、第二套状态、注册表或调度器。
 - `pl-core` 不依赖 `pl-protocol`、`pl-model`、`pl-tool`、`pl-trace`、`pl-output` 或 Studio 层组件（含测试依赖）。新增概念须先甄别是否属于通用的会话线程编排；账号、工具和产品专属概念分别归入对应适配层，不得通过 `pl-core` 门面镜像导出。
 - 工作区完整成员清单以根目录 `Cargo.toml` 为准；Flutter 应用目录本身不是 Cargo 工作区成员，其 Rust 桥接库 `pl-studio-bridge` 单独纳入工作区。
 - 厂商协议的 HTTP 客户端（模型目录发现、文件上传与图像生成）归属 `pl-model`，与账号配置、协议端点、模型目录及凭据解析保持同源，并由 `pl-model` 公开 API 的集成测试覆盖；`pl-tool` 仅负责参数校验、结果编排与媒体文件归档，不维护第二套协议或凭据逻辑。
@@ -36,7 +39,8 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-model` | 账号配置、厂商协议与传输层、模型目录、配置值对象、路由解析、厂商图像 API、媒体编码、提示缓存、用量计量及核心模型会话适配 |
 | `pl-acp` | 外部智能体的 ACP 协商与认证协议、类型化请求结果及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
-| `pl-tool` | 文件读写、命令执行、SSH、Git、LSP、MCP、技能、网络搜索、图像生成与展示、用户交互、笔记、待办（todo）、轮次完成、多智能体协作与机器人会话工具 |
+| 独立工具家族 crate | 文件、命令、Git、LSP、MCP、搜索、媒体与文件展示、技能、机器人各自聚合相关工具，以模块保存各工具的声明、校验、领域编排、结果与错误；通过 `pl-agent-tool` 被独立宿主消费，跨家族只共享必要的窄领域支持 |
+| `pl-tool` | Anywork 工具宿主适配、受限本地/SSH/容器后端与共享服务所有权、内核结果及控制映射；保留用户交互、笔记、待办、轮次完成、任务治理和多智能体等宿主控制工具 |
 | `pl-protocol` | Studio 与外围适配器共用的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |

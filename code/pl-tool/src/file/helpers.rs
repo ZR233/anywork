@@ -1,6 +1,3 @@
-use crate::tool_error;
-use std::path::Path;
-
 use super::path::WorkspacePaths;
 use crate::workspace::ToolWorkspace;
 use pl_core::tool::opaque::CallContext;
@@ -25,21 +22,4 @@ pub(super) async fn workspace(
         runtime.allows_workspace_escape(context),
     )
     .await
-}
-
-pub(super) async fn ensure_overwrite(
-    path: &Path,
-    overwrite: bool,
-    tool: &str,
-) -> Result<(), PureError> {
-    if !overwrite && tokio::fs::try_exists(path).await? {
-        return Err(tool_error(
-            tool,
-            format!(
-                "target '{}' already exists; use overwrite mode or apply_patch for an intentional replacement",
-                path.display()
-            ),
-        ));
-    }
-    Ok(())
 }

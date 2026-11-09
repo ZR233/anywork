@@ -1,299 +1,190 @@
-use crate::tool_error;
+//! Anywork policy/lease and output adaptation for the independent file tools.
+use super::{helpers::*, input::*, path::WorkspacePaths};
+use crate::{tool_error, workspace::ToolWorkspace};
+use pl_agent_tool::typed::TypedTool;
+use pl_core::tool::opaque::{CallContext, ToolError};
+use pl_protocol::{PureError, Result};
+use pl_tool_filesystem::{MutationBackend, MutationError};
+use std::path::PathBuf;
 
-use pl_protocol::PureError;
-
-use super::helpers::*;
-use super::input::*;
-
-use crate::workspace::ToolWorkspace;
-use crate::workspace::path_safety::remove_dir_all_no_follow_async;
-
-#[derive(Debug, Clone)]
-pub struct CreateDirectoryTool {
+pub(super) struct LocalMutationCapability {
+    paths: WorkspacePaths,
     workspace: ToolWorkspace,
 }
 
-#[derive(Debug, Clone)]
-pub struct DeletePathTool {
-    workspace: ToolWorkspace,
-}
-
-#[derive(Debug, Clone)]
-pub struct CopyPathTool {
-    workspace: ToolWorkspace,
-}
-
-#[derive(Debug, Clone)]
-pub struct MovePathTool {
-    workspace: ToolWorkspace,
-}
-
-impl CreateDirectoryTool {
-    pub fn new(workspace: ToolWorkspace) -> Self {
-        Self { workspace }
-    }
-}
-
-impl DeletePathTool {
-    pub fn new(workspace: ToolWorkspace) -> Self {
-        Self { workspace }
-    }
-}
-
-impl CopyPathTool {
-    pub fn new(workspace: ToolWorkspace) -> Self {
-        Self { workspace }
-    }
-}
-
-impl MovePathTool {
-    pub fn new(workspace: ToolWorkspace) -> Self {
-        Self { workspace }
-    }
-}
-
-impl pl_agent_tool::typed::TypedTool for CreateDirectoryTool {
-    const NAME: &'static str = CREATE_DIRECTORY_TOOL_NAME;
-    const DESCRIPTION: &'static str = CREATE_DIRECTORY_TOOL_DESCRIPTION;
-    type Args = PathInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
-    async fn execute(
+impl LocalMutationCapability {
+    async fn check_destination(
         &self,
-        input: Self::Args,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        self.execute_input(input, context)
-            .await
-            .map_err(pl_core::tool::opaque::ToolError::new)
-    }
-}
-impl CreateDirectoryTool {
-    async fn execute_input(
-        &self,
-        input: PathInput,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> Result<pl_core::tool::ToolOutput, PureError> {
-        self.workspace.ensure_workspace_writable()?;
-        let _write_guard = self.workspace.write_lock().await;
-        let paths = workspace(&self.workspace, &context).await?;
-        let path = paths.resolve_for_write(&input.path).await?;
-        self.workspace.ensure_path_writable(&path)?;
-        tokio::fs::create_dir_all(&path).await?;
-        Ok(text_output(format!(
-            "Created directory {}",
-            paths.display_relative(&path)
-        )))
+        path: &PathBuf,
+        collision: PathCollision,
+        tool: &str,
+    ) -> Result<()> {
+        if collision == PathCollision::FailIfExists && tokio::fs::try_exists(path).await? {
+            return Err(tool_error(
+                tool,
+                MutationError::<PureError>::DestinationExists(path.display().to_string()),
+            ));
+        }
+        Ok(())
     }
 }
 
-impl pl_agent_tool::typed::TypedTool for DeletePathTool {
-    const NAME: &'static str = DELETE_PATH_TOOL_NAME;
-    const DESCRIPTION: &'static str = DELETE_PATH_TOOL_DESCRIPTION;
-    type Args = DeletePathInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
+impl MutationBackend for LocalMutationCapability {
+    type Error = PureError;
+    type Path = PathBuf;
 
-    async fn execute(
-        &self,
-        input: Self::Args,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        self.execute_input(input, context)
-            .await
-            .map_err(pl_core::tool::opaque::ToolError::new)
+    async fn resolve_existing(&self, path: &str) -> Result<PathBuf> {
+        self.paths.resolve_existing(path).await
+    }
+    async fn resolve_for_write(&self, path: &str) -> Result<PathBuf> {
+        self.paths.resolve_for_write(path).await
+    }
+    fn ensure_writable(&self, path: &PathBuf) -> Result<()> {
+        self.workspace.ensure_path_writable(path)
+    }
+    fn display_path(&self, path: &PathBuf) -> String {
+        self.paths.display_relative(path)
+    }
+    fn diagnostic_path(&self, path: &PathBuf) -> String {
+        path.display().to_string()
+    }
+    async fn is_directory(&self, path: &PathBuf) -> Result<bool> {
+        Ok(tokio::fs::metadata(path).await?.is_dir())
+    }
+    async fn exists(&self, path: &PathBuf) -> Result<bool> {
+        Ok(tokio::fs::try_exists(path).await?)
+    }
+    async fn create_directory(&self, path: &PathBuf) -> Result<()> {
+        Ok(tokio::fs::create_dir_all(path).await?)
+    }
+    async fn remove_file(&self, path: &PathBuf) -> Result<()> {
+        tokio::fs::remove_file(path).await?;
+        self.workspace.notify_deleted(path).await;
+        Ok(())
+    }
+    async fn remove_directory(&self, path: &PathBuf, recursive: bool) -> Result<()> {
+        if recursive {
+            crate::workspace::path_safety::remove_dir_all_no_follow_async(self.paths.root(), path)
+                .await
+                .map_err(|error| tool_error("delete_path", error))?;
+        } else {
+            tokio::fs::remove_dir(path).await?;
+        }
+        self.workspace.notify_deleted(path).await;
+        Ok(())
+    }
+    async fn copy(&self, from: &PathBuf, to: &PathBuf, collision: PathCollision) -> Result<()> {
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        // This recheck is not atomic with the OS operation; it must not be
+        // represented as cross-process no-clobber.
+        self.check_destination(to, collision, "copy_path").await?;
+        tokio::fs::copy(from, to).await?;
+        self.workspace.notify_changed(to).await;
+        Ok(())
+    }
+    async fn rename(&self, from: &PathBuf, to: &PathBuf, collision: PathCollision) -> Result<()> {
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        self.check_destination(to, collision, "move_path").await?;
+        tokio::fs::rename(from, to).await?;
+        self.workspace.notify_deleted(from).await;
+        self.workspace.notify_changed(to).await;
+        Ok(())
     }
 }
-impl DeletePathTool {
-    async fn execute_input(
-        &self,
-        input: DeletePathInput,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> Result<pl_core::tool::ToolOutput, PureError> {
-        self.workspace.ensure_workspace_writable()?;
-        let _write_guard = self.workspace.write_lock().await;
-        let paths = workspace(&self.workspace, &context).await?;
-        let path = paths.resolve_existing(&input.path).await?;
-        self.workspace.ensure_path_writable(&path)?;
-        let metadata = tokio::fs::metadata(&path).await?;
-        match (metadata.is_dir(), input.delete_mode()) {
-            (false, DeleteMode::File) => tokio::fs::remove_file(&path).await?,
-            (false, DeleteMode::EmptyDirectory | DeleteMode::RecursiveDirectory) => {
-                return Err(tool_error(
-                    "delete_path",
-                    "delete mode requires a directory but path is a file",
-                ));
+
+fn mutation_error(tool: &str, error: MutationError<PureError>) -> PureError {
+    match error {
+        MutationError::Backend(error) => error,
+        error => tool_error(tool, error),
+    }
+}
+
+macro_rules! host_mutation {
+    ($host:ident, $domain:path, $input:ty, $map:expr) => {
+        #[derive(Debug, Clone)]
+        pub struct $host {
+            workspace: ToolWorkspace,
+        }
+        impl $host {
+            pub fn new(workspace: ToolWorkspace) -> Self {
+                Self { workspace }
             }
-            (true, DeleteMode::File) => {
-                return Err(tool_error(
-                    "delete_path",
-                    "delete mode file cannot delete a directory",
-                ));
-            }
-            (true, DeleteMode::EmptyDirectory) => tokio::fs::remove_dir(&path).await?,
-            (true, DeleteMode::RecursiveDirectory) => {
-                remove_dir_all_no_follow_async(paths.root(), &path)
+        }
+        impl TypedTool for $host {
+            const NAME: &'static str = <$domain as TypedTool>::NAME;
+            const DESCRIPTION: &'static str = <$domain as TypedTool>::DESCRIPTION;
+            type Args = $input;
+            type Context = CallContext;
+            type Output = pl_core::tool::ToolOutput;
+            type Error = ToolError;
+            async fn execute(
+                &self,
+                input: Self::Args,
+                context: CallContext,
+            ) -> std::result::Result<Self::Output, ToolError> {
+                self.workspace
+                    .ensure_workspace_writable()
+                    .map_err(ToolError::new)?;
+                let _guard = self.workspace.write_lock().await;
+                let paths = workspace(&self.workspace, &context)
                     .await
-                    .map_err(|error| tool_error("delete_path", error))?;
+                    .map_err(ToolError::new)?;
+                let backend = LocalMutationCapability {
+                    paths,
+                    workspace: self.workspace.clone(),
+                };
+                let result = <$domain>::new()
+                    .execute(input, backend)
+                    .await
+                    .map_err($map)
+                    .map_err(ToolError::new)?;
+                Ok(text_output(result))
             }
         }
-        self.workspace.notify_deleted(&path).await;
-        Ok(text_output(format!(
-            "Deleted {}",
-            paths.display_relative(&path)
-        )))
-    }
+    };
 }
-
-impl pl_agent_tool::typed::TypedTool for CopyPathTool {
-    const NAME: &'static str = COPY_PATH_TOOL_NAME;
-    const DESCRIPTION: &'static str = COPY_PATH_TOOL_DESCRIPTION;
-    type Args = CopyMoveInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
-    async fn execute(
-        &self,
-        input: Self::Args,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        self.execute_input(input, context)
-            .await
-            .map_err(pl_core::tool::opaque::ToolError::new)
-    }
-}
-impl CopyPathTool {
-    async fn execute_input(
-        &self,
-        input: CopyMoveInput,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> Result<pl_core::tool::ToolOutput, PureError> {
-        self.workspace.ensure_workspace_writable()?;
-        let _write_guard = self.workspace.write_lock().await;
-        let paths = workspace(&self.workspace, &context).await?;
-        let from = paths.resolve_existing(&input.from).await?;
-        let to = paths.resolve_for_write(&input.to).await?;
-        self.workspace.ensure_path_writable(&to)?;
-        ensure_overwrite(
-            &to,
-            input.collision() == PathCollision::Overwrite,
-            "copy_path",
-        )
-        .await?;
-        if let Some(parent) = to.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::copy(&from, &to).await?;
-        self.workspace.notify_changed(&to).await;
-        Ok(text_output(format!(
-            "Copied {} to {}",
-            paths.display_relative(&from),
-            paths.display_relative(&to)
-        )))
-    }
-}
-
-impl pl_agent_tool::typed::TypedTool for MovePathTool {
-    const NAME: &'static str = MOVE_PATH_TOOL_NAME;
-    const DESCRIPTION: &'static str = MOVE_PATH_TOOL_DESCRIPTION;
-    type Args = CopyMoveInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
-    async fn execute(
-        &self,
-        input: Self::Args,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> std::result::Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        self.execute_input(input, context)
-            .await
-            .map_err(pl_core::tool::opaque::ToolError::new)
-    }
-}
-impl MovePathTool {
-    async fn execute_input(
-        &self,
-        input: CopyMoveInput,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> Result<pl_core::tool::ToolOutput, PureError> {
-        self.workspace.ensure_workspace_writable()?;
-        let _write_guard = self.workspace.write_lock().await;
-        let paths = workspace(&self.workspace, &context).await?;
-        let from = paths.resolve_existing(&input.from).await?;
-        let to = paths.resolve_for_write(&input.to).await?;
-        self.workspace.ensure_path_writable(&from)?;
-        self.workspace.ensure_path_writable(&to)?;
-        ensure_overwrite(
-            &to,
-            input.collision() == PathCollision::Overwrite,
-            "move_path",
-        )
-        .await?;
-        if let Some(parent) = to.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::rename(&from, &to).await?;
-        self.workspace.notify_deleted(&from).await;
-        self.workspace.notify_changed(&to).await;
-        Ok(text_output(format!(
-            "Moved {} to {}",
-            paths.display_relative(&from),
-            paths.display_relative(&to)
-        )))
-    }
-}
+host_mutation!(
+    CreateDirectoryTool,
+    pl_tool_filesystem::create_directory::CreateDirectoryTool<LocalMutationCapability>,
+    PathInput,
+    |error| error
+);
+host_mutation!(
+    DeletePathTool,
+    pl_tool_filesystem::delete_path::DeletePathTool<LocalMutationCapability>,
+    DeletePathInput,
+    |error| mutation_error("delete_path", error)
+);
+host_mutation!(
+    CopyPathTool,
+    pl_tool_filesystem::copy_path::CopyPathTool<LocalMutationCapability>,
+    CopyMoveInput,
+    |error| mutation_error("copy_path", error)
+);
+host_mutation!(
+    MovePathTool,
+    pl_tool_filesystem::move_path::MovePathTool<LocalMutationCapability>,
+    CopyMoveInput,
+    |error| mutation_error("move_path", error)
+);
 
 pub fn create_directory_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        CREATE_DIRECTORY_TOOL_NAME,
-        CREATE_DIRECTORY_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<PathInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_filesystem::create_directory::definition::<LocalMutationCapability>()
 }
-
 pub fn delete_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        DELETE_PATH_TOOL_NAME,
-        DELETE_PATH_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<DeletePathInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_filesystem::delete_path::definition::<LocalMutationCapability>()
 }
-
 pub fn copy_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        COPY_PATH_TOOL_NAME,
-        COPY_PATH_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<CopyMoveInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_filesystem::copy_path::definition::<LocalMutationCapability>()
 }
-
 pub fn move_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        MOVE_PATH_TOOL_NAME,
-        MOVE_PATH_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<CopyMoveInput>(),
-    )
-    .expect("static tool definition")
+    pl_tool_filesystem::move_path::definition::<LocalMutationCapability>()
 }
 
-const MOVE_PATH_TOOL_NAME: &str = "move_path";
-const MOVE_PATH_TOOL_DESCRIPTION: &str =
-    "Move a workspace file or directory with explicit destination collision behavior.";
-
-const COPY_PATH_TOOL_NAME: &str = "copy_path";
-const COPY_PATH_TOOL_DESCRIPTION: &str =
-    "Copy a workspace file with explicit destination collision behavior.";
-
-const DELETE_PATH_TOOL_NAME: &str = "delete_path";
-const DELETE_PATH_TOOL_DESCRIPTION: &str = "Delete a file or directory using an explicit file, emptyDirectory, or recursiveDirectory mode.";
-
-const CREATE_DIRECTORY_TOOL_NAME: &str = "create_directory";
-const CREATE_DIRECTORY_TOOL_DESCRIPTION: &str = "Create a directory inside the workspace.";
+#[cfg(test)]
+#[path = "mutation_tests.rs"]
+mod tests;

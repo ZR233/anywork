@@ -388,12 +388,10 @@ async fn save_effect(
 
 pub(super) async fn activity(feed: &mut ConversationFeed) -> Result<Arc<ActivitySnapshot>> {
     tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            match feed.recv().await?.context("activity feed ended")? {
-                ConversationEvent::Activity { snapshot } => return Ok(snapshot),
-                ConversationEvent::Chat { .. } => {
-                    bail!("Activity crossed an unaccepted completion batch")
-                }
+        match feed.recv().await?.context("activity feed ended")? {
+            ConversationEvent::Activity { snapshot } => Ok(snapshot),
+            ConversationEvent::Chat { .. } => {
+                bail!("Activity crossed an unaccepted completion batch")
             }
         }
     })

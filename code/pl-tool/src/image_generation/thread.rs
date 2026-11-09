@@ -1,8 +1,7 @@
-//! One Thread-local image generation executor over a frozen account backend and media host.
-use super::{
-    IMAGE_GENERATION_RECEIPT_FORMAT, IMAGE_GENERATION_RECEIPT_VERSION, TOOL_IMAGE_GENERATION,
-};
-use crate::media::{PreparedToolImage, ToolMedia, ToolMediaHost, ToolMediaKind, image_limits};
+//! Selected ImagesClient capability and historical generation receipts for Anywork.
+use super::{IMAGE_GENERATION_RECEIPT_FORMAT, IMAGE_GENERATION_RECEIPT_VERSION};
+use crate::media::{DomainMediaHost, ToolMediaHost, domain_error, image_limits};
+use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -11,202 +10,154 @@ use pl_core::{
     },
 };
 use pl_model::protocol::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
+pub use pl_tool_media::generate_image::Input as ImageGenerationInput;
 use std::sync::Arc;
 
-/// Longest prompt accepted after trimming; the endpoint never receives a longer request.
-const MAX_PROMPT_CHARS: usize = 8_000;
-
-const DESCRIPTION: &str = "Generate one image from a text prompt with the account's image \
-service. The generated image is archived as a thread attachment; describe the result in text \
-instead of embedding or repeating the image inline.";
-
-/// Fixed model-visible note appended after the archived media projection.
-const ARCHIVED_NOTE: &str = "The generated image is archived as a thread attachment. Do not \
-embed or restate the image in your reply.";
-
-/// Request parameters for one image generation call.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ImageGenerationInput {
-    /// Image description sent to the account verbatim after trimming surrounding whitespace.
-    pub prompt: String,
-    /// Request a transparent background; omitted means the account default (opaque).
-    #[serde(default)]
-    pub transparent_background: bool,
-}
-
-/// Tool-owned receipt binding the archived bytes to the request that produced them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageGenerationReceipt {
-    /// Account instance that served the request.
     pub account_id: String,
-    /// Image model slug selected from the online directory observation.
     pub model: String,
-    /// Trimmed prompt actually sent to the account.
     pub prompt: String,
-    /// Whether a transparent background was requested.
     pub transparent_background: bool,
-    /// Media type detected from the returned bytes.
     pub media_type: String,
-    /// Raw bytes archived under the shared resource host.
     pub original: pl_core::context::ResourceReference,
-    /// Service-supplied rewritten prompt, when the endpoint returns one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revised_prompt: Option<String>,
-    /// Width of the model-visible variant, absent when the prepared model accepts no image input.
     pub model_width: Option<u32>,
-    /// Height of the model-visible variant, absent when the prepared model accepts no image input.
     pub model_height: Option<u32>,
 }
 
-/// A Thread-local generator sharing only its immutable HTTP client configuration.
+#[derive(Debug, Clone)]
+struct SelectedGenerator {
+    client: Arc<ImagesClient>,
+    model: String,
+}
+
+impl pl_tool_media::generate_image::ImageGenerator for SelectedGenerator {
+    type Error = pl_model::protocol::images::ImagesError;
+
+    async fn generate(
+        &self,
+        prompt: String,
+        transparent: bool,
+    ) -> Result<pl_tool_media::generate_image::GeneratedImage, Self::Error> {
+        let image = self
+            .client
+            .generate(ImageGenerationRequest {
+                model: self.model.clone(),
+                prompt,
+                background: if transparent {
+                    ImageGenerationBackground::Transparent
+                } else {
+                    ImageGenerationBackground::Opaque
+                },
+            })
+            .await?;
+        Ok(pl_tool_media::generate_image::GeneratedImage {
+            bytes: image.bytes.into(),
+            media_type: image.media_type.into(),
+            revised_prompt: image.revised_prompt,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct ThreadImageGenerationTool<H> {
-    client: ImagesClient,
-    model: String,
+    generator: SelectedGenerator,
     account_id: String,
     media: Arc<H>,
 }
 
 impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
-    /// Binds the frozen account backend, its selected model and the Thread media host.
     pub fn new(client: ImagesClient, model: String, account_id: String, media: Arc<H>) -> Self {
         Self {
-            client,
-            model,
+            generator: SelectedGenerator {
+                client: Arc::new(client),
+                model,
+            },
             account_id,
             media,
         }
     }
 
-    /// Stable declaration, independent of conversation state and observed results.
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
-        thread_image_generation_tool_definition()
+        pl_agent_tool::ToolDefinition::json(
+            pl_tool_media::generate_image::NAME,
+            pl_tool_media::generate_image::DESCRIPTION,
+            pl_agent_tool::typed::input_schema_for::<ImageGenerationInput>(),
+        )
+        .expect("static tool definition")
     }
 }
 
-impl<H: ToolMediaHost> pl_agent_tool::typed::TypedTool for ThreadImageGenerationTool<H> {
-    const NAME: &'static str = THREAD_IMAGE_GENERATION_TOOL_NAME;
-    const DESCRIPTION: &'static str = THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION;
+impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
+    const NAME: &'static str = pl_tool_media::generate_image::NAME;
+    const DESCRIPTION: &'static str = pl_tool_media::generate_image::DESCRIPTION;
     type Args = ImageGenerationInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
 
     async fn execute(
         &self,
         input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let prompt = input.prompt.trim().to_owned();
-        if prompt.is_empty() {
-            return Err(failure("image generation prompt must not be empty"));
-        }
-        if prompt.chars().count() > MAX_PROMPT_CHARS {
-            return Err(failure("image generation prompt exceeds 8000 characters"));
-        }
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
-        }
-        let generated = self
-            .client
-            .generate(ImageGenerationRequest {
-                model: self.model.clone(),
-                prompt: prompt.clone(),
-                background: if input.transparent_background {
-                    ImageGenerationBackground::Transparent
-                } else {
-                    ImageGenerationBackground::Opaque
-                },
-            })
-            .await
-            .map_err(|error| failure(&format!("image generation failed: {error}")))?;
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
-        }
-        let bytes: Arc<[u8]> = generated.bytes.into();
-        // The model projection follows the prepared model's advertised image input bounds; a
-        // model without image input still receives the archived resource, never a failure.
-        let (model_image, model_dimensions) = match image_limits(context.model_projection.as_ref())?
-            .filter(|limits| limits.max_count != Some(0))
-        {
-            Some(limits) => {
-                let total_limit = limits.max_total_bytes;
-                let original = bytes.clone();
-                let normalized = tokio::task::spawn_blocking(move || {
-                    crate::image::normalize_tool_image(
-                        TOOL_IMAGE_GENERATION,
-                        original.to_vec(),
-                        None,
-                        &limits,
-                    )
-                    .map_err(ToolError::new)
-                })
-                .await
-                .map_err(ToolError::new)??;
-                if total_limit.is_some_and(|limit| normalized.bytes.len() as u64 > limit) {
-                    return Err(failure(
-                        "generated image exceeds the prepared total-byte limit",
-                    ));
-                }
-                (
-                    Some(PreparedToolImage {
-                        bytes: normalized.bytes.into(),
-                        media_type: normalized.media_type,
-                    }),
-                    Some((normalized.width, normalized.height)),
-                )
-            }
-            None => (None, None),
+        let context = pl_tool_media_support::ImageContext {
+            limits: image_limits(context.model_projection.as_ref())?,
+            cancellation: context.cancellation,
         };
-        let retained = self
-            .media
-            .retain(ToolMedia {
-                kind: ToolMediaKind::Image,
-                bytes: bytes.clone(),
-                media_type: generated.media_type.into(),
-                model_image,
-            })
-            .await?;
-        retained.reference.verify(&bytes).map_err(ToolError::new)?;
+        let tool = pl_tool_media::generate_image::GenerateImage::new(
+            self.generator.clone(),
+            Arc::new(DomainMediaHost(self.media.clone())),
+        );
+        let output = tool
+            .execute(input, context)
+            .await
+            .map_err(generation_error)?;
         let payload = OpaquePayload::new(
             IMAGE_GENERATION_RECEIPT_FORMAT,
             IMAGE_GENERATION_RECEIPT_VERSION,
             serde_json::to_string(&ImageGenerationReceipt {
                 account_id: self.account_id.clone(),
-                model: self.model.clone(),
-                prompt,
-                transparent_background: input.transparent_background,
-                media_type: generated.media_type.into(),
-                original: retained.reference,
-                revised_prompt: generated.revised_prompt,
-                model_width: model_dimensions.map(|dimensions| dimensions.0),
-                model_height: model_dimensions.map(|dimensions| dimensions.1),
+                model: self.generator.model.clone(),
+                prompt: output.prompt,
+                transparent_background: output.transparent_background,
+                media_type: output.media_type,
+                original: output.retained.reference,
+                revised_prompt: output.revised_prompt,
+                model_width: output.model_dimensions.map(|dimensions| dimensions.0),
+                model_height: output.model_dimensions.map(|dimensions| dimensions.1),
             })
             .map_err(ToolError::new)?,
         )
         .map_err(ToolError::new)?;
-        let mut context = retained.context;
+        let mut context = output.retained.projection;
         context.push(ContextContent::Text {
-            text: Arc::from(ARCHIVED_NOTE),
+            text: pl_tool_media::generate_image::ARCHIVED_NOTE.into(),
         });
         Ok(ToolOutput::new(payload, context))
     }
 }
 
-fn failure(message: &str) -> ToolError {
-    ToolError::new(crate::tool_error(TOOL_IMAGE_GENERATION, message))
-}
-
-pub fn thread_image_generation_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        THREAD_IMAGE_GENERATION_TOOL_NAME,
-        THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<ImageGenerationInput>(),
+fn generation_error(error: pl_tool_media::generate_image::GenerationError) -> ToolError {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let source = domain_error(error.source);
+    let Some(image) = error.observed else {
+        return source;
+    };
+    let payload = OpaquePayload::new(
+        "pl.tool.image-generation-unarchived",
+        1,
+        serde_json::json!({
+            "mediaType": image.media_type, "data": STANDARD.encode(&image.bytes),
+            "revisedPrompt": image.revised_prompt,
+        })
+        .to_string(),
     )
-    .expect("static tool definition")
+    .expect("static image generation observation format");
+    source.with_output(ToolOutput::new(payload, vec![ContextContent::Text {
+        text: "Generated image was received but could not be archived; the service was not called again.".into(),
+    }]))
 }
-
-const THREAD_IMAGE_GENERATION_TOOL_NAME: &str = TOOL_IMAGE_GENERATION;
-const THREAD_IMAGE_GENERATION_TOOL_DESCRIPTION: &str = DESCRIPTION;

@@ -27,28 +27,8 @@ pub(super) fn safe_relative_path(path: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn category_path(category: &str) -> Result<PathBuf> {
-    let relative = safe_relative_path(category.trim())?;
-    for component in relative.components() {
-        let Component::Normal(part) = component else {
-            return Err(PureError::ConfigError(
-                "skill category must contain normal path components".to_string(),
-            ));
-        };
-        let Some(part) = part.to_str() else {
-            return Err(PureError::ConfigError(
-                "skill category must be valid UTF-8".to_string(),
-            ));
-        };
-        if !part
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-        {
-            return Err(PureError::ConfigError(format!(
-                "skill category contains unsupported characters: {category}"
-            )));
-        }
-    }
-    Ok(relative)
+    pl_tool_skill::support::category_path(category)
+        .map_err(|source| PureError::ConfigError(source.into_message()))
 }
 
 pub(super) fn expand_home(path: &str) -> Result<PathBuf> {

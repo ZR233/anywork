@@ -1,26 +1,12 @@
 //! Image snapshots and decoding limits supplied by the host, independent of model protocols.
 
-mod normalize;
 mod thread;
-mod view;
 pub use thread::{
     ThreadViewImageTool, VIEW_IMAGE_RECEIPT_FORMAT, VIEW_IMAGE_RECEIPT_VERSION, ViewImageReceipt,
     saved_view_image_receipt,
 };
 
-pub(crate) use normalize::*;
-pub use view::{TOOL_VIEW_IMAGE, ViewImageInput};
-
-/// Host-selected limits for image output. The host first verifies model source/replay support.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageOutputLimits {
-    pub max_count: Option<u32>,
-    pub max_bytes: Option<u64>,
-    pub max_total_bytes: Option<u64>,
-    pub max_width: Option<u32>,
-    pub max_height: Option<u32>,
-    pub media_types: Vec<String>,
-}
+pub use pl_tool_media::view_image::{Input as ViewImageInput, NAME as TOOL_VIEW_IMAGE};
+pub use pl_tool_media_support::ImageOutputLimits;
 
 pub use thread::thread_view_image_tool_definition;

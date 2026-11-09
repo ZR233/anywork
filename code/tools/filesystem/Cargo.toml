@@ -1,0 +1,12 @@
+[package]
+name = "pl-tool-filesystem"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+pl-agent-tool = { path = "../../pl-agent-tool", features = ["typed"] }
+pl-patch = { path = "../../pl-patch" }
+schemars = "=1.2.3"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

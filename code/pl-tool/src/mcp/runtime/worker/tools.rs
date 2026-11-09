@@ -1,12 +1,11 @@
-//! MCP 工具定义的过滤、规整与序列化,以及请求超时配置解析。
+//! MCP 工具定义的过滤与原样序列化，以及请求超时配置解析。
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 use pl_protocol::{PureError, Result};
 use rmcp::model::Tool;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::mcp::config::McpServerConfig;
 
@@ -30,23 +29,7 @@ pub(super) fn filter_tool_definitions(tools: Vec<Tool>, config: &McpServerConfig
             let name = tool.name.as_ref();
             enabled.as_ref().is_none_or(|names| names.contains(name)) && !disabled.contains(name)
         })
-        .map(normalize_tool_definition)
         .collect()
-}
-
-fn normalize_tool_definition(mut tool: Tool) -> Tool {
-    let mut schema = tool.input_schema.as_ref().clone();
-    schema
-        .entry("type".to_string())
-        .or_insert_with(|| Value::String("object".to_string()));
-    if schema
-        .get("properties")
-        .is_none_or(serde_json::Value::is_null)
-    {
-        schema.insert("properties".to_string(), Value::Object(Map::new()));
-    }
-    tool.input_schema = Arc::new(schema);
-    tool
 }
 
 pub(super) fn serialize_optional<T: serde::Serialize>(value: &Option<T>) -> Option<Value> {

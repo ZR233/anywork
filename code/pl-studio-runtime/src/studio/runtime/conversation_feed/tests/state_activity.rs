@@ -82,29 +82,27 @@ async fn expect_update(
                 }
             }
         }
-        loop {
-            match feed.recv().await?.context("summary feed ended")? {
-                ConversationEvent::Activity { snapshot } => {
-                    assert_eq!(snapshot.completed_through, feed.delivered);
+        match feed.recv().await?.context("summary feed ended")? {
+            ConversationEvent::Activity { snapshot } => {
+                assert_eq!(snapshot.completed_through, feed.delivered);
+                assert!(
+                    snapshot.entries.is_empty(),
+                    "summary invented a body member"
+                );
+                if notifications == 0 {
+                    // No producer remains in flight in this synthetic cut.
+                    // Allow the State owner's bounded coalescing interval.
                     assert!(
-                        snapshot.entries.is_empty(),
-                        "summary invented a body member"
+                        tokio::time::timeout(Duration::from_millis(100), state.recv())
+                            .await
+                            .is_err(),
+                        "unchanged or retired phase emitted a State frame"
                     );
-                    if notifications == 0 {
-                        // No producer remains in flight in this synthetic cut.
-                        // Allow the State owner's bounded coalescing interval.
-                        assert!(
-                            tokio::time::timeout(Duration::from_millis(100), state.recv())
-                                .await
-                                .is_err(),
-                            "unchanged or retired phase emitted a State frame"
-                        );
-                    }
-                    return Ok(());
                 }
-                ConversationEvent::Chat { .. } => {
-                    bail!("a phase-only change invented a completion batch")
-                }
+                Ok(())
+            }
+            ConversationEvent::Chat { .. } => {
+                bail!("a phase-only change invented a completion batch")
             }
         }
     })

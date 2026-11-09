@@ -1,8 +1,5 @@
-use pl_output::OutputTruncation;
-
 use super::{
-    CommandOutputSnapshot, CommandProcessFailure, CommandProcessFinalResult,
-    CommandProcessLifecycle, CommandProcessState, CommandTerminationReason,
+    CommandProcessFailure, CommandProcessFinalResult, CommandProcessLifecycle, CommandProcessState,
 };
 
 /// 一条截断指示行在可见正文里占用的字节上界。
@@ -40,25 +37,6 @@ fn failure_message(failure: &CommandProcessFailure) -> String {
         ),
         CommandProcessFailure::Wait { message } | CommandProcessFailure::Output { message, .. } => {
             message.clone()
-        }
-    }
-}
-
-impl CommandTerminationReason {
-    fn message_fragment(self) -> &'static str {
-        match self {
-            Self::TimedOut => "timed out",
-            Self::Cancelled => "was cancelled",
-            Self::OutputFailed => "output capture could not continue",
-        }
-    }
-}
-
-impl From<&CommandOutputSnapshot> for OutputTruncation {
-    fn from(snapshot: &CommandOutputSnapshot) -> Self {
-        Self {
-            stdout: snapshot.stdout.clone(),
-            stderr: snapshot.stderr.clone(),
         }
     }
 }

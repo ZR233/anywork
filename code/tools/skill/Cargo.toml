@@ -1,0 +1,14 @@
+[package]
+name = "pl-tool-skill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-agent-tool = { workspace = true, features = ["typed"] }
+pl-skill-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true }

@@ -1,0 +1,225 @@
+[
+  {
+    "name": "git_status",
+    "description": "Show git working tree status for this workspace.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "GitEmptyInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_diff",
+    "description": "Show git diff for this workspace.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Optional repository-relative path to limit the diff.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staged": {
+            "default": false,
+            "description": "Show staged changes instead of unstaged changes.",
+            "type": "boolean"
+          }
+        },
+        "title": "GitDiffInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_branch",
+    "description": "List branches or create/switch the current branch.",
+    "input": {
+      "JsonSchema": {
+        "$defs": {
+          "GitBranchAction": {
+            "enum": [
+              "list",
+              "switch",
+              "create"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GitBranchAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Branch action; defaults to list."
+          },
+          "name": {
+            "description": "Branch name used by switch and create.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startPoint": {
+            "description": "Optional starting revision for create.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GitBranchInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_fetch",
+    "description": "Fetch from the repository remote using host-injected credentials.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "prune": {
+            "default": true,
+            "description": "Whether to prune stale remote-tracking refs.",
+            "type": "boolean"
+          },
+          "refspec": {
+            "description": "Optional fetch refspec.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Remote name; defaults to origin.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GitFetchInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_commit",
+    "description": "Create a git commit in this workspace.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "default": false,
+            "description": "Commit all tracked modified and deleted files.",
+            "type": "boolean"
+          },
+          "message": {
+            "description": "Commit message.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "GitCommitInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_push",
+    "description": "Push the current branch using host-injected credentials.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "description": "Destination branch; defaults to the configured push branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Remote name; defaults to origin.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "setUpstream": {
+            "default": false,
+            "description": "Set the upstream branch while pushing.",
+            "type": "boolean"
+          }
+        },
+        "title": "GitPushInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_workspace_info",
+    "description": "Show information about this git workspace.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "GitEmptyInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  },
+  {
+    "name": "git_sync_default_branch",
+    "description": "Synchronize this workspace branch with the configured default branch.",
+    "input": {
+      "JsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "default": false,
+            "description": "Discard uncommitted workspace changes while syncing.",
+            "type": "boolean"
+          },
+          "preserveChanges": {
+            "default": false,
+            "description": "Stash uncommitted changes before syncing and restore them afterwards.",
+            "type": "boolean"
+          }
+        },
+        "title": "GitSyncDefaultBranchInput",
+        "type": "object"
+      }
+    },
+    "output_schema": null
+  }
+]

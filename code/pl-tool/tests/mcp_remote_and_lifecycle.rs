@@ -2,6 +2,8 @@
 //! forwarding over `pl-remote-helper` (T10, T11, T12, T13).
 #![cfg(target_os = "linux")]
 
+#[path = "support/mcp_authorization.rs"]
+mod authorization_tests;
 #[path = "support/binding_host.rs"]
 mod binding_host;
 #[path = "support/mcp_binding.rs"]
