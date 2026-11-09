@@ -2279,6 +2279,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionPlanViewDetails => '查看完整计划';
 
   @override
+  String get interactionPlanCollapseDetails => '收起计划';
+
+  @override
   String get interactionPlanDetailsTitle => '实施计划';
 
   @override

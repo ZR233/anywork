@@ -852,6 +852,7 @@
   "planDecisionSubmitting": "正在提交决定…",
   "statusPlanEntry": "计划",
   "interactionPlanViewDetails": "查看完整计划",
+  "interactionPlanCollapseDetails": "收起计划",
   "interactionPlanDetailsTitle": "实施计划",
   "interactionPlanConfirmFooterHint": "确认后将在{mode}模式进入文档编辑检查点。",
   "@interactionPlanConfirmFooterHint": {

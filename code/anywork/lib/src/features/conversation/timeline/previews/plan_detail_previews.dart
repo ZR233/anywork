@@ -7,6 +7,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../interactions/views/plan_confirmation_view.dart';
 import '../views/plan_detail_view.dart';
 import '../views/plan_receipt_view.dart';
+import '../widgets/plan_summary_card.dart';
 import '../widgets/timeline_markdown.dart';
 
 // The frozen sample is shared with design/prototypes/plan-workspace/plan.js.
@@ -52,6 +53,7 @@ Widget _host(
   bool error = false,
   bool fullWidth = false,
   bool history = false,
+  bool summary = false,
   double textScale = 1,
 }) => MaterialApp(
   debugShowCheckedModeBanner: false,
@@ -68,7 +70,9 @@ Widget _host(
     key: ValueKey('plan-preview:$id'),
     body: Padding(
       padding: const EdgeInsets.all(16),
-      child: history
+      child: summary
+          ? const SingleChildScrollView(child: _SummaryCard())
+          : history
           ? const _History()
           : LayoutBuilder(
               builder: (context, constraints) => Column(
@@ -106,6 +110,24 @@ Widget _host(
     ),
   ),
 );
+
+class _SummaryCard extends StatefulWidget {
+  const _SummaryCard();
+
+  @override
+  State<_SummaryCard> createState() => _SummaryCardState();
+}
+
+class _SummaryCardState extends State<_SummaryCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => PlanSummaryCard(
+    title: '优化项目搜索体验',
+    expanded: _expanded,
+    onToggle: () => setState(() => _expanded = !_expanded),
+  );
+}
 
 /// Local editing only; preview callbacks never claim a business decision.
 class _Feedback extends StatefulWidget {
@@ -247,3 +269,18 @@ Widget planShortPreview() => _host('short', confirm: true);
 
 @Preview(name: 'Plan / history', group: 'Plan workspace', size: Size(760, 720))
 Widget planHistoryPreview() => _host('history', history: true);
+
+@Preview(
+  name: 'Plan / summary card',
+  group: 'Plan workspace',
+  size: Size(760, 320),
+)
+Widget planSummaryCardPreview() => _host('summary', summary: true);
+
+@Preview(
+  name: 'Plan / summary narrow',
+  group: 'Plan workspace',
+  size: Size(320, 700),
+)
+Widget planSummaryCardNarrowPreview() =>
+    _host('summary-narrow', summary: true, textScale: 1.5);

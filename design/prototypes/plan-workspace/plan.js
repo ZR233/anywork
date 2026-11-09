@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   const scenarios = {
+    workspace: { name: '会话中的计划卡', state: 'awaiting', confirm: true, workspace: true, width: 1200, height: 820, note: '计划卡负责查看与收起，反馈栏负责决定。待确认期间不显示工具等待条或交互详情；关闭正文保留意见。' },
     drafting: { name: '起草中', state: 'drafting', empty: true, note: '没有文档时只展示准备提示，不伪造正文或批准状态。' },
     awaiting: { name: '等待确认', state: 'awaiting', confirm: true, note: '详情只读；批准与提交修改仅位于底部反馈栏。' },
     feedback: { name: '填写修改意见', state: 'awaiting', confirm: true, feedback: true, note: '修改意见非空后开放提交；批准计划始终是明确的主操作。' },
@@ -48,6 +49,7 @@
     stage.style.setProperty('--pw-font-scale', scene.scale || 1);
     stage.toggleAttribute('data-narrow', (scene.width || 760) < 520);
     stage.toggleAttribute('data-short', (scene.height || 720) < 520);
+    stage.classList.toggle('pw-workspace', !!scene.workspace);
     document.querySelector('#scene-name').textContent = scene.name;
     document.querySelector('#scene-note').textContent = scene.note;
     nav.innerHTML = Object.entries(scenarios).map(([id, value]) =>
@@ -106,10 +108,53 @@
             </div>
           </footer>
         </form>` : ''}`;
-    stage.querySelector('[data-mode]').addEventListener('click', () =>
-      render(key, stage.querySelector('textarea')?.value, !scene.full));
+    if (scene.workspace) {
+      const sheet = stage.querySelector('.pw-sheet');
+      sheet.id = 'workspace-plan';
+      const conversation = document.createElement('section');
+      conversation.className = 'pw-conversation';
+      conversation.setAttribute('aria-label', '会话');
+      conversation.innerHTML = `
+        <header class="pw-conversation-header"><strong>优化项目搜索体验</strong><span>任务 · 主智能体</span></header>
+        <div class="pw-conversation-scroll">
+          <p class="pw-user-message">让搜索更顺手，也保留我正在阅读的位置。</p>
+          <p class="pw-assistant-message">计划已整理好，包含搜索入口、选中反馈和窄窗口体验。请先阅读，再批准或提出修改意见。</p>
+          <button class="pw-plan-card" type="button" aria-expanded="true" aria-controls="workspace-plan">
+            <span class="pw-plan-emblem">${icon('document')}</span>
+            <span class="pw-plan-content"><strong>优化项目搜索体验</strong>
+              <span class="pw-plan-copy">阅读计划后，可批准或提出修改。</span>
+              <span class="pw-plan-meta"><span class="pw-badge" data-state="awaiting">${icon('clock')}等待确认</span>
+              <span class="pw-plan-action">收起计划 ${icon('down')}</span></span>
+            </span>
+          </button>
+        </div>`;
+      stage.prepend(conversation);
+      stage.querySelector('.pw-confirm').classList.add('pw-workspace-feedback');
+      const card = conversation.querySelector('.pw-plan-card');
+      const mode = sheet.querySelector('[data-mode]');
+      const updateMode = (full) => {
+        stage.classList.toggle('pw-workspace-full', full);
+        const label = full ? '恢复并排' : '展开阅读';
+        mode.title = label;
+        mode.setAttribute('aria-label', label);
+        mode.innerHTML = icon(full ? 'split' : 'expand');
+      };
+      mode.addEventListener('click', () => updateMode(!stage.classList.contains('pw-workspace-full')));
+      const setExpanded = (expanded) => {
+        if (!expanded) updateMode(false);
+        sheet.hidden = !expanded;
+        card.setAttribute('aria-expanded', String(expanded));
+        card.querySelector('.pw-plan-action').innerHTML = `${expanded ? '收起计划' : '查看计划'} ${icon('down')}`;
+        stage.classList.toggle('pw-reading-closed', !expanded);
+      };
+      card.addEventListener('click', () => setExpanded(sheet.hidden));
+      sheet.querySelector('[data-close]').addEventListener('click', () => setExpanded(false));
+    }
+    stage.querySelector('[data-mode]').addEventListener('click', () => {
+      if (!scene.workspace) render(key, stage.querySelector('textarea')?.value, !scene.full);
+    });
     stage.querySelector('[data-close]').addEventListener('click', () => {
-      stage.querySelector('.pw-sheet').remove();
+      if (!scene.workspace) stage.querySelector('.pw-sheet').remove();
     });
     const form = stage.querySelector('form');
     if (!form) return;
@@ -130,5 +175,5 @@
     });
     form.querySelector('[data-approve]').addEventListener('click', () => { if (!scene.busy) render('approved'); });
   }
-  render(Object.hasOwn(scenarios, params.get('scenario')) ? params.get('scenario') : 'awaiting');
+  render(Object.hasOwn(scenarios, params.get('scenario')) ? params.get('scenario') : 'workspace');
 })();

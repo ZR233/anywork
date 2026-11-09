@@ -2411,6 +2411,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionPlanViewDetails => 'View full plan';
 
   @override
+  String get interactionPlanCollapseDetails => 'Collapse plan';
+
+  @override
   String get interactionPlanDetailsTitle => 'Implementation plan';
 
   @override

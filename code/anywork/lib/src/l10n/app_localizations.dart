@@ -4302,6 +4302,12 @@ abstract class AppLocalizations {
   /// **'View full plan'**
   String get interactionPlanViewDetails;
 
+  /// No description provided for @interactionPlanCollapseDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse plan'**
+  String get interactionPlanCollapseDetails;
+
   /// No description provided for @interactionPlanDetailsTitle.
   ///
   /// In en, this message translates to:
