@@ -36,7 +36,6 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   late AppGraph graph;
-  late ProviderContainer container;
   late WaitSelectionTrace trace;
   final projectRoot = Platform.environment['ANYWORK_WAIT_PROJECTS'];
   final captureReport = <String, Object?>{
@@ -59,15 +58,6 @@ void main() {
     );
     graph = createProductionAppGraph();
     trace = WaitSelectionTrace(graph, captureReport);
-    container = ProviderContainer(
-      observers: [trace],
-      overrides: [
-        appGraphProvider.overrideWithValue(graph),
-        statisticsRepositoryProvider.overrideWithValue(
-          graph.statisticsRepository,
-        ),
-      ],
-    );
     await graph.initialize();
   });
   tearDownAll(() async {
@@ -86,7 +76,6 @@ void main() {
       );
     } finally {
       trace.close();
-      container.dispose();
       final traceOutput = Platform.environment['ANYWORK_WAIT_TRACE_OUTPUT'];
       if (traceOutput != null) await trace.write(traceOutput);
       final directory =
@@ -100,6 +89,19 @@ void main() {
   });
 
   Future<_Scene> open(WidgetTester tester, String name) async {
+    // Match production's root ProviderScope lifetime. Each test mounts a new
+    // application root, so it must not inherit the scheduler of a disposed
+    // UncontrolledProviderScope from a previous test. The application graph,
+    // SDK and timeline owner remain shared and close only in tearDownAll.
+    final container = ProviderContainer(
+      observers: [trace],
+      overrides: [
+        appGraphProvider.overrideWithValue(graph),
+        statisticsRepositoryProvider.overrideWithValue(
+          graph.statisticsRepository,
+        ),
+      ],
+    );
     // This suite tests Waiting, not native IME compatibility. The SDK warns
     // that enterText and a real IME can overwrite each other's editing state.
     // Use its standard keyboard for the entire scene, before any field mounts.
@@ -123,6 +125,7 @@ void main() {
           isTrue,
         );
       } finally {
+        container.dispose();
         tester.testTextInput.unregister();
         FlutterError.onError = testErrorHandler;
       }
