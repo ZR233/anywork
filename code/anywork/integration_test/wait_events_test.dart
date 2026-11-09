@@ -27,6 +27,7 @@ import 'package:integration_test/integration_test.dart';
 
 import 'support/timeline_observation.dart';
 import 'support/presentation_capture.dart';
+import 'support/wait_selection_trace.dart';
 
 // Real AppGraph/FRB/SQLite and production routes. Only the native exit shell is
 // omitted: the official test runner, not StudioExitCoordinator, owns this process.
@@ -36,6 +37,7 @@ void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
   late AppGraph graph;
   late ProviderContainer container;
+  late WaitSelectionTrace trace;
   final projectRoot = Platform.environment['ANYWORK_WAIT_PROJECTS'];
   final captureReport = <String, Object?>{
     'scenario': 'wait-events',
@@ -56,7 +58,9 @@ void main() {
       reason: 'Use cargo xtask test-project --suite desktop --case wait_events',
     );
     graph = createProductionAppGraph();
+    trace = WaitSelectionTrace(graph, captureReport);
     container = ProviderContainer(
+      observers: [trace],
       overrides: [
         appGraphProvider.overrideWithValue(graph),
         statisticsRepositoryProvider.overrideWithValue(
@@ -81,6 +85,7 @@ void main() {
         isA<DrainedStudioPendingPersistence>(),
       );
     } finally {
+      trace.close();
       container.dispose();
       final directory =
           Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS'];
@@ -130,8 +135,10 @@ void main() {
       ),
     );
     captureReport['nativeWindow'] = await configurePresentationWindow(tester);
+    trace.snapshot(tester, name, 'before-open-project');
     await graph.client.directoryCommands.openProject('$projectRoot/$name');
-    return _Scene(tester, graph, name, captureReport);
+    trace.snapshot(tester, name, 'after-open-project');
+    return _Scene(tester, graph, name, captureReport, trace);
   }
 
   for (final (name, prefix, completedName, runningName) in const [
@@ -264,11 +271,12 @@ void main() {
 }
 
 final class _Scene {
-  _Scene(this.tester, this.graph, this.name, this.captureReport);
+  _Scene(this.tester, this.graph, this.name, this.captureReport, this.trace);
   final WidgetTester tester;
   final AppGraph graph;
   final String name;
   final Map<String, Object?> captureReport;
+  final WaitSelectionTrace trace;
   String? latestTurnId;
   String? _submittedThreadId;
   String? _priorTurnId;
@@ -327,6 +335,7 @@ final class _Scene {
         fail('Timed out waiting for $description');
       }
       await tester.pump(const Duration(milliseconds: 50));
+      trace.snapshot(tester, name, 'pump');
       expect(tester.takeException(), isNull);
     }
   }
@@ -351,8 +360,11 @@ final class _Scene {
     final input = find.byKey(const ValueKey('composer-input'));
     await until(() => input.evaluate().isNotEmpty, 'composer');
     try {
+      trace.snapshot(tester, name, 'before-enter');
       await tester.enterText(input, prompt);
+      trace.snapshot(tester, name, 'after-enter');
       await tester.pump();
+      trace.snapshot(tester, name, 'after-enter-pump');
       expect(tester.widget<TextField>(input).controller!.text, prompt);
       _submittedThreadId = graph.client.selection.state.selectedThreadId;
       _priorTurnId = _submittedThreadId == null
@@ -365,6 +377,7 @@ final class _Scene {
       _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
     } catch (error, stack) {
+      trace.dump();
       try {
         final composer = tester
             .widgetList<PromptComposerView>(find.byType(PromptComposerView))
@@ -490,6 +503,8 @@ final class _Scene {
         return true;
       }, '${outcome.name} Turn');
     } catch (_) {
+      trace.snapshot(tester, name, 'turn-failure');
+      trace.dump();
       final failureKey = 'turnWaitFailure:$name:${outcome.name}';
       if (!captureReport.containsKey(failureKey)) {
         final selected = graph.client.selection.state.selectedThreadId;
