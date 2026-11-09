@@ -2,9 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// 活动状态的竖尾图标；动画时钟由活动指示组件持有。
-class TimelineCatTail extends StatelessWidget {
-  const TimelineCatTail({
+/// 趴卧猫活动图标：身体固定，只有垂落的尾巴摆动；时钟由活动行持有。
+class TimelineRestingCat extends StatelessWidget {
+  const TimelineRestingCat({
     required this.progress,
     required this.color,
     required this.size,
@@ -21,13 +21,76 @@ class TimelineCatTail extends StatelessWidget {
   Widget build(BuildContext context) => RepaintBoundary(
     child: SizedBox.square(
       dimension: size,
-      child: CustomPaint(painter: _CatTailPainter(progress, color)),
+      child: Stack(
+        alignment: Alignment.topLeft,
+        children: [
+          Positioned.fill(
+            child: CustomPaint(painter: _RestingCatBodyPainter(color)),
+          ),
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: CustomPaint(painter: _RestingTailPainter(progress, color)),
+            ),
+          ),
+        ],
+      ),
     ),
   );
 }
 
-class _CatTailPainter extends CustomPainter {
-  _CatTailPainter(this.progress, this.color) : super(repaint: progress);
+// 身体与尾巴各自绘制，动画只触发尾巴重绘，不移动身体或整枚图标。
+class _RestingCatBodyPainter extends CustomPainter {
+  const _RestingCatBodyPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.scale(size.width / 64, size.height / 64);
+    final ink = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final body = Path()
+      ..moveTo(10.8, 29.6)
+      ..cubicTo(9.5, 27.6, 9.6, 25.6, 11.6, 22.6)
+      ..cubicTo(11.1, 20.5, 11.7, 16.5, 12.9, 15.2)
+      ..cubicTo(15.3, 15.3, 17.3, 17.2, 18.9, 19)
+      ..quadraticBezierTo(20.7, 18.6, 22.1, 19)
+      ..cubicTo(23.9, 16.7, 25.6, 15, 27.1, 14.7)
+      ..cubicTo(28.5, 16.8, 29, 19.3, 29.1, 21.5)
+      ..cubicTo(34.8, 16.3, 41.3, 15.7, 46.3, 18.6)
+      ..cubicTo(51.8, 21.6, 53.8, 27, 53.8, 36)
+      ..moveTo(7.5, 34)
+      ..lineTo(46.6, 34)
+      ..quadraticBezierTo(49, 34, 49, 36)
+      ..moveTo(53.8, 34)
+      ..lineTo(56.8, 34)
+      // 前爪、闭合的眼睛和后腿轮廓。
+      ..moveTo(9.3, 33.8)
+      ..cubicTo(8.8, 28.6, 16.4, 28.3, 16.8, 33.8)
+      ..moveTo(15.3, 27.6)
+      ..quadraticBezierTo(17.1, 29, 18.7, 27.6)
+      ..moveTo(22.3, 27.6)
+      ..quadraticBezierTo(24.2, 29, 25.8, 27.6)
+      ..moveTo(24.7, 33.8)
+      ..cubicTo(24.5, 29.5, 30.3, 28.2, 32, 31.4)
+      ..moveTo(39.7, 33.8)
+      ..cubicTo(36.9, 32.7, 38.1, 28.8, 42.2, 27.4);
+    canvas.drawPath(body, ink);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_RestingCatBodyPainter oldDelegate) =>
+      color != oldDelegate.color;
+}
+
+class _RestingTailPainter extends CustomPainter {
+  _RestingTailPainter(this.progress, this.color) : super(repaint: progress);
 
   final Animation<double> progress;
   final Color color;
@@ -104,20 +167,22 @@ class _CatTailPainter extends CustomPainter {
       (joint) => _direction(time - .13 * math.pow(joint / 5, 1.5), joint),
     );
     const segments = 56;
-    final points = <Offset>[const Offset(10, 20)];
+    final points = <Offset>[const Offset(51.4, 36)];
     for (var i = 1; i <= segments; i++) {
       final position = (i - .5) / segments * 5;
       final joint = position.floor();
-      final angle = _curve(
-        directions[math.max(0, joint - 1)],
-        directions[joint],
-        directions[math.min(5, joint + 1)],
-        directions[math.min(5, joint + 2)],
+      final swing = _curve(
+        directions[math.max(0, joint - 1)] - _rest[math.max(0, joint - 1)],
+        directions[joint] - _rest[joint],
+        directions[math.min(5, joint + 1)] - _rest[math.min(5, joint + 1)],
+        directions[math.min(5, joint + 2)] - _rest[math.min(5, joint + 2)],
         position - joint,
       );
+      // 垂尾从固定根部向下摆动，沿用旧姿态的节奏与尾尖跟随时差。
+      final angle = math.pi / 2 + swing * .48;
       points.add(
         points.last +
-            Offset(math.cos(angle), math.sin(angle)) * (43 / segments),
+            Offset(math.cos(angle), math.sin(angle)) * (15.4 / segments),
       );
     }
     final left = <Offset>[];
@@ -127,7 +192,7 @@ class _CatTailPainter extends CustomPainter {
       final tangent =
           points[math.min(segments, i + 1)] - points[math.max(0, i - 1)];
       final normal = Offset(-tangent.dy, tangent.dx) / tangent.distance;
-      final radius = 3.7 - 1.85 * math.pow(i / segments, 1.5);
+      final radius = 2.4 - .4 * math.pow(i / segments, 1.5);
       normals.add(normal);
       left.add(points[i] + normal * radius);
       right.add(points[i] - normal * radius);
@@ -142,21 +207,26 @@ class _CatTailPainter extends CustomPainter {
 
     final outline = [
       ...left,
-      ...cap(points.last, normals.last, 1.85),
+      ...cap(points.last, normals.last, 2.0),
       ...right.reversed,
-      ...cap(points.first, -normals.first, 3.7),
     ];
-    final path = Path()..addPolygon(outline, true);
+    // 根部不封口，与静止身体和台沿的轮廓连续相接。
+    final path = Path()..addPolygon(outline, false);
     canvas.save();
     canvas.scale(size.width / 64, size.height / 64);
-    canvas.translate(29, 55);
-    canvas.rotate(-115 * math.pi / 180);
-    canvas.translate(-10, -20);
-    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_CatTailPainter oldDelegate) =>
+  bool shouldRepaint(_RestingTailPainter oldDelegate) =>
       color != oldDelegate.color || progress != oldDelegate.progress;
 }
