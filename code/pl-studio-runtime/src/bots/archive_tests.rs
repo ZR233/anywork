@@ -18,6 +18,131 @@ pub(in crate::bots) struct Fixture {
     _temp: tempfile::TempDir,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct PrivateBotBackendCause(&'static str);
+
+#[tokio::test]
+async fn studio_bot_tools_keep_backend_causes_private() -> Result<()> {
+    use pl_agent_tool::Tool;
+    use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
+    use pl_tool::bots::{BotToolKind, ThreadBotTool};
+    use std::error::Error;
+    const PRIVATE_MARKER: &str = "PRIVATE_BACKEND_SENTINEL";
+    let fixture = Fixture::new().await?;
+    let host = Arc::new(crate::bots::StudioBotSessionHost {
+        runtime: fixture.bots.clone(),
+    });
+    let result = async {
+        let config = fixture.managed.config.lock().await.clone();
+        fixture
+            .host
+            .runtime
+            .save_bot(SaveBotRequest {
+                operation_id: "allow-private-cause-test".into(),
+                bot_id: Some(config.id.clone()),
+                expected_config_revision: config.config_revision,
+                name: config.name,
+                workspace_id: config.workspace_id,
+                app_id: "cli_archive_fixture".into(),
+                secret: BotSecretUpdate::Preserve,
+                enabled: false,
+                tools_enabled: true,
+                model_route: None,
+            })
+            .await?;
+        let injected = FeishuError::new(
+            FeishuErrorKind::Transport,
+            "safe outer bot failure",
+            true,
+            None,
+        )
+        .with_source(PrivateBotBackendCause(PRIVATE_MARKER));
+        let public_diagnostic = injected.to_string();
+        for (kind, arguments) in [
+            (
+                BotToolKind::ListConversations,
+                serde_json::json!({"botId": config.id}),
+            ),
+            (
+                BotToolKind::ReadMessages,
+                serde_json::json!({"botId": config.id, "chatId":"chat"}),
+            ),
+            (
+                BotToolKind::SendMessage,
+                serde_json::json!({"botId": config.id, "chatId":"chat", "text":"do not send"}),
+            ),
+        ] {
+            let tool = ThreadBotTool::new(
+                host.clone(),
+                kind,
+                fixture.workspace_id.clone(),
+                kind.declaration(),
+            );
+            let context = CallContext {
+                thread_id: "private-bot-error".into(),
+                turn_id: "turn".into(),
+                call_id: "frozen-send-operation".into(),
+                cancellation: Default::default(),
+                extensions: Default::default(),
+                catalog: Arc::from([]),
+                extension_sequence: 0,
+                grant: Default::default(),
+                context: Default::default(),
+                history_fence: 0,
+                model_projection: None,
+                tasks: None,
+            };
+            let error = crate::bots::host::with_service_failure(
+                injected.clone(),
+                tool.execute(
+                    OpaquePayload::new("application/json", 1, arguments.to_string())?,
+                    context,
+                ),
+            )
+            .await
+            .unwrap_err();
+            let serialized = serde_json::to_string(&error)?;
+            anyhow::ensure!(
+                !serialized.contains(PRIVATE_MARKER),
+                "public tool error serialization leaked the private backend cause",
+            );
+            anyhow::ensure!(serialized.contains(&public_diagnostic));
+            anyhow::ensure!(!format!("{error:?}").contains(PRIVATE_MARKER));
+            let mut source: Option<&(dyn Error + 'static)> = Some(&error);
+            let mut frames = 0;
+            while let Some(frame) = source {
+                anyhow::ensure!(!frame.to_string().contains(PRIVATE_MARKER));
+                anyhow::ensure!(!format!("{frame:?}").contains(PRIVATE_MARKER));
+                frames += 1;
+                anyhow::ensure!(
+                    frames <= 2,
+                    "the public chain crossed the host error boundary"
+                );
+                source = frame.source();
+            }
+            let adapter = error
+                .source
+                .downcast_ref::<crate::bots::host::BotToolError>()
+                .expect("the Studio host must provide its safe error boundary");
+            anyhow::ensure!(adapter.to_string() == public_diagnostic);
+            anyhow::ensure!(adapter.source().is_none());
+            anyhow::ensure!(adapter.original().kind() == FeishuErrorKind::Transport);
+            let original_cause = adapter.original().source().expect("trusted backend cause");
+            let private = original_cause
+                .downcast_ref::<PrivateBotBackendCause>()
+                .expect("the original typed backend cause must not be flattened");
+            anyhow::ensure!(private.0 == PRIVATE_MARKER);
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let shutdown = fixture.host.runtime.shutdown_runtime().await;
+    result?;
+    shutdown?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn independent_bot_tools_use_studio_authorization_and_reject_cross_project_access()
 -> Result<()> {
@@ -111,8 +236,9 @@ async fn independent_bot_tools_use_studio_authorization_and_reject_cross_project
             assert_eq!(
                 error
                     .source
-                    .downcast_ref::<FeishuError>()
-                    .expect("original authorization source")
+                    .downcast_ref::<crate::bots::host::BotToolError>()
+                    .expect("safe Studio authorization error")
+                    .original()
                     .kind(),
                 FeishuErrorKind::Permission
             );
