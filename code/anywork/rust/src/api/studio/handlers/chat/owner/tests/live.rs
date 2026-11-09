@@ -8,52 +8,33 @@ use crate::api::studio::{
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
 
+async fn next_event(
+    owner: &ConversationOwner,
+    port: &mut mpsc::Receiver<BridgeConversationFrame>,
+    sent: &mut u64,
+) -> Result<BridgeConversationEvent> {
+    let frame = receive(port).await?;
+    ensure!(frame.thread_id == owner.thread_id);
+    ensure!(frame.subscription_id == owner.subscription_id);
+    ensure!(
+        frame.delivery_sequence == *sent + 1,
+        "duplicated or skipped delivery prefix"
+    );
+    *sent = frame.delivery_sequence;
+    Ok(frame.event)
+}
+
 async fn chat(
     owner: &ConversationOwner,
     port: &mut mpsc::Receiver<BridgeConversationFrame>,
     sent: &mut u64,
 ) -> Result<(u64, BridgeChatBatch)> {
     loop {
-        let frame = receive(port).await?;
-        ensure!(frame.thread_id == owner.thread_id);
-        ensure!(frame.subscription_id == owner.subscription_id);
-        ensure!(
-            frame.delivery_sequence == *sent + 1,
-            "duplicated or skipped delivery prefix"
-        );
-        *sent = frame.delivery_sequence;
-        match frame.event {
+        match next_event(owner, port, sent).await? {
             BridgeConversationEvent::State { .. } | BridgeConversationEvent::Activity { .. } => {
                 owner.acknowledge(&owner.subscription_id, *sent)?;
             }
             BridgeConversationEvent::Chat { batch } => return Ok((*sent, *batch)),
-            event => anyhow::bail!("unexpected live terminal: {event:?}"),
-        }
-    }
-}
-
-async fn activity(
-    owner: &ConversationOwner,
-    port: &mut mpsc::Receiver<BridgeConversationFrame>,
-    sent: &mut u64,
-) -> Result<(u64, crate::api::studio::types::BridgeActivitySnapshot)> {
-    loop {
-        let frame = receive(port).await?;
-        ensure!(frame.thread_id == owner.thread_id);
-        ensure!(frame.subscription_id == owner.subscription_id);
-        ensure!(
-            frame.delivery_sequence == *sent + 1,
-            "duplicated or skipped delivery prefix"
-        );
-        *sent = frame.delivery_sequence;
-        match frame.event {
-            BridgeConversationEvent::State { .. } => {
-                owner.acknowledge(&owner.subscription_id, *sent)?;
-            }
-            BridgeConversationEvent::Activity { snapshot } => return Ok((*sent, *snapshot)),
-            BridgeConversationEvent::Chat { .. } => {
-                anyhow::bail!("unexpected Chat before Activity cut")
-            }
             event => anyhow::bail!("unexpected live terminal: {event:?}"),
         }
     }
@@ -101,6 +82,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let (set_seq, initial) = chat(&owner, &mut port, &mut sent).await?;
         ensure!(initial.placement == BridgeChatPlacement::Set);
         ensure!(initial.from_seq.is_none());
+        let mut accepted_through = initial.through_seq;
         let before = initial.before.context("nonempty fixture must have an older page")?;
         let old = facade.load_older(before.clone(), BridgeReadDemand {
             max_items: 16, max_bytes: 64 * 1024,
@@ -141,16 +123,27 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         // Chat completion and Activity are separate credit-bearing events. ACK each preceding
         // Chat; hold the exact Activity snapshot that carries the live body owner.
         let (held_seq, reference, activity_id, turn_id, held_snapshot) = loop {
-            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
-            ensure!(batch.placement == BridgeChatPlacement::Append
-                && batch.before.is_none()
-                && batch.from_seq.is_some_and(|from| from < batch.through_seq));
-            let accepted_through = batch.through_seq;
-            for entry in batch.entries {
-                ensure!(completed_records.insert(entry.record_id));
-            }
-            owner.acknowledge(&owner.subscription_id, chat_seq)?;
-            let (sequence, snapshot) = activity(&owner, &mut port, &mut sent).await?;
+            let event = next_event(&owner, &mut port, &mut sent).await?;
+            let sequence = sent;
+            let snapshot = match event {
+                BridgeConversationEvent::State { .. } => {
+                    owner.acknowledge(&owner.subscription_id, sequence)?;
+                    continue;
+                }
+                BridgeConversationEvent::Chat { batch } => {
+                    ensure!(batch.placement == BridgeChatPlacement::Append
+                        && batch.before.is_none()
+                        && batch.from_seq == Some(accepted_through));
+                    accepted_through = batch.through_seq;
+                    for entry in batch.entries {
+                        ensure!(completed_records.insert(entry.record_id));
+                    }
+                    owner.acknowledge(&owner.subscription_id, sequence)?;
+                    continue;
+                }
+                BridgeConversationEvent::Activity { snapshot } => *snapshot,
+                event => anyhow::bail!("unexpected live terminal: {event:?}"),
+            };
             ensure!(snapshot.revision > 0);
             ensure!(snapshot.completed_through == accepted_through,
                 "Activity arrived ahead of or behind the accepted completion prefix");
@@ -237,12 +230,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         // Completion and Activity are independent events. Token/retirement-only
         // Activity must be consumed here, not silently ACKed while waiting for Chat.
         for _ in 0..64 {
-            let frame = receive(&mut port).await?;
-            ensure!(frame.thread_id == owner.thread_id);
-            ensure!(frame.subscription_id == owner.subscription_id);
-            ensure!(frame.delivery_sequence == sent + 1, "duplicated or skipped delivery prefix");
-            sent = frame.delivery_sequence;
-            match frame.event {
+            match next_event(&owner, &mut port, &mut sent).await? {
                 BridgeConversationEvent::State { .. } => {}
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
