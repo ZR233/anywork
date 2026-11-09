@@ -25,6 +25,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 ## 输出、失败与控制
 
 - native helper 原样通过 ToolOutput 和已有 ToolError，包括 observed_output；禁止再次 ToolError::new 包装已有错误。副作用后失败用 with_output 保存观测，不提交迟到控制。
+- 私有后端错误在宿主边界保留原始 typed 值及显式受信访问入口；对外标准 source 链、序列化和 Debug 只含安全诊断。保留原始来源不等于把凭据或私有远端诊断沿错误链写入模型与历史。
 - 普通 JSON helper 仅在 handler 成功后编码一次，同一文本构造 application/json@1 payload 与 Text context；不使用 Opaque context，也不猜测 content/message/path。编码失败保留 JsonOutputError 的阶段与 serde source，明确可能已有副作用，不重执行。
 - 完整 payload 与实际 delivered_context 分别保存；预览、命令 capture 或临时路径不能冒充可靠资源。重开只读原保存材料，不按当前 Args/Output 重新解码或调用当前渲染器。
 - 结束 Turn、CAS、交互、发现、等待和取消必须显式注册授权并返回类型化控制。JSON 字段、名称、schema 或 MCP annotations 都不授予权限。Note/Todo/Skill 状态从 CallContext 冻结扩展计算候选，不维护第二份可写状态。
