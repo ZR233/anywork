@@ -10,13 +10,13 @@ Runtime 的唯一产品投影持续消费可靠 effect，一次生成业务当�
 
 模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等、取消收束及活动退出顺序见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，不能把已结束成员保留在活动元数据直到 attempt 终态，或通过增大内容帧预算掩盖累积。
 
-会话 Chat 事件携带 [26](./26-timeline-content.md) 的不可变完成记录 ChatBatch；Main 初始/旧页交付连续段代表，实时 Append 逐条交付新可见完成事实。Flutter 仅按明确的呈现类别与 run 索引组合卡片，不推断业务分类或重排完成顺序。Activity 是独立最新活动快照，State 保留输入、workspace、交互等真实业务领域；低频目录身份不被迟到会话快照反写。
+会话内容有两种明确用途：[26](./26-timeline-content.md) 的原 ConversationFeed/ChatBatch/Activity 服务完成级消费者；GUI Timeline feed 仅交付 State/Timeline/Failure/Closed，以冻结展示块和同切面 live 窗口完成整组交接。Flutter 不根据原完成项猜分组或退役成员。State 保留输入、workspace、交互等真实业务领域；低频目录身份不被迟到会话快照反写。
 
 业务文档/集合读取引用按 [26 的 State 合同](./26-timeline-content.md#业务引用由-state-交付)进入必有的 Snapshot.business_refs 与 BusinessRefsChanged 通知；只在原 Plan/交互资源头变化时更新，不受 token 或 Chat 进度驱动。基线先登记再捕获，引用发布前必须可由原 reader 解析；冷无执行源仍交付已保存的业务引用。沿原 State schema、epoch/revision 和信用升级，不另建业务通道、全局版本或 ACK。
 
 open 先登记被动接收者，再捕获同切面的完成上界 H0 与活动快照。首个 Chat 为到 H0 的 Set，接纳后才交付该活动快照；后继每次固定一个目标 H，按原完成集合补读到目标后交付同切面 Activity。源资格失效或无法证明连续时终结原流，新句柄用 Set 重同步，不在原流 reset 或重放业务命令。
 
-完成记录只由原 Session/pending/SQLite 补读，不建立可靠展示 cut 队列。watch 仅保存有界最新活动值与唤醒；原 Core Effect/HistoryChannel 的可靠执行保存职责不变。分批完成接纳后按 typed identity 精确退出对应活动；Activity.completed_through 等于已接纳 through，低水位快照丢弃，高水位快照由 Feed 先补齐完成前缀，不让客户端补偿查询。取消/关闭先撤销准入，再汇合原资源，未接纳事实不能 ACK。
+完成记录从原 Session/pending/SQLite 读取；展示冻结头从原 effect 待保存索引/快照表读取，不建立可靠展示 cut 队列。watch 只保留最新切面并唤醒，原 Core Effect/HistoryChannel 保存职责不变。原完成 feed 仍按完成 through 对齐 Activity；GUI 按独立展示位置 P 追赶目标，每帧只退役已经交付的相同 block_id，追至目标才替换完整 live。取消/关闭先撤销准入，再汇合原资源，未接纳事实不能 ACK。
 
 每项真实完成立即进入历史，不等前台组封口。客户端通过类型化 Run 引用按需读取段明细；Main 工作代表始终 Deferred，不读取成员正文/媒体。窗口、预算与折叠释放见 [26](./26-timeline-content.md#2682-活动与成员展开的资源边界)。
 
@@ -52,7 +52,7 @@ FRB 的消费确认与在途上限遵循 §7.10；HTTP 与原生消费者同样�
 
 SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型映射，ViewModel 只从已提交快照派生不可变 ViewState。Flutter 不把 snapshot 拆为伪事件再归约，也不保存 competing mirror。首帧、恢复和版本缺口仅更新受影响域，不清理草稿或无关状态。
 
-ChatBatch 经 SDK 唯一串行接纳链交 Flutter 原 controller，流与旧页共用入口。SDK 不组合卡片或保存历史镜像；Flutter 按明确类别与 run.start_seq 进行唯一尾部组合，Message.custom 持已加载代表。ACK 在实际 applyBatch/Activity 接纳并复核原 lease 后推进，不等布局、query、数据库或用户展开。空 Append 仅推进前缀，纯活动不枚举历史；布局补载使用 Main 段分页，详见 [26](./26-timeline-content.md)。
+GUI TimelineBatch 经 SDK 原串行接纳链交 Flutter controller，流与旧页共用入口，一冻结块一条 Message.custom。历史批量插入和同 ID live 退役共同完成后才公开一次更新并 ACK；SDK 不保存历史镜像或组合尾组。ACK 复核原 lease，不等布局、query、数据库或用户展开。纯 live Append 不枚举历史，Prepend 不带 live；原件消费者仍使用 ChatBatch，详见 [26](./26-timeline-content.md)。
 
 迟到结果按首次 await 前冻结的会话、incarnation、operationId、领域/草稿版本和附件归属结算。未知结果保留原意图，不自动重发。选择 null 仍为合法新会话草稿，流恢复或目录新增不能擅自选中历史会话。
 
@@ -80,6 +80,10 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 | 方法与 Thread 内路径 | 请求内容 | 返回内容 |
 | --- | --- | --- |
 | `POST /chat/older` | before、demand | Prepend ChatBatch |
+| `POST /timeline/open`、`GET /timeline/events` | demand、原订阅资格 | Timeline feed，presentation_version=1 |
+| `POST /timeline/older` | before、demand | Prepend TimelineBatch |
+| `POST /timeline/live-older` | before、demand | LiveDisplayWindow |
+| `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |

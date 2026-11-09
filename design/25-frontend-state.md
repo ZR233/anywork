@@ -29,7 +29,7 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| 不可变完成历史、冻结详情与 run 读取索引 | Rust Session/HistoryStore | SDK 机械接纳；Flutter 唯一连续段组合，原 ChatController 持代表卡；独立 Run 明细窗口 | 完成 seq/through、读取 epoch、scope、显示资格 |
+| 不可变原件、冻结展示块与成员索引 | Rust Session/HistoryStore 及原 live 展示 owner | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
@@ -45,7 +45,7 @@ flowchart LR
 
 前端状态管理严格区分五类不可混用的版本域标识：
 - **`ResourceStamp`**：由 `(ResourceKey, OwnerEpoch, Revision)` 组成，仅在同一资源、同一 `OwnerEpoch` 下可比。所有者代次更换后必须采纳新基线，旧 `epoch` 的回执不得由新 `epoch` 满足。
-- **完成历史**：timelineEpoch 与 append_seq 标识完成集合和连续接纳位置，不与领域 revision、活动 generation/revision 或句柄 deliverySequence 混用。
+- **完成与展示历史**：原件完成 seq/through 与 GUI 展示 pos/through 分开，读取 epoch、live 结构 revision 及句柄 deliverySequence 各自独立，不与领域 revision 或活动 generation 混用。
 - **`AttemptId`**：单次客户端异步连接绑定身份，不得充当业务 `OwnerEpoch`。
 - **`OperationId`**：单次业务提交身份，在首次 `await` 前分配；结果未知的非幂等操作不得更换 ID 自动重放。
 - **`DraftStamp`**：由 `(DraftId, 字段或项目修订号)` 组成，不得以窗口版本替代。
@@ -166,7 +166,7 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。CompletedEntry 经 transport→SDK 一次机械映射，在原串行 applyBatch 接纳；Flutter 原 controller 是唯一连续段组合器，只使用明确的 mainPresentation 与 run.startSeq，不重写业务分类。Message.metadata 持代表，展开的独立 Run controller 持需求内成员，不保存 rawAtoms/groups/messages 三份完整历史或无界成员 map。SDK 只维护有界传输、through 接纳前缀、游标、single-flight 和资格，不组合卡片或保存历史尾部，见 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。GUI TimelineBatch 经 transport→SDK 一次机械映射，在原串行 applyBatch 接纳，Flutter controller 一冻结块一卡，不组合旧完成 run 或重写业务分类。Message.metadata 持块，display lease 持需求内成员窗口与 block_id 展开意图；不保存 rawAtoms/groups/messages 三份完整历史或无界成员 map。SDK 只维护有界传输、展示接纳位置、live 窗口、游标、single-flight 和资格，原完成端口继续服务完成级消费者，见 [26](./26-timeline-content.md)。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -404,19 +404,21 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，公开内容只由 Chat 接纳。
 
-Main Set/Prepend 读 run 代表，Append 读每条新可见完成记录；明细通过 database_id/index_version/start_seq 的 Run 引用打开独立 scope，真实 Children 保留原 parent。Flutter 只按 mainPresentation 与 run.startSeq 组合，不解析 payload 或 ordinal 猜业务类别；不扫描原子寻找组头。Run cursor/计数不覆盖 Main，见 [26](./26-timeline-content.md)。
+GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
 活动区只显示尚在进行的真实操作，完成即入历史，不保留已完成待封组片段。Main 的工作代表始终 Deferred，未展开不读取参数/工具结果/思考/媒体；展开的 Run controller 才持已加载成员。折叠撤资格并 cancel/join，不留永久骨架、隐藏 Element 或成员快照；活动到历史不保证 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。唯一连续段组合在原 TimelineMessageController：Set 一次、Prepend 完整段、Append 仅尾部局部替换或插入，Message.custom 持代表。SDK/Widget 不做第二组合器；空 Append/Activity 不枚举历史。原内容 owner 保留窗口/订阅，View 根据布局请求旧页，无总页数上限，ACK 不等布局。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。原 TimelineMessageController 持唯一已加载消息集合：Set 一次、Prepend/Append 批量插入冻结块，不更新历史尾组。历史插入与相同 ID live 退役共同完成才公开视图更新及 ACK，live=None 的分帧中间态保留其余实时块；纯 live 帧不枚举历史。原内容 owner 保留窗口/订阅，View 按布局补旧块，无总页数上限，ACK 不等布局。
+
+实时栏的纯呈现投影使用类型化状态集中选择区域可见性、问答占用与状态提示，有序实时块允许 closing Work 与正文并存；不复制 Rust 分组或执行生命周期。展开、滚动、跟随输出属于 display lease 内局部状态，稳定 block_id 保持跨区展开；遮蔽不销毁底层内容，冷读未恢复不画运行计时。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
-历史代表卡、确定回执、活动正文/集合、Run 明细、Children 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。段卡稳定 key 来自库身份与 run.startSeq，展开资格绑定显示代次；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
+历史展示块、确定回执、活动正文、成员窗口、原件 Run/Children 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。GUI 段卡稳定 key 来自 database_id/block_id，展开资格绑定显示代次；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
 
-涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。需要局部状态的组件由自身 `State` 持有；跨组件呈现状态仍归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 `ExpansionTile`/`ExpansibleController` 的状态与生命周期，父层仅接收真实展开事件以声明读取需求、取消或诊断借用，不反向注入展开态或补做控制。组件身份变化按官方 key/生命周期退役原状态，不以外层修复循环、强制重置或备用数据维持显示。
+涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。局部状态由组件持有，跨组件呈现状态归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 `ExpansionTile`/`ExpansibleController`；实时块移入历史时，由原 display lease 按稳定 block_id 保存并恢复用户的展开意图，读取窗口沿同一资格继续。组件身份和资格真正改变时按 key/生命周期退役，不以补偿刷新、强制重置或备用数据维持显示。
 
 实时栏与详情仅有一套生产内容组件：领域绑定在所属组件内完成，不能同时保留“外部 builder 覆盖内容”和“内部备用渲染”两条路径，也不能用预览特供实现替代生产内容。正常的不可变参数、组件组合、依赖装配和官方预览构造值不承担运行态写入；禁止外层注入业务状态、合成 current、兜底控制或数据修补来制造正确画面。官方预览须操作同一生产组件自身的状态，不能在外壳模拟其展开、加载或翻页状态机。
 

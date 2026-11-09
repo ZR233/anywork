@@ -595,11 +595,11 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 按需完成历史沿既有 SeaORM 序列追加不可变连续段索引迁移；原已发布来源分类、后台结果身份、完成边界步骤的名称和语义不改。当前格式只消费新索引，不双读双写旧组模型。本文描述目标，不是迁移或验收已完成声明。
 
-完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新。工作段不是持久对象；不保存展示 item、成员关联、item_order、开放/封口或组恢复头。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
+完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新；该原完成读取能力保留给完成级消费者。GUI 使用 §17.19 的增量展示快照，不能把原完成 run 当成当前展示组。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
 
 后台结果的历史身份纠正在同一序列中拥有独立具名步骤，位于原子元数据迁移之后、展示项迁移之前。它以已保存的工具收件箱投递和消息身份账本证明最终结果的消息身份及受理序号，区分原工具移交回执与独立后台结果，保留完成项原身份、序号、载荷、正文引用、检查点和工具投递。缺失或冲突的消息证明使该步骤回滚并保源，不推导新消息身份。对已有完整展示项的库，仅在实际发生纠正时，在同一事务中保留无关真实开始／终态事实并重建派生展示及恢复头；无需纠正时保留原代际。内容准备以具名迁移账本判断待执行步骤，不能仅因物理格式号已是当前值就跳过新增纠正；已应用迁移的缺表、缺恢复头或账本冲突仍明确拒绝。
 
-当前完成索引只有原记录的两个可空 run 列及可见 seq/段 seq 索引。提示从原 typed metadata 经唯一 Native v1 分类还原，不再存 key 或呈现类别列。Main 索引跳过整段、Run 直接按段读记录；算法与切点见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
+原完成索引保留原记录两个可空 run 列及可见 seq/段 seq 索引，提示由原 typed metadata 经唯一 Native v1 分类还原。完成级 Main/Run 查询继续按这些索引读取；GUI 历史改读冻结展示头，见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
 
 普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
 
@@ -691,3 +691,43 @@ ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立�
 旧模型路由与冻结 Profile 的生产者版本准备归本次正式小头迁移：在派生前复用原保全转换器，将载荷准备为当前结构并保留原扩展 revision，不再等待执行准备阶段的 ModelAccess。原 TOML 导入在自身显式格式准备边界复用同一转换。普通 checkpoint writer 只写已准备的当前布局与载荷，不增加旧格式解码或缺列 fallback；后续正式表示迁移若改写小头来源，须在其原事务中同步维护已建立的小头，不留下陈旧派生值。
 
 所有正式内容迁移保留已有 ID/seq/公开原始字节、附件及恢复事实，未知工具不经当前业务 decoder 重构。原 SQLite 事务连接原子公开数据、版本和 SeaORM Applied，故障必须实证回滚，不以声明替代。不得清库、删原件、迁移备份或 v2 前隔离数据；#308 受管归档继续原样保留，正常读写不激活。
+
+## 17.19 增量展示快照与整组交接
+
+每 Thread 的原 history.sqlite 保存两张派生表，原完成表及其 run 列完整保留。展示时序与查询合同归 [26](./26-timeline-content.md)，这里只规定持久边界。
+
+```sql
+CREATE TABLE conversation_display_blocks (
+    block_id TEXT PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    block_order INTEGER NOT NULL UNIQUE CHECK(block_order > 0),
+    history_pos INTEGER UNIQUE CHECK(history_pos IS NULL OR history_pos > 0),
+    updated_effect INTEGER NOT NULL,
+    header BLOB NOT NULL
+);
+CREATE INDEX conversation_display_open
+    ON conversation_display_blocks(block_order) WHERE history_pos IS NULL;
+CREATE TABLE conversation_display_members (
+    block_id TEXT NOT NULL,
+    member_order INTEGER NOT NULL CHECK(member_order > 0),
+    member_key TEXT NOT NULL UNIQUE,
+    terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
+    completion_id TEXT,
+    updated_effect INTEGER NOT NULL,
+    metadata BLOB NOT NULL,
+    PRIMARY KEY(block_id, member_order),
+    FOREIGN KEY(block_id) REFERENCES conversation_display_blocks(block_id)
+) WITHOUT ROWID;
+CREATE INDEX conversation_display_unfinished
+    ON conversation_display_members(block_id,member_order) WHERE terminal=0;
+```
+
+块头只保存小型、定版的展示元数据与计数/引用，成员 metadata 只存轻量身份、真实开始/终态证据及内容引用，不保存全组成员数组、正文、完整工具 payload 或完整 ThreadSnapshot。原 history_meta 增加 display_published_through 与 display_applied_effect，复用原库身份和迁移账本，不建 Ready/generation/repair 表。
+
+PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的变更行，随原可靠批次提交。成员开始/终态更新本成员和组小头；交接只设置冻结头及 history_pos，不搬运正文；token/滚动/图片解码/计时不写展示表。原件、内容、检查点、展示增量与水位同事务提交，失败整批回滚；重放核对同冻结材料和提交凭据，不查询原历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
+
+RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置的派生段，先删除本段成员再删除块；原完成项、来源事实、内容、检查点保留。该处置同 effect 保存和重放，不是 reader 清理，不推进展示历史位置。
+
+具名迁移 `m20261109_000001_display_snapshots` 在显式迁移序列中追加到既有 immutable_completion_runs 之后，schema18→19，不改旧迁移或 Applied 语义。迁移以 seq 键集每批 128 个轻量头读取，复用旧 run 和 typed 类别建立历史冻结块及成员引用；历史位置按旧可见段顺序分配，Hidden 不产块，稳定块身份使用 legacy-run 域。缺失时间/来源保持未知，不读取正文或图片、不更改旧 ID/seq/payload/metadata/content，不猜旧库曾经开放的组。
+
+表、索引、引用与水位验证后写 schema/Applied，同一迁移事务提交；失败整体回滚。旧执行恢复仍由 Core 决定，后来的真实结果进入新展示段。正常重开只读小头和请求页，Applied 后缺表/头、坏引用或账本矛盾明确报错并保原件，不回填、不删建、不重放全历史或回落旧分组。受管归档、旧源与迁移备份全部保留。
