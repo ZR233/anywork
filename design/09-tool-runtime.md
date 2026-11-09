@@ -107,6 +107,18 @@ stdout 与 stderr 的纯输出内容共用请求的 UTF-8 字节预算，默认�
 
 工作区文件工具目录保留写入、元数据（`stat_path`）、建目录、删除、复制、移动与 `apply_patch`。`apply_patch` 为匹配上下文而读取目标文件属于其内部实现步骤，不单独暴露为工具，也不为模型提供绕过命令工具的独立读取入口。
 
+### 用户文件展示
+
+`show_files` 是向用户展示文件的唯一现役工具，输入为有序 `files` 和可选简短 `caption`。每项以 `kind=workspace` 加 `path` 或 `kind=attachment` 加 `attachmentId` 明确选择工作区常规文件或当前 Thread 已归档资源；空列表、非法输入及过长说明在执行前拒绝。它不是目录发现、文本读取或模型媒体输入工具，不受模型多模态输入能力限制，不自动将正文或图片加入模型上下文。`view_image` 继续承担模型读取；不再注册 `show_image` 或保留其执行别名。
+
+工作区读取复用同一冻结 grant 和本地／SSH backend，单个新读取文件上限为 50 MiB；必须拒绝超限而非截断。逐项处理保留成功与失败，回执不将部分成功伪报为全部成功。成功项先保留精确原始字节，再发布资源引用；同资源可在新的展示中再次选择，同一次展示重放不能产生新的外发操作。
+
+工具回执为 `pl.tool.files@1`，专用呈现契约为 `builtin.show_files@1`。回执包含 `caption` 和有序 `files`：每项以 `status=ready` 携带 `resource`、`filename`、`modality` 和 `origin`，或以 `status=failed` 携带 `filename` 与 `message`。`origin.kind` 为 `local`、`remote` 或 `archive`；只有经本地 backend 校验的 `local` 项可携带供宿主定位的绝对 `path`，远程路径不得作为本机路径使用。稳定展示身份沿原 Thread／工具调用身份确定，不增加第二份展示序号。
+
+文件专用回执以标准 `ContextContent::Opaque` 形状（`kind=opaque`、`payload={format,version,content}`）保留在产品输出的 `tool.output-artifacts` 中，供专用 renderer 按格式与版本解释；不将该业务回执注入模型上下文。实时封存与冷历史读取保留相同材料，前端不猜测普通 `tool.result` 文本或从当前参数重建结果。
+
+归档回执只证明展示事实发布，不证明外部平台送达。桌面消费同一事实；已绑定外部会话通过 [27](./27-bots.md) 的渠道交付边界发送。模型不能通过该工具指定任意外部目标；普通读取、工具日志和未显式选择的资源不自动外发。旧图片展示回执仅保留历史读取，不恢复旧工具执行。
+
 ## 9.8 补丁工具的声明、输入形态与应用语义
 
 - **声明形态与投影条件**：内置 `apply_patch` 的规范声明是带 lark 语法的 freeform（custom）工具，语法定义由 `pl-patch` 单一维护，`pl-tool` 与 `pl-model` 复用同一份定义而不各自持有副本。实际下发形态由 `pl-model` 在请求准备阶段投影：仅当端点使用原生 custom tool 线协议、端点声明补丁工具类型为 freeform、且当前模型能力同时声明 custom 与 freeform 工具时保留 freeform 声明；任一条件不满足即投影为函数回退（`function-fallback`）声明，其参数为单个 `input` 字符串并携带完整补丁文本的格式说明。主请求与上下文压缩使用同一判定与同一投影结果，不得出现两条路径形态不一致。

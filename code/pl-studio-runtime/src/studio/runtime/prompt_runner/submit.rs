@@ -131,8 +131,8 @@ impl StudioRuntime {
         let _agent_operation = self.threads.agent_operation(&thread_id).await;
         self.threads.ensure_agent_admission_open(&thread_id)?;
         // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
-        if let Some(previous) = thread
-            .snapshot()
+        let snapshot = thread.snapshot();
+        if let Some(previous) = snapshot
             .inputs
             .iter()
             .find(|record| record.input.id == input.input_id)
@@ -153,6 +153,21 @@ impl StudioRuntime {
                 cursor: previous.accepted_sequence,
             });
         }
+        let terminal_retry = snapshot
+            .terminal_inputs
+            .iter()
+            .any(|identity| identity.id == input.input_id);
+        drop(snapshot);
+        if terminal_retry {
+            // Core's bounded terminal identity proves admission but no longer carries
+            // the original admission watermark. Wait for its original writer before
+            // answering, rather than rebuilding that receipt at today's commit.
+            ensure_submission_not_cancelled(cancel)?;
+            self.thread_observations
+                .synchronize(Some(&thread_id))
+                .await?;
+            ensure_submission_not_cancelled(cancel)?;
+        }
         // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
         // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
         // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
@@ -161,6 +176,7 @@ impl StudioRuntime {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
+            Err(error) if terminal_retry => return Err(error),
             Err(_) => None,
         };
         if let Some(previous) = durable_receipt {
@@ -183,6 +199,10 @@ impl StudioRuntime {
                 cursor: previous.entry.accepted_sequence,
             });
         }
+        anyhow::ensure!(
+            !terminal_retry,
+            "accepted input identity is missing from synchronized history"
+        );
         // The caller's frozen route is a CAS against its canonical extension,
         // not a Thread revision or the current mode default. Both route writes
         // and input admission hold lifecycle_lock, so it cannot change between

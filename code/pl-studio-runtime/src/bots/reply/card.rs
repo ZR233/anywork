@@ -67,6 +67,9 @@ impl BotRuntime {
                 ReplyTarget::Unconsumed => return Ok(()),
             },
         };
+        if run.file_delivery_diagnostic.is_some() {
+            state.file_delivery_diagnostic = run.file_delivery_diagnostic.clone();
+        }
         let result = self
             .drive_card(
                 &managed,

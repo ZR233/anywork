@@ -219,6 +219,43 @@ static CFDataRef Activate(CFMessagePortRef port, SInt32 message,
 }
 
 - (void)pick:(FlutterMethodCall *)call result:(FlutterResult)result {
+  if ([call.method isEqualToString:@"saveFile"]) {
+    if (![call.arguments isKindOfClass:NSString.class]) {
+      result([FlutterError errorWithCode:@"invalid_arguments"
+                                message:@"Expected a suggested filename." details:nil]);
+      return;
+    }
+    NSSavePanel *panel = NSSavePanel.savePanel;
+    panel.nameFieldStringValue = [call.arguments lastPathComponent];
+    panel.canCreateDirectories = YES;
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+      if (response == NSModalResponseCancel) {
+        result(nil);
+      } else if (response != NSModalResponseOK || !panel.URL.isFileURL) {
+        result([FlutterError errorWithCode:@"file_dialog_failed"
+                                  message:@"No local save path was selected." details:nil]);
+      } else {
+        // NSSavePanel performs its standard replace confirmation before OK.
+        result(panel.URL.path);
+      }
+    }];
+    return;
+  }
+  if ([call.method isEqualToString:@"revealFile"]) {
+    NSString *path = [call.arguments isKindOfClass:NSString.class] ? call.arguments : nil;
+    BOOL directory = NO;
+    if (path == nil || !path.isAbsolutePath ||
+        ![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || directory) {
+      result([FlutterError errorWithCode:@"reveal_file_failed"
+                                message:@"The original local file does not exist." details:nil]);
+    } else if (![NSWorkspace.sharedWorkspace selectFile:path inFileViewerRootedAtPath:@""]) {
+      result([FlutterError errorWithCode:@"reveal_file_failed"
+                                message:@"The file viewer could not display the original file." details:nil]);
+    } else {
+      result(nil);
+    }
+    return;
+  }
   BOOL directory = [call.method isEqualToString:@"pickDirectory"];
   if (!directory && ![call.method isEqualToString:@"pickFiles"]) {
     result(FlutterMethodNotImplemented);

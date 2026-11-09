@@ -73,6 +73,7 @@ const specializedToolContracts = {
   'builtin.wait@1',
   'builtin.sleep@1',
   'builtin.view_image@1',
+  'builtin.show_files@1',
   'builtin.lsp_query@1',
   'builtin.lsp_capabilities@1',
   'builtin.plan_current@1',

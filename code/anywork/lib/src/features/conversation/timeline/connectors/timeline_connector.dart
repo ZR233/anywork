@@ -244,6 +244,13 @@ class _TimelineConnectorBody extends ConsumerWidget {
         readAttachment: (id) =>
             ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
         isActive: active,
+        readContent: (reference, range) {
+          final scope = lease.queries;
+          if (!active() || scope == null) {
+            return Future.error(const StaleConversationScope());
+          }
+          return scope.readContent(reference: reference, range: range);
+        },
       ),
       onLink: link,
       isSafeLink: (url) => safeExternalWebUrl(url) != null,

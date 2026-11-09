@@ -32,6 +32,7 @@ const PREVIEW_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 一次入站工作的恢复执行进度；`watch_input` 是当前 canonical 输入身份。
 pub(super) struct ReplyRun {
+    pub(super) output: crate::channel_output::ChannelOutputBinding,
     pub(super) bot_id: String,
     pub(super) chat_id: String,
     pub(super) message_id: String,
@@ -43,6 +44,8 @@ pub(super) struct ReplyRun {
     pub(super) watch_input: String,
     /// 本执行内已受理的提示；真正的去重由发送账本的稳定操作身份保证。
     pub(super) hinted: BTreeSet<String>,
+    pub(super) delivered_displays: BTreeSet<String>,
+    pub(super) file_delivery_diagnostic: Option<String>,
     pub(super) card: Option<CardStream>,
     pub(super) next_observation: tokio::time::Instant,
 }
@@ -197,6 +200,7 @@ impl BotRuntime {
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
         let run = ReplyRun {
+            output: crate::bots::files::feishu_reply_binding(self.clone(), &inbound, worker_id),
             bot_id: inbound.bot_id.clone(),
             chat_id: inbound.chat_id.clone(),
             message_id: inbound.message_id.clone(),
@@ -211,6 +215,8 @@ impl BotRuntime {
                 inbound.watch_input.clone()
             },
             hinted: BTreeSet::new(),
+            delivered_displays: BTreeSet::new(),
+            file_delivery_diagnostic: None,
             card: None,
             next_observation: tokio::time::Instant::now(),
         };
@@ -267,6 +273,10 @@ impl BotRuntime {
             Ok(card) => card,
             Err(error) => return classify_send_error(error),
         };
+        run.file_delivery_diagnostic = run
+            .card
+            .as_ref()
+            .and_then(|card| card.file_delivery_diagnostic.clone());
         if let Some(card) = run.card.as_mut() {
             if card.uncertain() || card.lifecycle == CardLifecycle::NeedsAttention {
                 if let Some(operation) = card.last_operation.as_mut()
@@ -302,6 +312,9 @@ impl BotRuntime {
                 return attention(diagnostic);
             }
             if card.lifecycle.terminal() {
+                if let Some(diagnostic) = &card.file_delivery_diagnostic {
+                    return attention(diagnostic.clone());
+                }
                 return closed_card_outcome(card.lifecycle);
             }
         }
@@ -613,7 +626,20 @@ impl BotRuntime {
         } else {
             None
         };
-        match content.terminal {
+        if let Some(projection) = content.projection
+            && let Err(outcome) = super::files::deliver_file_displays(
+                runtime,
+                content.reader,
+                run,
+                turn_id,
+                projection,
+                cancel,
+            )
+            .await
+        {
+            return Step::Done(outcome);
+        }
+        let step = match content.terminal {
             None if matches!(
                 content.observed,
                 Some(TurnState::Queued(_) | TurnState::Running(_))
@@ -691,6 +717,17 @@ impl BotRuntime {
                 .await
             }
             Some(TurnState::Queued(_) | TurnState::Running(_)) => Step::Wait,
+        };
+        match step {
+            Step::Done(InboundWorkOutcome::Completed) if run.file_delivery_diagnostic.is_some() => {
+                Step::Done(InboundWorkOutcome::NeedsAttention {
+                    diagnostic: run
+                        .file_delivery_diagnostic
+                        .clone()
+                        .expect("checked diagnostic"),
+                })
+            }
+            other => other,
         }
     }
 
@@ -941,6 +978,69 @@ mod archive_cancellation_tests {
     use crate::bots::inbound::InboundAttachment;
 
     #[tokio::test]
+    async fn completed_card_recovery_keeps_independent_file_delivery_failure() -> anyhow::Result<()>
+    {
+        use crate::bots::storage::card::{CardAction, CardOperationStatus, hash};
+        use crate::bots::storage::{InboundClaim, MarkOutcome};
+        let fixture = Fixture::new().await?;
+        let inbound = fixture.inbound("closed-card-file-failure", true).await?;
+        let managed = fixture.bots.managed(&inbound.bot_id).await?;
+        let worker = "file-recovery-worker";
+        assert_eq!(
+            managed
+                .store
+                .claim_inbound_work(
+                    &inbound.bot_id,
+                    &inbound.chat_id,
+                    &inbound.message_id,
+                    worker
+                )
+                .await?,
+            InboundClaim::Claimed
+        );
+        let original = bot_input_id(&inbound.bot_id, &inbound.chat_id, &inbound.message_id);
+        let binding = CardBinding {
+            bot_id: inbound.bot_id.clone(),
+            chat_id: inbound.chat_id.clone(),
+            message_id: inbound.message_id.clone(),
+            thread_id: inbound.creation_id.clone(),
+            original_input: original.clone(),
+        };
+        let mut card = CardStream::new(binding, &original, "finished-turn");
+        card.card_id = Some("confirmed-card".into());
+        card.platform_message_id = Some("confirmed-card-message".into());
+        card.confirmed_text = "Final text delivered independently".into();
+        card.confirmed_content_hash = hash(card.confirmed_text.as_bytes());
+        card.final_content_hash = Some(card.confirmed_content_hash.clone());
+        card.reserve(CardAction::Settings {
+            streaming: false,
+            lifecycle: CardLifecycle::Completed,
+            recovery: false,
+        })?;
+        card.last_operation.as_mut().unwrap().status = CardOperationStatus::Confirmed;
+        card.confirmed_sequence = card.sequence;
+        card.lifecycle = CardLifecycle::Completed;
+        card.file_delivery_diagnostic = Some("file message acceptance is unknown".into());
+        assert_eq!(
+            managed.store.save_card(&mut card, worker).await?,
+            MarkOutcome::Applied
+        );
+        // run_reply reloads the durable card before any network or new content subscription.
+        let thread_id = inbound.creation_id.clone();
+        let outcome = fixture
+            .bots
+            .run_reply(inbound, worker, &thread_id, CancellationToken::new())
+            .await;
+        assert_eq!(
+            outcome,
+            InboundWorkOutcome::NeedsAttention {
+                diagnostic: "file message acceptance is unknown".into(),
+            }
+        );
+        fixture.shutdown().await
+    }
+
+    #[tokio::test]
     async fn media_setup_and_prompt_admission_exit_the_owned_reply_on_cancel() -> anyhow::Result<()>
     {
         let fixture = Fixture::new().await?;
@@ -948,6 +1048,11 @@ mod archive_cancellation_tests {
         let managed = fixture.bots.managed(&inbound.bot_id).await?;
         for media in [false, true] {
             let mut run = ReplyRun {
+                output: crate::bots::files::feishu_reply_binding(
+                    fixture.bots.clone(),
+                    &inbound,
+                    "fixture-worker",
+                ),
                 bot_id: inbound.bot_id.clone(),
                 chat_id: inbound.chat_id.clone(),
                 message_id: inbound.message_id.clone(),
@@ -962,6 +1067,8 @@ mod archive_cancellation_tests {
                 ),
                 watch_input: String::new(),
                 hinted: BTreeSet::new(),
+                delivered_displays: BTreeSet::new(),
+                file_delivery_diagnostic: None,
                 card: None,
                 next_observation: tokio::time::Instant::now(),
             };

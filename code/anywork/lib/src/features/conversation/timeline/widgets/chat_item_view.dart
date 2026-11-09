@@ -225,7 +225,7 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _content(BuildContext context) => switch (item.type) {
     'text' => _text(context),
     'thinking' => _thinking(context),
-    'tool' => _tool(context),
+    'tool' => item.presentsFiles ? _media() : _tool(context),
     'turn' => _turn(context),
     'plan' => _plan(context),
     'skill' => _record(

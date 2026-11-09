@@ -246,6 +246,18 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
             }
         }
     }
+    if pl_tool::file_display::saved_file_display_receipt(delivery.output.payload())
+        .map_err(ProjectionError::ToolMedia)?
+        .is_some()
+    {
+        // Display metadata is a public artifact, not model input. Keep the standard
+        // ContextContent shape here without modifying the actual delivered context.
+        resources.push(serde_json::to_value(
+            pl_core::context::ContextContent::Opaque {
+                payload: delivery.output.payload().clone(),
+            },
+        )?);
+    }
     let output = ThreadToolOutput::new(
         text_content(&delivery.delivered_context),
         super::delivery_attachments(delivery)?,

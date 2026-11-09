@@ -1,17 +1,39 @@
-//! Timeline image display of an image this Thread already archived, without new bytes.
-//!
-//! 该模块属于工具执行边界：它只从本次调用已冻结的上下文中挑出一份已归档图片引用，并写入带
-//! 有界展示文案的版本化回执。工具不持有媒体 host、不 retain 字节、不读工作区文件，也不扩大
-//! pl-model / pl-core 的公共接口。图片字节始终由资源与附件缓存按身份读取，产品投影负责把该
-//! 引用变成时间线卡片（见 design/06 §6.13 与 design/09 §9.1）。
-
-mod thread;
-
-/// Stable tool identity shared with the product declaration and the receipt format.
-pub const TOOL_SHOW_IMAGE: &str = "show_image";
+//! Read-only decoder for historical image cards. No executable legacy tool remains.
+use pl_core::{
+    context::{OpaquePayload, ResourceReference},
+    tool::opaque::ToolError,
+};
 /// Versioned receipt format emitted for one displayed image card.
 pub const IMAGE_CARD_FORMAT: &str = "pl.tool.image-card";
 /// Receipt layout version; changes require an explicit decoder update.
 pub const IMAGE_CARD_VERSION: u32 = 1;
 
-pub use thread::{ImageCardReceipt, ShowImageInput, ThreadShowImageTool, saved_image_card_receipt};
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageCardReceipt {
+    pub image: ResourceReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+}
+
+/// Decodes an old saved card without restoring its execution path.
+///
+/// # Errors
+/// Rejects unsupported versions, malformed content and invalid references.
+pub fn saved_image_card_receipt(
+    payload: &OpaquePayload,
+) -> Result<Option<ImageCardReceipt>, ToolError> {
+    if payload.format() != IMAGE_CARD_FORMAT {
+        return Ok(None);
+    }
+    if payload.version() != IMAGE_CARD_VERSION {
+        return Err(ToolError::new(std::io::Error::other(format!(
+            "unsupported {IMAGE_CARD_FORMAT} receipt version {}",
+            payload.version()
+        ))));
+    }
+    let receipt: ImageCardReceipt =
+        serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    receipt.image.validate().map_err(ToolError::new)?;
+    Ok(Some(receipt))
+}

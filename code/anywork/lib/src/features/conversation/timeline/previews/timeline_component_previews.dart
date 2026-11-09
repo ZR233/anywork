@@ -12,6 +12,7 @@ import '../../../../l10n/app_localizations.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/timeline_file_presentation.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../views/timeline_view.dart';
@@ -97,6 +98,56 @@ Widget _previewAttachments(
     width: TimelinePreviewFixtures.imageWidth,
     height: TimelinePreviewFixtures.imageHeight,
     error: attachment.id == resourceErrorAttachmentId ? '合成读取失败' : null,
+  ),
+);
+
+@Preview(name: '文件 / 混合附件与局部失败', group: 'Timeline · 文件', size: Size(820, 480))
+@Preview(name: '文件 / 窄窗自然换行', group: 'Timeline · 文件', size: Size(320, 700))
+Widget timelineFilesPreview() => _timelinePreviewHost(
+  SingleChildScrollView(
+    child: TimelineAttachmentsView(
+      attachments: const [],
+      caption: '本次交付',
+      files: [
+        TimelineFileEntry.archived(TimelinePreviewFixtures.imageAttachment),
+        const TimelineFileEntry(
+          filename: '实现说明与验收记录.markdown',
+          origin: TimelineFileOrigin.remote,
+          attachment: ThreadAttachmentView(
+            id: 'preview-markdown',
+            filename: '实现说明与验收记录.markdown',
+            modality: AttachmentModalityView.file,
+            mediaType: 'text/markdown',
+            byteSize: 2048,
+          ),
+        ),
+        const TimelineFileEntry(
+          filename: 'project-delivery.zip',
+          attachment: ThreadAttachmentView(
+            id: 'preview-archive',
+            modality: AttachmentModalityView.file,
+            mediaType: 'application/zip',
+            byteSize: 4096,
+          ),
+        ),
+        const TimelineFileEntry(
+          filename: 'missing-report.pdf',
+          error: '文件不可读取',
+        ),
+      ],
+      imageBuilder: (attachment) => TimelineImageView(
+        itemId: 'preview-files',
+        attachment: attachment,
+        isTool: true,
+        active: true,
+        imageIdentity: ('preview-files', attachment.id),
+        bytes: TimelinePreviewFixtures.imageBytes,
+        width: TimelinePreviewFixtures.imageWidth,
+        height: TimelinePreviewFixtures.imageHeight,
+      ),
+      onSave: (_) {},
+      onOpen: (_) {},
+    ),
   ),
 );
 

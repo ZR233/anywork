@@ -101,6 +101,13 @@ impl WorkspaceFileBackend for LocalWorkspaceFileBackend {
         Ok(".".to_string())
     }
 
+    async fn local_file_path(&self, request: WorkspaceFileStatRequest) -> Result<Option<String>> {
+        let path = self
+            .resolve_existing(request.cwd.as_deref(), &request.path)
+            .await?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    }
+
     async fn stat_optional(
         &self,
         request: WorkspaceFileStatRequest,

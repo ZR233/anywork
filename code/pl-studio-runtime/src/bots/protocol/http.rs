@@ -64,6 +64,17 @@ impl FeishuHttp {
         &self.client
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_timeout(mut self, timeout: Duration) -> Self {
+        self.client = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(timeout)
+            .redirect(RedirectPolicy::none())
+            .build()
+            .unwrap();
+        self
+    }
+
     pub fn open_api(&self) -> &Url {
         &self.policy.open_api
     }
@@ -273,17 +284,49 @@ impl FeishuHttp {
     ) -> Result<T, FeishuError> {
         let envelope: OpenApiEnvelope<T> =
             self.open_typed(method, path, token, query, body).await?;
-        if envelope.code != 0 {
-            return Err(classify_open_api(envelope.code, envelope.msg.as_deref()));
+        open_data(envelope)
+    }
+
+    pub async fn open_multipart<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        token: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<T, FeishuError> {
+        let url = self
+            .open_api()
+            .join(path.trim_start_matches('/'))
+            .map_err(|error| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    format!("invalid upload path: {error}"),
+                    false,
+                    None,
+                )
+            })?;
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(transport)?;
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(transport)?;
+        if !status.is_success() {
+            #[derive(Deserialize)]
+            struct Failure {
+                code: i64,
+            }
+            if let Ok(failure) = serde_json::from_slice::<Failure>(&bytes)
+                && failure.code != 0
+            {
+                return Err(classify_open_api(failure.code, None));
+            }
+            return Err(classify_http_status(status));
         }
-        envelope.data.ok_or_else(|| {
-            FeishuError::new(
-                FeishuErrorKind::Protocol,
-                "Feishu response missing data",
-                false,
-                Some(envelope.code.to_string()),
-            )
-        })
+        open_data(parse_json(&bytes, status)?)
     }
 
     pub async fn open_typed<T: DeserializeOwned, B: Serialize>(
@@ -533,6 +576,20 @@ pub(crate) fn classify_open_api(code: i64, msg: Option<&str>) -> FeishuError {
         _ => "Feishu API rejected the request",
     };
     FeishuError::new(kind, message, retryable, Some(code.to_string()))
+}
+
+fn open_data<T>(envelope: OpenApiEnvelope<T>) -> Result<T, FeishuError> {
+    if envelope.code != 0 {
+        return Err(classify_open_api(envelope.code, envelope.msg.as_deref()));
+    }
+    envelope.data.ok_or_else(|| {
+        FeishuError::new(
+            FeishuErrorKind::Protocol,
+            "Feishu response missing data",
+            false,
+            Some(envelope.code.to_string()),
+        )
+    })
 }
 
 fn parse_json<T: DeserializeOwned>(

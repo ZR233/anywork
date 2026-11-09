@@ -45,6 +45,7 @@ import '../status/thread_status_bar.dart';
 import '../conversation/timeline/connectors/conversation_activity_connector.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
+import '../conversation/timeline/connectors/file_reading_panel.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';

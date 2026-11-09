@@ -122,6 +122,8 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// rendering or about the CardKit wire, which the bots observation proves
 /// separately.
 pub const GUI_MARKDOWN_PROMPT: &str = "Reply with the fixture Markdown sample";
+/// Explicit opt-in journey using real files in the selected repository workspace.
+pub const GUI_FILES_PROMPT: &str = "Show the local file display sample";
 
 /// Ordered Markdown chunks of [`GUI_MARKDOWN_PROMPT`]'s answer: Chinese heading,
 /// list, bold/inline code/link, fenced code block and a small table.
@@ -2332,6 +2334,63 @@ pub fn gui_script() -> Vec<Step> {
             Reply::Sse(responses_text(
                 "Fixture Markdown Session",
                 "title-response",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(GUI_FILES_PROMPT),
+            6,
+            Reply::Sse(responses_text(
+                "文件展示",
+                "file-display-title",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_FILES_PROMPT,
+            7,
+            Reply::Sse(responses_tool_calls(
+                "file-display-response",
+                "fixture-model",
+                &[RealtimeToolCall {
+                    item_id: "file-display-item",
+                    call_id: "file-display-call",
+                    name: "show_files",
+                    arguments: json!({
+                        "caption": "设计说明、界面素材与项目配置",
+                        "files": [
+                            {"kind": "workspace", "path": "design/09-tool-runtime.md"},
+                            {"kind": "workspace", "path": "code/anywork/assets/branding/anywork-startup-cat.png"},
+                            {"kind": "workspace", "path": "Cargo.toml"}
+                        ]
+                    })
+                    .to_string(),
+                }],
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_FILES_PROMPT,
+            8,
+            Reply::Sse(responses_text(
+                "文件展示请求已处理。可以点击 Markdown 阅读正文，或打开文件菜单保存原件。",
+                "file-display-answer",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(GUI_FILES_PROMPT),
+            9,
+            Reply::Sse(responses_text(
+                "文件展示",
+                "file-display-title",
                 "fixture-model",
             )),
         )
