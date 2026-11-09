@@ -79,7 +79,14 @@ impl CatalogSources {
                 serde_json::json!(value.state.value().map(|data| {
                     data.lsp_servers
                         .iter()
-                        .map(|server| (&server.id, &server.extensions, &server.language_ids))
+                        .map(|server| {
+                            (
+                                &server.id,
+                                &server.extensions,
+                                &server.language_ids,
+                                &server.phase,
+                            )
+                        })
                         .collect::<Vec<_>>()
                 })),
             )),
@@ -579,9 +586,30 @@ fn catalog_fingerprint(
                 && matches!(delivery.outcome, ToolOutcome::Succeeded)
         })
         .map(|delivery| &delivery.call_id);
+    // Commands can write configuration without going through the filesystem backend.
+    // Their completed delivery is a safe opportunity to re-scan the bound workspace;
+    // unchanged content does not restart a language server.
+    let workspace_mutation = snapshot
+        .deliveries
+        .iter()
+        .rev()
+        .find(|delivery| {
+            matches!(
+                delivery.tool_id.as_str(),
+                "exec"
+                    | "wait"
+                    | "write_file"
+                    | "apply_patch"
+                    | "copy_path"
+                    | "move_path"
+                    | "delete_path"
+            )
+        })
+        .map(|delivery| &delivery.call_id);
     crate::hash::canonical_json_hash(&serde_json::json!({
         "sources": sources.0,
         "skillMutation": mutation,
+        "workspaceMutation": workspace_mutation,
         "mode": snapshot.extensions.get("studio.mode"),
         "modelRoute": snapshot.extensions.get(crate::studio::model_route::MODEL_ROUTE_EXTENSION),
         "agentProfile": snapshot.extensions.get(crate::studio::model_route::AGENT_PROFILE_EXTENSION),

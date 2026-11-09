@@ -5,7 +5,6 @@ mod capability;
 mod error;
 mod formatting;
 mod membership;
-mod probe;
 mod query;
 mod registry;
 mod request;
@@ -17,6 +16,7 @@ mod state;
 
 pub use capability::*;
 pub use error::*;
+pub use membership::{MAX_LSP_CONFIGURATION_BYTES, MAX_LSP_CONFIGURATION_FILES};
 pub use registry::LspRuntimeRegistry;
 pub use state::*;
 

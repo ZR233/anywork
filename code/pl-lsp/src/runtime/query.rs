@@ -7,7 +7,7 @@ use crate::query::{LspDiagnostic, LspQuery, LspQueryOperation, LspQueryResult};
 
 use super::formatting::{format_diagnostics, format_lsp_result};
 use super::request::request_for_query;
-use super::{LspAvailabilityKind, LspResult, LspRuntimeRegistry};
+use super::{LspResult, LspRuntimeRegistry};
 
 impl LspRuntimeRegistry {
     pub async fn query_in_workspace(
@@ -16,6 +16,11 @@ impl LspRuntimeRegistry {
         query: LspQuery,
     ) -> LspResult<LspQueryResult> {
         let workspace_root = super::workspace_key(workspace_root.as_ref());
+        if !self.has_ready_servers(&workspace_root).await {
+            return Err(super::LspRuntimeError::Unavailable(
+                "no LSP server is ready in this workspace".into(),
+            ));
+        }
         if query.operation == LspQueryOperation::Diagnostics {
             return self
                 .query_diagnostics_in_workspace(&workspace_root, query)
@@ -31,7 +36,7 @@ impl LspRuntimeRegistry {
         let value = match request_for_query(&client, &query).await {
             Ok(value) => value,
             Err(error) => {
-                self.mark_client_failure(&workspace_root, &server_id, error.to_string())
+                self.mark_client_failure(&workspace_root, &server_id, &client, error.to_string())
                     .await;
                 return Err(error);
             }
@@ -54,6 +59,7 @@ impl LspRuntimeRegistry {
 
     pub async fn notify_file_changed(&self, path: impl AsRef<Path>) {
         let path = path.as_ref();
+        self.refresh_for_configuration_path(path).await;
         for client in self.open_clients_for_path(path).await {
             let _ = client.file_changed(path).await;
         }
@@ -65,6 +71,7 @@ impl LspRuntimeRegistry {
 
     pub async fn notify_file_deleted(&self, path: impl AsRef<Path>) {
         let path = path.as_ref();
+        self.refresh_for_configuration_path(path).await;
         for client in self.open_clients_for_path(path).await {
             let _ = client.file_deleted(path).await;
         }
@@ -73,8 +80,14 @@ impl LspRuntimeRegistry {
         }
     }
 
-    async fn mark_client_failure(&self, workspace_root: &Path, server_id: &str, message: String) {
-        let client = {
+    async fn mark_client_failure(
+        &self,
+        workspace_root: &Path,
+        server_id: &str,
+        failed_client: &std::sync::Arc<crate::client::LspClient>,
+        message: String,
+    ) {
+        {
             let mut state = self.state.lock().await;
             let Some(server) = state
                 .workspaces
@@ -83,19 +96,39 @@ impl LspRuntimeRegistry {
             else {
                 return;
             };
-            server.availability_kind = LspAvailabilityKind::Unavailable;
-            server.availability_message = Some(message);
-            server.client.take()
-        };
-        if let Some(client) = client
-            && let Err(error) = client.shutdown().await
-        {
-            tracing::warn!(
-                %error,
-                "LSP client did not confirm closure after being marked unavailable"
-            );
+            if !server
+                .client
+                .as_ref()
+                .is_some_and(|client| std::sync::Arc::ptr_eq(client, failed_client))
+            {
+                return;
+            }
+            server.set_phase(super::LspLifecyclePhase::Failed, Some(message));
+            server.cancel.cancel();
+            failed_client.cancel();
         }
         self.emit_update();
+    }
+
+    async fn refresh_for_configuration_path(&self, path: &Path) {
+        let roots: Vec<_> = self
+            .state
+            .lock()
+            .await
+            .workspaces
+            .iter()
+            .filter(|(root, workspace)| {
+                path.starts_with(root.join(".anywork/lsp"))
+                    || workspace
+                        .defaults_directory
+                        .as_ref()
+                        .is_some_and(|directory| path.starts_with(directory))
+            })
+            .map(|(root, _)| root.clone())
+            .collect();
+        for root in roots {
+            self.refresh_workspace_configuration(root).await;
+        }
     }
 
     async fn query_diagnostics_in_workspace(
@@ -144,22 +177,31 @@ impl LspRuntimeRegistry {
     }
 
     async fn all_diagnostics_for_workspace(&self, workspace_root: &Path) -> Vec<LspDiagnostic> {
-        let diagnostics = self
+        let containers = self
             .state
             .lock()
             .await
             .workspaces
             .get(workspace_root)
-            .map(|workspace| workspace.diagnostics.clone());
-        let Some(diagnostics) = diagnostics else {
-            return Vec::new();
-        };
-        let mut diagnostics = diagnostics
-            .lock()
-            .await
-            .values()
-            .flat_map(|items| items.iter().cloned())
-            .collect::<Vec<_>>();
+            .map(|workspace| {
+                workspace
+                    .servers
+                    .values()
+                    .filter(|server| server.healthy())
+                    .map(|server| server.diagnostics.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut diagnostics = Vec::new();
+        for container in containers {
+            diagnostics.extend(
+                container
+                    .lock()
+                    .await
+                    .values()
+                    .flat_map(|items| items.iter().cloned()),
+            );
+        }
         diagnostics.sort_by(|left, right| {
             left.path
                 .cmp(&right.path)

@@ -22,21 +22,21 @@ use pl_tool::workspace_file::{
 
 use pl_tool::remote::{RemoteSkillProvider, SshConnectionState, SshManager, SshServerProfile};
 
-use pl_lsp::catalog::{LspCatalogServer, LspCommandSpec, LspServerCatalog, LspServerDefinition};
-use pl_lsp::driver::{LspProbeOutcome, LspRepairError, LspResolvedCommand, LspServerDriver};
 use pl_lsp::host::LspHostBackend;
 use pl_lsp::query::{LspQuery, LspQueryOperation};
-use pl_lsp::runtime::{LspMissingComponent, LspRuntimeRegistry};
+use pl_lsp::runtime::LspRuntimeRegistry;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 #[ignore = "external SSH; requires PURE_SSH_TEST_SERVER, PURE_SSH_TEST_WORKSPACE, and PURE_REMOTE_HELPER_*"]
 async fn ssh_remote_validation() -> anyhow::Result<()> {
-    let exec_only = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
-        Ok("exec") => true,
-        Ok("full") | Err(std::env::VarError::NotPresent) => false,
+    let scope = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
+        Ok("exec") => "exec",
+        Ok("lsp") => "lsp",
+        Ok("full") | Err(std::env::VarError::NotPresent) => "full",
         other => anyhow::bail!("invalid PURE_SSH_TEST_SCOPE: {other:?}"),
     };
+    let exec_only = scope == "exec";
     let host = required("PURE_SSH_TEST_SERVER")?;
     let workspace = required("PURE_SSH_TEST_WORKSPACE")?;
     let aarch64 = std::env::var_os("PURE_REMOTE_HELPER_AARCH64").map(PathBuf::from);
@@ -86,6 +86,35 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     anyhow::ensure!(host.identity() == cached.identity());
     drop(cached);
     let files = Arc::new(host.files.clone());
+    if scope == "lsp" {
+        // A focused protocol entry, independent of unrelated command/capture-layout checks.
+        // The default full suite below remains unchanged.
+        let observed = async {
+            let environment = run_remote(
+                &host.git,
+                vec!["sh".into(), "-c".into(), "printf '%s' \"$PATH\"".into()],
+            )
+            .await?;
+            anyhow::ensure!(environment.status == 0, "read remote execution PATH");
+            files
+                .write_text(WorkspaceFileWriteRequest {
+                    mode: pl_tool::workspace::WriteMode::Overwrite,
+                    path: "expected-path.json".into(),
+                    cwd: None,
+                    content: serde_json::to_string(&environment.stdout)?,
+                })
+                .await?;
+            validate_lsp_backend(host.clone(), files.as_ref()).await
+        }
+        .await;
+        drop(host);
+        drop(files);
+        let cleanup = manager.disconnect_server("validation").await;
+        observed?;
+        cleanup?;
+        println!("SSH_LSP_CONFIGURATION_QUERY_AND_SHUTDOWN=PASS");
+        return Ok(());
+    }
     if !exec_only {
         files.create_directory("leases".into(), None).await?;
         for cycle in 0..50 {
@@ -869,6 +898,7 @@ import sys
 
 with open("expected-path.json") as expected:
     assert os.environ["PATH"] == json.load(expected), "LSP must inherit the execution environment"
+assert os.environ["LSP_FIXTURE_ENV"] == os.getcwd() + "/environment value; $(literal)", "LSP env/cwd must be execution-side values without shell expansion"
 
 def read_message():
     length = None
@@ -898,6 +928,7 @@ while True:
     if "id" not in message:
         continue
     if method == "initialize":
+        assert message["params"]["initializationOptions"]["root"] == os.getcwd() + "/init"
         result = {"capabilities": {"documentSymbolProvider": True}}
     elif method == "textDocument/documentSymbol":
         result = [{"name": "remote_symbol", "kind": 12, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}}]
@@ -924,29 +955,42 @@ while True:
         })
         .await?;
 
-    let mut catalog = LspServerCatalog::empty();
-    catalog.insert(LspCatalogServer {
-        definition: LspServerDefinition {
-            id: "remote-python-fixture".to_string(),
-            display_name: "Remote Python fixture".to_string(),
-            language_ids: vec!["python".to_string()],
-            extensions: vec![".py".to_string()],
-            detection: vec!["fixture.py".to_string()],
-            command: LspCommandSpec {
-                program: "python3".to_string(),
-                args: vec!["-u".to_string(), "lsp_fixture.py".to_string()],
-            },
-            operations: vec![LspQueryOperation::DocumentSymbol],
-        },
-        driver: Arc::new(ValidationLspDriver),
-    })?;
-    let registry = LspRuntimeRegistry::with_catalog(catalog);
+    files.create_directory(".anywork/lsp".into(), None).await?;
+    files
+        .write_text(WorkspaceFileWriteRequest {
+            mode: pl_tool::workspace::WriteMode::Overwrite,
+            path: ".anywork/lsp/remote-python-fixture.toml".into(),
+            cwd: None,
+            content: r#"schema_version = 1
+id = "remote-python-fixture"
+command = "python3"
+args = ["-u", "{workspaceRoot}/lsp_fixture.py"]
+language_ids = ["python"]
+extensions = [".py"]
+detection = ["fixture.py"]
+operations = ["documentSymbol"]
+[env]
+LSP_FIXTURE_ENV = "{workspaceRoot}/environment value; $(literal)"
+[initialization_options]
+root = "{workspaceRoot}/init"
+"#
+            .into(),
+        })
+        .await?;
+    let registry = LspRuntimeRegistry::new();
     let workspace_root = PathBuf::from(files.canonical_path());
     let host: Arc<dyn LspHostBackend> = Arc::new(host);
     registry
-        .reconcile_workspace_membership_with_host(&workspace_root, host)
+        .configure_workspace_from_directory(&workspace_root, Some(host), None)
         .await;
-    registry.probe_lsp_server(&workspace_root).await;
+    let mut updates = registry.subscribe();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !registry.has_ready_servers(&workspace_root).await {
+            updates.recv().await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
     let result = registry
         .query_in_workspace(
             &workspace_root,
@@ -965,28 +1009,6 @@ while True:
     assert!(result.result.contains("remote_symbol"));
     registry.shutdown().await?;
     Ok(())
-}
-
-struct ValidationLspDriver;
-
-impl LspServerDriver for ValidationLspDriver {
-    fn probe<'a>(
-        &'a self,
-        _command: &'a LspResolvedCommand,
-        _host: Option<&'a dyn LspHostBackend>,
-    ) -> futures::future::BoxFuture<'a, LspProbeOutcome> {
-        Box::pin(std::future::ready(LspProbeOutcome::Ready {
-            version: "fixture".to_string(),
-        }))
-    }
-
-    fn repair<'a>(
-        &'a self,
-        _component: &'a LspMissingComponent,
-        _host: Option<&'a dyn LspHostBackend>,
-    ) -> futures::future::BoxFuture<'a, Result<(), LspRepairError>> {
-        Box::pin(std::future::ready(Err(LspRepairError::NotSupported)))
-    }
 }
 
 async fn run_remote(

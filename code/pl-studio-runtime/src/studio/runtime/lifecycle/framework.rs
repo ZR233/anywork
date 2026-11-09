@@ -81,6 +81,23 @@ impl StudioRuntime {
         }
         let runtime = self.clone();
         let mut updates = self.external_runtimes.lsp.subscribe();
+        // Threads can prepare services without navigating through project activation.
+        // Establish the initial published cut before forwarding background lifecycle changes.
+        {
+            let _command = self.external_runtimes.lsp_state.command().await;
+            let initial = health(&self.external_runtimes.lsp).await;
+            if let Err(error) = self
+                .external_runtimes
+                .lsp_state
+                .begin(pl_protocol::StateOperation::Activate)
+                .await
+            {
+                tracing::warn!(%error, "failed to begin LSP observed state");
+            } else if let Err(error) = self.external_runtimes.lsp_state.ready(initial, false).await
+            {
+                tracing::warn!(%error, "failed to publish initial LSP observed state");
+            }
+        }
         *watcher = Some(BackgroundTask::new(tokio::spawn(async move {
             while let Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
                 updates.recv().await

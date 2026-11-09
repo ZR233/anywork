@@ -366,7 +366,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(reconnect_thread_mcp))
         .routes(routes!(read_lsp))
         .routes(routes!(probe_lsp))
-        .routes(routes!(repair_lsp))
         .routes(routes!(reset_lsp))
         .routes(routes!(read_update))
         .routes(routes!(check_update))
@@ -1644,19 +1643,6 @@ async fn probe_lsp(
     state
         .runtime
         .probe_lsp_server(&workspace_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(state.runtime.read_lsp_state().await))
-}
-
-#[utoipa::path(post, path = "/api/v1/runtime/projects/{workspace_id}/lsp/{server_id}/repair", operation_id = "lsp.repair", params(("workspace_id" = String, Path), ("server_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
-async fn repair_lsp(
-    State(state): State<AppState>,
-    Path((workspace_id, server_id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
-    state
-        .runtime
-        .repair_lsp_server(&workspace_id, &server_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(state.runtime.read_lsp_state().await))

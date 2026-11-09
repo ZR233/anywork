@@ -21,7 +21,14 @@ const SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl LspClient {
     pub(crate) async fn start(&self) -> LspResult<()> {
-        self.ensure_started().await
+        let result = self.ensure_started().await;
+        if let Err(error) = result {
+            if let Err(cleanup) = self.shutdown().await {
+                return Err(LspRuntimeError::Unavailable(format!("{error}; {cleanup}")));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// 请求关闭并确认整棵 language-server 进程树已回收。
@@ -71,7 +78,10 @@ impl LspClient {
         }
         self.stop_stale_connection_locked().await?;
 
-        let mut child = self.spawn_server().await?;
+        let child = self.spawn_server().await?;
+        self.child.lock().await.replace(child);
+        let mut child_guard = self.child.lock().await;
+        let child = child_guard.as_mut().expect("owned child");
         let stdin = child.take_stdin().ok_or_else(|| {
             LspRuntimeError::Unavailable("LSP child stdin pipe is unavailable".to_string())
         })?;
@@ -79,9 +89,11 @@ impl LspClient {
             LspRuntimeError::Unavailable("LSP child stdout pipe is unavailable".to_string())
         })?;
         let stderr = child.take_stderr();
+        drop(child_guard);
         let (transport, inbound) = LspTransport::spawn(stdin, stdout)?;
         let rpc = RpcClient::new(transport.sender()?);
         let generation = self.connection_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.connection_alive.store(true, Ordering::Release);
         self.spawn_dispatcher(inbound, rpc.clone(), generation);
         self.transport.lock().await.replace(transport);
         self.rpc
@@ -90,8 +102,10 @@ impl LspClient {
                 LspRuntimeError::Unavailable("LSP connection state is poisoned".to_string())
             })?
             .replace(rpc.clone());
-        self.child.lock().await.replace(child);
         self.observe_stderr(stderr);
+        self.observe_process();
+        self.startup_phase
+            .send_replace(crate::runtime::LspLifecyclePhase::Initializing);
 
         let initialize = tokio::select! {
             biased;
@@ -105,17 +119,43 @@ impl LspClient {
                 STARTUP_TIMEOUT,
             ) => initialize,
         };
-        if let Err(error) = initialize {
-            self.record_last_error(error.to_string()).await;
-            let _ = self.shutdown_connection_locked().await;
-            return Err(error);
-        }
+        let initialize = match initialize {
+            Ok(value) => value,
+            Err(error) => {
+                self.record_last_error(error.to_string()).await;
+                let _ = self.shutdown_connection_locked().await;
+                return Err(error);
+            }
+        };
+        let result: lsp_types::InitializeResult = match serde_json::from_value(initialize) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.shutdown_connection_locked().await;
+                return Err(error.into());
+            }
+        };
+        let operations = negotiated_operations(&result.capabilities);
+        *self.negotiated_operations.write().map_err(|_| {
+            LspRuntimeError::Unavailable("LSP capability state is poisoned".into())
+        })? = operations;
         if self.closed.load(Ordering::Acquire) {
             let _ = self.shutdown_connection_locked().await;
             return Err(shutting_down_error());
         }
         let initialized_params = serde_json::to_value(InitializedParams {})?;
         if let Err(error) = rpc.notify("initialized", initialized_params).await {
+            self.record_last_error(error.to_string()).await;
+            let _ = self.shutdown_connection_locked().await;
+            return Err(error);
+        }
+        if !self.server.settings.is_null()
+            && let Err(error) = rpc
+                .notify(
+                    "workspace/didChangeConfiguration",
+                    serde_json::json!({ "settings": self.server.settings }),
+                )
+                .await
+        {
             self.record_last_error(error.to_string()).await;
             let _ = self.shutdown_connection_locked().await;
             return Err(error);
@@ -131,7 +171,10 @@ impl LspClient {
                     process_id: format!("lsp-{}", self.server.id),
                     program: self.server.program.clone(),
                     args: self.server.args.clone(),
+                    env: self.server.env.clone(),
                     cwd: self.server.workspace_root.clone(),
+                    cancellation: self.shutdown_requested.clone(),
+                    deadline: tokio::time::Instant::now() + STARTUP_TIMEOUT,
                 })
                 .await
                 .map(LspChild::Hosted)
@@ -142,8 +185,15 @@ impl LspClient {
                     ))
                 });
         }
+        if cfg!(target_os = "linux") {
+            return Err(LspRuntimeError::Unavailable(
+                "LSP requires a supervised execution host on Linux; no native fallback is permitted".into(),
+            ));
+        }
         let mut command = Command::new(&self.server.program);
         command.args(&self.server.args);
+        command.envs(&self.server.env);
+        command.current_dir(&self.server.workspace_root);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -163,7 +213,7 @@ impl LspClient {
         };
         let status = self.status.clone();
         let updates = self.diagnostics.updates.clone();
-        tokio::spawn(async move {
+        self.retain_task(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             loop {
                 let mut line = String::new();
@@ -180,10 +230,11 @@ impl LspClient {
                     }
                 }
             }
-        });
+        }));
     }
 
     async fn shutdown_connection_locked(&self) -> LspResult<()> {
+        self.process_monitor_stop.cancel();
         let was_initialized = self.initialized.swap(false, Ordering::Relaxed);
         let mut degraded: Vec<String> = Vec::new();
         if was_initialized && let Ok(rpc) = self.rpc() {
@@ -211,6 +262,7 @@ impl LspClient {
 
         // Reclaim through the existing owned-process mechanism. Only a confirmed wait may
         // remove the child owner; otherwise it is retained for retry/reporting.
+        let mut startup_failure = None;
         let reclaim = {
             let mut child_guard = self.child.lock().await;
             let confirmed: std::result::Result<Vec<String>, String> = match child_guard.as_mut() {
@@ -249,12 +301,19 @@ impl LspClient {
             match confirmed {
                 Ok(issues) => {
                     degraded.extend(issues);
+                    startup_failure = child_guard
+                        .as_ref()
+                        .and_then(LspChild::startup_failure)
+                        .map(str::to_owned);
                     child_guard.take();
                     Ok(())
                 }
                 Err(error) => Err(error),
             }
         };
+        if let Some(message) = startup_failure {
+            self.record_last_error(message).await;
+        }
 
         self.connection_generation.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut rpc) = self.rpc.write() {
@@ -268,6 +327,24 @@ impl LspClient {
                 }
             }
         }
+        let tasks = self
+            .background
+            .lock()
+            .expect("LSP background task list is not poisoned")
+            .clone();
+        for task in tasks {
+            let mut task = task.lock().await;
+            if let Some(handle) = task.as_mut() {
+                if let Err(error) = handle.await {
+                    degraded.push(format!("LSP background task failed: {error}"));
+                }
+                task.take();
+            }
+        }
+        self.background
+            .lock()
+            .expect("LSP background task list is not poisoned")
+            .clear();
         self.opened_files.lock().await.clear();
         self.clear_progress().await;
 
@@ -300,6 +377,34 @@ impl LspClient {
                 }
             }
         }
+    }
+
+    fn observe_process(&self) {
+        let child = self.child.clone();
+        let stop = self.process_monitor_stop.clone();
+        let alive = self.connection_alive.clone();
+        let updates = self.diagnostics.updates.clone();
+        let status = self.status.clone();
+        self.retain_task(tokio::spawn(async move {
+            let outcome = {
+                let mut child = child.lock().await;
+                let Some(child) = child.as_mut() else {
+                    return;
+                };
+                tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => return,
+                    result = child.wait() => result,
+                }
+            };
+            alive.store(false, Ordering::Release);
+            let message = match outcome {
+                Ok(()) => "LSP process exited".to_string(),
+                Err(error) => format!("LSP process exit observation failed: {error}"),
+            };
+            record_last_error_status(&status, message).await;
+            let _ = updates.send(());
+        }));
     }
 
     async fn stop_stale_connection_locked(&self) -> LspResult<()> {
@@ -346,4 +451,32 @@ fn prefix_issue(primary: String, issue: Option<String>) -> Vec<String> {
 fn is_error_stderr_line(line: &str) -> bool {
     let line = line.to_ascii_lowercase();
     line.contains("warn") || line.contains("error")
+}
+
+fn negotiated_operations(
+    capabilities: &lsp_types::ServerCapabilities,
+) -> Vec<crate::query::LspQueryOperation> {
+    use crate::query::LspQueryOperation as Operation;
+    let capabilities = serde_json::to_value(capabilities).expect("serializable LSP capabilities");
+    Operation::all()
+        .iter()
+        .copied()
+        .filter(|operation| {
+            let key = match operation {
+                Operation::GoToDefinition => "definitionProvider",
+                Operation::FindReferences => "referencesProvider",
+                Operation::Hover => "hoverProvider",
+                Operation::DocumentSymbol => "documentSymbolProvider",
+                Operation::WorkspaceSymbol => "workspaceSymbolProvider",
+                Operation::GoToImplementation => "implementationProvider",
+                Operation::PrepareCallHierarchy
+                | Operation::IncomingCalls
+                | Operation::OutgoingCalls => "callHierarchyProvider",
+                Operation::Diagnostics => return true,
+            };
+            capabilities
+                .get(key)
+                .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+        })
+        .collect()
 }

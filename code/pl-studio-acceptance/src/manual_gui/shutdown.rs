@@ -41,8 +41,8 @@
 //!   isolate is blocked and the native host forces the process out at
 //!   the single 30-second deadline (exit code 1) while the product supervisor
 //!   reclaims the whole subtree before this harness intervenes.
-//! * `lsp-subtree-reclamation` — a real `lsp_query` turn starts the
-//!   scenario-owned fake LSP server (declared in `[lsp.servers.*]`) and its
+//! * `lsp-subtree-reclamation` — asynchronous preparation starts the
+//!   scenario-owned fake LSP server (declared in a standalone LSP document) and its
 //!   SIGTERM-ignoring grandchild; both are proven live, then the isolate is
 //!   blocked and the same forced 30-second native exit must let the product
 //!   reclaim them.

@@ -283,20 +283,38 @@ Studio 维护两段相互独立的顶层联网搜索配置：
 
 设置页运行独立的服务规划器（service planner），仅根据账号服务能力与凭据完整性解析各搜索后端的可用性（`disabled`、`missingCredential` 或 `accountUnsupported`），不依赖当前会话或角色路由：OpenAI 独立搜索优先选用所属账号目录中的 `gpt-6-sol`（不存在时取首个有效模型），DeepSeek 独立搜索直接调用原生工具接口而无需绑定模型。实际会话轮次执行时，再根据当前对话模型是否支持函数调用（function calling）决定是否为本轮注册对应的独立搜索工具；OpenAI 独立搜索、DeepSeek 原生搜索与托管搜索互不抢占（多后端仲裁规则见 [06](./06-model.md)）。
 
-## 20.13 LSP 自定义服务器配置
+## 20.13 LSP 服务器配置
 
-用户在 `[lsp.servers.<server_id>]` 表中声明自定义语言服务器：每个条目必须配置 `command` 与非空 `language_ids`，可选配置 `args`、`detection`（工作区检测文件名或单段通配符，缺省为始终匹配）、`extensions`（文件扩展名列表）、`display_name` 与 `operations`（支持的 `lsp_query` 操作子集，缺省支持全部操作）。示例如下：
+会话在实际执行工作区的 `.anywork/lsp/<server-id>.toml` 发现服务器，每个文件声明一个服务器，文件名与 `id` 相同，ID 只允许 ASCII 字母、数字、`-`、`_` 和 `.`，不允许路径分隔符或 `.` / `..`。不递归搜索父目录或其他会话目录。无文档表示没有配置，不自动加入 rust-analyzer。SSH 读取远端工作区同一位置并在远端执行；worktree 使用自己的执行目录。
+
+文档有独立正整数 `schema_version = 1`，必须声明 `id`、`command` 和非空 `language_ids`；可选字段为 `args`、`env`、`display_name`、`detection`、`extensions`、`operations`、`initialization_options`、`settings`。未知字段、版本、空命令和无效 ID 作为该文档的局部错误。`detection` 为相对工作区根的文件名或单段通配符，空列表总是匹配；`operations` 缺省为全部查询操作。
 
 ```toml
-[lsp.servers.purelang]
-command = "purelang-lsp"
-args = ["--stdio"]
-language_ids = ["purelang"]
-detection = ["pure.toml"]
-extensions = [".purelang"]
+# .anywork/lsp/rust-analyzer.toml
+schema_version = 1
+id = "rust-analyzer"
+command = "rust-analyzer"
+language_ids = ["rust"]
+detection = ["Cargo.toml"]
+extensions = [".rs"]
+
+[initialization_options]
+checkOnSave = false
+
+[initialization_options.files]
+watcher = "client"
+
+[settings.rust-analyzer.files]
+watcher = "client"
 ```
 
-该配置段与 `pl-lsp` 内置目录合并；若 `server_id` 或 `language_ids` 与内置或其他自定义服务器冲突，配置校验直接返回类型化错误并保留原配置。自定义服务器绑定通用命令驱动（通过 `<command> --version` 探测环境，无自动修复语义，运行与路由契约见 [21](./21-lsp.md)）。
+`command` 是执行侧 PATH 名称或绝对路径，`args` 是独立参数，`env` 是进程环境增量；不做 shell 展开。`{workspaceRoot}` 在命令、参数、环境和嵌套设置字符串中替换为执行工作区绝对路径。初始化选项原样成为 LSP `initializationOptions`；`settings` 用于配置通知与 section 查询，使用服务器官方要求的嵌套结构。
+
+服务器专有辅助配置可放宿主事实 `studio.session-files` 提供的当前 Thread `scratch`，再由参数、环境或设置显式引用。SSH 的 scratch 属于远端，不能替换为宿主路径；不扫描其他 Thread，也不把临时路径固化为通用示例。归档清理 scratch 后，依赖该文件的临时配置需要重新准备。
+
+Studio home 的 `lsp/host/<server-id>.toml` 是本地默认配置，格式相同；实际工作区的同 ID 文档整体覆盖默认项，不进行字段深合并。SSH 不继承宿主默认。旧主配置 `[lsp.servers]` 在版本迁移边界提取到上述本地默认目录，受现有迁移备份与恢复日志保护，保留字段值并补充文档 schema/ID；冲突不覆盖用户文件，未完成迁移保留现场。正常运行不再解码旧字段。
+
+文档发现、异步初始化、失败隔离、状态查询和语义工具准入见 [21](./21-lsp.md)。配置错误不阻断会话，来源与错误对 GUI 和智能体可查，健康成员仍可用。文件变更发起受管理的异步重载，显式重载可重试失败配置；普通状态读取不扫描或启动服务器。
 
 ## 20.14 独立设置变更命令
 

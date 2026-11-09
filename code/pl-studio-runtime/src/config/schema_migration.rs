@@ -1001,7 +1001,7 @@ effort = "high"
         assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
         assert!(migrated_plain.acp.accounts.is_empty());
 
-        // 全部其它事实逐项相同：Native 账号（含 endpoint/模板/覆盖）、全部路由、模式路由、MCP/LSP/
+        // 全部其它事实逐项相同：Native 账号（含 endpoint/模板/覆盖）、全部路由、模式路由、
         // Skills/UI 等设置；退役 ACP 执行字段不改变其中任何一项。
         let mut without_acp = migrated_acp.clone();
         without_acp.acp = Default::default();
@@ -1012,7 +1012,6 @@ effort = "high"
             bases.baseline.mode_model_routes
         );
         assert_eq!(migrated_acp.skills, bases.baseline.skills);
-        assert_eq!(migrated_acp.lsp, bases.baseline.lsp);
         assert_eq!(migrated_acp.ui, bases.baseline.ui);
 
         // 显式列出账号/路由/模式路由集合，避免只靠整体相等掩盖"某类整体消失"。

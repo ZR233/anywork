@@ -533,7 +533,31 @@ struct Document31 {
     acp: wire::AcpConfig,
 }
 
-type Current = Document31;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document32 {
+    models: Models<Account30<wire::ModelInfo>>,
+    #[serde(default)]
+    delegation: wire::DelegationSettings,
+    #[serde(default)]
+    mode_model_routes: BTreeMap<String, Route>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    disabled_system_agents: BTreeSet<String>,
+    #[serde(default)]
+    web_search: wire::WebSearchConfig,
+    #[serde(default)]
+    deepseek_web_search: wire::DeepSeekWebSearchConfig,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    runtime: wire::RuntimeConfigCurrent,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    instructions: wire::InstructionsConfig,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    skills: wire::SkillsConfigCurrent,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    ui: wire::StudioUiConfig,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    acp: wire::AcpConfig,
+}
 
 account!(Account28,
     authentication: wire::AuthenticationMethod,
@@ -579,7 +603,8 @@ version!(MainV27, "27.0.0", BeforeAuthentication);
 version!(MainV28, "28.0.0", BeforeSkillDirectoryRemoval);
 version!(MainV29, "29.0.0", BeforeCodex);
 version!(MainV30, "30.0.0", BeforeMcpSplit);
-version!(MainV31, "31.0.0", Current);
+version!(MainV31, "31.0.0", Document31);
+version!(MainV32, "32.0.0", Document32);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -990,13 +1015,38 @@ impl IntoDomain<MainV31> for MainV31 {
     }
 }
 
-impl MainV31 {
+impl MigratesTo<MainV32> for MainV31 {
+    fn migrate(self) -> MainV32 {
+        let doc = self.0;
+        MainV32(Document32 {
+            models: doc.models,
+            delegation: doc.delegation,
+            mode_model_routes: doc.mode_model_routes,
+            disabled_system_agents: doc.disabled_system_agents,
+            web_search: doc.web_search,
+            deepseek_web_search: doc.deepseek_web_search,
+            runtime: doc.runtime,
+            instructions: doc.instructions,
+            skills: doc.skills,
+            ui: doc.ui,
+            acp: doc.acp,
+        })
+    }
+}
+
+impl IntoDomain<MainV32> for MainV32 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+
+impl MainV32 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 31.into());
+            .insert(VERSION_KEY.into(), 32.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -1069,18 +1119,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV29>()
                 .step::<MainV30>()
                 .step::<MainV31>()
-                .into::<MainV31>(),
+                .step::<MainV32>()
+                .into::<MainV32>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV31>> {
-    toml_schema::load::<MainV18, MainV31>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV32>> {
+    toml_schema::load::<MainV18, MainV32>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV31> {
-    toml_schema::load::<MainV31, MainV31>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV32> {
+    toml_schema::load::<MainV32, MainV32>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -1101,6 +1152,61 @@ pub(crate) fn extract_legacy_mcp_from_main(
         VERSION_KEY,
     )?;
     Ok(Some(v30.document.0.mcp))
+}
+
+/// Returns the legacy LSP server documents without decoding them through the mutable runtime
+/// configuration type. This keeps every schema-31 field value available to the migration.
+pub(crate) fn extract_legacy_lsp_from_main(
+    path: &Path,
+    content: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let loaded = load_main(path, content)?;
+    if loaded.source_version >= 32 {
+        return Ok(BTreeMap::new());
+    }
+    let mut root: toml::Value = toml::from_str(content)?;
+    let Some(servers) = root
+        .get_mut("lsp")
+        .and_then(|lsp| lsp.get_mut("servers"))
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let mut documents = BTreeMap::new();
+    for (id, value) in std::mem::take(servers) {
+        let mut document = value
+            .as_table()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("legacy LSP server `{id}` must be a table"))?;
+        ensure!(
+            valid_lsp_server_id(&id),
+            "invalid legacy LSP server id `{id}`"
+        );
+        // In schema 31, an absent operations field and an explicitly empty list both
+        // meant "all operations" when converted to a catalog server. The current
+        // document format uses an empty list to mean "no operations", so elide the
+        // semantically-default legacy encoding before migrating it.
+        if document
+            .get("operations")
+            .and_then(toml::Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            document.remove("operations");
+        }
+        document.insert("schema_version".into(), toml::Value::Integer(1));
+        document.insert("id".into(), toml::Value::String(id.clone()));
+        documents.insert(id, toml::to_string_pretty(&document)?.into_bytes());
+    }
+    Ok(documents)
+}
+
+fn valid_lsp_server_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 #[cfg(test)]
@@ -1169,8 +1275,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 31);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 31);
+        assert_eq!(loaded.migrated, version != 32);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 32);
     }
 
     #[test]
@@ -1203,6 +1309,8 @@ enabled = false
         round_trip(&v30);
         let v31: MainV31 = v30.migrate();
         round_trip(&v31);
+        let v32: MainV32 = v31.migrate();
+        round_trip(&v32);
     }
 
     #[test]
@@ -1236,7 +1344,7 @@ enabled = false
         });
         let id = pl_model::config::AccountId::new("saved-oauth").unwrap();
         config.models.accounts.insert(id.clone(), account);
-        let encoded = MainV31::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV32::from_config(&config).unwrap().encode().unwrap();
         let current = load_current_main(Path::new("codex.toml"), &encoded)
             .unwrap()
             .into_config()
@@ -1248,7 +1356,7 @@ enabled = false
         assert!(
             load_main(
                 Path::new("invalid29.toml"),
-                &encoded.replacen("schema_version = 31", "schema_version = 29", 1)
+                &encoded.replacen("schema_version = 32", "schema_version = 29", 1)
             )
             .is_err()
         );
@@ -1259,11 +1367,11 @@ enabled = false
         info.client_id = "old-issued-client".into();
         info.plan_usage_enabled = true;
         info.codex = None;
-        let historical = MainV31::from_config(&config)
+        let historical = MainV32::from_config(&config)
             .unwrap()
             .encode()
             .unwrap()
-            .replacen("schema_version = 31", "schema_version = 29", 1);
+            .replacen("schema_version = 32", "schema_version = 29", 1);
         let loaded = load_main(Path::new("siwc29.toml"), &historical).unwrap();
         assert!(loaded.migrated);
         let migrated = loaded.document.into_config().unwrap();
@@ -1292,7 +1400,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV31::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV32::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1309,7 +1417,7 @@ enabled = false
             "",
             "schema_version=0\n",
             "schema_version=17\n",
-            "schema_version=32\n",
+            "schema_version=33\n",
             "schema_version=-1\n",
             "schema_version=4294967296\n",
             "schema_version='27'\n",
@@ -1468,7 +1576,7 @@ enabled = false
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 31);
+        assert_eq!(migrated.schema_version, 32);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);

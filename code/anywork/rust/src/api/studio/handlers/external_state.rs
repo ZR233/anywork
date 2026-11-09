@@ -98,18 +98,6 @@ pub async fn probe_lsp_server(workspace_id: String) -> Result<BridgeLspStateSnap
     read_lsp_state().await
 }
 
-pub async fn repair_lsp_server(
-    workspace_id: String,
-    server_id: String,
-) -> Result<BridgeLspStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    bridge
-        .studio
-        .repair_lsp_server(&workspace_id, &server_id)
-        .await?;
-    read_lsp_state().await
-}
-
 pub async fn reset_lsp(input: LspScopeInput) -> Result<BridgeLspStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
     let request = match input {

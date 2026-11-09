@@ -14,6 +14,12 @@ pub(crate) enum LspChild {
 }
 
 impl LspChild {
+    pub(crate) fn startup_failure(&self) -> Option<&str> {
+        match self {
+            Self::Hosted(child) => child.startup_failure(),
+            Self::Local(_) => None,
+        }
+    }
     pub(crate) fn take_stdin(&mut self) -> Option<LspHostWriter> {
         match self {
             Self::Local(child) => child
@@ -85,7 +91,7 @@ impl LspChild {
     }
 }
 
-/// 派生 LSP server / rustup 探测等后台子进程的统一入口。
+/// 非 Linux 原生宿主派生 LSP 后台子进程的统一入口。
 ///
 /// 复用跨端进程工厂的 Job Object / process group 所有权和平台 I/O 驱动，
 /// 不在 LSP 内维护另一套创建标志、管道读取或进程树策略。

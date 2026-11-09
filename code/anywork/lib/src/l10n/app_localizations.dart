@@ -5187,7 +5187,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsLspSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Last-known project language server status and explicit lifecycle commands.'**
+  /// **'View language server configuration sources, lifecycle phases, and runtime status.'**
   String get settingsLspSubtitle;
 
   /// No description provided for @settingsLspRefresh.
@@ -5196,17 +5196,11 @@ abstract class AppLocalizations {
   /// **'Refresh'**
   String get settingsLspRefresh;
 
-  /// No description provided for @settingsLspProbe.
+  /// No description provided for @settingsLspReload.
   ///
   /// In en, this message translates to:
-  /// **'Probe'**
-  String get settingsLspProbe;
-
-  /// No description provided for @settingsLspRepair.
-  ///
-  /// In en, this message translates to:
-  /// **'Repair'**
-  String get settingsLspRepair;
+  /// **'Reload and initialize'**
+  String get settingsLspReload;
 
   /// No description provided for @settingsLspReset.
   ///
@@ -5219,6 +5213,72 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Reset workspace'**
   String get settingsLspResetWorkspace;
+
+  /// No description provided for @settingsLspConfigurationMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration file not found'**
+  String get settingsLspConfigurationMissing;
+
+  /// No description provided for @settingsLspConfigurationHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Configure this server in .anywork/lsp/{id}.toml.'**
+  String settingsLspConfigurationHint(Object id);
+
+  /// No description provided for @settingsLspPhase.
+  ///
+  /// In en, this message translates to:
+  /// **'Phase: {phase}'**
+  String settingsLspPhase(Object phase);
+
+  /// No description provided for @settingsLspPhaseLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading configuration'**
+  String get settingsLspPhaseLoading;
+
+  /// No description provided for @settingsLspPhaseProbing.
+  ///
+  /// In en, this message translates to:
+  /// **'Probing'**
+  String get settingsLspPhaseProbing;
+
+  /// No description provided for @settingsLspPhaseStarting.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting'**
+  String get settingsLspPhaseStarting;
+
+  /// No description provided for @settingsLspPhaseInitializing.
+  ///
+  /// In en, this message translates to:
+  /// **'Initializing'**
+  String get settingsLspPhaseInitializing;
+
+  /// No description provided for @settingsLspPhaseReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Ready'**
+  String get settingsLspPhaseReady;
+
+  /// No description provided for @settingsLspPhaseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get settingsLspPhaseFailed;
+
+  /// No description provided for @settingsLspPhaseStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped'**
+  String get settingsLspPhaseStopped;
+
+  /// No description provided for @settingsLspPhaseDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get settingsLspPhaseDisabled;
 
   /// No description provided for @settingsLspActivityIndexing.
   ///
@@ -5241,7 +5301,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsLspEmptyMessage.
   ///
   /// In en, this message translates to:
-  /// **'Activate a supported project to create language server membership.'**
+  /// **'Add an LSP configuration file to load and initialize a language server.'**
   String get settingsLspEmptyMessage;
 
   /// No description provided for @settingsSecurityTitle.

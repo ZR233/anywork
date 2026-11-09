@@ -60,7 +60,7 @@ class _LspTabState extends ConsumerState<LspTab> {
                       ? null
                       : () => unawaited(_run(_probe)),
                   icon: const Icon(Icons.monitor_heart_outlined),
-                  label: Text(context.l10n.settingsLspProbe),
+                  label: Text(context.l10n.settingsLspReload),
                 ),
                 TextButton.icon(
                   key: StudioDriverKeys.lspResetWorkspace,
@@ -84,14 +84,6 @@ class _LspTabState extends ConsumerState<LspTab> {
               for (final server in servers)
                 _LspSettingsRow(
                   server: server,
-                  onRepair: switch (server.state) {
-                    LspUnavailableState(code: 'lspComponentMissing') =>
-                      () => unawaited(_run(() => _repair(server.id))),
-                    LspCheckingState() ||
-                    LspAvailableState() ||
-                    LspUnavailableState() ||
-                    LspDisabledState() => null,
-                  },
                   onReset: workspaceId == null
                       ? null
                       : () => unawaited(_run(() => _resetServer(server.id))),
@@ -102,7 +94,9 @@ class _LspTabState extends ConsumerState<LspTab> {
           SettingsEmptyMessage(
             icon: Icons.code_outlined,
             title: context.l10n.settingsLspEmptyTitle,
-            body: context.l10n.settingsLspEmptyMessage,
+            body:
+                '${context.l10n.settingsLspEmptyMessage}\n'
+                '${context.l10n.settingsLspConfigurationHint('*')}',
           ),
         if (_error != null) ...[
           const SizedBox(height: 12),
@@ -118,13 +112,6 @@ class _LspTabState extends ConsumerState<LspTab> {
 
   Future<void> _probe() {
     return ref.read(anyworkClientProvider).directoryCommands.probeLspServer();
-  }
-
-  Future<void> _repair(String serverId) {
-    return ref
-        .read(anyworkClientProvider)
-        .directoryCommands
-        .repairLspServer(serverId);
   }
 
   Future<void> _resetServer(String serverId) {
@@ -152,14 +139,9 @@ class _LspTabState extends ConsumerState<LspTab> {
 }
 
 class _LspSettingsRow extends StatelessWidget {
-  const _LspSettingsRow({
-    required this.server,
-    required this.onRepair,
-    required this.onReset,
-  });
+  const _LspSettingsRow({required this.server, required this.onReset});
 
   final LspServerStateView server;
-  final VoidCallback? onRepair;
   final VoidCallback? onReset;
 
   @override
@@ -168,13 +150,6 @@ class _LspSettingsRow extends StatelessWidget {
       title: server.displayName,
       icon: Icons.code_outlined,
       actions: [
-        if (onRepair != null)
-          TextButton.icon(
-            key: StudioDriverKeys.lspRepairServer(server.id),
-            onPressed: onRepair,
-            icon: const Icon(Icons.build_outlined),
-            label: Text(context.l10n.settingsLspRepair),
-          ),
         const SizedBox(width: 8),
         TextButton.icon(
           key: StudioDriverKeys.lspResetServer(server.id),
@@ -193,6 +168,12 @@ class _LspSettingsRow extends StatelessWidget {
               icon: Icons.circle_outlined,
               label: _lspAvailabilityLabel(context, server.state),
             ),
+            SettingsInfoPill(
+              icon: Icons.sync_outlined,
+              label: context.l10n.settingsLspPhase(
+                _lspPhaseLabel(context, server.phase),
+              ),
+            ),
             if (server.state case LspAvailableState(:final diagnosticCount))
               SettingsInfoPill(
                 icon: Icons.rule_outlined,
@@ -207,6 +188,19 @@ class _LspSettingsRow extends StatelessWidget {
               ),
           ],
         ),
+        const SizedBox(height: 8),
+        Text(
+          server.configurationPath ??
+              context.l10n.settingsLspConfigurationMissing,
+          style: context.text.bodySmall,
+        ),
+        if (server.configurationPath == null) ...[
+          const SizedBox(height: 4),
+          Text(
+            context.l10n.settingsLspConfigurationHint(server.id),
+            style: context.text.bodySmall,
+          ),
+        ],
         if (_lspActivityDetail(server) case final activityDetail?) ...[
           const SizedBox(height: 8),
           Text(activityDetail, style: context.text.bodySmall),
@@ -230,6 +224,18 @@ class _LspSettingsRow extends StatelessWidget {
     );
   }
 }
+
+String _lspPhaseLabel(BuildContext context, String phase) => switch (phase) {
+  'loading' => context.l10n.settingsLspPhaseLoading,
+  'probing' => context.l10n.settingsLspPhaseProbing,
+  'starting' => context.l10n.settingsLspPhaseStarting,
+  'initializing' => context.l10n.settingsLspPhaseInitializing,
+  'ready' => context.l10n.settingsLspPhaseReady,
+  'failed' => context.l10n.settingsLspPhaseFailed,
+  'stopped' => context.l10n.settingsLspPhaseStopped,
+  'disabled' => context.l10n.settingsLspPhaseDisabled,
+  _ => phase,
+};
 
 String _lspAvailabilityLabel(BuildContext context, LspServerState state) =>
     switch (state) {

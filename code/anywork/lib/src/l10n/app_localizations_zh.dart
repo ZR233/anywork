@@ -2743,22 +2743,56 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsLspTitle => '语言服务器';
 
   @override
-  String get settingsLspSubtitle => '显示项目最近一次语言服务器状态，可刷新、探测、修复或重置。';
+  String get settingsLspSubtitle => '查看语言服务器配置来源、生命周期阶段和运行状态。';
 
   @override
   String get settingsLspRefresh => '刷新';
 
   @override
-  String get settingsLspProbe => '探测';
-
-  @override
-  String get settingsLspRepair => '修复';
+  String get settingsLspReload => '重载并初始化';
 
   @override
   String get settingsLspReset => '重置';
 
   @override
   String get settingsLspResetWorkspace => '重置工作区';
+
+  @override
+  String get settingsLspConfigurationMissing => '未找到配置文件';
+
+  @override
+  String settingsLspConfigurationHint(Object id) {
+    return '请在 .anywork/lsp/$id.toml 中配置服务器。';
+  }
+
+  @override
+  String settingsLspPhase(Object phase) {
+    return '阶段：$phase';
+  }
+
+  @override
+  String get settingsLspPhaseLoading => '加载配置';
+
+  @override
+  String get settingsLspPhaseProbing => '探测中';
+
+  @override
+  String get settingsLspPhaseStarting => '启动中';
+
+  @override
+  String get settingsLspPhaseInitializing => '初始化中';
+
+  @override
+  String get settingsLspPhaseReady => '就绪';
+
+  @override
+  String get settingsLspPhaseFailed => '失败';
+
+  @override
+  String get settingsLspPhaseStopped => '已停止';
+
+  @override
+  String get settingsLspPhaseDisabled => '已禁用';
 
   @override
   String get settingsLspActivityIndexing => '正在索引';
@@ -2770,7 +2804,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsLspEmptyTitle => '没有语言服务器';
 
   @override
-  String get settingsLspEmptyMessage => '打开受支持的项目后，系统会自动关联相应的语言服务器。';
+  String get settingsLspEmptyMessage => '添加 LSP 配置文件后，系统会加载并初始化相应的语言服务器。';
 
   @override
   String get settingsSecurityTitle => '安全';

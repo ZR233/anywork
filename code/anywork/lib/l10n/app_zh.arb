@@ -1006,16 +1006,36 @@
   "settingsMcpEmptyTitle": "没有 MCP 服务器",
   "settingsMcpEmptyMessage": "已配置的 MCP 服务器会显示在这里。",
   "settingsLspTitle": "语言服务器",
-  "settingsLspSubtitle": "显示项目最近一次语言服务器状态，可刷新、探测、修复或重置。",
+  "settingsLspSubtitle": "查看语言服务器配置来源、生命周期阶段和运行状态。",
   "settingsLspRefresh": "刷新",
-  "settingsLspProbe": "探测",
-  "settingsLspRepair": "修复",
+  "settingsLspReload": "重载并初始化",
   "settingsLspReset": "重置",
   "settingsLspResetWorkspace": "重置工作区",
+  "settingsLspConfigurationMissing": "未找到配置文件",
+  "settingsLspConfigurationHint": "请在 .anywork/lsp/{id}.toml 中配置服务器。",
+  "@settingsLspConfigurationHint": {
+    "placeholders": {
+      "id": {}
+    }
+  },
+  "settingsLspPhase": "阶段：{phase}",
+  "@settingsLspPhase": {
+    "placeholders": {
+      "phase": {}
+    }
+  },
+  "settingsLspPhaseLoading": "加载配置",
+  "settingsLspPhaseProbing": "探测中",
+  "settingsLspPhaseStarting": "启动中",
+  "settingsLspPhaseInitializing": "初始化中",
+  "settingsLspPhaseReady": "就绪",
+  "settingsLspPhaseFailed": "失败",
+  "settingsLspPhaseStopped": "已停止",
+  "settingsLspPhaseDisabled": "已禁用",
   "settingsLspActivityIndexing": "正在索引",
   "settingsLspActivityBusy": "忙碌",
   "settingsLspEmptyTitle": "没有语言服务器",
-  "settingsLspEmptyMessage": "打开受支持的项目后，系统会自动关联相应的语言服务器。",
+  "settingsLspEmptyMessage": "添加 LSP 配置文件后，系统会加载并初始化相应的语言服务器。",
   "settingsSecurityTitle": "安全",
   "settingsSecuritySubtitle": "选择此工作区默认审批姿态。",
   "settingsSecurityModeSubtitle": "工具执行权限固定为完全访问；工作区与 worktree 边界不因此放宽。",

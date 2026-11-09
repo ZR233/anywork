@@ -298,11 +298,15 @@ class LspServerStateView {
   const LspServerStateView({
     required this.id,
     required this.displayName,
+    required this.configurationPath,
+    required this.phase,
     required this.state,
   });
 
   final String id;
   final String displayName;
+  final String? configurationPath;
+  final String phase;
   final LspServerState state;
 }
 

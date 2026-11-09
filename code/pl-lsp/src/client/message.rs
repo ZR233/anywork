@@ -30,8 +30,9 @@ impl LspClient {
         let driver = self.driver.clone();
         let server_id = self.server.id.clone();
         let initialized = self.initialized.clone();
+        let connection_alive = self.connection_alive.clone();
         let connection_generation = self.connection_generation.clone();
-        tokio::spawn(async move {
+        self.retain_task(tokio::spawn(async move {
             while let Some(message) = inbound.recv().await {
                 let message = match message {
                     Ok(message) => message,
@@ -89,8 +90,10 @@ impl LspClient {
                 .await;
             if generation_is_current(&connection_generation, generation) {
                 initialized.store(false, Ordering::Relaxed);
+                connection_alive.store(false, Ordering::Release);
+                let _ = updates.send(());
             }
-        });
+        }));
     }
 }
 
