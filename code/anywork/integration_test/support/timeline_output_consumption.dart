@@ -152,8 +152,9 @@ final class TimelineOutputConsumption {
         // This is an explicit history inventory demand. Membership/order are
         // read from the producer's display index, never recomputed from seq.
         for (final member in page.entries.reversed) {
-          if (laterOrder != null)
+          if (laterOrder != null) {
             expectSync(member.memberOrder, lessThan(laterOrder));
+          }
           laterOrder = member.memberOrder;
           members += 1;
           final atom = member.atom;
