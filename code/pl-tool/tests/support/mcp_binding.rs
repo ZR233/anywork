@@ -115,10 +115,9 @@ async fn frozen_peer_descriptor_and_results_survive_the_new_handle() -> anyhow::
     runtime.reconcile(servers("new")).await?;
     let replacement = published(&runtime, "new").await?;
     assert_ne!(lease.generation(), replacement.generation());
-    assert_eq!(
-        lease.authorization(),
-        replacement.authorization(),
-        "transport refresh must not revoke host authorization"
+    assert!(
+        lease.authorization() != replacement.authorization(),
+        "changing the configured process environment changes the authorization scope"
     );
     assert_eq!(replacement.tools()[0].exposed_name, descriptor.exposed_name);
     for (mode, prepared, tool) in tools {

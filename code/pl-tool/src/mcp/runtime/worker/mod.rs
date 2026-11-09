@@ -388,15 +388,16 @@ impl RuntimeWorker {
         let current = self.current_generation();
         current.servers.len() == servers.len()
             && servers.iter().all(|(server_id, config)| {
-                current
-                    .servers
-                    .get(server_id)
-                    .is_some_and(|server| server.fingerprint == server_fingerprint(config))
+                current.servers.get(server_id).is_some_and(|server| {
+                    server.fingerprint == server_fingerprint(config)
+                        && server.matches_config(config)
+                })
             })
     }
 
     async fn activate_generation(&mut self, mut next: RuntimeGeneration) {
         self.propagate_pending_session_failures(&mut next);
+        next.freeze_authorization(self.current_generation());
         if let Some(previous) = self.generations.get_mut(&self.current) {
             previous.retired = true;
         }
@@ -484,6 +485,7 @@ impl RuntimeWorker {
             .collect();
         Ok(LeaseSnapshot {
             generation: generation.id,
+            authorization: generation.authorization.clone(),
             tools,
             server_ids,
             resource_server_ids,

@@ -55,7 +55,7 @@ for raw in sys.stdin:
     msg_id = msg.get("id")
     if os.environ.get("MCP_REQUEST_LOG"):
         with open(os.environ["MCP_REQUEST_LOG"], "a") as log:
-            log.write(json.dumps({"method": method, "params": msg.get("params"), "tag": os.environ.get("MCP_SCHEMA_TAG")}) + "\n")
+            log.write(json.dumps({"method": method, "params": msg.get("params"), "tag": os.environ.get("MCP_SCHEMA_TAG"), "pid": os.getpid()}) + "\n")
     if method == "server/discover":
         resp = {
             "jsonrpc": "2.0",
@@ -67,12 +67,17 @@ for raw in sys.stdin:
     elif method == "initialize":
         if hang_initialize:
             time.sleep(60)
+        resources_enabled = os.environ.get("MCP_NO_RESOURCES") != "1"
+        resources_flag = os.environ.get("MCP_RESOURCES_FLAG")
+        if resources_flag and os.path.exists(resources_flag):
+            with open(resources_flag) as flag:
+                resources_enabled = flag.read().strip() != "0"
         resp = {
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {
                 "protocolVersion": "2025-11-25",
-                "capabilities": {"tools": {}, **({} if os.environ.get("MCP_NO_RESOURCES") == "1" else {"resources": {}})},
+                "capabilities": {"tools": {}, **({"resources": {}} if resources_enabled else {})},
                 "serverInfo": {"name": "test-stdio", "version": "1.0.0"}
             }
         }
@@ -104,6 +109,8 @@ for raw in sys.stdin:
                 }]
             }
         }
+        if os.environ.get("MCP_RESOURCES_ONLY") == "1":
+            resp["result"]["tools"] = []
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
     elif method == "tools/call":

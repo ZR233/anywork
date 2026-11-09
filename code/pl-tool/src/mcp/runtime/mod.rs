@@ -86,7 +86,6 @@ impl McpRuntime {
         });
         let shutdown_completion = ShutdownCompletion::default();
         let handle = McpRuntimeHandle {
-            authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
             commands: commands.clone(),
             updates: updates.clone(),
             shutdown_completion: shutdown_completion.clone(),
@@ -110,7 +109,6 @@ impl McpRuntime {
 /// 产品 facade 和工具持有的非泛型 MCP 命令句柄。
 #[derive(Clone)]
 pub struct McpRuntimeHandle {
-    authorization: pl_core::tool::opaque::ToolAuthorization,
     commands: mpsc::UnboundedSender<RuntimeCommand>,
     updates: broadcast::Sender<()>,
     /// Single-owned closing completion shared by every handle clone and the worker.
@@ -189,6 +187,7 @@ impl McpRuntimeHandle {
         let snapshot = response.await.map_err(runtime_stopped)??;
         Ok(McpTurnLease {
             generation: snapshot.generation,
+            authorization: snapshot.authorization,
             tools: Arc::new(snapshot.tools),
             server_ids: Arc::new(snapshot.server_ids),
             resource_server_ids: Arc::new(snapshot.resource_server_ids),
@@ -303,19 +302,29 @@ impl McpRuntimeHandle {
 }
 
 /// 固定 generation 的 MCP 工具、资源和调用入口。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpTurnLease {
     generation: McpGeneration,
+    authorization: pl_core::tool::opaque::ToolAuthorization,
     tools: Arc<Vec<McpRuntimeToolDescriptor>>,
     server_ids: Arc<Vec<String>>,
     resource_server_ids: Arc<Vec<String>>,
     guard: Arc<McpLeaseGuard>,
 }
 
+impl fmt::Debug for McpTurnLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpTurnLease")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
 impl McpTurnLease {
-    /// Host authorization stays stable across transport-only generation refreshes.
+    /// Captured at publication; subsequent generations cannot change this lease's authority.
     pub fn authorization(&self) -> pl_core::tool::opaque::ToolAuthorization {
-        self.guard.handle.authorization.clone()
+        self.authorization.clone()
     }
 
     pub fn generation(&self) -> McpGeneration {
@@ -457,6 +466,7 @@ impl From<&McpRuntimeToolDescriptor> for FrozenTool {
 
 pub(super) struct LeaseSnapshot {
     generation: McpGeneration,
+    authorization: pl_core::tool::opaque::ToolAuthorization,
     tools: Vec<McpRuntimeToolDescriptor>,
     server_ids: Vec<String>,
     resource_server_ids: Vec<String>,
