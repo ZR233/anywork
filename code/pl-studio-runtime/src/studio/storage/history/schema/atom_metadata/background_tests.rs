@@ -35,6 +35,7 @@ impl MigratorTraitSelf for Published {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()))

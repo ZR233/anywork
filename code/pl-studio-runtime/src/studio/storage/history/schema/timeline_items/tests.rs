@@ -767,7 +767,16 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
         store.prepare_conversation_read().await?;
         assert_migrated_content(&store).await?;
         let latest = migration_records(&store.writer().await?.db).await?;
-        assert_eq!(latest.len(), upgraded_ledger.len() + 3);
+        let appended_steps = [
+            TIMELINE_BACKGROUND_TAIL,
+            COMPLETION_BOUNDARY,
+            IMMUTABLE_COMPLETION_RUNS,
+            DISPLAY_SNAPSHOTS,
+        ];
+        assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
+        for step in appended_steps {
+            assert!(latest.iter().any(|record| record.contains(step)));
+        }
         assert!(upgraded_ledger.iter().all(|record| latest.contains(record)));
         store.close_for_deletion().await?;
     }
@@ -1003,12 +1012,12 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 6,
-        "content preparation records the six named timeline/content upgrades, not lifecycle migrations"
+        original_ledger.len() + 7,
+        "content preparation appends the seven named content/display upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1016,6 +1025,7 @@ async fn formal_migration_round_trip() -> Result<()> {
                 COMPLETION_BOUNDARY.into(),
                 TIMELINE_BACKGROUND_TAIL.into(),
                 IMMUTABLE_COMPLETION_RUNS.into(),
+                DISPLAY_SNAPSHOTS.into(),
             ],
         ))
         .await?
@@ -1028,6 +1038,7 @@ async fn formal_migration_round_trip() -> Result<()> {
             TIMELINE_ITEMS,
             SOURCE_CLASSIFICATION,
             TIMELINE_THINKING_SUMMARY,
+            DISPLAY_SNAPSHOTS,
             COMPLETION_BOUNDARY,
             TIMELINE_BACKGROUND_TAIL,
             IMMUTABLE_COMPLETION_RUNS

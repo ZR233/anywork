@@ -401,7 +401,31 @@ final class _ConceptScene {
 
   Future<void> submit(String text) async {
     final input = find.byKey(const ValueKey('composer-input'));
-    await _until(tester, () => input.evaluate().isNotEmpty, 'composer input');
+    try {
+      await _until(tester, () => input.evaluate().isNotEmpty, 'composer input');
+    } catch (error) {
+      final client = graph.client;
+      final selected = client.selection.state.selectedThreadId;
+      final state = selected == null
+          ? null
+          : client.conversations.existingSession(selected)?.state;
+      report['composerInputFailure'] = {
+        'exceptionType': error.runtimeType.toString(),
+        'selectedThreadId': selected,
+        'visibleThreadId': client.conversations.visibleThreadId.value,
+        'hasSnapshot': state?.hasSnapshot,
+        'directoryThreadStatus': selected == null
+            ? null
+            : client.threadDirectory.observedThread(selected)?.status.name,
+        'workspaceThreadStatus': state?.workspace?.thread.status.name,
+        'agentStatus': client.project.state.agents?.values
+            .where((agent) => agent.threadId == selected)
+            .firstOrNull
+            ?.state
+            .label,
+      };
+      rethrow;
+    }
     await tester.enterText(input, text);
     await tester.pump();
     expect(graph.client.drafts.composer(threadId).state.draft, text);

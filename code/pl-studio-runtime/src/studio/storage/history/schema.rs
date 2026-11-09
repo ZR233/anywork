@@ -189,6 +189,29 @@ const IMMUTABLE_COMPLETION_RUNS: &str = "m20261110_000001_history_immutable_comp
 const DISPLAY_SNAPSHOTS: &str = "m20261109_000001_display_snapshots";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
+#[cfg(test)]
+pub(super) async fn prepare_published17_fixture(
+    db: &DatabaseConnection,
+    thread_id: &str,
+) -> Result<()> {
+    let migrator = Migrator {
+        thread_id: thread_id.to_owned(),
+        execution_identity: None,
+        bot_root: None,
+    };
+    let steps = migrator
+        .migrations()
+        .iter()
+        .take_while(|step| step.name() != COMPLETION_BOUNDARY)
+        .count();
+    migrator.up(db, Some(u32::try_from(steps)?)).await?;
+    ensure!(
+        version(db).await? == 17,
+        "fixture must stop at published schema 17"
+    );
+    Ok(())
+}
+
 // Content preparation and current-only readers share the same lifecycle boundary.
 fn is_lifecycle_migration(name: &str) -> bool {
     matches!(

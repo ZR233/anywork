@@ -1048,6 +1048,15 @@ final class _NativeLifecycleAssembly {
       'contentError': contentError?.toString(),
       'hasSnapshot': state?.hasSnapshot,
       'snapshotThreadId': state?.workspace?.thread.id,
+      'directoryThreadStatus': threadId == null
+          ? null
+          : client.threadDirectory.observedThread(threadId)?.status.name,
+      'workspaceThreadStatus': state?.workspace?.thread.status.name,
+      'agentStatus': client.project.state.agents?.values
+          .where((agent) => agent.threadId == threadId)
+          .firstOrNull
+          ?.state
+          .label,
       'modelRouteAvailable': state?.modelRoute?.available,
       'stateSourcePhase': state?.sync.phase.name,
       'stateSourceError': state?.sync.errorMessage,

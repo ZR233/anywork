@@ -67,8 +67,9 @@ class ConversationActivityConnector extends ConsumerWidget {
         break;
     }
     final reference = sessionState.businessRefs?.interactions;
+    // The dock owns actionable questions, not this independent read-only
+    // State reference. Hiding live output must not remove its details reader.
     if (content != null &&
-        state?.region is! DockRealtimeRegion &&
         reference != null &&
         sessionState.interactions.isNotEmpty) {
       children.add(

@@ -1957,8 +1957,9 @@ impl LiveProjection {
                 ..ExecutionMaterialization::from_item(item)
             });
         }
-        let completion_drafts =
-            self.prepare_completion_drafts(thread, state, effect, &items, &background_ids)?;
+        let completion_drafts = self
+            .prepare_completion_drafts(thread, state, effect, &items, &background_ids)
+            .await?;
         let current_ids = items
             .iter()
             .map(|item| item.id.as_str())
@@ -2014,7 +2015,7 @@ impl LiveProjection {
     /// Propagates the completion session's typed failures (payload conflict, sequence exhaustion,
     /// storage reads) as projection failures; nothing is marked sealed until the whole batch
     /// published.
-    fn prepare_completion_drafts(
+    async fn prepare_completion_drafts(
         &self,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
@@ -2153,6 +2154,17 @@ impl LiveProjection {
             if !completion_ready(item)
                 || self.order_index_of()?.is_sealed(&item.id)
                 || matches!(item.state(), ThreadItemState::Inference(_))
+            {
+                continue;
+            }
+            // A cold reliable-output repair may carry a new execution-item revision
+            // without a resident completion qualification. Read that exact original
+            // identity only for repair targets; never reseal its supplemented payload.
+            if effect
+                .delivery_repairs
+                .iter()
+                .any(|repair| super::order::tool_id(&repair.call_id) == item.id)
+                && self.completion_exists(&item.id).await?
             {
                 continue;
             }

@@ -5,7 +5,7 @@
 //! 成员归属。会话级事实（标题、排序时间、归档、Mode、工作区、分发设置）唯一归属
 //! 会话记录；成员关系唯一归属成员记录的 `parent_agent_id`。
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use pl_protocol::studio::{
     ResourceStamp, StudioError, StudioErrorCode, ThreadDirectoryFrame, ThreadDirectoryQuery,
     ThreadDirectoryWindow, ThreadMetadataFrame,
@@ -731,14 +731,10 @@ impl ProductEventBus {
 
     fn apply_explicit_close_row(index: &ThreadDirectoryIndex, row: &mut SessionDirectoryRow) {
         if index.explicitly_closed.contains(&row.agent_id) {
-            row.status = if index
+            let agent = index
                 .get_agent(&row.agent_id)
-                .is_some_and(|agent| agent.status == ThreadStatus::Closed)
-            {
-                ThreadStatus::Closed
-            } else {
-                crate::studio::agent_close::directory_status(row.status, true)
-            };
+                .expect("explicit close retains its directory agent");
+            row.status = crate::studio::agent_close::directory_status(agent.status, true);
         }
     }
 
@@ -747,23 +743,28 @@ impl ProductEventBus {
             // 把关闭意图写回成员事实：`projected_status` 以该标志区分 Closed 与 Idle，
             // 缺失时已确认关闭的成员会被目录投影降级回 Idle。
             agent.explicitly_closed = true;
-            agent.status = if index
+            let existing = index
                 .get_agent(&agent.agent_id)
-                .is_some_and(|existing| existing.status == ThreadStatus::Closed)
-            {
-                ThreadStatus::Closed
-            } else {
-                crate::studio::agent_close::directory_status(agent.status, true)
-            };
+                .expect("explicit close retains its directory agent");
+            agent.status = crate::studio::agent_close::directory_status(existing.status, true);
         }
     }
 
-    /// Publish the durable close intent into this same current-metadata boundary.
+    /// Publish progress already saved by the close owner into the original metadata boundary.
+    /// Ordinary Core observations cannot advance this progress.
     pub(in crate::studio) async fn commit_explicit_close(&self, thread_id: &str) -> Result<()> {
         let _command = self.directory_commands.lock().await;
+        // Read inside the publication boundary: a restore waiting on this lock
+        // cannot carry an old false past a newer execution-close ACK.
+        let execution_closed = self
+            .store
+            .agent_close(thread_id)
+            .await?
+            .context("close progress requires its durable intent")?
+            .execution_closed;
         self.store
             .catalog()
-            .project_explicit_close(thread_id)
+            .project_explicit_close(thread_id, execution_closed)
             .await?;
         // A cold row is not resident in the directory index. Re-read exactly this durable row
         // instead of opening a list observation for it, then commit through the same path.
@@ -800,7 +801,12 @@ impl ProductEventBus {
         };
         let newly_closed = index.explicitly_closed.insert(agent.agent_id.clone());
         let previous_status = agent.status;
-        Self::apply_explicit_close_agent(&index, &mut agent);
+        agent.explicitly_closed = true;
+        agent.status = if execution_closed {
+            ThreadStatus::Closed
+        } else {
+            ThreadStatus::Closing
+        };
         if !newly_closed && previous_status == agent.status {
             return Ok(());
         }
@@ -1001,28 +1007,6 @@ impl ProductEventBus {
         .await
     }
 
-    /// The caller freezes this baseline when deriving its update, before any await.
-    pub(in crate::studio) async fn commit_agent_update(
-        &self,
-        baseline: AgentDirectoryRecord,
-        updated: AgentDirectoryRecord,
-    ) -> Result<StudioProductEventEnvelope> {
-        anyhow::ensure!(
-            baseline.agent_id == updated.agent_id,
-            "agent update identity mismatch"
-        );
-        let mut bases = DirectoryBaselines::default();
-        bases.agents.insert(baseline.agent_id.clone(), baseline);
-        self.commit_directory_with_bases(
-            DirectoryDelta {
-                agent_upserts: vec![updated],
-                ..Default::default()
-            },
-            bases,
-        )
-        .await
-    }
-
     async fn commit_directory_with_bases(
         &self,
         delta: DirectoryDelta,
@@ -1160,7 +1144,7 @@ impl ProductEventBus {
             let mut published_sessions = writer_delta.session_upserts.clone();
             self.writer.record_directory(writer_delta);
             // 本提交直接冻结的成员行先入发布切面：没有它，register_session、
-            // register_child_agent 与 commit_agent_update 这类携带成员事实的提交
+            // register_child_agent 这类携带成员事实的提交
             // 不会产生任何可观察行，命令通道会误报 "no observable changes"。
             for agent in frozen_agents.values() {
                 if let Some(session) = index.get_session(&agent.session_id) {

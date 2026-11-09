@@ -161,9 +161,14 @@ impl StudioRuntime {
                 continue;
             };
             let thread = pl_protocol::Thread::from(record);
-            // Strictly read-only: a projection never imports a legacy checkpoint, never deletes
-            // the files migration replaced and never touches the state directory, so listing
-            // child questions cannot modify storage.
+            // Passive reads enter the existing content preparation barrier for a supported
+            // old schema before loading its checkpoint. This neither installs an execution
+            // owner nor performs model/identity recovery; current-schema reads stay read-only.
+            self.store
+                .history(&child_id)
+                .await?
+                .prepare_conversation_read()
+                .await?;
             let Some(checkpoint) =
                 crate::studio::thread_factory::recovery::load_checkpoint_read_only(
                     &self.store,

@@ -18,6 +18,7 @@ impl StudioRuntime {
         let handle = self
             .session_of(thread_id)
             .and_then(|session| session.observed_thread(thread_id));
+        let cold_status = handle.is_none().then_some(thread.status);
         let (state, business_refs) = match handle.as_ref() {
             Some(handle) => {
                 let state = handle.snapshot();
@@ -47,6 +48,10 @@ impl StudioRuntime {
             persistence.as_ref(),
             business_refs,
         )?;
+        if let Some(status) = cold_status {
+            // A cold checkpoint's Closed owner is not a permanent product close.
+            snapshot.thread.status = status;
+        }
         if let Some(close) = self.store.agent_close(thread_id).await? {
             snapshot.thread.status = if close.execution_closed {
                 pl_protocol::ThreadStatus::Closed

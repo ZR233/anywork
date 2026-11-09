@@ -216,8 +216,8 @@ impl CatalogStore {
                     // DTO observations do not carry closure intent. A late owner/metadata
                     // projection cannot erase the checkpoint-derived, monotonic seal.
                     agent.explicitly_closed |= existing.explicitly_closed;
-                    if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
-                        agent.status = ThreadStatus::Closed;
+                    if existing.explicitly_closed {
+                        agent.status = existing.status;
                     }
                     if *existing == agent {
                         return false;
@@ -234,7 +234,11 @@ impl CatalogStore {
         .await
     }
 
-    pub(in crate::studio) async fn project_explicit_close(&self, agent_id: &str) -> Result<()> {
+    pub(in crate::studio) async fn project_explicit_close(
+        &self,
+        agent_id: &str,
+        execution_closed: bool,
+    ) -> Result<()> {
         ensure!(
             self.get_agent(agent_id)
                 .is_some_and(|agent| agent.parent_agent_id.is_some()),
@@ -249,13 +253,17 @@ impl CatalogStore {
             else {
                 return false;
             };
-            if agent.explicitly_closed {
+            let status = if execution_closed {
+                ThreadStatus::Closed
+            } else {
+                ThreadStatus::Closing
+            };
+            if agent.explicitly_closed && agent.status == status {
                 return false;
             }
             agent.explicitly_closed = true;
-            // An old normal-shutdown Closed status says nothing about this close's progress.
-            // The current owner publishes Closed only after its real shutdown is confirmed.
-            agent.status = ThreadStatus::Closing;
+            // Only the durable close owner can advance or restore this progress.
+            agent.status = status;
             true
         })
         .await
@@ -293,8 +301,8 @@ impl CatalogStore {
                         .find(|entry| entry.agent_id == agent.agent_id)
                     {
                         agent.explicitly_closed |= existing.explicitly_closed;
-                        if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
-                            agent.status = ThreadStatus::Closed;
+                        if existing.explicitly_closed {
+                            agent.status = existing.status;
                         }
                         *existing = agent;
                     } else {

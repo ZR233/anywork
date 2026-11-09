@@ -313,12 +313,15 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
     let db = &store.writer().await?.db;
     assert_eq!(originals(db).await?, original);
     let new_ledger = ledger(db).await?;
-    assert_eq!(new_ledger.len(), old_ledger.len() + 4);
-    for step in [
+    let appended_steps = [
         SOURCE_CLASSIFICATION,
         TIMELINE_BACKGROUND_TAIL,
         COMPLETION_BOUNDARY,
-    ] {
+        IMMUTABLE_COMPLETION_RUNS,
+        DISPLAY_SNAPSHOTS,
+    ];
+    assert_eq!(new_ledger.len(), old_ledger.len() + appended_steps.len());
+    for step in appended_steps {
         assert!(new_ledger.iter().any(|record| record.contains(step)));
     }
     assert!(old_ledger.iter().all(|record| new_ledger.contains(record)));

@@ -91,7 +91,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
     protocol.workspace_id = "review-workspace".into();
     protocol.root_thread_id = "root".into();
     protocol.workspace_path = root.to_string_lossy().into_owned();
-    register(&store, &protocol, &protocol.workspace_path).await?;
+    register(&physical.events, &protocol, &protocol.workspace_path).await?;
     let path = WorktreeManager::allocate_path(
         &root,
         "root",
@@ -233,7 +233,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
 }
 
 async fn register(
-    store: &StudioStore,
+    events: &crate::studio::ProductEventBus,
     protocol: &pl_protocol::Thread,
     root: &str,
 ) -> anyhow::Result<()> {
@@ -253,12 +253,14 @@ async fn register(
         delta.session_upserts.push(session);
     }
     delta.agent_upserts.push(agent);
-    store.persist_directory_summaries(&delta).await
+    events.commit_directory(delta).await?;
+    Ok(())
 }
 
 async fn restore_delivery(
     owner: &SessionRuntime,
     store: &StudioStore,
+    events: &crate::studio::ProductEventBus,
     id: &str,
     assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
 ) -> anyhow::Result<(ThreadHandle, tokio::task::JoinHandle<()>, String)> {
@@ -267,7 +269,7 @@ async fn restore_delivery(
     protocol.parent_thread_id = Some("root".into());
     protocol.root_thread_id = "root".into();
     protocol.workspace_path = assignment.root.clone();
-    register(store, &protocol, &assignment.project_root).await?;
+    register(events, &protocol, &assignment.project_root).await?;
     let turn = pl_core::thread::TurnRecord {
         turn_id: "original-terminal-turn".into(),
         input_id: None,
@@ -350,13 +352,13 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         )
     })?;
     let physical = close_factory(&store)?;
-    let owner = SessionRuntime::default();
+    let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
     physical.install(&owner)?;
     let mut protocol = pl_protocol::Thread::placeholder("root");
     protocol.workspace_id = "review-workspace".into();
     protocol.root_thread_id = "root".into();
     protocol.workspace_path = root.clone();
-    register(&store, &protocol, &root).await?;
+    register(&physical.events, &protocol, &root).await?;
     owner
         .assemble(spec("root".into(), None, temp.path()))
         .await?;
@@ -369,7 +371,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         worktree: None,
     };
     let (target, target_projection, _) =
-        restore_delivery(&owner, &store, "target", &assignment).await?;
+        restore_delivery(&owner, &store, &physical.events, "target", &assignment).await?;
     let snapshot = target.snapshot();
     let turn = store
         .history("target")
@@ -396,8 +398,14 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         feedback: Some(pl_protocol::AgentReviewFeedback::ToExecutor),
         baseline: Some(baseline),
     });
-    let (_, reviewer_projection, original_body) =
-        restore_delivery(&owner, &store, "reviewer", &review_assignment).await?;
+    let (_, reviewer_projection, original_body) = restore_delivery(
+        &owner,
+        &store,
+        &physical.events,
+        "reviewer",
+        &review_assignment,
+    )
+    .await?;
     let binding = WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, root)?;
     for id in ["root", "target", "reviewer"] {
         store.bind_workspace_identity(id, &binding).await?;

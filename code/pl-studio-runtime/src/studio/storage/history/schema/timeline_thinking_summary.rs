@@ -68,6 +68,7 @@ mod tests {
                             | TIMELINE_BACKGROUND_TAIL
                             | COMPLETION_BOUNDARY
                             | IMMUTABLE_COMPLETION_RUNS
+                            | DISPLAY_SNAPSHOTS
                     )
                 })
                 .collect()

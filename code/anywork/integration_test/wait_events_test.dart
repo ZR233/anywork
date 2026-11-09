@@ -230,15 +230,8 @@ void main() {
     final prepareTurn = scene.latestTurnId;
     await scene.closeTurn(prepared);
     await scene.submit('[[wait_cancel]]');
-    await scene.until(
-      () =>
-          scene.lease.content.activity.value?.entries.any(
-            (entry) =>
-                entry.atom.tool?.callId.startsWith('cancel-wait-t') == true,
-          ) ==
-          true,
-      'original wait call in the canonical current head',
-    );
+    // The typed live Work and original member window below prove the exact
+    // running call; the GUI no longer consumes the atomic Activity channel.
     await scene.currentWaiting('cancel-wait-t');
     await scene.tap(find.byKey(const ValueKey('composer-stop')));
     final stopped = await scene.completedTurn(
@@ -407,8 +400,9 @@ final class _Scene {
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
       // State proves completion; Main must separately accept this source and
       // mount its original viewport within this same wait budget before reveal.
+      // An independent background timer may still be live after this Turn.
       if (!observed.singleBlocks.any((item) => item.atom!.source == source) ||
-          observed.liveBlocks.isNotEmpty) {
+          observed.liveBlocks.any((block) => block.source == source)) {
         return false;
       }
       final mainScrollable = find.byWidgetPredicate(

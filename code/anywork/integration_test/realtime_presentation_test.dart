@@ -205,12 +205,15 @@ void main() {
       await scene.submit('Realtime delayed first token');
       await fixtureGate(tester, provider, _firstTokenObserverStage);
       await scene.untilKey(const ValueKey('conversation-activity'));
+      final firstLease = await scene.waitForTimelineSet();
       expect(scene.observed.liveBlocks, isEmpty);
       await scene.captureEvidence(
         'realtime-thinking.png',
         _firstTokenObserverStage,
         'Real activity before the fixture releases its first text token.',
       );
+      expect(scene.lease, same(firstLease));
+      expect(firstLease.isMounted && !firstLease.isRetired, isTrue);
       await fixtureGate(
         tester,
         provider,
@@ -405,10 +408,7 @@ void main() {
         reason: 'accepted partial text survives cancellation',
       );
       expect(
-        scene.lease.currentDisplay?.windows.where(
-              (window) => window.id == cancelledText.id,
-            ) ??
-            const [],
+        scene.liveWindows.where((window) => window.id == cancelledText.id),
         isEmpty,
       );
       await scene.captureEvidence(
@@ -454,7 +454,7 @@ void main() {
 typedef _PreparedToolObserver = ({
   String turnId,
   TimelineDisplayLease lease,
-  TimelineCurrentDisplay currentDisplay,
+  Object liveAdmission,
   Object controller,
   int generation,
   int mainSets,
@@ -491,6 +491,61 @@ final class _RealtimeScene {
 
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
+
+  Future<TimelineDisplayLease> waitForTimelineSet() async {
+    TimelineDisplayLease? accepted;
+    await until(() {
+      final threadId = graph.client.selection.state.selectedThreadId;
+      if (threadId == null) return false;
+      _submittedThreadId ??= threadId;
+      if (threadId != _submittedThreadId) return false;
+      final display = graph.timeline.lease(threadId);
+      if (display == null ||
+          display.threadId != threadId ||
+          !display.isMounted ||
+          display.isRetired ||
+          display.appliedSets != 1 ||
+          display.live.value == null ||
+          display.content.state.value is! ChatReady<bool>) {
+        return false;
+      }
+      expect(
+        display.content,
+        same(graph.client.conversations.session(threadId).content),
+      );
+      accepted = display;
+      return true;
+    }, 'the selected Thread original Timeline Set and live cut admitted');
+    report['firstTimelineAdmission'] = {
+      'threadId': accepted!.threadId,
+      'generation': accepted!.generation,
+      'selectionId': accepted!.selectionId,
+      'mainSets': accepted!.appliedSets,
+      'liveRevision': accepted!.live.value!.revision,
+      'retired': accepted!.isRetired,
+    };
+    return accepted!;
+  }
+
+  // Borrow only actual mounted live member scopes. Both Single and expanded
+  // Work members expose these windows; no Activity/currentDisplay is involved.
+  Iterable<TimelineCurrentWindowDisplay> get liveWindows sync* {
+    final original = lease;
+    final ids = observed.liveAtoms.map((atom) => atom.id).toSet();
+    final rows = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineMemberAtom &&
+          identical(widget.content, original.content) &&
+          widget.isActive() &&
+          ids.contains(widget.atom.id),
+    );
+    for (final element in rows.evaluate()) {
+      expect(lease, same(original));
+      expect(original.isMounted && !original.isRetired, isTrue);
+      yield* ((element as StatefulElement).state as TimelineMemberDisplay)
+          .windows;
+    }
+  }
 
   List<ChatItemPresentation> get items => observed.main
       .where((unit) => unit.atom?.payload != null)
@@ -945,11 +1000,14 @@ final class _RealtimeScene {
       reason: 'A terminal member without a boundary stays live',
     );
     final mainLease = lease;
-    final mountedDisplay = mainLease.currentDisplay;
-    expect(mountedDisplay, isNotNull);
-    final currentDisplay = mountedDisplay!;
-    expect(currentDisplay.isCurrent, isTrue);
-    expect(currentDisplay.turnId, turn!.turnId);
+    final liveAdmission = mainLease.live;
+    expect(mainLease.isMounted && !mainLease.isRetired, isTrue);
+    expect(liveAdmission.value, isNotNull);
+    expect(liveAdmission.value!.executionPresent, isTrue);
+    expect(
+      liveAdmission.value!.blocks.where((block) => block.id == unit.id),
+      hasLength(1),
+    );
     final controller = mainLease.controller;
     final generation = mainLease.generation;
     final mainSets = mainLease.appliedSets;
@@ -1033,7 +1091,7 @@ final class _RealtimeScene {
     final prepared = (
       turnId: turn!.turnId,
       lease: mainLease,
-      currentDisplay: currentDisplay,
+      liveAdmission: liveAdmission,
       controller: controller,
       generation: generation,
       mainSets: mainSets,
@@ -1070,8 +1128,9 @@ final class _RealtimeScene {
   bool _expectPreparedToolObserver(_PreparedToolObserver prepared) {
     expect(_latestTurn()?.turnId, prepared.turnId);
     expect(lease, same(prepared.lease));
-    expect(lease.currentDisplay, same(prepared.currentDisplay));
-    expect(prepared.currentDisplay.isCurrent, isTrue);
+    expect(lease.live, same(prepared.liveAdmission));
+    expect(lease.isMounted && !lease.isRetired, isTrue);
+    expect(lease.live.value, isNotNull);
     expect(lease.controller, same(prepared.controller));
     expect(lease.generation, prepared.generation);
     expect(lease.appliedSets, prepared.mainSets);
@@ -1119,10 +1178,9 @@ final class _RealtimeScene {
       'turnId': prepared.turnId,
       'groupId': prepared.display.unitId,
       'sameMainLease': identical(lease, prepared.lease),
-      'sameMainCurrentDisplay': identical(
-        lease.currentDisplay,
-        prepared.currentDisplay,
-      ),
+      'sameLiveAdmission': identical(lease.live, prepared.liveAdmission),
+      'liveRevision': lease.live.value?.revision,
+      'executionPresent': lease.live.value?.executionPresent,
       'sameMainController': identical(lease.controller, prepared.controller),
       'mainGeneration': lease.generation,
       'mainSets': lease.appliedSets,
@@ -1369,7 +1427,7 @@ final class _RealtimeScene {
     required TimelineDisplayUnit single,
   }) async {
     final mainLease = lease;
-    final initialCurrentOverlay = mainLease.currentDisplay;
+    final initialLive = mainLease.live.value;
     final controller = mainLease.controller;
     final scroll = mainLease.scrollController;
     final generation = mainLease.generation;
@@ -1731,7 +1789,7 @@ final class _RealtimeScene {
         final actualScrollable = scrollableMatches.length == 1
             ? tester.state<ScrollableState>(scrollable)
             : null;
-        final currentOverlay = mainLease.currentDisplay;
+        final currentLive = mainLease.live.value;
         final matches = connector.evaluate().toList();
         final actualState = matches.length == 1
             ? tester.state(connector)
@@ -1776,15 +1834,12 @@ final class _RealtimeScene {
           'expectedGeneration': generation,
           'mainSets': mainLease.appliedSets,
           'expectedMainSets': mainSets,
-          'currentOverlayObservation': {
-            'initialPresent': initialCurrentOverlay != null,
-            'initialIsCurrent': initialCurrentOverlay?.isCurrent,
-            'present': currentOverlay != null,
-            'isCurrent': currentOverlay?.isCurrent,
-            'sameResourceWhenBothPresent':
-                initialCurrentOverlay == null || currentOverlay == null
-                ? null
-                : identical(initialCurrentOverlay, currentOverlay),
+          'liveAdmissionObservation': {
+            'initialRevision': initialLive?.revision,
+            'revision': currentLive?.revision,
+            'executionPresent': currentLive?.executionPresent,
+            'mounted': mainLease.isMounted,
+            'retired': mainLease.isRetired,
           },
           'mainMetadata': {
             'messageMatches': mainMessages.length,
@@ -2719,18 +2774,27 @@ final class _RealtimeScene {
       await until(
         () {
           final turn = _latestTurn();
+          if (turn != null && turn.turnId != _priorTurn) {
+            _submittedTurnId ??= turn.turnId;
+          }
           final live = observed.liveAtoms.toList();
           final candidates = live
               .where(
                 (atom) =>
+                    turn != null &&
+                    turn.turnId == _submittedTurnId &&
+                    turn.turnId != _priorTurn &&
+                    atom.turnId == turn.turnId &&
+                    atom.source ==
+                        ForegroundTurnChatSource(turnId: turn.turnId) &&
                     atom.kind == ChatAtomKind.text &&
                     atom.lifecycle is ActiveChatAtom,
               )
               .toList();
           // These are fresh synchronous borrows for this predicate invocation,
           // not a lease or window retained across its next pump.
-          final display = lease.currentDisplay;
-          final allWindows = display?.windows.toList() ?? const [];
+          final liveCut = lease.live.value;
+          final allWindows = liveWindows.toList();
           final views = tester
               .widgetList<ConversationCurrentWindowView>(
                 find.byType(ConversationCurrentWindowView),
@@ -2747,10 +2811,11 @@ final class _RealtimeScene {
             'leaseGeneration': lease.generation,
             'leaseMode': lease.mode.name,
             'contentPhase': lease.content.state.value.runtimeType.toString(),
-            'displayPresent': display != null,
-            'displayCurrent': display?.isCurrent,
-            'displayTurnId': display?.turnId,
-            'displayActivityId': display?.activityId,
+            'livePresent': liveCut != null,
+            'liveRevision': liveCut?.revision,
+            'executionPresent': liveCut?.executionPresent,
+            'displayMounted': lease.isMounted,
+            'displayRetired': lease.isRetired,
             'live': [
               for (final unit in live)
                 {
@@ -2814,34 +2879,52 @@ final class _RealtimeScene {
             previousObservation = signature;
           }
           for (final atom in candidates) {
-            final view = find.byWidgetPredicate(
+            if (liveCut?.executionPresent != true) continue;
+            final row = find.byWidgetPredicate(
               (widget) =>
-                  widget is ConversationCurrentWindowView &&
-                  widget.id == atom.id &&
-                  widget.error == null &&
-                  widget.text.isNotEmpty,
+                  widget is TimelineMemberAtom &&
+                  widget.atom.id == atom.id &&
+                  identical(widget.content, lease.content) &&
+                  widget.isActive(),
+            );
+            final view = find.descendant(
+              of: row,
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is ConversationCurrentWindowView &&
+                    widget.id == atom.id &&
+                    widget.error == null &&
+                    widget.text.isNotEmpty,
+              ),
             );
             if (!_laidOut(view)) continue;
+            final body = atom.contents
+                .where((content) => content.role == ChatContentRole.body)
+                .singleOrNull;
+            if (body == null) continue;
             final windows = allWindows
-                .where((window) => window.id == atom.id)
+                .where(
+                  (window) =>
+                      window.id == atom.id &&
+                      contentReferenceIdentity(window.reference) ==
+                          contentReferenceIdentity(body.reference),
+                )
                 .toList();
             for (final window in windows) {
               if (window.error case final error?) throw StateError('$error');
             }
             if (windows.isEmpty ||
-                windows.every((window) => window.window == null)) {
+                windows.every(
+                  (window) => window.window?.bytes.isNotEmpty != true,
+                )) {
               continue;
             }
-            expect(
-              atom.contents.any(
-                (content) => windows.any(
-                  (window) =>
-                      contentReferenceIdentity(content.reference) ==
-                      contentReferenceIdentity(window.reference),
-                ),
-              ),
-              isTrue,
-            );
+            for (final window in windows) {
+              expect(
+                window.window?.bytes.length ?? 0,
+                lessThanOrEqualTo(64 * 1024),
+              );
+            }
             accepted = atom;
             return true;
           }
@@ -2954,7 +3037,7 @@ final class _RealtimeScene {
                   'activeScope': widget.isActive(),
                 };
               } else if (widget is ConversationCurrentConnector) {
-                match['scope'] = 'Activity';
+                match['scope'] = 'Timeline live';
                 match['scopeActive'] = widget.isDisplayActive();
                 match['sameMainContent'] = identical(
                   widget.content,
@@ -3132,7 +3215,7 @@ final class _RealtimeScene {
             );
           }
           debugPrintSynchronously(
-            'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': lease.currentDisplay?.windows.length})}',
+            'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': liveWindows.length})}',
           );
           if (preparedObserver != null) {
             expect(_expectPreparedToolObserver(preparedObserver), isTrue);

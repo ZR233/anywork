@@ -4503,6 +4503,10 @@ mod storage_fault_tests {
             let path = directory.path().join("history.sqlite");
             let thread_id = "damaged-timeline";
             let store = HistoryStore::open(&path, thread_id).await?;
+            // Exercise damage to the actual published pre-completion layout. A current
+            // writer has archived these tables and cannot stand in for this old schema.
+            let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
+            schema::prepare_published17_fixture(&db, thread_id).await?;
             let mut item = ThreadItem::completed_user_message(
                 "preserved-input".into(),
                 thread_id.into(),
@@ -4513,9 +4517,8 @@ mod storage_fault_tests {
             );
             item.ordinal = 1;
             item.revision = 1;
-            persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
-            let db = &store.writer().await?.db;
-            let source_facts = history_facts(db).await?;
+            store.upsert_item(&db, 1, item).await?;
+            let source_facts = history_facts(&db).await?;
             assert!(
                 db.query_one_raw(statement(
                     "SELECT 1 FROM seaql_migrations WHERE version='m20261103_000001_history_timeline_items'",
@@ -4526,7 +4529,7 @@ mod storage_fault_tests {
                 "fixture requires the named Timeline migration to be Applied"
             );
             db.execute_unprepared(damage).await?;
-            store.writer().await?.db.clone().close().await?;
+            db.close().await?;
             drop(store);
 
             let source = tokio::fs::read(&path).await?;
