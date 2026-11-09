@@ -1,8 +1,9 @@
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart' show DisplayMembers;
 import 'package:flutter/widgets.dart';
 
 import 'timeline_display_diagnostics.dart';
-import 'completion_run_presentation.dart';
+import '../view_models/display_member_controller.dart';
 
 /// Only local disclosure intent and its synchronously revocable capabilities.
 /// No membership, completion ranges or source-order facts are retained here.
@@ -12,7 +13,9 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<ConversationContent> Function(CompletionRunRef, ReadDemand)? openRun;
+  Future<DisplayMembers> Function(DisplayBlockRef, DisplayMemberWindow, ReadDemand)?
+  openDisplayMembers;
+  DisplayMemberController? members;
   final Set<Object> _bodyDisplays = {};
   bool _retired = false;
   Object bodyGeneration = Object();
@@ -28,6 +31,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     bodyGeneration = Object();
     retirement.value = true;
     retireBody?.call();
+    members?.retire();
     notifyListeners();
     retirement.value = !bodyActive;
   }
@@ -39,6 +43,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     _bodyDisplays.clear();
     bodyGeneration = Object();
     retireBody?.call();
+    members?.retire();
     current = null;
     notifyListeners();
   }
@@ -55,7 +60,11 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     bodyGeneration = Object();
     // Revoke descendants before ExpansionTile's closing animation/disposal.
     retirement.value = !bodyActive;
-    if (!bodyActive) retireBody?.call();
+    if (!bodyActive && expanded != true) {
+      retireBody?.call();
+      members?.retire();
+      members = null;
+    }
     notifyListeners();
   }
 }
@@ -75,18 +84,45 @@ class TimelineGroupBodyIntent extends InheritedWidget {
       !identical(intent, oldWidget.intent);
 }
 
-/// A completed entry and local disclosure capability. No member snapshots.
+/// One producer-defined block and its display-lease disclosure capability.
 final class TimelineDisplayUnit {
   TimelineDisplayUnit({
-    required this.entry,
-    this.run,
+    required DisplayBlock block,
     TimelineExpansionIntent? expansion,
-  }) : expansion = expansion ?? TimelineExpansionIntent();
+  }) : id = block.id,
+       historyPos = block.historyPos,
+       body = block.body,
+       closing = false,
+       executionPresent = false,
+       expansion = expansion ?? TimelineExpansionIntent();
 
-  final CompletedEntry entry;
-  final CompletionRunPresentation? run;
+  TimelineDisplayUnit.live({
+    required LiveDisplayBlock block,
+    required this.executionPresent,
+    required this.expansion,
+  }) : id = block.id,
+       historyPos = null,
+       body = block.body,
+       closing = block.closing;
+
+  final String id;
+  final int? historyPos;
+  final DisplayBlockBody body;
+  final bool closing;
+  final bool executionPresent;
   final TimelineExpansionIntent expansion;
-  String get id => run?.messageId ?? entry.recordId;
+  DisplayBlockRef? get memberReference => switch (body) {
+    WorkDisplayBlock(:final members) => members,
+    SingleDisplayBlock() => null,
+  };
+  WorkSummary? get summary => switch (body) {
+    WorkDisplayBlock(:final summary) => summary,
+    SingleDisplayBlock() => null,
+  };
+  ChatAtom? get atom => switch (body) {
+    SingleDisplayBlock(:final atom) => atom,
+    WorkDisplayBlock() => null,
+  };
 }
 
 const timelineDisplayUnitKey = 'timelineDisplayUnit';

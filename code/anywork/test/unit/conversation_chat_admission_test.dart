@@ -6,9 +6,10 @@ import 'package:anywork_client/src/conversation/data/conversation_content_impl.d
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 
-import '../support/chat_fixtures.dart'
-    show workItem, chatMessage, chatWorkspace;
+import '../support/chat_fixtures.dart' show chatMessage, chatWorkspace;
+import '../support/display_fixtures.dart';
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
@@ -153,42 +154,214 @@ void main() {
       },
     );
   }
-  test('real serial ACK accepts an unfinished Run tail immediately without body reads or layout', () async {
+  test('real serial ACK accepts live Work immediately and freezes only at the boundary without member/body reads or layout', () async {
     final h = _Harness();
     final controller = InMemoryChatController();
     final presentation = TimelineMessageController(controller, generation: 1);
-    h.attach(presentation);
+    h.owner.attachTimelineConsumer(
+      _TimelineConsumer(presentation),
+      demand: _demand,
+    );
+    h.owner.setDemand(true);
     final feed = await h.opened();
+    expect(
+      h.transport.scopes,
+      isEmpty,
+      reason: 'The GUI consumer opens Timeline, never the atomic Chat feed',
+    );
+    const reference = DisplayBlockRef(databaseId: 'db', blockId: 'work');
+    WorkDisplayBlock body(int total, int terminal) => WorkDisplayBlock(
+      summary: displaySummary(
+        total,
+        terminal: terminal,
+        running: total - terminal,
+      ),
+      members: reference,
+    );
+    LiveDisplayWindow live(int revision, int total, int terminal) =>
+        LiveDisplayWindow(
+          revision: revision,
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: [
+            LiveDisplayBlock(
+              id: reference.blockId,
+              blockOrder: 1,
+              closing: false,
+              body: body(total, terminal),
+            ),
+          ],
+        );
+    final initial = live(1, 1, 0);
     feed.sendScenario(
       1,
-      ConversationChatEvent(
-        batch: ChatBatch(
-          placement: ChatPlacement.set,
-          entries: [workItem('first', count: 1)],
-          throughSeq: 1,
-        ),
+      ConversationTimelineEvent(
+        batch: displayBatch([], through: 0, live: initial),
       ),
     );
     await feed.ackScenario(1).timeout(const Duration(seconds: 2));
-    final original = controller.messages.single;
+    expect(controller.messages, isEmpty);
+    expect(h.owner.live.value, same(initial));
+    for (final (sequence, terminal) in [(2, 1), (3, 2)]) {
+      final current = live(sequence, 2, terminal);
+      feed.sendScenario(
+        sequence,
+        ConversationTimelineEvent(
+          batch: displayBatch(
+            [],
+            placement: ChatPlacement.append,
+            from: 0,
+            live: current,
+          ),
+        ),
+      );
+      await feed.ackScenario(sequence).timeout(const Duration(seconds: 2));
+      expect(h.owner.live.value, same(current));
+      expect(
+        (current.blocks.single.body as WorkDisplayBlock).members,
+        reference,
+      );
+      expect(
+        controller.messages,
+        isEmpty,
+        reason:
+            'Even all terminal members do not freeze a Work without a boundary',
+      );
+    }
+    final frozen = DisplayBlock(
+      id: reference.blockId,
+      historyPos: 1,
+      body: body(2, 2),
+    );
     feed.sendScenario(
-      2,
-      ConversationChatEvent(
-        batch: ChatBatch(
+      4,
+      ConversationTimelineEvent(
+        batch: displayBatch(
+          [frozen],
           placement: ChatPlacement.append,
-          entries: [workItem('second', count: 2)],
-          fromSeq: 1,
-          throughSeq: 2,
+          from: 0,
+          live: LiveDisplayWindow(
+            revision: 4,
+            historyThrough: 1,
+            executionPresent: false,
+            blocks: const [],
+          ),
         ),
       ),
     );
-    await feed.ackScenario(2).timeout(const Duration(seconds: 2));
-    expect(controller.messages.single.id, original.id);
+    await feed.ackScenario(4).timeout(const Duration(seconds: 2));
+    expect(controller.messages.single.id, reference.blockId);
+    expect(h.owner.live.value!.blocks, isEmpty);
+    expect(feed.acks, [1, 2, 3, 4, 5]);
+    expect(feed.timelineQueries, 0);
+    expect(feed.memberOpens, 0);
     expect(feed.reader.loads, 0);
+    expect(feed.reader.manifestRequests, isEmpty);
+    expect(feed.reader.bodyRequests, isEmpty);
+    expect(h.failures, isEmpty);
     expect((await h.owner.close()).complete, isTrue);
     presentation.dispose();
     controller.dispose();
   });
+  test('component failed Future preserves accepted live, Main and ACK through real serial admission', () async {
+    final h = _Harness();
+    final component = _FailingAppendComponent();
+    final intents = <String, TimelineExpansionIntent>{};
+    final projection = TimelineMessageController(
+      component,
+      generation: 1,
+      expansionForBlock: (id) =>
+          intents.putIfAbsent(id, TimelineExpansionIntent.new),
+    );
+    h.owner.attachTimelineConsumer(
+      _TimelineConsumer(projection),
+      demand: _demand,
+    );
+    h.owner.setDemand(true);
+    final feed = await h.opened();
+    final work = LiveDisplayBlock(
+      id: 'work',
+      blockOrder: 1,
+      closing: true,
+      body: WorkDisplayBlock(
+        summary: displaySummary(2, terminal: 1, running: 1),
+        members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
+      ),
+    );
+    final live = LiveDisplayWindow(
+      revision: 1,
+      historyThrough: 1,
+      executionPresent: true,
+      blocks: [work],
+    );
+    final intent = intents.putIfAbsent('work', TimelineExpansionIntent.new)
+      ..expanded = true;
+    final originalUnit = TimelineDisplayUnit.live(
+      block: work,
+      executionPresent: true,
+      expansion: intent,
+    );
+    intent.current = originalUnit;
+    feed.sendScenario(
+      1,
+      ConversationTimelineEvent(
+        batch: displayBatch([displayWork('old', 1)], live: live),
+      ),
+    );
+    await feed.ackScenario(1);
+    final original = component.messages.single;
+    var notifications = 0;
+    final observation = h.owner.live.watch((_) => notifications++);
+    final gate = Completer<void>();
+    component.failure = gate.future;
+    feed.sendScenario(
+      2,
+      ConversationTimelineEvent(
+        batch: displayBatch(
+          [displayWork('work', 2, total: 2)],
+          placement: ChatPlacement.append,
+          from: 1,
+          live: LiveDisplayWindow(
+            revision: 2,
+            historyThrough: 2,
+            executionPresent: false,
+            blocks: const [],
+          ),
+        ),
+      ),
+    );
+    await component.entered.future;
+    expect(h.owner.live.value, same(live));
+    expect(intent.current, same(originalUnit));
+    final failure = StateError('actual component Future failed');
+    gate.completeError(failure);
+    await h.failed.future;
+    h.owner.setDemand(false);
+    expect(h.failures.single, same(failure));
+    expect(component.messages.single, same(original));
+    expect(h.owner.live.value, same(live));
+    expect(notifications, 0);
+    expect(intent.current, same(originalUnit));
+    expect(intent.expanded, isTrue);
+    expect(feed.acks, [
+      1,
+      2,
+    ], reason: 'The failed handoff never returns its credit');
+    component.failure = null;
+    await projection.applyTimeline(
+      displayBatch(
+        [displayWork('work', 2)],
+        placement: ChatPlacement.append,
+        from: 1,
+      ),
+    );
+    expect(component.messages.map((message) => message.id), ['old', 'work']);
+    observation.cancel();
+    expect((await h.owner.close()).complete, isTrue);
+    projection.dispose();
+    component.dispose();
+  });
+
   test('scope retirement rejects a page already queued behind component acceptance', () async {
     final h = _Harness();
     final accepting = Completer<void>();
@@ -605,7 +778,34 @@ final class _Consumer implements ConversationBatchConsumer {
   }
 }
 
-final class _Transport implements ConversationTransport {
+final class _FailingAppendComponent extends InMemoryChatController {
+  Future<void>? failure;
+  final entered = Completer<void>();
+  @override
+  Future<void> insertAllMessages(
+    List<Message> messages, {
+    int? index,
+    bool animated = true,
+  }) {
+    if (failure case final pending?) {
+      if (!entered.isCompleted) entered.complete();
+      return pending;
+    }
+    return super.insertAllMessages(messages, index: index, animated: animated);
+  }
+}
+
+final class _TimelineConsumer implements TimelineBatchConsumer {
+  _TimelineConsumer(this.presentation);
+  final TimelineMessageController presentation;
+  @override
+  Future<void> applyTimeline(
+    TimelineBatch batch,
+    LiveDisplayWindow acceptedLive,
+  ) => presentation.applyTimeline(batch);
+}
+
+final class _Transport implements ConversationTransport, TimelineTransport {
   final opened = Completer<_Feed>();
   final feeds = <_Feed>[];
   final scopes = <ChatScope>[];
@@ -614,9 +814,19 @@ final class _Transport implements ConversationTransport {
     String threadId, {
     required ChatScope scope,
     required ReadDemand demand,
-  }) async {
-    expect(demand.maxItems, _demand.maxItems);
+  }) {
     scopes.add(scope);
+    return _open(demand);
+  }
+
+  @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  }) => _open(demand);
+
+  Future<_Feed> _open(ReadDemand demand) async {
+    expect(demand.maxItems, _demand.maxItems);
     final feed = _Feed('subscription:${feeds.length}');
     feeds.add(feed);
     if (!opened.isCompleted) opened.complete(feed);
@@ -624,7 +834,7 @@ final class _Transport implements ConversationTransport {
   }
 }
 
-final class _Feed implements ConversationFeed {
+final class _Feed implements TimelineFeed {
   _Feed(this.subscriptionId);
   @override
   String get threadId => 'thread';
@@ -638,6 +848,36 @@ final class _Feed implements ConversationFeed {
   final waiting = <int, Completer<void>>{};
   Object? closeFailure;
   int closes = 0;
+  int timelineQueries = 0;
+  int memberOpens = 0;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    timelineQueries++;
+    throw StateError('Unexpected Timeline page query');
+  }
+
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    timelineQueries++;
+    throw StateError('Unexpected live page query');
+  }
+
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) {
+    memberOpens++;
+    throw StateError('Unexpected member query');
+  }
+
   @override
   Stream<ConversationFrame> get events {
     if (!listening.isCompleted) {

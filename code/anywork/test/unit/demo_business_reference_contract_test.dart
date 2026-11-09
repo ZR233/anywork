@@ -172,60 +172,59 @@ void main() {
     );
   });
 
-  test(
-    'Demo accepted composer input appears exactly once through Chat admission',
-    () async {
-      final (graph, _) = await _open();
-      final session = graph.client.conversations.session('thread-main');
-      final lease = graph.timeline.lease('thread-main')!;
-      final admitted = Completer<void>();
-      final observed = lease.controller.operationsStream.listen((_) {
-        if (!admitted.isCompleted &&
-            lease.controller.messages.any(
-              (message) => message.id == 'unique-user-input',
-            )) {
-          admitted.complete();
-        }
-      });
-      addTearDown(observed.cancel);
-      final receipt = await graph.client.threadCommands.submitComposer(
-        'thread-main',
-        const StudioPromptInput(
-          inputId: 'unique-user-input',
-          text: '唯一用户输入',
-          attachmentDraftIds: [],
-        ),
-        expectedModelRouteRevision: session.state.modelRoute!.revision,
-      );
-      expect(receipt.inputId, 'unique-user-input');
-      await admitted.future.timeout(const Duration(seconds: 3));
-      final messages = lease.controller.messages.where(
-        (message) => message.id == receipt.inputId,
-      );
-      expect(messages, hasLength(1));
-      final item = chatItemPresentationOf(messages.single)!;
-      expect(
-        item.atom!.source,
-        const InputChatSource(inputId: 'unique-user-input'),
-      );
-      expect(item.displayUnit!.entry.mainPresentation, MainPresentation.single);
-      final scope = session.content.openScope(generation: 101);
-      try {
-        final completed = await scope.readCompleted(
-          recordId: receipt.inputId,
-          demand: chatDemand,
-        );
-        expect(completed.recordId, receipt.inputId);
-        expect(completed.atom.source, item.atom!.source);
-        expect(
-          ChatItemPresentation.decode(completed.atom).inlineText('body'),
-          '唯一用户输入',
-        );
-      } finally {
-        expect((await scope.close()).complete, isTrue);
+  test('Demo accepted composer input appears exactly once through Timeline admission', () async {
+    final (graph, _) = await _open();
+    final session = graph.client.conversations.session('thread-main');
+    final lease = graph.timeline.lease('thread-main')!;
+    final admitted = Completer<void>();
+    final observed = lease.controller.operationsStream.listen((_) {
+      if (!admitted.isCompleted &&
+          lease.controller.messages.any(
+            (message) => message.id == 'unique-user-input',
+          )) {
+        admitted.complete();
       }
-    },
-  );
+    });
+    addTearDown(observed.cancel);
+    final receipt = await graph.client.threadCommands.submitComposer(
+      'thread-main',
+      const StudioPromptInput(
+        inputId: 'unique-user-input',
+        text: '唯一用户输入',
+        attachmentDraftIds: [],
+      ),
+      expectedModelRouteRevision: session.state.modelRoute!.revision,
+    );
+    expect(receipt.inputId, 'unique-user-input');
+    await admitted.future.timeout(const Duration(seconds: 3));
+    final messages = lease.controller.messages.where(
+      (message) => message.id == receipt.inputId,
+    );
+    expect(messages, hasLength(1));
+    final item = chatItemPresentationOf(messages.single)!;
+    expect(
+      item.atom!.source,
+      const InputChatSource(inputId: 'unique-user-input'),
+    );
+    final single = item.displayUnit!.body as SingleDisplayBlock;
+    expect(single.atom, same(item.atom));
+    expect(single.completionId, isNotNull);
+    final scope = session.content.openScope(generation: 101);
+    try {
+      final completed = await scope.readCompleted(
+        recordId: single.completionId!,
+        demand: chatDemand,
+      );
+      expect(completed.recordId, single.completionId);
+      expect(completed.atom.source, item.atom!.source);
+      expect(
+        ChatItemPresentation.decode(completed.atom).inlineText('body'),
+        '唯一用户输入',
+      );
+    } finally {
+      expect((await scope.close()).complete, isTrue);
+    }
+  });
 }
 
 Future<(AppGraph, DemoStudioTransport)> _open() async {

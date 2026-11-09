@@ -11,19 +11,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 void main() {
   for (final language in ['zh', 'en']) {
     testWidgets(
-      'one work member is a folded card; same Run growth preserves the open body ($language)',
+      'a later frozen block cannot grow or reset the open historical card ($language)',
       (tester) async {
         final controller = InMemoryChatController();
         final adapter = TimelineMessageController(controller, generation: 1);
         var built = 0;
         var retired = 0;
         Widget display() {
-          final message = controller.messages.single;
+          final message = controller.messages.first;
           return MaterialApp(
             locale: Locale(language),
             localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -41,7 +41,7 @@ void main() {
           );
         }
 
-        await adapter.applyBatch(completedBatch([completionEntry('first', 1)]));
+        await adapter.applyTimeline(displayBatch([displayWork('first', 1, total: 1)]));
         await tester.pumpWidget(display());
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
         expect(
@@ -59,18 +59,19 @@ void main() {
         expect(find.text('成员正文'), findsOneWidget);
         final first = tester.element(find.byType(_Body));
         final unit =
-            controller.messages.single.metadata![timelineDisplayUnitKey]
+            controller.messages.first.metadata![timelineDisplayUnitKey]
                 as TimelineDisplayUnit;
         final token = unit.expansion.bodyGeneration;
-        await adapter.applyBatch(
-          completedBatch(
-            [completionEntry('second', 2, start: 1, ordinal: 2)],
+        await adapter.applyTimeline(
+          displayBatch(
+            [displayWork('second', 2, total: 2)],
             placement: ChatPlacement.append,
             from: 1,
           ),
         );
         await tester.pumpWidget(display());
-        expect(find.text(_runTitle(tester, 2)), findsOneWidget);
+        expect(controller.messages, hasLength(2));
+        expect(find.text(_runTitle(tester, 1)), findsOneWidget);
         expect(
           tester
               .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
@@ -80,7 +81,7 @@ void main() {
         expect(tester.element(find.byType(_Body)), same(first));
         expect(unit.expansion.bodyGeneration, same(token));
         expect(retired, 0);
-        await tester.tap(find.text(_runTitle(tester, 2)));
+        await tester.tap(find.text(_runTitle(tester, 1)));
         // Eligibility is revoked in the tap callback, before the closing animation.
         expect(unit.expansion.retirement.value, isTrue);
         expect(unit.expansion.bodyActive, isFalse);
@@ -94,20 +95,12 @@ void main() {
     );
 
     testWidgets(
-      'background title uses explicit class; zero unrequested member reads ($language)',
+      'authoritative large block count requires zero unrequested member reads ($language)',
       (tester) async {
         final controller = InMemoryChatController();
         final adapter = TimelineMessageController(controller, generation: 1);
-        await adapter.applyBatch(
-          completedBatch([
-            completionEntry(
-              'background',
-              100000,
-              start: 1,
-              ordinal: 100000,
-              presentation: MainPresentation.backgroundResults,
-            ),
-          ]),
+        await adapter.applyTimeline(
+          displayBatch([displayWork('large', 1, total: 100000)]),
         );
         var reads = 0;
         await tester.pumpWidget(
@@ -127,7 +120,7 @@ void main() {
           ),
         );
         expect(
-          find.text(_runTitle(tester, 100000, background: true)),
+          find.text(_runTitle(tester, 100000)),
           findsOneWidget,
         );
         expect(reads, 0);
@@ -141,11 +134,9 @@ void main() {
   }
 }
 
-String _runTitle(WidgetTester tester, int count, {bool background = false}) {
+String _runTitle(WidgetTester tester, int count) {
   final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-  final label = background
-      ? l10n.timelineBackgroundResults
-      : l10n.timelineGroupRecord;
+  final label = l10n.timelineGroupRecord;
   return '$label · ${l10n.timelineGroupMemberCount(count)}';
 }
 

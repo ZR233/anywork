@@ -192,6 +192,8 @@ class _TimelineConnectorBody extends ConsumerWidget {
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
         threadId: threadId,
+        content: lease.content,
+        images: lease.imageResources,
         readAttachment: (id) =>
             ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
         monotonicMicros: () => owner.monotonicMicros,

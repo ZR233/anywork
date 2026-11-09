@@ -6,9 +6,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
-import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
 
-import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
@@ -114,10 +113,9 @@ const _tools = [
 
 Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
   if (!live) {
-    final entry = completionEntry('test-group', 82, start: 1, ordinal: 82);
     return CompletionRunView(
       id: 'test-group',
-      presentation: CompletionRunPresentation.fromEntry(entry),
+      summary: displaySummary(82),
       initiallyExpanded: false,
       childBuilder: (_) => content ?? const Text('成员正文'),
     );

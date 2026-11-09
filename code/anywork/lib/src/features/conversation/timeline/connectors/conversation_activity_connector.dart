@@ -6,8 +6,9 @@ import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_state.dart';
 import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
-import '../widgets/conversation_activity_bar.dart';
+import '../state/conversation_activity_state.dart';
 import '../widgets/conversation_activity_viewport.dart';
+import '../widgets/conversation_activity_bar.dart';
 import 'conversation_current_connector.dart';
 import 'interaction_details_connector.dart';
 
@@ -26,7 +27,8 @@ class ConversationActivityConnector extends ConsumerWidget {
     final content = session?.content;
     StudioDriverState.publishConversationActivity(state?.view);
     final children = <Widget>[];
-    if (content != null && state?.activity != null) {
+    switch (state?.region) {
+    case ContentRealtimeRegion region when content != null:
       ref.watch(timelineViewModelProvider(threadId));
       final timeline = ref.read(timelineSessionOwnerProvider);
       final lease = timeline.lease(threadId);
@@ -36,7 +38,10 @@ class ConversationActivityConnector extends ConsumerWidget {
             key: ValueKey((threadId, content, lease.generation)),
             session: sessionState,
             content: content,
-            view: state?.view,
+            region: region,
+            live: lease.live,
+            liveUnit: lease.liveUnit,
+            loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
             onExpandedChanged: StudioDriverState.publishActivityExpanded,
             registerDisplay: lease.registerCurrentDisplay,
             images: lease.imageResources,
@@ -49,16 +54,19 @@ class ConversationActivityConnector extends ConsumerWidget {
                 identical(lease.content, content),
           ),
         );
+      } else {
+        children.add(ConversationActivityBar(children: [
+          ConversationRealtimeNotices(notices: region.notices),
+        ]));
       }
-    } else if (state?.view case final view?) {
-      children.add(
-        ConversationActivityBar(
-          children: [ConversationActivityStatus(view: view)],
-        ),
-      );
+    case HiddenRealtimeRegion() || DockRealtimeRegion() || null:
+      break;
+    case ContentRealtimeRegion():
+      break;
     }
     final reference = sessionState.businessRefs?.interactions;
     if (content != null &&
+        state?.region is! DockRealtimeRegion &&
         reference != null &&
         sessionState.interactions.isNotEmpty) {
       children.add(

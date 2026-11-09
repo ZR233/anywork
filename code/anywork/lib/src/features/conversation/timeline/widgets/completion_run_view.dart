@@ -2,22 +2,24 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/studio_l10n.dart';
-import '../state/completion_run_presentation.dart';
 import 'timeline_activity_row.dart';
 
-/// The folded header reads only the representative's explicit class and
-/// ordinal. No body or aggregate facts are read to render a one-member Run.
+/// One producer-defined Work header with bounded, explicitly requested members.
 class CompletionRunView extends StatefulWidget {
   const CompletionRunView({
     required this.id,
-    required this.presentation,
+    required this.summary,
     required this.childBuilder,
     required this.initiallyExpanded,
     this.onExpandedChanged,
+    this.executionPresent = false,
+    this.closing = false,
     super.key,
   });
   final String id;
-  final CompletionRunPresentation presentation;
+  final WorkSummary summary;
+  final bool executionPresent;
+  final bool closing;
   final WidgetBuilder childBuilder;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpandedChanged;
@@ -49,11 +51,15 @@ class _CompletionRunViewState extends State<CompletionRunView> {
 
   @override
   Widget build(BuildContext context) {
-    final entry = widget.presentation.representative;
-    final label = entry.mainPresentation == MainPresentation.backgroundResults
-        ? context.l10n.timelineBackgroundResults
-        : context.l10n.timelineGroupRecord;
-    final count = context.l10n.timelineGroupMemberCount(entry.run!.ordinal);
+    final summary = widget.summary;
+    final label = context.l10n.timelineGroupRecord;
+    final count = context.l10n.timelineGroupMemberCount(summary.total);
+    final status = summary.running > 0 || summary.waiting > 0
+        ? '${summary.terminal}/${summary.total}'
+        : widget.executionPresent
+            ? (widget.closing ? '正在收束' : '等待下一步')
+            : null;
+    final duration = summary.durationMs;
     return Expansible(
       controller: _disclosure,
       maintainState: false,
@@ -69,6 +75,14 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           child: TimelineActivityRow(
             key: ValueKey('completion-run-header:${widget.id}'),
             label: '$label · $count',
+            active: widget.executionPresent && summary.running > 0,
+            summary: summary.thinkingSummary,
+            meta: [
+              ?status,
+              if (summary.failed > 0) '失败 ${summary.failed}',
+              if (summary.cancelled > 0) '取消 ${summary.cancelled}',
+              if (duration != null) '${(duration / 1000).toStringAsFixed(1)}s',
+            ].join(' · '),
             header: true,
             expanded: _disclosure.isExpanded,
           ),
@@ -81,7 +95,12 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               child: TimelineActivityRail(
                 inset: 3,
                 contentInset: 14,
-                child: Builder(builder: widget.childBuilder),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 186),
+                  child: SingleChildScrollView(
+                    child: Builder(builder: widget.childBuilder),
+                  ),
+                ),
               ),
             ),
       expansibleBuilder: (context, header, body, animation) => Column(

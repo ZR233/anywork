@@ -6,8 +6,15 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork/src/presentation/providers/client_provider.dart';
+import 'package:anywork/src/presentation/providers/thread_session_store.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 
 import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 const chatDemand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
@@ -16,6 +23,46 @@ const chatDemand = ReadDemand(maxItems: 20, maxBytes: 65536);
 // the doubles here only expose explicit completion and page handoff barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('accepted pure-live invalidates only realtime projection across hidden/content/hidden', () async {
+    final h = _Harness();
+    await h.openA([]);
+    final lease = h.owner.lease('a')!;
+    final container = ProviderContainer(overrides: [
+      anyworkClientProvider.overrideWithValue(_Client(h.repository)),
+      timelineSessionOwnerProvider.overrideWithValue(h.owner),
+      threadSessionStoreProvider('a').overrideWithValue(
+        const ThreadSessionState(threadId: 'a', hasSnapshot: true),
+      ),
+    ]);
+    final provider = conversationActivityViewModelProvider('a');
+    final observation = container.listen(provider, (_, _) {});
+    await container.pump();
+    expect(container.read(provider)!.region, isA<HiddenRealtimeRegion>());
+    final global = h.owner.source.value;
+    final appends = lease.appliedAppends;
+    final next = LiveDisplayWindow(
+      revision: 2, historyThrough: 0, executionPresent: true,
+      blocks: [LiveDisplayBlock(
+        id: 'work', blockOrder: 1, closing: false, body: displayWork('work', 1).body,
+      )],
+    );
+    await h.a.deliver(displayBatch(
+      [], placement: ChatPlacement.append, from: 0, through: 0, live: next,
+    ));
+    await container.pump();
+    expect(h.owner.source.value, same(global));
+    expect((container.read(provider)!.region as ContentRealtimeRegion).live, same(next));
+    await h.a.deliver(displayBatch(
+      [], placement: ChatPlacement.append, from: 0, through: 0, live: _emptyLive(0),
+    ));
+    await container.pump();
+    expect(container.read(provider)!.region, isA<HiddenRealtimeRegion>());
+    expect(lease.appliedAppends, appends);
+    expect(lease.loadedCount, 0);
+    observation.close();
+    container.dispose();
+    expect((await h.owner.close()).complete, isTrue);
+  });
   for (final failClose in [false, true]) {
     test(
       'group body fold revokes synchronously and retains original IO/close responsibility (failure: $failClose)',
@@ -447,7 +494,7 @@ void main() {
     await h.a.deliver(_batch([_text('a', 4)], placement: ChatPlacement.append));
     expect(lease.loadedCount, 2);
     scope.reply.complete(
-      ChatBatch(
+      _timeline(
         throughSeq: 3,
         placement: ChatPlacement.prepend,
         entries: ([_text('a', 1), _text('a', 2)]),
@@ -482,7 +529,7 @@ void main() {
     final latest = h.owner.lease('a')!;
     expect(latest, isNot(same(first)));
     scope.reply.complete(
-      ChatBatch(
+      _timeline(
         throughSeq: 3,
         placement: ChatPlacement.prepend,
         entries: ([_text('a', 1)]),
@@ -630,10 +677,10 @@ void main() {
       expect(h.owner.source.value?.olderError, isA<StateError>());
       expect(lease.olderCursor, 'before-3');
       expect(lease.loadedCount, 1);
-      scope.reply = Completer<ChatBatch>();
+      scope.reply = Completer<TimelineBatch>();
       final retry = h.owner.retryOlder('a', generation: lease.generation);
       scope.reply.complete(
-        ChatBatch(
+        _timeline(
           throughSeq: 3,
           placement: ChatPlacement.prepend,
           entries: ([_text('a', 2)]),
@@ -666,7 +713,7 @@ void main() {
     expect(lease.isReleased, isFalse);
     expect(scope.isActive, isFalse);
     scope.reply.complete(
-      ChatBatch(
+      _timeline(
         throughSeq: 3,
         placement: ChatPlacement.prepend,
         entries: const [],
@@ -736,6 +783,8 @@ final class _Client extends Fake implements AnyworkClient {
 final class _Repository extends Fake implements ConversationRepository {
   final sessions = <String, ConversationSession>{};
   @override
+  final visibleThreadId = LatestValue<String?>('a');
+  @override
   ConversationSession? existingSession(String threadId) => sessions[threadId];
 }
 
@@ -747,13 +796,15 @@ final class _Session extends Fake implements ConversationSession {
   final ConversationContent content;
 }
 
-final class _Content extends Fake implements ConversationContent {
+final class _Content extends Fake implements TimelineContent {
   _Content(this.threadId) : state = LatestValue(ChatReady(threadId, true));
   @override
   final String threadId;
   @override
   final LatestValue<ChatUiState<bool>> state;
-  ConversationBatchConsumer? consumer;
+  TimelineBatchConsumer? consumer;
+  @override
+  final LatestValue<LiveDisplayWindow?> live = LatestValue(null);
   void Function()? onAttach;
   void Function()? onDetach;
   int attaches = 0;
@@ -762,8 +813,8 @@ final class _Content extends Fake implements ConversationContent {
   final scopes = <_Scope>[];
   final payloads = <String, List<int>>{};
   @override
-  Observation attachConsumer(
-    ConversationBatchConsumer value, {
+  Observation attachTimelineConsumer(
+    TimelineBatchConsumer value, {
     required ReadDemand demand,
   }) {
     if (consumer != null) throw StateError('duplicate consumer');
@@ -777,12 +828,16 @@ final class _Content extends Fake implements ConversationContent {
     });
   }
 
-  Future<void> deliver(ChatBatch batch) => consumer!.applyBatch(batch);
+  Future<void> deliver(TimelineBatch batch) async {
+    final next = batch.live ?? live.value ?? _emptyLive(batch.throughPos);
+    await consumer!.applyTimeline(batch, next);
+    if (batch.placement != ChatPlacement.prepend) live.publish(next);
+  }
   @override
   void refresh() => refreshes++;
   @override
-  ConversationQueryScope openScope({required int generation}) {
-    final scope = _Scope(threadId, generation, consumer!)..payloads = payloads;
+  TimelineQueryScope openScope({required int generation}) {
+    final scope = _Scope(threadId, generation, consumer!, live)..payloads = payloads;
     scopes.add(scope);
     return scope;
   }
@@ -807,9 +862,10 @@ final class _Observation implements Observation {
   }
 }
 
-final class _Scope extends Fake implements ConversationQueryScope {
-  _Scope(this.threadId, this.generation, this.consumer);
-  final ConversationBatchConsumer consumer;
+final class _Scope extends Fake implements TimelineQueryScope {
+  _Scope(this.threadId, this.generation, this.consumer, this.live);
+  final TimelineBatchConsumer consumer;
+  final LatestValue<LiveDisplayWindow?> live;
   @override
   final String threadId;
   @override
@@ -849,11 +905,11 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 
   final requested = Completer<void>();
-  Completer<ChatBatch> reply = Completer<ChatBatch>();
+  Completer<TimelineBatch> reply = Completer<TimelineBatch>();
   Future<void>? _reading;
   final boundaries = <String?>[];
   @override
-  Future<ChatBatch> loadOlder({
+  Future<TimelineBatch> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -862,7 +918,7 @@ final class _Scope extends Fake implements ConversationQueryScope {
     // Match the SDK boundary: resolve only after the captured consumer admits
     // the batch. Retired scopes never redirect a page into a later consumer.
     final result = reply.future.then((batch) async {
-      if (isActive) await consumer.applyBatch(batch);
+      if (isActive) await consumer.applyTimeline(batch, live.value!);
       return batch;
     });
     _reading = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
@@ -882,15 +938,32 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 }
 
-ChatBatch _batch(
+TimelineBatch _batch(
   List<CompletedEntry> entries, {
   ChatPlacement placement = ChatPlacement.set,
   String? before,
-}) => completedBatch(
-  entries,
+}) => displayBatch(
+  entries.map(displaySingle).toList(),
   placement: placement,
   before: before,
   from: placement == ChatPlacement.append
       ? entries.first.completionSeq - 1
       : null,
+  live: placement == ChatPlacement.set ? _emptyLive(entries.lastOrNull?.completionSeq ?? 0) : null,
+);
+
+LiveDisplayWindow _emptyLive(int through) => LiveDisplayWindow(
+  revision: 1, historyThrough: through, executionPresent: false, blocks: [],
+);
+
+TimelineBatch _timeline({
+  required ChatPlacement placement,
+  required List<CompletedEntry> entries,
+  String? before,
+  int? fromSeq,
+  required int throughSeq,
+}) => displayBatch(
+  entries.map(displaySingle).toList(), placement: placement,
+  before: before, from: fromSeq, through: throughSeq,
+  live: placement == ChatPlacement.set ? _emptyLive(throughSeq) : null,
 );

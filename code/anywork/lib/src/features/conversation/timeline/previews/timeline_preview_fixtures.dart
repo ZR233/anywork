@@ -6,7 +6,6 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
-import '../state/completion_run_presentation.dart';
 
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
@@ -422,9 +421,20 @@ abstract final class TimelinePreviewFixtures {
       );
   static TimelineDisplayUnit runUnit(CompletedEntry entry) =>
       TimelineDisplayUnit(
-        entry: entry,
-        run: CompletionRunPresentation.fromEntry(entry),
+        block: DisplayBlock(
+          id: entry.recordId,
+          historyPos: entry.completionSeq,
+          body: WorkDisplayBlock(
+            summary: workSummary(entry.run!.ordinal),
+            members: DisplayBlockRef(databaseId: 'preview', blockId: entry.recordId),
+          ),
+        ),
       );
+
+  static WorkSummary workSummary(int count) => WorkSummary(
+    total: count, terminal: count, running: 0, waiting: 0,
+    failed: 0, cancelled: 0, transferred: 0,
+  );
 
   static Map<String, Object?> _imageMetadata(String id) => {
     'id': id,

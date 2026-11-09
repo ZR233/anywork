@@ -18,6 +18,7 @@ import 'accounts/demo_account_observation.dart';
 
 part 'studio_demo_conversation.dart';
 part 'studio_demo_settings.dart';
+part 'studio_demo_timeline.dart';
 
 const _conversationClosedFailure = StudioFailure(
   code: StudioFailureCode.cancelled,
@@ -251,6 +252,7 @@ class DemoStudioTransport extends StudioTransport
         AccountConfigurationPort,
         AccountModelsPort,
         AccountUsagePort,
+        TimelineTransport,
         AcpPort {
   @override
   Future<RecoveryStateSnapshot> retryRecovery() async => _demoRecoveryState();
@@ -1955,6 +1957,13 @@ class DemoStudioTransport extends StudioTransport
     final route = _demoModeRoute(thread.mode);
     final userCreatedAt = now.subtract(const Duration(minutes: 9));
     final agentCreatedAt = now.subtract(const Duration(minutes: 8));
+    final display = _historyOf(thread.id);
+    display.declareDisplay('turn-demo:user', ['turn-demo:user'], work: false);
+    display.declareDisplay('turn-demo:work', [
+      'turn-demo:reasoning',
+      'turn-demo:tool',
+    ], work: true);
+    display.declareDisplay('turn-demo:final', ['turn-demo:final'], work: false);
     _installDemoHistory(thread.id, [
       _messageItem(
         id: 'turn-demo:user',
@@ -2005,6 +2014,9 @@ class DemoStudioTransport extends StudioTransport
         createdAt: agentCreatedAt,
       ),
     ]);
+    display.sealDisplay('turn-demo:user');
+    display.sealDisplay('turn-demo:work');
+    display.sealDisplay('turn-demo:final');
     return ThreadWorkspace(
       businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
@@ -2056,6 +2068,10 @@ class DemoStudioTransport extends StudioTransport
     String modelId,
     DateTime createdAt,
   ) {
+    final display = _historyOf(thread.id);
+    display.declareDisplay('${thread.id}:final', [
+      '${thread.id}:final',
+    ], work: false);
     _installDemoHistory(thread.id, [
       _messageItem(
         id: '${thread.id}:final',
@@ -2066,6 +2082,7 @@ class DemoStudioTransport extends StudioTransport
         createdAt: createdAt,
       ),
     ]);
+    display.sealDisplay('${thread.id}:final');
     return ThreadWorkspace(
       businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
@@ -4550,6 +4567,63 @@ class DemoStudioTransport extends StudioTransport
     _conversationFeedFactory = factory;
   }
 
+  Future<TimelineFeed> Function(String, TimelineFeed)? _timelineFeedFactory;
+
+  @visibleForTesting
+  set timelineFeedFactory(
+    Future<TimelineFeed> Function(String, TimelineFeed)? factory,
+  ) => _timelineFeedFactory = factory;
+
+  @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  }) async {
+    _ensureDemoRunning();
+    if (!_workspaces.containsKey(threadId)) throw _demoMissing();
+    final connection = _DemoTimelineFeed(
+      this,
+      threadId,
+      _historyOf(threadId),
+      demand,
+    );
+    _ownedConversationFeeds.add(connection);
+    final factory = _timelineFeedFactory;
+    if (factory == null) return connection;
+    final opening = Completer<void>();
+    _openingConversationFeeds.add(opening.future);
+    try {
+      final feed = await factory(threadId, connection);
+      _ownedConversationFeeds.add(feed);
+      if (_runtimeExiting) {
+        await _closeDemoConversation(feed);
+        await connection.close();
+        throw _conversationClosedFailure;
+      }
+      return feed;
+    } catch (_) {
+      await connection.close();
+      rethrow;
+    } finally {
+      opening.complete();
+      _openingConversationFeeds.remove(opening.future);
+    }
+  }
+
+  @visibleForTesting
+  void seedDisplayBlocks({
+    required String threadId,
+    required List<DisplayBlock> blocks,
+    LiveDisplayWindow? live,
+    Map<DisplayBlockRef, List<DisplayMemberHead>>? members,
+  }) {
+    _ensureDemoRunning();
+    _demoWorkspace(threadId);
+    final history = _historyOf(threadId);
+    history.installDisplay(blocks: blocks, live: live, members: members);
+    _publishContent(threadId);
+  }
+
   /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
   /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
   @visibleForTesting
@@ -4705,6 +4779,8 @@ class DemoStudioTransport extends StudioTransport
     _demoContinuationPoints.remove(threadId);
     // 模拟服务同样只在成功受理后推进最近用户消息时间；拒绝路径在上方抛出、不推进。
     _advanceDemoLastUserMessage(threadId, now);
+    _historyOf(threadId)
+        .declareDisplay(input.inputId, [input.inputId], work: false);
     _upsertChatItem(
       threadId,
       _messageItem(
@@ -4729,6 +4805,8 @@ class DemoStudioTransport extends StudioTransport
         ],
       ),
     );
+    _historyOf(threadId).sealDisplay(input.inputId);
+    _publishContent(threadId);
     _emitThreadUpdate(
       threadId,
       ThreadTurnUpdate(
@@ -4777,6 +4855,12 @@ class DemoStudioTransport extends StudioTransport
     // 到这里模型请求才真正准入：控制输入在这一刻被消费，之后停止不会改写它。
     onAdmitted?.call();
     final reasoningId = '$turnId:reasoning';
+    _historyOf(threadId).declareDisplay(
+      '$turnId:work',
+      [reasoningId, '$turnId:tool'],
+      work: true,
+      turnId: turnId,
+    );
     const reasoningSummary =
         '## Inspecting the request\n\nChecking the live ThreadItem projection.';
     const reasoningContent =
@@ -4841,6 +4925,10 @@ class DemoStudioTransport extends StudioTransport
       ),
     );
     final commentaryId = '$turnId:commentary';
+    // This story's commentary is an independent Single, not a Work member.
+    _historyOf(
+      threadId,
+    ).declareDisplay(commentaryId, [commentaryId], work: false, turnId: turnId);
     _upsertChatItem(
       threadId,
       _demoItem(
@@ -4886,6 +4974,8 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
+    _historyOf(threadId).sealDisplay(commentaryId);
+    _publishContent(threadId);
     _emitThreadUpdate(
       threadId,
       ThreadTurnUpdate(
@@ -4986,6 +5076,9 @@ class DemoStudioTransport extends StudioTransport
       ),
     );
     final finalId = '$turnId:final';
+    _historyOf(threadId).sealDisplay('$turnId:work');
+    _historyOf(threadId)
+        .declareDisplay(finalId, [finalId], work: false, turnId: turnId);
     _emitActivity(
       threadId,
       turnId: turnId,
@@ -5038,6 +5131,8 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
+    _historyOf(threadId).sealDisplay(finalId);
+    _publishContent(threadId);
     _emitThreadUpdate(
       threadId,
       ThreadTurnUpdate(
@@ -5590,9 +5685,15 @@ class DemoStudioTransport extends StudioTransport
     if (planRequest != null && planDecision != null) {
       // Canonical admission can still reject a conflicting completion; do that
       // before mutating the runtime, interaction, or operation receipt table.
-      _completeDemoItem(
-        _demoPlanCompletion(planRequest, planDecision, completedAt),
+      final completion = _demoPlanCompletion(
+        planRequest,
+        planDecision,
+        completedAt,
       );
+      _completeDemoItem(completion);
+      final display = _historyOf(completion.threadId);
+      display.declareDisplay(completion.id, [completion.id], work: false);
+      display.sealDisplay(completion.id);
     }
     final receipt = _demoReceipt(
       operationId,
@@ -5728,6 +5829,10 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
+    final display = _historyOf(interaction.threadId);
+    final displayId = 'demo-user-input:${interaction.id}';
+    display.declareDisplay(displayId, [displayId], work: false);
+    display.sealDisplay(displayId);
   }
 
   @override
@@ -6820,6 +6925,12 @@ class DemoStudioTransport extends StudioTransport
       if (host != null) _publishChildInteractionsIfChanged(host);
     }
     if (update case ThreadTurnUpdate(:final turn) when turn.state.isTerminal) {
+      _historyOf(threadId).finishDisplayTurn(turn.turnId, switch (turn.state) {
+        FailedStudioTurnState() => ChatTerminalOutcome.failed,
+        CancelledStudioTurnState() => ChatTerminalOutcome.cancelled,
+        _ => ChatTerminalOutcome.completed,
+      });
+      // Turn receipts are explicit hidden originals, not GUI display blocks.
       _completeDemoItem(
         _demoItem(
           id: 'turn:${turn.turnId.length}:${turn.turnId}',
@@ -6906,7 +7017,9 @@ class DemoStudioTransport extends StudioTransport
     final history = _historyOf(threadId);
     for (final id in pending?.keys ?? const <String>[]) {
       if (!history.byId.containsKey(id)) {
-        history.bodies.remove(id);
+        if (!history.displayMembership.containsKey(id)) {
+          history.bodies.remove(id);
+        }
         history.positions.remove(('member', id));
       }
     }
@@ -7222,6 +7335,11 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
             ),
           ),
         );
+        final displayId = '$turnId:connection-retry-$attempt';
+        final display = _historyOf(threadId);
+        display.declareDisplay(displayId, [displayId], work: false);
+        display.sealDisplay(displayId);
+        _publishContent(threadId);
       }
     }
     if (!_failNextTurn) {

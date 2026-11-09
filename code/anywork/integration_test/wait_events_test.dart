@@ -8,6 +8,7 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -21,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/timeline_observation.dart';
+import 'support/presentation_capture.dart';
 
 // Real AppGraph/FRB/SQLite and production routes. Only the native exit shell is
 // omitted: the official test runner, not StudioExitCoordinator, owns this process.
@@ -31,6 +33,17 @@ void main() {
   late AppGraph graph;
   late ProviderContainer container;
   final projectRoot = Platform.environment['ANYWORK_WAIT_PROJECTS'];
+  final captureReport = <String, Object?>{
+    'scenario': 'wait-events',
+    'runner': 'flutter.integration_test',
+    'coverageGaps': {
+      'permissionApproval':
+          'The existing wait stories do not request approval.',
+      'storageFailure':
+          'No visible storage failure is produced by these stories.',
+    },
+    'presentationCaptures': <Map<String, Object?>>[],
+  };
 
   setUpAll(() async {
     expect(
@@ -65,6 +78,13 @@ void main() {
       );
     } finally {
       container.dispose();
+      final directory =
+          Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS'];
+      if (directory != null && directory.isNotEmpty) {
+        await File('$directory/wait-events-captures.json').writeAsString(
+          '${const JsonEncoder.withIndent('  ').convert(captureReport)}\n',
+        );
+      }
     }
   });
 
@@ -97,13 +117,17 @@ void main() {
       }
     });
     await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const AnyworkApp(enableDesktopHost: false),
+      RepaintBoundary(
+        key: presentationCaptureKey,
+        child: UncontrolledProviderScope(
+          container: container,
+          child: const AnyworkApp(enableDesktopHost: false),
+        ),
       ),
     );
+    captureReport['nativeWindow'] = await configurePresentationWindow(tester);
     await graph.client.directoryCommands.openProject('$projectRoot/$name');
-    return _Scene(tester, graph);
+    return _Scene(tester, graph, name, captureReport);
   }
 
   for (final (name, prefix, completedName, runningName) in const [
@@ -131,6 +155,12 @@ void main() {
       // A later UI read verifies the original immutable result, not whether
       // the model is still running. Early-return proof belongs to Core barriers.
       await scene.expandWait(wait, ThreadWaitStateView.ready);
+      await scene.capture(
+        'wait-events-$name-ready.png',
+        '[[wait_${name.replaceAll('-', '_')}]]; immutable ready result expanded',
+        'Real any-of result: one task succeeded while the other was still running.',
+        wait.atom!,
+      );
 
       if (name == 'sleep-first') {
         final previous = scene.latestTurnId;
@@ -160,6 +190,12 @@ void main() {
     expect(target['status'], 'running');
     expect(target['cancelRequested'], isFalse);
     await scene.expandWait(wait, ThreadWaitStateView.timedOut);
+    await scene.capture(
+      'wait-events-timeout-result.png',
+      '[[wait_timeout]]; immutable timeout result expanded',
+      'Real timedOut result does not imply cancellation of its running task.',
+      wait.atom!,
+    );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets('child wakes parent; a later request retains one report', (
@@ -213,7 +249,7 @@ void main() {
       stopped,
       ChatTerminalOutcome.cancelled,
     );
-    expect(stoppedReceipt.atom.kind, ChatAtomKind.turnReceipt);
+    expect(stoppedReceipt.atom!.kind, ChatAtomKind.turnReceipt);
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -231,9 +267,11 @@ void main() {
 }
 
 final class _Scene {
-  _Scene(this.tester, this.graph);
+  _Scene(this.tester, this.graph, this.name, this.captureReport);
   final WidgetTester tester;
   final AppGraph graph;
+  final String name;
+  final Map<String, Object?> captureReport;
   String? latestTurnId;
   String? _submittedThreadId;
   String? _priorTurnId;
@@ -242,6 +280,37 @@ final class _Scene {
   TimelineDisplayLease get lease =>
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
   late final observed = TimelineObservation(tester, () => lease);
+
+  Future<void> capture(
+    String fileName,
+    String stage,
+    String coverage,
+    ChatAtom atom,
+  ) async {
+    final evidence = <String, Object?>{
+      'fileName': fileName,
+      'fixtureStage': stage,
+      'coverage': coverage,
+      'threadId': lease.threadId,
+      'turnId': atom.turnId,
+      'blockId': observed.unitForMember(atom.id).id,
+      'memberId': atom.id,
+      'toolCallId': atom.tool?.callId,
+      'waitState': atom.wait?.state.name,
+      'captureRequested':
+          Platform
+              .environment['ANYWORK_PRESENTATION_SCREENSHOTS']
+              ?.isNotEmpty ??
+          false,
+      'captureCompleted': false,
+    };
+    (captureReport['presentationCaptures'] as List<Map<String, Object?>>).add(
+      evidence,
+    );
+    await capturePresentation(tester, fileName);
+    expect(tester.takeException(), isNull);
+    evidence['captureCompleted'] = evidence['captureRequested'];
+  }
 
   Future<void> until(
     bool Function() ready,
@@ -338,8 +407,8 @@ final class _Scene {
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
       // State proves completion; Main must separately accept this source and
       // mount its original viewport within this same wait budget before reveal.
-      if (!observed.entries.any((item) => item.atom.source == source) ||
-          observed.activity.any((entry) => entry.atom.source == source)) {
+      if (!observed.singleBlocks.any((item) => item.atom!.source == source) ||
+          observed.liveBlocks.isNotEmpty) {
         return false;
       }
       final mainScrollable = find.byWidgetPredicate(
@@ -349,16 +418,15 @@ final class _Scene {
       );
       if (mainScrollable.evaluate().length != 1) return false;
       if (outcome == StudioTurnStatus.cancelled) {
-        final receipts = observed.entries
+        final receipts = observed.singleBlocks
             .where(
               (item) =>
-                  item.atom.source == source &&
-                  item.mainPresentation == MainPresentation.single &&
-                  item.atom.kind == ChatAtomKind.turnReceipt,
+                  item.atom!.source == source &&
+                  item.atom!.kind == ChatAtomKind.turnReceipt,
             )
             .toList();
         expect(receipts.length, lessThanOrEqualTo(1));
-        return (receipts.singleOrNull?.atom.lifecycle as TerminalChatAtom?)
+        return (receipts.singleOrNull?.atom?.lifecycle as TerminalChatAtom?)
                 ?.outcome ==
             ChatTerminalOutcome.cancelled;
       }
@@ -376,26 +444,25 @@ final class _Scene {
   }) async {
     final original = await waitForTurn(after: after, outcome: outcome);
     final source = ForegroundTurnChatSource(turnId: original.turnId);
-    expect(observed.workFor(source), isNotEmpty);
+    expect(await observed.workForSource(source), isNotEmpty);
     // The typed Turn identifies the real source. Tool lookup still opens and
     // verifies its original ordinary work segment, independently of completion.
     return original;
   }
 
-  Future<CompletedEntry> turnReceipt(
+  Future<TimelineDisplayUnit> turnReceipt(
     StudioTurnView turn,
     ChatTerminalOutcome outcome,
   ) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
-    final receipt = observed.entries.singleWhere(
+    final receipt = observed.singleBlocks.singleWhere(
       (item) =>
-          item.atom.source == source &&
-          item.mainPresentation == MainPresentation.single &&
-          item.atom.kind == ChatAtomKind.turnReceipt,
+          item.atom!.source == source &&
+          item.atom!.kind == ChatAtomKind.turnReceipt,
     );
-    expect((receipt.atom.lifecycle as TerminalChatAtom).outcome, outcome);
-    final payload = receipt.atom.payload;
+    expect((receipt.atom!.lifecycle as TerminalChatAtom).outcome, outcome);
+    final payload = receipt.atom!.payload;
     final byteLength = payload is InlinePayload
         ? payload.bytes.length
         : payload is DeferredPayload
@@ -403,19 +470,18 @@ final class _Scene {
         : null;
     final reason =
         'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${receipt.recordId}, '
+        'presentation within the original frame =${receipt.id}, '
         'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload is InlinePayload, isTrue, reason: reason);
     expect(
-      ChatItemPresentation.forUnit(observed.unit(receipt.recordId))
-          .compatibility,
+      ChatItemPresentation.forUnit(receipt).compatibility,
       ChatItemCompatibility.current,
       reason: reason,
     );
-    await observed.revealItem(receipt);
+    await observed.revealSingle(receipt);
     final rendered = tester
-        .widget<ChatItemView>(observed.itemRow(receipt.recordId))
+        .widget<ChatItemView>(observed.itemRow(receipt.id))
         .item;
     expect(
       rendered.compatibility,
@@ -434,9 +500,9 @@ final class _Scene {
   }) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
-    final groups = observed.workFor(source).toList();
+    final groups = await observed.workForSource(source);
     expect(groups, isNotEmpty);
-    await observed.openSourceRuns(source);
+    await observed.openSourceWork(source);
     final matches = observed.mountedMembers
         .where(
           (atom) =>
@@ -467,7 +533,7 @@ final class _Scene {
         'byteLength=$byteLength. '
         'Over-budget payloads may remain Deferred in the product.';
     expect(payload, isA<InlinePayload>(), reason: reason);
-    final reference = observed.unitForMember(atom.id).run!.reference;
+    final reference = observed.unitForMember(atom.id).memberReference!;
     final display = await observed.revealMember(atom, reference: reference);
     expect(display.expanded, isTrue);
     expect(
@@ -499,7 +565,9 @@ final class _Scene {
   }
 
   Future<void> closeTurn(StudioTurnView turn) async {
-    await observed.closeSource(ForegroundTurnChatSource(turnId: turn.turnId));
+    await observed.closeSourceWork(
+      ForegroundTurnChatSource(turnId: turn.turnId),
+    );
     expect(
       (await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
@@ -523,18 +591,13 @@ final class _Scene {
         return false;
       }
       _submittedTurnId ??= turn.turnId;
-      return turn.turnId == _submittedTurnId &&
-          observed.activity.any(
-            (entry) =>
-                entry.atom.source ==
-                ForegroundTurnChatSource(turnId: turn.turnId),
-          );
+      return turn.turnId == _submittedTurnId && observed.liveWork.isNotEmpty;
     }, 'live work item with explicit member reference');
     final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
+    await observed.openSourceWork(source);
     await until(
       () =>
-          observed.activity
-              .map((entry) => entry.atom)
+          observed.liveAtoms
               .where(
                 (atom) =>
                     atom.source == source &&
@@ -544,13 +607,10 @@ final class _Scene {
           1,
       'exact live wait atom',
     );
-    final atom = observed.activity
-        .map((entry) => entry.atom)
-        .singleWhere(
-          (atom) =>
-              atom.source == source &&
-              atom.tool?.callId.startsWith(prefix) == true,
-        );
+    final atom = observed.liveAtoms.singleWhere(
+      (atom) =>
+          atom.source == source && atom.tool?.callId.startsWith(prefix) == true,
+    );
     expect(atom.lifecycle, isA<ActiveChatAtom>());
     expect(atom.wait?.state, ThreadWaitStateView.waiting);
     final panel = find.byWidgetPredicate(
@@ -564,13 +624,21 @@ final class _Scene {
       'typed production Waiting panel',
     );
     expect(
-      observed.activity
-          .map((entry) => entry.atom)
+      observed.liveAtoms
           .singleWhere((member) => member.id == atom.id)
           .lifecycle,
       isA<ActiveChatAtom>(),
     );
     expect(tester.getSize(panel).isEmpty, isFalse);
+    await Scrollable.ensureVisible(tester.element(panel), alignment: 0.5);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await capture(
+      'wait-events-$name-waiting.png',
+      '[[wait_cancel]]; exact live wait member / before stop',
+      'Real active wait member and its production Waiting panel; not a permission dock.',
+      atom,
+    );
   }
 
   Map<String, dynamic> result(ChatItemPresentation item) =>
@@ -600,5 +668,8 @@ final class _Scene {
       find.byKey(StudioDriverKeys.waitingDetails(item.id)),
       findsOneWidget,
     );
+    await Scrollable.ensureVisible(tester.element(details), alignment: 0.5);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   }
 }

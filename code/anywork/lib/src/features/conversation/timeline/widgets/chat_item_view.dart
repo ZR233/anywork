@@ -156,21 +156,22 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
-      if (unit.run == null) {
+      if (unit.body is SingleDisplayBlock) {
+        final atom = unit.atom!;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (unit.entry.atom.contents.isEmpty) const Text('内容状态未知'),
+            if (atom.contents.isEmpty) const Text('内容状态未知'),
             for (
               var index = 0;
-              index < unit.entry.atom.contents.length;
+              index < atom.contents.length;
               index++
             )
               widget.contentRangeBuilder?.call(
                     unit.id,
                     'content-$index',
                     '查看内容',
-                    unit.entry.atom.contents[index].reference,
+                    atom.contents[index].reference,
                     _contentWitness,
                   ) ??
                   const Text('内容读取尚未就绪'),

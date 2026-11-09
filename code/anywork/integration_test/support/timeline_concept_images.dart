@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
@@ -31,15 +32,16 @@ final class TimelineConceptImageInput {
   /// Call with the completed entry and attachment refs from ONE Main message.
   /// Returns identities to archive alongside the later layout assertions.
   Map<String, Object?> verifyItem(
-    CompletedEntry item,
+    TimelineDisplayUnit item,
     List<ThreadAttachmentView> attachments,
   ) {
-    expect(item.mainPresentation, MainPresentation.single);
-    expect(item.atom.kind, ChatAtomKind.input);
-    expect(item.atom.source, InputChatSource(inputId: inputId));
-    expect(item.recordId, isNotNull);
-    expect(item.recordId, isNotEmpty);
-    expect(item.completionSeq, greaterThan(0));
+    expect(item.body, isA<SingleDisplayBlock>());
+    expect(item.atom!.kind, ChatAtomKind.input);
+    expect(item.atom!.source, InputChatSource(inputId: inputId));
+    expect(item.id, isNotEmpty);
+    expect((item.body as SingleDisplayBlock).completionId, isNotEmpty);
+    expect(item.historyPos, greaterThan(0));
+    expect(item.atom!.completionSeq, greaterThan(0));
     expect(attachments, hasLength(3));
     expect(attachments.map((item) => item.id).toSet(), hasLength(3));
     for (var index = 0; index < attachments.length; index++) {
@@ -54,8 +56,10 @@ final class TimelineConceptImageInput {
     }
     return {
       ...toJson(),
-      'itemId': item.recordId,
-      'contentItemId': item.recordId,
+      'itemId': item.id,
+      'contentItemId': (item.body as SingleDisplayBlock).completionId,
+      'historyPos': item.historyPos,
+      'completionSeq': item.atom!.completionSeq,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
     };
   }
@@ -64,7 +68,7 @@ final class TimelineConceptImageInput {
   /// No dependency on an in-flight owner/key/Driver DTO contract.
   Map<String, Object?> verifyHorizontalLayout(
     WidgetTester tester, {
-    required CompletedEntry item,
+    required TimelineDisplayUnit item,
     required List<ThreadAttachmentView> attachments,
     required Finder itemFinder,
     required Finder Function(String resourceId) thumbnailFinder,

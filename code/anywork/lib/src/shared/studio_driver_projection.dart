@@ -292,11 +292,10 @@ TimelineDisplayFacts? _timelineFacts(
         {
           'unitId': display.unitId,
           'expanded': display.expanded,
-          'runReference': switch (display.runReference) {
+          'blockReference': switch (display.blockReference) {
             final reference? => {
               'databaseId': reference.databaseId,
-              'indexVersion': reference.indexVersion,
-              'startSeq': reference.startSeq,
+              'blockId': reference.blockId,
             },
             null => null,
           },
@@ -436,22 +435,38 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-  if (unit?.run != null) {
-    final projected = unit!.entry;
+  if (unit != null) {
+    final atom = unit.atom;
+    final item = chatItemPresentationOf(message);
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: projected.atom.finishedAt,
+      sealedAt: atom?.finishedAt ?? unit.summary?.finishedAt,
       compatibility: 'current',
       omittedBytes: null,
-      kind: projected.mainPresentation.name,
+      kind: unit.summary == null ? atom?.kind.name ?? 'single' : 'work',
       status: 'history',
-      text: '',
-      channel: null,
-      timeline: _timelineEnvelopeFacts(projected),
+      text: item == null ? '' : _timelineItemFacts(item).text,
+      channel: atom?.textChannel?.name,
+      timeline: {
+        'blockId': unit.id,
+        'historyPos': unit.historyPos,
+        'members': switch (unit.memberReference) {
+          final reference? => {
+            'databaseId': reference.databaseId,
+            'blockId': reference.blockId,
+          },
+          null => null,
+        },
+        if (atom != null) ...{
+          'recordId': atom.completionItemId,
+          'completionSeq': atom.completionSeq,
+          'source': _sourceFacts(atom.source),
+        },
+      },
     );
   }
   final item = chatItemPresentationOf(message);
-  if (item != null) return _timelineItemFacts(item, timeline: unit?.entry);
+  if (item != null) return _timelineItemFacts(item);
   return TimelineItemFacts(
     id: message.id,
     sealedAt: null,

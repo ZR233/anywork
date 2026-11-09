@@ -26,7 +26,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.content,
     this.selectionId,
     this.selectionStartedMicros,
-    required this.openRun,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
@@ -34,6 +33,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       generation: generation,
       onUnitCreated: _bindUnit,
       onUnitRetired: _retireUnit,
+      expansionForBlock: expansionForBlock,
     );
   }
 
@@ -43,8 +43,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ConversationContent content;
   final int? selectionId;
   final int? selectionStartedMicros;
-  final Future<ConversationContent> Function(CompletionRunRef, ReadDemand)
-  openRun;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
@@ -54,6 +52,10 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final Set<TimelineGroupDisplay> _groupDisplays = {};
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
+
+  /// Published only by this display's serial admission, never directly by the transport.
+  final ValueNotifier<LiveDisplayWindow?> live = ValueNotifier(null);
+  final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<ConversationQueryScope> _ownedQueries = {};
   final Map<ConversationQueryScope, Future<void>> _closingQueries = {};
   ConversationQueryScope? _queries;
@@ -76,6 +78,65 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int get appliedSets => _appliedSets;
   int get appliedPrepends => _appliedPrepends;
   int get appliedAppends => _appliedAppends;
+  TimelineExpansionIntent expansionForBlock(String blockId) =>
+      _expansions.putIfAbsent(blockId, TimelineExpansionIntent.new);
+  bool isBlockExpanded(String blockId) =>
+      _expansions[blockId]?.expanded ?? false;
+  void setBlockExpanded(String blockId, bool expanded) {
+    if (_retired) return;
+    expansionForBlock(blockId).expanded = expanded;
+  }
+
+  TimelineDisplayUnit liveUnit(LiveDisplayBlock block, bool executionPresent) {
+    final unit = TimelineDisplayUnit.live(
+      block: block,
+      executionPresent: executionPresent,
+      expansion: expansionForBlock(block.id),
+    );
+    unit.expansion.current = unit;
+    _bindUnit(unit);
+    return unit;
+  }
+
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) async {
+    final scope = queries;
+    if (scope is! TimelineQueryScope) {
+      throw const StaleConversationScope();
+    }
+    final members = await scope.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
+    if (_retired || !scope.isActive) {
+      members.requestClose();
+      await members.close();
+      throw const StaleConversationScope();
+    }
+    return members;
+  }
+
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    ReadDemand? demand,
+  }) async {
+    final scope = queries;
+    if (scope is! TimelineQueryScope) {
+      throw const StaleConversationScope();
+    }
+    final page = await scope.loadLiveOlder(
+      before: before,
+      demand: demand ?? this.demand,
+    );
+    if (_retired || !scope.isActive) {
+      throw const StaleConversationScope();
+    }
+    return page;
+  }
 
   Iterable<TimelineGroupDisplay> get groupDisplays => _retired
       ? const []
@@ -83,6 +144,9 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   void _bindUnit(TimelineDisplayUnit unit) {
     final intent = unit.expansion;
+    // The same disclosure capability crosses live/history parents. Its queries
+    // and callbacks are installed once, independent of header replacements.
+    if (intent.isDisplayActive != null) return;
     ConversationQueryScope? bodyScope;
     Object? bodyGeneration;
     intent.retireBody = () {
@@ -129,11 +193,15 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openRun = (reference, demand) {
+    intent.openDisplayMembers = (reference, window, demand) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openRun(reference, demand);
+      return openDisplayMembers(
+        reference: reference,
+        window: window,
+        demand: demand,
+      );
     };
   }
 
@@ -252,6 +320,9 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     if (!_retired) {
       _retired = true;
       _presentation?.retireDisplays();
+      for (final intent in _expansions.values) {
+        intent.retire();
+      }
       _childrenDisplays.clear();
       _groupDisplays.clear();
       _currentDisplay = null;
@@ -313,6 +384,8 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     _presentation?.dispose();
     _presentation = null;
     imageResources.release();
+    live.dispose();
+    _expansions.clear();
     retirement.dispose();
     controller.dispose();
     _controller = null;
@@ -320,7 +393,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   }
 }
 
-/// The only completion consumer. Page results and completion batches commit
+/// The only presentation consumer. Page results and timeline batches commit
 /// serially; network reads stay outside that commit chain and never hold credit.
 final class TimelineSessionOwner {
   TimelineSessionOwner({required this.client});
@@ -516,7 +589,13 @@ final class TimelineSessionOwner {
     }
     _bindingConsumer = true;
     try {
-      final observation = session.content.attachConsumer(
+      final content = session.content;
+      if (content is! TimelineContent) {
+        throw const ConversationContinuityError(
+          'Native timeline requires the presentation feed',
+        );
+      }
+      final observation = content.attachTimelineConsumer(
         _TimelineConsumer(this, selection, session),
         demand: demand,
       );
@@ -574,11 +653,12 @@ final class TimelineSessionOwner {
   Future<void> _accept(
     int selection,
     ConversationSession session,
-    ChatBatch batch,
+    TimelineBatch batch,
+    LiveDisplayWindow live,
   ) => _serialize(() async {
     if (!_selected(selection, session)) return;
     if (batch.placement == ChatPlacement.set) {
-      await _set(selection, session, batch);
+      await _set(selection, session, batch, live);
       return;
     }
     final current = _current;
@@ -586,18 +666,34 @@ final class TimelineSessionOwner {
       throw const ConversationContinuityError('Chat has no active display');
     }
     final presentation = current._presentation!;
-    await current._mutate(() => presentation.applyBatch(batch));
+    await current._mutate(() async {
+      // The component API reports validation failures through its Future even
+      // though its in-memory mutation contains no await. Commit live only after
+      // successful admission; the completed microtasks precede the next frame.
+      // No content query, layout or animation is part of this commit.
+      if (batch.blocks.isNotEmpty) {
+        await presentation.applyTimeline(batch);
+      }
+      if (!_selected(selection, session) ||
+          !identical(_current, current) ||
+          current.isRetired) {
+        return;
+      }
+      current.live.value = live;
+    });
     if (!_selected(selection, session) ||
         !identical(_current, current) ||
         current.isRetired) {
       return;
     }
-    current._recordBatch(batch.placement);
+    if (batch.blocks.isNotEmpty || batch.placement != ChatPlacement.append) {
+      current._recordBatch(batch.placement);
+    }
     if (batch.placement == ChatPlacement.prepend) {
       current._before = batch.before;
       current._hasOlder = batch.before != null;
       _publishState(isLoadingOlder: false, olderError: null);
-    } else if (batch.entries.isNotEmpty) {
+    } else if (batch.blocks.isNotEmpty) {
       _publishState(hasNewOutput: current.mode == TimelineDisplayMode.history);
     }
   });
@@ -605,18 +701,14 @@ final class TimelineSessionOwner {
   Future<void> _set(
     int selection,
     ConversationSession session,
-    ChatBatch batch,
+    TimelineBatch batch,
+    LiveDisplayWindow live,
   ) async {
     final next = TimelineDisplayLease(
       threadId: session.threadId,
       generation: ++_generation,
       demand: _readDemand!,
       content: session.content,
-      openRun: (reference, demand) => client.conversations.openRun(
-        threadId: session.threadId,
-        reference: reference,
-        demand: demand,
-      ),
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
@@ -627,7 +719,10 @@ final class TimelineSessionOwner {
     _preparingDisplays.add(next);
     try {
       final presentation = next._presentation!;
-      await next._mutate(() => presentation.applyBatch(batch));
+      await next._mutate(() async {
+        await presentation.applyTimeline(batch);
+        next.live.value = live;
+      });
     } catch (_) {
       _preparingDisplays.remove(next);
       _retire(next);
@@ -781,10 +876,12 @@ final class TimelineSessionOwner {
     _publishState(isLoadingOlder: true, olderError: null);
     try {
       final scope = current.queries;
-      if (scope == null) return;
+      if (scope is! TimelineQueryScope) {
+        throw const StaleConversationScope();
+      }
       // The SDK performs IO outside admission, then resolves only after the same
       // captured consumer applied the Prepend. Do not insert the returned batch twice.
-      await scope.loadOlder(
+      await scope.loadTimelineOlder(
         before: before,
         demand: _readDemand ?? current.demand,
       );
@@ -888,24 +985,12 @@ final class TimelineSessionOwner {
   }
 }
 
-final class _TimelineConsumer implements ConversationBatchConsumer {
+final class _TimelineConsumer implements TimelineBatchConsumer {
   const _TimelineConsumer(this.owner, this.selection, this.session);
   final TimelineSessionOwner owner;
   final int selection;
   final ConversationSession session;
   @override
-  Future<void> applyBatch(ChatBatch batch) =>
-      owner._accept(selection, session, batch);
-  @override
-  Future<void> applyActivity(ActivitySnapshot snapshot) =>
-      owner._serialize(() async {
-        if (!owner._selected(selection, session)) return;
-        final display = owner._current;
-        if (display == null || display.isRetired) {
-          throw const StaleConversationScope();
-        }
-        await display._mutate(
-          () => display._presentation!.applyActivity(snapshot),
-        );
-      });
+  Future<void> applyTimeline(TimelineBatch batch, LiveDisplayWindow live) =>
+      owner._accept(selection, session, batch, live);
 }

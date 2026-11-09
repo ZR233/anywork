@@ -10,6 +10,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 import '../support/mapped_conversation_feed.dart';
 
 // The real SDK and presentation owner admit batches into the real component.
@@ -28,7 +29,8 @@ void main() {
     await session.content.ready;
     await transport.main.accepted(2);
     final mainLease = owner.lease('thread')!;
-    final mainCurrent = session.activity.value;
+    final mainCurrent = mainLease.live.value;
+    expect(mainCurrent, isNotNull);
     final children = await client.conversations.openChildren(
       threadId: 'thread',
       parentId: 'parent',
@@ -53,7 +55,7 @@ void main() {
     await children.ready;
     await transport.child.accepted(1);
     expect(controller.messages.single.id, 'child');
-    expect(session.activity.value, same(mainCurrent));
+    expect(mainLease.live.value, same(mainCurrent));
     expect(children.activity.value, isNull);
     expect(
       transport.scopes.last,
@@ -78,8 +80,8 @@ void main() {
     expect(transport.childReader.closeCalls, greaterThanOrEqualTo(1));
     expect(transport.main.closed, isFalse);
     expect(owner.lease('thread'), same(mainLease));
-    transport.main.emit(
-      chatBatch([
+    transport.main.emitTimeline(
+      _mainBatch([
         chatMessage('main-next', completionSeq: 2),
       ], placement: ChatPlacement.append),
     );
@@ -128,7 +130,7 @@ void main() {
     final loading = h.owner.loadOlder('thread', generation: lease.generation);
     await h.transport.reader.entered.future;
     h.transport.reader.reply.complete(
-      chatBatch([
+      _mainBatch([
         chatMessage('a', completionSeq: 10),
         chatMessage('b', completionSeq: 11),
       ], placement: ChatPlacement.prepend),
@@ -263,7 +265,7 @@ void main() {
       expect(lease.openDetailQueries(), isNull);
       expect(lease.isReleased, isFalse);
       h.transport.reader.reply.complete(
-        chatBatch([chatMessage('late')], placement: ChatPlacement.prepend),
+        _mainBatch([chatMessage('late')], placement: ChatPlacement.prepend),
       );
       await loading;
       expect((await h.owner.close()).complete, isTrue);
@@ -288,7 +290,7 @@ void main() {
     ]);
     final resource = old.imageResources.borrow('image');
     final oldKey = old.chatKey;
-    h.transport.initial = chatBatch([chatMessage('reset')]);
+    h.transport.initial = _mainBatch([chatMessage('reset')]);
     final content = h.client.conversations.session('thread').content;
     content.refresh();
     await content.ready;
@@ -328,14 +330,14 @@ void main() {
 
 final class _Harness {
   _Harness(List<CompletedEntry> messages, {String? before})
-    : transport = _LeaseTransport(chatBatch(messages, before: before)) {
+    : transport = _LeaseTransport(_mainBatch(messages, before: before)) {
     client = AnyworkClient(transport: transport, clientId: 'lease');
     owner = TimelineSessionOwner(client: client)..updateReadDemand(chatDemand);
     addTearDown(() async {
       transport.reader.failClose = false;
       if (!transport.reader.reply.isCompleted) {
         transport.reader.reply.complete(
-          chatBatch([], placement: ChatPlacement.prepend),
+          _mainBatch([], placement: ChatPlacement.prepend),
         );
       }
       client.conversations.setVisibleThread(null);
@@ -360,37 +362,37 @@ final class _Harness {
   }
 
   Future<void> append(List<CompletedEntry> messages) async {
-    transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
+    transport.feed.emitTimeline(
+      _mainBatch(messages, placement: ChatPlacement.append),
+    );
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }
 }
 
-final class _LeaseTransport extends Fake implements StudioTransport {
+final class _LeaseTransport extends Fake
+    implements StudioTransport, TimelineTransport {
   _LeaseTransport(this.initial) {
     _createFeed();
   }
-  ChatBatch initial;
+  TimelineBatch initial;
   void _createFeed() {
-    feed = ScriptedConversationFeed(
-      threadId: 'thread',
-      subscriptionId: 'lease',
+    feed = ScriptedTimelineFeed(
+      queries: _TimelineQueries(reader, 'lease'),
       state: () => ThreadSnapshotFrame(
         workspace: chatWorkspace('thread'),
         completedHistoryVersion: 1,
         schemaVersion: threadSchemaVersion,
       ),
       initial: () => initial,
-      reader: reader,
     );
   }
 
-  late ScriptedConversationFeed feed;
+  late ScriptedTimelineFeed feed;
   _Reader reader = _Reader();
   int opens = 0;
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
     if (opens > 0) {
@@ -405,14 +407,13 @@ final class _LeaseTransport extends Fake implements StudioTransport {
 final class _Reader extends Fake implements ConversationReader {
   @override
   String get threadId => 'thread';
-  final reply = Completer<ChatBatch>();
+  final reply = Completer<TimelineBatch>();
   final entered = Completer<void>();
   final boundaries = <String>[];
   final demands = <ReadDemand>[];
   bool failClose = false;
   int closeCalls = 0;
-  @override
-  Future<ChatBatch> loadOlder({
+  Future<TimelineBatch> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -431,19 +432,18 @@ final class _Reader extends Fake implements ConversationReader {
   }
 }
 
-final class _ScopedTransport extends Fake implements StudioTransport {
+final class _ScopedTransport extends Fake
+    implements StudioTransport, TimelineTransport {
   final mainReader = _Reader();
   final childReader = _Reader();
-  late final main = ScriptedConversationFeed(
-    threadId: 'thread',
-    subscriptionId: 'main',
+  late final main = ScriptedTimelineFeed(
+    queries: _TimelineQueries(mainReader, 'main'),
     state: () => ThreadSnapshotFrame(
       workspace: chatWorkspace('thread'),
       completedHistoryVersion: 1,
       schemaVersion: threadSchemaVersion,
     ),
-    reader: mainReader,
-    initial: () => chatBatch([chatMessage('main')]),
+    initial: () => _mainBatch([chatMessage('main')]),
   );
   late final child = ScriptedConversationFeed(
     threadId: 'thread',
@@ -457,12 +457,62 @@ final class _ScopedTransport extends Fake implements StudioTransport {
   );
   final scopes = <ChatScope>[];
   @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  }) async => main;
+  @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
     required ReadDemand demand,
   }) async {
     scopes.add(scope);
-    return scope is MainChatScope ? main : child;
+    expect(scope, isA<ChildrenChatScope>());
+    return child;
   }
+}
+
+TimelineBatch _mainBatch(
+  List<CompletedEntry> entries, {
+  ChatPlacement placement = ChatPlacement.set,
+  String? before,
+}) {
+  final through = entries.lastOrNull?.completionSeq ?? 0;
+  return displayBatch(
+    [for (final entry in entries) displaySingle(entry)],
+    placement: placement,
+    before: before,
+    from: placement == ChatPlacement.append
+        ? entries.first.completionSeq - 1
+        : null,
+    through: through,
+    live: placement == ChatPlacement.set
+        ? LiveDisplayWindow(
+            revision: 1,
+            historyThrough: through,
+            executionPresent: false,
+            blocks: const [],
+          )
+        : null,
+  );
+}
+
+final class _TimelineQueries extends Fake implements TimelineFeed {
+  _TimelineQueries(this.reader, this.subscriptionId);
+  @override
+  final _Reader reader;
+  @override
+  String get threadId => 'thread';
+  @override
+  final String subscriptionId;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => reader.loadTimelineOlder(before: before, demand: demand);
+  @override
+  void requestClose() {}
+  @override
+  Future<void> close() async {}
 }

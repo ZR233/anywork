@@ -7,6 +7,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 // Placement, Run composition and work counters are covered by
 // completion_run_controller_test. These assertions preserve the original
@@ -17,14 +18,14 @@ void main() {
     () async {
       final stock = InMemoryChatController();
       final adapter = TimelineMessageController(stock, generation: 7);
-      await adapter.applyBatch(
-        completedBatch([
-          completionEntry(
+      await adapter.applyTimeline(
+        displayBatch([
+          displaySingle(completionEntry(
             'completion',
             1,
             presentation: MainPresentation.single,
             text: '中文 🐱',
-          ),
+          )),
         ]),
       );
       final card = chatItemPresentationOf(stock.messages.single)!;
@@ -79,10 +80,10 @@ void main() {
   test('retirement rejects admission and leaves the component lifetime with its owner', () async {
     final stock = InMemoryChatController();
     final adapter = TimelineMessageController(stock, generation: 7);
-    await adapter.applyBatch(completedBatch([completionEntry('loaded', 1)]));
+    await adapter.applyTimeline(displayBatch([displaySingle(completionEntry('loaded', 1))]));
     adapter.retireDisplays();
     await expectLater(
-      adapter.applyBatch(completedBatch([])),
+      () => adapter.applyTimeline(displayBatch([])),
       throwsA(isA<StaleConversationScope>()),
     );
     adapter.dispose();

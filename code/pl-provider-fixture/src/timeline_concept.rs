@@ -22,9 +22,11 @@ pub const PARTIAL_TEXT: &str = "已经完成的部分结果必须保留，不能
 pub const OVERLAP_PROMPT: &str = "A07：推理尚未结束时开始正文，并保留可读流。";
 pub const OVERLAP_TEXT: &str = "正文已经开始且可以读取，先前推理稍后才结束。";
 pub const OVERLAP_EARLY_REASONING: &str = "后开始的推理 B 已先完成，推理 A 仍在进行。";
-pub const EMPTY_TEXT_PROMPT: &str = "A14：空正文开始和结束不分隔前后相邻工作。";
-pub const EMPTY_TEXT_ANSWER: &str = "空正文没有可见气泡，前后相邻工作仍属于同一段。";
-pub const REQUIRED_STEPS: usize = 9;
+pub const EMPTY_TEXT_PROMPT: &str = "A13：空正文保留真实边界，前后工作使用不同展示组。";
+pub const EMPTY_TEXT_ANSWER: &str = "空正文不显示卡片，前后工作分别保留。";
+pub const HOT_UPDATE_PROMPT: &str = "同一正文内依次追加二十个可控增量，保持展示身份不变。";
+const HOT_UPDATE_HEAD: &str = "热更新正文：";
+pub const REQUIRED_STEPS: usize = 10;
 // Distinct production assets, copied by the isolated harness for ONE input.
 // All are below production's 2000px / 5MiB base64 normalization limits;
 // together they also fit the fixture's existing 1MiB request-body limit.
@@ -83,6 +85,27 @@ pub const STAGES: &[&str] = &[
     "a14-after-empty",
     "a14-text-readable",
     "a14-before-turn-end",
+    "hot-ready",
+    "hot-01",
+    "hot-02",
+    "hot-03",
+    "hot-04",
+    "hot-05",
+    "hot-06",
+    "hot-07",
+    "hot-08",
+    "hot-09",
+    "hot-10",
+    "hot-11",
+    "hot-12",
+    "hot-13",
+    "hot-14",
+    "hot-15",
+    "hot-16",
+    "hot-17",
+    "hot-18",
+    "hot-19",
+    "hot-20",
 ];
 
 /// The listener and strict script share these existing ReplyStage tokens.
@@ -322,7 +345,40 @@ impl Control {
         });
         script.add(|step| self.overlap_step(step));
         script.add(|step| self.empty_text_step(step));
+        script.add(|step| self.hot_update_step(step));
         script.finish()
+    }
+
+    fn hot_update_step(&self, step: usize) -> Step {
+        let id = "concept-hot-text";
+        let mut first = vec![created("concept-hot")];
+        first.extend(text_start(id, 0, HOT_UPDATE_HEAD));
+        let mut chunks = vec![first];
+        let mut full_text = HOT_UPDATE_HEAD.to_owned();
+        for index in 1..=20 {
+            let delta = format!(" [{index:02}]");
+            full_text.push_str(&delta);
+            chunks.push(vec![json!({
+                "type":"response.output_text.delta",
+                "output_index":0, "item_id":id, "content_index":0, "delta":delta
+            })]);
+        }
+        chunks.push(vec![
+            text_done(id, 0, &full_text),
+            json!({"type":"response.completed","response":{"id":"concept-hot","model":"fixture-model"}}),
+        ]);
+        let gates = self
+            .names
+            .iter()
+            .zip(&self.stages)
+            .filter_map(|(name, stage)| name.starts_with("hot-").then_some(stage))
+            .collect::<Vec<_>>();
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            HOT_UPDATE_PROMPT,
+            step,
+            ReplyStage::staged(chunks, &gates),
+        )
     }
 
     fn named_stages(&self, names: &[&str]) -> Vec<&ReplyStage> {

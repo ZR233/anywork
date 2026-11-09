@@ -104,7 +104,18 @@ final class ChatItemPresentation {
   }
 
   static ChatItemPresentation forUnit(TimelineDisplayUnit unit) {
-    final item = unit.entry.atom;
+    final item = unit.atom;
+    if (item == null) {
+      return ChatItemPresentation(
+        id: unit.id,
+        compatibility: ChatItemCompatibility.current,
+        type: 'displayUnit',
+        data: const {},
+        bodies: const [],
+        displayUnit: unit,
+        authorId: 'assistant',
+      );
+    }
     final author = item.source is InboxMessageChatSource
         ? 'inbox:${(item.source as InboxMessageChatSource).sourceId}'
         : switch (item.textChannel) {
@@ -121,7 +132,7 @@ final class ChatItemPresentation {
             finishedAt <= 8640000000000
         ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
         : null;
-    if (unit.run != null || item.payload == null) {
+    if (item.payload == null) {
       return ChatItemPresentation(
         id: unit.id,
         compatibility: ChatItemCompatibility.current,

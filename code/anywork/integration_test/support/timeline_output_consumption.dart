@@ -125,96 +125,55 @@ final class TimelineOutputConsumption {
     _sealedEnds += 1;
   }
 
-  Future<void> _readRun(TimelineDisplayUnit unit) async {
+  Future<void> _readWork(TimelineDisplayUnit unit) async {
     const demand = ReadDemand(maxItems: 1, maxBytes: 64 * 1024);
-    final content = await _within(
-      conversations.openRun(
-        threadId: lease.threadId,
-        reference: unit.run!.reference,
-        demand: demand,
-      ),
-    );
-    final first = _MemberSet();
-    Observation? observation;
-    ConversationQueryScope? scope;
-    Object? failure;
-    StackTrace? failureStack;
-    try {
-      observation = content.attachConsumer(first, demand: demand);
-      await _within(content.ready);
-      final initial = await _within(first.batch.future);
-      final attempt = content.currentAttemptId;
-      scope = content.openScope(generation: lease.generation);
+    final reference = unit.memberReference!;
+    final source = ForegroundTurnChatSource(turnId: turnId);
+    DisplayMemberWindow window = const LatestDisplayMembers();
+    var members = 0;
+    int? laterOrder;
+    while (true) {
+      final handle = await _within(lease.openDisplayMembers(
+        reference: reference, window: window, demand: demand,
+      ));
       _memberScopes += 1;
-      _memberPages += 1;
-      var page = initial;
-      var members = 0;
-      int? laterOrder;
-      while (true) {
-        // Prepend reads walk backwards; check order without retaining old pages.
-        for (final atom in page.entries.reversed.map((entry) => entry.atom)) {
-          expectSync(atom.source, unit.entry.atom.source);
+      DisplayMemberPage page;
+      try {
+        final value = await _within(handle.next());
+        expectSync(value, isNotNull);
+        page = value!;
+        _memberPages += 1;
+        expectSync(page.block, reference);
+        expectSync(page.sealed, isTrue);
+        // This is an explicit history inventory demand. Membership/order are
+        // read from the producer's display index, never recomputed from seq.
+        for (final member in page.entries.reversed) {
+          if (laterOrder != null) expectSync(member.memberOrder, lessThan(laterOrder));
+          laterOrder = member.memberOrder;
+          members += 1;
+          final atom = member.atom;
+          if (atom.source != source) continue;
           expectSync(atom.turnId, turnId);
           expectSync(atom.lifecycle, isA<TerminalChatAtom>());
-          expectSync(
-            (atom.lifecycle as TerminalChatAtom).outcome,
-            ChatTerminalOutcome.completed,
-          );
+          expectSync((atom.lifecycle as TerminalChatAtom).outcome, ChatTerminalOutcome.completed);
           expectSync(atom.completionSeq, isNotNull);
-          if (laterOrder != null) {
-            expectSync(atom.completionSeq, lessThan(laterOrder));
-          }
-          laterOrder = atom.completionSeq;
-          members += 1;
-          if ((atom.kind == ChatAtomKind.text ||
-                  atom.kind == ChatAtomKind.reasoning) &&
-              !_outputs.contains(atom.completionItemId)) {
-            await _readFrozen(scope, atom.completionItemId!, atom.contents);
+          if ((atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.reasoning) &&
+              !_outputs.contains(member.completionId)) {
+            expectSync(member.completionId, isNotNull);
+            await _readFrozen(_scope, member.completionId!, atom.contents);
           }
         }
-        final before = page.before;
-        if (before == null) break;
-        page = await _within(scope.loadOlder(before: before, demand: demand));
-        _memberPages += 1;
-        expectSync(page.placement, ChatPlacement.prepend);
-        expectSync(page.before, isNot(before));
+        expectSync(await _within(handle.next()), isNull);
+      } finally {
+        handle.requestClose();
+        await _within(handle.close());
       }
-      expectSync(
-        members,
-        greaterThanOrEqualTo(unit.entry.run!.ordinal),
-        reason: 'Run opens at its own cut, which may be newer than Main',
-      );
-      expectSync(content.currentAttemptId, attempt);
-      expectSync(content.state.value, isA<ChatReady<bool>>());
-    } catch (error, stack) {
-      failure = error;
-      failureStack = stack;
-    } finally {
-      try {
-        if (scope != null) {
-          expectSync((await scope.close()).complete, isTrue);
-          expectSync(scope.pendingQueries, 0);
-        }
-      } catch (error, stack) {
-        failure ??= error;
-        failureStack ??= stack;
-      }
-      try {
-        observation?.cancel();
-      } catch (error, stack) {
-        failure ??= error;
-        failureStack ??= stack;
-      }
-      try {
-        expectSync((await content.close()).complete, isTrue);
-      } catch (error, stack) {
-        failure ??= error;
-        failureStack ??= stack;
-      }
+      final before = page.before;
+      if (before == null) break;
+      window = BeforeDisplayMembers(memberOrder: before);
     }
-    if (failure != null) {
-      Error.throwWithStackTrace(failure, failureStack!);
-    }
+    expectSync(members, unit.summary!.total,
+      reason: 'Frozen block membership and its authoritative header agree exactly');
   }
 
   Future<void> readMany({
@@ -227,28 +186,23 @@ final class TimelineOutputConsumption {
     final admitted = <String, int>{};
     final positions = <int, String>{};
     Future<void> consume(TimelineDisplayUnit unit) async {
-      final item = unit.entry;
-      final position = item.completionSeq;
-      if (admitted[unit.id] == position) {
-        return;
-      }
-      if (admitted[unit.id] case final previous?) {
-        expectSync(position, greaterThan(previous));
-      }
+      final position = unit.historyPos!;
+      if (admitted[unit.id] == position) return;
+      expectSync(admitted.containsKey(unit.id), isFalse,
+        reason: 'An already frozen block can never grow or change position');
       expectSync(positions.containsKey(position), isFalse);
       admitted[unit.id] = position;
-      positions[position] = item.recordId;
-      if (item.atom.source == source) {
-        expectSync(item.atom.turnId, turnId);
-        if (unit.run != null) {
-          await _readRun(unit);
-        } else if (item.atom.kind == ChatAtomKind.text) {
-          expectSync(
-            (item.atom.lifecycle as TerminalChatAtom).outcome,
-            ChatTerminalOutcome.completed,
-          );
-          await _readFrozen(_scope, item.recordId, item.atom.contents);
-        }
+      positions[position] = unit.id;
+      switch (unit.body) {
+        case WorkDisplayBlock():
+          await _readWork(unit);
+        case SingleDisplayBlock(:final atom, :final completionId):
+          if (atom.source == source && atom.kind == ChatAtomKind.text) {
+            expectSync(atom.turnId, turnId);
+            expectSync((atom.lifecycle as TerminalChatAtom).outcome, ChatTerminalOutcome.completed);
+            expectSync(completionId, isNotNull);
+            await _readFrozen(_scope, completionId!, atom.contents);
+          }
       }
     }
 
@@ -258,7 +212,7 @@ final class TimelineOutputConsumption {
       for (final message in lease.controller.messages) {
         final unit =
             message.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
-        if (admitted[unit.id] != unit.entry.completionSeq) {
+        if (admitted[unit.id] != unit.historyPos) {
           next = unit;
           break;
         }
@@ -274,12 +228,11 @@ final class TimelineOutputConsumption {
         continue;
       }
       final turn = session.state.lastTurn;
-      final activity = lease.content.activity.value;
+      final live = lease.live.value;
       if (turn?.turnId == turnId &&
           turn?.state is CompletedStudioTurnState &&
-          activity != null &&
-          !activity.executionPresent &&
-          activity.entries.isEmpty) {
+          live != null &&
+          live.blocks.isEmpty) {
         break;
       }
       // Drain already admitted bodies before requesting another layout. A
@@ -416,23 +369,5 @@ final class TimelineOutputConsumption {
       'originalScopeClosed': report.complete,
       'pendingQueriesAtClose': _scope.pendingQueries,
     };
-  }
-}
-
-final class _MemberSet implements ConversationBatchConsumer {
-  @override
-  Future<void> applyActivity(ActivitySnapshot snapshot) async {
-    // Every scope carries Activity. The SDK owns its through barrier; this
-    // one-page historical observer has no activity presentation or reducer.
-  }
-  final batch = Completer<ChatBatch>();
-
-  @override
-  Future<void> applyBatch(ChatBatch value) async {
-    // Accept immediately; reading bodies never holds the delivery acknowledgement.
-    if (!batch.isCompleted) {
-      expectSync(value.placement, ChatPlacement.set);
-      batch.complete(value);
-    }
   }
 }

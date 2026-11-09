@@ -69,7 +69,9 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
     final unit = widget.unit;
     return CompletionRunView(
       id: unit.id,
-      presentation: unit.run!,
+      summary: unit.summary!,
+      executionPresent: unit.executionPresent,
+      closing: unit.closing,
       initiallyExpanded: unit.expansion.expanded!,
       onExpandedChanged: (expanded) {
         // 在关闭动画前同步撤销读取资格；纯视图不持有领域资源。

@@ -531,6 +531,8 @@ final class _TimelineScene {
   }
 
   Future<void> waitForCompletedTurn({String? after}) async {
+    final clock = Stopwatch()..start();
+    const timeout = Duration(minutes: 6);
     StudioTurnView? turn;
     final observed = TimelineObservation(tester, () => lease);
     await until(
@@ -556,15 +558,24 @@ final class _TimelineScene {
             graph.timeline.lease(selected) == null) {
           return false;
         }
-        final source = ForegroundTurnChatSource(turnId: candidate.turnId);
-        // Main admission is a separate requirement, not the Turn's completion
-        // authority. Both must arrive within the original wait budget.
-        return observed.entries.any((item) => item.atom.source == source) &&
-            !observed.activity.any((entry) => entry.atom.source == source);
+        return observed.liveBlocks.isEmpty;
       },
       'completed timeline Turn',
-      timeout: const Duration(minutes: 6),
+      timeout: timeout,
     );
+    final source = ForegroundTurnChatSource(turnId: turn!.turnId);
+    // Main admission is independent of terminal State. Work headers have no
+    // source: inspect an actual bounded member page if no Single proves it.
+    while (!observed.singleBlocks.any((unit) => unit.atom!.source == source)) {
+      final work = await observed.workForSource(source);
+      if (work.any((unit) => unit.historyPos != null)) break;
+      if (clock.elapsed >= timeout) {
+        fail('Completed Turn has not admitted its original source into Main');
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
+    expect(observed.liveBlocks, isEmpty);
     latestTurnId = turn!.turnId;
   }
 

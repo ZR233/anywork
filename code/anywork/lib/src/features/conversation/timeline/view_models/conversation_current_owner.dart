@@ -6,6 +6,25 @@ import 'package:flutter/foundation.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
 
+/// Local member disclosure and its original range owner, held by a bounded
+/// display member page rather than a Widget's parent position.
+final class TimelineMemberDisclosure {
+  bool expanded = false;
+  bool retired = false;
+  ConversationCurrentOwner? owner;
+
+  void retire() {
+    if (retired) return;
+    retired = true;
+    final original = owner;
+    owner = null;
+    if (original != null) {
+      unawaited(original.close());
+      original.dispose();
+    }
+  }
+}
+
 /// Display-owned range subscriptions on one captured SDK content qualification.
 /// Only bounded windows and resource handles live here, never chat messages or
 /// a text-delta accumulator.

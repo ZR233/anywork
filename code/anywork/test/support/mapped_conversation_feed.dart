@@ -5,7 +5,7 @@ import 'package:anywork_client/conversation_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// A test-only typed frame projection around a real feed. Identity, ACK and close stay native-owned.
-final class MappedConversationFeed implements ConversationFeed {
+class MappedConversationFeed implements ConversationFeed {
   MappedConversationFeed(
     this.inner,
     this.mapState, {
@@ -42,12 +42,53 @@ final class MappedConversationFeed implements ConversationFeed {
   Future<void> close() => inner.close();
 }
 
+/// Preserves the display query capability while mapping only State frames.
+final class MappedTimelineFeed extends MappedConversationFeed
+    implements TimelineFeed {
+  MappedTimelineFeed(TimelineFeed super.inner, super.mapState, {super.reader});
+  TimelineFeed get timeline => inner as TimelineFeed;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => timeline.loadTimelineOlder(before: before, demand: demand);
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => timeline.loadLiveOlder(before: before, demand: demand);
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => timeline.openDisplayMembers(
+    reference: reference,
+    window: window,
+    demand: demand,
+  );
+}
+
 /// 脚本化权威发送端。只发布显式事实，SDK 才是归约者；没有 pull 循环。
 class ScriptedConversationFeed implements ConversationFeed {
   ScriptedConversationFeed({
+    required String threadId,
+    required String subscriptionId,
+    required ChatBatch Function() initial,
+    ConversationReader? reader,
+    ThreadStreamFrame Function()? state,
+  }) : this._(
+         threadId: threadId,
+         subscriptionId: subscriptionId,
+         initial: () => ConversationChatEvent(batch: initial()),
+         reader: reader,
+         state: state,
+       );
+
+  ScriptedConversationFeed._({
     required this.threadId,
     required this.subscriptionId,
-    required this.initial,
+    required ConversationEvent Function() initial,
     ConversationReader? reader,
     ThreadStreamFrame Function()? state,
   }) : reader = reader ?? _UnusedReader(threadId) {
@@ -61,7 +102,7 @@ class ScriptedConversationFeed implements ConversationFeed {
               emitState(state());
               await Future.any([accepted(deliveredFrames), _stopped.future]);
             }
-            if (!closed) publish(ConversationChatEvent(batch: initial()));
+            if (!closed) publish(initial());
           }());
         });
       },
@@ -72,7 +113,6 @@ class ScriptedConversationFeed implements ConversationFeed {
   final String threadId;
   @override
   final String subscriptionId;
-  final ChatBatch Function() initial;
   @override
   final ConversationReader reader;
   late final StreamController<ConversationFrame> _events;
@@ -160,6 +200,55 @@ class ScriptedConversationFeed implements ConversationFeed {
       _closing = null;
       rethrow;
     }
+  }
+}
+
+/// Explicit Timeline frames, sharing only the scripted credit/lifecycle harness.
+final class ScriptedTimelineFeed extends ScriptedConversationFeed
+    implements TimelineFeed {
+  ScriptedTimelineFeed({
+    required this.queries,
+    required TimelineBatch Function() initial,
+    super.state,
+  }) : super._(
+         threadId: queries.threadId,
+         subscriptionId: queries.subscriptionId,
+         reader: queries.reader,
+         initial: () => ConversationTimelineEvent(batch: initial()),
+       );
+  final TimelineFeed queries;
+  void emitTimeline(TimelineBatch batch) =>
+      publish(ConversationTimelineEvent(batch: batch));
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => queries.loadTimelineOlder(before: before, demand: demand);
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => queries.loadLiveOlder(before: before, demand: demand);
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => queries.openDisplayMembers(
+    reference: reference,
+    window: window,
+    demand: demand,
+  );
+  @override
+  void requestClose() {
+    super.requestClose();
+    queries.requestClose();
+  }
+
+  @override
+  Future<void> close() async {
+    await super.close();
+    await queries.close();
   }
 }
 

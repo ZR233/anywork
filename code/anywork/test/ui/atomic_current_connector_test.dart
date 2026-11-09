@@ -8,6 +8,8 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
+import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
@@ -176,13 +178,21 @@ final class _Harness {
   TimelineCurrentDisplay? display;
   int revision = 0;
   bool active = true;
-  void accept(List<ActivityEntry> entries) => content.activity.publish(
-    ActivitySnapshot(
-      revision: ++revision,
-      completedThrough: 0,
-      executionPresent: true,
-      entries: entries,
-    ),
+  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
+  void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
+    revision: ++revision,
+    historyThrough: 0,
+    executionPresent: true,
+    blocks: [
+      for (final (index, entry) in entries.indexed)
+        LiveDisplayBlock(
+          id: entry.atom.id,
+          blockOrder: index + 1,
+          closing: false,
+          body: SingleDisplayBlock(atom: entry.atom),
+        ),
+    ],
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
@@ -190,7 +200,14 @@ final class _Harness {
           key: ObjectKey(content),
           session: const ThreadSessionState(threadId: 'thread'),
           content: content,
-          view: null,
+          region: ContentRealtimeRegion(live: live.value, notices: []),
+          live: live,
+          loadLiveOlder: loadLiveOlder,
+          liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+            block: block,
+            executionPresent: executionPresent,
+            expansion: TimelineExpansionIntent(),
+          ),
           images: images,
           readAttachment: (_) async => Uint8List(0),
           isDisplayActive: () => active,
@@ -206,6 +223,7 @@ final class _Harness {
     active = false;
     images.release();
     content.activity.close();
+    live.dispose();
   }
 }
 
@@ -215,6 +233,86 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  for (final handoffWithoutRevisionChange in [false, true]) {
+    testWidgets(
+      'same-revision older page retains Single IO until ${handoffWithoutRevisionChange ? 'history handoff' : 'structural revision'} invalidates it',
+      (tester) async {
+        final h = _Harness();
+        addTearDown(h.dispose);
+        final latestBlock = LiveDisplayBlock(
+          id: 'latest',
+          blockOrder: 2,
+          closing: false,
+          body: SingleDisplayBlock(atom: _textItem(revision: 2)),
+        );
+        LiveDisplayWindow latest({int revision = 7, int through = 0}) =>
+            LiveDisplayWindow(
+              revision: revision,
+              historyThrough: through,
+              executionPresent: true,
+              blocks: [latestBlock],
+              older: 'older-cursor',
+            );
+        final page = LiveDisplayWindow(
+          revision: 7,
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: [
+            LiveDisplayBlock(
+              id: 'older',
+              blockOrder: 1,
+              closing: false,
+              body: SingleDisplayBlock(atom: _textItem()),
+            ),
+          ],
+        );
+        var reads = 0;
+        h.loadLiveOlder = (before) async {
+          expect(before, 'older-cursor');
+          reads++;
+          return page;
+        };
+        h.live.value = latest();
+        await tester.pumpWidget(h.host());
+        await tester.tap(find.widgetWithText(TextButton, '更早实时片段'));
+        await _flush(tester);
+        final scope = h.content.scopes.last;
+        scope.watches.single.add(_window('older text'));
+        await _flush(tester);
+        final borrowed = h.display!.windows.single;
+        final memberState = tester.state(find.byType(TimelineMemberAtom));
+        final scopes = h.content.scopes.length;
+        expect(find.text('older text'), findsOneWidget);
+        h.live.value = latest(); // Different DTO identity, same structural cut.
+        await tester.pumpWidget(h.host());
+        expect(find.widgetWithText(TextButton, '最新实时片段'), findsOneWidget);
+        expect(find.text('older text'), findsOneWidget);
+        expect(
+          tester.state(find.byType(TimelineMemberAtom)),
+          same(memberState),
+        );
+        expect(h.display!.windows.single, same(borrowed));
+        expect(h.content.scopes.length, scopes);
+        expect(scope.active, isTrue);
+        expect(scope.requests, hasLength(1));
+        expect(reads, 1);
+        h.live.value = latest(
+          revision: handoffWithoutRevisionChange ? 7 : 8,
+          through: handoffWithoutRevisionChange ? 1 : 0,
+        );
+        expect(scope.active, isFalse);
+        await tester.pumpWidget(h.host());
+        await _flush(tester);
+        expect(find.widgetWithText(TextButton, '最新实时片段'), findsNothing);
+        expect(find.text('older text'), findsNothing);
+        expect(scope.closed, isTrue);
+        expect(h.content.scopes.length, scopes + 1);
+        await tester.pumpWidget(const SizedBox());
+        await _flush(tester);
+      },
+    );
+  }
+
   testWidgets(
     'real Activity animates thinking and writing, pauses accessibly, and retires tickers with identity',
     (tester) async {

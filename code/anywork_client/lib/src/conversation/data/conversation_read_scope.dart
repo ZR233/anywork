@@ -9,14 +9,18 @@ import '../domain/conversation_repository.dart';
 
 /// Borrows the original feed's reader. Retiring this display scope cancels its
 /// watches and rejects late results, but never closes a sibling's read lease.
-final class ConversationReadScope implements ConversationQueryScope {
+final class ConversationReadScope implements TimelineQueryScope {
   ConversationReadScope({
     required this.threadId,
     required this.generation,
     required ConversationReader reader,
     required bool Function() isEligible,
     required Future<void> Function(ChatBatch) applyOlder,
+    TimelineFeed? timeline,
+    Future<void> Function(TimelineBatch)? applyTimelineOlder,
   }) : _reader = reader,
+       _timeline = timeline,
+       _applyTimelineOlder = applyTimelineOlder,
        _isEligible = isEligible,
        _applyOlder = applyOlder;
 
@@ -27,17 +31,83 @@ final class ConversationReadScope implements ConversationQueryScope {
   final ConversationReader _reader;
   final bool Function() _isEligible;
   final Future<void> Function(ChatBatch) _applyOlder;
+  final TimelineFeed? _timeline;
+  final Future<void> Function(TimelineBatch)? _applyTimelineOlder;
+  final Set<_ScopedDisplayMembers> _members = {};
   final Set<Future<void>> _pending = {};
   final Set<_ContentWatch> _watches = {};
   final Set<_ResourceRead> _resourceReads = {};
   bool _retired = false;
   Future<ChatBatch>? _older;
+  Future<TimelineBatch>? _timelineOlder;
 
   @override
   bool get isActive => !_retired && _isEligible();
   @override
   int get pendingQueries => _pending.length;
-  bool get isSettled => _retired && _pending.isEmpty && _watches.isEmpty;
+  bool get isSettled =>
+      _retired && _pending.isEmpty && _watches.isEmpty && _members.isEmpty;
+
+  TimelineFeed get _timelineFeed =>
+      _timeline ?? (throw StateError('Not a Timeline read scope'));
+
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    if (!isActive) return Future.error(const StaleConversationScope());
+    final existing = _timelineOlder;
+    if (existing != null) return existing;
+    final completion = Completer<TimelineBatch>();
+    _timelineOlder = completion.future;
+    completion.complete(
+      _run(() async {
+        final batch = await _timelineFeed.loadTimelineOlder(
+          before: before,
+          demand: demand,
+        );
+        if (!isActive) throw const StaleConversationScope();
+        await _applyTimelineOlder!(batch);
+        if (!isActive) throw const StaleConversationScope();
+        return batch;
+      }),
+    );
+    unawaited(
+      completion.future.then<void>(
+        (_) => _timelineOlder = null,
+        onError: (Object _, StackTrace __) => _timelineOlder = null,
+      ),
+    );
+    return completion.future;
+  }
+
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => _run(() => _timelineFeed.loadLiveOlder(before: before, demand: demand));
+
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => _run(() async {
+    final handle = await _timelineFeed.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
+    final owned = _ScopedDisplayMembers(this, handle, reference, window);
+    _members.add(owned);
+    if (!isActive) {
+      owned.requestClose();
+      await owned._settle();
+      throw const StaleConversationScope();
+    }
+    return owned;
+  });
 
   @override
   Future<ThreadBusinessRefs> readBusinessRefs() =>
@@ -327,6 +397,9 @@ final class ConversationReadScope implements ConversationQueryScope {
   void retire() {
     if (_retired) return;
     _retired = true;
+    for (final member in List.of(_members)) {
+      member.requestClose();
+    }
     for (final watch in List.of(_watches)) {
       unawaited(_cancelWatch(watch));
     }
@@ -338,6 +411,7 @@ final class ConversationReadScope implements ConversationQueryScope {
     final pending = [
       ..._pending,
       for (final watch in List.of(_watches)) _cancelWatch(watch),
+      for (final member in List.of(_members)) member._settle(),
     ];
     if (pending.isNotEmpty) {
       if (deadline == null) {
@@ -371,8 +445,112 @@ final class ConversationReadScope implements ConversationQueryScope {
               attemptId: AttemptId(generation),
               reason: reason,
             ),
+        for (final member in _members)
+          UnresolvedResource(
+            owner: 'display-members:$threadId:$generation',
+            attemptId: AttemptId(generation),
+            reason: member.error ?? StateError('members still closing'),
+          ),
       ],
     );
+  }
+}
+
+final class _ScopedDisplayMembers implements DisplayMembers {
+  _ScopedDisplayMembers(this.scope, this.handle, this.reference, this.window);
+  final ConversationReadScope scope;
+  final DisplayMembers handle;
+  final DisplayBlockRef reference;
+  final DisplayMemberWindow window;
+  bool stopping = false;
+  bool pulling = false;
+  bool closed = false;
+  int revision = -1;
+  bool sealed = false;
+  bool ended = false;
+  Object? error;
+  Future<void>? _closing;
+
+  @override
+  Future<DisplayMemberPage?> next() {
+    if (stopping || !scope.isActive)
+      return Future.error(const StaleConversationScope());
+    if (ended) return Future.value(null);
+    if (pulling)
+      return Future.error(StateError('Display member next already in flight'));
+    pulling = true;
+    return scope._run(() async {
+      try {
+        final page = await handle.next();
+        if (stopping || !scope.isActive) throw const StaleConversationScope();
+        if (page == null) {
+          if (!sealed) {
+            throw const ConversationContinuityError('Display members ended before sealed page');
+          }
+          ended = true;
+          return null;
+        }
+        var order = 0;
+        final keys = <String>{};
+        var valid = !sealed && page.block == reference && page.revision > revision;
+        for (final entry in page.entries) {
+          valid =
+              valid &&
+              entry.memberKey.isNotEmpty &&
+              keys.add(entry.memberKey) &&
+              entry.memberOrder > order;
+          if (window case BeforeDisplayMembers(:final memberOrder)) {
+            valid = valid && entry.memberOrder < memberOrder;
+          }
+          order = entry.memberOrder;
+        }
+        if (!valid)
+          throw const ConversationContinuityError(
+            'Invalid display member page',
+          );
+        revision = page.revision;
+        sealed = page.sealed;
+        return page;
+      } finally {
+        pulling = false;
+      }
+    });
+  }
+
+  @override
+  void requestClose() {
+    stopping = true;
+    if (closed) return;
+    try {
+      handle.requestClose();
+      error = null;
+    } catch (failure) {
+      error = failure;
+    }
+  }
+
+  Future<void> _settle() async {
+    try {
+      await close();
+    } catch (failure) {
+      error = failure;
+    }
+  }
+
+  @override
+  Future<void> close() {
+    if (closed) return Future.value();
+    requestClose();
+    return _closing ??= Future<void>.sync(() async {
+      try {
+        await handle.close();
+        if (error != null) throw error!;
+        closed = true;
+        scope._members.remove(this);
+      } finally {
+        _closing = null;
+      }
+    });
   }
 }
 

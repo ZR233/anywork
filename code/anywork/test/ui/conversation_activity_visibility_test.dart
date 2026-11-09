@@ -1,7 +1,8 @@
-import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_activity_state.dart';
+import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/display_fixtures.dart';
+import '../support/completion_fixtures.dart';
 
 const _status = ThreadActivityView(
   threadId: 'thread',
@@ -11,11 +12,11 @@ const _status = ThreadActivityView(
   kind: ThreadActivityKind.thinking,
   summary: '思考中',
 );
-final _activity = ActivitySnapshot(
+final _live = LiveDisplayWindow(
   revision: 1,
-  completedThrough: 0,
+  historyThrough: 0,
   executionPresent: true,
-  entries: const [],
+  blocks: const [],
 );
 
 PendingInteraction _userInput({
@@ -56,52 +57,91 @@ PendingInteraction _toolApproval() => const PendingInteraction(
   ),
 );
 
-ConversationActivityState? _project(List<PendingInteraction> interactions) =>
-    projectConversationActivityState(
+ConversationRealtimeRegion _project(PendingInteraction? interaction) =>
+    projectConversationRealtime(
       status: _status,
-      activity: _activity,
+      live: _live,
       storage: null,
-      interactions: interactions,
+      interaction: interaction,
     );
 
 void main() {
+  test('closing Work and successor text remain ordered and storage/stop notices coexist', () {
+    final live = LiveDisplayWindow(
+      revision: 4, historyThrough: 3, executionPresent: true,
+      blocks: [
+        LiveDisplayBlock(id: 'work', blockOrder: 1, closing: true, body: displayWork('work', 4).body),
+        LiveDisplayBlock(id: 'text', blockOrder: 2, closing: false,
+          body: SingleDisplayBlock(atom: completionEntry('text', 5, text: '正文').atom)),
+      ],
+    );
+    final projected = projectConversationRealtime(
+      live: live,
+      interaction: null,
+      storage: const ThreadStorageStateView(fault: ThreadHistoryFault.writeFailed),
+      status: const ThreadActivityView(
+        threadId: 'thread', identity: 'stopping', revision: 2, turnId: 'turn',
+        kind: ThreadActivityKind.stopping, summary: '停止中',
+      ),
+    ) as ContentRealtimeRegion;
+    expect(projected.live, same(live));
+    expect(projected.live!.blocks.map((block) => block.id), ['work', 'text']);
+    expect(projected.notices.whereType<ExecutionRealtimeNotice>().map((notice) => notice.view.kind),
+      [ConversationActivityKind.stopping, ConversationActivityKind.storageBlocked]);
+  });
+
+  test('cold open retains saved blocks but cannot project thinking or a running timer', () {
+    final live = LiveDisplayWindow(
+      revision: 4, historyThrough: 3, executionPresent: false,
+      blocks: [LiveDisplayBlock(id: 'work', blockOrder: 1, closing: false, body: displayWork('work', 4).body)],
+    );
+    final projected = projectConversationRealtime(
+      live: live, interaction: null, storage: null, status: _status,
+    ) as ContentRealtimeRegion;
+    expect(projected.live, same(live));
+    expect(projected.notices.single, isA<UnrestoredRealtimeNotice>());
+  });
+
+  test('idle history-only region hides without suppressing the final historical block', () {
+    expect(projectConversationRealtime(live: null, interaction: null, storage: null, status: null),
+      isA<HiddenRealtimeRegion>());
+  });
   test('Plan confirmation uses its State controls without hiding the actual activity snapshot', () {
-    final state = _project([
+    final state = _project(
       _userInput(
         id: 'plan',
         questionId: agentSessionPlanConfirmationQuestionId,
       ),
-    ]);
+    );
 
-    expect(state?.view, isNull);
-    expect(state?.activity, same(_activity));
+    expect(state, isA<DockRealtimeRegion>());
+    expect((state as DockRealtimeRegion).interactionId, 'plan');
   });
 
   test('ordinary questions suppress duplicate status text and preserve unfinished operations', () {
-    final state = _project([
+    final state = _project(
       _userInput(id: 'question', questionId: 'ordinary-question'),
-    ]);
+    );
 
-    expect(state?.view, isNull);
-    expect(state?.activity, same(_activity));
+    expect(state, isA<DockRealtimeRegion>());
+    expect((state as DockRealtimeRegion).interactionId, 'question');
   });
 
   test('resolved interaction retains the real activity observation', () {
-    final state = _project(const []);
+    final state = _project(null) as ContentRealtimeRegion;
 
     expect(state, isNotNull);
-    expect(state!.activity, isNotNull);
-    expect(state.view!.kind, ConversationActivityKind.thinking);
+    expect(state.live, same(_live));
+    expect(state.notices.whereType<ExecutionRealtimeNotice>().single.view.kind,
+      ConversationActivityKind.thinking);
   });
 
   test('tool approval keeps the existing activity projection', () {
-    final state = _project([
-      _userInput(id: 'question', questionId: 'ordinary-question'),
-      _toolApproval(),
-    ]);
+    final state = _project(_toolApproval()) as ContentRealtimeRegion;
 
     expect(state, isNotNull);
-    expect(state!.activity, isNotNull);
-    expect(state.view!.kind, ConversationActivityKind.thinking);
+    expect(state.live, same(_live));
+    expect(state.notices.whereType<ExecutionRealtimeNotice>().map((notice) => notice.view.kind),
+      [ConversationActivityKind.thinking, ConversationActivityKind.awaitingApproval]);
   });
 }

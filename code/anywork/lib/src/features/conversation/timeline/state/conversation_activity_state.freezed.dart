@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$ConversationActivityState {
 
- ConversationActivityView? get view; ActivitySnapshot? get activity;
+ ConversationActivityView? get view; ConversationRealtimeRegion get region;
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,20 +27,20 @@ $ConversationActivityStateCopyWith<ConversationActivityState> get copyWith => _$
 @override
 bool operator ==(Object other) {
   final _this = this as ConversationActivityState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ConversationActivityState&&(identical(other.view, _this.view) || other.view == _this.view)&&(identical(other.activity, _this.activity) || other.activity == _this.activity));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ConversationActivityState&&(identical(other.view, _this.view) || other.view == _this.view)&&(identical(other.region, _this.region) || other.region == _this.region));
 }
 
 
 @override
 int get hashCode {
   final _this = this as ConversationActivityState;
-  return Object.hash(runtimeType,_this.view,_this.activity);
+  return Object.hash(runtimeType,_this.view,_this.region);
 }
 
 @override
 String toString() {
   final _this = this as ConversationActivityState;
-  return 'ConversationActivityState(view: ${_this.view}, activity: ${_this.activity})';
+  return 'ConversationActivityState(view: ${_this.view}, region: ${_this.region})';
 }
 
 
@@ -51,7 +51,7 @@ abstract mixin class $ConversationActivityStateCopyWith<$Res>  {
   factory $ConversationActivityStateCopyWith(ConversationActivityState value, $Res Function(ConversationActivityState) _then) = _$ConversationActivityStateCopyWithImpl;
 @useResult
 $Res call({
- ConversationActivityView? view, ActivitySnapshot? activity
+ ConversationActivityView? view, ConversationRealtimeRegion region
 });
 
 
@@ -68,11 +68,11 @@ class _$ConversationActivityStateCopyWithImpl<$Res>
 
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? view = freezed,Object? activity = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? view = freezed,Object? region = null,}) {
   return _then(ConversationActivityState(
 view: freezed == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
-as ConversationActivityView?,activity: freezed == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
-as ActivitySnapshot?,
+as ConversationActivityView?,region: null == region ? _self.region : region // ignore: cast_nullable_to_non_nullable
+as ConversationRealtimeRegion,
   ));
 }
 
@@ -157,10 +157,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ConversationActivityView? view,  ActivitySnapshot? activity)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ConversationActivityView? view,  ConversationRealtimeRegion region)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _ConversationActivityState() when $default != null:
-return $default(_that.view,_that.activity);case _:
+return $default(_that.view,_that.region);case _:
   return orElse();
 
 }
@@ -178,10 +178,10 @@ return $default(_that.view,_that.activity);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ConversationActivityView? view,  ActivitySnapshot? activity)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ConversationActivityView? view,  ConversationRealtimeRegion region)  $default,) {final _that = this;
 switch (_that) {
 case _ConversationActivityState():
-return $default(_that.view,_that.activity);case _:
+return $default(_that.view,_that.region);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -198,10 +198,10 @@ return $default(_that.view,_that.activity);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ConversationActivityView? view,  ActivitySnapshot? activity)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ConversationActivityView? view,  ConversationRealtimeRegion region)?  $default,) {final _that = this;
 switch (_that) {
 case _ConversationActivityState() when $default != null:
-return $default(_that.view,_that.activity);case _:
+return $default(_that.view,_that.region);case _:
   return null;
 
 }
@@ -213,11 +213,11 @@ return $default(_that.view,_that.activity);case _:
 
 
 class _ConversationActivityState implements ConversationActivityState {
-  const _ConversationActivityState({required this.view, this.activity});
+  const _ConversationActivityState({required this.view, required this.region});
 
 
 @override final  ConversationActivityView? view;
-@override final  ActivitySnapshot? activity;
+@override final  ConversationRealtimeRegion region;
 
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
@@ -229,18 +229,18 @@ _$ConversationActivityStateCopyWith<_ConversationActivityState> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ConversationActivityState&&(identical(other.view, view) || other.view == view)&&(identical(other.activity, activity) || other.activity == activity));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ConversationActivityState&&(identical(other.view, view) || other.view == view)&&(identical(other.region, region) || other.region == region));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,view,activity);
+    return Object.hash(runtimeType,view,region);
 }
 
 @override
 String toString() {
-    return 'ConversationActivityState(view: $view, activity: $activity)';
+    return 'ConversationActivityState(view: $view, region: $region)';
 }
 
 
@@ -251,7 +251,7 @@ abstract mixin class _$ConversationActivityStateCopyWith<$Res> implements $Conve
   factory _$ConversationActivityStateCopyWith(_ConversationActivityState value, $Res Function(_ConversationActivityState) _then) = __$ConversationActivityStateCopyWithImpl;
 @override @useResult
 $Res call({
- ConversationActivityView? view, ActivitySnapshot? activity
+ ConversationActivityView? view, ConversationRealtimeRegion region
 });
 
 
@@ -268,11 +268,11 @@ class __$ConversationActivityStateCopyWithImpl<$Res>
 
 /// Create a copy of ConversationActivityState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? view = freezed,Object? activity = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? view = freezed,Object? region = null,}) {
   return _then(_ConversationActivityState(
 view: freezed == view ? _self.view : view // ignore: cast_nullable_to_non_nullable
-as ConversationActivityView?,activity: freezed == activity ? _self.activity : activity // ignore: cast_nullable_to_non_nullable
-as ActivitySnapshot?,
+as ConversationActivityView?,region: null == region ? _self.region : region // ignore: cast_nullable_to_non_nullable
+as ConversationRealtimeRegion,
   ));
 }
 

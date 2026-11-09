@@ -982,13 +982,12 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
-    return super.openConversationFeed(threadId, scope: scope, demand: demand);
+    return super.openTimelineFeed(threadId, demand: demand);
   }
 
   @override

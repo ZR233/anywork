@@ -20,13 +20,15 @@ const presentationCaptureKey = ValueKey('integration-presentation-surface');
 /// Request the concept's logical viewport through the existing PID-bound native
 /// window support. Never override the test view's metrics or surface size.
 Future<Map<String, Object?>> configurePresentationWindow(
-  WidgetTester tester,
-) async {
+  WidgetTester tester, {
+  double logicalWidth = 1440,
+  double logicalHeight = 1000,
+}) async {
   final view = tester.view;
   WindowResizeResult? resized;
   if (Platform.environment.containsKey(_environment)) {
-    final width = (1440 * view.devicePixelRatio).round();
-    final height = (1000 * view.devicePixelRatio).round();
+    final width = (logicalWidth * view.devicePixelRatio).round();
+    final height = (logicalHeight * view.devicePixelRatio).round();
     ({Object error, StackTrace stackTrace})? readinessFailure;
     resized = await tester.runAsync<WindowResizeResult?>(() async {
       try {
@@ -63,12 +65,15 @@ Future<Map<String, Object?>> configurePresentationWindow(
       expect(resized!.resized, isTrue, reason: resized.reason);
     }
     final deadline = Stopwatch()..start();
-    while ((view.physicalSize.width / view.devicePixelRatio - 1440).abs() >=
+    while ((view.physicalSize.width / view.devicePixelRatio - logicalWidth)
+                .abs() >=
             1 ||
-        (view.physicalSize.height / view.devicePixelRatio - 1000).abs() >= 1) {
+        (view.physicalSize.height / view.devicePixelRatio - logicalHeight)
+                .abs() >=
+            1) {
       if (deadline.elapsed > const Duration(seconds: 5)) {
         fail(
-          'Native concept viewport did not reach 1440x1000: '
+          'Native concept viewport did not reach ${logicalWidth}x$logicalHeight: '
           '${view.physicalSize} at ${view.devicePixelRatio}',
         );
       }
@@ -77,6 +82,8 @@ Future<Map<String, Object?>> configurePresentationWindow(
     }
   }
   return {
+    'requestedLogicalWidth': logicalWidth,
+    'requestedLogicalHeight': logicalHeight,
     'width': view.physicalSize.width / view.devicePixelRatio,
     'height': view.physicalSize.height / view.devicePixelRatio,
     'devicePixelRatio': view.devicePixelRatio,
@@ -161,7 +168,7 @@ Future<WindowResizeResult> _resizePresentationWindowWhenReady(
         'observations': observations,
       };
       await File(
-        '${directory.path}${Platform.pathSeparator}window-readiness-$pid.json',
+        '${directory.path}${Platform.pathSeparator}window-readiness-$pid-${width}x$height.json',
       ).writeAsString(
         '${const JsonEncoder.withIndent('  ').convert(diagnostic)}\n',
         flush: true,

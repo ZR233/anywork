@@ -1174,13 +1174,12 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
-    return MappedConversationFeed(
-      await super.openConversationFeed(threadId, scope: scope, demand: demand),
+    return MappedTimelineFeed(
+      await super.openTimelineFeed(threadId, demand: demand),
       (frame) => switch (frame) {
         ThreadSnapshotFrame(
           :final workspace,

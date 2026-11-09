@@ -14,7 +14,6 @@ import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_activity_section.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
-import '../state/completion_run_presentation.dart';
 
 /// 官方预览只装配生产组件，不装配 Client、原生桥或第二套状态投影。
 Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
@@ -41,7 +40,7 @@ const liveStatusResponseText =
     '- **子智能体只读**：详情展示历史、进展与工作区，主会话保持独立草稿。\n\n'
     '长正文达到可用高度后在区内滚动，向上阅读或选择文字暂停跟随，点击“跟随输出”回到底部。\n\n'
     '接下来继续核对各项交互：保留当前草稿与附件，检查宽窄窗口下的对齐，并逐项确认停止、等待和保存异常的呈现。\n\n'
-    '每项操作结束后立即进入时间线，活动区只保留尚未完成的操作。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
+    '成员完成后继续留在当前工作组，真实边界确定且成员收束后整组进入时间线。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
 
 Widget liveStatusGroupPreview({
   bool idle = false,
@@ -49,15 +48,9 @@ Widget liveStatusGroupPreview({
   bool thinkingOnly = false,
 }) {
   if (history) {
-    final entry = TimelinePreviewFixtures.runEntry(
-      'preview-history',
-      4,
-      count: 4,
-    );
-    final card = CompletionRunPresentation.fromEntry(entry);
     return CompletionRunView(
-      id: card.messageId,
-      presentation: card,
+      id: 'preview-history',
+      summary: TimelinePreviewFixtures.workSummary(4),
       initiallyExpanded: false,
       childBuilder: (_) => Column(
         mainAxisSize: MainAxisSize.min,

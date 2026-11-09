@@ -1,4 +1,5 @@
 import '../../../models.dart';
+import '../../../conversation_ports.dart' show DisplayMembers;
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart' show CloseReport;
 import '../../observation/latest_value.dart';
@@ -45,6 +46,36 @@ abstract interface class ConversationSession {
 abstract interface class ConversationBatchConsumer {
   Future<void> applyBatch(ChatBatch batch);
   Future<void> applyActivity(ActivitySnapshot snapshot);
+}
+
+abstract interface class TimelineBatchConsumer {
+  Future<void> applyTimeline(TimelineBatch batch, LiveDisplayWindow live);
+}
+
+abstract interface class TimelineContent implements ConversationContent {
+  ValueObservation<LiveDisplayWindow?> get live;
+  Observation attachTimelineConsumer(
+    TimelineBatchConsumer consumer, {
+    required ReadDemand demand,
+  });
+  @override
+  TimelineQueryScope openScope({required int generation});
+}
+
+abstract interface class TimelineQueryScope implements ConversationQueryScope {
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  });
 }
 
 abstract interface class ConversationContent {

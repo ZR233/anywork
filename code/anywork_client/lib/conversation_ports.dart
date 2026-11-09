@@ -12,6 +12,35 @@ abstract interface class ConversationTransport {
   });
 }
 
+abstract interface class TimelineTransport {
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  });
+}
+
+abstract interface class TimelineFeed implements ConversationFeed {
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  });
+}
+
+abstract interface class DisplayMembers {
+  Future<DisplayMemberPage?> next();
+  void requestClose();
+  Future<void> close();
+}
+
 /// The original feed's read lease; queries do not share its producer's receive/credit lock.
 abstract interface class ConversationReader {
   String get threadId;
@@ -92,6 +121,11 @@ final class ConversationStateEvent extends ConversationEvent {
 final class ConversationChatEvent extends ConversationEvent {
   const ConversationChatEvent({required this.batch});
   final ChatBatch batch;
+}
+
+final class ConversationTimelineEvent extends ConversationEvent {
+  const ConversationTimelineEvent({required this.batch});
+  final TimelineBatch batch;
 }
 
 final class ConversationActivityEvent extends ConversationEvent {

@@ -36,6 +36,8 @@ class TimelineMemberAtom extends StatefulWidget {
     this.monotonicMicros,
     this.onContentLayout,
     this.registerDisplay,
+    this.executionPresent = true,
+    this.disclosure,
   });
   final ChatAtom atom;
   final ConversationContent content;
@@ -46,13 +48,24 @@ class TimelineMemberAtom extends StatefulWidget {
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
   final VoidCallback Function(TimelineMemberDisplay)? registerDisplay;
+  final bool executionPresent;
+  final TimelineMemberDisclosure? disclosure;
   @override
   State<TimelineMemberAtom> createState() => _TimelineMemberAtomState();
 }
 
 class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     implements TimelineMemberDisplay {
-  ConversationCurrentOwner? _owner;
+  ConversationCurrentOwner? _localOwner;
+  ConversationCurrentOwner? get _owner => widget.disclosure?.owner ?? _localOwner;
+  set _owner(ConversationCurrentOwner? value) {
+    final disclosure = widget.disclosure;
+    if (disclosure == null) {
+      _localOwner = value;
+    } else {
+      disclosure.owner = value;
+    }
+  }
   ConversationQueryScope? _scope;
   Object _rangeQualification = Object();
   final Set<TimelineCurrentWindowDisplay> _rangeDisplays = {};
@@ -70,7 +83,16 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   }
 
   bool _retired = false;
-  bool _expanded = false;
+  bool _localExpanded = false;
+  bool get _expanded => widget.disclosure?.expanded ?? _localExpanded;
+  set _expanded(bool value) {
+    final disclosure = widget.disclosure;
+    if (disclosure == null) {
+      _localExpanded = value;
+    } else {
+      disclosure.expanded = value;
+    }
+  }
   bool get _active =>
       mounted &&
       !_retired &&
@@ -100,7 +122,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     // Folding revokes reads immediately, but is not permanent member retirement.
     if ((widget.retirement?.value ?? false)) {
       _retireRanges();
-      _closeBodies();
+      if (widget.disclosure == null || widget.disclosure!.retired) _closeBodies();
     } else if (widget.atom.kind != ChatAtomKind.toolCall &&
         widget.atom.payload == null) {
       _observe();
@@ -164,7 +186,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (_retired) return;
     _retired = true;
     _retireRanges();
-    _closeBodies();
+    if (widget.disclosure == null || widget.disclosure!.retired) _closeBodies();
   }
 
   @override
@@ -246,10 +268,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           .join(' ');
       final atom = widget.atom;
       final row = TimelineReasoningView(
-        summary: summary,
+        summary: !widget.executionPresent && atom.lifecycle is ActiveChatAtom && summary.isEmpty
+          ? '上次思考尚未恢复' : summary,
         startedAt: atom.startedAt,
         finishedAt: atom.finishedAt,
-        running: atom.lifecycle is ActiveChatAtom,
+        running: widget.executionPresent && atom.lifecycle is ActiveChatAtom,
         outcome: switch (atom.lifecycle) {
           TerminalChatAtom(:final outcome) => outcome.name,
           _ => null,
@@ -285,7 +308,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       return TimelineActivityRow(
         icon: Icons.compress_outlined,
         label: context.l10n.conversationActivityCompacting,
-        active: true,
+        active: widget.executionPresent,
         expandable: false,
       );
     }
@@ -352,6 +375,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
               ChatTerminalOutcome.transferred => 'transferred',
             },
           },
+          executionPresent: widget.executionPresent,
           arguments: '',
           output: '',
         ),
@@ -385,7 +409,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   Widget _response(Widget body) {
     final atom = widget.atom;
-    if (atom.kind != ChatAtomKind.text || atom.lifecycle is! ActiveChatAtom) {
+    if (!widget.executionPresent || atom.kind != ChatAtomKind.text || atom.lifecycle is! ActiveChatAtom) {
       return body;
     }
     return ConversationResponseView(startedAt: atom.startedAt, child: body);

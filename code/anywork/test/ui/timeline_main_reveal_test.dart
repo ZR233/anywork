@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../integration_test/support/timeline_observation.dart';
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 void main() {
   testWidgets(
@@ -29,32 +30,36 @@ void main() {
           generation: 7,
           demand: chatDemand,
           content: content,
-          openRun: (_, _) async {
-            memberOpens++;
-            throw StateError('Main reveal must not open a member query');
-          },
         ),
       ))!..bind();
       final controller = lease.controller;
-      // Use the existing production projection/fixtures to populate the lease's
-      // sole controller. No fake Main DTO, group display or direction algorithm.
+      // Populate the sole controller with explicit producer block fixtures
+      // through the production projection, not an alternate reveal algorithm.
       final projection = TimelineMessageController(
         controller as InMemoryChatController,
         generation: lease.generation,
+        onUnitCreated: (unit) {
+          unit.expansion.openDisplayMembers = (_, _, _) async {
+            memberOpens++;
+            throw StateError('Main reveal must not open a member query');
+          };
+        },
       );
       final ids = [
         for (var i = 0; i < 32; i++) 'main:${(i * 17 + 13) % 37}:opaque',
       ];
-      await projection.applyBatch(
-        chatBatch([
+      await projection.applyTimeline(
+        displayBatch([
           for (var i = 0; i < ids.length; i++)
             if (i == ids.length - 1)
-              workItem(ids[i], count: 1, startSeq: i + 1)
+              displayWork(ids[i], i + 1, total: 1)
             else
-              chatMessage(ids[i], body: 'Main row $i', completionSeq: i + 1),
+              displaySingle(
+                chatMessage(ids[i], body: 'Main row $i', completionSeq: i + 1),
+              ),
         ]),
       );
-      ids[ids.length - 1] = controller.messages.last.id;
+      expect(controller.messages.last.id, ids.last);
       final atomScroll = ScrollController();
       var operations = 0;
       final subscription = controller.operationsStream.listen(
@@ -257,10 +262,7 @@ void main() {
         final groupItem = tester.widget<ChatItemView>(cachedGroupRow).item;
         expect(groupItem.type, 'displayUnit');
         expect(groupItem.compatibility, ChatItemCompatibility.current);
-        expect(
-          groupUnit.entry.mainPresentation,
-          MainPresentation.foregroundWork,
-        );
+        expect(groupUnit.body, isA<WorkDisplayBlock>());
         expect(
           find.byWidgetPredicate(
             (widget) =>
@@ -331,7 +333,7 @@ void main() {
         final typedItem = tester.widget<ChatItemView>(cachedTypedRow).item;
         expect(typedItem.type, 'text');
         expect(typedItem.compatibility, ChatItemCompatibility.current);
-        expect(typedUnit.entry.mainPresentation, MainPresentation.single);
+        expect(typedUnit.body, isA<SingleDisplayBlock>());
         final cachedTypedBody = body(0);
         expect(cachedTypedBody, findsNothing);
         expect(cachedTypedBody.hitTestable(), findsNothing);

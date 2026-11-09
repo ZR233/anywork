@@ -10,7 +10,7 @@ final class ConversationCreditObservation {
     : _reader = feed.reader,
       _events = StreamIterator(feed.events) {
     evidence.addAll({
-      'source': 'real-frb-conversation-feed',
+      'source': 'real-frb-timeline-feed',
       'threadId': feed.threadId,
       'subscriptionId': feed.subscriptionId,
       'readerThreadId': _reader.threadId,
@@ -25,7 +25,7 @@ final class ConversationCreditObservation {
   }
 
   static const deadline = Duration(seconds: 20);
-  final ConversationFeed feed;
+  final TimelineFeed feed;
   final Map<String, Object?> evidence;
   final ConversationReader _reader;
   final StreamIterator<ConversationFrame> _events;
@@ -67,10 +67,16 @@ final class ConversationCreditObservation {
       'outstandingCount': 1,
     };
     switch (event) {
-      case ConversationChatEvent(:final batch):
-        final items = batch.entries;
-        final ids = [for (final item in items) item.recordId];
-        final contentIds = [for (final item in items) item.recordId];
+      case ConversationTimelineEvent(:final batch):
+        if (batch.presentationVersion != presentationVersion) {
+          throw StateError('Credit Timeline has an unsupported version');
+        }
+        final ids = [for (final block in batch.blocks) block.id];
+        final contentIds = [
+          for (final block in batch.blocks)
+            if (block.body case SingleDisplayBlock(:final completionId?))
+              completionId,
+        ];
         if (sequence == 1) {
           if (batch.placement != ChatPlacement.set) {
             throw StateError('Credit first frame is not the original Set');
@@ -81,10 +87,13 @@ final class ConversationCreditObservation {
           evidence['heldSetContentItemIds'] = _setContentItemIds;
         }
         observation.addAll({
-          'event': 'chat',
+          'event': 'timeline',
+          'presentationVersion': batch.presentationVersion,
           'placement': batch.placement.name,
           'itemIds': ids,
-          'entryCount': batch.entries.length,
+          'blockCount': batch.blocks.length,
+          'throughPos': batch.throughPos,
+          'liveRevision': batch.live?.revision,
         });
       case ConversationStateEvent(:final frame):
         if (sequence == 1) {
@@ -98,15 +107,8 @@ final class ConversationCreditObservation {
           'event': 'state',
           'frameKind': frame.runtimeType.toString(),
         });
-      case ConversationActivityEvent(:final snapshot):
-        if (sequence == 1) {
-          throw StateError('Credit first frame is Activity rather than Set');
-        }
-        observation.addAll({
-          'event': 'activity',
-          'revision': snapshot.revision,
-          'completedThrough': snapshot.completedThrough,
-        });
+      case ConversationChatEvent() || ConversationActivityEvent():
+        throw StateError('Timeline credit must not accept atomic GUI events');
       default:
         throw StateError('Credit observation received a nonordinary frame');
     }
@@ -156,17 +158,23 @@ final class ConversationCreditObservation {
     await _rejectFuture(2);
   }
 
-  Future<void> queryCompletedText(CompletedEntry item) async {
-    final itemId = item.recordId;
-    final terminal = item.atom.lifecycle;
+  Future<void> queryCompletedText({
+    required String blockId,
+    required int historyPos,
+    required SingleDisplayBlock single,
+  }) async {
+    final atom = single.atom;
+    final itemId = single.completionId;
+    final terminal = atom.lifecycle;
     if (_frames.length != 1 ||
         _acknowledged != 0 ||
-        item.mainPresentation != MainPresentation.single ||
-        item.atom.kind != ChatAtomKind.text ||
-        item.completionSeq <= 0 ||
+        atom.kind != ChatAtomKind.text ||
+        itemId == null ||
+        historyPos <= 0 ||
+        (atom.completionSeq ?? 0) <= 0 ||
         terminal is! TerminalChatAtom ||
         terminal.outcome != ChatTerminalOutcome.completed ||
-        _setItemIds.contains(item.recordId) ||
+        _setItemIds.contains(blockId) ||
         _setContentItemIds.contains(itemId)) {
       throw StateError('Credit query requires a new, truly completed text');
     }
@@ -207,9 +215,11 @@ final class ConversationCreditObservation {
     }
     final query = <String, Object?>{
       'operation': 'query-completed-text',
-      'recordId': item.recordId,
+      'blockId': blockId,
+      'historyPos': historyPos,
+      'recordId': itemId,
       'contentItemId': itemId,
-      'completionSeq': item.completionSeq,
+      'completionSeq': atom.completionSeq,
       'outcome': terminal.outcome.name,
       'absentFromHeldSet': true,
       'readerSource': 'original-held-feed',

@@ -180,12 +180,10 @@ void main() {
           payload: payload,
         );
         final unit = TimelineDisplayUnit(
-          entry: CompletedEntry(
-            recordId: 'accepted',
-            completionSeq: 1,
-            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-            mainPresentation: MainPresentation.single,
-            atom: atom,
+          block: DisplayBlock(
+            id: 'accepted',
+            historyPos: 1,
+            body: SingleDisplayBlock(atom: atom, completionId: 'accepted'),
           ),
         );
         addTearDown(unit.expansion.dispose);
@@ -375,12 +373,10 @@ void main() {
         ),
       );
       final unit = TimelineDisplayUnit(
-        entry: CompletedEntry(
-          recordId: 'inbox-record',
-          completionSeq: 1,
-          run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-          mainPresentation: MainPresentation.single,
-          atom: atom,
+        block: DisplayBlock(
+          id: 'inbox-record',
+          historyPos: 1,
+          body: SingleDisplayBlock(atom: atom, completionId: 'inbox-record'),
         ),
       );
       addTearDown(unit.expansion.dispose);
@@ -438,12 +434,10 @@ void main() {
           ],
         );
         final unit = TimelineDisplayUnit(
-          entry: CompletedEntry(
-            recordId: contentItemId,
-            completionSeq: 1,
-            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-            mainPresentation: MainPresentation.single,
-            atom: atom,
+          block: DisplayBlock(
+            id: contentItemId,
+            historyPos: 1,
+            body: SingleDisplayBlock(atom: atom, completionId: contentItemId),
           ),
         );
         final item = ChatItemPresentation.forUnit(unit);

@@ -21,6 +21,7 @@ final class TimelineToolPresentation {
     this.attachments = const [],
     this.outputArtifacts = const [],
     this.wait,
+    this.executionPresent = true,
   });
   final String id;
   final String toolCallId;
@@ -39,6 +40,7 @@ final class TimelineToolPresentation {
   final List<ThreadAttachmentView> attachments;
   final List<String> outputArtifacts;
   final ThreadWaitPresentationView? wait;
+  final bool executionPresent;
   TimelineToolOutcome? get outcome => switch (statusString) {
     'succeeded' => TimelineToolOutcome.succeeded,
     'failed' => TimelineToolOutcome.failed,

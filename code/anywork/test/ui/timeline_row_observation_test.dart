@@ -15,6 +15,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 Widget rowApp(Widget child) => MaterialApp(
   theme: pureStudioTheme(),
@@ -129,19 +130,21 @@ void main() {
           resources.release();
           controller.dispose();
         });
-        await adapter.applyBatch(
-          chatBatch([
-            statusItem(
-              chatEnvelope(
-                type,
-                type: type,
-                data: reasoning ? const {} : const {'decision': 'approved'},
-                bodies: [
-                  inlineBody(
-                    reasoning ? 'part.reasoningText.0' : 'plan.body',
-                    body,
-                  ),
-                ],
+        await adapter.applyTimeline(
+          displayBatch([
+            displaySingle(
+              statusItem(
+                chatEnvelope(
+                  type,
+                  type: type,
+                  data: reasoning ? const {} : const {'decision': 'approved'},
+                  bodies: [
+                    inlineBody(
+                      reasoning ? 'part.reasoningText.0' : 'plan.body',
+                      body,
+                    ),
+                  ],
+                ),
               ),
             ),
           ]),
@@ -166,8 +169,12 @@ void main() {
         expect(find.text(body), findsOneWidget);
         final old = controller.messages.single;
         final card = old.metadata![chatItemPresentationKey];
-        await adapter.applyBatch(
-          chatBatch([chatMessage('next')], placement: ChatPlacement.append),
+        await adapter.applyTimeline(
+          displayBatch(
+            [displaySingle(chatMessage('next', completionSeq: 2))],
+            placement: ChatPlacement.append,
+            from: 1,
+          ),
         );
         await tester.pumpWidget(build());
         expect(controller.messages.first, same(old));
