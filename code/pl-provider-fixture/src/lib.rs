@@ -2373,17 +2373,21 @@ pub fn gui_script() -> Vec<Step> {
             )),
         )
         .optional(),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_FILES_PROMPT,
-            8,
-            Reply::Sse(responses_text(
+        Step {
+            protocol: Protocol::ResponsesHttp,
+            request: RequestMatch::ToolCompletion {
+                call_id: "file-display-call".into(),
+                tool_id: "show_files".into(),
+                marker: "File display archived: 3 ready, 0 failed.".into(),
+                step: 8,
+            },
+            reply: Reply::Sse(responses_text(
                 "文件展示请求已处理。可以点击 Markdown 阅读正文，或打开文件菜单保存原件。",
                 "file-display-answer",
                 "fixture-model",
             )),
-        )
-        .optional(),
+            optional: true,
+        },
         Step::prompt(
             Protocol::ResponsesHttp,
             session_title_prompt(GUI_FILES_PROMPT),
