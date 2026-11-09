@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use pl_agent_tool::{Tool, ToolDefinition};
 use pl_core::tool::{ToolOutput, opaque::ToolError};
-use pl_tool_git_support::{
+use pl_tool_git::{
     GitCommand, GitCommandOutput, GitError, GitExecutor, GitNetwork, GitOutput, GitRunner,
 };
 
@@ -16,7 +16,7 @@ use crate::execution::{ExecutionBackend, ExecutionRequest};
 mod error;
 mod schema;
 pub use error::GitHostError;
-pub use pl_tool_git_support::{
+pub use pl_tool_git::{
     GIT_TOKEN_ENV, GitCredential, GitCredentialOperation, GitCredentialProvider,
     GitCredentialRequest, GitPolicy, GitWorkspaceConfig, NoGitCredentialProvider,
     git_askpass_script,
@@ -28,12 +28,12 @@ struct HostGitBackend<B>(Arc<B>);
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-struct HostGitExecutionError(#[source] pl_tool_git_support::BoxError);
+struct HostGitExecutionError(#[source] pl_tool_git::BoxError);
 
 impl<B> GitExecutor for HostGitBackend<B>
 where
     B: ExecutionBackend,
-    B::Error: Into<pl_tool_git_support::BoxError>,
+    B::Error: Into<pl_tool_git::BoxError>,
 {
     type Error = HostGitExecutionError;
 
@@ -59,14 +59,14 @@ where
 
 #[derive(Debug)]
 enum BoundGit<B, P> {
-    Status(pl_tool_git_status::GitStatus<HostGitBackend<B>>),
-    Diff(pl_tool_git_diff::GitDiff<HostGitBackend<B>>),
-    Branch(pl_tool_git_branch::GitBranch<HostGitBackend<B>>),
-    Fetch(pl_tool_git_fetch::GitFetch<HostGitBackend<B>, P>),
-    Commit(pl_tool_git_commit::GitCommit<HostGitBackend<B>>),
-    Push(pl_tool_git_push::GitPush<HostGitBackend<B>, P>),
-    WorkspaceInfo(pl_tool_git_workspace_info::GitWorkspaceInfo),
-    SyncDefaultBranch(pl_tool_git_sync_default_branch::GitSyncDefaultBranch<HostGitBackend<B>, P>),
+    Status(pl_tool_git::status::GitStatus<HostGitBackend<B>>),
+    Diff(pl_tool_git::diff::GitDiff<HostGitBackend<B>>),
+    Branch(pl_tool_git::branch::GitBranch<HostGitBackend<B>>),
+    Fetch(pl_tool_git::fetch::GitFetch<HostGitBackend<B>, P>),
+    Commit(pl_tool_git::commit::GitCommit<HostGitBackend<B>>),
+    Push(pl_tool_git::push::GitPush<HostGitBackend<B>, P>),
+    WorkspaceInfo(pl_tool_git::workspace_info::GitWorkspaceInfo),
+    SyncDefaultBranch(pl_tool_git::sync_default_branch::GitSyncDefaultBranch<HostGitBackend<B>, P>),
 }
 
 /// Static product adaptation; this type contains no Git command planning.
@@ -79,7 +79,7 @@ pub struct GitTool<B, P> {
 impl<B, P> GitTool<B, P>
 where
     B: ExecutionBackend + 'static,
-    B::Error: Into<pl_tool_git_support::BoxError>,
+    B::Error: Into<pl_tool_git::BoxError>,
     P: GitCredentialProvider + 'static,
 {
     pub fn new(
@@ -92,28 +92,30 @@ where
         let runner = GitRunner::new(config.clone(), Arc::new(HostGitBackend(backend)));
         let bound = match kind {
             GitToolKind::Status => {
-                BoundGit::Status(pl_tool_git_status::GitStatus::new(runner, definition))
+                BoundGit::Status(pl_tool_git::status::GitStatus::new(runner, definition))
             }
-            GitToolKind::Diff => BoundGit::Diff(pl_tool_git_diff::GitDiff::new(runner, definition)),
+            GitToolKind::Diff => {
+                BoundGit::Diff(pl_tool_git::diff::GitDiff::new(runner, definition))
+            }
             GitToolKind::Branch => {
-                BoundGit::Branch(pl_tool_git_branch::GitBranch::new(runner, definition))
+                BoundGit::Branch(pl_tool_git::branch::GitBranch::new(runner, definition))
             }
-            GitToolKind::Fetch => BoundGit::Fetch(pl_tool_git_fetch::GitFetch::new(
+            GitToolKind::Fetch => BoundGit::Fetch(pl_tool_git::fetch::GitFetch::new(
                 GitNetwork::new(runner, credential_provider),
                 definition,
             )),
             GitToolKind::Commit => {
-                BoundGit::Commit(pl_tool_git_commit::GitCommit::new(runner, definition))
+                BoundGit::Commit(pl_tool_git::commit::GitCommit::new(runner, definition))
             }
-            GitToolKind::Push => BoundGit::Push(pl_tool_git_push::GitPush::new(
+            GitToolKind::Push => BoundGit::Push(pl_tool_git::push::GitPush::new(
                 GitNetwork::new(runner, credential_provider),
                 definition,
             )),
             GitToolKind::WorkspaceInfo => BoundGit::WorkspaceInfo(
-                pl_tool_git_workspace_info::GitWorkspaceInfo::new(config, definition),
+                pl_tool_git::workspace_info::GitWorkspaceInfo::new(config, definition),
             ),
             GitToolKind::SyncDefaultBranch => BoundGit::SyncDefaultBranch(
-                pl_tool_git_sync_default_branch::GitSyncDefaultBranch::new(
+                pl_tool_git::sync_default_branch::GitSyncDefaultBranch::new(
                     GitNetwork::new(runner, credential_provider),
                     definition,
                 ),
@@ -150,7 +152,7 @@ where
 impl<B, P> Tool for GitTool<B, P>
 where
     B: ExecutionBackend + 'static,
-    B::Error: Into<pl_tool_git_support::BoxError>,
+    B::Error: Into<pl_tool_git::BoxError>,
     P: GitCredentialProvider + 'static,
 {
     type Input = pl_core::context::OpaquePayload;

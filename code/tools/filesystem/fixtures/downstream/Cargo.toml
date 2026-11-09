@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "filesystem-downstream"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pl-tool-filesystem = { path = "../.." }
+pl-agent-tool = { path = "../../../../pl-agent-tool", features = ["typed"] }
+pl-patch = { path = "../../../../pl-patch" }
+serde_json = "1"
+tempfile = "3"
+futures = "0.3"

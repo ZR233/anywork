@@ -29,8 +29,10 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
 }
 
 impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadWriteFileTool<B> {
-    const NAME: &'static str = <pl_tool_write_file::WriteFileTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
-    const DESCRIPTION: &'static str = <pl_tool_write_file::WriteFileTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
+    const NAME: &'static str = <pl_tool_filesystem::write_file::WriteFileTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
+    const DESCRIPTION: &'static str = <pl_tool_filesystem::write_file::WriteFileTool<
+        FileCapability<B>,
+    > as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
     type Args = WriteFileInput;
     type Context = pl_core::tool::opaque::CallContext;
     type Output = pl_core::tool::ToolOutput;
@@ -53,7 +55,7 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
         let backend = granted_backend(&self.backend, &context.grant);
-        let receipt = pl_tool_write_file::WriteFileTool::new()
+        let receipt = pl_tool_filesystem::write_file::WriteFileTool::new()
             .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
@@ -76,5 +78,5 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_write_file_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_write_file::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
+    pl_tool_filesystem::write_file::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
 }

@@ -7,14 +7,14 @@ use super::backend::*;
 use super::schema::TOOL_APPLY_PATCH;
 use crate::tool_error;
 
-use pl_tool_apply_patch::PatchOutput;
+use pl_tool_filesystem::apply_patch::PatchOutput;
 
 pub async fn apply_patch_to_backend<B>(backend: &B, cwd: String, patch: &str) -> Result<PatchOutput>
 where
     B: WorkspaceFileBackend,
 {
     let patch_backend = WorkspacePatchBackend { backend, cwd: &cwd };
-    pl_tool_apply_patch::apply_patch(&patch_backend, cwd.clone(), patch)
+    pl_tool_filesystem::apply_patch::apply_patch(&patch_backend, cwd.clone(), patch)
         .await
         .map_err(|error| tool_error(TOOL_APPLY_PATCH, error.into_message()))
 }

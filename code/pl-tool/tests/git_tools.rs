@@ -1,6 +1,6 @@
 #[path = "support/binding_host.rs"]
 mod host;
-#[path = "../../tools/support/git/fixtures/downstream/tests/support/mod.rs"]
+#[path = "../../tools/git/fixtures/downstream/tests/support/mod.rs"]
 mod support;
 
 use std::{
@@ -291,7 +291,7 @@ fn assert_public_diagnostic(error: &ToolError, private: &str) {
     while let Some(error) = source {
         assert!(!error.to_string().contains(private));
         assert!(!format!("{error:?}").contains(private));
-        assert!(!error.is::<pl_tool_git_support::GitError>());
+        assert!(!error.is::<pl_tool_git::GitError>());
         assert!(!error.is::<pl_tool::remote::RemoteExecutionError>());
         source = error.source();
     }

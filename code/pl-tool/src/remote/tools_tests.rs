@@ -58,13 +58,13 @@ async fn file_tools_over_real_helper_keep_remote_mutation_semantics() -> anyhow:
         let create = mutation(RemoteMutationKind::CreateDirectory).execute(input(json!({"path":"nested"})), context()).await?;
         ensure!(create.payload().content() == "Created directory nested");
         let write = ThreadWriteFileTool::new(backend.clone(), workspace.clone());
-        let written = TypedTool::execute(&write, pl_tool_write_file::WriteFileInput {
+        let written = TypedTool::execute(&write, pl_tool_filesystem::write_file::WriteFileInput {
             path: "nested/a".into(), content: "original\n".into(), mode: pl_tool_filesystem::WriteMode::Create,
         }, context()).await?;
         ensure!(written.payload().format() == "pl.tool.file-write");
         let value: serde_json::Value = serde_json::from_str(written.payload().content())?;
         ensure!(value == json!({"path":"nested/a","mode":"create","bytesWritten":9}));
-        ensure!(TypedTool::execute(&write, pl_tool_write_file::WriteFileInput {
+        ensure!(TypedTool::execute(&write, pl_tool_filesystem::write_file::WriteFileInput {
             path: "nested/a".into(), content: "lost".into(), mode: pl_tool_filesystem::WriteMode::Create,
         }, context()).await.is_err());
         let stat = TypedTool::execute(&ThreadStatPathTool::new(backend.clone()),
@@ -196,9 +196,9 @@ async fn fail_if_exists_preserves_destination_appearing_before_remote_mutation()
                     collision: pl_tool_filesystem::PathCollision::FailIfExists,
                 };
                 let outcome = if moving {
-                    TypedTool::execute(&pl_tool_move_path::MovePathTool::new(), args, capability).await
+                    TypedTool::execute(&pl_tool_filesystem::move_path::MovePathTool::new(), args, capability).await
                 } else {
-                    TypedTool::execute(&pl_tool_copy_path::CopyPathTool::new(), args, capability).await
+                    TypedTool::execute(&pl_tool_filesystem::copy_path::CopyPathTool::new(), args, capability).await
                 };
                 let conflict = outcome.as_ref().err().is_some_and(|error| error.to_string().contains("destination already exists"));
                 let preserved = if directory {

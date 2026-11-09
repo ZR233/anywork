@@ -149,40 +149,40 @@ macro_rules! host_mutation {
 }
 host_mutation!(
     CreateDirectoryTool,
-    pl_tool_create_directory::CreateDirectoryTool<LocalMutationCapability>,
+    pl_tool_filesystem::create_directory::CreateDirectoryTool<LocalMutationCapability>,
     PathInput,
     |error| error
 );
 host_mutation!(
     DeletePathTool,
-    pl_tool_delete_path::DeletePathTool<LocalMutationCapability>,
+    pl_tool_filesystem::delete_path::DeletePathTool<LocalMutationCapability>,
     DeletePathInput,
     |error| mutation_error("delete_path", error)
 );
 host_mutation!(
     CopyPathTool,
-    pl_tool_copy_path::CopyPathTool<LocalMutationCapability>,
+    pl_tool_filesystem::copy_path::CopyPathTool<LocalMutationCapability>,
     CopyMoveInput,
     |error| mutation_error("copy_path", error)
 );
 host_mutation!(
     MovePathTool,
-    pl_tool_move_path::MovePathTool<LocalMutationCapability>,
+    pl_tool_filesystem::move_path::MovePathTool<LocalMutationCapability>,
     CopyMoveInput,
     |error| mutation_error("move_path", error)
 );
 
 pub fn create_directory_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_create_directory::definition::<LocalMutationCapability>()
+    pl_tool_filesystem::create_directory::definition::<LocalMutationCapability>()
 }
 pub fn delete_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_delete_path::definition::<LocalMutationCapability>()
+    pl_tool_filesystem::delete_path::definition::<LocalMutationCapability>()
 }
 pub fn copy_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_copy_path::definition::<LocalMutationCapability>()
+    pl_tool_filesystem::copy_path::definition::<LocalMutationCapability>()
 }
 pub fn move_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_move_path::definition::<LocalMutationCapability>()
+    pl_tool_filesystem::move_path::definition::<LocalMutationCapability>()
 }
 
 #[cfg(test)]

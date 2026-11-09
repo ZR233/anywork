@@ -1,9 +1,0 @@
-[package]
-name = "pl-tool-move-path"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-pl-agent-tool = { workspace = true, features = ["typed"] }
-pl-tool-filesystem = { workspace = true }

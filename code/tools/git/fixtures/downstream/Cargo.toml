@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "git-tools-downstream"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+pl-tool-git = { path = "../.." }
+pl-agent-tool = { path = "../../../../pl-agent-tool", features = ["typed"] }
+serde_json = "1.0.154"
+tempfile = "3"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "sync"] }

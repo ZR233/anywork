@@ -26,8 +26,10 @@ impl<B: WorkspaceFileBackend + 'static> ThreadStatPathTool<B> {
 }
 
 impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for ThreadStatPathTool<B> {
-    const NAME: &'static str = <pl_tool_stat_path::StatPathTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
-    const DESCRIPTION: &'static str = <pl_tool_stat_path::StatPathTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
+    const NAME: &'static str = <pl_tool_filesystem::stat_path::StatPathTool<FileCapability<B>> as pl_agent_tool::typed::TypedTool>::NAME;
+    const DESCRIPTION: &'static str = <pl_tool_filesystem::stat_path::StatPathTool<
+        FileCapability<B>,
+    > as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
     type Args = crate::file::PathInput;
     type Context = pl_core::tool::opaque::CallContext;
     type Output = pl_core::tool::ToolOutput;
@@ -43,7 +45,7 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
         }
 
         let backend = granted_backend(&self.backend, &context.grant);
-        let receipt = pl_tool_stat_path::StatPathTool::new()
+        let receipt = pl_tool_filesystem::stat_path::StatPathTool::new()
             .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
@@ -58,5 +60,5 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_stat_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_stat_path::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
+    pl_tool_filesystem::stat_path::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
 }

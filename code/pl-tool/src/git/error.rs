@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use pl_tool_git_support::GitError;
+use pl_tool_git::GitError;
 
 use super::HostGitExecutionError;
 use crate::remote::RemoteExecutionError;

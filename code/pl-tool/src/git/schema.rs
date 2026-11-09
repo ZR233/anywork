@@ -5,14 +5,14 @@ use serde_json::Value;
 
 use crate::approval::ToolEffect;
 
-pub const TOOL_GIT_STATUS: &str = pl_tool_git_status::NAME;
-pub const TOOL_GIT_DIFF: &str = pl_tool_git_diff::NAME;
-pub const TOOL_GIT_BRANCH: &str = pl_tool_git_branch::NAME;
-pub const TOOL_GIT_FETCH: &str = pl_tool_git_fetch::NAME;
-pub const TOOL_GIT_COMMIT: &str = pl_tool_git_commit::NAME;
-pub const TOOL_GIT_PUSH: &str = pl_tool_git_push::NAME;
-pub const TOOL_GIT_WORKSPACE_INFO: &str = pl_tool_git_workspace_info::NAME;
-pub const TOOL_GIT_SYNC_DEFAULT_BRANCH: &str = pl_tool_git_sync_default_branch::NAME;
+pub const TOOL_GIT_STATUS: &str = pl_tool_git::status::NAME;
+pub const TOOL_GIT_DIFF: &str = pl_tool_git::diff::NAME;
+pub const TOOL_GIT_BRANCH: &str = pl_tool_git::branch::NAME;
+pub const TOOL_GIT_FETCH: &str = pl_tool_git::fetch::NAME;
+pub const TOOL_GIT_COMMIT: &str = pl_tool_git::commit::NAME;
+pub const TOOL_GIT_PUSH: &str = pl_tool_git::push::NAME;
+pub const TOOL_GIT_WORKSPACE_INFO: &str = pl_tool_git::workspace_info::NAME;
+pub const TOOL_GIT_SYNC_DEFAULT_BRANCH: &str = pl_tool_git::sync_default_branch::NAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitToolKind {
@@ -76,14 +76,14 @@ impl GitToolKind {
 
     pub fn definition(self) -> ToolDefinition {
         match self {
-            Self::Status => pl_tool_git_status::definition(),
-            Self::Diff => pl_tool_git_diff::definition(),
-            Self::Branch => pl_tool_git_branch::definition(),
-            Self::Fetch => pl_tool_git_fetch::definition(),
-            Self::Commit => pl_tool_git_commit::definition(),
-            Self::Push => pl_tool_git_push::definition(),
-            Self::WorkspaceInfo => pl_tool_git_workspace_info::definition(),
-            Self::SyncDefaultBranch => pl_tool_git_sync_default_branch::definition(),
+            Self::Status => pl_tool_git::status::definition(),
+            Self::Diff => pl_tool_git::diff::definition(),
+            Self::Branch => pl_tool_git::branch::definition(),
+            Self::Fetch => pl_tool_git::fetch::definition(),
+            Self::Commit => pl_tool_git::commit::definition(),
+            Self::Push => pl_tool_git::push::definition(),
+            Self::WorkspaceInfo => pl_tool_git::workspace_info::definition(),
+            Self::SyncDefaultBranch => pl_tool_git::sync_default_branch::definition(),
         }
     }
 }

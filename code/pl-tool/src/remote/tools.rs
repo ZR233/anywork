@@ -44,11 +44,13 @@ impl RemoteMutationKind {
     pub fn definition(self) -> pl_agent_tool::ToolDefinition {
         let definition = match self {
             Self::CreateDirectory => {
-                pl_tool_create_directory::definition::<RemoteMutationCapability>()
+                pl_tool_filesystem::create_directory::definition::<RemoteMutationCapability>()
             }
-            Self::Delete => pl_tool_delete_path::definition::<RemoteMutationCapability>(),
-            Self::Copy => pl_tool_copy_path::definition::<RemoteMutationCapability>(),
-            Self::Move => pl_tool_move_path::definition::<RemoteMutationCapability>(),
+            Self::Delete => {
+                pl_tool_filesystem::delete_path::definition::<RemoteMutationCapability>()
+            }
+            Self::Copy => pl_tool_filesystem::copy_path::definition::<RemoteMutationCapability>(),
+            Self::Move => pl_tool_filesystem::move_path::definition::<RemoteMutationCapability>(),
         };
         // Retain transport-specific model guidance; the domain owns the schema.
         let description = match self {
@@ -111,7 +113,7 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
         };
         let text = match self.kind {
             RemoteMutationKind::CreateDirectory => {
-                pl_tool_create_directory::CreateDirectoryTool::new()
+                pl_tool_filesystem::create_directory::CreateDirectoryTool::new()
                     .execute(
                         decode_json(input.content()).map_err(ToolError::new)?,
                         backend,
@@ -119,21 +121,21 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
                     .await
                     .map_err(ToolError::new)?
             }
-            RemoteMutationKind::Delete => pl_tool_delete_path::DeletePathTool::new()
+            RemoteMutationKind::Delete => pl_tool_filesystem::delete_path::DeletePathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,
                 )
                 .await
                 .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
-            RemoteMutationKind::Copy => pl_tool_copy_path::CopyPathTool::new()
+            RemoteMutationKind::Copy => pl_tool_filesystem::copy_path::CopyPathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,
                 )
                 .await
                 .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
-            RemoteMutationKind::Move => pl_tool_move_path::MovePathTool::new()
+            RemoteMutationKind::Move => pl_tool_filesystem::move_path::MovePathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,

@@ -2,7 +2,7 @@ use pl_agent_tool::ToolDefinition;
 
 use crate::approval::ToolEffect;
 
-pub use pl_tool_apply_patch::{
+pub use pl_tool_filesystem::apply_patch::{
     DESCRIPTION as APPLY_PATCH_FREEFORM_DESCRIPTION, NAME as TOOL_APPLY_PATCH,
 };
 
@@ -42,7 +42,7 @@ impl WorkspaceFileToolKind {
 
     pub fn definition(self) -> ToolDefinition {
         match self {
-            Self::ApplyPatch => pl_tool_apply_patch::definition(),
+            Self::ApplyPatch => pl_tool_filesystem::apply_patch::definition(),
         }
     }
 }
