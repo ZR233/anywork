@@ -1,6 +1,6 @@
 //! Managed terminal-to-feedback handoff. The projection registers, but never waits on this job.
 use super::{
-    StudioThreadAssembler,
+    SessionRuntime,
     agent_review::{
         ReviewDeliverySource, ReviewFeedbackDelivery, ReviewForward, ReviewForwardReason,
     },
@@ -196,7 +196,7 @@ impl TerminalResources {
     }
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// This is only the ownership acknowledgement. All IO, body copies and their fallible
     /// reservations occur in the retained operation after the real history handoff.
     pub(crate) async fn start_terminal_delivery(
@@ -311,11 +311,11 @@ impl StudioThreadAssembler {
                 state
                     .entries
                     .get(&terminal.thread.id)
-                    .map(|entry| entry.incarnation.clone()),
+                    .map(|entry| entry.native.incarnation.clone()),
                 state
                     .entries
                     .get(parent)
-                    .map(|entry| entry.incarnation.clone()),
+                    .map(|entry| entry.native.incarnation.clone()),
             )
         };
         TerminalResources {

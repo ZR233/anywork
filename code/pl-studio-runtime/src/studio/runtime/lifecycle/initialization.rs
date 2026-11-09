@@ -387,24 +387,52 @@ impl StudioRuntime {
             self.stop_agent_profiles_forwarder()
         );
         let observer = background_task::stop(&self.persistence_observer).await;
-        let mcp = self.thread_factory.shutdown_all_mcp().await;
-        let lsp = self.external_runtimes.lsp.shutdown().await;
-        let ssh = self.ssh_manager.shutdown().await;
+        let sessions = self.shutdown_agent_framework().await;
+        let lsp = if sessions.is_ok() {
+            self.external_runtimes
+                .lsp
+                .shutdown()
+                .await
+                .map_err(anyhow::Error::from)
+        } else {
+            Err(anyhow::anyhow!(
+                "Session resources have not closed; shared LSP retained"
+            ))
+        };
+        let ssh = if sessions.is_ok() && lsp.is_ok() {
+            self.ssh_manager
+                .shutdown()
+                .await
+                .map_err(anyhow::Error::from)
+        } else {
+            Err(anyhow::anyhow!(
+                "Session or LSP resources have not closed; shared SSH retained"
+            ))
+        };
         // Clone (never `take`) the retained writer first, then stop it, and only drop the retained
         // owner once the writer actually stopped; a failed stop keeps the owner out of circulation.
         let writer = self.agent_facility.persistence.lock().await.clone();
         let persistence = match writer {
-            Some(writer) => {
+            Some(writer) if sessions.is_ok() => {
                 let result = writer.shutdown().await;
                 if result.is_ok() {
                     self.agent_facility.persistence.lock().await.take();
                 }
-                result
+                result.map_err(anyhow::Error::from)
             }
+            Some(_) => Err(anyhow::anyhow!(
+                "Session resources have not closed; shared writer retained"
+            )),
             None => Ok(()),
         };
         let bots = self.bots.shutdown().await;
-        let storage = self.store.close().await;
+        let storage = if sessions.is_ok() {
+            self.store.close().await
+        } else {
+            Err(anyhow::anyhow!(
+                "Session resources have not closed; storage retained"
+            ))
+        };
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         usage.map_err(|error| internal("stop_account_usage", error))?;
         for result in [results.0, results.1, results.2, results.3, results.4] {
@@ -416,7 +444,7 @@ impl StudioRuntime {
                 anyhow::anyhow!(error.to_string()),
             )
         })?;
-        mcp.map_err(|error| internal("close_mcp", error))?;
+        sessions.map_err(|error| internal("close_sessions", error))?;
         lsp.map_err(|error| internal("close_lsp", error))?;
         ssh.map_err(|error| environment("close_ssh", error))?;
         persistence.map_err(|error| environment("close_writer", error))?;

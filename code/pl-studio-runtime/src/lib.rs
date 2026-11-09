@@ -42,6 +42,7 @@ pub use studio::accounts;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub use studio::benchmark;
+pub(crate) mod session;
 pub mod thread_assembler;
 mod updater;
 mod worker_assets;

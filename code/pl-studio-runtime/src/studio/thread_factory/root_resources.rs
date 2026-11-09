@@ -214,6 +214,7 @@ impl StudioThreadFactory {
             delegation: preflight_delegation,
         } = request;
         let id = identity.id();
+        self.bind_resource_scope(id, &workspace_owner.native_resources())?;
         let thread = self.thread_record(id).await?;
         self.services
             .store

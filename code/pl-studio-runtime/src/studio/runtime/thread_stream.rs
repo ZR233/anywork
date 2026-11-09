@@ -765,7 +765,12 @@ impl StudioRuntime {
                     )?);
             // A committed seal forbids activation, not observation of an owner still closing. Keep
             // its live feed until it stops; a cold/ended owner needs only the saved readonly facts.
-            if !explicitly_closed && self.threads.observed_thread(&request.thread_id).is_none() {
+            if !explicitly_closed
+                && self
+                    .session_of(&request.thread_id)
+                    .and_then(|session| session.observed_thread(&request.thread_id))
+                    .is_none()
+            {
                 let check = self
                     .thread_factory
                     .verify_execution_workspace(
@@ -780,8 +785,8 @@ impl StudioRuntime {
                 );
             }
             let closing_owner = self
-                .threads
-                .observed_thread(&request.thread_id)
+                .session_of(&request.thread_id)
+                .and_then(|session| session.observed_thread(&request.thread_id))
                 .filter(|handle| {
                     explicitly_closed
                         && handle.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Closed
@@ -790,7 +795,10 @@ impl StudioRuntime {
                 && (thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
                     || (explicitly_closed && closing_owner.is_none()))
                 || (self.check_thread_execution_access(&thread).is_err()
-                    && self.threads.observed_thread(&request.thread_id).is_none())
+                    && self
+                        .session_of(&request.thread_id)
+                        .and_then(|session| session.observed_thread(&request.thread_id))
+                        .is_none())
             {
                 // Content was prepared above; safe observation never activates an execution workspace.
                 let snapshot = self.thread_snapshot(&request.thread_id).await?;
@@ -950,7 +958,9 @@ impl StudioRuntime {
         let (position, _) = slot.capture();
         // Choose the read source once. In particular, an execution owner installed during cold IO
         // must not supply usage for the independently captured durable State.
-        let handle = self.threads.observed_thread(thread_id);
+        let handle = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id));
         let (state, business_refs) = match handle.as_ref() {
             Some(handle) => {
                 let state = handle.snapshot();
@@ -1098,7 +1108,7 @@ impl StudioRuntime {
         thread_id: &str,
     ) -> Result<ThreadSnapshot> {
         if let Some((_, handle)) = self
-            .threads
+            .sessions
             .observed_threads()
             .into_iter()
             .find(|(id, _)| id == thread_id)
@@ -1431,7 +1441,12 @@ mod storage_fault_tests {
         }
         if matches!(case, HistoryReadCase::Cold) {
             stage.set("cold State snapshot without execution owner");
-            assert!(runtime.threads.observed_thread(&thread.id).is_none());
+            assert!(
+                runtime
+                    .session_of(&thread.id)
+                    .and_then(|session| session.observed_thread(&thread.id))
+                    .is_none()
+            );
             let (saved, references) = runtime
                 .store
                 .history(&thread.id)
@@ -1447,7 +1462,10 @@ mod storage_fault_tests {
             assert!(snapshot.active_turn.is_none());
             assert!(snapshot.activity.is_none());
             assert!(
-                runtime.threads.observed_thread(&thread.id).is_none(),
+                runtime
+                    .session_of(&thread.id)
+                    .and_then(|session| session.observed_thread(&thread.id))
+                    .is_none(),
                 "cold State reading activated an execution owner"
             );
             assert_eq!(
@@ -1555,8 +1573,8 @@ mod storage_fault_tests {
         assert!(snapshot.activity.is_none());
         assert!(initial.progress.is_none());
         let handle = runtime
-            .threads
-            .thread(&thread.id)
+            .session_of(&thread.id)
+            .and_then(|session| session.thread(&thread.id))
             .context("reopened owner")?;
         stage.set("patch runtime facts");
         let mut publications = handle.subscribe();

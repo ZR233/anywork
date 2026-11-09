@@ -158,9 +158,12 @@ impl StudioRuntime {
                     continue;
                 };
                 let revision = format!("{}:{}", settings.revision, catalog.revision);
-                for (id, thread) in runtime.threads.observed_threads() {
-                    let _operation = runtime.threads.agent_operation(&id).await;
-                    if runtime.threads.ensure_agent_admission_open(&id).is_err() {
+                for (id, thread) in runtime.sessions.observed_threads() {
+                    let Some(session) = runtime.session_of(&id) else {
+                        continue;
+                    };
+                    let _operation = session.agent_operation(&id).await;
+                    if session.ensure_agent_admission_open(&id).is_err() {
                         continue;
                     }
                     if let Some(affected) = &affected {

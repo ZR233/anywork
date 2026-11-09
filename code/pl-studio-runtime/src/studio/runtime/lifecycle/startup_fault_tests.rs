@@ -454,7 +454,7 @@ async fn catalog_after_636_stale_child_modes_start_without_reset() -> Result<()>
         "synthetic-model"
     );
     assert!(
-        runtime.threads.observed_threads().is_empty(),
+        runtime.sessions.observed_threads().is_empty(),
         "directory migration stays cold"
     );
     runtime.shutdown_runtime().await?;
@@ -1037,7 +1037,12 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
     .await?;
     db.close().await?;
     let runtime = StudioRuntime::initialize(options(temp.path())).await?;
-    assert!(runtime.threads.observed_thread("cold").is_none());
+    assert!(
+        runtime
+            .session_of("cold")
+            .and_then(|session| session.observed_thread("cold"))
+            .is_none()
+    );
     let demand = pl_protocol::ReadDemand {
         max_items: 1,
         max_bytes: 64 * 1024,
@@ -1063,7 +1068,12 @@ async fn cold_v2_history_supports_passive_chat_content_without_activation() -> R
         .await?;
     assert_eq!(detail.bytes, "preserved detail 中文\n".as_bytes());
     assert!(detail.sealed);
-    assert!(runtime.threads.observed_thread("cold").is_none());
+    assert!(
+        runtime
+            .session_of("cold")
+            .and_then(|session| session.observed_thread("cold"))
+            .is_none()
+    );
     feed.close().await?;
     reader.close().await?;
     runtime.shutdown_runtime().await?;

@@ -1,7 +1,6 @@
 //! Managed final child close: permanent execution seal, real joins/save ACKs, one owned worktree.
 use super::{
-    CloseStorage, Entry, EntryPurpose, StudioThreadAssembler, ThreadAssemblyError,
-    agent_services::AgentServices,
+    CloseStorage, EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices,
 };
 use crate::studio::agent_close::{
     AgentCloseOutcome, AgentCloseResult, AgentWorktreeCleanup, state_error,
@@ -14,7 +13,7 @@ use std::{collections::BTreeMap, sync::Arc};
 impl AgentServices {
     pub(super) async fn close_child_tree(
         &self,
-        owner: StudioThreadAssembler,
+        owner: SessionRuntime,
         caller: String,
         target: String,
         options: AgentCloseOptions,
@@ -196,7 +195,7 @@ impl AgentServices {
 
     pub(super) async fn close_saved_child(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         record: &pl_protocol::Thread,
     ) -> Result<()> {
         let intent = self
@@ -205,15 +204,16 @@ impl AgentServices {
             .await?
             .context("child has no close intent")?;
         let closing = owner.0.state().entries.get_mut(&record.id).map(|entry| {
-            entry.ready = false;
-            entry.thread.clone()
+            entry.native.ready = false;
+            entry.native.thread.clone()
         });
         if let Some(thread) = closing {
             drop(owner.prepare_close(&record.id, &thread));
         }
         let operation = owner.agent_operation(&record.id).await;
         let receiver = owner.0.state().entries.get(&record.id).and_then(|entry| {
-            (entry.purpose == EntryPurpose::ReportReceiver).then(|| entry.incarnation.clone())
+            (entry.native.purpose == EntryPurpose::ReportReceiver)
+                .then(|| entry.native.incarnation.clone())
         });
         if let Some(incarnation) = receiver {
             // A parent selected for final close may itself retain a failed report receiver.
@@ -288,54 +288,82 @@ impl AgentServices {
     /// and joined its retained binding; Attached alone is not a release acknowledgement.
     pub(super) fn install_storage_owner(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         record: &pl_protocol::Thread,
         checkpoint: pl_core::thread::ThreadCheckpoint,
         purpose: EntryPurpose,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
+        let (identity, binding, parent_thread) =
+            self.events
+                .agent_execution_identity(&record.id)
+                .ok_or_else(|| ThreadAssemblyError::Identity(record.id.clone()))?;
+        if &identity.session_id != owner.id()
+            || parent_thread.as_ref().map(pl_protocol::ThreadId::as_str)
+                != record.parent_thread_id.as_deref()
+        {
+            return Err(ThreadAssemblyError::Identity(record.id.clone()));
+        }
+        if matches!(binding, pl_protocol::AgentBinding::Acp(_)) {
+            return Err(ThreadAssemblyError::UnsupportedBackend {
+                backend: pl_protocol::AgentBackendKind::Acp,
+            });
+        }
+        let thread =
+            ThreadHandle::resume_without_model(record.id.clone(), Some(checkpoint.clone()))?;
         let mut state = owner.0.state();
-        if state.creating.contains_key(&record.id) {
+        if state
+            .creating
+            .get(&record.id)
+            .is_some_and(|preparation| preparation.settlement.is_none())
+        {
             return Err(ThreadAssemblyError::Preparing(record.id.clone()));
         }
         if let Some(entry) = state.entries.get(&record.id)
             && (purpose == EntryPurpose::ReportReceiver
-                || entry.thread.snapshot().lifecycle != ThreadLifecycle::Closed
+                || entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Closed
                 || !matches!(
-                    entry.close_storage.as_ref(),
+                    entry.native.close_storage.as_ref(),
                     None | Some(CloseStorage::Attached(_))
                         | Some(CloseStorage::Execution { joined: true, .. })
                 ))
         {
             return Err(ThreadAssemblyError::Unpublished(record.id.clone()));
         }
-        let thread =
-            ThreadHandle::resume_without_model(record.id.clone(), Some(checkpoint.clone()))?;
-        let previous = state.entries.remove(&record.id);
-        state.entries.insert(
+        let previous = state.remove_entry(&record.id);
+        state.insert_entry(
             record.id.clone(),
-            Entry {
-                purpose,
-                workspace_usage: previous
-                    .as_ref()
-                    .and_then(|entry| entry.workspace_usage.clone()),
-                close_storage: Some(CloseStorage::Pending {
-                    record: Box::new(record.clone()),
-                    checkpoint: Box::new(checkpoint),
-                }),
-                published_resources_closed: previous
-                    .as_ref()
-                    .is_some_and(|entry| entry.published_resources_closed),
-                workspace_disposition: previous
-                    .as_ref()
-                    .and_then(|entry| entry.workspace_disposition),
-                cleanup: previous.map_or_else(Default::default, |entry| entry.cleanup),
-                execution: pl_core::thread::input::InputDriverOptions {
-                    max_model_steps: crate::studio::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT,
+            crate::session::AgentInstance {
+                identity,
+                binding,
+                native: crate::session::NativeThreadRuntime {
+                    resources: previous
+                        .as_ref()
+                        .map(|entry| entry.native.resources.clone())
+                        .unwrap_or_default(),
+                    purpose,
+                    workspace_usage: previous
+                        .as_ref()
+                        .and_then(|entry| entry.native.workspace_usage.clone()),
+                    close_storage: Some(CloseStorage::Pending {
+                        record: Box::new(record.clone()),
+                        checkpoint: Box::new(checkpoint),
+                    }),
+                    published_resources_closed: previous
+                        .as_ref()
+                        .is_some_and(|entry| entry.native.published_resources_closed),
+                    workspace_disposition: previous
+                        .as_ref()
+                        .and_then(|entry| entry.native.workspace_disposition),
+                    cleanup: previous
+                        .map_or_else(Default::default, |entry| entry.native.cleanup.clone()),
+                    execution: pl_core::thread::input::InputDriverOptions {
+                        max_model_steps: crate::studio::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT,
+                    },
+                    incarnation: Arc::new(()),
+                    parent_id: record.parent_thread_id.clone(),
+                    ready: false,
+                    thread: thread.clone(),
                 },
-                incarnation: Arc::new(()),
-                parent_id: record.parent_thread_id.clone(),
-                ready: false,
-                thread: thread.clone(),
             },
         );
         drop(state);

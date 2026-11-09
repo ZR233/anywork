@@ -112,7 +112,10 @@ impl StudioRuntime {
             }
             // Eviction retains the full resource/storage close state. Keep that state out of
             // activation's ancestry future without detaching this caller's cancellation or join.
-            match Box::pin(self.threads.evict_idle(&thread_id)).await {
+            let Some(session) = self.session_of(&thread_id) else {
+                continue;
+            };
+            match Box::pin(session.evict_idle(&thread_id)).await {
                 Ok(true) => {
                     self.residency.remove(&thread_id).await;
                 }
@@ -137,7 +140,7 @@ impl StudioRuntime {
         let lifecycle = background_task::finish(&self.thread_lifecycle_task).await;
         self.thread_lifecycle_task.lock().await.take();
         lifecycle.context("failed to join Thread lifecycle operation")?;
-        let thread_failures = self.threads.close_all().await;
+        let thread_failures = self.sessions.join_closes().await;
         if !thread_failures.is_empty() {
             return Err(ThreadCloseFailures(thread_failures).into());
         }
@@ -188,7 +191,12 @@ impl Drop for ThreadResidencyPin {
 }
 
 #[derive(Debug)]
-struct ThreadCloseFailures(Vec<(String, crate::thread_assembler::ThreadAssemblyError)>);
+struct ThreadCloseFailures(
+    Vec<(
+        String,
+        std::sync::Arc<crate::thread_assembler::ThreadAssemblyError>,
+    )>,
+);
 impl std::fmt::Display for ThreadCloseFailures {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("Thread shutdown failures")?;

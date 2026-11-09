@@ -1,5 +1,5 @@
 //! Product Plan confirmation over generic core interaction and extension commits.
-use super::StudioThreadAssembler;
+use super::SessionRuntime;
 use crate::plan_tool::{
     PLAN_EXTENSION, PlanConfirmationPrompt, decode_plan_state, encode_plan_state,
 };
@@ -274,7 +274,7 @@ fn prepare_resolution(
     })
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Commits a Plan answer, its product state and the exact follow-up input, then resumes execution.
     ///
     /// # Errors
@@ -293,9 +293,9 @@ impl StudioThreadAssembler {
         let (thread, execution, is_root) = {
             self.0.state().entries.get(thread_id).map(|entry| {
                 (
-                    entry.thread.clone(),
-                    entry.execution,
-                    entry.parent_id.is_none(),
+                    entry.native.thread.clone(),
+                    entry.native.execution,
+                    entry.native.parent_id.is_none(),
                 )
             })
         }

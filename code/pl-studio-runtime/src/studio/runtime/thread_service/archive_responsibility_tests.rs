@@ -169,7 +169,7 @@ async fn archive_first_scope_write_failure_recovers_exited_private_owner_and_ori
             }),
         };
         let mut spawn = tokio::spawn(spawn_failed_archive_fixture(
-            runtime.threads.clone(),
+            runtime.session_for_roots(std::slice::from_ref(&root.id))?,
             root.id.clone(),
             factory,
         ));
@@ -219,7 +219,7 @@ async fn archive_first_scope_write_failure_recovers_exited_private_owner_and_ori
                 .is_err()
         );
         let scope = runtime
-            .threads
+            .session_for_roots(std::slice::from_ref(&root.id))?
             .seal_archive_scope(std::slice::from_ref(&root.id))?;
         assert!(
             !scope.thread_ids().contains(&id),
@@ -490,7 +490,13 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
         pl_core::context::OpaquePayload::text("invalid initialization"),
     );
     eprintln!("private crash fixture: attach and fail initialization");
-    assert!(runtime.threads.assemble(spec).await.is_err());
+    assert!(
+        runtime
+            .session_for_roots(&["required-root".to_owned()])?
+            .assemble(spec)
+            .await
+            .is_err()
+    );
     eprintln!("private crash fixture: original failure retained");
     let record = runtime
         .store
@@ -578,8 +584,8 @@ async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_
         );
         assert!(
             runtime
-                .threads
-                .observed_thread("required-private")
+                .session_of("required-private")
+                .and_then(|session| session.observed_thread("required-private"))
                 .is_none()
         );
         if receipt {
@@ -639,8 +645,8 @@ async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_
             assert_eq!(operation.phase, ArchivePhase::Sealed);
             assert!(
                 runtime
-                    .threads
-                    .observed_thread("required-private")
+                    .session_of("required-private")
+                    .and_then(|session| session.observed_thread("required-private"))
                     .is_none(),
                 "no substitute cold incarnation"
             );
@@ -973,7 +979,12 @@ async fn archive_private_catalog_projection_retries_saved_cleaned_and_published_
                         .exists(),
                     "{id} host temp must stay cleaned across ACK retries"
                 );
-                assert!(runtime.threads.observed_thread(id).is_none());
+                assert!(
+                    runtime
+                        .session_of(id)
+                        .and_then(|session| session.observed_thread(id))
+                        .is_none()
+                );
             }
             assert_eq!(
                 tokio::fs::read(workspace.join(files.artifacts()).join("keep")).await?,

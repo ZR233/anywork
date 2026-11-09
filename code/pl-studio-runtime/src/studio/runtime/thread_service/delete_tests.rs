@@ -289,7 +289,7 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
     let producer_released = CancellationToken::new();
     let released = producer_released.clone();
     runtime
-        .threads
+        .require_session(&child.id)?
         .start_terminal_delivery(Arc::new(TerminalDelivery {
             thread: child.clone(),
             sequence: 1,
@@ -306,7 +306,9 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
         .await?;
     let failure = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        runtime.threads.join_review_delivery(&child.id),
+        runtime
+            .require_session(&child.id)?
+            .join_review_delivery(&child.id),
     )
     .await?
     .expect_err("missing original must block the actual terminal producer");
@@ -377,7 +379,12 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
         owner.snapshot().lifecycle,
         pl_core::thread::ThreadLifecycle::Closed
     );
-    assert!(runtime.threads.observed_thread(&root.id).is_none());
+    assert!(
+        runtime
+            .session_of(&root.id)
+            .and_then(|session| session.observed_thread(&root.id))
+            .is_none()
+    );
     assert!(runtime.thread_observations.live_feed(&root.id).is_none());
     assert!(
         runtime
@@ -482,7 +489,12 @@ async fn permanent_delete_cold_missing_or_unreadable_history_skips_storage_and_t
                 true,
             )
             .await?;
-        assert!(runtime.threads.observed_thread(&root.id).is_none());
+        assert!(
+            runtime
+                .session_of(&root.id)
+                .and_then(|session| session.observed_thread(&root.id))
+                .is_none()
+        );
         assert!(!host.history_database().exists());
         if unreadable_history {
             tokio::fs::create_dir_all(host.root()).await?;

@@ -21,6 +21,7 @@ impl StudioThreadFactory {
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let id = request.identity.id();
+        self.bind_resource_scope(id, &request.workspace_owner.native_resources())?;
         let verified = request.workspace_owner.take_review();
         self.services
             .store

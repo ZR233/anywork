@@ -447,9 +447,8 @@ impl StudioRuntime {
         else {
             return Ok(None);
         };
-        let scope = self
-            .threads
-            .seal_archive_scope(std::slice::from_ref(&thread_id))?;
+        let session = self.session_for_roots(std::slice::from_ref(&thread_id))?;
+        let scope = session.seal_archive_scope(std::slice::from_ref(&thread_id))?;
         let admitted = scope.preparation_identities(&thread.workspace_id);
         let mut admitted_ids = scope.thread_ids();
         admitted_ids.extend(thread_tree.iter().map(|thread| thread.id.clone()));
@@ -487,7 +486,7 @@ impl StudioRuntime {
         self.end_thread_tree_work(&admitted_ids).await?;
         tokio::time::timeout(
             self.archive_settle_timeout(),
-            self.threads.drain_archive_preparations(&scope),
+            session.drain_archive_preparations(&scope),
         )
         .await
         .context("archive preparations did not join")??;
@@ -598,7 +597,9 @@ impl StudioRuntime {
     }
 
     async fn compensate_unstarted_thread(&self, thread_id: &str) -> Result<()> {
-        self.threads.close(thread_id).await?;
+        if let Some(session) = self.session_of(thread_id) {
+            session.close(thread_id).await?;
+        }
         self.residency.remove(thread_id).await;
         self.agent_facility
             .product_events
@@ -669,7 +670,11 @@ impl StudioRuntime {
 
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
         for id in thread_ids {
-            if self.threads.observed_thread(id).is_none() {
+            if self
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+            {
                 if self
                     .store
                     .thread_preparation(id)
@@ -679,7 +684,9 @@ impl StudioRuntime {
                     continue;
                 }
                 let record = self.read_protocol_thread(id).await?;
-                self.threads.ensure_archive_storage_owner(&record).await?;
+                self.session_for_roots(std::slice::from_ref(id))?
+                    .ensure_archive_storage_owner(&record)
+                    .await?;
             }
         }
         self.close_project_agent_trees(thread_ids).await?;
@@ -766,7 +773,10 @@ impl StudioRuntime {
     /// 未驻留即不 busy：钉住集合恢复保证有 pending 工作的 Thread 会被恢复，
     /// LRU 只淘汰空闲且已耐久化的 actor（design/17 §17.5）。
     pub(in crate::studio::runtime) async fn thread_is_busy(&self, thread_id: &str) -> Result<bool> {
-        let Some(thread) = self.threads.observed_thread(thread_id) else {
+        let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
+        else {
             return Ok(false);
         };
         let snapshot = thread.snapshot();
@@ -796,7 +806,10 @@ impl StudioRuntime {
     /// 下进入 owner mailbox，因此归档期间不会有并发新输入落入这棵树。
     pub(super) async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
         for thread_id in thread_ids {
-            let Some(thread) = self.threads.observed_thread(thread_id) else {
+            let Some(thread) = self
+                .session_of(thread_id)
+                .and_then(|session| session.observed_thread(thread_id))
+            else {
                 // Cold history has no active work and must not be activated for archiving.
                 continue;
             };
@@ -810,7 +823,11 @@ impl StudioRuntime {
         loop {
             let mut still_busy = None;
             for thread_id in thread_ids {
-                if self.threads.observed_thread(thread_id).is_none() {
+                if self
+                    .session_of(thread_id)
+                    .and_then(|session| session.observed_thread(thread_id))
+                    .is_none()
+                {
                     continue;
                 }
                 self.discard_pending_inputs(thread_id).await?;
@@ -837,7 +854,10 @@ impl StudioRuntime {
 
     /// 丢弃该 Thread 当前 canonical 快照里仍未消费的输入，不改写已消费/已丢弃的记录。
     async fn discard_pending_inputs(&self, thread_id: &str) -> Result<()> {
-        let Some(thread) = self.threads.observed_thread(thread_id) else {
+        let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
+        else {
             return Ok(());
         };
         let snapshot = thread.snapshot();

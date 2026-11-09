@@ -1,5 +1,5 @@
 //! Published workspace cleanup remains owned until the frozen close policy succeeds.
-use super::{Registry, State, StudioThreadAssembler, ThreadAssemblyError};
+use super::{Registry, SessionRuntime, State, ThreadAssemblyError};
 use pl_tool::collaboration::thread::WorkspaceRelease;
 use std::sync::{Arc, Weak};
 
@@ -80,7 +80,7 @@ fn seal(registry: &Arc<Registry>, state: &mut State, ids: Vec<String>) -> AgentO
     }
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Capture all admitted owners and seal their admission in the same short registry lock.
     /// No cancellation or permit wait precedes the caller's complete durable scope commit.
     pub(crate) fn seal_archive_scope(
@@ -101,7 +101,7 @@ impl StudioThreadAssembler {
                 Ok(())
             };
             for (id, entry) in &state.entries {
-                observe(id, entry.parent_id.as_deref())?;
+                observe(id, entry.native.parent_id.as_deref())?;
             }
             for (id, entry) in &state.creating {
                 observe(id, entry.parent_id.as_deref())?;
@@ -299,6 +299,7 @@ impl StudioThreadAssembler {
         for (_, id) in targets {
             if let Some(entry) = state.entries.get(id)
                 && entry
+                    .native
                     .workspace_disposition
                     .is_some_and(|current| current != disposition)
             {
@@ -312,11 +313,11 @@ impl StudioThreadAssembler {
                 // admission here: publishing Cleanup before a successful flush would let ordinary
                 // shutdown consume an uncommitted request after the owned close fails.
                 if standalone {
-                    if entry.workspace_disposition != Some(disposition) {
-                        entry.published_resources_closed = false;
+                    if entry.native.workspace_disposition != Some(disposition) {
+                        entry.native.published_resources_closed = false;
                     }
-                    entry.workspace_disposition = Some(disposition);
-                    entry.ready = false;
+                    entry.native.workspace_disposition = Some(disposition);
+                    entry.native.ready = false;
                 }
             }
         }
@@ -335,15 +336,15 @@ impl StudioThreadAssembler {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        if let Some(current) = entry.workspace_disposition {
+        if let Some(current) = entry.native.workspace_disposition {
             if current != disposition {
                 return Err(ThreadAssemblyError::CloseDisposition(id.to_owned()));
             }
         } else {
             // A previous default Preserve is not an explicit policy; first durable Cleanup must
             // still run even if that ordinary resource retirement had already completed.
-            entry.published_resources_closed = false;
-            entry.workspace_disposition = Some(disposition);
+            entry.native.published_resources_closed = false;
+            entry.native.workspace_disposition = Some(disposition);
         }
         Ok(())
     }
@@ -362,9 +363,10 @@ impl StudioThreadAssembler {
                 .entries
                 .get(id)
                 .filter(|entry| {
-                    entry.parent_id.is_some() && Arc::ptr_eq(&entry.incarnation, incarnation)
+                    entry.native.parent_id.is_some()
+                        && Arc::ptr_eq(&entry.native.incarnation, incarnation)
                 })
-                .map(|entry| entry.cleanup.clone())
+                .map(|entry| entry.native.cleanup.clone())
         };
         let Some(cleanup) = cleanup else {
             return Ok(());
@@ -376,12 +378,12 @@ impl StudioThreadAssembler {
                 .entries
                 .get(id)
                 .filter(|entry| {
-                    !entry.published_resources_closed
-                        && Arc::ptr_eq(&entry.incarnation, incarnation)
+                    !entry.native.published_resources_closed
+                        && Arc::ptr_eq(&entry.native.incarnation, incarnation)
                 })
                 .and_then(|entry| {
                     state.child_factory.clone().map(|factory| {
-                        let disposition = entry.workspace_disposition.unwrap_or_default();
+                        let disposition = entry.native.workspace_disposition.unwrap_or_default();
                         (factory, disposition)
                     })
                 })
@@ -389,9 +391,9 @@ impl StudioThreadAssembler {
         if let Some((factory, disposition)) = resource {
             factory.close_published(id, disposition).await?;
             if let Some(entry) = self.0.state().entries.get_mut(id)
-                && Arc::ptr_eq(&entry.incarnation, incarnation)
+                && Arc::ptr_eq(&entry.native.incarnation, incarnation)
             {
-                entry.published_resources_closed = true;
+                entry.native.published_resources_closed = true;
             }
         }
         Ok(())
