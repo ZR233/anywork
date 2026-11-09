@@ -61,18 +61,17 @@ impl<E: GitExecutor, P: GitCredentialProvider> GitSyncDefaultBranch<E, P> {
             ));
         }
         let runner = &self.network.runner;
-        let dirty = {
-            let status = runner
-                .run_plain(NAME, vec!["status", "--porcelain"])
-                .await?;
-            !status.stdout().trim().is_empty()
-        };
+        let status = runner
+            .run_plain(NAME, vec!["status", "--porcelain"])
+            .await?;
+        let dirty = !status.stdout().trim().is_empty();
         if dirty && !input.force && !input.preserve_changes {
             return Err(GitError::invalid(
                 NAME,
                 "git workspace has uncommitted changes; pass force=true to discard them or preserveChanges=true to stash them before sync",
             ));
         }
+        completed.push(status);
         if dirty && input.preserve_changes {
             completed.push(
                 runner

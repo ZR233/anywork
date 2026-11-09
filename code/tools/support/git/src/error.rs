@@ -64,14 +64,33 @@ impl GitError {
         }
     }
 
-    /// The failed command, or the last completed command before a later failure.
-    pub fn observed(&self) -> Option<&GitOutput> {
+    /// Safe command facts suitable for delivery independently of the private source.
+    ///
+    /// A single command retains its original payload. A multi-step failure also
+    /// includes every completed command and the failed command (when available)
+    /// in execution order under `observations`, while keeping the last command's
+    /// original fields at the top level.
+    pub fn observed(&self) -> Option<GitOutput> {
+        let mut observations = Vec::new();
+        self.collect_observations(&mut observations);
+        let mut payload = observations.last()?.payload().clone();
+        if matches!(self, Self::AfterCommands { .. }) {
+            payload["observations"] = observations
+                .iter()
+                .map(|output| output.payload().clone())
+                .collect();
+        }
+        Some(GitOutput::new(payload))
+    }
+
+    fn collect_observations<'a>(&'a self, observations: &mut Vec<&'a GitOutput>) {
         match self {
-            Self::Command { output, .. } => Some(output),
+            Self::Command { output, .. } => observations.push(output),
             Self::AfterCommands { source, completed } => {
-                source.observed().or_else(|| completed.last())
+                observations.extend(completed);
+                source.collect_observations(observations);
             }
-            _ => None,
+            _ => {}
         }
     }
 }
@@ -87,4 +106,25 @@ pub fn required_text(
 ) -> Result<String, GitError> {
     non_empty(value)
         .ok_or_else(|| GitError::invalid(tool, format!("missing string field `{field}`")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observed_single_command_payload_is_unchanged() {
+        let output = GitOutput::command(17, "partial output".into(), "command failed".into());
+        let error = GitError::Command {
+            tool: "git_push",
+            status: 17,
+            output: output.clone(),
+        };
+        assert_eq!(error.observed(), Some(output));
+        assert!(
+            GitError::invalid("git_push", "missing branch")
+                .observed()
+                .is_none()
+        );
+    }
 }

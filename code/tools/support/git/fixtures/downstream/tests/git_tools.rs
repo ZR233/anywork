@@ -465,7 +465,7 @@ async fn provider_credentials_redact_success_and_failure_and_always_remove_askpa
         let tool = pl_tool_git_push::GitPush::new(network, pl_tool_git_push::definition());
         let result = tool.execute(r#"{"branch":"topic"}"#.into(), ()).await;
         let output = match &result {
-            Ok(output) => output,
+            Ok(output) => output.clone(),
             Err(error) => {
                 assert!(!format!("{error:?}").contains("fixture-private-token"));
                 error.observed().unwrap()
@@ -648,10 +648,16 @@ async fn sync_failure_keeps_prior_side_effect_observations_without_automatic_ret
     let GitError::AfterCommands { completed, source } = &error else {
         panic!("missing prior command observations: {error:?}");
     };
-    assert_eq!(completed.len(), 2);
-    assert!(completed[0].stdout().contains("Saved working directory"));
+    assert_eq!(completed.len(), 3);
+    assert!(completed[0].stdout().contains("local-note"));
+    assert!(completed[1].stdout().contains("Saved working directory"));
     assert!(matches!(source.as_ref(), GitError::Command { .. }));
-    assert_ne!(error.observed().unwrap().payload()["status"], 0);
+    let observed = error.observed().unwrap();
+    assert_ne!(observed.payload()["status"], 0);
+    assert_eq!(
+        observed.payload()["observations"].as_array().unwrap().len(),
+        4
+    );
     assert_eq!(git(&repo.worktree, &["stash", "list"]).lines().count(), 1);
     assert!(!repo.worktree.join("local-note").exists());
     assert!(

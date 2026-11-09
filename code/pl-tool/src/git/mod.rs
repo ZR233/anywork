@@ -188,7 +188,7 @@ where
         match self.invoke(input.content().to_owned()).await {
             Ok(output) => dynamic_output(&output),
             Err(source) => {
-                let observed = source.observed().map(dynamic_output).transpose()?;
+                let observed = source.observed().as_ref().map(dynamic_output).transpose()?;
                 let error = ToolError::new(GitHostError::new(self.kind.name(), source));
                 Err(match observed {
                     Some(output) => error.with_output(output),

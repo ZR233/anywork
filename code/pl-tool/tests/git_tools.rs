@@ -1,10 +1,12 @@
+#[path = "support/binding_host.rs"]
+mod host;
 #[path = "../../tools/support/git/fixtures/downstream/tests/support/mod.rs"]
 mod support;
 
 use std::{
     error::Error,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -12,9 +14,11 @@ use std::{
 use pl_agent_tool::Tool;
 use pl_core::{
     context::OpaquePayload,
+    model::DynModelSession,
+    thread::{ThreadEffectBatch, ThreadHandle, ToolOutcome},
     tool::{
         ToolOutput,
-        opaque::{CallContext, ToolError},
+        opaque::{CallContext, ToolAuthorization, ToolError},
     },
 };
 use pl_tool::{
@@ -343,35 +347,176 @@ async fn credential_source_is_retained_without_publishing_its_private_diagnostic
     assert_eq!(backend.0.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn host_error_source_retains_side_effect_observations() {
+#[derive(Debug, Clone, Copy)]
+enum SyncFailure {
+    Fetch,
+    Provider,
+}
+
+const PRIVATE_SYNC_TOKEN: &str = "fixture-private-sync-credential-token";
+
+impl pl_tool::git::GitCredentialProvider for SyncFailure {
+    type Error = std::io::Error;
+
+    async fn credential(
+        &self,
+        _request: pl_tool::git::GitCredentialRequest,
+    ) -> Result<Option<pl_tool::git::GitCredential>, Self::Error> {
+        match self {
+            Self::Fetch => Ok(Some(pl_tool::git::GitCredential::new(
+                PRIVATE_SYNC_TOKEN.into(),
+            ))),
+            Self::Provider => Err(std::io::Error::other(PRIVATE_SYNC_TOKEN)),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingLocalBackend(Mutex<Vec<ExecutionOutput>>);
+
+impl ExecutionBackend for RecordingLocalBackend {
+    type Error = String;
+
+    async fn run(&self, request: ExecutionRequest) -> Result<ExecutionOutput, Self::Error> {
+        let output = LocalExecutionBackend.run(request).await?;
+        self.0.lock().unwrap().push(output.clone());
+        Ok(output)
+    }
+}
+
+async fn sync_failure_history(failure: SyncFailure) {
     let repo = Repository::new();
     git(&repo.worktree, &["commit", "-m", "initial"]);
     std::fs::write(repo.worktree.join("local-note"), "keep\n").unwrap();
-    let mut config = GitWorkspaceConfig::local(&repo.worktree).with_native_credentials();
-    config.remote_url = Some(repo.worktree.join("not-a-remote").to_str().unwrap().into());
-    let error = execute(
-        &config,
-        GitToolKind::SyncDefaultBranch,
-        r#"{"preserveChanges":true}"#,
+    let mut config = GitWorkspaceConfig::local(&repo.worktree);
+    // A nonexistent local remote causes real Git to echo the token-bearing
+    // path, proving the retained failed-command observation stays redacted.
+    let remote_url = repo.worktree.join(PRIVATE_SYNC_TOKEN);
+    config.remote_url = Some(remote_url.to_str().unwrap().into());
+    let backend = Arc::new(RecordingLocalBackend::default());
+    let kind = GitToolKind::SyncDefaultBranch;
+    let definition = kind.definition();
+    let prepared = pl_tool::binding::prepare_registration(
+        kind.name(),
+        &definition,
+        pl_tool::binding::ToolCallPolicy::DirectOnly,
     )
-    .await
-    .unwrap_err();
-    let original = error
-        .source
-        .downcast_ref::<GitHostError>()
-        .unwrap()
-        .original();
-    let pl_tool_git_support::GitError::AfterCommands { completed, source } = original else {
-        panic!("missing prior side effects")
+    .unwrap();
+    let tool = GitTool::new(kind, config, backend.clone(), Arc::new(failure), definition);
+    let thread = ThreadHandle::start(
+        "git-sync-history".into(),
+        DynModelSession::new(host::Calls {
+            calls: [(kind.name().into(), r#"{"preserveChanges":true}"#.into())].into(),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![
+            tool.registration(prepared, ToolAuthorization::unique()),
+        ])
+        .await
+        .unwrap();
+    thread.run_turn(host::turn("sync")).await.unwrap();
+    let effects = thread.effects().await.unwrap();
+    let deliveries = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(deliveries.len(), 1);
+    let ToolOutcome::Failed(error) = &deliveries[0].outcome else {
+        panic!("sync must fail after the completed side effects")
     };
-    assert_eq!(completed.len(), 2);
-    assert!(completed[0].stdout().contains("Saved working directory"));
-    assert!(matches!(
-        source.as_ref(),
-        pl_tool_git_support::GitError::Command { .. }
-    ));
-    assert_ne!(original.observed().unwrap().payload()["status"], 0);
+    assert_public_diagnostic(error, PRIVATE_SYNC_TOKEN);
+    assert!(error.source.is::<GitHostError>());
+    let envelopes = effects
+        .iter()
+        .map(|effect| effect.encode().unwrap())
+        .collect::<Vec<_>>();
+    let journal = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(journal.path(), serde_json::to_vec(&envelopes).unwrap()).unwrap();
+    drop(envelopes);
+    drop(deliveries);
+    drop(effects);
+    thread.close().await.unwrap();
+    drop(thread);
+
+    // No live original() or Thread objects remain: read the canonical journal
+    // codec from disk, including the real ToolDelivery output and error serde.
+    let bytes = std::fs::read(journal.path()).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains(PRIVATE_SYNC_TOKEN));
+    let envelopes: Vec<OpaquePayload> = serde_json::from_slice(&bytes).unwrap();
+    let effects = envelopes
+        .iter()
+        .map(|envelope| ThreadEffectBatch::decode(envelope).unwrap())
+        .collect::<Vec<_>>();
+    let deliveries = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(deliveries.len(), 1);
+    let delivery = deliveries[0];
+    let ToolOutcome::Failed(error) = &delivery.outcome else {
+        panic!("cold history must retain the failed disposition")
+    };
+    assert_public_diagnostic(error, PRIVATE_SYNC_TOKEN);
+    assert!(!error.source.is::<GitHostError>());
+    assert_eq!(delivery.output.payload().format(), "pl.tool.git");
+    assert_eq!(delivery.output.payload().version(), 1);
+    let payload = payload(&delivery.output);
+    let observations = payload["observations"].as_array().expect(
+        "all completed and failed Git command observations must survive real Thread history",
+    );
+    let commands = backend.0.lock().unwrap();
+    let expected_count = match failure {
+        SyncFailure::Fetch => 4,
+        SyncFailure::Provider => 3,
+    };
+    assert_eq!(
+        commands.len(),
+        expected_count,
+        "Git commands must not repeat"
+    );
+    assert_eq!(observations.len(), commands.len());
+    assert!(commands[0].stdout.contains("local-note"));
+    assert!(commands[1].stdout.contains("Saved working directory"));
+    for (observed, actual) in observations.iter().zip(commands.iter()) {
+        assert_eq!(
+            observed,
+            &json!({
+                "status": actual.status,
+                "stdout": actual.stdout.replace(PRIVATE_SYNC_TOKEN, "[redacted]"),
+                "stderr": actual.stderr.replace(PRIVATE_SYNC_TOKEN, "[redacted]"),
+            })
+        );
+    }
+    for field in ["status", "stdout", "stderr"] {
+        assert_eq!(payload[field], observations.last().unwrap()[field]);
+    }
+    match failure {
+        SyncFailure::Fetch => {
+            let failed = observations.last().unwrap();
+            assert_ne!(failed["status"], 0);
+            assert!(failed["stderr"].as_str().unwrap().contains("[redacted]"));
+        }
+        SyncFailure::Provider => {
+            assert!(observations.iter().all(|observed| observed["status"] == 0));
+        }
+    }
+    assert_eq!(
+        git(&repo.worktree, &["remote", "get-url", "origin"]).trim(),
+        remote_url.to_str().unwrap()
+    );
     assert_eq!(git(&repo.worktree, &["stash", "list"]).lines().count(), 1);
     assert!(!repo.worktree.join("local-note").exists());
+}
+
+#[tokio::test]
+async fn sync_fetch_failure_observations_survive_thread_history() {
+    sync_failure_history(SyncFailure::Fetch).await;
+}
+
+#[tokio::test]
+async fn sync_provider_failure_observations_survive_thread_history() {
+    sync_failure_history(SyncFailure::Provider).await;
 }
