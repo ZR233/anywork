@@ -741,6 +741,12 @@ final class _RealtimeScene {
       timeout: remaining(),
     );
     await _revealTextFragment(tester, reasoningRow, _backgroundResultReasoning);
+    // The foreground disclosure can resize Main after its first reveal.
+    await _revealTextFragment(
+      tester,
+      backgroundRow,
+      'realtime-parallel-a-line-05',
+    );
     remaining();
     final executionId = graph.client.conversations
         .session(lease.threadId)
@@ -810,17 +816,16 @@ final class _RealtimeScene {
       expect(backgroundRow, findsOneWidget);
       expect(_laidOut(backgroundRow), isTrue);
       expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
-      expect(
-        find
-            .descendant(
-              of: backgroundRow,
-              matching: find.textContaining(
-                'realtime-parallel-a-line-05',
-                findRichText: true,
-              ),
-            )
-            .hitTestable(),
-        findsWidgets,
+      _expectTextFragmentVisible(
+        tester,
+        backgroundRow,
+        'realtime-parallel-a-line-05',
+        hitTestable: true,
+      );
+      _expectTextFragmentVisible(
+        tester,
+        reasoningRow,
+        _backgroundResultReasoning,
       );
       expect(_laidOut(reasoningRow), isTrue);
       return {
@@ -3339,7 +3344,32 @@ Future<void> _revealTextFragment(
   await tester.pump();
   expect(tester.takeException(), isNull);
   expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
-  for (final box in paragraph.getBoxesForSelection(selection)) {
+  _expectTextFragmentVisible(tester, finder, fragment);
+}
+
+void _expectTextFragmentVisible(
+  WidgetTester tester,
+  Finder finder,
+  String fragment, {
+  bool hitTestable = false,
+}) {
+  expect(_laidOut(finder), isTrue);
+  final text = find.descendant(
+    of: finder,
+    matching: find.byWidgetPredicate(
+      (widget) =>
+          widget is RichText && widget.text.toPlainText().contains(fragment),
+    ),
+  );
+  expect(text, findsOneWidget);
+  final paragraph = tester.renderObject<RenderParagraph>(text);
+  final start = paragraph.text.toPlainText().indexOf(fragment);
+  expect(start, greaterThanOrEqualTo(0));
+  final boxes = paragraph.getBoxesForSelection(
+    TextSelection(baseOffset: start, extentOffset: start + fragment.length),
+  );
+  expect(boxes, isNotEmpty);
+  for (final box in boxes) {
     final local = box.toRect();
     final rect = Rect.fromPoints(
       paragraph.localToGlobal(local.topLeft),
@@ -3358,6 +3388,18 @@ Future<void> _revealTextFragment(
         expect(viewport.contains(rect.bottomRight), isTrue, reason: diagnostic);
       }
       ancestor = ancestor.parent;
+    }
+    if (hitTestable) {
+      expect(
+        tester
+            .hitTestOnBinding(rect.center)
+            .path
+            .any((entry) => identical(entry.target, paragraph)),
+        isTrue,
+        reason:
+            'The actual $fragment glyphs must be hit-testable, not the '
+            'center of a larger multi-line text widget',
+      );
     }
   }
 }
