@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
+import 'package:anywork_client/models.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
@@ -24,6 +25,7 @@ class TimelineView extends StatefulWidget {
     super.key,
     required this.threadId,
     required this.view,
+    this.submissions = const [],
     required this.controls,
     required this.onLoadOlder,
     required this.onRetryOlder,
@@ -44,6 +46,7 @@ class TimelineView extends StatefulWidget {
   });
   final String threadId;
   final TimelineSessionViewState view;
+  final List<ComposerSubmission> submissions;
   final TimelineUiControllers controls;
   final Future<void> Function() onLoadOlder;
   final Future<void> Function() onRetryOlder;
@@ -101,6 +104,16 @@ class _TimelineViewState extends State<TimelineView> {
       identical(widget.controls, oldWidget.controls),
       'A new generation requires a new Chat subtree key',
     );
+    final oldSubmissionIds = {
+      for (final submission in oldWidget.submissions) submission.inputId,
+    };
+    if (widget.submissions.any(
+      (submission) => !oldSubmissionIds.contains(submission.inputId),
+    )) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _displayActive) unawaited(_returnToLatest());
+      });
+    }
     _scheduleFill();
   }
 
@@ -414,10 +427,24 @@ class _TimelineViewState extends State<TimelineView> {
                                             ? _loadOlder
                                             : null,
                                         paginationThreshold: 0,
-                                        bottomSliver: widget.planSummary == null
+                                        bottomSliver:
+                                            widget.planSummary == null &&
+                                                widget.submissions.isEmpty
                                             ? null
                                             : SliverToBoxAdapter(
-                                                child: widget.planSummary,
+                                                child: Column(
+                                                  children: [
+                                                    if (widget.planSummary !=
+                                                        null)
+                                                      widget.planSummary!,
+                                                    for (final submission
+                                                        in widget.submissions)
+                                                      _ComposerSubmissionCard(
+                                                        submission: submission,
+                                                        bodyBuilder: _body,
+                                                      ),
+                                                  ],
+                                                ),
                                               ),
                                       ),
                                   chatMessageBuilder:
@@ -576,6 +603,112 @@ class _TimelineViewState extends State<TimelineView> {
       ],
     );
   }
+}
+
+class _ComposerSubmissionCard extends StatelessWidget {
+  const _ComposerSubmissionCard({
+    required this.submission,
+    required this.bodyBuilder,
+  });
+
+  final ComposerSubmission submission;
+  final Widget Function(String id, String text) bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = switch (submission.phase) {
+      ComposerSubmissionPhase.sending => '正在发送',
+      ComposerSubmissionPhase.accepted => '已收到，等待同步',
+      ComposerSubmissionPhase.unknownOutcome => '发送结果待确认',
+    };
+    return Align(
+      alignment: AlignmentDirectional.centerEnd,
+      child: Container(
+        key: ValueKey('composer-submission:${submission.inputId}'),
+        margin: const EdgeInsetsDirectional.fromSTEB(24, 8, 24, 8),
+        padding: const EdgeInsets.all(12),
+        constraints: const BoxConstraints(
+          maxWidth: StudioLayout.conversationPromptWidth,
+        ),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (submission.text.isNotEmpty)
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: bodyBuilder(
+                  'composer-submission:${submission.inputId}:body',
+                  submission.text,
+                ),
+              ),
+            for (final attachment in submission.attachments)
+              SelectionContainer.disabled(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (attachment.previewBytes != null)
+                        Padding(
+                          padding: const EdgeInsetsDirectional.only(end: 8),
+                          child: Image.memory(
+                            attachment.previewBytes!,
+                            width: 36,
+                            height: 36,
+                            fit: BoxFit.cover,
+                          ),
+                        )
+                      else
+                        const Padding(
+                          padding: EdgeInsetsDirectional.only(end: 8),
+                          child: Icon(Icons.attach_file, size: 18),
+                        ),
+                      Flexible(child: Text(attachment.filename)),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 4),
+            SelectionContainer.disabled(
+              child: Text(
+                status,
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ComposerSubmissionList extends StatelessWidget {
+  const ComposerSubmissionList({
+    super.key,
+    required this.submissions,
+    required this.bodyBuilder,
+  });
+
+  final List<ComposerSubmission> submissions;
+  final Widget Function(String id, String text) bodyBuilder;
+
+  @override
+  Widget build(BuildContext context) => SelectionArea(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final submission in submissions)
+          _ComposerSubmissionCard(
+            submission: submission,
+            bodyBuilder: bodyBuilder,
+          ),
+      ],
+    ),
+  );
 }
 
 /// Observes actual rendering, including a retained layer becoming visible again

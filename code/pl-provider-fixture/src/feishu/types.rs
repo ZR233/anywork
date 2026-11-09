@@ -89,6 +89,8 @@ pub enum CallKind {
     ChatMembers,
     MessageList,
     MessageSend,
+    ImageUpload,
+    FileUpload,
     CardCreate,
     CardUpdate,
     CardSettings,

@@ -1064,6 +1064,7 @@ pub(crate) async fn message_send(
     match body.msg_type.as_str() {
         "post" => send_post(&state, &body, request_bytes).await,
         "interactive" => super::cardkit::send_card_message(&state, &body, request_bytes).await,
+        "image" | "file" => super::files::send(&state, &body, request_bytes).await,
         other => {
             // The Markdown contract sends `post`; automatic replies send an
             // `interactive` card entity. A plain `text` request is a regression,

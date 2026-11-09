@@ -128,7 +128,13 @@ impl StudioThreadFactory {
         {
             Ok(tools) => tools,
             Err(error) => {
-                let _ = self.shutdown_thread_mcp(&id).await;
+                if let Err(cleanup) = self.shutdown_thread_mcp(&id).await {
+                    return Err(ThreadAssemblyError::Cleanup {
+                        id,
+                        setup: Box::new(error),
+                        cleanup: Box::new(resource_error("close failed preparation MCP", cleanup)),
+                    });
+                }
                 return Err(error);
             }
         };
@@ -156,10 +162,13 @@ impl StudioThreadFactory {
                 factory.forget_tool_binding_if_current(&guard_id, &identity);
             },
         ));
-        self.bindings
+        let scope = self
+            .resource_scope(&id)
+            .ok_or(ThreadAssemblyError::Closed)?;
+        *scope
+            .binding
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, binding);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(binding);
         Ok(tools)
     }
 

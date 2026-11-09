@@ -239,6 +239,23 @@ impl FeishuControl {
         }
     }
 
+    pub async fn set_upload_script(&self, steps: Vec<SendDisposition>) {
+        let mut inner = self.shared.lock().await;
+        if steps
+            .iter()
+            .any(|step| matches!(step, SendDisposition::Hang))
+        {
+            inner.im.upload_hang.arm();
+        } else {
+            inner.im.upload_hang.clear();
+        }
+        inner.im.upload = steps.into();
+    }
+
+    pub async fn release_upload(&self) {
+        self.shared.lock().await.im.upload_hang.release();
+    }
+
     /// Scripts the answers of the next CardKit requests (create, element
     /// content, settings) in request order. An exhausted script succeeds.
     pub async fn set_card_script(&self, steps: Vec<CardDisposition>) {

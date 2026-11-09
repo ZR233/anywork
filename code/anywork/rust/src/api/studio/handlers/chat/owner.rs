@@ -7,7 +7,7 @@ use std::{
 };
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
-use pl_studio_runtime::{ConversationFeed, ConversationReader};
+use pl_studio_runtime::{ConversationFeed, ConversationReader, ConversationStateFeed};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -22,11 +22,10 @@ pub(crate) struct ConversationOwner {
     pub(super) cancel: CancellationToken,
     pub(super) producer_cancel: CancellationToken,
     /// Same original lease, captured before the native feed can be locked by the producer.
-    pub(super) reader: ConversationReader,
-    pub(super) watches: ContentWatches,
+    content: Option<ContentCapabilities>,
     pub(super) state: SyncMutex<DeliveryState>,
     pub(super) credit: Notify,
-    native: Mutex<Option<ConversationFeed>>,
+    native: Mutex<Option<NativeFeed>>,
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
     producer: Mutex<OwnedTaskSlot>,
@@ -34,6 +33,64 @@ pub(crate) struct ConversationOwner {
     /// so merely installing it cannot form an uncancelled Arc self-cycle.
     lifecycle: SyncMutex<Option<Arc<Mutex<OwnedTaskSlot>>>>,
     close_errors: SyncMutex<CloseFailures>,
+}
+
+pub(super) struct ContentCapabilities {
+    pub(super) reader: ConversationReader,
+    pub(super) watches: ContentWatches,
+}
+
+pub(super) enum NativeFeed {
+    Content(ConversationFeed),
+    State(ConversationStateFeed),
+}
+
+impl NativeFeed {
+    pub(super) async fn recv(
+        &mut self,
+    ) -> Result<Option<crate::api::studio::types::BridgeConversationEvent>, BridgeError> {
+        use crate::api::studio::{
+            convert::{chat, thread_stream::bridge_thread_update},
+            types::BridgeConversationEvent,
+        };
+        match self {
+            Self::Content(feed) => Ok(feed.recv().await?.map(|event| match event {
+                pl_studio_runtime::ConversationEvent::Chat { batch } => {
+                    BridgeConversationEvent::Chat {
+                        batch: Box::new(chat::batch(*batch)),
+                    }
+                }
+                pl_studio_runtime::ConversationEvent::Activity { snapshot } => {
+                    BridgeConversationEvent::Activity {
+                        snapshot: Box::new(chat::activity((*snapshot).clone())),
+                    }
+                }
+            })),
+            Self::State(feed) => feed
+                .recv()
+                .await?
+                .map(|update| {
+                    Ok(BridgeConversationEvent::State {
+                        update: Box::new(bridge_thread_update(update)?),
+                    })
+                })
+                .transpose(),
+        }
+    }
+
+    fn request_close(&self) {
+        match self {
+            Self::Content(feed) => feed.request_close(),
+            Self::State(feed) => feed.request_close(),
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), BridgeError> {
+        match self {
+            Self::Content(feed) => Ok(feed.close().await?),
+            Self::State(feed) => Ok(feed.close().await?),
+        }
+    }
 }
 
 #[flutter_rust_bridge::frb(ignore)]
@@ -58,11 +115,40 @@ struct OwnedTaskSlot {
 
 impl ConversationOwner {
     pub(super) fn new(feed: ConversationFeed, cancel: CancellationToken) -> Self {
-        Self {
-            thread_id: feed.thread_id().to_owned(),
-            subscription_id: feed.subscription_id().to_owned(),
+        let content = ContentCapabilities {
             reader: feed.reader().clone(),
             watches: ContentWatches::new(feed.subscription_id()),
+        };
+        Self::with_native(
+            feed.thread_id().to_owned(),
+            feed.subscription_id().to_owned(),
+            NativeFeed::Content(feed),
+            Some(content),
+            cancel,
+        )
+    }
+
+    pub(super) fn new_state(feed: ConversationStateFeed, cancel: CancellationToken) -> Self {
+        Self::with_native(
+            feed.thread_id().to_owned(),
+            feed.subscription_id().to_owned(),
+            NativeFeed::State(feed),
+            None,
+            cancel,
+        )
+    }
+
+    fn with_native(
+        thread_id: String,
+        subscription_id: String,
+        feed: NativeFeed,
+        content: Option<ContentCapabilities>,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            thread_id,
+            subscription_id,
+            content,
             native: Mutex::new(Some(feed)),
             producer_cancel: cancel.child_token(),
             cancel,
@@ -73,6 +159,15 @@ impl ConversationOwner {
             lifecycle: SyncMutex::new(None),
             close_errors: SyncMutex::new(CloseFailures::default()),
         }
+    }
+
+    pub(super) fn content(&self) -> Result<&ContentCapabilities, BridgeError> {
+        self.content.as_ref().ok_or_else(|| {
+            error(
+                StudioErrorCode::InvalidArgument,
+                "state feed has no content reader",
+            )
+        })
     }
 
     /// Called once while the opening registry holds its publication lock. Even immediate shutdown
@@ -175,8 +270,10 @@ impl ConversationOwner {
 
     pub(crate) fn request_close(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).closing = true;
-        self.watches.request_close_all();
-        self.reader.request_close();
+        if let Some(content) = &self.content {
+            content.watches.request_close_all();
+            content.reader.request_close();
+        }
         self.cancel.cancel();
     }
 
@@ -257,7 +354,7 @@ impl ConversationOwner {
         }
     }
 
-    pub(super) async fn native(&self) -> tokio::sync::MutexGuard<'_, Option<ConversationFeed>> {
+    pub(super) async fn native(&self) -> tokio::sync::MutexGuard<'_, Option<NativeFeed>> {
         self.native.lock().await
     }
 
@@ -313,18 +410,21 @@ impl ConversationOwner {
             .await;
         // Neither a feed failure nor a read failure may skip the other responsibility.
         // Both futures borrow retained slots, so cancelling this join loses no owner.
-        let (feed, reader, watches) = tokio::join!(
-            self.close_native(),
-            self.reader.close(),
-            self.watches.close_all(),
-        );
-        for (resource, result) in [("feed", feed), ("read", reader.map_err(BridgeError::from))] {
-            if let Err(error) = result {
-                self.remember_failure(resource, error);
+        let close_content = async {
+            if let Some(content) = &self.content {
+                let (reader, watches) =
+                    tokio::join!(content.reader.close(), content.watches.close_all());
+                if let Err(error) = reader {
+                    self.remember_failure("read", error.into());
+                }
+                for (id, error) in watches {
+                    self.remember_failure(&format!("content-watch:{id}"), error);
+                }
             }
-        }
-        for (id, error) in watches {
-            self.remember_failure(&format!("content-watch:{id}"), error);
+        };
+        let (feed, ()) = tokio::join!(self.close_native(), close_content);
+        if let Err(error) = feed {
+            self.remember_failure("feed", error);
         }
         if let Some(error) = self
             .close_errors

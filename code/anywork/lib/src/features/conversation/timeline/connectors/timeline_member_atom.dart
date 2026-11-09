@@ -5,8 +5,10 @@ import 'dart:typed_data';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../platform/external_url_launcher.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
@@ -18,6 +20,7 @@ import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
@@ -193,6 +196,28 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
                 contentReferenceIdentity(observation.reference),
       );
 
+  Widget _body(String id, String text) => TimelineMarkdown(
+    id: id,
+    text: text,
+    isSafeLink: (url) => safeExternalWebUrl(url) != null,
+    onLink: (raw) {
+      final url = safeExternalWebUrl(raw);
+      if (url == null || !_active) return;
+      unawaited(
+        ProviderScope.containerOf(
+          context,
+          listen: false,
+        ).read(externalUrlLauncherProvider)(url).catchError((Object error) {
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(error.toString())));
+          }
+        }),
+      );
+    },
+    imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
+  );
+
   Widget _windows({ChatContentRole? role}) => _owner == null
       ? const SizedBox.shrink()
       : ListenableBuilder(
@@ -209,6 +234,12 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
                     observation,
                     ConversationCurrentWindowView(
                       id: observation.id,
+                      bodyBuilder:
+                          (widget.atom.kind == ChatAtomKind.text ||
+                                  widget.atom.kind == ChatAtomKind.input) &&
+                              _hasRole(observation, ChatContentRole.body)
+                          ? (text) => _body(observation.id, text)
+                          : null,
                       text: observation.window == null
                           ? observation.source.text
                           : utf8.decode(
@@ -291,11 +322,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
     if (atom.payload != null) {
       final qualification = _rangeQualification;
+      final presentation = ChatItemPresentation.decode(atom);
       bool qualified() =>
-          _readActive('attachments') &&
+          (presentation.presentationContract == 'builtin.show_files@1'
+              ? _active
+              : _readActive('attachments')) &&
           identical(qualification, _rangeQualification);
       final view = ChatItemView(
-        item: ChatItemPresentation.decode(atom),
+        item: presentation,
+        bodyBuilder: _body,
         initiallyExpanded: _expanded,
         monotonicMicros: widget.monotonicMicros,
         onContentLayout: widget.onContentLayout,
@@ -306,6 +341,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           resources: widget.images,
           readAttachment: widget.readAttachment,
           isActive: qualified,
+          readContent: (reference, range) {
+            if (!qualified()) {
+              return Future.error(const StaleConversationScope());
+            }
+            return (_scope ??= widget.content.openScope(
+              generation: 1,
+            )).readContent(reference: reference, range: range);
+          },
         ),
         contentRangeBuilder: (id, key, label, reference, witness) {
           final qualification = _rangeQualification;
@@ -385,10 +428,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   Widget _response(Widget body) {
     final atom = widget.atom;
-    if (atom.kind != ChatAtomKind.text || atom.lifecycle is! ActiveChatAtom) {
-      return body;
+    if (atom.kind == ChatAtomKind.text && atom.lifecycle is ActiveChatAtom) {
+      return ConversationResponseView(startedAt: atom.startedAt, child: body);
     }
-    return ConversationResponseView(startedAt: atom.startedAt, child: body);
+    if ((atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input) &&
+        SelectionContainer.maybeOf(context) == null) {
+      body = SelectionArea(child: body);
+    }
+    return body;
   }
 
   Widget _witness(TimelineCurrentWindowDisplay observation, Widget child) {

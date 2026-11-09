@@ -94,7 +94,13 @@ async fn permanent_delete_private_required_save_records_real_stop_without_save_a
         String::new(),
         pl_core::context::OpaquePayload::text("invalid initialization"),
     );
-    assert!(runtime.threads.assemble(spec).await.is_err());
+    assert!(
+        runtime
+            .session_for_roots(std::slice::from_ref(&root.id))?
+            .assemble(spec)
+            .await
+            .is_err()
+    );
     let record = runtime
         .store
         .thread_preparation(id)
@@ -102,7 +108,12 @@ async fn permanent_delete_private_required_save_records_real_stop_without_save_a
         .context("retained private owner")?;
     assert_eq!(record.save, PreparationSave::Required);
     assert!(!record.stopped);
-    assert!(runtime.threads.observed_thread(id).is_some());
+    assert!(
+        runtime
+            .session_of(id)
+            .and_then(|session| session.observed_thread(id))
+            .is_some()
+    );
     let before = flushes.load(Ordering::SeqCst);
     assert!(
         !workspace.join(SessionFiles::new(id).root()).exists(),
@@ -145,7 +156,12 @@ async fn permanent_delete_private_required_save_records_real_stop_without_save_a
         before,
         "deletion must never retry original flush"
     );
-    assert!(runtime.threads.observed_thread(id).is_none());
+    assert!(
+        runtime
+            .session_of(id)
+            .and_then(|session| session.observed_thread(id))
+            .is_none()
+    );
     runtime
         .store
         .database()

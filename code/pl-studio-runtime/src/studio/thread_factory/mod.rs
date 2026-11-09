@@ -5,7 +5,7 @@ mod close_child;
 mod errors;
 mod execution_admission;
 mod execution_cleanup;
-mod mcp;
+pub(crate) mod mcp;
 pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
@@ -17,7 +17,7 @@ mod root_resources;
 mod session_files;
 mod thread_seed;
 mod thread_tools;
-mod tool_bindings;
+pub(crate) mod tool_bindings;
 mod workspace_validation;
 pub(crate) use workspace_validation::VerifiedLocalResume;
 pub(crate) use workspace_validation::{ReviewWorkspaceCheck, ReviewWorkspaceError};
@@ -49,9 +49,11 @@ pub(in crate::studio) struct StudioThreadServices {
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
     services: StudioThreadServices,
-    bindings: Arc<std::sync::Mutex<std::collections::BTreeMap<String, tool_bindings::ToolBinding>>>,
-    mcp_owners: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<mcp::ThreadMcpOwner>>>>,
-    retiring_mcp: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    scopes: Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
+        >,
+    >,
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<
@@ -59,6 +61,47 @@ pub(crate) struct StudioThreadFactory {
     >,
 }
 impl StudioThreadFactory {
+    pub(crate) fn resource_scope(&self, id: &str) -> Option<Arc<crate::session::NativeResources>> {
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(std::sync::Weak::upgrade)
+    }
+
+    pub(crate) fn bind_resource_scope(
+        &self,
+        id: &str,
+        scope: &Arc<crate::session::NativeResources>,
+    ) -> Result<(), crate::thread_assembler::ThreadAssemblyError> {
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(previous) = scopes.get(id).and_then(std::sync::Weak::upgrade)
+            && !Arc::ptr_eq(&previous, scope)
+            && previous.has_obligations()
+        {
+            return Err(crate::thread_assembler::ThreadAssemblyError::Unpublished(
+                id.into(),
+            ));
+        }
+        scopes.insert(id.into(), Arc::downgrade(scope));
+        Ok(())
+    }
+
+    pub(crate) fn resource_scopes(&self) -> Vec<Arc<crate::session::NativeResources>> {
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scopes.retain(|_, scope| scope.strong_count() > 0);
+        scopes
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect()
+    }
+
     /// Fresh allowance for each child Turn, including explicit continuation after a step limit.
     pub(crate) const CHILD_MODEL_STEP_LIMIT: pl_core::thread::ModelStepLimit =
         pl_core::thread::ModelStepLimit::Limited(
@@ -68,9 +111,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) fn new(services: StudioThreadServices) -> Self {
         Self {
             services,
-            bindings: Default::default(),
-            mcp_owners: Default::default(),
-            retiring_mcp: Default::default(),
+            scopes: Default::default(),
             initial_routes: Default::default(),
         }
     }

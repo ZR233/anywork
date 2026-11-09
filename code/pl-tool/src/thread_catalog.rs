@@ -6,7 +6,7 @@ use pl_agent_tool::ToolDefinition;
 #[derive(Debug, Clone, Copy)]
 pub enum ThreadBuiltin {
     ViewImage,
-    ShowImage,
+    ShowFiles,
     CreateDirectory,
     DeletePath,
     CopyPath,
@@ -37,7 +37,7 @@ impl ThreadBuiltin {
             Self::ListTasks => crate::task_control::ListTasksTool::declaration(),
             Self::Sleep => crate::session::SleepTool::declaration(),
             Self::ViewImage => crate::image::thread_view_image_tool_definition(),
-            Self::ShowImage => crate::image_card::ThreadShowImageTool::declaration(),
+            Self::ShowFiles => crate::file_display::thread_show_files_tool_definition(),
             Self::StatPath => crate::workspace_file::thread_stat_path_tool_definition(),
             Self::WriteFile => crate::workspace_file::thread_write_file_tool_definition(),
             Self::File(kind) => kind.definition(),

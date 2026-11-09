@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod connect;
 mod credentials;
+mod files;
 mod host;
 mod inbound;
 mod media;

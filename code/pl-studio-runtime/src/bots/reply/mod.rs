@@ -2,6 +2,7 @@
 
 mod card;
 mod content;
+mod files;
 mod interactions;
 mod owner;
 mod projection;

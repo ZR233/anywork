@@ -28,7 +28,7 @@ impl ThreadActivation {
             .map(pl_protocol::ThreadId::as_str)
     }
 
-    fn ensure_native(&self) -> Result<(), ThreadAssemblyError> {
+    pub(super) fn ensure_native(&self) -> Result<(), ThreadAssemblyError> {
         match &self.binding {
             pl_protocol::AgentBinding::Native(_) => Ok(()),
             pl_protocol::AgentBinding::Acp(_) => Err(ThreadAssemblyError::UnsupportedBackend {
@@ -91,7 +91,7 @@ pub trait StudioActivationFactory: std::fmt::Debug + Send + Sync + 'static {
     ) -> impl Future<Output = Result<StudioThreadSpec, ThreadAssemblyError>> + Send;
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Coalesces concurrent activation and owns preparation even if a waiting client disconnects.
     ///
     /// # Errors
@@ -132,12 +132,18 @@ impl StudioThreadAssembler {
         )>,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
         identity.ensure_native()?;
+        if &identity.agent.session_id != self.id() {
+            return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
+        }
         let is_restricted = restricted.is_some();
         let purpose = if is_restricted {
             ActivationPurpose::VerifiedReview
         } else {
             ActivationPurpose::Explicit
         };
+        // A retained failed owner can carry the entire cleanup/settlement future.
+        // Isolate that retry before composing the new activation's admission state.
+        Box::pin(self.close_failed_preparation(identity.id())).await?;
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -151,16 +157,19 @@ impl StudioThreadAssembler {
                     if is_restricted {
                         return Err(ThreadAssemblyError::Preparing(identity.id().to_owned()));
                     }
-                    if entry.parent_id.as_deref() != identity.parent_id() {
+                    if entry.native.parent_id.as_deref() != identity.parent_id()
+                        || entry.identity != identity.agent
+                        || entry.binding != identity.binding
+                    {
                         return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
                     }
-                    if entry.purpose != super::EntryPurpose::ReportReceiver
-                        && entry.ready
-                        && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    if entry.native.purpose != super::EntryPurpose::ReportReceiver
+                        && entry.native.ready
+                        && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
                     {
-                        return Ok(entry.thread.clone());
+                        return Ok(entry.native.thread.clone());
                     }
-                    if entry.purpose != super::EntryPurpose::ReportReceiver
+                    if entry.native.purpose != super::EntryPurpose::ReportReceiver
                         && !state.creating.contains_key(identity.id())
                     {
                         return Err(ThreadAssemblyError::Unpublished(identity.id().to_owned()));
@@ -182,10 +191,9 @@ impl StudioThreadAssembler {
                     None => None,
                 };
                 (
-                    state
-                        .entries
-                        .get(identity.id())
-                        .is_some_and(|entry| entry.purpose == super::EntryPurpose::ReportReceiver),
+                    state.entries.get(identity.id()).is_some_and(|entry| {
+                        entry.native.purpose == super::EntryPurpose::ReportReceiver
+                    }),
                     preparation,
                 )
             };
@@ -252,6 +260,15 @@ impl StudioThreadAssembler {
                         }
                         None => Vec::new(),
                     };
+                    let resources = owner
+                        .0
+                        .state()
+                        .creating
+                        .get(identity.id())
+                        .expect("reserved preparation")
+                        .resources
+                        .clone();
+                    workspace_owner.bind_native_resources(resources);
                     workspace_owner.bind_admission(&owner, identity.id(), &cancellation)?;
                     let spec = factory
                         .prepare(ThreadPreparation {
@@ -277,23 +294,56 @@ impl StudioThreadAssembler {
                     if cancellation.is_cancelled() {
                         return Err(ThreadAssemblyError::Closed);
                     }
-                    owner.assemble_reserved(spec, &reservation).await
+                    owner
+                        .0
+                        .state()
+                        .pending_activation
+                        .insert(identity.id().to_owned(), identity.clone());
+                    let assembled = owner.assemble_reserved(spec, &reservation).await;
+                    owner.0.state().pending_activation.remove(identity.id());
+                    assembled
                 })
                 .catch_unwind()
                 .await;
-                let panicked = operation.is_err();
                 let mut outcome = operation.unwrap_or(Err(ThreadAssemblyError::ActivationPanicked));
-                drop(reservation);
-                if !panicked
-                    && outcome.is_err()
-                    && let Err(cleanup) = owner.settle_failed_activation(identity.id()).await
-                {
-                    outcome = Err(ThreadAssemblyError::Cleanup {
-                        id: identity.id().to_owned(),
-                        setup: Box::new(outcome.err().unwrap()),
-                        cleanup: Box::new(cleanup),
-                    });
+                if outcome.is_err() {
+                    let cancellation = {
+                        let mut state = owner.0.state();
+                        let preparation = state
+                            .creating
+                            .get_mut(identity.id())
+                            .expect("settlement retains its original preparation");
+                        preparation.settlement = Some(workspace_owner.clone());
+                        preparation.cancellation.clone()
+                    };
+                    cancellation.cancel();
+                    let settlement = std::panic::AssertUnwindSafe(
+                        owner.settle_failed_activation(identity.id(), &workspace_owner),
+                    )
+                    .catch_unwind()
+                    .await
+                    .unwrap_or(Err(ThreadAssemblyError::ActivationPanicked));
+                    match settlement {
+                        Ok(()) => {
+                            owner
+                                .0
+                                .state()
+                                .creating
+                                .get_mut(identity.id())
+                                .expect("settlement retains its original preparation")
+                                .settlement = None;
+                        }
+                        Err(cleanup) => {
+                            outcome = Err(ThreadAssemblyError::Cleanup {
+                                id: identity.id().to_owned(),
+                                setup: Box::new(outcome.err().unwrap()),
+                                cleanup: Box::new(cleanup),
+                            });
+                        }
+                    }
                 }
+                // No async cleanup remains after releasing preparation admission.
+                drop(reservation);
                 publication.send_replace(Some(outcome.map_err(Arc::new)));
             });
             return await_result(result).await;
@@ -351,7 +401,7 @@ mod backend_tests {
 
     #[tokio::test]
     async fn acp_is_rejected_before_factory_work_or_reservation() {
-        let owner = StudioThreadAssembler::default();
+        let owner = SessionRuntime::default();
         let delegation_reads = Arc::new(AtomicUsize::new(0));
         let preparations = Arc::new(AtomicUsize::new(0));
         let factory = CountingFactory {
@@ -384,7 +434,7 @@ mod backend_tests {
         assert_eq!(delegation_reads.load(Ordering::SeqCst), 1);
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
 
-        let child_owner = StudioThreadAssembler::default();
+        let child_owner = SessionRuntime::default();
         let child_delegation_reads = Arc::new(AtomicUsize::new(0));
         let child_preparations = Arc::new(AtomicUsize::new(0));
         let child_factory = CountingFactory {

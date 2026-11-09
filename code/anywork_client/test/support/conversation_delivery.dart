@@ -6,23 +6,23 @@ import 'timeline_transport.dart';
 
 // Scripted environment delivery, not SDK state mutation. Each helper waits for
 // the real feed ACK, so synchronous freeze assertions observe actual reduction.
-final Map<String, TestConversationFeed> _feeds = {};
-final Map<String, Completer<TestConversationFeed>> _waiting = {};
-void registerScriptedFeed(TestConversationFeed feed) {
-  _feeds[feed.threadId] = feed;
-  _waiting.remove(feed.threadId)?.complete(feed);
+final Map<String, TestConversationStateFeed> _stateFeeds = {};
+final Map<String, Completer<TestConversationStateFeed>> _stateWaiting = {};
+void registerScriptedStateFeed(TestConversationStateFeed feed) {
+  _stateFeeds[feed.threadId] = feed;
+  _stateWaiting.remove(feed.threadId)?.complete(feed);
 }
 
-Future<TestConversationFeed> scriptedFeed(String threadId) {
-  final current = _feeds[threadId];
+Future<TestConversationStateFeed> scriptedStateFeed(String threadId) {
+  final current = _stateFeeds[threadId];
   return current != null && !current.requestCloseStarted.isCompleted
       ? Future.value(current)
-      : (_waiting[threadId] ??= Completer()).future;
+      : (_stateWaiting[threadId] ??= Completer()).future;
 }
 
 extension ConversationTestDelivery on ConversationSession {
   Future<void> deliverWorkspace(ThreadWorkspace workspace) async {
-    final feed = await scriptedFeed(threadId);
+    final feed = await scriptedStateFeed(threadId);
     await feed.deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
@@ -35,26 +35,87 @@ extension ConversationTestDelivery on ConversationSession {
   }
 
   Future<void> deliverNotification(ThreadNotificationFrame frame) async {
-    final feed = await scriptedFeed(threadId);
+    final feed = await scriptedStateFeed(threadId);
     await feed.deliver(ConversationStateEvent(frame: frame));
   }
 }
 
+/// Content-only scripted feed: it pumps the initial Chat set and never carries
+/// state frames; state scripts attach to [ScriptedConversationStateFeed].
 class ScriptedConversationFeed extends TestConversationFeed {
   ScriptedConversationFeed({
     String threadId = 'thread',
     String subscriptionId = 'sub',
     ChatBatch? initial,
-    Stream<ThreadStreamFrame>? states,
     TestConversationReader? reader,
   }) : initial = initial ?? chatSet(),
-       states = states,
        super(
          threadId: threadId,
          subscriptionId: subscriptionId,
          reader: reader,
        );
   final ChatBatch initial;
+  Future<void>? _pump;
+  @override
+  Stream<ConversationFrame> get events {
+    final stream = super.events;
+    _pump ??= () {
+      final done = Completer<void>();
+      scheduleMicrotask(() => done.complete(_pumpEvents()));
+      return done.future;
+    }();
+    return stream;
+  }
+
+  Future<void> _pumpEvents() async {
+    if (requestCloseStarted.isCompleted) return;
+    await _deliverCredited(ConversationChatEvent(batch: initial));
+  }
+
+  Future<void> _deliverCredited(ConversationEvent event) async {
+    if (requestCloseStarted.isCompleted) return;
+    final sequence = send(event);
+    if (requestCloseStarted.isCompleted) return;
+    if (event is ConversationClosedEvent || event is ConversationFailureEvent) {
+      return;
+    }
+    await Future.any<void>([
+      acknowledged(sequence),
+      requestCloseStarted.future,
+    ]);
+  }
+
+  @override
+  Future<void> close() async {
+    Object? closeError;
+    try {
+      await super.close();
+    } catch (error) {
+      closeError = error;
+    }
+    Object? pumpError;
+    final pump = _pump;
+    if (pump != null) {
+      try {
+        await pump;
+      } catch (error) {
+        pumpError = error;
+      }
+    }
+    if (closeError != null) throw closeError;
+    if (pumpError != null) throw pumpError;
+  }
+}
+
+/// State-only scripted feed: it pumps explicit state frames with real credit
+/// waits; content never flows here.
+class ScriptedConversationStateFeed extends TestConversationStateFeed {
+  ScriptedConversationStateFeed({
+    String threadId = 'thread',
+    String subscriptionId = 'state-sub',
+    Stream<ThreadStreamFrame>? states,
+  }) : states = states,
+       super(threadId: threadId, subscriptionId: subscriptionId);
   final Stream<ThreadStreamFrame>? states;
   StreamIterator<ThreadStreamFrame>? _states;
   Future<void>? _pump;
@@ -71,8 +132,7 @@ class ScriptedConversationFeed extends TestConversationFeed {
 
   Future<void> _pumpEvents() async {
     if (requestCloseStarted.isCompleted) return;
-    registerScriptedFeed(this);
-    await _deliverCredited(ConversationChatEvent(batch: initial));
+    registerScriptedStateFeed(this);
     final source = states;
     if (source == null || requestCloseStarted.isCompleted) return;
     final iterator = StreamIterator(source);

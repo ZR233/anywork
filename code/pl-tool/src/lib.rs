@@ -4,6 +4,7 @@
 #[cfg(test)]
 extern crate self as pl_tool;
 
+pub mod file_display;
 pub mod image;
 pub mod image_card;
 pub mod image_generation;

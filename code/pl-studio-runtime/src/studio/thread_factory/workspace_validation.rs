@@ -154,12 +154,7 @@ impl VerifiedLocalResume {
         self.recheck()
     }
     pub(super) fn confirm_published(&self) -> Result<(), ReviewWorkspaceError> {
-        let bindings = self
-            .check
-            .factory
-            .bindings
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bindings = self.check.factory.binding_snapshots();
         let binding = bindings
             .get(&self.check.target)
             .ok_or(ReviewWorkspaceError::Unconfirmed(
@@ -254,11 +249,7 @@ impl ReviewWorkspaceCheck {
                 "execution workspace authority requires refresh",
             ));
         }
-        let bindings = self
-            .factory
-            .bindings
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bindings = self.factory.binding_snapshots();
         match (&self.binding, bindings.get(&self.target)) {
             (Some(expected), Some(current)) => check_generation(current, expected)?,
             (None, None) => {}
@@ -357,12 +348,7 @@ impl StudioThreadFactory {
         id: &str,
         assignment: &AgentWorkspaceAssignmentSnapshot,
     ) -> Result<ReviewWorkspaceCheck, ReviewWorkspaceError> {
-        let binding = self
-            .bindings
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned();
+        let binding = self.binding_snapshots().get(id).cloned();
         let permit = match &binding {
             Some(binding) => Some(binding.lifetime.gate.clone().lock_owned().await),
             None => None,
@@ -621,9 +607,7 @@ impl StudioThreadFactory {
                         break Some((lease, repository));
                     } else {
                         check.root_binding = self
-                            .bindings
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .binding_snapshots()
                             .get(&root.id)
                             .cloned()
                             .map(|binding| (root.id.clone(), binding));

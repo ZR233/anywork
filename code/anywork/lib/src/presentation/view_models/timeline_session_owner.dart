@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
-import 'package:flutter/widgets.dart' show ScrollController;
+import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
@@ -593,6 +593,7 @@ final class TimelineSessionOwner {
       return;
     }
     current._recordBatch(batch.placement);
+    _markPresentedInputs(session.threadId, batch);
     if (batch.placement == ChatPlacement.prepend) {
       current._before = batch.before;
       current._hasOlder = batch.before != null;
@@ -644,9 +645,19 @@ final class TimelineSessionOwner {
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
+    _markPresentedInputs(session.threadId, batch);
     _olderInFlight = null;
     if (previous != null) _retire(previous);
     _publishState(isLoadingOlder: false, olderError: null, hasNewOutput: false);
+  }
+
+  void _markPresentedInputs(String threadId, ChatBatch batch) {
+    final inputIds = <String>[
+      for (final entry in batch.entries)
+        if (entry.atom.source case InputChatSource(:final inputId)) inputId,
+    ];
+    if (inputIds.isEmpty) return;
+    client.drafts.existingComposer(threadId)?.markInputsPresented(inputIds);
   }
 
   void _trackRetirement(TimelineDisplayLease lease) {
@@ -713,6 +724,31 @@ final class TimelineSessionOwner {
     if (current == null) return;
     current._mode = TimelineDisplayMode.live;
     _publishState(hasNewOutput: false);
+  }
+
+  /// Synchronously returns a visible composer submission to Chat's latest edge
+  /// before its next frame, then gives that frame an opportunity to paint.
+  Future<void> prepareComposerSubmissionDisplay(
+    String threadId, {
+    required TimelineDisplayLease lease,
+  }) async {
+    bool current() =>
+        identical(this.lease(threadId), lease) &&
+        lease.isMounted &&
+        !lease.isRetired;
+    if (!current()) return;
+
+    final scroll = lease.scrollController;
+    if (scroll.hasClients &&
+        scroll.position.hasContentDimensions &&
+        scroll.position.viewportDimension > 0) {
+      scroll.jumpTo(scroll.position.minScrollExtent);
+    }
+
+    await returnToLive(threadId);
+    if (!current()) return;
+    WidgetsBinding.instance.ensureVisualUpdate();
+    await WidgetsBinding.instance.endOfFrame;
   }
 
   Future<void> loadOlder(String threadId, {required int generation}) =>

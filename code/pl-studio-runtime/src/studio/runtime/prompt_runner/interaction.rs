@@ -166,7 +166,7 @@ impl StudioRuntime {
         // 路径返回，不产生新的受理事实（design/17 §17.1）。
         let user_answered = matches!(resolution, InteractionResolution::UserInput(_));
         let interaction = self
-            .threads
+            .require_session(&thread_id)?
             .resolve_product_interaction(&interaction_id, &operation_id, resolution)
             .await
             .map_err(interaction_error)?;
@@ -306,7 +306,10 @@ impl StudioRuntime {
     ///   silently reconciling nothing.
     async fn decision_records(&self, thread_id: &str) -> Result<Vec<DecisionRecord>> {
         let mut facts = std::collections::BTreeMap::new();
-        if let Some(thread) = self.threads.thread(thread_id) {
+        if let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        {
             collect_decision_records(&thread.snapshot(), &mut facts);
         } else {
             // A read failure is propagated, never read as "this Thread has no decisions": identity
@@ -671,7 +674,10 @@ impl StudioRuntime {
         &self,
         interaction_id: &str,
     ) -> Result<Option<InteractionForResolve>> {
-        if let Some(interaction) = self.threads.read_product_interaction(interaction_id)? {
+        let (thread_id, _) = crate::thread_assembler::decode_interaction_key(interaction_id)?;
+        if let Some(session) = self.session_of(thread_id)
+            && let Some(interaction) = session.read_product_interaction(interaction_id)?
+        {
             return Ok(Some(InteractionForResolve {
                 interaction,
                 durable: false,

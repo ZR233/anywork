@@ -1,5 +1,5 @@
 //! Ordinary question projection and atomic user-answer continuation.
-use super::StudioThreadAssembler;
+use super::SessionRuntime;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{
@@ -173,7 +173,7 @@ fn prepare_resolution(
     })
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Validates an answer and commits it with its continuation.
     ///
     /// Only the main session resumes its own queue: the answer is a user decision, so its own work
@@ -194,9 +194,9 @@ impl StudioThreadAssembler {
         let (thread, execution, is_root) = {
             self.0.state().entries.get(&thread_id).map(|entry| {
                 (
-                    entry.thread.clone(),
-                    entry.execution,
-                    entry.parent_id.is_none(),
+                    entry.native.thread.clone(),
+                    entry.native.execution,
+                    entry.native.parent_id.is_none(),
                 )
             })
         }

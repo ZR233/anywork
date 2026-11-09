@@ -34,16 +34,6 @@ class StudioContextProjection {
     this.usageDiagnostics = const ThreadUsageDiagnostics.empty(),
   });
 
-  factory StudioContextProjection.fromState(StudioState state) {
-    return StudioContextProjection.fromRuntime(
-      state.selectedThreadId,
-      state.runtime,
-      modelRoute: state.modelRoute,
-      accounts: state.accounts,
-      isBusy: state.isBusy,
-    );
-  }
-
   factory StudioContextProjection.fromRuntime(
     String? threadId,
     ThreadRuntimeView runtime, {
@@ -193,49 +183,6 @@ class StudioThroughputProjection {
 
   @override
   int get hashCode => Object.hash(threadId, completionTokens, responseMillis);
-}
-
-/// Stable status inputs. Runtime/context/throughput are intentionally not part
-/// of this value; status widgets subscribe to their own projections.
-class StudioStatusProjection {
-  const StudioStatusProjection({
-    required this.row,
-    required this.accounts,
-    required this.roles,
-    required this.isBusy,
-  });
-
-  factory StudioStatusProjection.fromState(StudioState state) {
-    return StudioStatusProjection(
-      row: state.selectedRow,
-      accounts: state.accounts,
-      roles: state.roles,
-      isBusy: state.isBusy,
-    );
-  }
-
-  final SessionDirectoryRow? row;
-  final List<ModelSelectionAccount> accounts;
-  final List<RoleSettingsView> roles;
-  final bool isBusy;
-
-  @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioStatusProjection &&
-            _rowEquals(row, other.row) &&
-            _listEqualsBy(accounts, other.accounts, _accountEquals) &&
-            _listEqualsBy(roles, other.roles, _roleEquals) &&
-            isBusy == other.isBusy;
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    _rowHash(row),
-    Object.hashAll(accounts.map(_accountHash)),
-    Object.hashAll(roles.map(_roleHash)),
-    isBusy,
-  );
 }
 
 /// Target diagnostics remain observable after a thread/workspace target is

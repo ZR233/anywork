@@ -79,6 +79,7 @@ impl StudioRuntime {
         cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
+        let started = std::time::Instant::now();
         // Serialize turn registration with the shared shutdown admission fence.
         // Cancellation may stop admission, never abandon a started resource operation.
         let _lifecycle_guard = match cancel {
@@ -89,6 +90,13 @@ impl StudioRuntime {
             },
             None => self.lifecycle_lock.lock().await,
         };
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id = request.thread_id,
+            input_id = request.input.input_id,
+            lifecycle_wait_us = started.elapsed().as_micros() as u64,
+            "prompt lifecycle admission acquired"
+        );
         ensure_submission_not_cancelled(cancel)?;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
         // The user-facing submission stops here for a child target: the trusted association proves
@@ -127,12 +135,26 @@ impl StudioRuntime {
         } = request;
         validate_prompt_content(&input)?;
         ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
+        let started = std::time::Instant::now();
         let thread = self.ensure_thread_owner(&thread_id).await?;
-        let _agent_operation = self.threads.agent_operation(&thread_id).await;
-        self.threads.ensure_agent_admission_open(&thread_id)?;
+        let operation_started = std::time::Instant::now();
+        let _agent_operation = self
+            .require_session(&thread_id)?
+            .agent_operation(&thread_id)
+            .await;
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id = input.input_id,
+            owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
+            operation_wait_us = operation_started.elapsed().as_micros() as u64,
+            "prompt thread admission acquired"
+        );
+        self.require_session(&thread_id)?
+            .ensure_agent_admission_open(&thread_id)?;
         // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
-        if let Some(previous) = thread
-            .snapshot()
+        let snapshot = thread.snapshot();
+        if let Some(previous) = snapshot
             .inputs
             .iter()
             .find(|record| record.input.id == input.input_id)
@@ -153,6 +175,21 @@ impl StudioRuntime {
                 cursor: previous.accepted_sequence,
             });
         }
+        let terminal_retry = snapshot
+            .terminal_inputs
+            .iter()
+            .any(|identity| identity.id == input.input_id);
+        drop(snapshot);
+        if terminal_retry {
+            // Core's bounded terminal identity proves admission but no longer carries
+            // the original admission watermark. Wait for its original writer before
+            // answering, rather than rebuilding that receipt at today's commit.
+            ensure_submission_not_cancelled(cancel)?;
+            self.thread_observations
+                .synchronize(Some(&thread_id))
+                .await?;
+            ensure_submission_not_cancelled(cancel)?;
+        }
         // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
         // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
         // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
@@ -161,6 +198,7 @@ impl StudioRuntime {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
+            Err(error) if terminal_retry => return Err(error),
             Err(_) => None,
         };
         if let Some(previous) = durable_receipt {
@@ -183,6 +221,10 @@ impl StudioRuntime {
                 cursor: previous.entry.accepted_sequence,
             });
         }
+        anyhow::ensure!(
+            !terminal_retry,
+            "accepted input identity is missing from synchronized history"
+        );
         // The caller's frozen route is a CAS against its canonical extension,
         // not a Thread revision or the current mode default. Both route writes
         // and input admission hold lifecycle_lock, so it cannot change between
@@ -299,6 +341,14 @@ impl StudioRuntime {
             .product_events
             .record_attachments(attachments.clone())
             .await?;
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id,
+            preparation_elapsed_us = started.elapsed().as_micros() as u64,
+            "prompt resources prepared"
+        );
+        let admission_started = std::time::Instant::now();
         let thread_input = pl_core::thread::input::ThreadInput {
             purpose: pl_core::thread::input::InputPurpose::Message,
             id: input_id,
@@ -327,6 +377,15 @@ impl StudioRuntime {
             }
             AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
         };
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id = accepted.input.id,
+            source_effect_seq = accepted.accepted_sequence,
+            core_admission_us = admission_started.elapsed().as_micros() as u64,
+            admission_elapsed_us = started.elapsed().as_micros() as u64,
+            "prompt accepted"
+        );
         // 用户消息已成功受理（含排队输入）：目录立即记录最近用户消息时间；后续模型、
         // 工具或保存失败都不回退该事实，拒绝的提交在上方 `?` 处直接返回、不记录。
         self.agent_facility

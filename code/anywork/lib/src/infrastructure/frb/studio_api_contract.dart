@@ -2609,6 +2609,72 @@ class FrbStudioTransport
   }
 
   @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async {
+    if (_closing || _dartSubscriptionsSealed) throw _conversationClosedFailure;
+    await _ensureReady();
+    frb_chat.BridgeConversationStateFeed? handle;
+    FrbConversationStateFeed? adapter;
+    final tracked = _DartSubscription(
+      'conversation-state:$threadId',
+      () async {
+        final feed = adapter;
+        if (feed != null) {
+          await feed._releaseNative();
+        } else {
+          final active = handle;
+          if (active == null) return;
+          active.requestClose();
+          await active.close();
+          active.dispose();
+        }
+      },
+      _forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    // Retain opening responsibility before any asynchronous native publication.
+    _trackDartSubscription(tracked);
+    try {
+      handle = await _bridgeCall(
+        () => frb_chat.openConversationStateFeed(threadId: threadId),
+      );
+      final feed = FrbConversationStateFeed(handle!);
+      adapter = feed;
+      tracked.markCreated();
+      feed._registration = tracked;
+      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
+        feed.requestClose();
+        await feed.close();
+        throw _conversationClosedFailure;
+      }
+      if (feed.threadId != threadId || feed.subscriptionId.isEmpty) {
+        feed.requestClose();
+        await feed.close();
+        throw const StudioFailure(
+          code: StudioFailureCode.internal,
+          message:
+              'Conversation state feed identity does not match its request',
+          retryable: false,
+          correlationId: 'client-conversation-state-identity',
+        );
+      }
+      return feed;
+    } catch (error, stack) {
+      tracked.markCreated();
+      if (handle != null && adapter == null) {
+        handle.requestClose();
+        // A failed native join is propagated and stays registered for retry.
+        await tracked.beginCancel();
+      }
+      Error.throwWithStackTrace(_studioFailure(error), stack);
+    } finally {
+      tracked.markCreated();
+      if (handle == null) await tracked.beginCancel();
+    }
+  }
+
+  @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
@@ -2676,12 +2742,8 @@ class FrbStudioTransport
       if (handle != null && adapter == null) {
         // A synchronous identity getter may fail after open. The registered owner
         // still owns that native handle, even though no Dart feed was published.
-        try {
-          handle.requestClose();
-          await tracked.beginCancel();
-        } catch (_) {
-          // Failed release stays registered for runtime cleanup/retry.
-        }
+        handle.requestClose();
+        await tracked.beginCancel();
       }
       Error.throwWithStackTrace(_studioFailure(error), stack);
     } finally {

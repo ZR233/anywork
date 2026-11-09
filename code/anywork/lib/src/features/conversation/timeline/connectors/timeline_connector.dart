@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/conversation.dart';
@@ -12,6 +13,7 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
+import '../widgets/timeline_markdown.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
@@ -92,7 +94,7 @@ class _TimelineDemandViewportState extends State<_TimelineDemandViewport> {
   );
 }
 
-class _TimelineConnectorBody extends ConsumerWidget {
+class _TimelineConnectorBody extends ConsumerStatefulWidget {
   const _TimelineConnectorBody({
     required this.threadId,
     this.planConfirmation,
@@ -105,12 +107,82 @@ class _TimelineConnectorBody extends ConsumerWidget {
   final VoidCallback? onPlanToggle;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_TimelineConnectorBody> createState() =>
+      _TimelineConnectorBodyState();
+}
+
+class _TimelineConnectorBodyState
+    extends ConsumerState<_TimelineConnectorBody> {
+  Observation? _submissionsObservation;
+  List<ComposerSubmission> _submissions = const [];
+  String? _observedThreadId;
+
+  void _observeSubmissions(String threadId) {
+    _submissionsObservation?.cancel();
+    _observedThreadId = threadId;
+    final composer = ref
+        .read(anyworkClientProvider)
+        .drafts
+        .existingComposer(threadId);
+    if (composer == null) {
+      _submissions = const [];
+      return;
+    }
+    final watch = composer.submissions.watchLatest((value) {
+      if (!mounted || _observedThreadId != threadId) return;
+      setState(() => _submissions = value);
+    });
+    _submissions = watch.value;
+    _submissionsObservation = watch.observation;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _observeSubmissions(widget.threadId);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineConnectorBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId) {
+      _observeSubmissions(widget.threadId);
+    }
+  }
+
+  @override
+  void dispose() {
+    _submissionsObservation?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final threadId = widget.threadId;
     final state = ref.watch(timelineViewModelProvider(threadId));
     final owner = ref.read(timelineSessionOwnerProvider);
     final observedView = state.asData?.value;
     final view = observedView?.threadId == threadId ? observedView : null;
     final lease = owner.lease(threadId);
+    void link(String raw) {
+      final url = safeExternalWebUrl(raw);
+      if (url == null ||
+          !mounted ||
+          _observedThreadId != threadId ||
+          (lease?.isRetired ?? false) ||
+          !identical(owner.lease(threadId), lease)) {
+        return;
+      }
+      unawaited(
+        ref.read(externalUrlLauncherProvider)(url).catchError((Object error) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(error.toString())));
+          }
+        }),
+      );
+    }
+
     void retry() => ref
         .read(anyworkClientProvider)
         .conversations
@@ -147,6 +219,21 @@ class _TimelineConnectorBody extends ConsumerWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               Text(error?.toString() ?? context.l10n.workspaceLoading),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: ComposerSubmissionList(
+                    submissions: _submissions,
+                    bodyBuilder: (id, text) => TimelineMarkdown(
+                      id: id,
+                      text: text,
+                      onLink: link,
+                      isSafeLink: (raw) => safeExternalWebUrl(raw) != null,
+                      imageBuilder: (_, url) =>
+                          TimelineRemoteImageConnector(url: url),
+                    ),
+                  ),
+                ),
+              ),
               if (failedView != null && failedSession != null)
                 TextButton(
                   key: StudioDriverKeys.timelineRetryConnection,
@@ -170,30 +257,29 @@ class _TimelineConnectorBody extends ConsumerWidget {
     }
     bool active() =>
         identical(owner.lease(threadId), lease) && !lease.isRetired;
-    void link(String raw) {
-      final url = safeExternalWebUrl(raw);
-      if (url == null || !active()) return;
-      unawaited(
-        ref.read(externalUrlLauncherProvider)(url).catchError((Object error) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text(error.toString())));
-          }
-        }),
-      );
+    // The reader may outlive this row and its WidgetRef when the shell opens
+    // a document. Authority belongs to the original display lease.
+    final readAttachmentBytes = ref
+        .read(anyworkClientProvider)
+        .readAttachmentBytes;
+    Future<Uint8List> readAttachment(String id) async {
+      if (!active()) throw const StaleConversationScope();
+      final bytes = await readAttachmentBytes(threadId, id);
+      if (!active()) throw const StaleConversationScope();
+      return bytes;
     }
 
-    final plan = planConfirmation;
+    final plan = widget.planConfirmation;
     return TimelineView(
       key: lease.chatKey,
       threadId: threadId,
       view: view,
+      submissions: _submissions,
       controls: lease,
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
         threadId: threadId,
-        readAttachment: (id) =>
-            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        readAttachment: readAttachment,
         monotonicMicros: () => owner.monotonicMicros,
         onContentLayout: (itemId, micros) {
           if (active()) owner.recordContentLayout(lease, itemId, micros);
@@ -241,9 +327,15 @@ class _TimelineConnectorBody extends ConsumerWidget {
         key: ValueKey((lease.generation, item.id)),
         item: item,
         resources: lease.imageResources,
-        readAttachment: (id) =>
-            ref.read(anyworkClientProvider).readAttachmentBytes(threadId, id),
+        readAttachment: readAttachment,
         isActive: active,
+        readContent: (reference, range) {
+          final scope = lease.queries;
+          if (!active() || scope == null) {
+            return Future.error(const StaleConversationScope());
+          }
+          return scope.readContent(reference: reference, range: range);
+        },
       ),
       onLink: link,
       isSafeLink: (url) => safeExternalWebUrl(url) != null,
@@ -256,9 +348,9 @@ class _TimelineConnectorBody extends ConsumerWidget {
               child: SelectionContainer.disabled(
                 child: TextButton.icon(
                   key: StudioDriverKeys.planSummary,
-                  onPressed: onPlanToggle,
+                  onPressed: widget.onPlanToggle,
                   icon: Icon(
-                    planExpanded ? Icons.expand_less : Icons.expand_more,
+                    widget.planExpanded ? Icons.expand_less : Icons.expand_more,
                   ),
                   label: Text(plan.title),
                 ),

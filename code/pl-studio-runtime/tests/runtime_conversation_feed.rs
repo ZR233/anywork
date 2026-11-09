@@ -13,7 +13,81 @@ use pl_protocol::{
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{ReplyStage, responses_text};
-use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader};
+use pl_studio_runtime::{
+    ConversationEvent as ContentEvent, ConversationFeed as ContentFeed, ConversationReader,
+    ConversationStateFeed, StudioRuntime,
+};
+
+// This test-only multiplexer observes both production owners. It does not impose
+// ordering between State and content; each assertion checks its own stream's prefix.
+enum Observation {
+    Chat {
+        batch: Box<ChatBatch>,
+    },
+    Activity {
+        snapshot: std::sync::Arc<ActivitySnapshot>,
+    },
+    State {
+        update: Box<ThreadSubscriptionUpdate>,
+    },
+}
+struct ObservedFeed {
+    content: ContentFeed,
+    state: ConversationStateFeed,
+}
+impl std::ops::Deref for ObservedFeed {
+    type Target = ContentFeed;
+    fn deref(&self) -> &ContentFeed {
+        &self.content
+    }
+}
+impl ObservedFeed {
+    async fn recv(&mut self) -> Result<Option<Observation>> {
+        tokio::select! {
+            biased;
+            state = self.state.recv() => state.map(|update| update.map(|update| Observation::State { update: Box::new(update) })),
+            content = self.content.recv() => content.map(|event| event.map(|event| match event {
+                ContentEvent::Chat { batch } => Observation::Chat { batch },
+                ContentEvent::Activity { snapshot } => Observation::Activity { snapshot },
+            })),
+        }
+    }
+    fn request_close(&self) {
+        self.content.request_close();
+        self.state.request_close();
+    }
+    async fn close(&mut self) -> Result<()> {
+        let state = self.state.close().await;
+        let content = self.content.close().await;
+        state?;
+        content
+    }
+}
+trait ObserveConversation {
+    fn open_observed_feed(
+        &self,
+        id: &str,
+        scope: ChatScope,
+        demand: ReadDemand,
+    ) -> impl std::future::Future<Output = Result<ObservedFeed>> + Send;
+}
+impl ObserveConversation for StudioRuntime {
+    async fn open_observed_feed(
+        &self,
+        id: &str,
+        scope: ChatScope,
+        demand: ReadDemand,
+    ) -> Result<ObservedFeed> {
+        let mut state = self.open_conversation_state_feed(id).await?;
+        match self.open_conversation_feed(id, scope, demand).await {
+            Ok(content) => Ok(ObservedFeed { content, state }),
+            Err(error) => {
+                state.close().await?;
+                Err(error)
+            }
+        }
+    }
+}
 use std::{collections::HashSet, time::Duration};
 use support::{Environment, completed_prompt, prompt_step, reached, text_reply};
 
@@ -24,12 +98,12 @@ fn demand(max_items: u32) -> ReadDemand {
     }
 }
 
-async fn next(feed: &mut ConversationFeed) -> Result<ConversationEvent> {
+async fn next(feed: &mut ObservedFeed) -> Result<Observation> {
     let event = tokio::time::timeout(Duration::from_secs(10), feed.recv())
         .await
         .context("conversation feed did not deliver its pending facts")??
         .context("conversation feed ended before its pending facts")?;
-    if let ConversationEvent::State { update } = &event
+    if let Observation::State { update } = &event
         && let ThreadSubscriptionUpdate::Snapshot {
             completed_history_version,
             snapshot,
@@ -56,16 +130,16 @@ async fn next(feed: &mut ConversationFeed) -> Result<ConversationEvent> {
     Ok(event)
 }
 
-async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
+async fn chat(feed: &mut ObservedFeed) -> Result<ChatBatch> {
     loop {
-        if let ConversationEvent::Chat { batch } = next(feed).await? {
+        if let Observation::Chat { batch } = next(feed).await? {
             return Ok(*batch);
         }
     }
 }
 
 // Close both independent owners even if the observation or one close failed.
-async fn finish_feed<T>(feed: &mut ConversationFeed, result: Result<T>) -> Result<T> {
+async fn finish_feed<T>(feed: &mut ObservedFeed, result: Result<T>) -> Result<T> {
     let reader = feed.reader().clone();
     feed.request_close();
     reader.request_close();
@@ -338,7 +412,7 @@ async fn history(
         };
         let mut feed = env
             .runtime
-            .open_conversation_feed(thread_id, scope.clone(), read_demand)
+            .open_observed_feed(thread_id, scope.clone(), read_demand)
             .await?;
         let read = async {
             let first = chat(&mut feed).await?;
@@ -445,7 +519,7 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
         let id = thread.thread.id;
         let mut feed = env
             .runtime
-            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .open_observed_feed(&id, ChatScope::Main, demand(7))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
@@ -473,18 +547,18 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
             let mut retired = false;
             while terminal.is_none() || !retired {
                 match next(&mut feed).await? {
-                    ConversationEvent::Chat { batch } => {
+                    Observation::Chat { batch } => {
                         batch.validate_for(&ChatScope::Main)?;
                         ensure!(batch.placement == ChatPlacement::Append);
                         ensure!(batch.from_seq == Some(through));
                         through = batch.through_seq;
                         appended.extend(items(batch.entries)?);
                     }
-                    ConversationEvent::Activity { snapshot } => {
+                    Observation::Activity { snapshot } => {
                         ensure!(snapshot.completed_through == through);
                         retired = snapshot.entries.is_empty();
                     }
-                    ConversationEvent::State { update } => {
+                    Observation::State { update } => {
                         if let ThreadSubscriptionUpdate::Notification { notification } = *update
                             && let ThreadNotification::TurnCompleted { turn } =
                                 notification.notification
@@ -527,7 +601,7 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
         env.restart().await?;
         let mut reopened = env
             .runtime
-            .open_conversation_feed(&id, ChatScope::Main, demand(7))
+            .open_observed_feed(&id, ChatScope::Main, demand(7))
             .await?;
         let read = async {
             let first = chat(&mut reopened).await?;
@@ -649,11 +723,11 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
         reached(&stage).await?;
         let mut probe = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::Main, demand(1))
             .await?;
         let ready = async {
             loop {
-                if let ConversationEvent::Activity { snapshot } = next(&mut probe).await?
+                if let Observation::Activity { snapshot } = next(&mut probe).await?
                     && let Some(target) = live_body_target(&snapshot)?
                 {
                     let input = probe
@@ -675,7 +749,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
         let (target, accepted, accepted_bytes) = finish_feed(&mut probe, ready).await?;
         let mut feed = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::Main, demand(1))
             .await?;
         let observed = async {
             let reader = feed.reader().clone();
@@ -723,7 +797,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
             let mut revision = 0;
             loop {
                 match next(&mut feed).await? {
-                    ConversationEvent::Chat { batch } => {
+                    Observation::Chat { batch } => {
                         batch.validate_for(&ChatScope::Main)?;
                         ensure!(
                             batch.placement == ChatPlacement::Append
@@ -753,7 +827,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
                             }
                         }
                     }
-                    ConversationEvent::Activity { snapshot } => {
+                    Observation::Activity { snapshot } => {
                         ensure!(
                             snapshot.completed_through == through && snapshot.revision >= revision
                         );
@@ -774,7 +848,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
                             break;
                         }
                     }
-                    ConversationEvent::State { .. } => {}
+                    Observation::State { .. } => {}
                 }
             }
             feed.close().await?;
@@ -873,7 +947,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
         let observed = async {
             let mut feed = env
                 .runtime
-                .open_conversation_feed(id, ChatScope::Main, demand(7))
+                .open_observed_feed(id, ChatScope::Main, demand(7))
                 .await?;
             let observed = async {
                 let first = chat(&mut feed).await?;
@@ -900,12 +974,12 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let mut through = first.through_seq;
                 loop {
                     match next(&mut feed).await? {
-                        ConversationEvent::Chat { batch } => {
+                        Observation::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(batch.from_seq == Some(through));
                             through = batch.through_seq;
                         }
-                        ConversationEvent::Activity { snapshot } => {
+                        Observation::Activity { snapshot } => {
                             ensure!(snapshot.completed_through == through);
                             if snapshot
                                 .entries
@@ -919,7 +993,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                                 break;
                             }
                         }
-                        ConversationEvent::State { .. } => {}
+                        Observation::State { .. } => {}
                     }
                 }
                 active.release();
@@ -928,7 +1002,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let mut text_owner = None;
                 while reasoning.len() < 2 || text_owner.is_none() {
                     match next(&mut feed).await? {
-                        ConversationEvent::Chat { batch } => {
+                        Observation::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(
                                 batch.placement == ChatPlacement::Append
@@ -964,14 +1038,14 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                                 }
                             }
                         }
-                        ConversationEvent::Activity { snapshot } => {
+                        Observation::Activity { snapshot } => {
                             ensure!(snapshot.completed_through == through);
                             ensure!(
                                 snapshot.execution_present,
                                 "completion waited for attempt terminal"
                             );
                         }
-                        ConversationEvent::State { .. } => {}
+                        Observation::State { .. } => {}
                     }
                 }
                 ensure!(!sealed.is_released());
@@ -1003,7 +1077,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 };
                 let mut members = env
                     .runtime
-                    .open_conversation_feed(id, scope.clone(), demand(1))
+                    .open_observed_feed(id, scope.clone(), demand(1))
                     .await?;
                 let read = async {
                     let set = chat(&mut members).await?;
@@ -1106,7 +1180,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
         ensure!(matches!(terminal.state, TurnState::Completed(_)));
         let mut feed = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::Main, demand(1))
             .await?;
         let observed = async {
             let old = chat(&mut feed).await?;
@@ -1139,10 +1213,8 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             let error = loop {
                 match tokio::time::timeout(Duration::from_secs(10), feed.recv()).await? {
                     Err(error) => break error,
-                    Ok(Some(
-                        ConversationEvent::State { .. } | ConversationEvent::Activity { .. },
-                    )) => (),
-                    Ok(Some(ConversationEvent::Chat { batch })) => {
+                    Ok(Some(Observation::State { .. } | Observation::Activity { .. })) => (),
+                    Ok(Some(Observation::Chat { batch })) => {
                         ensure!(batch.placement == ChatPlacement::Append)
                     }
                     Ok(None) => anyhow::bail!("old source ended without explicit resync"),
@@ -1169,7 +1241,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             );
             let mut restored = env
                 .runtime
-                .open_conversation_feed(id, ChatScope::Main, demand(1))
+                .open_observed_feed(id, ChatScope::Main, demand(1))
                 .await?;
             let read = async {
                 let first = chat(&mut restored).await?;
@@ -1338,7 +1410,7 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
     .await?;
     let result = async {
         let thread = env.start(ThreadWorkspaceMode::Worktree, &prompt).await?;
-        let mut feed = env.runtime.open_conversation_feed(&thread.thread.id, ChatScope::Main, demand(37)).await?;
+        let mut feed = env.runtime.open_observed_feed(&thread.thread.id, ChatScope::Main, demand(37)).await?;
         let observed = async {
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set);
@@ -1357,7 +1429,7 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                 // pagination or body reads, as the production Main consumer does.
                 while terminal.is_none() || !retired {
                     match next(&mut feed).await? {
-                        ConversationEvent::Chat { batch } => {
+                        Observation::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                             ensure!(batch.entries.len() <= demand(37).max_items as usize);
@@ -1372,11 +1444,11 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                             }
                             appended.extend(items);
                         }
-                        ConversationEvent::Activity { snapshot } => {
+                        Observation::Activity { snapshot } => {
                             ensure!(snapshot.completed_through == through);
                             retired = snapshot.entries.is_empty();
                         }
-                        ConversationEvent::State { update } => {
+                        Observation::State { update } => {
                             if let ThreadSubscriptionUpdate::Notification { notification } = *update
                                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
                             {
@@ -1594,7 +1666,7 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
         let id = &thread.thread.id;
         let mut feed = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand(37))
+            .open_observed_feed(id, ChatScope::Main, demand(37))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
@@ -1619,7 +1691,7 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
                     let mut terminal = None;
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
-                            ConversationEvent::Chat { batch } => {
+                            Observation::Chat { batch } => {
                                 batch.validate_for(&ChatScope::Main)?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                                 ensure!(batch.entries.len() <= demand(37).max_items as usize);
@@ -1634,14 +1706,14 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
                                 }
                                 appended.extend(items);
                             }
-                            ConversationEvent::Activity { snapshot } => {
+                            Observation::Activity { snapshot } => {
                             ensure!(snapshot.completed_through == through);
                             if let Some(target) = live_body_target(&snapshot)? && let Some(sender) = offer.take() {
                                 sender.send(target).map_err(|_| anyhow::anyhow!("live reader closed before its first target"))?;
                             }
                             retired = snapshot.entries.is_empty();
                         }
-                        ConversationEvent::State { update } => {
+                        Observation::State { update } => {
                                 if let ThreadSubscriptionUpdate::Notification { notification } = *update
                                     && let ThreadNotification::TurnCompleted { turn } = notification.notification
                                 {
@@ -1715,7 +1787,7 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
         };
         let mut feed = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand(37))
+            .open_observed_feed(id, ChatScope::Main, demand(37))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
@@ -1739,7 +1811,7 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                     let mut terminal = None;
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
-                            ConversationEvent::Chat { batch } => {
+                            Observation::Chat { batch } => {
                                 batch.validate_for(&ChatScope::Main)?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                                 ensure!(batch.entries.len() <= demand(37).max_items as usize);
@@ -1759,11 +1831,11 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                                 };
                                 changed.send_replace(count);
                             }
-                            ConversationEvent::Activity { snapshot } => {
+                            Observation::Activity { snapshot } => {
                             ensure!(snapshot.completed_through == through);
                             retired = snapshot.entries.is_empty();
                         }
-                        ConversationEvent::State { update } => {
+                        Observation::State { update } => {
                                 if let ThreadSubscriptionUpdate::Notification { notification } = *update
                                     && let ThreadNotification::TurnCompleted { turn } = notification.notification
                                 {

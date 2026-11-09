@@ -9,7 +9,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 
 ## 作者与声明
 
-- 静态工具按身份独立 crate，自己拥有声明、校验、领域编排与结果；动态 MCP 按适配器组织，不按远端名称造包。独立工具及支持层不得传递依赖 core/model/Studio/`pl-tool`；用领域能力注入，不把 `CallContext`/`ToolOutput` 搬进接口库，也不把完整旧工具 execute 作为宿主回调。
+- 独立工具按能力家族组成 crate，同家族命令用模块组织，自己拥有声明、校验、领域编排与结果，不机械为每工具造包；动态 MCP 与资源门面同家族，不按远端名称造包。家族与独立支持层不得传递依赖 core/model/Studio/`pl-tool`；家族专属支持内聚，真正跨家族共享才抽取窄支持层。用领域能力注入，不把 `CallContext`/`ToolOutput` 搬进接口库，也不把完整旧工具 execute 作为宿主回调。
 - 普通 JSON 作者使用 `#[pl_agent_tool::tool_args]` 与 `#[pl_agent_tool::tool(name = "...")]`，或手写 `typed::TypedTool`；宏只生成参数派生与 RPITIT + Send 转发，不装箱、spawn 或赋予权限。工具可以持有业务服务，无需无关的 Debug/Clone/Serialize 约束。
 - `ToolDefinition` 是名称、描述、完整 JsonSchema/Text/Grammar 输入和可选输出 schema 的唯一作者声明。静态 typed 与动态 Rust Args 共用 `typed::input_schema_for`，在绑定时生成一次；MCP 使用冻结的远端完整 schema。不在生产作者中构造 ToolSpec；`pl_model::completion::tool_definition_to_spec` 是唯一模型投影入口。
 - `typed::decode_json` 解码原文并保留实际字段/索引路径、JSON source 和尾部检查。Schema 生成不执行所有 JSON Schema 约束，业务检查仍在 handler。普通 flatten/map 直接遵循 Serde；严格未知字段且复用共享业务结构时，以私有非 flatten wire + From 适配，不扫描 schema properties。
@@ -28,6 +28,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 - 私有后端错误在宿主边界保留原始 typed 值及显式受信访问入口；对外标准 source 链、序列化和 Debug 只含安全诊断。保留原始来源不等于把凭据或私有远端诊断沿错误链写入模型与历史。
 - 普通 JSON helper 仅在 handler 成功后编码一次，同一文本构造 application/json@1 payload 与 Text context；不使用 Opaque context，也不猜测 content/message/path。编码失败保留 JsonOutputError 的阶段与 serde source，明确可能已有副作用，不重执行。
 - 完整 payload 与实际 delivered_context 分别保存；预览、命令 capture 或临时路径不能冒充可靠资源。重开只读原保存材料，不按当前 Args/Output 重新解码或调用当前渲染器。
+- 需要专用产品呈现时，明确完整回执进入哪个公开正文／artifact 及其版本化封装；`ToolOutput.payload` 不会自动出现在界面可读的模型结果文本中。产品投影保留回执，不为让界面取到内容而把业务回执注入模型上下文。
 - 结束 Turn、CAS、交互、发现、等待和取消必须显式注册授权并返回类型化控制。JSON 字段、名称、schema 或 MCP annotations 都不授予权限。Note/Todo/Skill 状态从 CallContext 冻结扩展计算候选，不维护第二份可写状态。
 
 ## 生命周期与执行边界
@@ -45,5 +46,7 @@ MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等�
 先编译公开 API 示例再迁移相应生产路径。新库无特性、typed、typed+macros、重命名下游及必要 compile-fail 分别验证，workspace 特性合并不证明基础消费方独立。
 
 按风险复用真实 Thread 的注册替换、冻结授权、控制、取消和关闭证明，不以 Tool::execute 直调替代。新 binding 的持久化证明应穿过 Thread、原 writer、close/join 与重开冷读，核对原字节、完整 delivery、错误、展示 marker 与不重执行；MCP 用真实本地 peer，Linux-only 零用例不算覆盖。
+
+跨语言回执测试使用生产序列化的实际封装，核对外层标签、版本及内层编码。`OpaquePayload.content` 是 UTF-8 字符串，即使内容是 JSON，也不能在客户端夹具中直接替换成对象；专用解码器先验证字符串，再按所属格式解析。分别手写两端看似一致的对象夹具不能证明互通。
 
 人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不以固定延时、放宽断言或强制生产前台化制造成功。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。

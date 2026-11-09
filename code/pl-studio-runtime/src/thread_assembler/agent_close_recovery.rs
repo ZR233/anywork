@@ -1,10 +1,10 @@
 //! Restart resumes only saved explicit child-close jobs, without model/workspace activation.
-use super::{StudioThreadAssembler, agent_services::AgentServices};
+use super::{SessionRuntime, agent_services::AgentServices};
 use anyhow::{Context, Result, ensure};
 use pl_tool::collaboration::thread::WorkspaceRelease;
 use std::collections::BTreeMap;
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     pub(crate) async fn resume_agent_closes(&self) -> Result<()> {
         let services = self
             .0
@@ -66,7 +66,7 @@ impl StudioThreadAssembler {
 impl AgentServices {
     async fn resume_child_close_tree(
         &self,
-        owner: StudioThreadAssembler,
+        owner: SessionRuntime,
         targets: Vec<(usize, pl_protocol::Thread)>,
     ) -> Result<()> {
         let ids = targets

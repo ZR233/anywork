@@ -666,19 +666,8 @@ pub(crate) type ServiceStopSlot = Arc<tokio::sync::Mutex<Option<ServiceStopJob>>
 /// runtime 常驻的三个外部服务关闭槽位。
 #[derive(Clone, Default)]
 pub(crate) struct ServiceStopSlots {
-    pub(crate) mcp: ServiceStopSlot,
     pub(crate) lsp: ServiceStopSlot,
     pub(crate) ssh: ServiceStopSlot,
-}
-
-/// 本次编排要 join 的服务关闭共享句柄（按需从常驻槽位 ensure）。
-///
-/// 只含与 SSH transport 无依赖的远端服务：MCP 与 LSP 的 stop 可并发发起。SSH transport 承载
-/// 远端 MCP/LSP/工具的通信，必须在这些依赖收束之后才请求回收，因此不在本结构内，而在
-/// `run_shutdown_stages` 的依赖闸门之后单独从 `service_stops.ssh` 槽位 ensure。
-struct ServiceStops {
-    mcp: ServiceStopJob,
-    lsp: ServiceStopJob,
 }
 
 /// 一个并发阶段的真实结果。
@@ -838,7 +827,6 @@ mod stage_order {
     pub(super) const RECOVERY: usize = 3;
     pub(super) const MODEL_REFRESH: usize = 4;
     pub(super) const TITLE: usize = 5;
-    pub(super) const MCP_STOP: usize = 8;
     pub(super) const LSP_STATE: usize = 10;
     pub(super) const LSP_STOP: usize = 11;
     pub(super) const LSP_STOPPED: usize = 12;
@@ -1094,10 +1082,9 @@ impl StudioRuntime {
         // 提交准入后**先**向所有独立 owner 广播取消，并启动/常驻保留 MCP/LSP/SSH 的 owned 关闭
         // job。真正的阶段 join 与 finalize 仍在后续同一编排内、复用同一批 job。
         self.broadcast_cancel().await;
-        let services = self.ensure_service_stops().await;
 
         let stages = self
-            .run_shutdown_stages(budget, collector.pending_hint, &services)
+            .run_shutdown_stages(budget, collector.pending_hint)
             .await;
         collector.writer_reclaimed = stages.writer_reclaimed;
         collector.persistence = stages.persistence;
@@ -1239,44 +1226,15 @@ impl StudioRuntime {
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
         // 执行的退出，满足「先封闭准入并广播取消（含 Turn）再 join」。
-        for (_, handle) in self.threads.observed_threads() {
+        for (_, handle) in self.sessions.observed_threads() {
             handle.request_shutdown();
         }
-    }
-
-    /// 确保与 SSH transport 无依赖的远端服务（MCP、LSP）各自唯一一次的真实 stop 工作已在常驻
-    /// 槽位启动。SSH transport 依赖它们，改由 `run_shutdown_stages` 的依赖闸门之后单独 ensure。
-    ///
-    /// 每个服务只调用一次 `shutdown`（MCP worker 的首个 `Shutdown` 即退出）；job 与 completion
-    /// 常驻于 runtime 槽位，阶段只 join 同一共享完成句柄。预算耗尽或超时只放弃等待，owner 与
-    /// 句柄仍被 runtime 保留；严格重试再次 join 同一 job，不重启 stop。
-    async fn ensure_service_stops(&self) -> ServiceStops {
-        let slots = &self.service_stops;
-        // MCP 与 LSP 是彼此独立的远端服务，stop 并发发起：各自的 owned 关闭 job 在同一时刻
-        // spawn，而不是等前一个服务的 stop 启动后才轮到下一个。每个服务仍只启动一次（常驻槽位
-        // 保证幂等）。SSH transport 不是与它们独立的资源：它承载远端 MCP/LSP/工具的通信，必须在
-        // 这些依赖的停止请求与结果处理之后才回收，因此在依赖闸门之后单独 ensure（见
-        // `run_shutdown_stages`）。
-        let thread_factory = self.thread_factory.clone();
-        let lsp = self.external_runtimes.lsp.clone();
-        let (mcp, lsp) = futures::join!(
-            ensure_service_stop(&slots.mcp, move || {
-                ServiceStopJob::spawn(async move { thread_factory.shutdown_all_mcp().await })
-            }),
-            ensure_service_stop(&slots.lsp, move || {
-                ServiceStopJob::spawn(
-                    async move { lsp.shutdown().await.map_err(anyhow::Error::from) },
-                )
-            }),
-        );
-        ServiceStops { mcp, lsp }
     }
 
     async fn run_shutdown_stages(
         &self,
         budget: ShutdownBudget,
         pending_before: Option<usize>,
-        services: &ServiceStops,
     ) -> StageReport {
         let progress = self.shutdown_progress.clone();
 
@@ -1303,6 +1261,8 @@ impl StudioRuntime {
         // 生产者收束观测结束后才推进持久化（有界退出路径下个别生产者超时也继续，但缺 ACK 会成为
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
+        let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::oneshot::channel::<bool>();
+        let (transport_ready_tx, transport_ready_rx) = tokio::sync::oneshot::channel::<bool>();
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         producers.push(self.stage_branch(
             budget,
@@ -1386,29 +1346,17 @@ impl StudioRuntime {
             |runtime| async move { runtime.acp_install.cancel_and_join().await },
         ));
 
-        // MCP/LSP 只 join `ensure_service_stops` 已启动的那一次关闭，消费真实 typed 结果；
-        // 只有确认回收才发布 `stopped`，失败绝不伪成功。job 常驻 runtime，超时不丢句柄。
-        // stop 与随后的 `stopped` 发布是同一服务内的有向顺序，整体仍与其他独立资源并发。
-        let mcp_job = services.mcp.clone();
-        remote_dependents.push(
-            async move {
-                vec![
-                    join_service_outcome(
-                        budget,
-                        stage_order::MCP_STOP,
-                        "mcpStop",
-                        mcp_job,
-                        Some(SERVICE_STAGE_LIMIT),
-                    )
-                    .await,
-                ]
-            }
-            .boxed(),
-        );
-        let lsp_job = services.lsp.clone();
+        // Shared LSP and SSH remain available until the actual Session close ACK.
         let lsp_runtime = self.clone();
         remote_dependents.push(
             async move {
+                if !matches!(sessions_ready_rx.await, Ok(true)) {
+                    return vec![StageOutcome { order: stage_order::LSP_STOP, stage: "lspStop", status: StageStatus::Failed(anyhow::anyhow!("Session resources have not closed; shared LSP retained")), elapsed: Duration::ZERO }];
+                }
+                let lsp_job = ensure_service_stop(&lsp_runtime.service_stops.lsp, {
+                    let lsp = lsp_runtime.external_runtimes.lsp.clone();
+                    move || ServiceStopJob::spawn(async move { lsp.shutdown().await.map_err(anyhow::Error::from) })
+                }).await;
                 let stop = join_service_outcome(
                     budget,
                     stage_order::LSP_STOP,
@@ -1496,19 +1444,18 @@ impl StudioRuntime {
         // MCP watcher）的停止请求与结果处理，以及写入生产者的收束观测，之后才在常驻槽位请求
         // SSH 回收；仍只 join 已启动的那一次 owned task，真实结果不被 `let _ =` 吞掉。依赖等待与
         // 真正的 SSH stop 分别计时：依赖等待只做闸门，SSH stop 的耗时由 `join_service_outcome` 的
-        // `elapsed` 单独给出。依赖超时 / 失败 / 预算耗尽都不拦下回收请求（有界降级）：
-        // `ensure_service_stop` 照常调用，只是 `join_service_outcome` 可能在预算耗尽时返回
-        // `Skipped`，owner 仍由常驻槽位保留、可重试。闸门只记录事实，不据此伪报成功。
+        // `elapsed` 单独给出。Session 或 LSP 尚未真正关闭时保留 transport，使原 owner 可重试。
         let ssh_runtime = self.clone();
         let ssh_branch = async move {
             let dependents_started = Instant::now();
-            let (mut outcomes, producers_signal) = futures::join!(
+            let (mut outcomes, producers_signal, transport_signal) = futures::join!(
                 drain_stage_branches(&mut remote_dependents),
                 producers_settled_rx,
+                transport_ready_rx,
             );
             let dependents_elapsed_ms = dependents_started.elapsed().as_millis() as u64;
             // 区分「依赖已结束观测」与「实际全部成功 ACK」：前者只要信号送达即成立，后者只由载荷
-            // `true` 表达。任一为假都只作为日志事实，既不放行伪成功，也不阻止照样请求 SSH 回收。
+            // `true` 表达。资源依赖的真实 ACK 决定是否允许关闭共享 transport。
             let producers_observed = producers_signal.is_ok();
             let producers_acked = matches!(&producers_signal, Ok(true));
             tracing::info!(
@@ -1521,6 +1468,21 @@ impl StudioRuntime {
                 producers_acked,
                 "Studio shutdown SSH dependency gate released; requesting transport recycle"
             );
+            if !matches!(transport_signal, Ok(true))
+                || !outcomes
+                    .iter()
+                    .any(|outcome| outcome.stage == "lspStop" && outcome.is_done())
+            {
+                outcomes.push(StageOutcome {
+                    order: stage_order::SSH,
+                    stage: "ssh",
+                    status: StageStatus::Failed(anyhow::anyhow!(
+                        "Session or LSP resources have not closed; shared SSH retained"
+                    )),
+                    elapsed: Duration::ZERO,
+                });
+                return outcomes;
+            }
             let ssh_job = ensure_service_stop(&ssh_runtime.service_stops.ssh, {
                 let ssh = ssh_runtime.ssh_manager.clone();
                 move || {
@@ -1561,6 +1523,8 @@ impl StudioRuntime {
                 let agent_ok = outcomes
                     .iter()
                     .any(|outcome| outcome.stage == "agentFramework" && outcome.is_done());
+                let _ = sessions_ready_tx.send(agent_ok);
+                let _ = transport_ready_tx.send(agent_ok);
                 // 只在真实已知时发布 pending count；未知不伪造 0。
                 if let Some(pending_before) = pending_before {
                     progress.emit(crate::StudioShutdownProgress::FlushingPersistence(

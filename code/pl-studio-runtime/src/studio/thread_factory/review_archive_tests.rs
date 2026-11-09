@@ -1,6 +1,6 @@
 //! Archive admission at real binding confirmation and restricted review feedback consumers.
 use crate::thread_assembler::{
-    StudioActivationFactory, StudioThreadAssembler, StudioThreadSpec, ThreadActivation,
+    SessionRuntime, StudioActivationFactory, StudioThreadSpec, ThreadActivation,
     ThreadAssemblyError, ThreadPreparation, archive_test_spec as spec,
 };
 use crate::{
@@ -85,7 +85,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
     let store = StudioStore::open(root.join("home/data/studio.sqlite")).await?;
     let physical = close_factory(&store)?;
     let factory = &physical.factory;
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     physical.install(&owner)?;
     let mut protocol = pl_protocol::Thread::placeholder("root");
     protocol.workspace_id = "review-workspace".into();
@@ -257,7 +257,7 @@ async fn register(
 }
 
 async fn restore_delivery(
-    owner: &StudioThreadAssembler,
+    owner: &SessionRuntime,
     store: &StudioStore,
     id: &str,
     assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
@@ -350,7 +350,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
         )
     })?;
     let physical = close_factory(&store)?;
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     physical.install(&owner)?;
     let mut protocol = pl_protocol::Thread::placeholder("root");
     protocol.workspace_id = "review-workspace".into();

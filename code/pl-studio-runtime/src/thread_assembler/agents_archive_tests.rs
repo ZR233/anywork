@@ -155,7 +155,7 @@ impl StudioChildFactory for UnsupportedAdmission {
 
 /// Product environment replacement only; reservation, spawn ownership and failed disposal remain real.
 pub(crate) async fn spawn_failed_archive_fixture(
-    owner: StudioThreadAssembler,
+    owner: SessionRuntime,
     root: String,
     factory: impl StudioChildFactory,
 ) -> Result<ToolOutput, ToolError> {
@@ -195,8 +195,11 @@ pub(crate) async fn spawn_failed_archive_fixture(
 #[tokio::test]
 async fn unsupported_profile_fails_outer_spawn_before_reservation_or_review_workspace() {
     let root = tempfile::tempdir().unwrap();
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     owner.set_child_factory(UnsupportedAdmission).unwrap();
+    owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+        "root", None,
+    ));
     let parent = owner
         .assemble(spec("root".into(), None, root.path()))
         .await
@@ -253,7 +256,7 @@ async fn unsupported_profile_fails_outer_spawn_before_reservation_or_review_work
 #[tokio::test]
 async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_spawn() {
     let root = tempfile::tempdir().unwrap();
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let id = Arc::new(Mutex::new(None));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let dispositions = Arc::new(Mutex::new(Vec::new()));
@@ -269,7 +272,7 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
     let observed_child = observed.clone();
     owner
         .observe_assembly(
-            move |id, _| {
+            move |id, _, _| {
                 if id != "root" {
                     observed_child.store(true, Ordering::SeqCst);
                 }
@@ -280,6 +283,9 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
             |_| Box::pin(async { Ok(()) }),
         )
         .unwrap();
+    owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+        "root", None,
+    ));
     let parent = owner
         .assemble(spec("root".into(), None, root.path()))
         .await
@@ -322,6 +328,12 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
     tokio::pin!(spawn);
     assert!(futures::poll!(&mut spawn).is_pending());
     let child_id = id.lock().unwrap().clone().unwrap();
+    // The spawn is parked inside the factory's release gate, before child assembly; give the
+    // child the same explicit typed identity the standalone roots use.
+    owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+        &child_id,
+        Some("root"),
+    ));
     let child_operation = owner.agent_operation(&child_id).await;
     release.add_permits(1);
     // The observer runs at the end of real assembly. With no review target or services there
@@ -423,7 +435,7 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
         protocol.workspace_id = "workspace".into();
         protocol.root_thread_id = protocol.id.clone();
         register_test_thread(&store, &protocol).await?;
-        let owner = StudioThreadAssembler::default();
+        let owner = SessionRuntime::default();
         let registration =
             Registration::prepare("close-probe".into(), OpaquePayload::text("probe"))?;
         let resource = RejectFirstDeletionResourceClose::default();
@@ -431,6 +443,10 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
         prepared
             .tools
             .push(registration.attach(pl_agent_tool::ToolHandle::new(resource.clone())));
+        owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+            &protocol.id,
+            protocol.parent_thread_id.as_deref(),
+        ));
         let thread = owner.assemble(prepared).await?;
         let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
         let binding = Arc::new(sink.binding());
@@ -451,6 +467,7 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
             .entries
             .get_mut(&protocol.id)
             .unwrap()
+            .native
             .close_storage = Some(if execution {
             CloseStorage::Execution {
                 completion: completion.clone(),
@@ -488,8 +505,16 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
             .close_tree_for_deletion(&protocol.id, &members)
             .await
             .expect_err("a true resource close failure must retain the owner");
+        // The delete dependency graph propagates branch failures as SubtreeClose; the
+        // original resource-close failure stays the sole first cause with no siblings.
         assert!(
-            matches!(&failure, ThreadAssemblyError::Thread(ThreadError::Tool(_))),
+            matches!(
+                &failure,
+                ThreadAssemblyError::SubtreeClose {
+                    first,
+                    ..
+                } if matches!(first.as_ref(), ThreadAssemblyError::Thread(ThreadError::Tool(_)))
+            ),
             "{failure:?}"
         );
         assert_eq!(resource.0.load(Ordering::SeqCst), 1);
@@ -504,7 +529,7 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
         if !execution {
             assert!(
                 matches!(
-                    owner.0.state().entries[&protocol.id].close_storage,
+                    owner.0.state().entries[&protocol.id].native.close_storage,
                     Some(CloseStorage::Attaching { .. })
                 ),
                 "a rejected attachment must not become Attached"
@@ -585,7 +610,7 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
         )
     })?;
     let factory = close_factory(&store)?;
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     factory.install(&owner)?;
     let mut protocol = pl_protocol::Thread::placeholder("private-setup");
     protocol.workspace_id = "workspace".into();
@@ -619,6 +644,10 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
         String::new(),
         OpaquePayload::text("invalid extension identity"),
     );
+    owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+        &protocol.id,
+        None,
+    ));
     let result = owner.assemble(prepared).await;
     assert!(matches!(result, Err(ThreadAssemblyError::Cleanup { .. })));
     assert!(
@@ -633,7 +662,7 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
     {
         let state = owner.0.state();
         assert!(matches!(
-            state.entries[&protocol.id].close_storage,
+            state.entries[&protocol.id].native.close_storage,
             Some(crate::thread_assembler::CloseStorage::Execution {
                 observation_installed: false,
                 joined: false,

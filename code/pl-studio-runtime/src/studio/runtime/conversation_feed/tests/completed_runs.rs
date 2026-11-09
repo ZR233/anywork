@@ -88,7 +88,7 @@ fn publish(
     )
 }
 
-pub(super) struct Harness {
+pub(in crate::studio::runtime) struct Harness {
     pub thread: Thread,
     pub history: crate::studio::storage::history::HistoryStore,
     pub session: core::Session,
@@ -115,7 +115,12 @@ impl Harness {
             .product_events
             .commit_directory(delta)
             .await?;
-        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&thread.id)
+                .and_then(|session| session.observed_thread(&thread.id))
+                .is_none()
+        );
         let history = env.runtime.store.history(&thread.id).await?;
         history.prepare_write().await?;
         let database = history
@@ -386,7 +391,6 @@ pub(super) async fn activity(feed: &mut ConversationFeed) -> Result<Arc<Activity
         loop {
             match feed.recv().await?.context("activity feed ended")? {
                 ConversationEvent::Activity { snapshot } => return Ok(snapshot),
-                ConversationEvent::State { .. } => {}
                 ConversationEvent::Chat { .. } => {
                     bail!("Activity crossed an unaccepted completion batch")
                 }
@@ -493,6 +497,7 @@ async fn slow_observer_keeps_only_latest_activity_and_queries_do_not_need_stream
         h.save(&prepared).await?;
         // Pure activity updates never allocate completion sequences or write history.
         let head = h.session.head_seq();
+        let state = h.source.subscribe();
         for _ in 0..1024 {
             h.source.publish_test_conversation(
                 &h.session,
@@ -502,7 +507,7 @@ async fn slow_observer_keeps_only_latest_activity_and_queries_do_not_need_stream
         assert_eq!(h.session.head_seq(), head);
         assert_eq!(h.session.durable_seq(), head);
         assert_eq!(
-            feed.state.as_ref().unwrap().len(),
+            state.len(),
             0,
             "token/current-only publications must not emit BusinessRefsChanged"
         );
@@ -1149,7 +1154,12 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
             };
             assert_eq!(bytes.as_slice(), record.payload.as_ref());
         }
-        assert!(env.runtime.threads.observed_thread(&h.thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&h.thread.id)
+                .and_then(|session| session.observed_thread(&h.thread.id))
+                .is_none()
+        );
         cold.close().await?;
         cold.reader().close().await?;
         Ok(())

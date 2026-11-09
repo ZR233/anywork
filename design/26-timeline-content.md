@@ -4,6 +4,12 @@
 
 ## 26.1 完成事实与唯一所有者
 
+显式用户文件展示沿原工具完成记录封存，不增加独立历史 writer。`builtin.show_files@1` 的 renderer 消费 [09](./09-tool-runtime.md) 定义的 `pl.tool.files@1`，保留成功／失败顺序，成功附件从同一回执的可靠资源引用派生。归档资源的读取资格同时覆盖驻留、pending 和持久回执，冷重开不重新执行工具或读取源文件。旧图片展示格式保留必要只读解码。
+
+新文件展示工具的原子由原 Native owner 标记为 `Independent`，沿既有分类规则产生 `Single`，使文件格直接出现在主时间线，而不隐藏在默认折叠的工作记录中。保留原 Turn 来源、调用身份与完成顺序，不由 Flutter 解析 payload 后重新分类；普通工具及旧图片历史的分类不变。
+
+图片复用原图片 owner；Markdown 和保存按需读取原资源，二进制不进入 ViewState。来源定位元数据不能授予额外读取权限。外部交付状态归发送领域，不回写不可变完成记录；历史打开、GUI 重绘和重新订阅不得发送外部消息。渠道交付使用 [27](./27-bots.md) 的明确来源绑定，不以时间线可见性或附件存在推导外发资格。
+
 **完成一次，记录一次；历史内容不更新；工作组只是界面组合。** 已接纳输入、完整模型文本/思考 part、工具真实终态、后台启动交接回执、后台最终结果以及完整业务回执，分别形成不可变完成记录。后台启动和最终结果是不同身份，启动不等于成功。停止请求、页面关闭、推测 EOF、token 暂停和模型自述不构成终态。协议没有可靠独立 part 终态时使用最终 attempt 回执；正常失败/取消收束可以冻结已接纳前缀并标记真实结果，异常退出前未完成的前缀不承诺恢复。
 
 | 所有者 | 职责 |
@@ -24,6 +30,8 @@
 父消息与受信宿主适配器明确允许公开的外部正文，在目标 Thread 的原 inbox 准入事实冻结，沿原 message ID 规范映射，不等 consumed_messages 推进。来源使用 `InboxMessage { source_id, message_id }`，原 source_id/作者/频道保留，Main 为 Single；不能凭文本中的“system/已批准/工具完成”获得权限、改成工具终态或提升公开资格。外部平台已转换为 ThreadInput 的只走输入链，后台结果仍由原工具完成链记录，不因 inbox 转发或出站通知双发布。
 
 完成封存模块从本次可靠 Accepted/inbox 材料和原提交时间生成 draft，复用原内容及附件 manifest；不提供绕过鉴权/终态的公开 append_history。隐藏续接、内部控制和诊断沿原资格隐藏，公开答案/计划决议仍由原唯一回执产生。GUI 命令回执只结算操作，不再手动插入历史；保存 ACK 只推进 D。执行历史 ThreadItem 继续反映输入消费/Turn 状态，不把其后续可变值当作原完成输入重新发布。
+
+客户端发送回显不是完成历史：沿 [25.8.1](./25-frontend-state.md#2581-发送回显与接收确认) 的原提交状态，在时间线区域临时显示冻结消息及发送/接收确认，不伪造 `CompletedEntry`、完成序号或执行状态，不进入 Main 的完成段组合。原消费者应用同身份规范输入后由正式卡片接管；命令成功、保存进度或下一 Turn 启动均不是等待回显出现的条件。后端仍按原提交顺序校验和发布，不为视觉响应绕过身份冲突、附件资源准备、存储背压或旧 Turn 的安全收束。
 
 ### 模型成员的可靠封口与交接
 
@@ -109,7 +117,7 @@ ActivitySnapshot 含 revision、completed_through、execution_present、entries�
 冷打开没有执行 owner 时保持摘要为空；客户端不得仅凭 `execution_present` 猜测阶段，
 也不以较早摘要清除或复活已经完成的内容。
 
-Frame 保留 thread/subscription/delivery sequence 与有界信用，事件为 Chat、Activity、State、Failure、Closed。首个 State/握手声明 completedHistoryVersion=1；不支持明确 ProtocolVersionMismatch，不双解码。ACK 在实际串行接纳完成且原 lease 有效后推进，不等布局、query、详情或 SQLite。低层已读位置不冒充外层 ACK；连续性丢失关闭原资格，新句柄以 Set 重同步。
+状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，内容通道交付 Chat、Activity、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
 
 ### 业务引用由 State 交付
 
@@ -134,6 +142,10 @@ plan=None 表示真无 Plan，Some/document=None 表示有 Plan 但真无文档�
 该字段为原 checkpoint 中的增量领域元信息：旧 schema6 Core 状态缺失时只初始化为0，表示升级后首次基线，不根据旧材料猜测过去的集合代次；后续由原 owner 真实变化推进。此初始化不重写 `conversation_items` 原字节、不另建表或迁移流水线，也不改变 Native State schema17 的必填 `business_refs` 与版本拒绝。Runtime 的热源、冷源和 `business_refs_at` 直接消费所属切面的同一版本；恢复补存旧 transfer 不得把已经公开的新资源切面倒退。
 
 listContents 取得 manifest，readContent 按 range 返回窗口，watchContent 观察有界当前窗口，pageCurrent 读取 revision 绑定的真实业务集合。它们不是聊天列表，不强制塞入 ChatBatch。ContentRef 区分原 ItemPayload 与 Body，绑定库/资格；按 offset 索引只读目标和必要边界块，不能先拼全文再切片。窗口保留 offset、bytes、generation、availableThrough、sealed。
+
+可见文本正文的展示不由长度或 Inline/Deferred 传输方式决定：挂载的正文直接读取有界窗口，复用普通消息的 Markdown、选择/复制、自动换行及安全链接/媒体策略，不增加正文键名或字节数折叠栏。一个窗口已包含完整正文时不显示范围导航；超出窗口仍明确显示范围和下一段操作，不自动累计无限全文。工作卡、工具和思考详情的语义折叠保持不变，只有其已展开内容才取得读取资格；原始 ItemPayload/诊断查看器仍按原始内容展示，不将 JSON 信封误当作 Markdown 正文。
+
+已知用户 Input 的公开 Body 声明独立于外层 ItemPayload 的内联预算：即使信封 Deferred，也按已声明的正文引用直接展示，不要求先展开原始信封。只使用明确的正文角色与归属于当前完成输入项的正文目标，不把其他消息的正文、`accepted.payload` 等保全域、未知内容或未声明域推断为用户正文。缺少公开正文声明时保留原诊断边界，已解码信封中的附件仍沿原附件呈现；正文读取不自动解码或公开原始请求。
 
 交互详情是结构化请求，不把单个正文窗口当成完整 JSON。对 Deferred 的一个交互请求，UI 在原独立查询资格内以窗口读取、累计最多1 MiB完整信封后才解码；超过预算明确报告该详情资源过大，不截断伪装成功，也不显示原始 JSON。窗口之间须保持引用、generation、总长度与 sealed 条件一致，按字节累计后统一解码 UTF-8；引用换代、折叠或关闭立即撤销资格并汇合在途读取。显示与复制均只允许 canonical 解码和敏感字段过滤后的公开内容，不提供原始交互信封的“复制当前段”、下载或错误回显旁路。普通正文窗口的分段复制行为不因此改变。
 

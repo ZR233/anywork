@@ -14,12 +14,11 @@ use pl_protocol::studio::{
 };
 use pl_protocol::{
     CHAT_BATCH_MAX_BYTES, CHAT_READ_MAX_ITEMS, ChatPlacement, ChatScope, ReadDemand,
-    ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
-    ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
-    StudioThreadSubscription,
+    ConversationEvent, ConversationStateFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
 };
 use serde::Serialize;
@@ -173,11 +172,7 @@ async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
 
 async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) -> Result<String> {
     let created = Box::pin(create_seed_thread(runtime, workspace_id, index)).await?;
-    let mut subscription = runtime
-        .subscribe_thread(ThreadSubscriptionRequest {
-            thread_id: created.clone(),
-        })
-        .await?;
+    let mut subscription = runtime.open_conversation_state_feed(&created).await?;
     let mut route_revision = Box::pin(wait_completed(
         runtime,
         &mut subscription,
@@ -232,7 +227,7 @@ async fn create_seed_thread(
 
 async fn seed_followup(
     runtime: &StudioRuntime,
-    subscription: &mut StudioThreadSubscription,
+    subscription: &mut ConversationStateFeed,
     thread_id: &str,
     index: usize,
     turn: usize,
@@ -358,7 +353,7 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
 
 async fn wait_completed(
     runtime: &StudioRuntime,
-    subscription: &mut StudioThreadSubscription,
+    subscription: &mut ConversationStateFeed,
     thread_id: &str,
     input_id: &str,
 ) -> Result<u64> {

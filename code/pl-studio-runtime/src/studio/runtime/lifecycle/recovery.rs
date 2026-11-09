@@ -380,7 +380,10 @@ impl StudioRuntime {
         // per-Thread operation guard. Both are taken here in the same order archiving uses (lifecycle
         // first), so a cleanup can neither race a restore that revives the Thread and reuses the site
         // nor an activation that is already running in it.
-        let _operation = self.threads.agent_operation(owner_thread_id).await;
+        let _operation = self
+            .require_session(owner_thread_id)?
+            .agent_operation(owner_thread_id)
+            .await;
         // Re-read the lease *after* the guards: the facts the card was rendered from may already be
         // stale, and every check below must run against the state that is true while nothing else can
         // change it.
@@ -506,7 +509,11 @@ impl StudioRuntime {
     async fn worktree_owner_facts(&self, thread_id: &str) -> Result<WorktreeOwnerFacts> {
         // A retained execution/shutdown owner is stronger evidence than a missing or archived
         // directory row. Never infer inactivity while an in-process incarnation still exists.
-        if self.threads.observed_thread(thread_id).is_some() {
+        if self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
+            .is_some()
+        {
             return Ok(WorktreeOwnerFacts {
                 exists: true,
                 retained: true,

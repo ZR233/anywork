@@ -91,6 +91,9 @@ pub struct SendSegmentFact {
     pub status: SendRecordStatus,
     pub platform_message_id: Option<String>,
     pub diagnostic: Option<String>,
+    /// Added in the current JSON facts encoding. Missing on preserved text records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_delivery: Option<super::files::FileDeliveryFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1678,6 +1681,7 @@ fn legacy_segment_facts(ids: &[String], overall: SendRecordStatus) -> (Vec<SendS
             },
             platform_message_id: Some(id.clone()),
             diagnostic: diagnostic.clone(),
+            file_delivery: None,
         })
         .collect::<Vec<_>>();
     (facts, false)

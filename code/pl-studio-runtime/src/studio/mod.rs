@@ -18,11 +18,12 @@ pub(crate) mod producer_migration;
 mod product_event_bus;
 mod records;
 mod recovery_registry;
-mod runtime;
+pub(crate) mod runtime;
 mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
 mod storage;
+
 #[cfg(test)]
 pub(crate) mod storage_fault_test_support {
     pub(crate) use super::storage::thread_writer::storage_fault_tests::{
