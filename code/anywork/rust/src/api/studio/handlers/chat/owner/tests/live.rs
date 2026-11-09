@@ -141,12 +141,12 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
 
         // Chat completion and Activity are separate credit-bearing events. ACK each preceding
         // Chat; hold the exact Activity snapshot that carries the live body owner.
-        let mut held_activity = None;
-        let (held_seq, reference, activity_id, turn_id) = loop {
+        let (held_seq, reference, activity_id, turn_id, held_snapshot) = loop {
             let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
             ensure!(batch.placement == BridgeChatPlacement::Append
                 && batch.before.is_none()
                 && batch.from_seq.is_some_and(|from| from < batch.through_seq));
+            ensure!(batch.from_seq == Some(accepted_through));
             accepted_through = batch.through_seq;
             for entry in batch.entries {
                 ensure!(completed_records.insert(entry.record_id));
@@ -165,7 +165,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                 owner.acknowledge(&owner.subscription_id, sequence)?;
                 continue;
             };
-            ensure!(snapshot.execution_present && snapshot.completed_through >= 0);
+            ensure!(snapshot.execution_present);
             let body = entry.atom.contents.iter()
                 .find(|content| content.role == crate::api::studio::types::BridgeChatContentRole::Body)
                 .context("Activity omitted Body reference")?;
@@ -183,10 +183,8 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
             let reference = body.reference.clone();
             let activity_id = identity.clone();
             let turn_id = entry.atom.turn_id.clone().context("Activity omitted Turn identity")?;
-            held_activity = Some(snapshot);
-            break (sequence, reference, activity_id, turn_id);
+            break (sequence, reference, activity_id, turn_id, snapshot);
         };
-        let held_snapshot = held_activity.context("no live Activity snapshot was held")?;
         ensure!(held_snapshot.execution_present && held_snapshot.revision > 0);
         ensure!(owner.native.try_lock().is_err(), "producer owns native recv while credit is held");
         let mut credit = Box::pin(owner.wait_credit());

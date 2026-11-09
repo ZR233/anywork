@@ -596,7 +596,7 @@ async fn all_items(
     first: ChatBatch,
 ) -> Result<Vec<CompletedEntry>> {
     let entries = all_entries(env, thread, capability, first).await?;
-    let mut items = entries;
+    let items = entries;
     let ids = items
         .iter()
         .map(|item| &item.record_id)

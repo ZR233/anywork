@@ -278,7 +278,8 @@ final class TimelineOutputConsumption {
       if (turn?.turnId == turnId &&
           turn?.state is CompletedStudioTurnState &&
           activity != null &&
-          !activity.executionPresent &&
+          // executionPresent describes an installed owner, including an idle one.
+          // Turn completion and an empty Activity establish the drained boundary.
           activity.entries.isEmpty) {
         break;
       }

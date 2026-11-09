@@ -178,9 +178,12 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
             thread_id: created.clone(),
         })
         .await?;
+    // The initial State belongs to the subscription, across all seeded Turns.
+    let mut saw_snapshot = false;
     let mut route_revision = Box::pin(wait_completed(
         runtime,
         &mut subscription,
+        &mut saw_snapshot,
         &created,
         &format!("read-input-{index}-00"),
     ))
@@ -189,6 +192,7 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
         route_revision = Box::pin(seed_followup(
             runtime,
             &mut subscription,
+            &mut saw_snapshot,
             &created,
             index,
             turn,
@@ -233,6 +237,7 @@ async fn create_seed_thread(
 async fn seed_followup(
     runtime: &StudioRuntime,
     subscription: &mut StudioThreadSubscription,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     index: usize,
     turn: usize,
@@ -252,7 +257,7 @@ async fn seed_followup(
             },
         )
         .await?;
-    wait_completed(runtime, subscription, thread_id, &input_id).await
+    wait_completed(runtime, subscription, saw_snapshot, thread_id, &input_id).await
 }
 
 async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<usize>> {
@@ -359,11 +364,11 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
 async fn wait_completed(
     runtime: &StudioRuntime,
     subscription: &mut StudioThreadSubscription,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     input_id: &str,
 ) -> Result<u64> {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let mut saw_snapshot = false;
         while let Some(update) = subscription.recv().await? {
             match update {
                 ThreadSubscriptionUpdate::Snapshot {
@@ -371,18 +376,18 @@ async fn wait_completed(
                     ..
                 } => {
                     ensure!(
-                        !saw_snapshot,
+                        !*saw_snapshot,
                         "Thread subscription repeated its initial State snapshot"
                     );
                     ensure!(
                         completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
                         "unsupported completed history version {completed_history_version}"
                     );
-                    saw_snapshot = true;
+                    *saw_snapshot = true;
                 }
                 ThreadSubscriptionUpdate::Notification { notification } => {
                     ensure!(
-                        saw_snapshot,
+                        *saw_snapshot,
                         "Thread notification arrived before State snapshot"
                     );
                     if let ThreadNotification::TurnCompleted { turn } = notification.notification

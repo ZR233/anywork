@@ -35,7 +35,7 @@ void main() {
         'thread-main',
       )!;
       await session.content.ready;
-      await transport.firstSetAcknowledged.future;
+      await transport.initialActivityAcknowledged.future;
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
       addTearDown(summaries.release);
@@ -172,7 +172,7 @@ void main() {
         .selectThread('thread-main');
     final session = graph.client.conversations.existingSession('thread-main')!;
     await session.content.ready;
-    await transport.firstSetAcknowledged.future;
+    await transport.initialActivityAcknowledged.future;
     final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
     final initial = session.state.workspace!;
@@ -365,26 +365,30 @@ void main() {
 final class _StatusTransport extends RecordingDemoTransport {
   _StatusTransport() {
     conversationFeedFactory = (_, inner) async =>
-        _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
+        _InitialActivityAcknowledgedFeed(
+          inner: inner,
+          acknowledged: initialActivityAcknowledged,
+        );
   }
 
-  final firstSetAcknowledged = Completer<void>();
+  final initialActivityAcknowledged = Completer<void>();
 }
 
-/// Wait for the actual Set ACK before injecting State frames into the same feed.
+/// Wait for the initial Activity ACK after Set before injecting State frames.
 /// This observes transport ownership; it never publishes or reduces a projection.
-final class _SetAcknowledgedFeed extends RecordingConversationFeed {
-  _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
+final class _InitialActivityAcknowledgedFeed extends RecordingConversationFeed {
+  _InitialActivityAcknowledgedFeed({
+    required super.inner,
+    required this.acknowledged,
+  });
 
   final Completer<void> acknowledged;
-  int? _firstSetSequence;
+  int? _initialActivitySequence;
 
   @override
   Stream<ConversationFrame> get events => super.events.map((frame) {
-    if (frame.event case ConversationChatEvent(
-      batch: ChatBatch(placement: ChatPlacement.set),
-    )) {
-      _firstSetSequence ??= frame.deliverySequence;
+    if (frame.event case ConversationActivityEvent()) {
+      _initialActivitySequence ??= frame.deliverySequence;
     }
     return frame;
   });
@@ -392,9 +396,9 @@ final class _SetAcknowledgedFeed extends RecordingConversationFeed {
   @override
   Future<void> acknowledge(int deliverySequence) async {
     await super.acknowledge(deliverySequence);
-    final firstSet = _firstSetSequence;
-    if (firstSet != null &&
-        deliverySequence >= firstSet &&
+    final initialActivity = _initialActivitySequence;
+    if (initialActivity != null &&
+        deliverySequence >= initialActivity &&
         !acknowledged.isCompleted) {
       acknowledged.complete();
     }

@@ -36,9 +36,17 @@ void main() {
       final items = [
         find.byKey(const ValueKey('chat-item:spacing-intro')),
         find.byKey(const ValueKey('chat-item:spacing-plain')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-0')),
+        find.byKey(
+          const ValueKey(
+            'completion-run-header:["completion-run","preview",1]',
+          ),
+        ),
         find.byKey(const ValueKey('chat-item:spacing-result-0')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-1')),
+        find.byKey(
+          const ValueKey(
+            'completion-run-header:["completion-run","preview",5]',
+          ),
+        ),
         find.byKey(const ValueKey('chat-item:spacing-result-1')),
       ];
       final gaps = [
