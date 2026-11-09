@@ -237,6 +237,7 @@ fn desktop_harness_preset(id: &str) -> Option<&'static str> {
         "conversation_read_work" => Some("conversation-read-work"),
         "question_history" => Some("question-history"),
         "realtime_presentation" => Some("realtime-presentation"),
+        "message_submission" => Some("message-submission"),
         "timeline_presentation" => Some("timeline-history"),
         "timeline_concept" => Some("timeline-concept"),
         "sidebar" => Some("sidebar-query"),
@@ -258,6 +259,12 @@ fn desktop_env_ready(id: &str) -> bool {
         }
         "realtime_presentation" => {
             env_present("ANYWORK_REALTIME_PROJECT") && env_present("ANYWORK_REALTIME_OUTPUT")
+        }
+        "message_submission" => {
+            env_present("ANYWORK_HOME")
+                && env_present("ANYWORK_SUBMISSION_PROJECT")
+                && env_present("ANYWORK_SUBMISSION_OUTPUT")
+                && env_present("ANYWORK_SUBMISSION_PROVIDER")
         }
         "timeline_presentation" => {
             env_present("ANYWORK_TIMELINE_PHASE")

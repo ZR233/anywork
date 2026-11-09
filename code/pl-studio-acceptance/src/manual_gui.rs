@@ -3,6 +3,7 @@ mod bots_fixture;
 mod context_replay_recovery;
 mod conversation_read_work;
 mod delegation;
+mod message_submission;
 mod mode_editor;
 mod model_catalog;
 mod question_history;
@@ -771,6 +772,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history-20k"
                     | "question-history"
                     | "realtime-presentation"
+                    | "message-submission"
                     | "timeline-concept"
                     | "stress-body-large"
                     | "wait-events"
@@ -780,7 +782,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
-         timeline-concept, stress-body-large, wait-events, conversation-read-work, \
+         timeline-concept, message-submission, stress-body-large, wait-events, conversation-read-work, \
          sidebar-query and the delegation scenes"
     );
     ensure!(
@@ -857,6 +859,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "statistics"
             | "realtime"
             | "realtime-presentation"
+            | "message-submission"
             | "timeline-concept"
             | "stress-body"
             | "stress-body-large"
@@ -1343,6 +1346,34 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 (Err(error), Ok(())) => Err(error),
                 (Err(error), Err(retain_error)) => Err(error.context(format!(
                     "retaining the failed timeline-concept environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
+    if options.preset == "message-submission" {
+        let project = working.path().join("message-submission-project");
+        let result = message_submission::run(
+            &message_submission::SubmissionScenario {
+                workspace: &workspace,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+                provider_url: &ready.base_url,
+            },
+            fixture,
+        );
+        if options.retain_environment || result.is_err() {
+            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the failed message-submission environment also failed: {retain_error:#}"
                 ))),
             };
         }

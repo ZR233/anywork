@@ -223,6 +223,9 @@ async fn main() -> Result<()> {
         "timeline-concept" => Some(pl_provider_fixture::timeline_concept::Control::default()),
         "question-history" => Some(pl_provider_fixture::timeline_concept::Control::questions()),
         "realtime-presentation" => Some(pl_provider_fixture::timeline_concept::Control::realtime()),
+        "message-submission" => {
+            Some(pl_provider_fixture::timeline_concept::Control::message_submission())
+        }
         _ => None,
     };
     let steps = match scenario {
@@ -240,6 +243,10 @@ async fn main() -> Result<()> {
         "timeline-history-20k" => gui_timeline_history_20k_script(),
         "statistics" => gui_statistics_script(),
         "timeline-concept" => timeline_concept.as_ref().unwrap().script(),
+        "message-submission" => timeline_concept
+            .as_ref()
+            .unwrap()
+            .message_submission_script(),
         "realtime" | "realtime-presentation" => {
             let directory = realtime_host_cwd_directory(args.ready_file.as_deref())?;
             let path = directory
