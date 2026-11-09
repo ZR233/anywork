@@ -2,7 +2,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -305,7 +304,8 @@ void main() {
         final groupTitle = find.descendant(
           of: groupHeader,
           matching: find.text(
-            tester.widget<TimelineActivityRow>(groupHeader).label,
+            AppLocalizations.of(tester.element(groupHeader))
+                .timelineGroupRecord,
           ),
         );
         expect(groupTitle, findsOneWidget);
@@ -320,6 +320,14 @@ void main() {
           reason: 'An already mounted canonical row needs no further UI drag',
         );
         expect(groupUnit.expansion.expanded ?? false, isFalse);
+        final groupDisclosure = find.byKey(
+          ValueKey('completion-run-disclosure:${ids.last}'),
+        );
+        expect(groupDisclosure, findsOneWidget);
+        expect(
+          tester.widget<Expansible>(groupDisclosure).controller.isExpanded,
+          isFalse,
+        );
 
         final typedUnit = chatItemPresentationOf(controller.messages[0])!
             .displayUnit!;
@@ -362,14 +370,14 @@ void main() {
         await tester.pumpAndSettle();
         expect(groupUnit.expansion.expanded, isTrue);
         expect(
-          tester.widget<TimelineActivityRow>(groupHeader).expanded,
+          tester.widget<Expansible>(groupDisclosure).controller.isExpanded,
           isTrue,
         );
         await observed.tap(groupTitle);
         await tester.pumpAndSettle();
         expect(groupUnit.expansion.expanded, isFalse);
         expect(
-          tester.widget<TimelineActivityRow>(groupHeader).expanded,
+          tester.widget<Expansible>(groupDisclosure).controller.isExpanded,
           isFalse,
         );
         expect(position.pixels, titlePixels);

@@ -12,6 +12,7 @@ import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 void main() {
   testWidgets(
@@ -77,14 +78,18 @@ void main() {
       final composer = _SubmissionOwner();
       final h = await _Harness.open(tester, composer: composer);
       await h.content.deliver(
-        chatBatch([
-          for (var i = 1; i <= 28; i++)
-            chatMessage(
-              'long:$i',
-              body: 'history row $i',
-              completionSeq: 1000 + i,
-            ),
-        ], placement: ChatPlacement.append),
+        _timelineBatch(
+          [
+            for (var i = 1; i <= 28; i++)
+              chatMessage(
+                'long:$i',
+                body: 'history row $i',
+                completionSeq: 1000 + i,
+              ),
+          ],
+          placement: ChatPlacement.append,
+          from: 1000,
+        ),
       );
       await _frames(tester);
       final scroll = h.lease.scrollController;
@@ -160,7 +165,9 @@ void main() {
       ),
     ]);
     await _frames(tester);
-    await h.content.deliver(chatBatch([statusItem(atom, completionSeq: 2)]));
+    await h.content.deliver(
+      _timelineBatch([statusItem(atom, completionSeq: 2)]),
+    );
     await _frames(tester);
     expect(composer.presented, ['input-canonical']);
     expect(
@@ -197,7 +204,7 @@ void main() {
         expect(request.before, 'page:${i - 1}');
         expect(request.demand, chatDemand);
         request.reply.complete(
-          chatBatch(
+          _timelineBatch(
             const [],
             placement: ChatPlacement.prepend,
             before: i == 12 ? null : 'page:$i',
@@ -240,14 +247,18 @@ void main() {
       expect(h.requests, hasLength(2));
       expect(h.requests.last.before, 'page:0');
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend, before: 'page:1'),
+        _timelineBatch(
+          const [],
+          placement: ChatPlacement.prepend,
+          before: 'page:1',
+        ),
       );
       await _frames(tester);
       expect(h.owner.source.value!.olderError, isNull);
       expect(h.requests, hasLength(3));
       expect(h.requests.last.before, 'page:1');
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await tester.pumpAndSettle();
       expect(h.owner.source.value!.hasOlder, isFalse);
@@ -261,7 +272,11 @@ void main() {
     (tester) async {
       final h = await _Harness.open(tester);
       h.requests.single.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend, before: 'page:0'),
+        _timelineBatch(
+          const [],
+          placement: ChatPlacement.prepend,
+          before: 'page:0',
+        ),
       );
       await tester.pumpAndSettle();
       expect(
@@ -290,7 +305,7 @@ void main() {
       await _frames(tester);
       expect(h.requests, hasLength(1));
       h.requests.last.reply.complete(
-        chatBatch(
+        _timelineBatch(
           [
             for (var i = 0; i < 5; i++)
               chatMessage('older:$i', completionSeq: 10 + i),
@@ -324,7 +339,7 @@ void main() {
       );
       expect(position.viewportDimension, lessThanOrEqualTo(550));
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await tester.pumpAndSettle();
       await h.close(tester);
@@ -353,7 +368,11 @@ void main() {
       expect(h.requests, hasLength(1));
       h.summaryHeight.value = 550;
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend, before: 'page:1'),
+        _timelineBatch(
+          const [],
+          placement: ChatPlacement.prepend,
+          before: 'page:1',
+        ),
       );
       await tester.pumpAndSettle();
       expect(
@@ -365,7 +384,7 @@ void main() {
       await _frames(tester);
       expect(h.requests, hasLength(2));
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await tester.pumpAndSettle();
       await h.close(tester);
@@ -384,7 +403,7 @@ void main() {
       await _frames(tester);
       expect(h.requests, hasLength(1));
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await tester.pumpAndSettle();
       await h.close(tester);
@@ -411,7 +430,11 @@ void main() {
       h.outerOffstage.value = true;
       await _frames(tester);
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend, before: 'page:1'),
+        _timelineBatch(
+          const [],
+          placement: ChatPlacement.prepend,
+          before: 'page:1',
+        ),
       );
       await _frames(tester);
       expect(h.requests, hasLength(1));
@@ -421,7 +444,7 @@ void main() {
       expect(tester.widget<TimelineView>(timeline), same(cachedView));
       expect(h.requests, hasLength(2));
       h.requests.last.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await tester.pumpAndSettle();
       expect(h.requests, hasLength(2));
@@ -440,10 +463,14 @@ void main() {
       final retry = h.owner.retryOlder('a', generation: lease.generation);
       expect(identical(loading, retry), isTrue);
       await h.content.deliver(
-        chatBatch([
-          for (var i = 0; i < 18; i++)
-            chatMessage('append:$i', completionSeq: 2000 + i),
-        ], placement: ChatPlacement.append),
+        _timelineBatch(
+          [
+            for (var i = 0; i < 18; i++)
+              chatMessage('append:$i', completionSeq: 2000 + i),
+          ],
+          placement: ChatPlacement.append,
+          from: 1000,
+        ),
       );
       await _frames(tester);
       expect(lease.olderCursor, 'page:0');
@@ -459,7 +486,7 @@ void main() {
       await _frames(tester);
       expect(h.requests, hasLength(1));
       h.requests.single.reply.complete(
-        chatBatch(
+        _timelineBatch(
           [chatMessage('older', completionSeq: 10)],
           placement: ChatPlacement.prepend,
           before: 'page:1',
@@ -491,7 +518,7 @@ void main() {
       final oldEndReached = h.initialEndReached!;
       final oldRequest = h.requests.single;
       await h.content.deliver(
-        chatBatch([
+        _timelineBatch([
           for (var i = 0; i < 18; i++)
             chatMessage('new:$i', completionSeq: 3000 + i),
         ], before: 'new-before'),
@@ -500,7 +527,7 @@ void main() {
       expect(oldLease.isRetired, isTrue);
       expect(h.lease, isNot(same(oldLease)));
       oldRequest.reply.complete(
-        chatBatch(
+        _timelineBatch(
           [chatMessage('stale')],
           placement: ChatPlacement.prepend,
           before: 'stale-before',
@@ -528,6 +555,30 @@ Future<void> _frames(WidgetTester tester) async {
   for (var i = 0; i < 4; i++) {
     await tester.pump();
   }
+}
+
+TimelineBatch _timelineBatch(
+  List<CompletedEntry> entries, {
+  ChatPlacement placement = ChatPlacement.set,
+  String? before,
+  int? from,
+}) {
+  final through = entries.lastOrNull?.completionSeq ?? 0;
+  return displayBatch(
+    [for (final entry in entries) displaySingle(entry)],
+    placement: placement,
+    before: before,
+    from: from,
+    through: through,
+    live: placement == ChatPlacement.prepend
+        ? null
+        : LiveDisplayWindow(
+            revision: 0,
+            historyThrough: through,
+            executionPresent: false,
+            blocks: const [],
+          ),
+  );
 }
 
 final class _Harness {
@@ -582,7 +633,7 @@ final class _Harness {
       composer: composer,
     );
     await h.content.deliver(
-      chatBatch([
+      _timelineBatch([
         chatMessage('first', body: 'first body', completionSeq: 1000),
       ], before: 'page:0'),
     );
@@ -698,7 +749,7 @@ final class _Harness {
       if (pending.isEmpty) return;
       final request = pending.last;
       request.reply.complete(
-        chatBatch(const [], placement: ChatPlacement.prepend),
+        _timelineBatch(const [], placement: ChatPlacement.prepend),
       );
       await request.finished.future;
       await _frames(tester);
@@ -773,31 +824,37 @@ final class _Session extends Fake implements ConversationSession {
   @override
   String get threadId => 'a';
   @override
-  final ConversationContent content;
+  final TimelineContent content;
 }
 
-final class _Content extends Fake implements ConversationContent {
+final class _Content extends Fake implements TimelineContent {
   @override
   String get threadId => 'a';
   @override
   final state = LatestValue<ChatUiState<bool>>(const ChatReady('a', true));
-  ConversationBatchConsumer? consumer;
+  @override
+  final LatestValue<LiveDisplayWindow?> live = LatestValue(null);
+  TimelineBatchConsumer? consumer;
   final scopes = <_Scope>[];
 
   @override
-  Observation attachConsumer(
-    ConversationBatchConsumer consumer, {
+  Observation attachTimelineConsumer(
+    TimelineBatchConsumer consumer, {
     required ReadDemand demand,
   }) {
     this.consumer = consumer;
     return _Observation(() => this.consumer = null);
   }
 
-  Future<void> deliver(ChatBatch batch) => consumer!.applyBatch(batch);
+  Future<void> deliver(TimelineBatch batch) async {
+    final acceptedLive = batch.live ?? live.value!;
+    await consumer!.applyTimeline(batch, acceptedLive);
+    if (batch.placement != ChatPlacement.prepend) live.publish(acceptedLive);
+  }
 
   @override
-  ConversationQueryScope openScope({required int generation}) {
-    final scope = _Scope(consumer!, generation);
+  TimelineQueryScope openScope({required int generation}) {
+    final scope = _Scope(this, consumer!, generation);
     scopes.add(scope);
     return scope;
   }
@@ -814,15 +871,16 @@ final class _PageRequest {
   _PageRequest(this.before, this.demand);
   final String before;
   final ReadDemand demand;
-  final reply = Completer<ChatBatch>();
+  final reply = Completer<TimelineBatch>();
   final finished = Completer<void>();
 }
 
 // Only transport and admission barriers are doubled. All pagination, cursor,
 // error, single-flight, projection and layout behavior belongs to production.
-final class _Scope extends Fake implements ConversationQueryScope {
-  _Scope(this.consumer, this.generation);
-  final ConversationBatchConsumer consumer;
+final class _Scope extends Fake implements TimelineQueryScope {
+  _Scope(this.content, this.consumer, this.generation);
+  final _Content content;
+  final TimelineBatchConsumer consumer;
   @override
   final int generation;
   @override
@@ -832,7 +890,7 @@ final class _Scope extends Fake implements ConversationQueryScope {
   final requests = <_PageRequest>[];
 
   @override
-  Future<ChatBatch> loadOlder({
+  Future<TimelineBatch> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) async {
@@ -840,7 +898,7 @@ final class _Scope extends Fake implements ConversationQueryScope {
     requests.add(request);
     try {
       final batch = await request.reply.future;
-      if (isActive) await consumer.applyBatch(batch);
+      if (isActive) await consumer.applyTimeline(batch, content.live.value!);
       return batch;
     } finally {
       request.finished.complete();

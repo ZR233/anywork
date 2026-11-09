@@ -25,17 +25,21 @@ class StudioMenuLabel extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: maxWidth),
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelMedium
-                    ?.copyWith(color: color),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxWidth),
+                child: Padding(
+                  padding: const EdgeInsetsDirectional.only(end: 5),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelMedium
+                        ?.copyWith(color: color),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(width: 5),
             Icon(Icons.keyboard_arrow_down, size: 14, color: color),
           ],
         ),

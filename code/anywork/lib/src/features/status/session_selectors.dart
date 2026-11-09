@@ -470,29 +470,12 @@ class ReasoningEffortSelector extends StatelessWidget {
             child: Text(effort),
           ),
       ],
-      child: _ControlItem(label: label, enabled: selectionEnabled),
-    );
-  }
-}
-
-class _ControlItem extends StatelessWidget {
-  const _ControlItem({required this.label, required this.enabled});
-
-  final String label;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        StudioMenuLabel(
-          key: StudioDriverKeys.reasoningEffortLabel,
-          label: label,
-          enabled: enabled,
-          maxWidth: 140,
-        ),
-      ],
+      child: StudioMenuLabel(
+        key: StudioDriverKeys.reasoningEffortLabel,
+        label: label,
+        enabled: selectionEnabled,
+        maxWidth: 140,
+      ),
     );
   }
 }

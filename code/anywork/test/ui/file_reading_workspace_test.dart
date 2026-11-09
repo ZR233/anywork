@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
@@ -142,10 +143,20 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        transport.feeds.last.emit(
-          chatBatch([
-            statusItem(_markdownFile(), completionSeq: 5),
-          ], placement: ChatPlacement.append),
+        final feed = transport.timelineFeeds.last;
+        final filePosition =
+            graph.timeline.lease('thread-main')!.live.value!.historyThrough + 1;
+        feed.emitTimeline(
+          displayBatch(
+            [
+              displaySingle(
+                statusItem(_markdownFile(), completionSeq: 5),
+                historyPos: filePosition,
+              ),
+            ],
+            placement: ChatPlacement.append,
+            from: filePosition - 1,
+          ),
         );
         await pumpClientUntil(
           tester,
@@ -153,11 +164,14 @@ void main() {
           'production file card',
         );
         final timeline = tester.element(find.byType(TimelineConnector));
-        final source = tester.state(find.byType(TimelineAttachmentsConnector));
+        final sourceFinder = find.ancestor(
+          of: find.text('notes.md'),
+          matching: find.byType(TimelineAttachmentsConnector),
+        );
+        expect(sourceFinder, findsOneWidget);
+        final source = tester.state(sourceFinder);
         final read = tester
-            .widget<TimelineAttachmentsConnector>(
-              find.byType(TimelineAttachmentsConnector),
-            )
+            .widget<TimelineAttachmentsConnector>(sourceFinder)
             .readAttachment!;
         await tester.tap(find.text('notes.md'));
         await tester.pump();
@@ -192,17 +206,24 @@ void main() {
         // New completions move the original file row outside the virtual window.
         resize(() => width = 1100);
         await tester.pump();
-        transport.feeds.last.emit(
-          chatBatch([
-            chatMessage(
-              'after-file',
-              completionSeq: 6,
-              body: List.generate(
-                100,
-                (index) => 'Later paragraph $index',
-              ).join('\n\n'),
-            ),
-          ], placement: ChatPlacement.append),
+        feed.emitTimeline(
+          displayBatch(
+            [
+              displaySingle(
+                chatMessage(
+                  'after-file',
+                  completionSeq: 6,
+                  body: List.generate(
+                    100,
+                    (index) => 'Later paragraph $index',
+                  ).join('\n\n'),
+                ),
+                historyPos: filePosition + 1,
+              ),
+            ],
+            placement: ChatPlacement.append,
+            from: filePosition,
+          ),
         );
         await pumpClientUntil(
           tester,
