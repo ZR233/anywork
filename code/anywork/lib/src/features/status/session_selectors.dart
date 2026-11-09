@@ -479,7 +479,9 @@ class ReasoningEffortSelector extends StatelessWidget {
         constraints: const BoxConstraints(minWidth: 96),
         child: StudioMenuLabel(
           key: StudioDriverKeys.reasoningEffortLabel,
-          label: efforts.isEmpty ? context.l10n.settingsUsageUnsupported : label,
+          label: efforts.isEmpty
+              ? context.l10n.settingsUsageUnsupported
+              : label,
           enabled: selectionEnabled,
           maxWidth: 140,
         ),
