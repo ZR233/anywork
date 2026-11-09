@@ -34,3 +34,16 @@
 
 独立下游验证必须在 workspace 外解析依赖并实际调用工具，不能依赖 workspace
 特性合并。依赖闭包检查与宿主集成证明缺一不可；工具声明不构成授权证明。
+
+## 验证入口
+
+从仓库根目录执行：
+
+```sh
+python3 .github/scripts/check_tool_boundaries.py
+cargo test --locked --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
+```
+
+依赖检查消费 Cargo 的全特性、全平台解析图，包括构建与测试依赖，并拒绝宿主依赖、
+工具之间的依赖及遗漏的 workspace 成员。重命名下游 fixture 独立解析所有工具，
+用于证明公开接口的可消费性；它不替代各工具的行为测试和宿主的授权、归档、关闭证明。

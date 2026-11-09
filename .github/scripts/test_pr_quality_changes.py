@@ -35,6 +35,19 @@ class ClassifyPathTest(unittest.TestCase):
     def test_unknown_root_file_is_unknown(self):
         self.assertEqual(classify_path("mystery.bin"), frozenset({"unknown"}))
 
+    def test_independent_tools_and_support_are_rust_inputs(self):
+        for path in (
+            "code/tools/apply-patch/src/lib.rs",
+            "code/tools/support/filesystem/Cargo.toml",
+            "code/tools/fixtures/downstream/src/lib.rs",
+        ):
+            with self.subTest(path=path):
+                tags = classify_path(path)
+                self.assertIn("rust", tags)
+                self.assertNotIn("unknown", tags)
+                plan = plan_from_paths([path], event_name="pull_request")
+                self.assertTrue(plan["rust_checks"])
+
     def test_bridge_and_native_paths_are_distinguished(self):
         self.assertIn("bridge", classify_path("code/pl-studio-bridge/src/lib.rs"))
         self.assertIn("native_exact", classify_path("code/anywork/tool/native_fault_main.dart"))

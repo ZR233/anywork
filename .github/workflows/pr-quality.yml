@@ -251,6 +251,8 @@ jobs:
             cargo test --locked -p pl-agent-tool --no-default-features --features typed,macros
             cargo test --locked -p pl-agent-tool-macros
             cargo test --locked --manifest-path code/pl-agent-tool/fixtures/downstream/Cargo.toml --target-dir target/tool-downstream
+            python3 .github/scripts/check_tool_boundaries.py
+            cargo test --locked --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
             # Library tests run outside the Flutter bundle and need the
