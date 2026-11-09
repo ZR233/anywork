@@ -75,7 +75,7 @@ class ConversationActivityStatus extends StatelessWidget {
         icon: view.kind.icon,
         indicatorStyle: view.kind == ConversationActivityKind.responding
             ? TimelineActivityIndicatorStyle.writing
-            : TimelineActivityIndicatorStyle.catTail,
+            : TimelineActivityIndicatorStyle.restingCat,
         isIssue: view.kind.isIssue,
         active:
             view.waits ||

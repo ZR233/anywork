@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
@@ -11,7 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/state/completion_run_
 import '../support/completion_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
@@ -139,7 +141,53 @@ Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
 
 void main() {
   group('统一实时状态栏', () {
-    testWidgets('输出阶段显示书写图标，其余活动显示猫尾巴，故障保留错误图标', (tester) async {
+    testWidgets('趴卧猫逐帧保持身体像素固定，只有台沿以下的尾巴摆动', (tester) async {
+      final progress = AnimationController(vsync: tester);
+      addTearDown(progress.dispose);
+      const boundaryKey = ValueKey('resting-cat-frame');
+      await tester.pumpWidget(
+        Center(
+          child: RepaintBoundary(
+            key: boundaryKey,
+            child: TimelineRestingCat(
+              progress: progress,
+              color: Colors.black,
+              size: 128,
+            ),
+          ),
+        ),
+      );
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        find.byKey(boundaryKey),
+      );
+      Future<List<int>> pixels() async => (await tester.runAsync(() async {
+        final image = await boundary.toImage();
+        try {
+          final bytes = await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          );
+          return bytes!.buffer.asUint8List();
+        } finally {
+          image.dispose();
+        }
+      }))!;
+      final rest = await pixels();
+      // 图标上部包含身体、前爪与台沿；尾巴从台沿下方开始。
+      const bodyBytes = 128 * 70 * 4;
+      for (final phase in [.2, .36, .5]) {
+        progress.value = phase;
+        await tester.pump();
+        final frame = await pixels();
+        expect(frame.take(bodyBytes), orderedEquals(rest.take(bodyBytes)));
+        expect(
+          frame.skip(bodyBytes),
+          isNot(orderedEquals(rest.skip(bodyBytes))),
+        );
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('输出阶段显示书写图标，其余活动显示趴卧猫，故障保留错误图标', (tester) async {
       for (final kind in [
         ConversationActivityKind.preparing,
         ConversationActivityKind.compacting,
@@ -159,18 +207,18 @@ void main() {
           ),
         );
         if (kind == ConversationActivityKind.responding) {
-          expect(find.byType(TimelineCatTail), findsNothing);
+          expect(find.byType(TimelineRestingCat), findsNothing);
           expect(find.byType(TimelineWritingIndicator), findsOneWidget);
         } else {
           expect(
-            find.byType(TimelineCatTail),
+            find.byType(TimelineRestingCat),
             findsOneWidget,
             reason: kind.name,
           );
         }
       }
       final progress = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final before = progress.value;
       await tester.pump(const Duration(milliseconds: 700));
@@ -186,7 +234,7 @@ void main() {
           ),
         ),
       );
-      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byType(TimelineRestingCat), findsNothing);
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     });
@@ -199,7 +247,7 @@ void main() {
             disableAnimations: disabled,
           ),
         );
-        expect(find.byType(TimelineCatTail), findsNothing);
+        expect(find.byType(TimelineRestingCat), findsNothing);
         expect(find.byType(TimelineWritingIndicator), findsOneWidget);
         final paper = find.byKey(const ValueKey('writing-paper'));
         final pen = find.byKey(const ValueKey('writing-pen'));
@@ -223,6 +271,7 @@ void main() {
 
     testWidgets('官方预览直接装配生产组件且各工况可渲染', (tester) async {
       for (final preview in [
+        conversationRestingCatPreview,
         conversationLiveStatusWaitingPreview,
         conversationLiveStatusCompactingPreview,
         conversationLiveStatusToolsPreview,
@@ -589,7 +638,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('耗时取真实投影，未知时不补零；减少动态效果保留静止猫尾巴', (tester) async {
+    testWidgets('耗时取真实投影，未知时不补零；减少动态效果保留静止趴卧猫', (tester) async {
       await tester.pumpWidget(
         _wrapWithApp(
           ConversationActivityBar(
@@ -607,9 +656,9 @@ void main() {
         ),
       );
       expect(find.text('用时 2 分 5 秒'), findsOneWidget);
-      expect(find.byType(TimelineCatTail), findsOneWidget);
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
       final progress = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final still = progress.value;
       await tester.pump(const Duration(milliseconds: 700));
@@ -634,7 +683,7 @@ void main() {
       );
       await tester.pump();
       final resumed = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final resumedBefore = resumed.value;
       await tester.pump(const Duration(milliseconds: 700));
