@@ -52,7 +52,7 @@ pub fn saved_view_image_receipt(
 }
 
 struct AuthorizedImageReader<B>(Arc<B>);
-impl<B: WorkspaceFileBackend + 'static> pl_tool_view_image::ImageReader
+impl<B: WorkspaceFileBackend + 'static> pl_tool_media::view_image::ImageReader
     for AuthorizedImageReader<B>
 {
     type Error = ToolError;
@@ -96,8 +96,8 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> ThreadViewImageTool<B,
 }
 
 impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadViewImageTool<B, H> {
-    const NAME: &'static str = pl_tool_view_image::NAME;
-    const DESCRIPTION: &'static str = pl_tool_view_image::DESCRIPTION;
+    const NAME: &'static str = pl_tool_media::view_image::NAME;
+    const DESCRIPTION: &'static str = pl_tool_media::view_image::DESCRIPTION;
     type Args = ViewImageInput;
     type Context = CallContext;
     type Output = ToolOutput;
@@ -113,12 +113,13 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadVi
             Some(backend) => Arc::new(backend),
             None => self.backend.clone(),
         });
-        let tool =
-            pl_tool_view_image::ViewImage::new(Arc::new(DomainMediaHost(self.media.clone())));
+        let tool = pl_tool_media::view_image::ViewImage::new(Arc::new(DomainMediaHost(
+            self.media.clone(),
+        )));
         let output = tool
             .execute(
                 input,
-                pl_tool_view_image::Context {
+                pl_tool_media::view_image::Context {
                     reader,
                     image: pl_tool_media_support::ImageContext {
                         limits,
@@ -146,8 +147,8 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadVi
 
 pub fn thread_view_image_tool_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json(
-        pl_tool_view_image::NAME,
-        pl_tool_view_image::DESCRIPTION,
+        pl_tool_media::view_image::NAME,
+        pl_tool_media::view_image::DESCRIPTION,
         pl_agent_tool::typed::input_schema_for::<ViewImageInput>(),
     )
     .expect("static tool definition")

@@ -34,9 +34,7 @@ members = [
     "code/tools/list-mcp-resources",
     "code/tools/list-mcp-resource-templates",
     "code/tools/read-mcp-resource",
-    "code/tools/view-image",
-    "code/tools/generate-image",
-    "code/tools/show-image",
+    "code/tools/media",
     "code/tools/git-status",
     "code/tools/git-diff",
     "code/tools/git-branch",
@@ -219,9 +217,7 @@ pl-tool-mcp = { path = "code/tools/mcp" }
 pl-tool-list-mcp-resources = { path = "code/tools/list-mcp-resources" }
 pl-tool-list-mcp-resource-templates = { path = "code/tools/list-mcp-resource-templates" }
 pl-tool-read-mcp-resource = { path = "code/tools/read-mcp-resource" }
-pl-tool-view-image = { path = "code/tools/view-image" }
-pl-tool-generate-image = { path = "code/tools/generate-image" }
-pl-tool-show-image = { path = "code/tools/show-image" }
+pl-tool-media = { path = "code/tools/media" }
 pl-tool-git-status = { path = "code/tools/git-status" }
 pl-tool-git-diff = { path = "code/tools/git-diff" }
 pl-tool-git-branch = { path = "code/tools/git-branch" }

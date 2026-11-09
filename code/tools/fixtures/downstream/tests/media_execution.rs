@@ -1,9 +1,8 @@
 //! Independent consumers exercise actual tools; the fixture only supplies bytes and storage.
-use generate_image as pl_tool_generate_image;
+use generate_image::{GenerateImage, GeneratedImage, ImageGenerator};
+use media::{generate_image, show_files, view_image};
 use pl_agent_tool::{Tool, typed};
-use pl_tool_generate_image::{GenerateImage, GeneratedImage, ImageGenerator};
 use pl_tool_media_support::{ImageContext, ImageOutputLimits, Media, MediaHost, Retained};
-use show_image as pl_tool_show_image;
 use std::{
     io::Cursor,
     sync::{
@@ -11,7 +10,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use view_image as pl_tool_view_image;
 
 fn png() -> Arc<[u8]> {
     let mut bytes = Cursor::new(Vec::new());
@@ -71,7 +69,7 @@ struct Reader {
     bytes: Arc<[u8]>,
     reads: Arc<Mutex<Vec<(String, usize)>>>,
 }
-impl pl_tool_view_image::ImageReader for Reader {
+impl view_image::ImageReader for Reader {
     type Error = std::convert::Infallible;
     async fn read(&self, path: String, max_bytes: usize) -> Result<Arc<[u8]>, Self::Error> {
         self.reads.lock().unwrap().push((path, max_bytes));
@@ -79,18 +77,192 @@ impl pl_tool_view_image::ImageReader for Reader {
     }
 }
 
+struct DisplaySource {
+    reads: Arc<Mutex<Vec<(String, usize)>>>,
+}
+
+impl show_files::FileSource for DisplaySource {
+    type Reference = usize;
+    type Error = std::io::Error;
+
+    async fn stat(&self, path: &str) -> Result<show_files::FileStat, Self::Error> {
+        if path == "denied" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ));
+        }
+        Ok(show_files::FileStat {
+            is_file: path != "directory",
+            len: Some(if path == "large" {
+                show_files::MAX_SOURCE_BYTES as u64 + 1
+            } else {
+                3
+            }),
+        })
+    }
+
+    async fn local_file_path(&self, path: &str) -> Result<Option<String>, Self::Error> {
+        Ok((path == "local.txt").then(|| "/verified/local.txt".into()))
+    }
+
+    async fn read_bytes(&self, path: &str, max_bytes: usize) -> Result<Arc<[u8]>, Self::Error> {
+        self.reads.lock().unwrap().push((path.into(), max_bytes));
+        Ok(Arc::from(&b"abc"[..]))
+    }
+
+    async fn archived_file(&self, id: &str) -> Result<show_files::File<usize>, Self::Error> {
+        if id != "saved" {
+            return Err(std::io::Error::other("not a member of the frozen archive"));
+        }
+        Ok(show_files::File {
+            resource: 42,
+            filename: "saved.pdf".into(),
+            modality: show_files::Modality::File,
+            origin: show_files::Origin::Archive,
+        })
+    }
+}
+
 #[tokio::test]
-async fn read_normalize_generate_and_select_run_without_product_types() {
+async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
+    let archive = Arc::new(Archive::default());
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let show = typed::prepare_json()
+        .unwrap()
+        .attach(show_files::ShowFiles::new(archive.clone()));
+    let context = || show_files::Context {
+        source: DisplaySource {
+            reads: reads.clone(),
+        },
+        cancellation: Default::default(),
+    };
+    // Invalid requests must fail before touching sources or retention.
+    for args in [
+        serde_json::json!({"files": []}),
+        serde_json::json!({"files": [{"kind":"workspace","path":" "}]}),
+        serde_json::json!({"files": [{"kind":"attachment","attachmentId":""}]}),
+        serde_json::json!({"files": [{"kind":"workspace","path":"local.txt"}], "caption":"图".repeat(241)}),
+        serde_json::json!({"files": [{"kind":"workspace","path":"local.txt","extra":true}]}),
+    ] {
+        assert!(show.execute(args.to_string(), context()).await.is_err());
+    }
+    let cancelled = context();
+    cancelled.cancellation.cancel();
+    assert!(
+        show.execute(
+            r#"{"files":[{"kind":"workspace","path":"local.txt"}]}"#.into(),
+            cancelled,
+        )
+        .await
+        .is_err()
+    );
+    assert!(reads.lock().unwrap().is_empty());
+    assert!(archive.media.lock().unwrap().is_empty());
+
+    let output = show
+        .execute(
+            serde_json::json!({
+                "caption":"  displayed  ",
+                "files":[
+                    {"kind":"workspace","path":"local.txt"},
+                    {"kind":"workspace","path":"denied"},
+                    {"kind":"workspace","path":"remote.txt"},
+                    {"kind":"attachment","attachmentId":"saved"},
+                    {"kind":"workspace","path":"large"},
+                    {"kind":"workspace","path":"directory"},
+                    {"kind":"workspace","path":"corrupt.png"},
+                    {"kind":"attachment","attachmentId":"foreign"}
+                ]
+            })
+            .to_string(),
+            context(),
+        )
+        .await
+        .unwrap();
+    let receipt = serde_json::to_value(&output).unwrap();
+    assert_eq!(receipt["caption"], "displayed");
+    let files = receipt["files"].as_array().unwrap();
+    assert_eq!(files.len(), 8);
+    assert_eq!(files[0]["status"], "ready");
+    assert_eq!(
+        files[0]["origin"],
+        serde_json::json!({"kind":"local","path":"/verified/local.txt"})
+    );
+    assert_eq!(files[0]["modality"], "file");
+    assert_eq!(files[1]["status"], "failed");
+    assert_eq!(files[2]["origin"], serde_json::json!({"kind":"remote"}));
+    assert_eq!(files[3]["origin"], serde_json::json!({"kind":"archive"}));
+    assert_eq!(files[3]["resource"], 42);
+    assert_eq!(files[3]["filename"], "saved.pdf");
+    for file in &files[4..] {
+        assert_eq!(file["status"], "failed");
+    }
+    assert!(files[4]["message"].as_str().unwrap().contains("50 MiB"));
+    assert!(
+        files[5]["message"]
+            .as_str()
+            .unwrap()
+            .contains("regular file")
+    );
+    assert!(
+        files[6]["message"]
+            .as_str()
+            .unwrap()
+            .contains("image header")
+    );
+    assert!(
+        files[7]["message"]
+            .as_str()
+            .unwrap()
+            .contains("frozen archive")
+    );
+    assert_eq!(
+        reads.lock().unwrap().as_slice(),
+        &[
+            ("/verified/local.txt".into(), show_files::MAX_SOURCE_BYTES),
+            ("remote.txt".into(), show_files::MAX_SOURCE_BYTES),
+            ("corrupt.png".into(), show_files::MAX_SOURCE_BYTES),
+        ]
+    );
+    {
+        let retained = archive.media.lock().unwrap();
+        assert_eq!(retained.len(), 2);
+        for media in retained.iter() {
+            assert_eq!(media.bytes.as_ref(), b"abc");
+            assert_eq!(media.media_type, "text/plain");
+            assert!(media.model_image.is_none());
+        }
+    }
+    // A retention failure remains a per-file failure; no retry or success reference.
+    archive.fail.store(true, Ordering::SeqCst);
+    let output = show
+        .execute(
+            r#"{"files":[{"kind":"workspace","path":"remote.txt"}]}"#.into(),
+            context(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&output.files[0], show_files::FileResult::Failed { message, .. } if message == "archive unavailable")
+    );
+    assert_eq!(archive.media.lock().unwrap().len(), 3);
+    assert_eq!(reads.lock().unwrap().len(), 4);
+    show.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn read_normalize_and_generate_run_without_product_types() {
     let source = png();
     let archive = Arc::new(Archive::default());
     let reads = Arc::new(Mutex::new(Vec::new()));
     let view = typed::prepare_json()
         .unwrap()
-        .attach(pl_tool_view_image::ViewImage::new(archive.clone()));
+        .attach(view_image::ViewImage::new(archive.clone()));
     let output = view
         .execute(
             r#"{"path":"capture.png"}"#.into(),
-            pl_tool_view_image::Context {
+            view_image::Context {
                 reader: Reader {
                     bytes: source.clone(),
                     reads: reads.clone(),
@@ -112,7 +284,10 @@ async fn read_normalize_generate_and_select_run_without_product_types() {
     assert_eq!((output.model_width, output.model_height), (4, 2));
     assert_eq!(
         reads.lock().unwrap().as_slice(),
-        &[("capture.png".into(), pl_tool_media_support::MAX_SOURCE_BYTES)]
+        &[(
+            "capture.png".into(),
+            pl_tool_media_support::MAX_SOURCE_BYTES
+        )]
     );
     let requests = Arc::new(Mutex::new(Vec::new()));
     let generator = typed::prepare_json().unwrap().attach(GenerateImage::new(
@@ -153,53 +328,8 @@ async fn read_normalize_generate_and_select_run_without_product_types() {
             "no-image models still archive the source"
         );
     }
-    let show = typed::prepare_json()
-        .unwrap()
-        .attach(pl_tool_show_image::ShowImage::default());
-    let candidates = || {
-        vec![
-            pl_tool_show_image::ArchivedImage {
-                id: "generated".into(),
-                image: generated.retained.reference,
-            },
-            pl_tool_show_image::ArchivedImage {
-                id: "viewed".into(),
-                image: output.retained.reference,
-            },
-        ]
-    };
-    let shown = show
-        .execute(r#"{"caption":"  ready  "}"#.into(), candidates())
-        .await
-        .unwrap();
-    assert_eq!(shown.image, 1);
-    assert_eq!(shown.caption.as_deref(), Some("ready"));
-    let chosen = show
-        .execute(r#"{"imageId":"viewed"}"#.into(), candidates())
-        .await
-        .unwrap();
-    assert_eq!(chosen.image, 0);
-    assert!(
-        show.execute(r#"{"imageId":"unknown"}"#.into(), candidates())
-            .await
-            .is_err()
-    );
-    assert!(
-        show.execute(
-            serde_json::json!({"caption": "图".repeat(241)}).to_string(),
-            candidates()
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        show.execute(r#"{"path":"forbidden.png"}"#.into(), candidates())
-            .await
-            .is_err()
-    );
     view.close().await.unwrap();
     generator.close().await.unwrap();
-    show.close().await.unwrap();
 }
 
 #[tokio::test]

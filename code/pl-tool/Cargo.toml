@@ -30,9 +30,7 @@ pl-tool-mcp = { workspace = true }
 pl-tool-list-mcp-resources = { workspace = true }
 pl-tool-list-mcp-resource-templates = { workspace = true }
 pl-tool-read-mcp-resource = { workspace = true }
-pl-tool-view-image = { workspace = true }
-pl-tool-generate-image = { workspace = true }
-pl-tool-show-image = { workspace = true }
+pl-tool-media = { workspace = true }
 pl-tool-git-status = { workspace = true }
 pl-tool-git-diff = { workspace = true }
 pl-tool-git-branch = { workspace = true }

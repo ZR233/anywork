@@ -4,47 +4,20 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# Deliberately outside the product workspace: its feature unification cannot
-# supply a hidden dependency or required feature to independent tool authors.
+# Deliberately outside the product workspace: independent consumers cannot rely
+# on the host's feature unification. Every complete family is renamed here.
 [workspace]
 
 [dependencies]
-patch = { package = "pl-tool-apply-patch", path = "../../apply-patch" }
-stat = { package = "pl-tool-stat-path", path = "../../stat-path" }
-write = { package = "pl-tool-write-file", path = "../../write-file" }
-mkdir = { package = "pl-tool-create-directory", path = "../../create-directory" }
-delete = { package = "pl-tool-delete-path", path = "../../delete-path" }
-copy = { package = "pl-tool-copy-path", path = "../../copy-path" }
-move_path = { package = "pl-tool-move-path", path = "../../move-path" }
-exec = { package = "pl-tool-exec", path = "../../exec" }
-stdin = { package = "pl-tool-write-stdin", path = "../../write-stdin" }
-git_status = { package = "pl-tool-git-status", path = "../../git-status" }
-git_diff = { package = "pl-tool-git-diff", path = "../../git-diff" }
-git_branch = { package = "pl-tool-git-branch", path = "../../git-branch" }
-git_fetch = { package = "pl-tool-git-fetch", path = "../../git-fetch" }
-git_commit = { package = "pl-tool-git-commit", path = "../../git-commit" }
-git_push = { package = "pl-tool-git-push", path = "../../git-push" }
-git_info = { package = "pl-tool-git-workspace-info", path = "../../git-workspace-info" }
-git_sync = { package = "pl-tool-git-sync-default-branch", path = "../../git-sync-default-branch" }
-lsp_capabilities = { package = "pl-tool-lsp-capabilities", path = "../../lsp-capabilities" }
-lsp_query = { package = "pl-tool-lsp-query", path = "../../lsp-query" }
-search = { package = "pl-tool-web-search", path = "../../web-search" }
-deepseek_search = { package = "pl-tool-deepseek-web-search", path = "../../deepseek-web-search" }
-deepseek_fetch = { package = "pl-tool-deepseek-web-fetch", path = "../../deepseek-web-fetch" }
-view_image = { package = "pl-tool-view-image", path = "../../view-image" }
-generate_image = { package = "pl-tool-generate-image", path = "../../generate-image" }
-show_image = { package = "pl-tool-show-image", path = "../../show-image" }
-skills_list = { package = "pl-tool-skills-list", path = "../../skills-list" }
-skill_view = { package = "pl-tool-skill-view", path = "../../skill-view" }
-skill_manage = { package = "pl-tool-skill-manage", path = "../../skill-manage" }
-bots = { package = "pl-tool-list-bots", path = "../../list-bots" }
-bot_conversations = { package = "pl-tool-list-bot-conversations", path = "../../list-bot-conversations" }
-bot_read = { package = "pl-tool-read-bot-messages", path = "../../read-bot-messages" }
-bot_send = { package = "pl-tool-send-bot-message", path = "../../send-bot-message" }
+filesystem = { package = "pl-tool-filesystem", path = "../../filesystem" }
+command = { package = "pl-tool-command", path = "../../command" }
+git = { package = "pl-tool-git", path = "../../git" }
+lsp = { package = "pl-tool-lsp", path = "../../lsp" }
 mcp = { package = "pl-tool-mcp", path = "../../mcp" }
-mcp_resources = { package = "pl-tool-list-mcp-resources", path = "../../list-mcp-resources" }
-mcp_templates = { package = "pl-tool-list-mcp-resource-templates", path = "../../list-mcp-resource-templates" }
-mcp_read = { package = "pl-tool-read-mcp-resource", path = "../../read-mcp-resource" }
+search = { package = "pl-tool-search", path = "../../search" }
+media = { package = "pl-tool-media", path = "../../media" }
+skill = { package = "pl-tool-skill", path = "../../skill" }
+bots = { package = "pl-tool-bots", path = "../../bots" }
 
 [dev-dependencies]
 pl-agent-tool = { path = "../../../pl-agent-tool", features = ["typed"] }

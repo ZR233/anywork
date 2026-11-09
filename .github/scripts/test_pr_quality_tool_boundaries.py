@@ -80,7 +80,7 @@ class ToolBoundaryTest(unittest.TestCase):
         ]
         self.assertIn("pl-model", self.errors(graph)[0])
 
-    def test_tools_cannot_depend_on_another_static_tool(self):
+    def test_families_cannot_depend_on_another_complete_family(self):
         graph = self.metadata({"tool": ["other"]})
         graph["workspace_members"].append("other")
         errors = self.errors(
@@ -88,6 +88,29 @@ class ToolBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(
             errors, ["forbidden tool dependency: pl-tool-tool -> pl-tool-other"]
+        )
+
+    def test_shared_support_cannot_hide_a_complete_family_dependency(self):
+        graph = self.metadata({"tool": ["support"], "support": ["other"]})
+        graph["workspace_members"].append("other")
+        errors = self.errors(
+            graph,
+            [
+                self.root / "tool/Cargo.toml",
+                self.root / "support/shared/Cargo.toml",
+                self.root / "other/Cargo.toml",
+            ],
+        )
+        self.assertIn(
+            "forbidden tool dependency: pl-tool-tool -> pl-tool-support -> pl-tool-other",
+            errors,
+        )
+
+    def test_no_discovered_packages_is_not_success(self):
+        graph = self.metadata({"tool": []})
+        self.assertEqual(
+            boundary_errors(graph, [], self.root),
+            ["no independent tool packages were checked"],
         )
 
     def test_missing_member_and_missing_graph_fail_closed(self):

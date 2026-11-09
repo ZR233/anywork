@@ -38,7 +38,7 @@ class ClassifyPathTest(unittest.TestCase):
     def test_independent_tools_and_support_are_rust_inputs(self):
         for path in (
             "code/tools/apply-patch/src/lib.rs",
-            "code/tools/support/filesystem/Cargo.toml",
+            "code/tools/filesystem/Cargo.toml",
             "code/tools/fixtures/downstream/src/lib.rs",
         ):
             with self.subTest(path=path):

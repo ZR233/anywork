@@ -4270,7 +4270,6 @@ dependencies = [
  "pl-tool-delete-path",
  "pl-tool-exec",
  "pl-tool-filesystem",
- "pl-tool-generate-image",
  "pl-tool-git-branch",
  "pl-tool-git-commit",
  "pl-tool-git-diff",
@@ -4289,6 +4288,7 @@ dependencies = [
  "pl-tool-lsp-support",
  "pl-tool-mcp",
  "pl-tool-mcp-support",
+ "pl-tool-media",
  "pl-tool-media-support",
  "pl-tool-move-path",
  "pl-tool-process",
@@ -4296,13 +4296,11 @@ dependencies = [
  "pl-tool-read-mcp-resource",
  "pl-tool-search-support",
  "pl-tool-send-bot-message",
- "pl-tool-show-image",
  "pl-tool-skill-manage",
  "pl-tool-skill-support",
  "pl-tool-skill-view",
  "pl-tool-skills-list",
  "pl-tool-stat-path",
- "pl-tool-view-image",
  "pl-tool-web-search",
  "pl-tool-write-file",
  "pl-tool-write-stdin",
@@ -4413,17 +4411,6 @@ dependencies = [
 name = "pl-tool-filesystem"
 version = "0.1.0"
 dependencies = [
- "schemars 1.2.3",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "pl-tool-generate-image"
-version = "0.1.0"
-dependencies = [
- "pl-agent-tool",
- "pl-tool-media-support",
  "schemars 1.2.3",
  "serde",
  "thiserror 2.0.21",
@@ -4618,6 +4605,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pl-agent-tool",
+ "pl-tool-media-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "pl-tool-media-support"
 version = "0.1.0"
 dependencies = [
@@ -4691,16 +4691,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pl-tool-show-image"
-version = "0.1.0"
-dependencies = [
- "pl-agent-tool",
- "schemars 1.2.3",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "pl-tool-skill-manage"
 version = "0.1.0"
 dependencies = [
@@ -4753,18 +4743,6 @@ dependencies = [
  "pl-agent-tool",
  "pl-tool-filesystem",
  "serde",
-]
-
-[[package]]
-name = "pl-tool-view-image"
-version = "0.1.0"
-dependencies = [
- "image",
- "pl-agent-tool",
- "pl-tool-media-support",
- "schemars 1.2.3",
- "serde",
- "thiserror 2.0.21",
 ]
 
 [[package]]

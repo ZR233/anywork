@@ -10,7 +10,7 @@ use pl_core::{
     },
 };
 use pl_model::protocol::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
-pub use pl_tool_generate_image::Input as ImageGenerationInput;
+pub use pl_tool_media::generate_image::Input as ImageGenerationInput;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,14 +34,14 @@ struct SelectedGenerator {
     model: String,
 }
 
-impl pl_tool_generate_image::ImageGenerator for SelectedGenerator {
+impl pl_tool_media::generate_image::ImageGenerator for SelectedGenerator {
     type Error = pl_model::protocol::images::ImagesError;
 
     async fn generate(
         &self,
         prompt: String,
         transparent: bool,
-    ) -> Result<pl_tool_generate_image::GeneratedImage, Self::Error> {
+    ) -> Result<pl_tool_media::generate_image::GeneratedImage, Self::Error> {
         let image = self
             .client
             .generate(ImageGenerationRequest {
@@ -54,7 +54,7 @@ impl pl_tool_generate_image::ImageGenerator for SelectedGenerator {
                 },
             })
             .await?;
-        Ok(pl_tool_generate_image::GeneratedImage {
+        Ok(pl_tool_media::generate_image::GeneratedImage {
             bytes: image.bytes.into(),
             media_type: image.media_type.into(),
             revised_prompt: image.revised_prompt,
@@ -83,8 +83,8 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
 
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::ToolDefinition::json(
-            pl_tool_generate_image::NAME,
-            pl_tool_generate_image::DESCRIPTION,
+            pl_tool_media::generate_image::NAME,
+            pl_tool_media::generate_image::DESCRIPTION,
             pl_agent_tool::typed::input_schema_for::<ImageGenerationInput>(),
         )
         .expect("static tool definition")
@@ -92,8 +92,8 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
 }
 
 impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
-    const NAME: &'static str = pl_tool_generate_image::NAME;
-    const DESCRIPTION: &'static str = pl_tool_generate_image::DESCRIPTION;
+    const NAME: &'static str = pl_tool_media::generate_image::NAME;
+    const DESCRIPTION: &'static str = pl_tool_media::generate_image::DESCRIPTION;
     type Args = ImageGenerationInput;
     type Context = CallContext;
     type Output = ToolOutput;
@@ -108,7 +108,7 @@ impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
             limits: image_limits(context.model_projection.as_ref())?,
             cancellation: context.cancellation,
         };
-        let tool = pl_tool_generate_image::GenerateImage::new(
+        let tool = pl_tool_media::generate_image::GenerateImage::new(
             self.generator.clone(),
             Arc::new(DomainMediaHost(self.media.clone())),
         );
@@ -135,13 +135,13 @@ impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
         .map_err(ToolError::new)?;
         let mut context = output.retained.projection;
         context.push(ContextContent::Text {
-            text: pl_tool_generate_image::ARCHIVED_NOTE.into(),
+            text: pl_tool_media::generate_image::ARCHIVED_NOTE.into(),
         });
         Ok(ToolOutput::new(payload, context))
     }
 }
 
-fn generation_error(error: pl_tool_generate_image::GenerationError) -> ToolError {
+fn generation_error(error: pl_tool_media::generate_image::GenerationError) -> ToolError {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let source = domain_error(error.source);
     let Some(image) = error.observed else {

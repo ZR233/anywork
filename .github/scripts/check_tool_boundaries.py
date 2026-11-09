@@ -40,10 +40,9 @@ def boundary_errors(metadata: dict, manifests: list[Path], tools_root: Path) -> 
         errors.append("no independent tool packages were checked")
         return errors
 
-    # Tool-to-tool dependencies merely relocate coupling. Shared domain libraries
-    # live under support; static MCP resource tools use that support, not the
-    # dynamic tool package.
-    tool_ids = {
+    # A family contains all of its tool modules. Cross-family reuse may only go
+    # through narrow libraries under support, never another complete family.
+    family_ids = {
         identity
         for identity in roots
         if Path(packages[identity]["manifest_path"]).resolve().relative_to(tools_root).parts[0]
@@ -62,7 +61,7 @@ def boundary_errors(metadata: dict, manifests: list[Path], tools_root: Path) -> 
             if package is None or node is None:
                 errors.append(f"incomplete Cargo dependency graph: {' -> '.join(chain)}")
                 continue
-            if _forbidden(package["name"]) or (identity != root and identity in tool_ids):
+            if _forbidden(package["name"]) or (identity != root and identity in family_ids):
                 errors.append(f"forbidden tool dependency: {' -> '.join(chain)}")
                 continue
             for dependency in node["deps"]:
@@ -94,7 +93,13 @@ def main() -> int:
         print(error, file=sys.stderr)
     if errors:
         return 1
-    print(f"Validated dependency closures for {len(manifests)} independent tool/support packages")
+    families = sum(
+        manifest.relative_to(tools_root).parts[0] != "support" for manifest in manifests
+    )
+    print(
+        f"Validated dependency closures for {families} independent tool families "
+        f"and {len(manifests) - families} shared support packages"
+    )
     return 0
 
 
