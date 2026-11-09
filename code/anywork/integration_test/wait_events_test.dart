@@ -15,6 +15,7 @@ import 'package:anywork/src/features/conversation/timeline/views/timeline_view.d
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
+import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -478,6 +479,13 @@ final class _Scene {
           );
           cut.addAll({
             'scene': name,
+            'selectionNeedsOpen': graph.client.selection.state.needsOpen,
+            'workspacePaneThreadIds': [
+              for (final pane in tester.widgetList<AgentWorkspacePane>(
+                find.byType(AgentWorkspacePane, skipOffstage: false),
+              ))
+                pane.threadId,
+            ],
             'ownerSourceThreadId': graph.timeline.source.value?.threadId,
             'connectorOnstage': find
                 .byType(TimelineConnector)
