@@ -4,7 +4,7 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_core::{context::ContextContent, thread::ToolDelivery};
 use pl_protocol::{
-    ChatScope, ContentRange, PayloadData, ReadDemand, ThreadWorkspaceMode,
+    ChatScope, ContentRange, MainPresentation, PayloadData, ReadDemand, ThreadWorkspaceMode,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
@@ -20,9 +20,7 @@ async fn public_artifact(
     let mut feed = runtime
         .open_conversation_feed(
             thread,
-            ChatScope::Children {
-                parent_id: pl_core::chat::ChatKey::new("turn", turn)?.as_str().into(),
-            },
+            ChatScope::Main,
             ReadDemand {
                 max_items: 64,
                 max_bytes: 256 * 1024,
@@ -69,6 +67,11 @@ async fn public_artifact(
             if value["type"] != "tool" || value["data"]["invocation"]["callId"] != "display-call" {
                 continue;
             }
+            ensure!(atom.turn_id.as_deref() == Some(turn));
+            ensure!(
+                entry.main_presentation == MainPresentation::Single,
+                "explicit file display must not be hidden in a collapsed work run"
+            );
             ensure!(value["data"]["invocation"]["presentationContract"] == "builtin.show_files@1");
             let manifest = feed
                 .reader()
