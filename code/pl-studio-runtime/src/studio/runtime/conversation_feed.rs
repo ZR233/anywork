@@ -5,54 +5,33 @@ use super::{
         JsonBudget, ReadResources, annotate_atoms, annotate_sources, core_demand, entries, query,
         resync,
     },
-    thread_observation::{ConversationSource, ThreadLiveEvent},
+    thread_observation::ConversationSource,
 };
-use crate::studio::thread_projection::{LiveEvent, TurnEvent};
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
 use pl_protocol::*;
-use std::{collections::VecDeque, sync::Arc};
-use tokio::sync::{broadcast, watch};
+use std::sync::Arc;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub enum ConversationEvent {
-    State {
-        update: Box<ThreadSubscriptionUpdate>,
-    },
-    Chat {
-        batch: Box<ChatBatch>,
-    },
-    Activity {
-        snapshot: Arc<ActivitySnapshot>,
-    },
+    Chat { batch: Box<ChatBatch> },
+    Activity { snapshot: Arc<ActivitySnapshot> },
 }
 pub struct ConversationFeed {
     reader: ConversationReader,
     initial: Option<ChatBatch>,
     initial_activity: Option<Arc<ActivitySnapshot>>,
-    business_refs: ThreadBusinessRefs,
-    pending: VecDeque<ThreadSubscriptionUpdate>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    state: Option<super::thread_observation::StateReceiver>,
-    storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
-    last_turn: Option<watch::Receiver<Option<Arc<Turn>>>>,
     slot_changed: watch::Receiver<u64>,
     target: Option<Arc<CompletionTarget>>,
     delivered: u64,
     seen_serial: u64,
     activity_revision: u64,
     demand: ReadDemand,
-    state_revision: u64,
-    state_effect_floor: u64,
-    active_turn: Option<String>,
-    delivered_terminal: Option<(String, u64)>,
-    runtime_floor: (u64, u64),
-    state_activity: Option<ThreadActivity>,
-    state_activity_floor: u64,
-    state_turn: bool,
     cancel: CancellationToken,
 }
 /// A slow reader retains only a bounded observation head, never an obsolete
@@ -98,22 +77,11 @@ impl StudioRuntime {
         let slot = self.thread_observations.observation_slot(thread_id);
         let (position, mut slot_changed) = slot.capture();
         // Register both observations before capturing the serial boundary.
-        let registered = position.source.as_ref().map(|source| {
-            let state = source.subscribe();
-            (
-                source.conversation(),
-                state,
-                source.storage(),
-                source.last_turn(),
-            )
-        });
+        let registered = position.source.as_ref().map(|source| source.conversation());
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let history = self.store.history(thread_id).await?;
         let mut progress = None;
-        let mut state = None;
-        let mut storage = None;
-        let mut last_turn = None;
         let mut initial_activity = Arc::new(ActivitySnapshot {
             revision: 0,
             completed_through: 0,
@@ -121,19 +89,10 @@ impl StudioRuntime {
             entries: Vec::new(),
         });
         let mut initial_serial = 0;
-        let mut initial_turn = None;
-        let mut initial_interactions = Vec::new();
         let mut source_states = Vec::new();
         let mut cold_sources = None;
-        let mut model_route = None;
-        let mut cold_terminal = None;
-        let mut business_refs = ThreadBusinessRefs::empty();
-        let (session, database_id, head, effect_cut, items, boundary) = if let Some((
-            registration,
-            state_rx,
-            storage_rx,
-            terminal_rx,
-        )) = registered
+        let (session, database_id, head, effect_cut, items, boundary) = if let Some(registration) =
+            registered
         {
             let mut source = registration.source;
             let mut progress_rx = registration.progress;
@@ -187,15 +146,9 @@ impl StudioRuntime {
                 .await?;
             initial_serial = source.serial;
             initial_activity = source.activity.clone();
-            initial_turn = source.current.active_turn().cloned();
-            initial_interactions = source.current.interactions().to_vec();
-            business_refs = source.current.business_refs();
             source_states = source.current.source_states().to_vec();
             let effect_cut = source.current.projection().source_effect_seq;
             progress = Some(progress_rx);
-            state = Some(state_rx);
-            storage = Some(storage_rx);
-            last_turn = Some(terminal_rx);
             (
                 source.session.clone(),
                 Some(database_id),
@@ -258,12 +211,7 @@ impl StudioRuntime {
                         execution_present: false,
                         entries: Vec::new(),
                     });
-                    initial_interactions = cold.interactions;
-                    business_refs =
-                        crate::studio::thread_projection::project_business_refs(&cold.current);
                     cold_sources = Some(cold.sources);
-                    model_route = cold.model_route.map(|route| route.snapshot(false));
-                    cold_terminal = cold.terminal_turn;
                     (
                         session,
                         Some(cold.database_id),
@@ -315,79 +263,19 @@ impl StudioRuntime {
             },
             demand,
         )?;
-        let runtime_source = position.source.as_ref().and_then(|source| source.runtime());
-        let state_activity_cut = position
-            .source
-            .as_ref()
-            .and_then(|source| source.state_activity());
-        let (state_activity_floor, state_activity) = state_activity_cut
-            .map(|cut| (cut.observation_revision, cut.activity.as_deref().cloned()))
-            .unwrap_or((0, None));
-        let runtime_floor = runtime_source.as_ref().map_or((0, 0), |cut| {
-            (cut.observation_revision, cut.catalog_revision)
-        });
-        let runtime = if let Some(cut) = runtime_source {
-            model_route = cut.model_route;
-            Some((*cut.runtime).clone())
-        } else {
-            let (config, _) = self.config_runtime.read_with_catalog()?;
-            crate::studio::model_route::annotate_availability(
-                model_route.as_mut(),
-                &thread,
-                &config.config,
-            )?;
-            None
-        };
-        let active_turn = initial_turn.as_ref().map(|turn| turn.id.clone());
-        let snapshot = pl_protocol::ThreadSnapshot {
-            schema_version: THREAD_SCHEMA_VERSION,
-            revision: effect_cut,
-            thread,
-            runtime,
-            model_route,
-            active_turn: initial_turn,
-            interactions: initial_interactions,
-            business_refs: business_refs.clone(),
-            activity: state_activity.clone(),
-            storage: storage
-                .as_ref()
-                .and_then(|storage| storage.borrow().clone()),
-        };
-        let mut pending = VecDeque::new();
-        pending.push_back(ThreadSubscriptionUpdate::Snapshot {
-            completed_history_version: COMPLETED_HISTORY_VERSION,
-            snapshot: Box::new(snapshot),
-        });
-        let mut feed = ConversationFeed {
+        let feed = ConversationFeed {
             reader,
             initial: Some(initial),
             initial_activity: Some(initial_activity),
-            business_refs,
-            pending,
             progress,
-            state,
-            storage,
-            last_turn,
             slot_changed,
             target: None,
             delivered: head,
             seen_serial: initial_serial,
             activity_revision: 0,
             demand,
-            state_revision: effect_cut,
-            state_effect_floor: effect_cut,
-            active_turn,
-            delivered_terminal: None,
-            runtime_floor,
-            state_activity,
-            state_activity_floor,
-            state_turn: true,
             cancel: CancellationToken::new(),
         };
-        feed.check_state_budget()?;
-        if let Some(turn) = cold_terminal {
-            feed.reflect_terminal(turn)?;
-        }
         feed.reader.ensure()?;
         Ok(feed)
     }
@@ -463,183 +351,9 @@ impl ConversationFeed {
     fn finish_production(&mut self) {
         self.cancel.cancel();
         self.progress = None;
-        self.state = None;
-        self.storage = None;
-        self.last_turn = None;
         self.target = None;
         self.initial = None;
         self.initial_activity = None;
-        self.pending.clear();
-    }
-    fn notification(&mut self, notification: ThreadNotification) -> Result<()> {
-        if let ThreadNotification::ThreadRuntimeUpdated { runtime, .. } = &notification
-            && let Some(ThreadSubscriptionUpdate::Notification { notification: last }) =
-                self.pending.back_mut()
-            && matches!(
-                &last.notification,
-                ThreadNotification::ThreadRuntimeUpdated { runtime: old, .. }
-                    if super::thread_stream::same_live_runtime_identity(runtime, old)
-            )
-        {
-            last.notification = notification;
-            last.emitted_at = crate::studio::unix_seconds();
-            return self.check_state_budget();
-        }
-        let next = self.state_revision.checked_add(1).ok_or_else(resync)?;
-        self.pending
-            .push_back(ThreadSubscriptionUpdate::Notification {
-                notification: Box::new(ThreadNotificationEnvelope::new(
-                    self.thread_id(),
-                    self.reader.inner.epoch,
-                    self.state_revision,
-                    next,
-                    crate::studio::unix_seconds(),
-                    notification,
-                )),
-            });
-        self.state_revision = next;
-        self.check_state_budget()
-    }
-
-    fn check_state_budget(&self) -> Result<()> {
-        ensure!(
-            self.pending.len() <= 64
-                && self
-                    .pending
-                    .iter()
-                    .map(|item| serde_json::to_vec(item).map_or(usize::MAX, |bytes| bytes.len()))
-                    .sum::<usize>()
-                    <= 1024 * 1024,
-            resync()
-        );
-        Ok(())
-    }
-
-    fn terminal_delivered(&self, turn: &Turn) -> bool {
-        self.delivered_terminal
-            .as_ref()
-            .is_some_and(|(id, revision)| id == &turn.id && *revision >= turn.revision)
-    }
-
-    fn reflect_retained_turn(&mut self) -> Result<()> {
-        let retained = self
-            .last_turn
-            .as_mut()
-            .and_then(|watch| watch.borrow_and_update().clone());
-        if let Some(turn) = retained {
-            self.reflect_terminal((*turn).clone())?;
-        }
-        Ok(())
-    }
-
-    fn reflect_terminal(&mut self, turn: Turn) -> Result<()> {
-        // This is the original State owner's typed terminal fact, published only after its reliable
-        // PreparedEffect handoff. It is not inferred from current, progress, content or idle. Replay
-        // only a fact covered by this State cut, and never replay an older terminal over an active
-        // Turn. Snapshot carries only activeTurn, so omitting this replay loses lastTurn on reopen.
-        if turn.revision > self.state_effect_floor
-            || self.active_turn.is_some()
-            || self.terminal_delivered(&turn)
-        {
-            return Ok(());
-        }
-        self.delivered_terminal = Some((turn.id.clone(), turn.revision));
-        self.notification(ThreadNotification::TurnCompleted { turn })
-    }
-
-    fn state_event(&mut self, event: ThreadLiveEvent) -> Result<()> {
-        match event {
-            ThreadLiveEvent::BusinessRefs {
-                sequence,
-                references,
-            } => {
-                if sequence < self.state_effect_floor || references == self.business_refs {
-                    return Ok(());
-                }
-                self.business_refs = references.clone();
-                self.notification(ThreadNotification::BusinessRefsChanged { references })?;
-            }
-            ThreadLiveEvent::Committed { sequence, changes } => {
-                if sequence <= self.state_effect_floor {
-                    return Ok(());
-                }
-                self.state_effect_floor = sequence;
-                for change in changes {
-                    let notification = match change {
-                        LiveEvent::Turn { turn, event } => {
-                            if self.terminal_delivered(&turn) {
-                                continue;
-                            }
-                            if matches!(&turn.state, TurnState::Running(_)) {
-                                self.active_turn = Some(turn.id.clone());
-                            } else if turn.state.is_terminal() {
-                                self.delivered_terminal = Some((turn.id.clone(), turn.revision));
-                                if self.active_turn.as_deref() == Some(turn.id.as_str()) {
-                                    self.active_turn = None;
-                                }
-                            }
-                            match event {
-                                TurnEvent::Started => ThreadNotification::TurnStarted { turn },
-                                TurnEvent::Updated => ThreadNotification::TurnUpdated { turn },
-                                TurnEvent::Completed => ThreadNotification::TurnCompleted { turn },
-                            }
-                        }
-                        LiveEvent::Interaction(interaction) => {
-                            ThreadNotification::InteractionChanged { interaction }
-                        }
-                    };
-                    self.notification(notification)?;
-                }
-            }
-            ThreadLiveEvent::Runtime {
-                runtime,
-                model_route,
-                observation_revision,
-                catalog_revision,
-            } => {
-                if observation_revision <= self.runtime_floor.0
-                    && catalog_revision <= self.runtime_floor.1
-                {
-                    return Ok(());
-                }
-                ensure!(
-                    observation_revision >= self.runtime_floor.0
-                        && catalog_revision >= self.runtime_floor.1,
-                    resync()
-                );
-                self.runtime_floor = (observation_revision, catalog_revision);
-                self.notification(ThreadNotification::ThreadRuntimeUpdated {
-                    runtime: Box::new((*runtime).clone()),
-                    model_route,
-                })?
-            }
-            ThreadLiveEvent::Activity {
-                observation_revision,
-                activity,
-            } => {
-                if observation_revision <= self.state_activity_floor {
-                    return Ok(());
-                }
-                self.state_activity_floor = observation_revision;
-                if activity.as_deref() != self.state_activity.as_ref() {
-                    self.state_activity = activity.as_deref().cloned();
-                    self.notification(ThreadNotification::ActivityChanged {
-                        activity: activity.map(|activity| Box::new((*activity).clone())),
-                    })?;
-                }
-            }
-            ThreadLiveEvent::UnframedCommit { sequence } => {
-                ensure!(
-                    sequence <= self.state_effect_floor,
-                    resync().context(format!(
-                        "conversation UnframedCommit above State floor: sequence={sequence}, state_effect_floor={}",
-                        self.state_effect_floor
-                    ))
-                );
-            }
-            ThreadLiveEvent::Rebase { .. } => return Err(resync()),
-        }
-        Ok(())
     }
     pub async fn recv(&mut self) -> Result<Option<ConversationEvent>> {
         let result = self.receive().await;
@@ -678,22 +392,9 @@ impl ConversationFeed {
                 return Err(core::ChatError::Cancelled.into());
             }
             self.reader.ensure()?;
-            ensure!(
-                !self
-                    .state
-                    .as_ref()
-                    .is_some_and(super::thread_observation::StateReceiver::is_closed),
-                resync()
-            );
-            self.reflect_retained_turn()?;
             if let Some(batch) = self.initial.take() {
                 return Ok(Some(ConversationEvent::Chat {
                     batch: Box::new(batch),
-                }));
-            }
-            if let Some(update) = self.pending.pop_front() {
-                return Ok(Some(ConversationEvent::State {
-                    update: Box::new(update),
                 }));
             }
             if let Some(snapshot) = self.initial_activity.take() {
@@ -701,36 +402,6 @@ impl ConversationFeed {
                 self.activity_revision = snapshot.revision;
                 return Ok(Some(ConversationEvent::Activity { snapshot }));
             }
-            if self.state_turn {
-                self.state_turn = false;
-                let queued = self
-                    .state
-                    .as_ref()
-                    .map_or(0, super::thread_observation::StateReceiver::len);
-                for _ in 0..queued {
-                    match self
-                        .state
-                        .as_mut()
-                        .expect("queued State receiver")
-                        .try_recv()
-                    {
-                        Ok(event) => self.state_event(event)?,
-                        Err(broadcast::error::TryRecvError::Empty) => break,
-                        Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                            return Err(resync().context(format!(
-                                "conversation state try_recv lagged: skipped={skipped}"
-                            )));
-                        }
-                        Err(broadcast::error::TryRecvError::Closed) => return Err(resync()),
-                    }
-                }
-                if let Some(update) = self.pending.pop_front() {
-                    return Ok(Some(ConversationEvent::State {
-                        update: Box::new(update),
-                    }));
-                }
-            }
-            self.state_turn = true;
             self.take_progress()?;
             if let Some(target) = self.target.clone() {
                 if target.head > self.delivered {
@@ -799,37 +470,13 @@ impl ConversationFeed {
                     snapshot: target.activity.clone(),
                 }));
             }
-            enum Wake {
-                State(Result<ThreadLiveEvent, broadcast::error::RecvError>),
-                Progress(bool),
-                Storage(Option<ThreadStorageState>),
-                Terminal(bool),
-                Slot,
-            }
-            let wake = tokio::select! { biased;
+            let progress_open = tokio::select! { biased;
                 _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
-                _ = self.slot_changed.changed() => Wake::Slot,
-                state = async { match self.state.as_mut() { Some(state) => state.recv().await, None => std::future::pending().await } } => Wake::State(state),
-                progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Progress(progress),
-                storage = async { match self.storage.as_mut() { Some(storage) => { if storage.changed().await.is_ok() { storage.borrow_and_update().clone() } else { std::future::pending().await } }, None => std::future::pending().await } } => Wake::Storage(storage),
-                terminal = async { match self.last_turn.as_mut() { Some(terminal) => terminal.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Terminal(terminal),
+                _ = self.slot_changed.changed() => return Err(resync()),
+                progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => progress,
             };
-            match wake {
-                Wake::Slot => {
-                    self.reader.ensure()?;
-                    return Err(resync());
-                }
-                Wake::State(Ok(event)) => self.state_event(event)?,
-                Wake::State(Err(_)) => return Err(resync()),
-                Wake::Progress(true) => {}
-                Wake::Progress(false) => return Err(resync()),
-                Wake::Storage(storage) => {
-                    self.notification(ThreadNotification::StorageChanged {
-                        storage: storage.map(Box::new),
-                    })?
-                }
-                Wake::Terminal(false) => self.last_turn = None,
-                Wake::Terminal(true) => {}
+            if !progress_open {
+                return Err(resync());
             }
         }
     }

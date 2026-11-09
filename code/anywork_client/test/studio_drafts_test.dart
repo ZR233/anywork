@@ -92,8 +92,35 @@ final class _DraftTransport extends AccountsTestTransport
     feedOpens++;
     return window = _DraftConnection(
       threadId: threadId,
-      states: frames.stream,
       initial: initialForThread?.call(threadId),
+    );
+  }
+
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(String threadId) =>
+      Future.value(
+        ScriptedConversationStateFeed(
+          threadId: threadId,
+          states: frames.stream,
+        ),
+      );
+
+  /// State turns enter through the independent state channel with a real ACK
+  /// wait; the content connection only ever carries Chat frames.
+  Future<void> emitTurn(StudioTurnView turn) async {
+    final feed = await scriptedStateFeed(turn.threadId);
+    await feed.deliver(
+      ConversationStateEvent(
+        frame: ThreadSnapshotFrame(
+          schemaVersion: 17,
+          completedHistoryVersion: 1,
+          workspace: _workspace(
+            revision: turn.revision,
+            turn: turn,
+            thread: _thread(turn.threadId),
+          ),
+        ),
+      ),
     );
   }
 
@@ -292,11 +319,8 @@ final class _DraftTransport extends AccountsTestTransport
 
 /// A controlled content source driven through the production timeline channel.
 final class _DraftConnection extends ScriptedConversationFeed {
-  _DraftConnection({
-    required super.threadId,
-    required super.states,
-    ChatBatch? initial,
-  }) : super(initial: initial ?? chatSet(messages: const []));
+  _DraftConnection({required super.threadId, ChatBatch? initial})
+    : super(initial: initial ?? chatSet(messages: const []));
   int _completedThrough = 1;
   Future<void> emitItem(CompletedEntry item) async {
     final from = _completedThrough++;
@@ -318,20 +342,6 @@ final class _DraftConnection extends ScriptedConversationFeed {
       ),
     );
   }
-
-  Future<void> emitTurn(StudioTurnView turn) => deliver(
-    ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        schemaVersion: 17,
-        completedHistoryVersion: 1,
-        workspace: _workspace(
-          revision: turn.revision,
-          turn: turn,
-          thread: _thread(turn.threadId),
-        ),
-      ),
-    ),
-  );
 }
 
 const _project = StudioProject(
@@ -537,8 +547,8 @@ Future<AnyworkClient> _client(
         demand: _demand,
       );
   client.conversations.setVisibleThread('thread');
-  final feed = await scriptedFeed('thread');
-  await feed.acknowledged(1);
+  await scriptedStateFeed('thread');
+  await transport.window.acknowledged(1);
   return client;
 }
 
@@ -580,7 +590,7 @@ void main() {
         final submitting = owner.submit();
         final input = await transport.promptEntered.future;
         final operation = client.mutations.lookup(OperationId(input.inputId))!;
-        await transport.window.emitTurn(
+        await transport.emitTurn(
           _inputTurn(
             input.inputId,
             const CompletedStudioTurnState(
@@ -673,8 +683,8 @@ void main() {
         ),
       ),
     );
-    final feed = await scriptedFeed('new-thread');
-    await feed.acknowledged(1);
+    await scriptedStateFeed('new-thread');
+    await transport.window.acknowledged(1);
     final newSession = client.conversations.session('new-thread');
     await newSession.deliverWorkspace(
       _workspace(
@@ -730,7 +740,7 @@ void main() {
     final operation = client.mutations.lookup(
       OperationId(request.input.inputId),
     )!;
-    await transport.window.emitTurn(
+    await transport.emitTurn(
       _inputTurn(
         request.input.inputId,
         const CompletedStudioTurnState(
@@ -778,7 +788,7 @@ void main() {
     final input = await transport.promptEntered.future;
     var seq = 1;
     for (final id in ['turn', 'conflicting-turn']) {
-      await transport.window.emitTurn(
+      await transport.emitTurn(
         _inputTurn(
           input.inputId,
           const CompletedStudioTurnState(

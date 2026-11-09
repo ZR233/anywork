@@ -412,32 +412,11 @@ async fn schema12_rejects_bad_checkpoint_hash_identity_fence_and_route_without_a
     Ok(())
 }
 
-struct EmptyBudget;
-impl ChatBudget for EmptyBudget {
-    fn fixed_bytes(&self) -> usize {
-        0
-    }
-    fn item_bytes(
-        &self,
-        _: &pl_core::chat::ChatItemHeader,
-        _: pl_core::chat::PayloadMode,
-    ) -> usize {
-        unreachable!("empty conversation has no items")
-    }
-    fn manifest_bytes(&self, _: &pl_core::chat::ContentDescriptor) -> usize {
-        unreachable!("empty conversation has no manifests")
-    }
-}
-
-async fn cold(store: &HistoryStore) -> Result<ColdConversation> {
+async fn cold(store: &HistoryStore) -> Result<ColdStateFacet> {
     store
-        .cold_conversation(
-            pl_core::chat::ChatQuery::new("conversation", None),
-            pl_core::chat::ReadDemand::new(10, 256 * 1024),
-            &EmptyBudget,
-        )
+        .cold_state_facet()
         .await?
-        .context("cold conversation missing")
+        .context("cold State missing")
 }
 
 #[tokio::test]
@@ -446,21 +425,47 @@ async fn current_cold_head_ignores_recovery_bodies_but_rejects_bad_head_without_
     let (dir, db) = source().await?;
     seed(&db).await?;
     prepare(&db, THREAD, Preparation::Schema, None).await?;
+    let original = db
+        .query_one_raw(statement(
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("original checkpoint")?
+        .try_get::<String>("", "payload")?;
+    let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
+    let saved = cold(&store).await?.model_route.unwrap();
+    assert_eq!(saved.revision, 7);
+    assert_eq!(saved.bot_id.as_deref(), Some("original-bot"));
     db.execute_unprepared(
         "UPDATE session_checkpoint SET payload=json_set(payload,'$.state.context','invalid recovery body');
          UPDATE current_context SET payload='invalid context body'",
     )
     .await?;
-    let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
     assert!(
         store.conversation_current().await?.is_some(),
         "small current must not decode the corrupt recovery body"
     );
-    let saved = cold(&store).await?.model_route.unwrap();
-    assert_eq!(saved.revision, 7);
-    assert_eq!(saved.bot_id.as_deref(), Some("original-bot"));
+    // Content remains independent of recovery bodies. State additionally owns
+    // saved statistics, so it must reject an envelope whose integrity was lost.
+    let error = match cold(&store).await {
+        Err(error) => error,
+        Ok(_) => anyhow::bail!("State accepted a tampered statistics envelope"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("checkpoint content hash mismatch")
+    );
     assert!(checkpoint::read(&db, THREAD).await.is_err());
     assert!(store.state.writer.get().is_none());
+    // Restore only the original envelope; the bad recovery context remains.
+    // The remaining cases isolate route-head validation rather than hash failure.
+    db.execute_raw(statement(
+        "UPDATE session_checkpoint SET payload=? WHERE id=1",
+        vec![original.into()],
+    ))
+    .await?;
     let valid = serde_json::to_string(&saved)?;
     for (json, hash) in [
         (Some(valid.clone()), None),

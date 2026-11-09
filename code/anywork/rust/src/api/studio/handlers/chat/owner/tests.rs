@@ -9,9 +9,16 @@ use crate::api::studio::types::{BridgeConversationEvent, BridgeReadDemand};
 
 mod live;
 mod output_limit;
+mod state;
 
 fn managed(feed: ConversationFeed) -> Arc<ConversationOwner> {
     let owner = Arc::new(ConversationOwner::new(feed, CancellationToken::new()));
+    owner.install_lifecycle(|_| {}).unwrap();
+    owner
+}
+
+fn managed_state(feed: ConversationStateFeed) -> Arc<ConversationOwner> {
+    let owner = Arc::new(ConversationOwner::new_state(feed, CancellationToken::new()));
     owner.install_lifecycle(|_| {}).unwrap();
     owner
 }
@@ -46,9 +53,6 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
         let (sequence, before) = loop {
             let frame = receive(&mut port).await?;
             match frame.event {
-                BridgeConversationEvent::State { .. } => {
-                    owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
-                }
                 BridgeConversationEvent::Chat { batch } => {
                     ensure!(batch.placement == crate::api::studio::types::BridgeChatPlacement::Set);
                     break (
@@ -123,6 +127,7 @@ async fn paused_producer_does_not_block_original_lease_queries_or_steal_read_clo
         ensure!(facade.load_older(before.clone(), demand).await.is_err());
         ensure!(
             owner
+                .content()?
                 .reader
                 .load_older(&before, chat_demand())
                 .await
@@ -193,7 +198,11 @@ async fn cancelled_close_wait_retains_join_and_producer_failure_still_closes_rea
             }
         };
         let failed = managed(feed);
-        failed.reader.load_older(&before, chat_demand()).await?;
+        failed
+            .content()?
+            .reader
+            .load_older(&before, chat_demand())
+            .await?;
         failed.producer.lock().await.task = Some(tokio::spawn(async {
             panic!("injected producer panic");
         }));
@@ -207,6 +216,7 @@ async fn cancelled_close_wait_retains_join_and_producer_failure_still_closes_rea
             "producer failure must not skip feed cleanup"
         );
         let read_error = failed
+            .content()?
             .reader
             .load_older(&before, chat_demand())
             .await

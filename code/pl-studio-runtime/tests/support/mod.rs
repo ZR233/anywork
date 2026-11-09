@@ -5,8 +5,7 @@ use pl_model::{
     protocol::ProtocolEndpoint,
 };
 use pl_protocol::{
-    AgentWorkspaceMode, ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
-    ThreadWorkspaceMode,
+    AgentWorkspaceMode, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
@@ -105,13 +104,22 @@ async fn terminal(
     id: &str,
     input: Option<&str>,
 ) -> Result<pl_protocol::Turn> {
-    let mut subscription = runtime
-        .subscribe_thread(ThreadSubscriptionRequest {
-            thread_id: id.into(),
-        })
-        .await?;
+    // The prompt already activated the owner. Reopen on slot replacement; never activate here.
+    let mut feed = runtime.open_conversation_state_feed(id).await?;
     tokio::time::timeout(integration_test_deadline()?, async {
-        while let Some(update) = subscription.recv().await? {
+        loop {
+            let update = match feed.recv().await {
+                Ok(update) => update,
+                Err(error) if is_resync(&error) => {
+                    let _ = feed.close().await;
+                    feed = runtime.open_conversation_state_feed(id).await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let Some(update) = update else {
+                anyhow::bail!("thread stream ended without a terminal Turn");
+            };
             if let ThreadSubscriptionUpdate::Notification { notification } = update
                 && let ThreadNotification::TurnCompleted { turn } = notification.notification
                 && input.is_none_or(|input| turn.input_id.as_deref() == Some(input))
@@ -119,10 +127,15 @@ async fn terminal(
                 return Ok::<_, anyhow::Error>(turn);
             }
         }
-        anyhow::bail!("thread stream ended without a terminal Turn")
     })
     .await
     .context("terminal Turn not observed")?
+}
+
+fn is_resync(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<pl_protocol::studio::StudioError>()
+        .is_some_and(|error| error.reason() == Some("conversationResyncRequired"))
 }
 
 pub struct Environment {

@@ -119,6 +119,7 @@ impl StateReceiver {
     }
 
     /// Captures the queued observation prefix without consuming it or reserving capacity.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.receiver.len()
     }

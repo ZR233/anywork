@@ -372,6 +372,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(check_update))
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
+        .routes(routes!(sse::thread_state_events))
         .merge(crate::bots::bot_routes())
         .merge(attachment_upload)
 }

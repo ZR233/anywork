@@ -47,8 +47,8 @@ Matcher get _stale => isA<StudioFailure>().having(
   StudioFailureReason.staleContent,
 );
 
-Future<void> _baseline(TestConversationFeed feed, ThreadBusinessRefs refs) =>
-    feed.deliver(
+Future<void> _baseline(ConversationFixture fixture, ThreadBusinessRefs refs) =>
+    fixture.stateFeed().deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
@@ -58,10 +58,10 @@ Future<void> _baseline(TestConversationFeed feed, ThreadBusinessRefs refs) =>
       ),
     );
 Future<void> _update(
-  TestConversationFeed feed,
+  ConversationFixture fixture,
   int revision,
   ThreadBusinessRefs refs,
-) => feed.deliver(
+) => fixture.stateFeed().deliver(
   ConversationStateEvent(
     frame: ThreadNotificationFrame(
       threadId: 'thread',
@@ -78,7 +78,7 @@ void main() {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     final refs = _refs();
-    await _baseline(feed, refs);
+    await _baseline(fixture, refs);
     expect(fixture.session().state.businessRefs, same(refs));
     expect(fixture.session().activity.value, isNull);
     final scope = fixture.session().content.openScope(generation: 1);
@@ -118,7 +118,7 @@ void main() {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     final initial = _refs();
-    await _baseline(feed, initial);
+    await _baseline(fixture, initial);
     final scope = fixture.session().content.openScope(generation: 1);
     final plan = Completer<ContentWindow>();
     final page = Completer<CurrentCollectionPage>();
@@ -134,7 +134,7 @@ void main() {
       demand: _demand,
     );
     final rejectedPlan = expectLater(oldPlan, throwsA(_stale));
-    await _update(feed, 2, _refs(plan: 4));
+    await _update(fixture, 2, _refs(plan: 4));
     plan.complete(_window('v3'));
     page.complete(CurrentCollectionPage(revision: 1, entries: []));
     await rejectedPlan;
@@ -152,7 +152,7 @@ void main() {
       ),
       throwsA(_stale),
     );
-    await _update(feed, 3, _refs(plan: 4, interactions: 2));
+    await _update(fixture, 3, _refs(plan: 4, interactions: 2));
     secondPage.complete(CurrentCollectionPage(revision: 1, entries: []));
     await stalePage;
     expect(scope.isActive, isTrue);
@@ -164,12 +164,12 @@ void main() {
   test('B10 identical refs and activity tokens do not invalidate a Plan read; explicit old version reads stay legal', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
-    await _baseline(feed, _refs());
+    await _baseline(fixture, _refs());
     final scope = fixture.session().content.openScope(generation: 1);
     final reply = Completer<ContentWindow>();
     feed.reader.onContent = (_, _) => reply.future;
     final reading = scope.readContent(reference: _document(3), range: _range);
-    await _update(feed, 2, _refs());
+    await _update(fixture, 2, _refs());
     await feed.deliver(
       ConversationActivityEvent(
         snapshot: ActivitySnapshot(
@@ -182,7 +182,7 @@ void main() {
     );
     reply.complete(_window('v3'));
     expect(String.fromCharCodes((await reading).bytes), 'v3');
-    await _update(feed, 3, _refs(plan: 4));
+    await _update(fixture, 3, _refs(plan: 4));
     feed.reader.onContent = (reference, _) async {
       expect(reference, _document(3));
       return _window('original v3');
@@ -199,7 +199,7 @@ void main() {
   test('B10 Plan replacement closes only its original content watch and retains unrelated body watch', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
-    await _baseline(feed, _refs());
+    await _baseline(fixture, _refs());
     final scope = fixture.session().content.openScope(generation: 1);
     final planSource = StreamController<ContentWindow>();
     final bodySource = StreamController<ContentWindow>();
@@ -219,7 +219,7 @@ void main() {
     final body = scope
         .watchContent(reference: bodyRef, range: _range)
         .listen((_) {});
-    await _update(feed, 2, _refs(plan: 4));
+    await _update(fixture, 2, _refs(plan: 4));
     await ended.future;
     expect(errors.single, _stale);
     expect(planHandle.closeCalls, 1);
@@ -236,7 +236,7 @@ void main() {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     final refs = _refs();
-    await _baseline(feed, refs);
+    await _baseline(fixture, refs);
     final scope = fixture.session().content.openScope(generation: 1);
     const failure = StudioFailure(
       code: StudioFailureCode.storage,
@@ -272,7 +272,7 @@ void main() {
       final feed = TestConversationFeed();
       fixture.transport.opens.single.result.complete(feed);
       await feed.deliver(ConversationChatEvent(batch: chatSet()));
-      await _baseline(feed, _refs());
+      await _baseline(fixture, _refs());
       final scope = fixture.session().content.openScope(generation: 1);
       final gate = Completer<void>();
       consumer.onApply = (_) => gate.future;
@@ -294,9 +294,14 @@ void main() {
         scope.readContent(reference: _document(3), range: _range),
         scope.pageCurrent(reference: _interactions(1), demand: _demand),
       ]);
-      expect(feed.acknowledgements, [1, 2]);
+      expect(feed.acknowledgements, [
+        1,
+      ], reason: 'the gated Chat still owns the sole content credit');
+      expect(fixture.stateFeed().acknowledgements, [
+        1,
+      ], reason: 'the state snapshot was already ACKed independently');
       gate.complete();
-      await feed.acknowledged(3);
+      await feed.acknowledged(2);
       expect((await fixture.close()).complete, isTrue);
     },
   );
@@ -306,7 +311,7 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       final old = await fixture.open(demand: _demand);
-      await _baseline(old, _refs());
+      await _baseline(fixture, _refs());
       final content = fixture.session().content;
       final scope = content.openScope(generation: 1);
       final reply = Completer<ThreadBusinessRefs>();
@@ -322,7 +327,7 @@ void main() {
       fixture.transport.opens[1].result.complete(fresh);
       await fresh.deliver(ConversationChatEvent(batch: chatSet()));
       final current = _refs(plan: 4, interactions: 2);
-      await _baseline(fresh, current);
+      await _baseline(fixture, current);
       reply.complete(_refs(plan: 99, interactions: 99));
       await rejected;
       expect((await content.joinRetired()).complete, isTrue);
@@ -334,7 +339,7 @@ void main() {
 
   test('B12/B13 refs and collection pages do not rewrite the actionable interaction owner or storage state', () async {
     final fixture = ConversationFixture();
-    final feed = await fixture.open(demand: _demand);
+    await fixture.open(demand: _demand);
     const pending = PendingInteraction(
       id: 'question',
       threadId: 'thread',
@@ -343,7 +348,7 @@ void main() {
       title: 'question',
       body: 'original',
     );
-    await feed.deliver(
+    await fixture.stateFeed().deliver(
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
@@ -352,9 +357,9 @@ void main() {
         ),
       ),
     );
-    await _update(feed, 2, _none);
+    await _update(fixture, 2, _none);
     expect(fixture.session().state.interactions.single, same(pending));
-    await feed.deliver(
+    await fixture.stateFeed().deliver(
       ConversationStateEvent(
         frame: const ThreadNotificationFrame(
           threadId: 'thread',
@@ -377,7 +382,7 @@ void main() {
   test('B18 readBusinessRefs is an explicit read, never an automatic State repair or second writer', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
-    await _baseline(feed, _none);
+    await _baseline(fixture, _none);
     var calls = 0;
     final refs = _refs();
     feed.reader.onBusinessRefs = () async {
@@ -397,10 +402,13 @@ void main() {
       () async {
         final fixture = ConversationFixture();
         final feed = await fixture.open(demand: _demand);
-        final failed = fixture.session().content.state.waitFor(
-          (state) => state is ChatFailed<bool>,
+        final state = fixture.stateFeed();
+        final failed = fixture.session().source.waitFor(
+          (value) =>
+              value.sync.phase == DomainSyncPhase.failed &&
+              value.sync.retryExhausted,
         );
-        feed.send(
+        state.send(
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
               schemaVersion: version,
@@ -409,14 +417,22 @@ void main() {
             ),
           ),
         );
+        await failed;
         expect(
-          (await failed as ChatFailed<bool>).error,
-          isA<ProtocolVersionMismatch>()
-              .having((error) => error.field, 'field', 'threadSchemaVersion')
-              .having((error) => error.supported, 'supported', 17),
+          fixture.session().state.sync.errorMessage,
+          allOf(
+            contains('ProtocolVersionMismatch'),
+            contains('threadSchemaVersion=$version'),
+          ),
         );
         expect(fixture.session().state.businessRefs, isNull);
+        expect(state.acknowledgements, isEmpty);
         expect(feed.acknowledgements, [1]);
+        expect(
+          feed.requestCloseCalls,
+          0,
+          reason: 'a state rejection never retires the content owner',
+        );
         expect((await fixture.close()).complete, isTrue);
       },
     );

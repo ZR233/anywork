@@ -6,8 +6,7 @@ use pl_model::{
     protocol::ProtocolEndpoint,
 };
 use pl_protocol::{
-    ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-    TurnState,
+    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
     studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
@@ -132,11 +131,7 @@ impl Environment {
             ))
             .await?;
             let id = started.thread.id;
-            let mut subscription = runtime
-                .subscribe_thread(ThreadSubscriptionRequest {
-                    thread_id: id.clone(),
-                })
-                .await?;
+            let mut subscription = runtime.open_conversation_state_feed(&id).await?;
             loop {
                 let update = subscription.recv().await?.context("fixture stream ended")?;
                 let turn = match update {
@@ -169,7 +164,7 @@ impl Environment {
                     break;
                 }
             }
-            drop(subscription);
+            subscription.close().await?;
             runtime.synchronize_thread_observation(&id).await?;
             Ok(id)
         }

@@ -228,8 +228,7 @@ async fn session_tools_read_plan_and_interaction_refs_then_keep_hidden_continuat
     use pl_protocol::studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput};
     use pl_protocol::{
         AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionResolution, InteractionStatus,
-        ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate, UserInputAnswer,
-        UserInputResolution,
+        ThreadNotification, ThreadSubscriptionUpdate, UserInputAnswer, UserInputResolution,
     };
     use serde_json::json;
     use std::time::Duration;
@@ -279,12 +278,7 @@ async fn session_tools_read_plan_and_interaction_refs_then_keep_hidden_continuat
         ))
         .await?;
         let id = &started.thread.id;
-        let mut subscription = env
-            .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: id.clone(),
-            })
-            .await?;
+        let mut subscription = env.runtime.open_conversation_state_feed(id).await?;
         let pending = tokio::time::timeout(Duration::from_secs(20), async {
             while let Some(update) = subscription.recv().await? {
                 let interaction = match update {

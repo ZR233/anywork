@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatFactPosition,
-    ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, CompletedEntry,
+    ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, CompletedEntry,
     CompletionRunPosition, MainPresentation, PayloadData, ReadDemand, studio::StudioErrorCode,
 };
 

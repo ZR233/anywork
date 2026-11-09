@@ -575,7 +575,7 @@ impl EvidenceFile {
 
 impl EventWriter {
     pub fn start(
-        mut stream: pl_studio_runtime::StudioThreadSubscription,
+        mut stream: pl_studio_runtime::ConversationStateFeed,
         sink: &Evidence,
         id: &str,
         index: usize,

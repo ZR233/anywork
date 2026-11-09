@@ -1,18 +1,78 @@
 part of 'studio_api.dart';
 
 /// Mechanical typed transport only. The SDK owns continuity, reduction and ACK.
-final class FrbConversationFeed implements ConversationFeed {
+final class FrbConversationFeed extends _FrbConversationDelivery
+    implements ConversationFeed {
   FrbConversationFeed(this._native)
-    : threadId = _native.threadId(),
-      subscriptionId = _native.subscriptionId();
+    : super(_native.threadId(), _native.subscriptionId());
 
   final frb_chat.BridgeConversationFeed _native;
   @override
   late final ConversationReader reader = _FrbConversationReader(this);
   final Set<_FrbContentWatch> _contentWatches = {};
+
   @override
+  Stream<frb_chat_types.BridgeConversationFrame> _nativeEvents() =>
+      _native.events();
+  @override
+  void _nativeAcknowledge(int sequence) => _native.acknowledge(
+    subscriptionId: subscriptionId,
+    deliverySequence: BigInt.from(sequence),
+  );
+  @override
+  void _nativeRequestClose() => _native.requestClose();
+  @override
+  Future<void> _nativeClose() => _native.close();
+  @override
+  void _nativeDispose() => _native.dispose();
+  @override
+  void _requestCloseChildren() {
+    for (final watch in List.of(_contentWatches)) {
+      watch.requestClose();
+    }
+  }
+
+  @override
+  Iterable<Future<void>> _closeChildren() => [
+    for (final watch in List.of(_contentWatches)) watch.close(),
+  ];
+}
+
+final class FrbConversationStateFeed extends _FrbConversationDelivery
+    implements ConversationStateFeed {
+  FrbConversationStateFeed(this._native)
+    : super(_native.threadId(), _native.subscriptionId());
+
+  final frb_chat.BridgeConversationStateFeed _native;
+  @override
+  Stream<frb_chat_types.BridgeConversationFrame> _nativeEvents() =>
+      _native.events();
+  @override
+  void _nativeAcknowledge(int sequence) => _native.acknowledge(
+    subscriptionId: subscriptionId,
+    deliverySequence: BigInt.from(sequence),
+  );
+  @override
+  void _nativeRequestClose() => _native.requestClose();
+  @override
+  Future<void> _nativeClose() => _native.close();
+  @override
+  void _nativeDispose() => _native.dispose();
+}
+
+/// Shared transport lifetime only; no domain state or recovery is reduced here.
+abstract class _FrbConversationDelivery {
+  _FrbConversationDelivery(this.threadId, this.subscriptionId);
+
+  Stream<frb_chat_types.BridgeConversationFrame> _nativeEvents();
+  void _nativeAcknowledge(int sequence);
+  void _nativeRequestClose();
+  Future<void> _nativeClose();
+  void _nativeDispose();
+  void _requestCloseChildren() {}
+  Iterable<Future<void>> _closeChildren() => const [];
+
   final String threadId;
-  @override
   final String subscriptionId;
   _DartSubscription? _registration;
   bool get _admissionsClosed =>
@@ -34,7 +94,6 @@ final class FrbConversationFeed implements ConversationFeed {
     },
   );
 
-  @override
   Stream<ConversationFrame> get events {
     if (_admissionsClosed) throw _conversationClosedFailure;
     if (_listened) {
@@ -55,7 +114,7 @@ final class FrbConversationFeed implements ConversationFeed {
       return;
     }
     try {
-      _subscription = _native.events().listen(
+      _subscription = _nativeEvents().listen(
         (value) {
           if (_admissionsClosed) return;
           try {
@@ -114,33 +173,25 @@ final class FrbConversationFeed implements ConversationFeed {
     unawaited(_controller.close());
   }
 
-  @override
   Future<void> acknowledge(int deliverySequence) async {
     if (_admissionsClosed) throw _conversationClosedFailure;
     _validateConversationUnsigned(deliverySequence);
     await FrbStudioTransport._bridgeCall(() async {
-      _native.acknowledge(
-        subscriptionId: subscriptionId,
-        deliverySequence: BigInt.from(deliverySequence),
-      );
+      _nativeAcknowledge(deliverySequence);
     });
   }
 
-  @override
   void requestClose() {
     if (_closed) return;
     _closed = true;
-    for (final watch in List.of(_contentWatches)) {
-      watch.requestClose();
-    }
+    _requestCloseChildren();
     try {
-      _native.requestClose();
+      _nativeRequestClose();
     } catch (_) {
       /* close retains typed failure responsibility */
     }
   }
 
-  @override
   Future<void> close() {
     requestClose();
     final existing = _closing;
@@ -193,10 +244,7 @@ final class FrbConversationFeed implements ConversationFeed {
       Object? failure;
       StackTrace? failureStack;
       await Future.wait(
-        [
-          Future<void>.sync(_native.close),
-          for (final watch in List.of(_contentWatches)) watch.close(),
-        ].map(
+        [Future<void>.sync(_nativeClose), ..._closeChildren()].map(
           (task) => task.then<void>(
             (_) {},
             onError: (Object error, StackTrace stack) {
@@ -219,7 +267,7 @@ final class FrbConversationFeed implements ConversationFeed {
         Error.throwWithStackTrace(failure!, failureStack!);
       }
       if (!_disposed) {
-        _native.dispose();
+        _nativeDispose();
         _disposed = true;
       }
       if (_listened) unawaited(_controller.close());

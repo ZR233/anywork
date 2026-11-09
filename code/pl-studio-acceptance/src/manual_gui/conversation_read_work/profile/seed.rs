@@ -188,11 +188,7 @@ async fn seed_batches(
         .await?;
     let id = created.thread.id;
     inventory.thread_id = Some(id.clone());
-    let mut subscription = runtime
-        .subscribe_thread(ThreadSubscriptionRequest {
-            thread_id: id.clone(),
-        })
-        .await?;
+    let mut subscription = runtime.open_conversation_state_feed(&id).await?;
     // One State baseline belongs to this subscription, not to each seeded Turn.
     let mut saw_snapshot = false;
     let mut revision = completed(
@@ -236,7 +232,7 @@ async fn seed_batches(
 
 async fn completed(
     runtime: &StudioRuntime,
-    subscription: &mut StudioThreadSubscription,
+    subscription: &mut ConversationStateFeed,
     saw_snapshot: &mut bool,
     thread_id: &str,
     input_id: &str,
