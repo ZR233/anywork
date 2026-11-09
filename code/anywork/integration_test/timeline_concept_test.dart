@@ -695,7 +695,11 @@ final class _ConceptScene {
   Future<void> capture(String name) =>
       capturePresentation(tester, 'concept-$phase-$name.png');
 
-  Future<void> captureAccessibleVariants(String stage) async {
+  Future<void> captureAccessibleVariants(
+    String stage, {
+    required String workBlockId,
+    String? streamingAtomId,
+  }) async {
     final captures = report.putIfAbsent(
       'accessibleCaptures',
       () => <Map<String, Object?>>[],
@@ -704,8 +708,31 @@ final class _ConceptScene {
     final originalWidth = view.physicalSize.width / view.devicePixelRatio;
     final originalHeight = view.physicalSize.height / view.devicePixelRatio;
     final originalScale = textScale.value;
+    void expectPausedState() {
+      final work = observed.unit(workBlockId);
+      expect(work.summary!.total, 2);
+      expect(work.summary!.terminal, 1);
+      expect(work.summary!.running, 1);
+      expect(work.historyPos, isNull);
+      if (streamingAtomId != null) {
+        expect(work.closing, isTrue);
+        final text = observed.liveBlocks.singleWhere(
+          (block) =>
+              block.body is SingleDisplayBlock &&
+              (block.body as SingleDisplayBlock).atom.id == streamingAtomId,
+        );
+        expect(
+          (text.body as SingleDisplayBlock).atom.lifecycle,
+          isA<ActiveChatAtom>(),
+        );
+      }
+    }
+
+    expectPausedState();
     final evidence = <String, Object?>{
       'fixtureStage': stage,
+      'workBlockId': workBlockId,
+      'streamingAtomId': streamingAtomId,
       'liveBlockIds': observed.liveBlocks.map((block) => block.id).toList(),
       'liveBlocks': [
         for (final block in observed.liveBlocks)
@@ -738,6 +765,7 @@ final class _ConceptScene {
       evidence['status'] = 'not requested; no native screenshot directory';
       return;
     }
+    Object? primaryFailure;
     try {
       for (final scale in [1.0, 1.6]) {
         final name = scale == 1 ? '$stage-narrow' : '$stage-narrow-large-text';
@@ -767,12 +795,29 @@ final class _ConceptScene {
             observed.liveBlocks.map((block) => block.id),
             orderedEquals(evidence['liveBlockIds'] as List<String>),
           );
+          expectPausedState();
+          if (streamingAtomId != null) {
+            await _until(
+              tester,
+              () => _incrementGlyph(streamingAtomId, _overlapText) != null,
+              'closing Work and fully readable streaming body at $name',
+            );
+          }
           await capture(name);
           expect(tester.takeException(), isNull);
           variant['pass'] = true;
         } catch (error, stack) {
           variant['failure'] = '$error';
           variant['stack'] = '$stack';
+          // Keep the failed real layout as evidence; never shrink text or hide
+          // content to make a constrained native window look successful.
+          final failureName = '$name-failed';
+          try {
+            await capture(failureName);
+            variant['failureScreenshot'] = 'concept-$phase-$failureName.png';
+          } catch (captureError) {
+            variant['failureScreenshotError'] = '$captureError';
+          }
           rethrow;
         } finally {
           variant['observedViewport'] = {
@@ -782,6 +827,9 @@ final class _ConceptScene {
           };
         }
       }
+    } catch (error) {
+      primaryFailure = error;
+      rethrow;
     } finally {
       textScale.value = originalScale;
       try {
@@ -801,14 +849,16 @@ final class _ConceptScene {
       } catch (error, stack) {
         evidence['restoreFailure'] = '$error';
         evidence['restoreStack'] = '$stack';
-        rethrow;
+        // Preserve the layout/resize failure if restoration fails as well.
+        if (primaryFailure == null) rethrow;
       }
     }
   }
 
   // Same production glyph/ancestor-clip observation as timeline_presentation.
-  // Only glyphs inside this increment qualify; an older visible prefix cannot
-  // satisfy a later sample. This borrows layout and never opens a body query.
+  // Every non-whitespace glyph inside this unique increment must be laid out
+  // and visible, not just its shared "[" prefix or a clipped sliver. This
+  // borrows layout and never opens a body query.
   Rect? _incrementGlyph(String atomId, String increment) {
     final member = find.byWidgetPredicate(
       (widget) => widget is TimelineMemberAtom && widget.atom.id == atomId,
@@ -837,15 +887,20 @@ final class _ConceptScene {
       final text = paragraph.text.toPlainText();
       final start = text.indexOf(increment);
       if (start < 0) continue;
+      Rect? incrementBounds;
+      var fullyVisible = true;
       for (var offset = start; offset < start + increment.length; offset++) {
         if (text[offset].trim().isEmpty) continue;
-        for (final box in paragraph.getBoxesForSelection(
+        final boxes = paragraph.getBoxesForSelection(
           TextSelection(baseOffset: offset, extentOffset: offset + 1),
-        )) {
-          var visible = MatrixUtils.transformRect(
+        );
+        if (boxes.isEmpty) fullyVisible = false;
+        for (final box in boxes) {
+          final laidOut = MatrixUtils.transformRect(
             paragraph.getTransformTo(surface),
             box.toRect(),
-          ).intersect(Offset.zero & surface.size);
+          );
+          var visible = laidOut.intersect(Offset.zero & surface.size);
           RenderObject child = paragraph;
           while (!identical(child, surface)) {
             final parent = child.parent;
@@ -858,9 +913,17 @@ final class _ConceptScene {
             }
             child = parent;
           }
-          if (visible.isFinite && !visible.isEmpty) return visible;
+          if (!visible.isFinite ||
+              visible.isEmpty ||
+              visible.width + 0.5 < laidOut.width ||
+              visible.height + 0.5 < laidOut.height) {
+            fullyVisible = false;
+          }
+          incrementBounds =
+              incrementBounds?.expandToInclude(visible) ?? visible;
         }
       }
+      if (fullyVisible && incrementBounds != null) return incrementBounds;
     }
     return null;
   }
@@ -942,7 +1005,8 @@ final class _ConceptScene {
           'actual release spacing recorded per sample',
       'start': 'monotonic Stopwatch immediately before HTTP gate release',
       'stop':
-          'first observed laid-out production body glyph from the unique increment, '
+          'first observation with every non-whitespace glyph of the unique '
+          'increment laid out and fully visible in the production body, '
           'clipped by real surface and ancestor paint clips',
       'semantics':
           'test-observed upper bound including HTTP release and frame polling; '
@@ -961,7 +1025,17 @@ final class _ConceptScene {
           : 'hot-${(index - 1).toString().padLeft(2, '0')}';
       final next = 'hot-${index.toString().padLeft(2, '0')}';
       final increment = '[${index.toString().padLeft(2, '0')}]';
+      expect(_incrementGlyph(atom.id, increment), isNull);
+      expect(_hotUpdateCut(), before);
+      final sample = <String, Object?>{
+        'index': index,
+        'releasedGate': previous,
+        'increment': increment,
+        'pass': false,
+      };
+      samples.add(sample);
       final startedAtUtc = DateTime.now().toUtc().toIso8601String();
+      sample['releaseStartedAtUtc'] = startedAtUtc;
       final start = clock.elapsedMicroseconds;
       await release(previous);
       Rect? glyph;
@@ -970,13 +1044,9 @@ final class _ConceptScene {
         return glyph != null;
       }, 'increment $increment visible and laid out');
       final observedAt = clock.elapsedMicroseconds;
-      final sample = <String, Object?>{
-        'index': index,
-        'releasedGate': previous,
-        'increment': increment,
-        'releaseStartedAtUtc': startedAtUtc,
-        'observedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      sample.addAll({
         'releaseStartMicros': start,
+        'observedAtUtc': DateTime.now().toUtc().toIso8601String(),
         'releaseSpacingMicros': previousRelease == null
             ? null
             : start - previousRelease,
@@ -987,8 +1057,7 @@ final class _ConceptScene {
           'width': glyph!.width,
           'height': glyph!.height,
         },
-      };
-      samples.add(sample);
+      });
       previousRelease = start;
       // Gate reach/diagnostics happen after the measured endpoint.
       await reach(next, () => _incrementGlyph(atom.id, increment) != null);
@@ -1013,6 +1082,7 @@ final class _ConceptScene {
         (current.body as SingleDisplayBlock).atom.lifecycle,
         isA<ActiveChatAtom>(),
       );
+      sample['pass'] = true;
     }
     evidence['after'] = _hotUpdateCut();
     final values =
@@ -2902,7 +2972,7 @@ final class _ConceptScene {
       'B is readable within the still live Work',
     );
     expectLiveWork();
-    await captureAccessibleVariants('a07-b-terminal');
+    await captureAccessibleVariants('a07-b-terminal', workBlockId: work.id);
     await observed.closeWork(earlyDisplay);
     expect(earlyDisplay.atoms, isEmpty);
     expect(earlyDisplay.windows, isEmpty);
@@ -2938,7 +3008,11 @@ final class _ConceptScene {
     expectLiveWork();
     await capture('a07-late-reasoning');
     await capture('a07-closing-work-streaming-text');
-    await captureAccessibleVariants('a07-text-readable');
+    await captureAccessibleVariants(
+      'a07-text-readable',
+      workBlockId: work.id,
+      streamingAtomId: text.id,
+    );
     await release('a07-text-readable');
     await reach(
       'a07-text-terminal',

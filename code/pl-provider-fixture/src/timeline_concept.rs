@@ -352,6 +352,8 @@ impl Control {
     }
 
     fn hot_update_step(&self, step: usize) -> Step {
+        // One request, one item/content identity, and twenty independently held
+        // deltas. No done/turn boundary is sent until hot-20 is released.
         let id = "concept-hot-text";
         let mut first = vec![created("concept-hot")];
         first.extend(text_start(id, 0, HOT_UPDATE_HEAD));
@@ -541,4 +543,110 @@ pub(super) async fn release(State(state): State<AppState>, Path(name): Path<Stri
     }
     stage.release();
     StatusCode::NO_CONTENT
+}
+
+// This proves fixture pacing/identity only, not native layout or latency.
+#[cfg(test)]
+mod hot_update_wire_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    fn events(wire: &[u8]) -> Vec<Value> {
+        String::from_utf8_lossy(wire)
+            .split_inclusive("\n\n")
+            .filter(|frame| frame.ends_with("\n\n"))
+            .filter_map(|frame| frame.trim().strip_prefix("data: ").map(str::to_owned))
+            .filter(|frame| frame != "[DONE]")
+            .map(|frame| serde_json::from_str(&frame).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn hot_updates_hold_twenty_deltas_on_one_text_identity() {
+        let mut control = Control::default();
+        let first = control
+            .names
+            .iter()
+            .position(|name| *name == "hot-ready")
+            .unwrap();
+        control.names.drain(..first);
+        control.stages.drain(..first);
+        assert_eq!(control.names.len(), 21);
+        let fixture = FixtureServer::start_with_options(
+            vec![control.hot_update_step(0)],
+            FixtureOptions {
+                timeline_concept: Some(control.clone()),
+                ..FixtureOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let base = fixture.base_url();
+        let gate =
+            |name: &str| format!("{}/__timeline_concept/{name}", base.trim_end_matches("/v1"));
+        let response = client
+            .post(format!("{base}/responses"))
+            .json(&json!({
+                "model":"fixture-model", "stream":true,
+                "input":[{"role":"user","content":[{"type":"input_text","text":HOT_UPDATE_PROMPT}]}],
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.bytes_stream();
+        let mut wire = Vec::new();
+        let mut full_text = HOT_UPDATE_HEAD.to_owned();
+        for (index, name) in control.names.iter().enumerate() {
+            assert_eq!(
+                client.get(gate(name)).send().await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
+            while events(&wire).len() < 3 + index {
+                let chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                    .await
+                    .expect("held hot update was not emitted")
+                    .expect("text ended before its gate")
+                    .unwrap();
+                wire.extend_from_slice(&chunk);
+            }
+            let observed = events(&wire);
+            assert_eq!(observed.len(), 3 + index);
+            assert_eq!(observed[1]["item"]["id"], "concept-hot-text");
+            let delta = &observed[2 + index];
+            assert_eq!(delta["type"], "response.output_text.delta");
+            assert_eq!(delta["item_id"], "concept-hot-text");
+            assert_eq!(delta["output_index"], 0);
+            assert_eq!(delta["content_index"], 0);
+            if index == 0 {
+                assert_eq!(delta["delta"], HOT_UPDATE_HEAD);
+            } else {
+                let expected = format!(" [{index:02}]");
+                assert_eq!(delta["delta"], expected);
+                full_text.push_str(&expected);
+            }
+            assert_eq!(
+                client.post(gate(name)).send().await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("released hot update did not finish")
+        {
+            wire.extend_from_slice(&chunk.unwrap());
+        }
+        let observed = events(&wire);
+        assert_eq!(observed.len(), 25);
+        assert_eq!(observed[23], text_done("concept-hot-text", 0, &full_text));
+        assert_eq!(observed[24]["type"], "response.completed");
+        let requests = fixture.finish().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].accepted);
+    }
 }

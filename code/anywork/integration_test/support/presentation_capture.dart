@@ -24,6 +24,12 @@ Future<Map<String, Object?>> configurePresentationWindow(
   double logicalWidth = 1440,
   double logicalHeight = 1000,
 }) async {
+  if (!logicalWidth.isFinite ||
+      !logicalHeight.isFinite ||
+      logicalWidth <= 0 ||
+      logicalHeight <= 0) {
+    throw ArgumentError('Presentation viewport must be finite and positive');
+  }
   final view = tester.view;
   WindowResizeResult? resized;
   if (Platform.environment.containsKey(_environment)) {
@@ -82,6 +88,10 @@ Future<Map<String, Object?>> configurePresentationWindow(
     }
   }
   return {
+    'guiPid': pid,
+    'platform': Platform.operatingSystem,
+    'resizeMethod': 'PID-bound resizeOwnedWindow; no test-view metric override',
+    'nativeResizeRequested': Platform.environment.containsKey(_environment),
     'requestedLogicalWidth': logicalWidth,
     'requestedLogicalHeight': logicalHeight,
     'width': view.physicalSize.width / view.devicePixelRatio,
