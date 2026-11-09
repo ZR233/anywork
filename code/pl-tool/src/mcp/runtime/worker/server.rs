@@ -182,11 +182,8 @@ pub(super) fn assign_tool_descriptors(servers: &mut BTreeMap<String, RuntimeServ
             .map(|definition| {
                 let annotations = serialize_optional(&definition.annotations);
                 let safety_hints = McpToolSafetyHints::parse(annotations.as_ref());
-                // server 配置显式声明的 effect 优先；否则只有 readOnlyHint=true
-                // 推导为 Read。destructiveHint 不映射写 effect，保持保守 None。
-                let effect = server.tool_effect.or({
-                    (safety_hints.read_only_hint == Some(true)).then_some(ToolEffect::Read)
-                });
+                // Remote display hints never grant local read/programmatic privileges.
+                let effect = server.tool_effect;
                 McpRuntimeToolDescriptor {
                     server_id: server.descriptor.id.clone(),
                     raw_name: definition.name.to_string(),

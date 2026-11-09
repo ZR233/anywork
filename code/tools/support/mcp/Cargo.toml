@@ -1,0 +1,13 @@
+[package]
+name = "pl-tool-mcp-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-agent-tool = { workspace = true }
+pl-tool-media = { workspace = true }
+pl-output = { workspace = true }
+rmcp = { workspace = true, features = ["client"] }
+base64 = { workspace = true }
+serde_json = { workspace = true }

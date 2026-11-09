@@ -4267,12 +4267,21 @@ dependencies = [
  "pl-tool-delete-path",
  "pl-tool-exec",
  "pl-tool-filesystem",
+ "pl-tool-generate-image",
+ "pl-tool-list-mcp-resource-templates",
+ "pl-tool-list-mcp-resources",
  "pl-tool-lsp-capabilities",
  "pl-tool-lsp-query",
  "pl-tool-lsp-support",
+ "pl-tool-mcp",
+ "pl-tool-mcp-support",
+ "pl-tool-media",
  "pl-tool-move-path",
  "pl-tool-process",
+ "pl-tool-read-mcp-resource",
+ "pl-tool-show-image",
  "pl-tool-stat-path",
+ "pl-tool-view-image",
  "pl-tool-write-file",
  "pl-tool-write-stdin",
  "process-wrap",
@@ -4353,6 +4362,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-generate-image"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pl-agent-tool",
+ "pl-tool-media",
+ "pl-tool-show-image",
+ "pl-tool-view-image",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "pl-tool-list-mcp-resource-templates"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-mcp-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-list-mcp-resources"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-mcp-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
 name = "pl-tool-lsp-capabilities"
 version = "0.1.0"
 dependencies = [
@@ -4386,6 +4431,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-mcp"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-mcp-support",
+ "pl-tool-media",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-tool-mcp-support"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "pl-agent-tool",
+ "pl-output",
+ "pl-tool-media",
+ "rmcp",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-tool-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "pl-tool-move-path"
 version = "0.1.0"
 dependencies = [
@@ -4406,12 +4484,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-read-mcp-resource"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-mcp-support",
+ "pl-tool-media",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-show-image"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pl-tool-stat-path"
 version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
  "pl-tool-filesystem",
  "serde",
+]
+
+[[package]]
+name = "pl-tool-view-image"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pl-agent-tool",
+ "pl-tool-media",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

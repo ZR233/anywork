@@ -14,7 +14,7 @@ pub fn write_python_mcp_server(
     path
 }
 
-pub const STDIO_MCP_SCRIPT: &str = r#"import json, os, signal, sys, time
+pub const STDIO_MCP_SCRIPT: &str = r##"import json, os, signal, sys, time
 
 pid_file = os.environ.get("MCP_PID_FILE")
 if pid_file:
@@ -53,6 +53,9 @@ for raw in sys.stdin:
     msg = json.loads(line)
     method = msg.get("method")
     msg_id = msg.get("id")
+    if os.environ.get("MCP_REQUEST_LOG"):
+        with open(os.environ["MCP_REQUEST_LOG"], "a") as log:
+            log.write(json.dumps({"method": method, "params": msg.get("params"), "tag": os.environ.get("MCP_SCHEMA_TAG")}) + "\n")
     if method == "server/discover":
         resp = {
             "jsonrpc": "2.0",
@@ -69,7 +72,7 @@ for raw in sys.stdin:
             "id": msg_id,
             "result": {
                 "protocolVersion": "2025-11-25",
-                "capabilities": {"tools": {}, "resources": {}},
+                "capabilities": {"tools": {}, **({} if os.environ.get("MCP_NO_RESOURCES") == "1" else {"resources": {}})},
                 "serverInfo": {"name": "test-stdio", "version": "1.0.0"}
             }
         }
@@ -81,9 +84,11 @@ for raw in sys.stdin:
         schema = {"type": "object", "properties": {}}
         if os.environ.get("MCP_BINDING_RESULTS") == "1":
             schema = {
-                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "description": os.environ["MCP_SCHEMA_TAG"],
-                "properties": {"mode": {"type": "string"}}
+                "$defs": {"Mode": {"type": "string", "enum": ["success", "error", "unarchived"]}},
+                "allOf": [{"type": "object", "properties": {"mode": {"$ref": "#/$defs/Mode"}}, "required": ["mode"]}],
+                "unevaluatedProperties": False
             }
         resp = {
             "jsonrpc": "2.0",
@@ -93,6 +98,7 @@ for raw in sys.stdin:
                     "name": "inspect_env",
                     "description": "Returns argv, cwd, and env",
                     "inputSchema": schema,
+                    "annotations": {"readOnlyHint": True},
                     **({"outputSchema": {"type": "object", "additionalProperties": True}}
                        if os.environ.get("MCP_BINDING_RESULTS") == "1" else {})
                 }]
@@ -127,6 +133,11 @@ for raw in sys.stdin:
             resp["result"] = {"content": content, "isError": mode == "error"}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+    elif method in ("resources/list", "resources/templates/list"):
+        key = "resources" if method == "resources/list" else "resourceTemplates"
+        resp = {"jsonrpc": "2.0", "id": msg_id, "result": {key: []}}
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
     elif method == "resources/read":
         if hang_call_ms > 0:
             time.sleep(hang_call_ms / 1000.0)
@@ -134,7 +145,11 @@ for raw in sys.stdin:
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {
-                "contents": [{"uri": "test://doc", "text": "hello"}]
+                "contents": [
+                    {"uri": "test://doc", "mimeType": "application/octet-stream", "blob": "Ynl0ZXM="}
+                    if msg.get("params", {}).get("uri") == "test://blob"
+                    else {"uri": "test://doc", "text": "hello"}
+                ]
             }
         }
         sys.stdout.write(json.dumps(resp) + "\n")
@@ -146,7 +161,7 @@ if term_release_marker:
     while time.monotonic() < deadline:
         time.sleep(0.025)
     sys.exit("stdin closed without SIGTERM")
-"#;
+"##;
 
 pub fn stdio_effective_config(
     id: &str,

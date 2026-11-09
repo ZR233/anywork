@@ -1,5 +1,6 @@
-//! One Thread-local display tool selecting an image this Thread already archived.
-use super::{IMAGE_CARD_FORMAT, IMAGE_CARD_VERSION, TOOL_SHOW_IMAGE};
+//! Host-authorized archive candidates and unchanged image-card history receipts.
+use super::{IMAGE_CARD_FORMAT, IMAGE_CARD_VERSION};
+use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, ContextRecord, OpaquePayload, ResourceReference},
     tool::{
@@ -8,47 +9,16 @@ use pl_core::{
     },
 };
 use pl_protocol::AttachmentModality;
+pub use pl_tool_show_image::Input as ShowImageInput;
 
-/// Longest caption retained after trimming; the card never shows a longer text.
-const MAX_CAPTION_CHARS: usize = 240;
-
-const DESCRIPTION: &str = "Display one image this thread already archived as a timeline image \
-card. Pass an optional short caption; the image is chosen from archived thread attachments. This \
-does not read workspace files, fetch remote URLs or add new image bytes.";
-
-/// Fixed model-visible note describing the delivered card, without image bytes or paths.
-const CARD_NOTE: &str = "An image card was added to the timeline.";
-
-/// Request parameters for one image card display.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShowImageInput {
-    /// Optional card text, trimmed; an empty text or omission shows no caption (<= 240 chars).
-    pub caption: Option<String>,
-    /// Optional identity of one archived image; omitted displays the newest archived image.
-    pub image_id: Option<String>,
-}
-
-/// Tool-owned receipt binding the displayed attachment to its bounded caption.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageCardReceipt {
-    /// Thread-owned archive reference the card displays; the tool adds no second media source.
-    pub image: pl_core::context::ResourceReference,
-    /// Trimmed display text, absent when the caller supplied none.
+    pub image: ResourceReference,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
 }
 
-/// Decodes the tool-owned receipt, or returns `None` for another producer's payload.
-///
-/// Owning the format means every version of it must be understood: a payload that claims
-/// `IMAGE_CARD_FORMAT` but an unknown version is rejected instead of being silently skipped, so
-/// an unreadable card never degrades into a guessed projection.
-///
-/// # Errors
-/// Rejects an unsupported receipt version, malformed receipt content, or invalid retained
-/// reference metadata.
 pub fn saved_image_card_receipt(
     payload: &OpaquePayload,
 ) -> Result<Option<ImageCardReceipt>, ToolError> {
@@ -58,7 +28,7 @@ pub fn saved_image_card_receipt(
     if payload.version() != IMAGE_CARD_VERSION {
         return Err(ToolError::new(std::io::Error::other(format!(
             "unsupported {IMAGE_CARD_FORMAT} receipt version {}",
-            payload.version()
+            payload.version(),
         ))));
     }
     let receipt: ImageCardReceipt =
@@ -67,79 +37,67 @@ pub fn saved_image_card_receipt(
     Ok(Some(receipt))
 }
 
-/// A role-free display tool: it owns no media host, backend or workspace binding.
 #[derive(Debug, Default)]
 pub struct ThreadShowImageTool;
-
 impl ThreadShowImageTool {
-    /// Creates the tool; display input and archived facts come from the executed call alone.
     pub fn new() -> Self {
         Self
     }
-
-    /// Stable declaration, independent of conversation state and observed results.
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
-        thread_show_image_tool_definition()
+        pl_agent_tool::ToolDefinition::json(
+            pl_tool_show_image::NAME,
+            pl_tool_show_image::DESCRIPTION,
+            pl_agent_tool::typed::input_schema_for::<ShowImageInput>(),
+        )
+        .expect("static tool definition")
     }
 }
 
-impl pl_agent_tool::typed::TypedTool for ThreadShowImageTool {
-    const NAME: &'static str = THREAD_SHOW_IMAGE_TOOL_NAME;
-    const DESCRIPTION: &'static str = THREAD_SHOW_IMAGE_TOOL_DESCRIPTION;
+impl TypedTool for ThreadShowImageTool {
+    const NAME: &'static str = pl_tool_show_image::NAME;
+    const DESCRIPTION: &'static str = pl_tool_show_image::DESCRIPTION;
     type Args = ShowImageInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
 
     async fn execute(
         &self,
         input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let caption = input
-            .caption
-            .as_deref()
-            .map(str::trim)
-            .filter(|caption| !caption.is_empty())
-            .map(str::to_owned);
-        if caption
-            .as_ref()
-            .is_some_and(|caption| caption.chars().count() > MAX_CAPTION_CHARS)
-        {
-            return Err(failure("image card caption exceeds 240 characters"));
-        }
-        let image_id = input.image_id;
-        let image = match archived_image(&context.context.records, image_id.as_deref()) {
-            Some(image) => image,
-            None if image_id.is_some() => {
-                return Err(failure("archived image id not found in this thread"));
-            }
-            None => return Err(failure("no archived image in this thread")),
-        };
+        let candidates = archived_images(&context.context.records);
+        let output = pl_tool_show_image::ShowImage::default()
+            .execute(input, candidates)
+            .await
+            .map_err(ToolError::new)?;
         let payload = OpaquePayload::new(
             IMAGE_CARD_FORMAT,
             IMAGE_CARD_VERSION,
-            serde_json::to_string(&ImageCardReceipt { image, caption }).map_err(ToolError::new)?,
+            serde_json::to_string(&ImageCardReceipt {
+                image: output.image,
+                caption: output.caption,
+            })
+            .map_err(ToolError::new)?,
         )
         .map_err(ToolError::new)?;
         Ok(ToolOutput::new(
             payload,
             vec![ContextContent::Text {
-                text: CARD_NOTE.into(),
+                text: pl_tool_show_image::CARD_NOTE.into(),
             }],
         ))
     }
 }
 
-/// Returns the archived image reference the card displays, scanning newest content first.
-///
-/// An opaque entry contributes only when it decodes as the model attachment projection with an
-/// image modality; another producer's opaque payload is skipped instead of failing the call. A
-/// resource entry contributes only an `image/*` reference. A requested identity filters out every
-/// other archived image, so a stale identity never silently displays a different image.
-fn archived_image(records: &[ContextRecord], image_id: Option<&str>) -> Option<ResourceReference> {
-    for record in records.iter().rev() {
-        for content in record.content.iter().rev() {
+fn archived_images(
+    records: &[ContextRecord],
+) -> Vec<pl_tool_show_image::ArchivedImage<ResourceReference>> {
+    records
+        .iter()
+        .rev()
+        .flat_map(|record| record.content.iter().rev())
+        .filter_map(|content| {
             let reference = match content {
                 ContextContent::Opaque { payload } => {
                     match pl_model::runtime::decode_attachment(payload) {
@@ -151,39 +109,17 @@ fn archived_image(records: &[ContextRecord], image_id: Option<&str>) -> Option<R
                         _ => None,
                     }
                 }
-                ContextContent::Resource { reference } => {
-                    if reference.media_type().starts_with("image/") {
-                        Some(reference.clone())
-                    } else {
-                        None
-                    }
+                ContextContent::Resource { reference }
+                    if reference.media_type().starts_with("image/") =>
+                {
+                    Some(reference.clone())
                 }
-                ContextContent::Text { .. } => None,
-            };
-            let Some(reference) = reference else {
-                continue;
-            };
-            if image_id.is_some_and(|image_id| reference.id() != image_id) {
-                continue;
-            }
-            return Some(reference);
-        }
-    }
-    None
+                _ => None,
+            }?;
+            Some(pl_tool_show_image::ArchivedImage {
+                id: reference.id().to_owned(),
+                image: reference,
+            })
+        })
+        .collect()
 }
-
-fn failure(message: &str) -> ToolError {
-    ToolError::new(crate::tool_error(TOOL_SHOW_IMAGE, message))
-}
-
-pub fn thread_show_image_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_agent_tool::ToolDefinition::json(
-        THREAD_SHOW_IMAGE_TOOL_NAME,
-        THREAD_SHOW_IMAGE_TOOL_DESCRIPTION,
-        pl_agent_tool::typed::input_schema_for::<ShowImageInput>(),
-    )
-    .expect("static tool definition")
-}
-
-const THREAD_SHOW_IMAGE_TOOL_NAME: &str = TOOL_SHOW_IMAGE;
-const THREAD_SHOW_IMAGE_TOOL_DESCRIPTION: &str = DESCRIPTION;

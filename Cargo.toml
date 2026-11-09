@@ -28,6 +28,15 @@ members = [
     "code/tools/lsp-query",
     "code/tools/support/process",
     "code/tools/support/lsp",
+    "code/tools/support/media",
+    "code/tools/support/mcp",
+    "code/tools/mcp",
+    "code/tools/list-mcp-resources",
+    "code/tools/list-mcp-resource-templates",
+    "code/tools/read-mcp-resource",
+    "code/tools/view-image",
+    "code/tools/generate-image",
+    "code/tools/show-image",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -182,6 +191,15 @@ pl-tool-lsp-capabilities = { path = "code/tools/lsp-capabilities" }
 pl-tool-lsp-query = { path = "code/tools/lsp-query" }
 pl-tool-process = { path = "code/tools/support/process" }
 pl-tool-lsp-support = { path = "code/tools/support/lsp" }
+pl-tool-media = { path = "code/tools/support/media" }
+pl-tool-mcp-support = { path = "code/tools/support/mcp" }
+pl-tool-mcp = { path = "code/tools/mcp" }
+pl-tool-list-mcp-resources = { path = "code/tools/list-mcp-resources" }
+pl-tool-list-mcp-resource-templates = { path = "code/tools/list-mcp-resource-templates" }
+pl-tool-read-mcp-resource = { path = "code/tools/read-mcp-resource" }
+pl-tool-view-image = { path = "code/tools/view-image" }
+pl-tool-generate-image = { path = "code/tools/generate-image" }
+pl-tool-show-image = { path = "code/tools/show-image" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
