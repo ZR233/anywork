@@ -6,6 +6,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_vie
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
@@ -1151,23 +1153,137 @@ final class TimelineObservation {
     expect(rendered.tool?.callId, atom.tool?.callId);
     if (atom.kind == ChatAtomKind.reasoning ||
         atom.kind == ChatAtomKind.toolCall) {
-      final header = find
-          .descendant(
-            of: row,
-            matching: find.byWidgetPredicate(
-              (widget) => widget is TimelineActivityRow && widget.expandable,
-            ),
-          )
-          .first;
-      await until(
-        () => header.evaluate().isNotEmpty,
-        'readable member disclosure ${atom.id}',
-      );
-      if (!tester.widget<TimelineActivityRow>(header).expanded) {
-        await tap(timelineGroupTitleFinder(tester, header));
-      }
+      await ensureMemberReadable(row, atom);
     }
     return display;
+  }
+
+  Future<void> ensureMemberReadable(
+    Finder row,
+    ChatAtom atom, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (atom.kind == ChatAtomKind.toolCall) {
+      await expandMemberDisclosure(row, atom.id, timeout: timeout);
+      return;
+    }
+    expect(atom.kind, ChatAtomKind.reasoning);
+    expect(
+      atom.contents,
+      isNotEmpty,
+      reason: 'Reasoning readability requires producer-declared content',
+    );
+    expect(
+      atom.contents.every(
+        (content) =>
+            content.role == ChatContentRole.body ||
+            content.role == ChatContentRole.reasoningSummary,
+      ),
+      isTrue,
+      reason: 'Unsupported reasoning content roles must not guess a renderer',
+    );
+    if (atom.contents.any((content) => content.role == ChatContentRole.body)) {
+      await expandMemberDisclosure(row, atom.id, timeout: timeout);
+      return;
+    }
+
+    final reasoning = find.descendant(
+      of: row,
+      matching: find.byType(TimelineReasoningView),
+    );
+    await until(
+      () {
+        if (reasoning.evaluate().isEmpty) return false;
+        expect(reasoning, findsOneWidget);
+        expect(tester.widget<TimelineReasoningView>(reasoning).body, isNull);
+        final header = find.descendant(
+          of: reasoning,
+          matching: find.byType(TimelineActivityRow),
+        );
+        expect(header, findsOneWidget);
+        expect(tester.widget<TimelineActivityRow>(header).expandable, isFalse);
+        expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
+        // A summary read error may itself be displayed as summary text. Borrow
+        // existing window diagnostics so it cannot satisfy the visibility gate.
+        final observations = <TimelineCurrentWindowDisplay>[
+          for (final element in row.evaluate())
+            if (element is StatefulElement &&
+                element.state is TimelineMemberDisplay)
+              ...(element.state as TimelineMemberDisplay).windows,
+          for (final element
+              in find
+                  .descendant(
+                    of: reasoning,
+                    matching: find.byType(TimelineContentRangeConnector),
+                  )
+                  .evaluate())
+            (element as StatefulElement).state as TimelineCurrentWindowDisplay,
+        ];
+        for (final observation in observations) {
+          expect(
+            atom.contents.any(
+              (content) => content.reference == observation.reference,
+            ),
+            isTrue,
+          );
+          expect(observation.error, isNull);
+          if (observation.window == null || observation.window!.bytes.isEmpty) {
+            return false;
+          }
+        }
+        final summaries = find.descendant(
+          of: reasoning,
+          matching: find.byType(TimelineReasoningSummary),
+        );
+        if (summaries.evaluate().isEmpty ||
+            tester
+                .widgetList<TimelineReasoningSummary>(summaries)
+                .any((summary) => summary.text.trim().isEmpty)) {
+          return false;
+        }
+        return find
+            .descendant(
+              of: summaries,
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is RichText &&
+                    widget.text.toPlainText().trim().isNotEmpty,
+              ),
+            )
+            .hitTestable()
+            .evaluate()
+            .isNotEmpty;
+      },
+      'visible summary-only reasoning ${atom.id}',
+      timeout: timeout,
+    );
+  }
+
+  Future<void> expandMemberDisclosure(
+    Finder row,
+    String memberId, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() => timeout - clock.elapsed;
+    // A Deferred member is mounted before its canonical renderer is ready.
+    // Evaluate the candidates, not .first, while there may be no header yet.
+    final candidates = find.descendant(
+      of: row,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is TimelineActivityRow && widget.expandable,
+      ),
+    );
+    await until(
+      () => candidates.evaluate().isNotEmpty,
+      'readable member disclosure $memberId',
+      timeout: remaining(),
+    );
+    final header = candidates.first;
+    if (!tester.widget<TimelineActivityRow>(header).expanded) {
+      await tap(timelineGroupTitleFinder(tester, header), timeout: remaining());
+    }
+    expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
   }
 
   Future<void> closeWork(TimelineGroupDisplay display) async {
