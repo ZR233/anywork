@@ -72,12 +72,37 @@ mod tests {
             let calls = self
                 .0
                 .pop_front()
-                .map(|(name, input)| ModelToolCall {
-                    call_id: request.attempt_id.clone(),
-                    tool_id: name.into(),
-                    arguments: OpaquePayload::new("application/json", 1, input).unwrap(),
-                    rejection: None,
-                    presentation_contract: None,
+                .map(|(name, input)| {
+                    let mut input: serde_json::Value = serde_json::from_str(input).unwrap();
+                    if name == "show_files" {
+                        // Select the actual normalized attachment from the preceding delivery,
+                        // not a guessed resource identity or the removed implicit image selector.
+                        let attachment = request
+                            .context
+                            .records
+                            .iter()
+                            .rev()
+                            .flat_map(|record| record.content.iter().rev())
+                            .find_map(|content| match content {
+                                ContextContent::Opaque { payload } => {
+                                    pl_model::runtime::decode_attachment(payload).unwrap()
+                                }
+                                _ => None,
+                            })
+                            .expect("view_image delivered a normalized attachment");
+                        input["files"] = serde_json::json!([{
+                            "kind": "attachment",
+                            "attachmentId": attachment.reference.id(),
+                        }]);
+                    }
+                    ModelToolCall {
+                        call_id: request.attempt_id.clone(),
+                        tool_id: name.into(),
+                        arguments: OpaquePayload::new("application/json", 1, input.to_string())
+                            .unwrap(),
+                        rejection: None,
+                        presentation_contract: None,
+                    }
                 })
                 .into_iter()
                 .collect();
@@ -134,15 +159,16 @@ mod tests {
         let view = prepare_native_tool::<pl_tool::image::ThreadViewImageTool<_, MediaHost>>()?;
         let view_registration =
             prepare_registration("view_image", view.definition(), ToolCallPolicy::DirectOnly)?;
-        let view = view_registration.attach(ToolHandle::new(
-            view.attach(pl_tool::image::ThreadViewImageTool::new(backend, host)),
-        ));
-        let show = prepare_native_tool::<pl_tool::image_card::ThreadShowImageTool>()?;
+        let view = view_registration.attach(ToolHandle::new(view.attach(
+            pl_tool::image::ThreadViewImageTool::new(backend.clone(), host.clone()),
+        )));
+        let show =
+            prepare_native_tool::<pl_tool::file_display::ThreadShowFilesTool<_, MediaHost>>()?;
         let show_registration =
-            prepare_registration("show_image", show.definition(), ToolCallPolicy::DirectOnly)?;
-        let show = show_registration.attach(ToolHandle::new(
-            show.attach(pl_tool::image_card::ThreadShowImageTool::new()),
-        ));
+            prepare_registration("show_files", show.definition(), ToolCallPolicy::DirectOnly)?;
+        let show = show_registration.attach(ToolHandle::new(show.attach(
+            pl_tool::file_display::ThreadShowFilesTool::new(backend, host),
+        )));
         let options = SqliteSessionOptions {
             path: root.path().join("history.sqlite"),
         };
@@ -152,7 +178,7 @@ mod tests {
             DynModelSession::new(MediaCalls(
                 [
                     ("view_image", r#"{"path":"capture.png"}"#),
-                    ("show_image", r#"{"caption":"  delivered  "}"#),
+                    ("show_files", r#"{"caption":"  delivered  "}"#),
                 ]
                 .into(),
             )),
@@ -226,15 +252,22 @@ mod tests {
         assert_eq!((variant.width(), variant.height()), (4, 2));
         let shown = deliveries
             .iter()
-            .find(|delivery| delivery.tool_id == "show_image")
+            .find(|delivery| delivery.tool_id == "show_files")
             .unwrap();
-        let card = pl_tool::image_card::saved_image_card_receipt(shown.output.payload())?.unwrap();
-        assert_eq!(card.image, attachment.reference);
-        assert_eq!(card.caption.as_deref(), Some("delivered"));
+        let display =
+            pl_tool::file_display::saved_file_display_receipt(shown.output.payload())?.unwrap();
+        assert_eq!(display.files.len(), 1);
         assert!(
-            matches!(shown.delivered_context.as_slice(), [ContextContent::Text { text }]
-            if text.as_ref() == "An image card was added to the timeline.")
+            matches!(&display.files[0], pl_tool::file_display::FileDisplayResult::Ready {
+            resource, modality: pl_protocol::AttachmentModality::Image,
+            origin: pl_tool::file_display::FileDisplayOrigin::Archive, ..
+        } if resource == &attachment.reference)
         );
+        assert_eq!(display.caption.as_deref(), Some("delivered"));
+        assert!(matches!(shown.delivered_context.as_slice(), [
+                ContextContent::Text { text }, ContextContent::Resource { reference }
+            ] if text.as_ref() == "File display archived: 1 ready, 0 failed."
+                && reference == &attachment.reference));
         history.shutdown().await.unwrap();
         Ok(())
     }

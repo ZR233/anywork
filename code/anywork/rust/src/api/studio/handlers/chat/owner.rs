@@ -42,7 +42,7 @@ pub(super) struct ContentCapabilities {
 
 pub(super) enum NativeFeed {
     Content(ConversationFeed),
-    State(ConversationStateFeed),
+    State(Box<ConversationStateFeed>),
 }
 
 impl NativeFeed {
@@ -132,7 +132,7 @@ impl ConversationOwner {
         Self::with_native(
             feed.thread_id().to_owned(),
             feed.subscription_id().to_owned(),
-            NativeFeed::State(feed),
+            NativeFeed::State(Box::new(feed)),
             None,
             cancel,
         )
