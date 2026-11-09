@@ -11,6 +11,74 @@ import '../state/completion_run_presentation.dart';
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
 abstract final class TimelinePreviewFixtures {
+  static final longUserInput =
+      '# 用户长输入\n\n'
+      '**待发送与正式正文使用相同呈现。**\n\n'
+      '- 可选择复制正文\n'
+      '- 根据窗口宽度自然换行\n\n'
+      '${'这是一段没有人为换行的中文用户输入，用于检查长正文在窄窗口中的完整呈现。' * 70}\n\n'
+      '末尾内容保持可读。';
+
+  static const userBodyReference = ContentRef(
+    databaseId: 'preview',
+    target: BodyContentTarget(
+      owner: ItemContentOwner(itemId: 'preview-user-deferred'),
+      key: 'body',
+    ),
+  );
+
+  static final deferredUserInput = ChatItemPresentation.forUnit(
+    TimelineDisplayUnit(
+      entry: CompletedEntry(
+        recordId: 'preview-user-deferred',
+        completionSeq: 1,
+        run: null,
+        mainPresentation: MainPresentation.single,
+        atom: ChatAtom(
+          id: 'preview-user-deferred',
+          source: const InputChatSource(inputId: 'preview-input'),
+          sourceOrder: 1,
+          kind: ChatAtomKind.input,
+          delivery: ChatDeliveryKind.foreground,
+          lifecycle: const TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: ChatTerminalOutcome.completed,
+          ),
+          contents: const [
+            ChatAtomContent(
+              role: ChatContentRole.body,
+              reference: userBodyReference,
+            ),
+          ],
+          payload: const DeferredPayload(
+            reference: ContentRef(
+              databaseId: 'preview',
+              target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
+            ),
+            byteLength: 90000,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  static ComposerSubmission longUserSubmission(ComposerSubmissionPhase phase) =>
+      ComposerSubmission(
+        inputId: 'preview-input',
+        text: longUserInput,
+        attachments: const [
+          AttachmentDraftView(
+            id: 'preview-draft',
+            modality: AttachmentModalityView.file,
+            mediaType: 'text/plain',
+            filename: '用户输入附件.txt',
+            byteSize: 120,
+          ),
+        ],
+        phase: phase,
+      );
+
   static Map<String, Object?> body(String key, String text) => {
     'key': key,
     'byteLength': utf8.encode(text).length,

@@ -441,6 +441,7 @@ class _TimelineViewState extends State<TimelineView> {
                                                         in widget.submissions)
                                                       _ComposerSubmissionCard(
                                                         submission: submission,
+                                                        bodyBuilder: _body,
                                                       ),
                                                   ],
                                                 ),
@@ -605,9 +606,13 @@ class _TimelineViewState extends State<TimelineView> {
 }
 
 class _ComposerSubmissionCard extends StatelessWidget {
-  const _ComposerSubmissionCard({required this.submission});
+  const _ComposerSubmissionCard({
+    required this.submission,
+    required this.bodyBuilder,
+  });
 
   final ComposerSubmission submission;
+  final Widget Function(String id, String text) bodyBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -635,35 +640,45 @@ class _ComposerSubmissionCard extends StatelessWidget {
             if (submission.text.isNotEmpty)
               Align(
                 alignment: AlignmentDirectional.centerStart,
-                child: Text(submission.text),
+                child: bodyBuilder(
+                  'composer-submission:${submission.inputId}:body',
+                  submission.text,
+                ),
               ),
             for (final attachment in submission.attachments)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (attachment.previewBytes != null)
-                      Padding(
-                        padding: const EdgeInsetsDirectional.only(end: 8),
-                        child: Image.memory(
-                          attachment.previewBytes!,
-                          width: 36,
-                          height: 36,
-                          fit: BoxFit.cover,
+              SelectionContainer.disabled(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (attachment.previewBytes != null)
+                        Padding(
+                          padding: const EdgeInsetsDirectional.only(end: 8),
+                          child: Image.memory(
+                            attachment.previewBytes!,
+                            width: 36,
+                            height: 36,
+                            fit: BoxFit.cover,
+                          ),
+                        )
+                      else
+                        const Padding(
+                          padding: EdgeInsetsDirectional.only(end: 8),
+                          child: Icon(Icons.attach_file, size: 18),
                         ),
-                      )
-                    else
-                      const Padding(
-                        padding: EdgeInsetsDirectional.only(end: 8),
-                        child: Icon(Icons.attach_file, size: 18),
-                      ),
-                    Flexible(child: Text(attachment.filename)),
-                  ],
+                      Flexible(child: Text(attachment.filename)),
+                    ],
+                  ),
                 ),
               ),
             const SizedBox(height: 4),
-            Text(status, style: Theme.of(context).textTheme.labelSmall),
+            SelectionContainer.disabled(
+              child: Text(
+                status,
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
           ],
         ),
       ),
@@ -672,17 +687,27 @@ class _ComposerSubmissionCard extends StatelessWidget {
 }
 
 class ComposerSubmissionList extends StatelessWidget {
-  const ComposerSubmissionList({super.key, required this.submissions});
+  const ComposerSubmissionList({
+    super.key,
+    required this.submissions,
+    required this.bodyBuilder,
+  });
 
   final List<ComposerSubmission> submissions;
+  final Widget Function(String id, String text) bodyBuilder;
 
   @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      for (final submission in submissions)
-        _ComposerSubmissionCard(submission: submission),
-    ],
+  Widget build(BuildContext context) => SelectionArea(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final submission in submissions)
+          _ComposerSubmissionCard(
+            submission: submission,
+            bodyBuilder: bodyBuilder,
+          ),
+      ],
+    ),
   );
 }
 
