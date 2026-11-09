@@ -31,6 +31,8 @@ pub use scanning::{
 };
 pub use selection::{SkillSelection, SkillSelectionRequest, SkillSelector};
 
+pub(crate) use pl_tool_skill_support::is_main_skill_path;
+
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const USAGE_FILE_NAME: &str = ".usage.json";
 const MAX_SKILL_SCAN_DEPTH: usize = 5;
@@ -128,29 +130,11 @@ pub struct SkillUsage {
     pub pinned: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct SkillFrontmatter {
-    name: String,
-    description: String,
-    #[serde(default)]
-    category: Option<String>,
-    #[serde(default)]
-    platforms: Vec<String>,
-    #[serde(default)]
-    disable_model_invocation: bool,
-    #[serde(default = "default_user_invocable")]
-    user_invocable: bool,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct SkillSource {
     pub(super) root: PathBuf,
     pub(super) kind: SkillSourceKind,
     pub(super) priority: u16,
-}
-
-const fn default_user_invocable() -> bool {
-    true
 }
 
 const fn default_complete() -> bool {
@@ -199,26 +183,8 @@ pub fn project_skills_dir(workspace_root: &Path, config: &SkillsConfig) -> Resul
 }
 
 pub fn validate_skill_name(name: &str) -> Result<()> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err(PureError::ConfigError(
-            "skill name must not be empty".to_string(),
-        ));
-    }
-    if trimmed.chars().count() > 64 {
-        return Err(PureError::ConfigError(
-            "skill name must be at most 64 characters".to_string(),
-        ));
-    }
-    if !trimmed
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-    {
-        return Err(PureError::ConfigError(format!(
-            "skill name contains unsupported characters: {trimmed}"
-        )));
-    }
-    Ok(())
+    pl_tool_skill_support::validate_name(name)
+        .map_err(|source| PureError::ConfigError(source.into_message()))
 }
 
 pub fn bump_project_view(project_dir: &Path, skill: &SkillMetadata) -> Result<()> {

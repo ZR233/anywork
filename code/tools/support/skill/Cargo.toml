@@ -1,0 +1,10 @@
+[package]
+name = "pl-tool-skill-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+pl-skill-core = { workspace = true }
+tokio-util = { workspace = true }

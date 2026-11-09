@@ -1,11 +1,11 @@
 use super::SendAuthority;
 use super::owner::BotRuntime;
-use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    tool::{ToolOutput, opaque::ToolError},
+use super::protocol::error::{FeishuError, FeishuErrorKind};
+use pl_protocol::studio::{
+    BotConnectionState, BotConversation, BotMessage, BotSendSegment, BotSendStatus,
+    StudioCommandReceipt,
 };
-use pl_tool::bots::BotSessionHost;
-use std::sync::Arc;
+use pl_tool::bots::{Bot, BotSessionHost, Page, ReadMessages, SendStatus, Sent};
 
 #[derive(Clone)]
 pub struct StudioBotSessionHost {
@@ -19,22 +19,29 @@ impl std::fmt::Debug for StudioBotSessionHost {
 }
 
 impl BotSessionHost for StudioBotSessionHost {
-    async fn list_bots(&self, workspace_id: &str) -> Result<ToolOutput, ToolError> {
+    type Error = FeishuError;
+    type Connection = BotConnectionState;
+    type Conversation = BotConversation;
+    type Message = BotMessage;
+    type Segment = BotSendSegment;
+    type Receipt = StudioCommandReceipt;
+    async fn list_bots(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<Bot<BotConnectionState>>, FeishuError> {
         let bots = self
             .runtime
             .authorized_bots(workspace_id)
             .await
             .into_iter()
-            .map(|bot| {
-                serde_json::json!({
-                    "id": bot.id,
-                    "name": bot.name,
-                    "connection": bot.connection,
-                    "toolsEnabled": bot.tools_enabled,
-                })
+            .map(|bot| Bot {
+                id: bot.id,
+                name: bot.name,
+                connection: bot.connection,
+                tools_enabled: bot.tools_enabled,
             })
             .collect::<Vec<_>>();
-        output(&bots)
+        Ok(bots)
     }
 
     async fn list_conversations(
@@ -43,21 +50,23 @@ impl BotSessionHost for StudioBotSessionHost {
         bot_id: String,
         cursor: Option<String>,
         limit: Option<u32>,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<Page<BotConversation>, FeishuError> {
         self.ensure_tools_enabled(workspace_id, &bot_id).await?;
         let page = self
             .runtime
             .list_conversations(&bot_id, cursor.as_deref(), limit)
-            .await
-            .map_err(ToolError::new)?;
-        output(&page)
+            .await?;
+        Ok(Page {
+            items: page.conversations,
+            next_cursor: page.next_cursor,
+        })
     }
 
     async fn read_messages(
         &self,
         workspace_id: &str,
-        request: pl_tool::bots::ReadMessagesInput,
-    ) -> Result<ToolOutput, ToolError> {
+        request: ReadMessages,
+    ) -> Result<Page<BotMessage>, FeishuError> {
         self.ensure_tools_enabled(workspace_id, &request.bot_id)
             .await?;
         let page = self
@@ -70,9 +79,11 @@ impl BotSessionHost for StudioBotSessionHost {
                 request.cursor.as_deref(),
                 request.limit,
             )
-            .await
-            .map_err(ToolError::new)?;
-        output(&page)
+            .await?;
+        Ok(Page {
+            items: page.messages,
+            next_cursor: page.next_cursor,
+        })
     }
 
     async fn send_message(
@@ -82,7 +93,7 @@ impl BotSessionHost for StudioBotSessionHost {
         bot_id: String,
         chat_id: String,
         text: String,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<Sent<BotSendSegment, StudioCommandReceipt>, FeishuError> {
         self.ensure_tools_enabled(workspace_id, &bot_id).await?;
         let result = self
             .runtime
@@ -96,9 +107,17 @@ impl BotSessionHost for StudioBotSessionHost {
                     workspace_id: workspace_id.to_string(),
                 },
             )
-            .await
-            .map_err(ToolError::new)?;
-        output(&result)
+            .await?;
+        Ok(Sent {
+            status: match result.status {
+                BotSendStatus::Succeeded => SendStatus::Succeeded,
+                BotSendStatus::Partial => SendStatus::Partial,
+                BotSendStatus::Rejected => SendStatus::Rejected,
+                BotSendStatus::Unknown => SendStatus::Unknown,
+            },
+            segments: result.segments,
+            receipt: result.receipt,
+        })
     }
 }
 
@@ -107,7 +126,7 @@ impl StudioBotSessionHost {
         &self,
         workspace_id: &str,
         bot_id: &str,
-    ) -> Result<(), ToolError> {
+    ) -> Result<(), FeishuError> {
         let allowed = self
             .runtime
             .authorized_bots(workspace_id)
@@ -117,19 +136,12 @@ impl StudioBotSessionHost {
         if allowed {
             Ok(())
         } else {
-            Err(ToolError::new(std::io::Error::other(
+            Err(FeishuError::new(
+                FeishuErrorKind::Permission,
                 "bot is not authorized for this project",
-            )))
+                false,
+                None,
+            ))
         }
     }
-}
-
-fn output(value: &impl serde::Serialize) -> Result<ToolOutput, ToolError> {
-    let encoded = serde_json::to_string(value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.bot-tool", 1, encoded.clone()).map_err(ToolError::new)?,
-        vec![ContextContent::Text {
-            text: Arc::from(encoded),
-        }],
-    ))
 }

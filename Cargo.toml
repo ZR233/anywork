@@ -46,6 +46,19 @@ members = [
     "code/tools/git-workspace-info",
     "code/tools/git-sync-default-branch",
     "code/tools/support/git",
+    "code/tools/web-search",
+    "code/tools/deepseek-web-search",
+    "code/tools/deepseek-web-fetch",
+    "code/tools/skills-list",
+    "code/tools/skill-view",
+    "code/tools/skill-manage",
+    "code/tools/list-bots",
+    "code/tools/list-bot-conversations",
+    "code/tools/read-bot-messages",
+    "code/tools/send-bot-message",
+    "code/tools/support/search",
+    "code/tools/support/skill",
+    "code/tools/support/bots",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -218,6 +231,19 @@ pl-tool-git-push = { path = "code/tools/git-push" }
 pl-tool-git-workspace-info = { path = "code/tools/git-workspace-info" }
 pl-tool-git-sync-default-branch = { path = "code/tools/git-sync-default-branch" }
 pl-tool-git-support = { path = "code/tools/support/git" }
+pl-tool-web-search = { path = "code/tools/web-search" }
+pl-tool-deepseek-web-search = { path = "code/tools/deepseek-web-search" }
+pl-tool-deepseek-web-fetch = { path = "code/tools/deepseek-web-fetch" }
+pl-tool-skills-list = { path = "code/tools/skills-list" }
+pl-tool-skill-view = { path = "code/tools/skill-view" }
+pl-tool-skill-manage = { path = "code/tools/skill-manage" }
+pl-tool-list-bots = { path = "code/tools/list-bots" }
+pl-tool-list-bot-conversations = { path = "code/tools/list-bot-conversations" }
+pl-tool-read-bot-messages = { path = "code/tools/read-bot-messages" }
+pl-tool-send-bot-message = { path = "code/tools/send-bot-message" }
+pl-tool-search-support = { path = "code/tools/support/search" }
+pl-tool-skill-support = { path = "code/tools/support/skill" }
+pl-tool-bot-support = { path = "code/tools/support/bots" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }

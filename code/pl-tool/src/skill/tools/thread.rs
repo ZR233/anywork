@@ -1,8 +1,8 @@
-//! Skill discovery and actual read snapshots at the opaque Thread boundary.
-use super::{
-    FrozenSkillCatalog, SKILL_FILE_NAME, SkillDiscoverySources, SkillLoadInvocation,
-    SkillViewInput, SkillViewOutput, SkillsListInput, is_main_skill_path, list_snapshot,
+//! Host-owned discovery, permissions and extension commit for standalone skill tools.
+use super::super::{
+    FrozenSkillCatalog, SkillDiscoverySources, SkillLoadInvocation, SkillResourceBase, SkillSummary,
 };
+use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::extensions::ExtensionMutation,
@@ -11,44 +11,39 @@ use pl_core::{
         opaque::{CallContext, Registration, ToolError},
     },
 };
+use pl_tool_skill_support::{Document, SkillReader};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
-/// Stable tool operations; catalog contents and activation state are result data.
 #[derive(Debug, Clone, Copy)]
 pub enum ThreadSkillKind {
     List,
     View,
 }
-
 impl ThreadSkillKind {
-    /// Declares the input owned by this tool, without embedding mutable catalog rows.
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::List => pl_agent_tool::ToolDefinition::json(
-                "skills_list",
-                "List or search available skill names and descriptions before loading one by exact name.",
-                pl_agent_tool::typed::input_schema_for::<SkillsListInput>(),
-            ).expect("valid tool definition"),
-            Self::View => pl_agent_tool::ToolDefinition::json(
-                "skill_view",
-                "Read a skill or a support file. The actual text is retained in history; use it as tool-provided guidance.",
-                pl_agent_tool::typed::input_schema_for::<SkillViewInput>(),
-            ).expect("valid tool definition"),
+            Self::List => pl_agent_tool::typed::prepare_json::<pl_tool_skills_list::SkillsList>()
+                .expect("static skill definition")
+                .definition()
+                .clone(),
+            Self::View => {
+                pl_agent_tool::typed::prepare_json::<pl_tool_skill_view::SkillView<CatalogReader>>()
+                    .expect("static skill definition")
+                    .definition()
+                    .clone()
+            }
         }
     }
 }
-
-/// An instance owns fixed discovery sources; each invocation freezes its own result.
 #[derive(Debug)]
 pub struct ThreadSkillTool {
     definition: pl_agent_tool::ToolDefinition,
     sources: SkillDiscoverySources,
     kind: ThreadSkillKind,
 }
-
 impl ThreadSkillTool {
-    /// Binds this tool to an immutable workspace/configuration and complete Provider set.
     pub fn new(
         sources: SkillDiscoverySources,
         kind: ThreadSkillKind,
@@ -60,10 +55,6 @@ impl ThreadSkillTool {
             kind,
         }
     }
-
-    /// Transfers an instance, granting state updates only to the tool that saves read snapshots.
-    ///
-    /// The supplied preparation has already validated the registration identity.
     pub fn registration(
         self,
         prepared: pl_core::tool::opaque::PreparedRegistration,
@@ -79,17 +70,54 @@ impl ThreadSkillTool {
         }
     }
 }
-
+#[derive(Debug)]
+struct CatalogReader(FrozenSkillCatalog);
+impl SkillReader for CatalogReader {
+    type Error = pl_protocol::PureError;
+    type Summary = SkillSummary;
+    type ResourceBase = SkillResourceBase;
+    async fn load(
+        &self,
+        name: &str,
+        cancellation: CancellationToken,
+    ) -> Result<Document<SkillSummary, SkillResourceBase>, Self::Error> {
+        let document = self
+            .0
+            .load(name, SkillLoadInvocation::Model, cancellation)
+            .await?;
+        Ok(Document {
+            name: document.summary.name.clone(),
+            resource_base: document.summary.resource_base.clone(),
+            summary: document.summary,
+            content: document.content,
+        })
+    }
+    async fn read_resource(
+        &self,
+        name: &str,
+        path: &str,
+        cancellation: CancellationToken,
+    ) -> Result<String, Self::Error> {
+        self.0
+            .read_resource(name, path, SkillLoadInvocation::Model, cancellation)
+            .await
+    }
+    async fn record_view(
+        &self,
+        name: &str,
+        cancellation: CancellationToken,
+    ) -> Result<(), Self::Error> {
+        self.0.record_model_view(name, cancellation).await
+    }
+}
 impl pl_agent_tool::Tool for ThreadSkillTool {
-    type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
     fn definition(&self) -> &pl_agent_tool::ToolDefinition {
         &self.definition
     }
-
     async fn execute(
         &self,
         input: OpaquePayload,
@@ -103,90 +131,57 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
         }
         match self.kind {
             ThreadSkillKind::List => {
-                let input: SkillsListInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let input = decode_json(input.content()).map_err(ToolError::new)?;
                 let catalog = self
                     .sources
                     .discover(context.cancellation)
                     .await
                     .map_err(ToolError::new)?;
-                let value = list_snapshot(&catalog, input).map_err(ToolError::new)?;
-                let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
-                Ok(ToolOutput::new(
-                    OpaquePayload::new("pl.tool.skill-list", 1, encoded.clone())
-                        .map_err(ToolError::new)?,
-                    vec![ContextContent::Text {
-                        text: Arc::from(encoded),
-                    }],
-                ))
+                let rows = catalog
+                    .snapshot()
+                    .skills
+                    .iter()
+                    .map(|skill| pl_tool_skill_support::Listing {
+                        name: skill.name.clone(),
+                        description: skill.description.clone(),
+                        category: skill.category.clone(),
+                        model_invocable: skill.invocation.model_invocable,
+                    })
+                    .collect();
+                let result = pl_tool_skills_list::SkillsList::new(rows)
+                    .execute(input, ())
+                    .await
+                    .map_err(ToolError::new)?;
+                let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
+                text_output("pl.tool.skill-list", &result, encoded)
             }
             ThreadSkillKind::View => {
-                let input: SkillViewInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let input = decode_json(input.content()).map_err(ToolError::new)?;
                 let catalog = self
                     .sources
                     .discover(context.cancellation.clone())
                     .await
                     .map_err(ToolError::new)?;
-                let definition = catalog
-                    .load(
-                        &input.target.name,
-                        SkillLoadInvocation::Model,
-                        context.cancellation.clone(),
-                    )
-                    .await
-                    .map_err(ToolError::new)?;
-                let resource = input
-                    .file_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|path| !is_main_skill_path(path));
-                let (file_path, content) = match resource {
-                    Some(path) => (
-                        path.to_owned(),
-                        catalog
-                            .read_resource(
-                                &input.target.name,
-                                path,
-                                SkillLoadInvocation::Model,
-                                context.cancellation.clone(),
-                            )
-                            .await
-                            .map_err(ToolError::new)?,
-                    ),
-                    None => (SKILL_FILE_NAME.to_owned(), definition.content),
-                };
-                let visible = vec![ContextContent::Text {
-                    text: Arc::from(format!(
-                        "Skill: {}\nResource: {file_path}\n\n{content}",
-                        definition.summary.name
-                    )),
-                }];
-                let result = SkillViewOutput {
-                    success: true,
-                    skill: definition.summary.clone(),
-                    file_path,
-                    resource_base: definition.summary.resource_base,
-                    resource_hint: "Use filePath to read support resources on demand.".into(),
-                    content,
-                };
-                let payload = OpaquePayload::new(
-                    "pl.tool.skill-view",
-                    1,
-                    serde_json::to_string(&result).map_err(ToolError::new)?,
-                )
-                .map_err(ToolError::new)?;
-                let output = ToolOutput::new(payload.clone(), visible);
-                if let Err(source) = catalog
-                    .record_model_view(&input.target.name, context.cancellation)
+                let result = match pl_tool_skill_view::SkillView::new(CatalogReader(catalog))
+                    .execute(input, context.cancellation)
                     .await
                 {
-                    return Err(ToolError::new(source).with_output(output));
-                }
+                    Ok(result) => result,
+                    Err(pl_tool_skill_view::ViewError::Record { source, output }) => {
+                        return Err(ToolError::new(source).with_output(text_output(
+                            "pl.tool.skill-view",
+                            &output.viewed,
+                            output.preview,
+                        )?));
+                    }
+                    Err(error) => return Err(ToolError::new(error)),
+                };
+                let output = text_output("pl.tool.skill-view", &result.viewed, result.preview)?;
+                let payload = output.payload().clone();
                 let id = format!(
                     "pl.tool.skill-view:{}",
                     hex::encode(Sha256::digest(
-                        result.skill.name.to_ascii_lowercase().as_bytes()
+                        result.viewed.skill.name.to_ascii_lowercase().as_bytes()
                     ))
                 );
                 let previous = context.extensions.get(&id);
@@ -205,65 +200,113 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
     }
 }
 
-/// Local project Skill mutation, explicitly installed by the product host.
 #[derive(Debug)]
 pub struct ThreadSkillManageTool {
     catalog: Arc<FrozenSkillCatalog>,
     workspace: crate::workspace::ToolWorkspace,
 }
-
 impl ThreadSkillManageTool {
-    /// Binds a local project catalog to its writable workspace policy.
     pub fn new(
         catalog: Arc<FrozenSkillCatalog>,
         workspace: crate::workspace::ToolWorkspace,
     ) -> Self {
         Self { catalog, workspace }
     }
-
-    /// Stable mutation schema; no live skill names or directory revisions are embedded.
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
-        crate::binding::prepare_native_tool::<Self>()
-            .expect("static skill definition")
-            .definition()
-            .clone()
+        pl_agent_tool::typed::prepare_json::<
+            pl_tool_skill_manage::SkillManage<super::actions::LocalSkillFiles>,
+        >()
+        .expect("static skill definition")
+        .definition()
+        .clone()
     }
 }
-
-impl pl_agent_tool::typed::TypedTool for ThreadSkillManageTool {
+impl TypedTool for ThreadSkillManageTool {
     const NAME: &'static str = "skill_manage";
-    const DESCRIPTION: &'static str = "Create, patch, edit or remove local project skills and their support files within the configured writable paths.";
-    type Args = super::SkillManageInput;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
+    const DESCRIPTION: &'static str = <pl_tool_skill_manage::SkillManage<
+        super::actions::LocalSkillFiles,
+    > as TypedTool>::DESCRIPTION;
+    type Args = pl_tool_skill_manage::SkillManageInput;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
     async fn execute(
         &self,
         input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let result = super::manage_snapshot(
-            self.catalog.clone(),
-            self.workspace.clone(),
-            super::ManageRequest {
-                input,
-                cancellation: context.cancellation,
+        self.workspace
+            .ensure_workspace_writable()
+            .map_err(ToolError::new)?;
+        let lease = tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => return Err(error("operation cancelled before mutation")),
+            lease = self.workspace.write_lock() => lease,
+        };
+        if context.cancellation.is_cancelled() {
+            return Err(error("operation cancelled before mutation"));
+        }
+        let snapshot = self.catalog.snapshot();
+        let candidates = snapshot
+            .skills
+            .iter()
+            .map(|skill| pl_tool_skill_manage::Candidate {
+                name: skill.name.clone(),
+                path: skill.path.clone(),
+                read_only_source: match skill.source {
+                    super::super::SkillSourceKind::Project => None,
+                    source => Some(super::super::provider::source_label(source).into()),
+                },
+            })
+            .collect();
+        let tool = pl_tool_skill_manage::SkillManage::new(
+            super::actions::LocalSkillFiles {
+                workspace: self.workspace.clone(),
+                project_dir: snapshot.project_dir.clone(),
             },
-        )
+            snapshot.project_dir.clone(),
+            candidates,
+        );
+        let catalog = self.catalog.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            let result = futures::executor::block_on(tool.execute(input, ()));
+            catalog.invalidate();
+            result
+        })
         .await
         .map_err(ToolError::new)?;
+        let result = match result {
+            Ok(result) => result,
+            Err(pl_tool_skill_manage::ManageError::Record { source, output }) => {
+                let encoded = serde_json::to_string(&output).map_err(ToolError::new)?;
+                return Err(ToolError::new(source).with_output(text_output(
+                    "pl.tool.skill-mutation",
+                    &output,
+                    encoded,
+                )?));
+            }
+            Err(error) => return Err(ToolError::new(error)),
+        };
         let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("pl.tool.skill-mutation", 1, encoded.clone())
-                .map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(encoded),
-            }],
-        ))
+        text_output("pl.tool.skill-mutation", &result, encoded)
     }
 }
-
+fn text_output(
+    format: &str,
+    value: &impl serde::Serialize,
+    text: String,
+) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput::new(
+        OpaquePayload::new(
+            format,
+            1,
+            serde_json::to_string(value).map_err(ToolError::new)?,
+        )
+        .map_err(ToolError::new)?,
+        vec![ContextContent::Text { text: text.into() }],
+    ))
+}
 fn error(message: &str) -> ToolError {
-    ToolError::new(super::tool_error("skills", message))
+    ToolError::new(crate::tool_error("skills", message))
 }

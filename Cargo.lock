@@ -4262,8 +4262,11 @@ dependencies = [
  "pl-remote-helper",
  "pl-skill-core",
  "pl-tool-apply-patch",
+ "pl-tool-bot-support",
  "pl-tool-copy-path",
  "pl-tool-create-directory",
+ "pl-tool-deepseek-web-fetch",
+ "pl-tool-deepseek-web-search",
  "pl-tool-delete-path",
  "pl-tool-exec",
  "pl-tool-filesystem",
@@ -4277,6 +4280,8 @@ dependencies = [
  "pl-tool-git-support",
  "pl-tool-git-sync-default-branch",
  "pl-tool-git-workspace-info",
+ "pl-tool-list-bot-conversations",
+ "pl-tool-list-bots",
  "pl-tool-list-mcp-resource-templates",
  "pl-tool-list-mcp-resources",
  "pl-tool-lsp-capabilities",
@@ -4287,10 +4292,18 @@ dependencies = [
  "pl-tool-media",
  "pl-tool-move-path",
  "pl-tool-process",
+ "pl-tool-read-bot-messages",
  "pl-tool-read-mcp-resource",
+ "pl-tool-search-support",
+ "pl-tool-send-bot-message",
  "pl-tool-show-image",
+ "pl-tool-skill-manage",
+ "pl-tool-skill-support",
+ "pl-tool-skill-view",
+ "pl-tool-skills-list",
  "pl-tool-stat-path",
  "pl-tool-view-image",
+ "pl-tool-web-search",
  "pl-tool-write-file",
  "pl-tool-write-stdin",
  "process-wrap",
@@ -4324,6 +4337,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-bot-support"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "pl-tool-copy-path"
 version = "0.1.0"
 dependencies = [
@@ -4337,6 +4357,34 @@ version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
  "pl-tool-filesystem",
+]
+
+[[package]]
+name = "pl-tool-deepseek-web-fetch"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-search-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "pl-tool-deepseek-web-search"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "pl-agent-tool",
+ "pl-tool-search-support",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -4480,6 +4528,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-list-bot-conversations"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-bot-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-list-bots"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-bot-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
 name = "pl-tool-list-mcp-resource-templates"
 version = "0.1.0"
 dependencies = [
@@ -4586,6 +4654,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-read-bot-messages"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-bot-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
 name = "pl-tool-read-mcp-resource"
 version = "0.1.0"
 dependencies = [
@@ -4597,10 +4675,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-search-support"
+version = "0.1.0"
+dependencies = [
+ "pl-output",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-send-bot-message"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-bot-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
 name = "pl-tool-show-image"
 version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-skill-manage"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-skill-core",
+ "pl-tool-skill-support",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-skill-support"
+version = "0.1.0"
+dependencies = [
+ "pl-skill-core",
+ "serde",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-skill-view"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-skill-core",
+ "pl-tool-skill-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-skills-list"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-skill-support",
  "schemars 1.2.3",
  "serde",
  "thiserror 2.0.21",
@@ -4625,6 +4770,19 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-web-search"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-output",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
 ]
 
 [[package]]
