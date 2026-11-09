@@ -72,6 +72,7 @@ pub use billing::{
     ModelPricingSnapshot,
 };
 pub use conversation::*;
+pub mod presentation;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
@@ -120,6 +121,7 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
+pub use presentation::*;
 pub use session::{SessionDescriptor, SessionDirectoryRow, SessionId};
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。
