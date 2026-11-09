@@ -7,7 +7,6 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 

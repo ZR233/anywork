@@ -47,30 +47,334 @@ TimelineBatch _append(String id, int pos, {LiveDisplayWindow? live}) =>
       live: live,
     );
 
+DisplayMemberHead _sealHead({
+  String memberKey = 'member',
+  int order = 1,
+  String completionId = 'member',
+  int finishedAt = 20,
+  ChatAtomLifecycle? lifecycle,
+  ChatSourceState? sourceState,
+  ContentRef? body,
+  PayloadData? payload,
+}) => DisplayMemberHead(
+  memberKey: memberKey,
+  memberOrder: order,
+  completionId: completionId,
+  atom: ChatAtom(
+    id: 'member',
+    completionItemId: 'member',
+    completionSeq: 7,
+    source: const ForegroundTurnChatSource(turnId: 'turn'),
+    sourceState: sourceState,
+    sourceOrder: 4,
+    kind: ChatAtomKind.reasoning,
+    delivery: ChatDeliveryKind.foreground,
+    lifecycle:
+        lifecycle ??
+        TerminalChatAtom(
+          started: ChatFactPosition(effectSeq: 3, suborder: 1),
+          ended: ChatFactPosition(effectSeq: 8, suborder: 2),
+          outcome: ChatTerminalOutcome.completed,
+        ),
+    turnId: 'turn',
+    attemptId: 'attempt',
+    textChannel: ThreadTextChannel.finalAnswer,
+    contentPresent: true,
+    startedAt: 10,
+    finishedAt: finishedAt,
+    contents: [
+      ChatAtomContent(
+        role: ChatContentRole.reasoningSummary,
+        reference:
+            body ??
+            const ContentRef(
+              databaseId: 'db',
+              target: BodyContentTarget(
+                owner: ItemContentOwner(itemId: 'member'),
+                key: 'summary',
+              ),
+            ),
+      ),
+    ],
+    payload: payload ?? InlinePayload(bytes: [1, 2, 3]),
+  ),
+);
+
+DisplayMemberPage _sealPage({
+  int revision = 11,
+  bool sealed = false,
+  DisplayBlockRef block = _reference,
+  List<DisplayMemberHead>? entries,
+  int lastOrder = 2,
+  int? before,
+}) => DisplayMemberPage(
+  block: block,
+  revision: revision,
+  sealed: sealed,
+  entries:
+      entries ??
+      [
+        _sealHead(),
+        _sealHead(
+          memberKey: 'other',
+          order: lastOrder,
+          completionId: 'other',
+          payload: const DeferredPayload(
+            reference: ContentRef(
+              databaseId: 'db',
+              target: ItemPayloadTarget(itemId: 'other'),
+            ),
+            byteLength: 37,
+          ),
+        ),
+      ],
+  before: before,
+);
+
+Future<(DisplayMembers, _Members)> _openSealMembers(_Harness h) async {
+  final feed = await h.open();
+  await feed.deliver(ConversationTimelineEvent(batch: _set()));
+  final native = _Members();
+  feed.members = native;
+  final members = await h.content
+      .openScope(generation: 1)
+      .openDisplayMembers(
+        reference: _reference,
+        window: const LatestDisplayMembers(),
+        demand: const ReadDemand(maxItems: 12, maxBytes: 32768),
+      );
+  return (members, native);
+}
+
+Future<DisplayMemberPage?> _deliverMemberPage(
+  DisplayMembers members,
+  _Members native,
+  DisplayMemberPage? page,
+) {
+  native.pending = Completer<DisplayMemberPage?>();
+  final result = members.next();
+  native.pending.complete(page);
+  return result;
+}
+
 void main() {
-  test('a sealed member page is followed by explicit EOF, never a repeated page', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set()));
-    final native = _Members();
-    feed.members = native;
-    final scope = h.content.openScope(generation: 1);
-    final members = await scope.openDisplayMembers(
-      reference: _reference, window: const LatestDisplayMembers(), demand: _demand,
+  for (final cold in [false, true]) {
+    test(
+      'member seal ${cold ? 'cold first page' : 'same revision handoff'} preserves values and reaches EOF',
+      () async {
+        final h = _Harness();
+        addTearDown(h.close);
+        final (members, native) = await _openSealMembers(h);
+        if (!cold) {
+          final live = _sealPage();
+          expect(await _deliverMemberPage(members, native, live), same(live));
+        }
+        // Fresh allocations model the FRB/SQLite page, not reused Dart objects.
+        final sealed = _sealPage(sealed: true);
+        expect(await _deliverMemberPage(members, native, sealed), same(sealed));
+        expect(await _deliverMemberPage(members, native, null), isNull);
+        expect(await members.next(), isNull);
+        expect(h.transport.timelineOpens, hasLength(1));
+        await members.close();
+        expect(native.closeCalls, 1);
+      },
     );
-    final first = members.next();
-    native.pending.complete(DisplayMemberPage(
-      block: _reference, revision: 2, sealed: true, entries: [],
-    ));
-    expect((await first)!.sealed, isTrue);
-    native.pending = Completer<DisplayMemberPage?>();
-    final eof = members.next();
-    native.pending.complete(null);
-    expect(await eof, isNull);
-    expect(await members.next(), isNull);
-    await members.close();
-  });
+  }
+
+  test(
+    'member seal newer revision may update members before sealing',
+    () async {
+      final h = _Harness();
+      addTearDown(h.close);
+      final (members, native) = await _openSealMembers(h);
+      await _deliverMemberPage(members, native, _sealPage());
+      final updated = _sealPage(
+        revision: 12,
+        entries: [_sealHead(finishedAt: 21)],
+      );
+      expect(await _deliverMemberPage(members, native, updated), same(updated));
+      final sealed = _sealPage(
+        revision: 12,
+        sealed: true,
+        entries: [_sealHead(finishedAt: 21)],
+      );
+      expect(await _deliverMemberPage(members, native, sealed), same(sealed));
+      expect(await _deliverMemberPage(members, native, null), isNull);
+      await members.close();
+    },
+  );
+
+  final invalidSeals = <String, DisplayMemberPage Function()>{
+    'ordinary duplicate': () => _sealPage(),
+    'revision regression': () => _sealPage(revision: 10, sealed: true),
+    'different database': () => _sealPage(
+      sealed: true,
+      block: const DisplayBlockRef(databaseId: 'other-db', blockId: 'work'),
+    ),
+    'different block': () => _sealPage(
+      sealed: true,
+      block: const DisplayBlockRef(databaseId: 'db', blockId: 'other'),
+    ),
+    'changed continuation': () => _sealPage(sealed: true, before: 1),
+    'missing member': () => _sealPage(sealed: true, entries: [_sealHead()]),
+    'changed member identity': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(memberKey: 'rewritten'),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed member order': () => _sealPage(sealed: true, lastOrder: 3),
+    'changed completion': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(completionId: 'rewritten'),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed metadata': () => _sealPage(
+      sealed: true,
+      entries: [_sealHead(finishedAt: 21), _sealPage().entries.last],
+    ),
+    'changed lifecycle evidence': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(
+          lifecycle: const TerminalChatAtom(
+            started: ChatFactPosition(effectSeq: 3, suborder: 1),
+            ended: ChatFactPosition(effectSeq: 9, suborder: 2),
+            outcome: ChatTerminalOutcome.completed,
+          ),
+        ),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed source evidence': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(
+          sourceState: const ChatSourceState(
+            source: ForegroundTurnChatSource(turnId: 'turn'),
+            lifecycle: ActiveChatSource(),
+            started: null,
+            ended: null,
+          ),
+        ),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed body capability': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(
+          body: const ContentRef(
+            databaseId: 'db',
+            target: ItemPayloadTarget(itemId: 'rewritten'),
+          ),
+        ),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed inline payload': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(payload: InlinePayload(bytes: [1, 2, 4])),
+        _sealPage().entries.last,
+      ],
+    ),
+    'changed deferred payload': () => _sealPage(
+      sealed: true,
+      entries: [
+        _sealHead(),
+        _sealHead(
+          memberKey: 'other',
+          order: 2,
+          completionId: 'other',
+          payload: const DeferredPayload(
+            reference: ContentRef(
+              databaseId: 'db',
+              target: ItemPayloadTarget(itemId: 'other'),
+            ),
+            byteLength: 38,
+          ),
+        ),
+      ],
+    ),
+  };
+  for (final invalid in invalidSeals.entries) {
+    test('member seal rejects ${invalid.key}', () async {
+      final h = _Harness();
+      addTearDown(h.close);
+      final (members, native) = await _openSealMembers(h);
+      await _deliverMemberPage(members, native, _sealPage());
+      await expectLater(
+        _deliverMemberPage(members, native, invalid.value()),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+      final sealed = _sealPage(sealed: true);
+      expect(
+        await _deliverMemberPage(members, native, sealed),
+        same(sealed),
+        reason: 'A rejected page must not advance revision or sealing',
+      );
+      expect(await _deliverMemberPage(members, native, null), isNull);
+      await members.close();
+    });
+  }
+
+  test(
+    'member seal rejects any page after sealing, even a newer revision',
+    () async {
+      final h = _Harness();
+      addTearDown(h.close);
+      final (members, native) = await _openSealMembers(h);
+      await _deliverMemberPage(members, native, _sealPage(sealed: true));
+      await expectLater(
+        _deliverMemberPage(
+          members,
+          native,
+          _sealPage(revision: 12, sealed: true),
+        ),
+        throwsA(isA<ConversationContinuityError>()),
+      );
+      expect(await _deliverMemberPage(members, native, null), isNull);
+      await members.close();
+    },
+  );
+
+  test(
+    'a sealed member page is followed by explicit EOF, never a repeated page',
+    () async {
+      final h = _Harness();
+      addTearDown(h.close);
+      final feed = await h.open();
+      await feed.deliver(ConversationTimelineEvent(batch: _set()));
+      final native = _Members();
+      feed.members = native;
+      final scope = h.content.openScope(generation: 1);
+      final members = await scope.openDisplayMembers(
+        reference: _reference,
+        window: const LatestDisplayMembers(),
+        demand: _demand,
+      );
+      final first = members.next();
+      native.pending.complete(
+        DisplayMemberPage(
+          block: _reference,
+          revision: 2,
+          sealed: true,
+          entries: [],
+        ),
+      );
+      expect((await first)!.sealed, isTrue);
+      native.pending = Completer<DisplayMemberPage?>();
+      final eof = members.next();
+      native.pending.complete(null);
+      expect(await eof, isNull);
+      expect(await members.next(), isNull);
+      await members.close();
+    },
+  );
 
   test('max_items=1 retires only delivered IDs and publishes/ACKs after acceptance', () async {
     final h = _Harness();

@@ -182,6 +182,14 @@ void main() {
           'ref.onCancel(session.close); }',
       rule: 'LIFE-02',
     ),
+    (
+      name: 'Provider disposal cannot remove a business resource',
+      path: _account,
+      source:
+          'void bind(dynamic ref, dynamic store) { '
+          'ref.onDispose(() { store.remove("thread"); }); }',
+      rule: 'LIFE-02',
+    ),
     for (final owner in ['session', 'composer', 'skills', 'sessionCosts'])
       (
         name: 'Provider cannot admit a $owner owner',
@@ -266,6 +274,9 @@ class Owner {
 void observe(dynamic ref, dynamic source) {
   final observation = source.watchLatest((next) {});
   ref.onDispose(observation.cancel);
+  void changed() {}
+  source.addListener(changed);
+  ref.onDispose(() => source.removeListener(changed));
 }
 Object? existing(dynamic client, String id) => client.conversations.existingSession(id);
 Object descriptor(String id) => new ThreadRuntimeTopic(id);

@@ -1,5 +1,4 @@
 import '../../../models.dart';
-import '../../../conversation_ports.dart' show DisplayMembers;
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart' show CloseReport;
 import '../../observation/latest_value.dart';
@@ -76,6 +75,13 @@ abstract interface class TimelineQueryScope implements ConversationQueryScope {
     required DisplayMemberWindow window,
     required ReadDemand demand,
   });
+}
+
+/// One bounded display-member query observation, owned by its read scope.
+abstract interface class DisplayMembers {
+  Future<DisplayMemberPage?> next();
+  void requestClose();
+  Future<void> close();
 }
 
 abstract interface class ConversationContent {

@@ -7,6 +7,7 @@ import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/acp_ports.dart';
 import 'package:anywork_client/conversation_encoding.dart';
+import 'package:anywork_client/conversation.dart' show DisplayMembers;
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_ports.dart';

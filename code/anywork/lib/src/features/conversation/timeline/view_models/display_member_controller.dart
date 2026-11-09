@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart' show DisplayMembers;
 import 'package:flutter/foundation.dart';
 
 import 'conversation_current_owner.dart';

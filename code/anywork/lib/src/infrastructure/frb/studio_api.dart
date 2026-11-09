@@ -12,7 +12,8 @@ import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/conversation.dart' show ProtocolVersionMismatch;
+import 'package:anywork_client/conversation.dart'
+    show DisplayMembers, ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';

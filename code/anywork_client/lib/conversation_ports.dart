@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'models.dart';
+import 'src/conversation/domain/conversation_repository.dart'
+    show DisplayMembers;
 import 'src/studio/thread_frames.dart';
 export 'src/studio/thread_frames.dart';
 
@@ -33,12 +35,6 @@ abstract interface class TimelineFeed implements ConversationFeed {
     required DisplayMemberWindow window,
     required ReadDemand demand,
   });
-}
-
-abstract interface class DisplayMembers {
-  Future<DisplayMemberPage?> next();
-  void requestClose();
-  Future<void> close();
 }
 
 /// The original feed's read lease; queries do not share its producer's receive/credit lock.

@@ -1,5 +1,4 @@
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart' show DisplayMembers;
 import 'package:flutter/widgets.dart';
 
 import 'timeline_display_diagnostics.dart';
@@ -13,7 +12,11 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<DisplayMembers> Function(DisplayBlockRef, DisplayMemberWindow, ReadDemand)?
+  Future<DisplayMembers> Function(
+    DisplayBlockRef,
+    DisplayMemberWindow,
+    ReadDemand,
+  )?
   openDisplayMembers;
   DisplayMemberController? members;
   final Set<Object> _bodyDisplays = {};

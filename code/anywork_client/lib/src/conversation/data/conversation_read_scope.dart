@@ -470,6 +470,7 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   bool ended = false;
   Object? error;
   Future<void>? _closing;
+  DisplayMemberPage? _lastPage;
 
   @override
   Future<DisplayMemberPage?> next() {
@@ -485,14 +486,27 @@ final class _ScopedDisplayMembers implements DisplayMembers {
         if (stopping || !scope.isActive) throw const StaleConversationScope();
         if (page == null) {
           if (!sealed) {
-            throw const ConversationContinuityError('Display members ended before sealed page');
+            throw const ConversationContinuityError(
+              'Display members ended before sealed page',
+            );
           }
           ended = true;
           return null;
         }
         var order = 0;
         final keys = <String>{};
-        var valid = !sealed && page.block == reference && page.revision > revision;
+        // Member revision and block sealing are independent. An unchanged
+        // bounded page may seal without another member revision.
+        final previous = _lastPage;
+        final sameRevisionSeal =
+            previous != null &&
+            page.revision == revision &&
+            page.sealed &&
+            _sameMemberPageContents(previous, page);
+        var valid =
+            !sealed &&
+            page.block == reference &&
+            (page.revision > revision || sameRevisionSeal);
         for (final entry in page.entries) {
           valid =
               valid &&
@@ -510,6 +524,7 @@ final class _ScopedDisplayMembers implements DisplayMembers {
           );
         revision = page.revision;
         sealed = page.sealed;
+        _lastPage = page.sealed ? null : page;
         return page;
       } finally {
         pulling = false;
@@ -520,6 +535,7 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   @override
   void requestClose() {
     stopping = true;
+    _lastPage = null;
     if (closed) return;
     try {
       handle.requestClose();
@@ -552,6 +568,91 @@ final class _ScopedDisplayMembers implements DisplayMembers {
       }
     });
   }
+}
+
+// Compare only the last admitted bounded page, not a member/history mirror.
+// FRB allocates fresh values, so allocation identity cannot prove continuity.
+bool _sameMemberPageContents(DisplayMemberPage a, DisplayMemberPage b) =>
+    a.before == b.before &&
+    _sameValues(
+      a.entries,
+      b.entries,
+      (a, b) =>
+          a.memberKey == b.memberKey &&
+          a.memberOrder == b.memberOrder &&
+          a.completionId == b.completionId &&
+          _atomFields(a.atom) == _atomFields(b.atom) &&
+          _sameValues(
+            a.atom.contents,
+            b.atom.contents,
+            (a, b) => a.role == b.role && a.reference == b.reference,
+          ) &&
+          _samePayload(a.atom.payload, b.atom.payload),
+    );
+
+Object _atomFields(ChatAtom atom) => (
+  atom.id,
+  atom.completionItemId,
+  atom.completionSeq,
+  atom.source,
+  switch (atom.sourceState) {
+    null => null,
+    final state => (
+      state.source,
+      switch (state.lifecycle) {
+        UnknownChatSource() => (UnknownChatSource,),
+        ActiveChatSource() => (ActiveChatSource,),
+        EndedChatSource(:final outcome) => (EndedChatSource, outcome),
+      },
+      _factFields(state.started),
+      _factFields(state.ended),
+    ),
+  },
+  atom.sourceOrder,
+  atom.kind,
+  atom.delivery,
+  switch (atom.lifecycle) {
+    ActiveChatAtom(:final started, :final status) => (
+      ActiveChatAtom,
+      _factFields(started),
+      status,
+    ),
+    TerminalChatAtom(:final started, :final ended, :final outcome) => (
+      TerminalChatAtom,
+      _factFields(started),
+      _factFields(ended),
+      outcome,
+    ),
+  },
+  atom.turnId,
+  atom.attemptId,
+  atom.tool == null ? null : (atom.tool!.callId, atom.tool!.name),
+  atom.wait,
+  atom.textChannel,
+  atom.contentPresent,
+  atom.startedAt,
+  atom.finishedAt,
+);
+
+(int, int)? _factFields(ChatFactPosition? value) =>
+    value == null ? null : (value.effectSeq, value.suborder);
+
+bool _samePayload(PayloadData? a, PayloadData? b) {
+  if (a is InlinePayload && b is InlinePayload) {
+    return _sameValues(a.bytes, b.bytes, (a, b) => a == b);
+  }
+  if (a is DeferredPayload && b is DeferredPayload) {
+    return a.reference == b.reference && a.byteLength == b.byteLength;
+  }
+  return a == null && b == null;
+}
+
+bool _sameValues<T>(List<T> a, List<T> b, bool Function(T, T) equal) {
+  if (a.length != b.length) return false;
+  for (var index = 0; index < a.length; index++) {
+    if (!equal(a[index], b[index])) return false;
+  }
+  return true;
 }
 
 final class _ContentWatch {

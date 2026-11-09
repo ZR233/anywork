@@ -705,10 +705,13 @@ String? _constructorType(Expression? expression) => switch (expression) {
   _ => null,
 };
 
-bool _changesBusinessResource(String name) => RegExp(
-  r'(?:close|dispose|clear|reset|delete|remove|releaseOrphans|releaseNewThreadOrphans|releaseAll|setDemand|openChatWindow|attachThread)',
-  caseSensitive: false,
-).hasMatch(name);
+bool _changesBusinessResource(String name) =>
+    // Flutter's listener removal detaches an observation, not its resource.
+    !RegExp(r'(?:^|\.)removeListener$').hasMatch(name) &&
+    RegExp(
+      r'(?:close|dispose|clear|reset|delete|remove|releaseOrphans|releaseNewThreadOrphans|releaseAll|setDemand|openChatWindow|attachThread)',
+      caseSensitive: false,
+    ).hasMatch(name);
 
 final class _LifecycleCalls extends RecursiveAstVisitor<void> {
   final names = <String>[];

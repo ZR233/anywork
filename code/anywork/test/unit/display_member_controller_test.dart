@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _ref = DisplayBlockRef(databaseId: 'db', blockId: 'group');

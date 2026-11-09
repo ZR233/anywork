@@ -123,6 +123,8 @@ DisplayMemberWindow 为 Latest 或 Before{member_order}。DisplayMemberPage 携�
 
 DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空 completion_id。真实中断无完成正文可为 None，不伪造成功。组总数来自头，不用窗口长度覆盖。实时到历史 ref/member_key 不变，原展开需求继续借用同一 reader；展开意图由 display lease 按 block_id 保存，不依赖跨父 Widget 移动自动保留 State。
 
+`DisplayMembers` 是查询 scope 交出的有界只读观察能力，声明在 Client 公开会话领域接口；transport 使用同一能力类型。Feature 通过公开查询 API 使用它，不为取得类型导入底层传输端口。
+
 完成卡的 Deferred payload 是原件定位，不是把业务卡降级为原始 JSON 的展示类型。实际挂载且仍有资格的 Single 卡或展开成员，沿原 `read_completed` 以 completion 身份、有界预算读取 canonical envelope，核对原件、atom、来源及完成身份后，复用原业务解码和 renderer；保留外层 block/member key、展开意图与 Main controller，不把解码结果回写展示头或另建消息列表。折叠 Work 不枚举或预读成员原件；正文、输出和媒体仍由原引用按各自窗口读取。metadata 单次读取采用现有 64 KiB 预算；若返回仍为 Deferred、身份矛盾或解码失败，明确呈现该限制或错误，不自动扩大预算、累计任意全文或把截断信封当作业务卡。离页、收起及资格换代撤销局部读取，迟到结果不得恢复已退役视图。底层原文范围查看器不承担业务 envelope 解码。
 
 交互 Deferred 请求是结构化信封：沿原独立资格按窗口累计最多 1 MiB 后解码，超预算明确失败，不截断或显示原始 JSON。跨窗验证 ref/generation/总长/sealed，按字节累计后 UTF-8 解码。展示/复制仅用 canonical 解码及敏感过滤结果，无原始信封复制/下载旁路。旧 Plan 引用读原版本或 stale，不静默换最新文档。
