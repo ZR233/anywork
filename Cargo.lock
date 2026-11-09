@@ -4422,16 +4422,11 @@ dependencies = [
 name = "pl-tool-generate-image"
 version = "0.1.0"
 dependencies = [
- "image",
  "pl-agent-tool",
  "pl-tool-media",
- "pl-tool-show-image",
- "pl-tool-view-image",
  "schemars 1.2.3",
  "serde",
- "serde_json",
  "thiserror 2.0.21",
- "tokio",
 ]
 
 [[package]]

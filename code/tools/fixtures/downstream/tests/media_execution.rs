@@ -1,7 +1,9 @@
 //! Independent consumers exercise actual tools; the fixture only supplies bytes and storage.
+use generate_image as pl_tool_generate_image;
 use pl_agent_tool::{Tool, typed};
 use pl_tool_generate_image::{GenerateImage, GeneratedImage, ImageGenerator};
 use pl_tool_media::{ImageContext, ImageOutputLimits, Media, MediaHost, Retained};
+use show_image as pl_tool_show_image;
 use std::{
     io::Cursor,
     sync::{
@@ -9,6 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use view_image as pl_tool_view_image;
 
 fn png() -> Arc<[u8]> {
     let mut bytes = Cursor::new(Vec::new());

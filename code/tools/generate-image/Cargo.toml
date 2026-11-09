@@ -10,10 +10,3 @@ pl-tool-media = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-pl-tool-view-image = { workspace = true }
-pl-tool-show-image = { workspace = true }
-image = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }

@@ -45,3 +45,10 @@ mcp = { package = "pl-tool-mcp", path = "../../mcp" }
 mcp_resources = { package = "pl-tool-list-mcp-resources", path = "../../list-mcp-resources" }
 mcp_templates = { package = "pl-tool-list-mcp-resource-templates", path = "../../list-mcp-resource-templates" }
 mcp_read = { package = "pl-tool-read-mcp-resource", path = "../../read-mcp-resource" }
+
+[dev-dependencies]
+pl-agent-tool = { path = "../../../pl-agent-tool", features = ["typed"] }
+pl-tool-media = { path = "../../support/media" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
