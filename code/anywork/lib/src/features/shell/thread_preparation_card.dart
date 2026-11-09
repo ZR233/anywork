@@ -11,11 +11,13 @@ class ThreadPreparationCard extends StatelessWidget {
   const ThreadPreparationCard({
     required this.project,
     required this.preparation,
+    this.onUseLocalDirectory,
     super.key,
   });
 
   final StudioProject project;
   final NewThreadPreparation preparation;
+  final VoidCallback? onUseLocalDirectory;
 
   @override
   Widget build(BuildContext context) {
@@ -159,6 +161,12 @@ class ThreadPreparationCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                  if (onUseLocalDirectory != null)
+                    TextButton(
+                      key: const ValueKey('preparation-use-local-directory'),
+                      onPressed: onUseLocalDirectory,
+                      child: Text(l10n.composerWorkspaceModeLocal),
+                    ),
                 ],
               ],
             ),

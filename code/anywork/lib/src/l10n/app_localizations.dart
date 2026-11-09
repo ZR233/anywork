@@ -9849,7 +9849,7 @@ abstract class AppLocalizations {
   /// No description provided for @delegationProfile.
   ///
   /// In en, this message translates to:
-  /// **'Fixed Profile'**
+  /// **'Fixed configuration template'**
   String get delegationProfile;
 
   /// No description provided for @delegationAutomatic.
@@ -9879,7 +9879,7 @@ abstract class AppLocalizations {
   /// No description provided for @delegationOnlyAutomatic.
   ///
   /// In en, this message translates to:
-  /// **'Only applies to automatic model selection. The value is kept in fixed Profile mode.'**
+  /// **'Only applies to automatic model selection. The value is kept in fixed configuration template mode.'**
   String get delegationOnlyAutomatic;
 
   /// No description provided for @delegationEconomyHint.
@@ -11069,6 +11069,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{count} running'**
   String timelineGroupActiveCount(int count);
+
+  /// No description provided for @composerNoProject.
+  ///
+  /// In en, this message translates to:
+  /// **'No project'**
+  String get composerNoProject;
+
+  /// No description provided for @composerProjectSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search projects, paths or SSH'**
+  String get composerProjectSearch;
+
+  /// No description provided for @composerNewProject.
+  ///
+  /// In en, this message translates to:
+  /// **'New project…'**
+  String get composerNewProject;
+
+  /// No description provided for @composerFixedLocalDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Fixed local directory'**
+  String get composerFixedLocalDirectory;
+
+  /// No description provided for @composerWorktreeHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Create an isolated worktree from Git HEAD'**
+  String get composerWorktreeHint;
+
+  /// No description provided for @composerLocalDirectoryHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Use the project directory directly'**
+  String get composerLocalDirectoryHint;
+
+  /// No description provided for @composerEnvironmentLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing the session; settings cannot be changed yet'**
+  String get composerEnvironmentLocked;
+
+  /// No description provided for @composerEffortUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'The current model does not support reasoning effort'**
+  String get composerEffortUnsupported;
 }
 
 class _AppLocalizationsDelegate

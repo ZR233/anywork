@@ -5231,7 +5231,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get delegationPreferenceLabel => '自动选模偏好';
 
   @override
-  String get delegationProfile => '固定 Profile';
+  String get delegationProfile => '固定配置模板';
 
   @override
   String get delegationAutomatic => '自动选模';
@@ -5246,7 +5246,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get delegationFast => '快速';
 
   @override
-  String get delegationOnlyAutomatic => '仅自动选模时生效；固定 Profile 模式下保留该值。';
+  String get delegationOnlyAutomatic => '仅自动选模时生效；固定配置模板模式下保留该值。';
 
   @override
   String get delegationEconomyHint => '满足任务能力与质量要求后，优先降低预计整体成本；未知价格不当免费。';
@@ -5890,4 +5890,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String timelineGroupActiveCount(int count) {
     return '$count 进行中';
   }
+
+  @override
+  String get composerNoProject => '无项目';
+
+  @override
+  String get composerProjectSearch => '搜索项目、路径或 SSH';
+
+  @override
+  String get composerNewProject => '新建项目…';
+
+  @override
+  String get composerFixedLocalDirectory => '固定本地目录';
+
+  @override
+  String get composerWorktreeHint => '从 Git HEAD 创建隔离工作树';
+
+  @override
+  String get composerLocalDirectoryHint => '直接使用项目目录';
+
+  @override
+  String get composerEnvironmentLocked => '正在准备会话，暂时无法更改';
+
+  @override
+  String get composerEffortUnsupported => '当前模型不支持思考强度';
 }
