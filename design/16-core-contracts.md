@@ -43,7 +43,7 @@ Thread 快照的 `observation_revision` 标记同一物理 owner 的每次内存
 
 模型调用具有彼此独立的观察面：可合并的当前进度，以及不可丢失的已校验成员开始/完成事实。可靠载荷以真实 attempt、恢复 generation、provider item 与 part 身份绑定调用；Core 在等待模型结果及处理邮箱期间持续接纳，不等整个模型调用返回。调用所有者复用有界可靠通道与既有 effect/checkpoint、输出准入和 pending 交接，不允许 watch 覆盖成员边界，也不允许适配器绕过 owner 直接操作 `Session` 或产品历史。
 
-接纳单个成员不提前提交模型上下文、调用用量或 Turn 终态。最终模型回执与已接纳成员必须身份一致、载荷幂等；后续失败或取消保留已接纳事实，先收束生产者和完成交接，再结束调用。产品封口与 live 退出协调的唯一契约见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，Core 不包含展示分组或实时 UI 生命周期。
+接纳单个成员不提前提交模型上下文、调用用量或 Turn 终态。最终模型回执与已接纳成员必须身份一致、载荷幂等；后续失败或取消保留已接纳事实，先收束生产者和完成交接，再结束调用。产品封口与 live 退出协调的唯一契约见 [26 §26.1](./26-timeline-content.md#261-两个完成点与唯一所有者)，Core 不包含展示分组或实时 UI 生命周期。
 
 `ModelRequest.members` 是调用所有者提供的可选 `ModelMemberSender`，与 `progress` 分开。`submit(generation, member_id, payload)` 只接收适配器已校验的独立结束事实；Core 补入原 `turn_id/attempt_id`，形成 `ModelCompletedMember`。`member_id` 是厂商真实成员身份，part 身份及内容由模型拥有的版本化 `OpaquePayload` 表达，Core 不解释厂商或产品 schema。`ThreadEffectBatch.model_members` 保存同一冻结信封，缺失字段表示没有成员事实，不是从 progress 恢复它们的许可。
 

@@ -1,5 +1,5 @@
-//! 不可变完成历史的产品模型。Native 给出读取分类与连续段索引，
-//! Flutter 只组合代表卡片；真实业务当前态与完成记录分离。
+//! 不可变完成原件及其读取模型。完成级消费者沿连续段索引读取；
+//! GUI 的整组交接使用独立 presentation 协议，真实业务当前态仍由 State 维护。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

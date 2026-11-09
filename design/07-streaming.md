@@ -8,11 +8,11 @@
 
 Runtime 的唯一产品投影持续消费可靠 effect，一次生成业务当前态及不可变完成项，先发布可查询完成批次，再将同一 PreparedEffect 交既有 writer。无 GUI 订阅仍维护业务与保存事实；只跳过无需求的对外编码和事件泵，不积压无界 UI 日志。
 
-模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等、取消收束及活动退出顺序见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)，不能把已结束成员保留在活动元数据直到 attempt 终态，或通过增大内容帧预算掩盖累积。
+模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等与取消收束见 [26 §26.1](./26-timeline-content.md#261-两个完成点与唯一所有者)。原完成级 Activity 不继续假装已结束成员活跃；GUI 展示组可以保留它的轻量终态引用直到整组交接，不能保活已落盘正文或增大帧预算掩盖累积。
 
 会话内容有两种明确用途：[26](./26-timeline-content.md) 的原 ConversationFeed/ChatBatch/Activity 服务完成级消费者；GUI Timeline feed 仅交付 State/Timeline/Failure/Closed，以冻结展示块和同切面 live 窗口完成整组交接。Flutter 不根据原完成项猜分组或退役成员。State 保留输入、workspace、交互等真实业务领域；低频目录身份不被迟到会话快照反写。
 
-业务文档/集合读取引用按 [26 的 State 合同](./26-timeline-content.md#业务引用由-state-交付)进入必有的 Snapshot.business_refs 与 BusinessRefsChanged 通知；只在原 Plan/交互资源头变化时更新，不受 token 或 Chat 进度驱动。基线先登记再捕获，引用发布前必须可由原 reader 解析；冷无执行源仍交付已保存的业务引用。沿原 State schema、epoch/revision 和信用升级，不另建业务通道、全局版本或 ACK。
+业务文档/集合读取引用按 [26 的 State 合同](./26-timeline-content.md#266-业务引用由-state-交付)进入必有的 Snapshot.business_refs 与 BusinessRefsChanged 通知；只在原 Plan/交互资源头变化时更新，不受 token 或 Chat 进度驱动。基线先登记再捕获，引用发布前必须可由原 reader 解析；冷无执行源仍交付已保存的业务引用。沿原 State schema、epoch/revision 和信用升级，不另建业务通道、全局版本或 ACK。
 
 open 先登记被动接收者，再捕获同切面的完成上界 H0 与活动快照。首个 Chat 为到 H0 的 Set，接纳后才交付该活动快照；后继每次固定一个目标 H，按原完成集合补读到目标后交付同切面 Activity。源资格失效或无法证明连续时终结原流，新句柄用 Set 重同步，不在原流 reset 或重放业务命令。
 
@@ -64,7 +64,7 @@ GUI TimelineBatch 经 SDK 原串行接纳链交 Flutter controller，流与旧�
 
 FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，不各自维护流状态机：
 - **端点与订阅顺序**：HTTP 产品流端点为 `GET /api/v1/events/product`，线程状态流端点为 `GET /api/v1/threads/{thread_id}/events`。订阅建立时一律先注册接收通道、再读取当前基线状态（如自更新主题流 `Updater` 先登记接收者再读取当前更新状态），确保建连期间完成的后台状态变更不会漏发。
-- **统一会话 SSE**：线程 events 消费同一 Runtime ConversationFeed，保留 State/Failure/Closed，Chat 交付完成记录，Activity 交付完成前缀绑定的最新活动快照。HTTP 不重组卡片；首个 State/握手声明 `completedHistoryVersion=1`，不支持或缺失时明确 ProtocolVersionMismatch，不解码旧 TimelineItem。
+- **完成级会话 SSE**：原线程 events 消费 Runtime ConversationFeed，保留 State/Failure/Closed，Chat 交付完成记录，Activity 交付完成前缀绑定的最新活动快照。GUI 改用同会话 `/timeline` 展示接口，不双订阅后自行合并。HTTP 不重组卡片；原握手 `completedHistoryVersion=1` 保留，GUI 另严格检查 `presentation_version=1`，不支持或缺失时明确 ProtocolVersionMismatch。
 - **需求与恢复**：scope、条数/字节、from_seq/through_seq 遵循 [26](./26-timeline-content.md)。重连新 handle 取得 Set；Last-Event-ID 不是完成接纳位置，不支持旧恢复参数或流内 Reset。
 - **独立内容读取**：Main 段代表页、Run 明细、真实 Children、按完成 ID 和内容范围查询共用原 read lease，各 scope 的 cursor 独立；查询不受 SSE/FRB credit 阻塞，不提供跨连接 durable replay。
 - **内存驻留与关闭**：统一 feed 在连接存活期间持有正式 reader/订阅作用域，不在 HTTP 新建平行会话登记或内容缓存。正文发送最多保留一个有界排队帧；发送背压、断连及服务端关闭均保留原取消语义，先取消并 join 真实 feed 再释放作用域。重叠订阅与临时激活各自管理所有权。
@@ -84,6 +84,7 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 | `POST /timeline/older` | before、demand | Prepend TimelineBatch |
 | `POST /timeline/live-older` | before、demand | LiveDisplayWindow |
 | `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
+| `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，sealed 后结束观察 |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |

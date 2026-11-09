@@ -39,6 +39,8 @@ flowchart LR
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
 
+Demo 的 GUI 同样实现专用 Timeline 端口。展示 fixture 由原 Demo 数据容器持有，脚本在声明处显式指定块身份、成员归属、真实脚本终态与交接步骤；静态展示块及原完成记录分别安装，不以完成序号代替展示位置。Demo 不复制 Rust 的通用来源分组算法，也不在旧完成 feed 外把 Chat/Activity 拼成 Timeline。新端口复用原单消费者、信用、reader、资源登记及关闭责任，测试包装保留底层 Timeline 类型和展示读取能力；原完成端口仅供完成级消费者。Demo 与组件注入证据均不能替代真实 Rust→FRB→SDK→生产页面验收。
+
 启动阶段的 `loading`、`ready` 与类型化失败状态由 Client 持有并供只读观察。应用生命周期调用一次引导加载，待项目会话目录与主界面必需配置就绪后才展示主界面外壳（shell）；账号静态模板由对应领域按需加载，不再作为全应用启动屏障。若在首帧基线前发生失败，必须展示类型化错误码与关联 ID（`correlationId`），显式重试时复用同一 Client 实例清除失败尝试后重新启动。启动成功后，若某个目录观察失败，则保留最后有效目录与可用主界面并展示该领域的显式重试入口，不退回无操作的启动等待页。会话状态流的同步状态与聊天界面内容状态（`ChatUiState`）分属各自独立的观察通道，互不覆盖。
 
 ## 25.3 版本域与资源戳（Stamps）
@@ -402,11 +404,11 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。Activity 是有完成前缀屏障的独立活动快照，State 保留真实业务状态，Children 不写全局活动。loadOlder/readCompleted/内容查询沿独立 read lease，在应用队列外执行，不竞争 recv/credit 锁；ACK 只归 feed owner，见 [07](./07-streaming.md)。
 
-Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，公开内容只由 Chat 接纳。
+Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#266-业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，GUI 公开内容只由 Timeline 接纳，完成级消费者沿原 Chat 接纳。
 
 GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
-活动区只显示尚在进行的真实操作，完成即入历史，不保留已完成待封组片段。Main 的工作代表始终 Deferred，未展开不读取参数/工具结果/思考/媒体；展开的 Run controller 才持已加载成员。折叠撤资格并 cancel/join，不留永久骨架、隐藏 Element 或成员快照；活动到历史不保证 Widget 整体移交。
+GUI 实时区保留尚未交接的权威展示块，包括同组已完成成员；只有真实边界已出现且成员真实终态齐备时才整组进入 Main。Main 的工作块只含轻量头与成员引用，未展开不读取参数/工具结果/思考/媒体；展开的成员窗口才持已加载成员。折叠撤销自身读取资格并 cancel/join，不留永久骨架、隐藏 Element 或无主成员快照；稳定 block_id 的展开意图由原 display lease 持有，跨实时到历史交接保留，但不要求 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
