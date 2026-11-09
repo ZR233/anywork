@@ -253,7 +253,9 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                 BridgeConversationEvent::Activity { snapshot } => {
                     ensure!(snapshot.revision > 0 && snapshot.completed_through == accepted_through,
                         "Activity did not match the accepted completion prefix");
-                    retired = !snapshot.execution_present && snapshot.entries.is_empty();
+                    // execution_present describes the warm execution owner, not
+                    // whether this response still has any live activity.
+                    retired = snapshot.entries.is_empty();
                     if retired {
                         ensure!(completed_body.is_some(),
                             "Activity retired before response completion appeared");
