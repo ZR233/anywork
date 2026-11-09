@@ -27,7 +27,7 @@ pub(super) fn safe_relative_path(path: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn category_path(category: &str) -> Result<PathBuf> {
-    pl_tool_skill_support::category_path(category)
+    pl_tool_skill::support::category_path(category)
         .map_err(|source| PureError::ConfigError(source.into_message()))
 }
 

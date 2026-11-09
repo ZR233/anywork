@@ -4,7 +4,7 @@ use crate::{
     workspace::{ToolWorkspace, path_safety::*},
 };
 use pl_protocol::PureError;
-use pl_tool_skill_manage::{ProjectFiles, WriteMode};
+use pl_tool_skill::tools::skill_manage::{ProjectFiles, WriteMode};
 use std::{
     fs,
     path::{Path, PathBuf},

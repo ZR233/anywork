@@ -11,7 +11,7 @@ use pl_core::{
         opaque::{CallContext, Registration, ToolError},
     },
 };
-use pl_tool_skill_support::{Document, SkillReader};
+use pl_tool_skill::support::{Document, SkillReader};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -24,16 +24,18 @@ pub enum ThreadSkillKind {
 impl ThreadSkillKind {
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::List => pl_agent_tool::typed::prepare_json::<pl_tool_skills_list::SkillsList>()
-                .expect("static skill definition")
-                .definition()
-                .clone(),
-            Self::View => {
-                pl_agent_tool::typed::prepare_json::<pl_tool_skill_view::SkillView<CatalogReader>>()
-                    .expect("static skill definition")
-                    .definition()
-                    .clone()
-            }
+            Self::List => pl_agent_tool::typed::prepare_json::<
+                pl_tool_skill::tools::skills_list::SkillsList,
+            >()
+            .expect("static skill definition")
+            .definition()
+            .clone(),
+            Self::View => pl_agent_tool::typed::prepare_json::<
+                pl_tool_skill::tools::skill_view::SkillView<CatalogReader>,
+            >()
+            .expect("static skill definition")
+            .definition()
+            .clone(),
         }
     }
 }
@@ -141,14 +143,14 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
                     .snapshot()
                     .skills
                     .iter()
-                    .map(|skill| pl_tool_skill_support::Listing {
+                    .map(|skill| pl_tool_skill::support::Listing {
                         name: skill.name.clone(),
                         description: skill.description.clone(),
                         category: skill.category.clone(),
                         model_invocable: skill.invocation.model_invocable,
                     })
                     .collect();
-                let result = pl_tool_skills_list::SkillsList::new(rows)
+                let result = pl_tool_skill::tools::skills_list::SkillsList::new(rows)
                     .execute(input, ())
                     .await
                     .map_err(ToolError::new)?;
@@ -162,20 +164,24 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
                     .discover(context.cancellation.clone())
                     .await
                     .map_err(ToolError::new)?;
-                let result = match pl_tool_skill_view::SkillView::new(CatalogReader(catalog))
-                    .execute(input, context.cancellation)
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(pl_tool_skill_view::ViewError::Record { source, output }) => {
-                        return Err(ToolError::new(source).with_output(text_output(
-                            "pl.tool.skill-view",
-                            &output.viewed,
-                            output.preview,
-                        )?));
-                    }
-                    Err(error) => return Err(ToolError::new(error)),
-                };
+                let result =
+                    match pl_tool_skill::tools::skill_view::SkillView::new(CatalogReader(catalog))
+                        .execute(input, context.cancellation)
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(pl_tool_skill::tools::skill_view::ViewError::Record {
+                            source,
+                            output,
+                        }) => {
+                            return Err(ToolError::new(source).with_output(text_output(
+                                "pl.tool.skill-view",
+                                &output.viewed,
+                                output.preview,
+                            )?));
+                        }
+                        Err(error) => return Err(ToolError::new(error)),
+                    };
                 let output = text_output("pl.tool.skill-view", &result.viewed, result.preview)?;
                 let payload = output.payload().clone();
                 let id = format!(
@@ -214,7 +220,7 @@ impl ThreadSkillManageTool {
     }
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::prepare_json::<
-            pl_tool_skill_manage::SkillManage<super::actions::LocalSkillFiles>,
+            pl_tool_skill::tools::skill_manage::SkillManage<super::actions::LocalSkillFiles>,
         >()
         .expect("static skill definition")
         .definition()
@@ -223,10 +229,10 @@ impl ThreadSkillManageTool {
 }
 impl TypedTool for ThreadSkillManageTool {
     const NAME: &'static str = "skill_manage";
-    const DESCRIPTION: &'static str = <pl_tool_skill_manage::SkillManage<
+    const DESCRIPTION: &'static str = <pl_tool_skill::tools::skill_manage::SkillManage<
         super::actions::LocalSkillFiles,
     > as TypedTool>::DESCRIPTION;
-    type Args = pl_tool_skill_manage::SkillManageInput;
+    type Args = pl_tool_skill::tools::skill_manage::SkillManageInput;
     type Context = CallContext;
     type Output = ToolOutput;
     type Error = ToolError;
@@ -250,7 +256,7 @@ impl TypedTool for ThreadSkillManageTool {
         let candidates = snapshot
             .skills
             .iter()
-            .map(|skill| pl_tool_skill_manage::Candidate {
+            .map(|skill| pl_tool_skill::tools::skill_manage::Candidate {
                 name: skill.name.clone(),
                 path: skill.path.clone(),
                 read_only_source: match skill.source {
@@ -259,7 +265,7 @@ impl TypedTool for ThreadSkillManageTool {
                 },
             })
             .collect();
-        let tool = pl_tool_skill_manage::SkillManage::new(
+        let tool = pl_tool_skill::tools::skill_manage::SkillManage::new(
             super::actions::LocalSkillFiles {
                 workspace: self.workspace.clone(),
                 project_dir: snapshot.project_dir.clone(),
@@ -278,7 +284,7 @@ impl TypedTool for ThreadSkillManageTool {
         .map_err(ToolError::new)?;
         let result = match result {
             Ok(result) => result,
-            Err(pl_tool_skill_manage::ManageError::Record { source, output }) => {
+            Err(pl_tool_skill::tools::skill_manage::ManageError::Record { source, output }) => {
                 let encoded = serde_json::to_string(&output).map_err(ToolError::new)?;
                 return Err(ToolError::new(source).with_output(text_output(
                     "pl.tool.skill-mutation",

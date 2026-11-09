@@ -1,6 +1,6 @@
-pub use pl_tool_skill_support::{SkillSelection, SkillSelectionRequest, SkillSelector};
+pub use pl_tool_skill::support::{SkillSelection, SkillSelectionRequest, SkillSelector};
 
-impl pl_tool_skill_support::SelectionCandidate for super::SkillMetadata {
+impl pl_tool_skill::support::SelectionCandidate for super::SkillMetadata {
     fn name(&self) -> &str {
         &self.name
     }

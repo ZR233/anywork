@@ -10,7 +10,7 @@ use pl_core::{
 };
 use pl_model::protocol::deepseek::tools::{self, Observed, ToolsClient, ToolsError};
 use pl_protocol::search::SearchSettings;
-use pl_tool_search_support::{
+use pl_tool_search::support::{
     FetchResponse, FetchService, SearchResponse, SearchService, SearchSource, ServiceFailure,
 };
 use serde_json::Value;
@@ -29,12 +29,12 @@ pub struct StandaloneSearchService {
     client: WebSearchClient,
     options: ThreadSearchOptions,
 }
-impl pl_tool_web_search::SearchService for StandaloneSearchService {
+impl pl_tool_search::tools::web_search::SearchService for StandaloneSearchService {
     type Error = super::WebSearchError;
     async fn search(
         &self,
-        request: pl_tool_web_search::Request,
-    ) -> Result<pl_tool_web_search::Response, Self::Error> {
+        request: pl_tool_search::tools::web_search::Request,
+    ) -> Result<pl_tool_search::tools::web_search::Response, Self::Error> {
         let request = pl_protocol::search::SearchRequest {
             id: request.id,
             model: self.options.model.clone(),
@@ -44,7 +44,7 @@ impl pl_tool_web_search::SearchService for StandaloneSearchService {
             max_output_tokens: self.options.max_output_tokens,
         };
         let response = self.client.search(&request).await?;
-        Ok(pl_tool_web_search::Response {
+        Ok(pl_tool_search::tools::web_search::Response {
             encrypted_output: response.encrypted_output,
             output: response.output,
             results: response.results,
@@ -54,23 +54,31 @@ impl pl_tool_web_search::SearchService for StandaloneSearchService {
 
 #[derive(Debug)]
 pub struct ThreadWebSearchTool {
-    tool: pl_tool_web_search::WebSearch<StandaloneSearchService>,
+    tool: pl_tool_search::tools::web_search::WebSearch<StandaloneSearchService>,
 }
 impl ThreadWebSearchTool {
     pub fn new(client: WebSearchClient, options: ThreadSearchOptions) -> Self {
         Self {
-            tool: pl_tool_web_search::WebSearch::new(StandaloneSearchService { client, options }),
+            tool: pl_tool_search::tools::web_search::WebSearch::new(StandaloneSearchService {
+                client,
+                options,
+            }),
         }
     }
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
-        pl_agent_tool::typed::prepare_json::<pl_tool_web_search::WebSearch<StandaloneSearchService>>().expect("static search definition").definition().clone()
+        pl_agent_tool::typed::prepare_json::<
+            pl_tool_search::tools::web_search::WebSearch<StandaloneSearchService>,
+        >()
+        .expect("static search definition")
+        .definition()
+        .clone()
     }
 }
 impl TypedTool for ThreadWebSearchTool {
     const NAME: &'static str =
-        <pl_tool_web_search::WebSearch<StandaloneSearchService> as TypedTool>::NAME;
-    const DESCRIPTION: &'static str = pl_tool_web_search::DESCRIPTION;
-    type Args = pl_tool_web_search::SearchCommands;
+        <pl_tool_search::tools::web_search::WebSearch<StandaloneSearchService> as TypedTool>::NAME;
+    const DESCRIPTION: &'static str = pl_tool_search::tools::web_search::DESCRIPTION;
+    type Args = pl_tool_search::tools::web_search::SearchCommands;
     type Context = CallContext;
     type Output = ToolOutput;
     type Error = ToolError;
@@ -83,7 +91,7 @@ impl TypedTool for ThreadWebSearchTool {
             .tool
             .execute(
                 commands,
-                pl_tool_web_search::Context {
+                pl_tool_search::tools::web_search::Context {
                     request_id: format!("{}:{}", context.turn_id, context.call_id),
                     input: recent_context(&context.context),
                     cancellation: context.cancellation,
@@ -178,17 +186,19 @@ fn fetch_response(response: tools::FetchResponse) -> FetchResponse {
 
 #[derive(Debug)]
 pub struct ThreadDeepSeekWebSearchTool {
-    tool: pl_tool_deepseek_web_search::DeepSeekWebSearch<DeepSeekService>,
+    tool: pl_tool_search::tools::deepseek_web_search::DeepSeekWebSearch<DeepSeekService>,
 }
 impl ThreadDeepSeekWebSearchTool {
     pub fn new(client: ToolsClient) -> Self {
         Self {
-            tool: pl_tool_deepseek_web_search::DeepSeekWebSearch::new(DeepSeekService { client }),
+            tool: pl_tool_search::tools::deepseek_web_search::DeepSeekWebSearch::new(
+                DeepSeekService { client },
+            ),
         }
     }
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::prepare_json::<
-            pl_tool_deepseek_web_search::DeepSeekWebSearch<DeepSeekService>,
+            pl_tool_search::tools::deepseek_web_search::DeepSeekWebSearch<DeepSeekService>,
         >()
         .expect("static search definition")
         .definition()
@@ -197,8 +207,8 @@ impl ThreadDeepSeekWebSearchTool {
 }
 impl TypedTool for ThreadDeepSeekWebSearchTool {
     const NAME: &'static str = "deepseek_web_search";
-    const DESCRIPTION: &'static str = pl_tool_deepseek_web_search::DESCRIPTION;
-    type Args = pl_tool_deepseek_web_search::Args;
+    const DESCRIPTION: &'static str = pl_tool_search::tools::deepseek_web_search::DESCRIPTION;
+    type Args = pl_tool_search::tools::deepseek_web_search::Args;
     type Context = CallContext;
     type Output = ToolOutput;
     type Error = ToolError;
@@ -213,7 +223,10 @@ impl TypedTool for ThreadDeepSeekWebSearchTool {
                 &output.results,
                 output.preview,
             ),
-            Err(pl_tool_deepseek_web_search::SearchError::Service { source, output }) => {
+            Err(pl_tool_search::tools::deepseek_web_search::SearchError::Service {
+                source,
+                output,
+            }) => {
                 let mut error = ToolError::new(source);
                 if let Some(output) = output {
                     error = error.with_output(text_output(
@@ -230,17 +243,19 @@ impl TypedTool for ThreadDeepSeekWebSearchTool {
 }
 #[derive(Debug)]
 pub struct ThreadDeepSeekWebFetchTool {
-    tool: pl_tool_deepseek_web_fetch::DeepSeekWebFetch<DeepSeekService>,
+    tool: pl_tool_search::tools::deepseek_web_fetch::DeepSeekWebFetch<DeepSeekService>,
 }
 impl ThreadDeepSeekWebFetchTool {
     pub fn new(client: ToolsClient) -> Self {
         Self {
-            tool: pl_tool_deepseek_web_fetch::DeepSeekWebFetch::new(DeepSeekService { client }),
+            tool: pl_tool_search::tools::deepseek_web_fetch::DeepSeekWebFetch::new(
+                DeepSeekService { client },
+            ),
         }
     }
     pub fn declaration() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::prepare_json::<
-            pl_tool_deepseek_web_fetch::DeepSeekWebFetch<DeepSeekService>,
+            pl_tool_search::tools::deepseek_web_fetch::DeepSeekWebFetch<DeepSeekService>,
         >()
         .expect("static fetch definition")
         .definition()
@@ -249,8 +264,8 @@ impl ThreadDeepSeekWebFetchTool {
 }
 impl TypedTool for ThreadDeepSeekWebFetchTool {
     const NAME: &'static str = "deepseek_web_fetch";
-    const DESCRIPTION: &'static str = pl_tool_deepseek_web_fetch::DESCRIPTION;
-    type Args = pl_tool_deepseek_web_fetch::Args;
+    const DESCRIPTION: &'static str = pl_tool_search::tools::deepseek_web_fetch::DESCRIPTION;
+    type Args = pl_tool_search::tools::deepseek_web_fetch::Args;
     type Context = CallContext;
     type Output = ToolOutput;
     type Error = ToolError;
@@ -265,7 +280,10 @@ impl TypedTool for ThreadDeepSeekWebFetchTool {
                 &output.response,
                 output.preview,
             ),
-            Err(pl_tool_deepseek_web_fetch::FetchError::Service { source, output }) => {
+            Err(pl_tool_search::tools::deepseek_web_fetch::FetchError::Service {
+                source,
+                output,
+            }) => {
                 let mut error = ToolError::new(source);
                 if let Some(output) = output {
                     error = error.with_output(text_output(

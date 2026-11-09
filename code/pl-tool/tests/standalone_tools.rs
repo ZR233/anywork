@@ -12,15 +12,15 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
-struct WebService(Arc<Mutex<Vec<pl_tool_web_search::Request>>>);
-impl pl_tool_web_search::SearchService for WebService {
+struct WebService(Arc<Mutex<Vec<pl_tool_search::tools::web_search::Request>>>);
+impl pl_tool_search::tools::web_search::SearchService for WebService {
     type Error = io::Error;
     async fn search(
         &self,
-        request: pl_tool_web_search::Request,
-    ) -> Result<pl_tool_web_search::Response, io::Error> {
+        request: pl_tool_search::tools::web_search::Request,
+    ) -> Result<pl_tool_search::tools::web_search::Response, io::Error> {
         self.0.lock().unwrap().push(request);
-        Ok(pl_tool_web_search::Response {
+        Ok(pl_tool_search::tools::web_search::Response {
             output: "界".repeat(6_000),
             encrypted_output: Some("opaque-provider-state".into()),
             results: None,
@@ -33,9 +33,9 @@ async fn web_search_executes_commands_and_bounds_only_the_preview() {
     let requests = service.0.clone();
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_web_search::WebSearch::new(service));
+        .attach(pl_tool_search::tools::web_search::WebSearch::new(service));
     let output = tool.execute(r#"{"search_query":[{"q":"rust","domains":["rust-lang.org"]}],"time":[{"utc_offset":"+08:00"}]}"#.into(),
-        pl_tool_web_search::Context { request_id: "turn:call".into(), input: Some(vec![serde_json::json!({"role":"user","content":"question"})]), cancellation: CancellationToken::new() }).await.unwrap();
+        pl_tool_search::tools::web_search::Context { request_id: "turn:call".into(), input: Some(vec![serde_json::json!({"role":"user","content":"question"})]), cancellation: CancellationToken::new() }).await.unwrap();
     assert_eq!(output.response.output.len(), 18_000);
     assert!(output.preview.contains("preview omitted"));
     assert_eq!(
@@ -56,7 +56,7 @@ async fn web_search_executes_commands_and_bounds_only_the_preview() {
 
 #[derive(Clone, Default)]
 struct DeepService(Arc<Mutex<Vec<String>>>);
-impl pl_tool_search_support::SearchService for DeepService {
+impl pl_tool_search::support::SearchService for DeepService {
     type Error = io::Error;
     fn source_limit(&self) -> usize {
         2
@@ -66,22 +66,22 @@ impl pl_tool_search_support::SearchService for DeepService {
         query: String,
         _: CancellationToken,
     ) -> Result<
-        pl_tool_search_support::SearchResponse,
-        pl_tool_search_support::ServiceFailure<io::Error, pl_tool_search_support::SearchResponse>,
+        pl_tool_search::support::SearchResponse,
+        pl_tool_search::support::ServiceFailure<io::Error, pl_tool_search::support::SearchResponse>,
     > {
         self.0.lock().unwrap().push(query.clone());
         if query == "first" {
             tokio::task::yield_now().await;
         }
-        let response = pl_tool_search_support::SearchResponse {
+        let response = pl_tool_search::support::SearchResponse {
             sources: vec![
-                pl_tool_search_support::SearchSource {
+                pl_tool_search::support::SearchSource {
                     url: format!("https://example.org/{query}"),
                     title: Some(query.clone()),
                     snippet: Some("snippet".into()),
                     published_at: Some("2026-01-01".into()),
                 },
-                pl_tool_search_support::SearchSource {
+                pl_tool_search::support::SearchSource {
                     url: "https://common.test/".into(),
                     title: None,
                     snippet: None,
@@ -91,7 +91,7 @@ impl pl_tool_search_support::SearchService for DeepService {
             raw_response: serde_json::json!({"query":query}),
         };
         if query == "failure" {
-            return Err(pl_tool_search_support::ServiceFailure {
+            return Err(pl_tool_search::support::ServiceFailure {
                 source: io::Error::other("provider rejected"),
                 observed: Some(response),
                 cancelled: false,
@@ -106,7 +106,7 @@ async fn deepseek_search_deduplicates_fanout_and_preserves_query_order() {
     let calls = service.0.clone();
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_deepseek_web_search::DeepSeekWebSearch::new(service));
+        .attach(pl_tool_search::tools::deepseek_web_search::DeepSeekWebSearch::new(service));
     let output = tool
         .execute(
             r#"{"queries":["first","second","first"]}"#.into(),
@@ -127,7 +127,7 @@ async fn deepseek_search_deduplicates_fanout_and_preserves_query_order() {
         .await
         .unwrap_err();
     let pl_agent_tool::typed::InvocationError::Tool(
-        pl_tool_deepseek_web_search::SearchError::Service { source, output },
+        pl_tool_search::tools::deepseek_web_search::SearchError::Service { source, output },
     ) = error
     else {
         panic!("lost provider failure")
@@ -148,25 +148,25 @@ async fn deepseek_search_deduplicates_fanout_and_preserves_query_order() {
 
 #[derive(Clone, Default)]
 struct FetchService(Arc<AtomicUsize>);
-impl pl_tool_search_support::FetchService for FetchService {
+impl pl_tool_search::support::FetchService for FetchService {
     type Error = io::Error;
     async fn fetch(
         &self,
         url: String,
         _: CancellationToken,
     ) -> Result<
-        pl_tool_search_support::FetchResponse,
-        pl_tool_search_support::ServiceFailure<io::Error, pl_tool_search_support::FetchResponse>,
+        pl_tool_search::support::FetchResponse,
+        pl_tool_search::support::ServiceFailure<io::Error, pl_tool_search::support::FetchResponse>,
     > {
         self.0.fetch_add(1, Ordering::SeqCst);
-        let response = pl_tool_search_support::FetchResponse {
+        let response = pl_tool_search::support::FetchResponse {
             status: 200,
             title: None,
             content: "内容".repeat(4_000),
             raw_response: serde_json::json!({"url":url}),
         };
         if url.ends_with("/failure") {
-            Err(pl_tool_search_support::ServiceFailure {
+            Err(pl_tool_search::support::ServiceFailure {
                 source: io::Error::other("malformed response"),
                 observed: Some(response),
                 cancelled: false,
@@ -182,7 +182,7 @@ async fn deepseek_fetch_retains_full_content_and_failure_observation() {
     let calls = service.0.clone();
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_deepseek_web_fetch::DeepSeekWebFetch::new(service));
+        .attach(pl_tool_search::tools::deepseek_web_fetch::DeepSeekWebFetch::new(service));
     let output = tool
         .execute(
             r#"{"url":"https://example.org/"}"#.into(),
@@ -209,7 +209,7 @@ async fn deepseek_fetch_retains_full_content_and_failure_observation() {
         .await
         .unwrap_err();
     let pl_agent_tool::typed::InvocationError::Tool(
-        pl_tool_deepseek_web_fetch::FetchError::Service { output, .. },
+        pl_tool_search::tools::deepseek_web_fetch::FetchError::Service { output, .. },
     ) = error
     else {
         panic!("lost response")
@@ -219,7 +219,7 @@ async fn deepseek_fetch_retains_full_content_and_failure_observation() {
 
 #[tokio::test]
 async fn skills_list_selects_visible_names_without_loading_bodies() {
-    let listing = |name: &str, description: &str, visible| pl_tool_skill_support::Listing {
+    let listing = |name: &str, description: &str, visible| pl_tool_skill::support::Listing {
         name: name.into(),
         description: description.into(),
         category: Some("rust".into()),
@@ -227,7 +227,7 @@ async fn skills_list_selects_visible_names_without_loading_bodies() {
     };
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_skills_list::SkillsList::new(vec![
+        .attach(pl_tool_skill::tools::skills_list::SkillsList::new(vec![
             listing("rust-api", "public interfaces", true),
             listing("rust-tests", "tests", true),
             listing("hidden", "rust-api", false),
@@ -256,7 +256,7 @@ async fn skills_list_selects_visible_names_without_loading_bodies() {
 
 #[derive(Clone, Default)]
 struct SkillReader(Arc<Mutex<Vec<String>>>);
-impl pl_tool_skill_support::SkillReader for SkillReader {
+impl pl_tool_skill::support::SkillReader for SkillReader {
     type Error = io::Error;
     type Summary = String;
     type ResourceBase = String;
@@ -264,8 +264,8 @@ impl pl_tool_skill_support::SkillReader for SkillReader {
         &self,
         name: &str,
         _: CancellationToken,
-    ) -> Result<pl_tool_skill_support::Document<String, String>, io::Error> {
-        Ok(pl_tool_skill_support::Document {
+    ) -> Result<pl_tool_skill::support::Document<String, String>, io::Error> {
+        Ok(pl_tool_skill::support::Document {
             name: name.into(),
             summary: name.into(),
             resource_base: "provider-owned".into(),
@@ -295,7 +295,7 @@ async fn skill_view_owns_resource_selection_and_retains_reads_on_usage_failure()
     let events = reader.0.clone();
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_skill_view::SkillView::new(reader));
+        .attach(pl_tool_skill::tools::skill_view::SkillView::new(reader));
     let output = tool
         .execute(
             r#"{"name":"example","filePath":"references/detail.md"}"#.into(),
@@ -323,10 +323,9 @@ async fn skill_view_owns_resource_selection_and_retains_reads_on_usage_failure()
         )
         .await
         .unwrap_err();
-    let pl_agent_tool::typed::InvocationError::Tool(pl_tool_skill_view::ViewError::Record {
-        output,
-        ..
-    }) = error
+    let pl_agent_tool::typed::InvocationError::Tool(
+        pl_tool_skill::tools::skill_view::ViewError::Record { output, .. },
+    ) = error
     else {
         panic!("lost successful read")
     };
@@ -335,7 +334,7 @@ async fn skill_view_owns_resource_selection_and_retains_reads_on_usage_failure()
 
 #[derive(Clone, Default)]
 struct SkillFiles(Arc<Mutex<BTreeMap<PathBuf, String>>>, bool);
-impl pl_tool_skill_manage::ProjectFiles for SkillFiles {
+impl pl_tool_skill::tools::skill_manage::ProjectFiles for SkillFiles {
     type Error = io::Error;
     async fn exists(&self, path: &Path) -> Result<bool, io::Error> {
         Ok(self.0.lock().unwrap().contains_key(path))
@@ -352,12 +351,12 @@ impl pl_tool_skill_manage::ProjectFiles for SkillFiles {
         &self,
         path: &Path,
         text: String,
-        mode: pl_tool_skill_manage::WriteMode,
+        mode: pl_tool_skill::tools::skill_manage::WriteMode,
     ) -> Result<(), io::Error> {
         let mut files = self.0.lock().unwrap();
         match (mode, files.contains_key(path)) {
-            (pl_tool_skill_manage::WriteMode::Existing, false)
-            | (pl_tool_skill_manage::WriteMode::Create, true) => {
+            (pl_tool_skill::tools::skill_manage::WriteMode::Existing, false)
+            | (pl_tool_skill::tools::skill_manage::WriteMode::Create, true) => {
                 return Err(io::Error::other("write mode rejected"));
             }
             _ => {}
@@ -393,13 +392,14 @@ impl pl_tool_skill_manage::ProjectFiles for SkillFiles {
 async fn skill_manage_retains_applied_mutation_when_usage_recording_fails() {
     let files = SkillFiles(Arc::default(), true);
     let state = files.0.clone();
-    let tool = prepare_json()
-        .unwrap()
-        .attach(pl_tool_skill_manage::SkillManage::new(
-            files,
-            PathBuf::from("/project/skills"),
-            vec![],
-        ));
+    let tool =
+        prepare_json()
+            .unwrap()
+            .attach(pl_tool_skill::tools::skill_manage::SkillManage::new(
+                files,
+                PathBuf::from("/project/skills"),
+                vec![],
+            ));
     let document = "---\nname: example\ndescription: useful workflow\n---\nbody";
     let error = tool
         .execute(
@@ -408,10 +408,9 @@ async fn skill_manage_retains_applied_mutation_when_usage_recording_fails() {
         )
         .await
         .unwrap_err();
-    let pl_agent_tool::typed::InvocationError::Tool(pl_tool_skill_manage::ManageError::Record {
-        source,
-        output,
-    }) = error
+    let pl_agent_tool::typed::InvocationError::Tool(
+        pl_tool_skill::tools::skill_manage::ManageError::Record { source, output },
+    ) = error
     else {
         panic!("lost mutation observation")
     };
@@ -428,13 +427,14 @@ async fn skill_manage_performs_all_mutations_and_rejects_ambiguous_patch_and_rea
     let state = files.0.clone();
     let root = PathBuf::from("/project/skills");
     let document = "---\nname: example\ndescription: useful workflow\n---\nold old";
-    let tool = prepare_json()
-        .unwrap()
-        .attach(pl_tool_skill_manage::SkillManage::new(
-            files.clone(),
-            root.clone(),
-            vec![],
-        ));
+    let tool =
+        prepare_json()
+            .unwrap()
+            .attach(pl_tool_skill::tools::skill_manage::SkillManage::new(
+                files.clone(),
+                root.clone(),
+                vec![],
+            ));
     let output = tool
         .execute(
             serde_json::json!({"action":"create","name":"example","content":document}).to_string(),
@@ -448,24 +448,25 @@ async fn skill_manage_performs_all_mutations_and_rejects_ambiguous_patch_and_rea
         document
     );
     let candidates = vec![
-        pl_tool_skill_manage::Candidate {
+        pl_tool_skill::tools::skill_manage::Candidate {
             name: "example".into(),
             path: root.join("example"),
             read_only_source: None,
         },
-        pl_tool_skill_manage::Candidate {
+        pl_tool_skill::tools::skill_manage::Candidate {
             name: "system".into(),
             path: PathBuf::from("/readonly/system"),
             read_only_source: Some("system".into()),
         },
     ];
-    let tool = prepare_json()
-        .unwrap()
-        .attach(pl_tool_skill_manage::SkillManage::new(
-            files,
-            root.clone(),
-            candidates,
-        ));
+    let tool =
+        prepare_json()
+            .unwrap()
+            .attach(pl_tool_skill::tools::skill_manage::SkillManage::new(
+                files,
+                root.clone(),
+                candidates,
+            ));
     assert!(
         tool.execute(
             r#"{"action":"patch","name":"example","oldString":"old","newString":"new"}"#.into(),
@@ -513,7 +514,7 @@ async fn skill_manage_performs_all_mutations_and_rejects_ambiguous_patch_and_rea
 
 #[derive(Debug, Default)]
 struct Bots(AtomicUsize);
-impl pl_tool_bot_support::BotSessionHost for Bots {
+impl pl_tool_bots::support::BotSessionHost for Bots {
     type Error = io::Error;
     type Connection = String;
     type Conversation = String;
@@ -523,9 +524,9 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
     async fn list_bots(
         &self,
         scope: &str,
-    ) -> Result<Vec<pl_tool_bot_support::Bot<String>>, io::Error> {
+    ) -> Result<Vec<pl_tool_bots::support::Bot<String>>, io::Error> {
         assert_eq!(scope, "project");
-        Ok(vec![pl_tool_bot_support::Bot {
+        Ok(vec![pl_tool_bots::support::Bot {
             id: "bot".into(),
             name: "helper".into(),
             connection: "connected".into(),
@@ -538,12 +539,12 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
         bot_id: String,
         cursor: Option<String>,
         limit: Option<u32>,
-    ) -> Result<pl_tool_bot_support::Page<String>, io::Error> {
+    ) -> Result<pl_tool_bots::support::Page<String>, io::Error> {
         assert_eq!(
             (scope, bot_id.as_str(), cursor.as_deref(), limit),
             ("project", "bot", Some("cursor"), Some(7))
         );
-        Ok(pl_tool_bot_support::Page {
+        Ok(pl_tool_bots::support::Page {
             items: vec!["chat".into()],
             next_cursor: Some("next".into()),
         })
@@ -551,8 +552,8 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
     async fn read_messages(
         &self,
         scope: &str,
-        request: pl_tool_bot_support::ReadMessages,
-    ) -> Result<pl_tool_bot_support::Page<serde_json::Value>, io::Error> {
+        request: pl_tool_bots::support::ReadMessages,
+    ) -> Result<pl_tool_bots::support::Page<serde_json::Value>, io::Error> {
         assert_eq!(
             (
                 scope,
@@ -563,7 +564,7 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
             ),
             ("project", "bot", "chat", Some(1), Some(2))
         );
-        Ok(pl_tool_bot_support::Page {
+        Ok(pl_tool_bots::support::Page {
             items: vec![
                 serde_json::json!({"kind":"unsupported","msgType":"image","notice":"unsupported"}),
             ],
@@ -577,7 +578,7 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
         bot_id: String,
         chat_id: String,
         text: String,
-    ) -> Result<pl_tool_bot_support::Sent<String, String>, io::Error> {
+    ) -> Result<pl_tool_bots::support::Sent<String, String>, io::Error> {
         assert_eq!(
             (
                 scope,
@@ -589,8 +590,8 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
             ("project", "frozen-call", "bot", "chat", "hello")
         );
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(pl_tool_bot_support::Sent {
-            status: pl_tool_bot_support::SendStatus::Unknown,
+        Ok(pl_tool_bots::support::Sent {
+            status: pl_tool_bots::support::SendStatus::Unknown,
             segments: vec!["observed".into()],
             receipt: "receipt".into(),
         })
@@ -600,7 +601,7 @@ impl pl_tool_bot_support::BotSessionHost for Bots {
 async fn list_bots_projects_authorized_facts() {
     let tool = prepare_json()
         .unwrap()
-        .attach(pl_tool_list_bots::ListBots::new(
+        .attach(pl_tool_bots::tools::list_bots::ListBots::new(
             Arc::new(Bots::default()),
             "project".into(),
         ));
@@ -612,13 +613,12 @@ async fn list_bots_projects_authorized_facts() {
 }
 #[tokio::test]
 async fn list_bot_conversations_preserves_cursor_and_scope() {
-    let tool =
-        prepare_json()
-            .unwrap()
-            .attach(pl_tool_list_bot_conversations::ListBotConversations::new(
-                Arc::new(Bots::default()),
-                "project".into(),
-            ));
+    let tool = prepare_json().unwrap().attach(
+        pl_tool_bots::tools::list_bot_conversations::ListBotConversations::new(
+            Arc::new(Bots::default()),
+            "project".into(),
+        ),
+    );
     let result = tool
         .execute(r#"{"botId":"bot","cursor":"cursor","limit":7}"#.into(), ())
         .await
@@ -629,12 +629,12 @@ async fn list_bot_conversations_preserves_cursor_and_scope() {
 }
 #[tokio::test]
 async fn read_bot_messages_preserves_time_filter_and_unsupported_media() {
-    let tool = prepare_json()
-        .unwrap()
-        .attach(pl_tool_read_bot_messages::ReadBotMessages::new(
+    let tool = prepare_json().unwrap().attach(
+        pl_tool_bots::tools::read_bot_messages::ReadBotMessages::new(
             Arc::new(Bots::default()),
             "project".into(),
-        ));
+        ),
+    );
     let result = tool
         .execute(
             r#"{"botId":"bot","chatId":"chat","startTime":1,"endTime":2}"#.into(),
@@ -648,12 +648,13 @@ async fn read_bot_messages_preserves_time_filter_and_unsupported_media() {
 #[tokio::test]
 async fn send_bot_message_uses_frozen_operation_and_does_not_retry_unknown_status() {
     let host = Arc::new(Bots::default());
-    let tool = prepare_json()
-        .unwrap()
-        .attach(pl_tool_send_bot_message::SendBotMessage::new(
-            host.clone(),
-            "project".into(),
-        ));
+    let tool =
+        prepare_json()
+            .unwrap()
+            .attach(pl_tool_bots::tools::send_bot_message::SendBotMessage::new(
+                host.clone(),
+                "project".into(),
+            ));
     let result = tool
         .execute(
             r#"{"botId":"bot","chatId":"chat","text":"hello"}"#.into(),
@@ -664,7 +665,7 @@ async fn send_bot_message_uses_frozen_operation_and_does_not_retry_unknown_statu
     assert_eq!(result.operation_id, "frozen-call");
     assert!(matches!(
         result.status,
-        pl_tool_bot_support::SendStatus::Unknown
+        pl_tool_bots::support::SendStatus::Unknown
     ));
     assert_eq!(result.segments, ["observed"]);
     assert_eq!(host.0.load(Ordering::SeqCst), 1);

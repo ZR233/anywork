@@ -96,7 +96,7 @@ pub fn validate_skill_document(
     content: &str,
     expected_name: Option<&str>,
 ) -> Result<SkillMetadata> {
-    let frontmatter = pl_tool_skill_support::validate_document(content, expected_name)
+    let frontmatter = pl_tool_skill::support::validate_document(content, expected_name)
         .map_err(skill_core_error)?;
     let description = frontmatter.description.trim();
     Ok(SkillMetadata {

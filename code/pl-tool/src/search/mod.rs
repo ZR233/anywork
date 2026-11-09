@@ -19,4 +19,5 @@ pub use thread::{
 pub const TOOL_WEB_SEARCH: &str = "web_search";
 pub const TOOL_DEEPSEEK_WEB_SEARCH: &str = "deepseek_web_search";
 pub const TOOL_DEEPSEEK_WEB_FETCH: &str = "deepseek_web_fetch";
-pub const DEEPSEEK_SEARCH_MAX_QUERIES: usize = pl_tool_deepseek_web_search::MAX_QUERIES;
+pub const DEEPSEEK_SEARCH_MAX_QUERIES: usize =
+    pl_tool_search::tools::deepseek_web_search::MAX_QUERIES;

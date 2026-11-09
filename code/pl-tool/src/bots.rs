@@ -7,7 +7,7 @@ use pl_core::{
         opaque::{CallContext, Registration, ToolError},
     },
 };
-pub use pl_tool_bot_support::{Bot, BotSessionHost, Page, ReadMessages, SendStatus, Sent};
+pub use pl_tool_bots::support::{Bot, BotSessionHost, Page, ReadMessages, SendStatus, Sent};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -28,10 +28,10 @@ impl BotToolKind {
     }
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::ListBots => pl_tool_list_bots::declaration(),
-            Self::ListConversations => pl_tool_list_bot_conversations::declaration(),
-            Self::ReadMessages => pl_tool_read_bot_messages::declaration(),
-            Self::SendMessage => pl_tool_send_bot_message::declaration(),
+            Self::ListBots => pl_tool_bots::tools::list_bots::declaration(),
+            Self::ListConversations => pl_tool_bots::tools::list_bot_conversations::declaration(),
+            Self::ReadMessages => pl_tool_bots::tools::read_bot_messages::declaration(),
+            Self::SendMessage => pl_tool_bots::tools::send_bot_message::declaration(),
         }
     }
 }
@@ -107,25 +107,27 @@ where
         let scope = self.workspace_id.clone();
         match self.kind {
             BotToolKind::ListBots => output(
-                &pl_tool_list_bots::ListBots::new(host, scope)
+                &pl_tool_bots::tools::list_bots::ListBots::new(host, scope)
                     .execute(decode_json(input.content()).map_err(ToolError::new)?, ())
                     .await
                     .map_err(ToolError::new)?,
             ),
             BotToolKind::ListConversations => output(
-                &pl_tool_list_bot_conversations::ListBotConversations::new(host, scope)
-                    .execute(decode_json(input.content()).map_err(ToolError::new)?, ())
-                    .await
-                    .map_err(ToolError::new)?,
+                &pl_tool_bots::tools::list_bot_conversations::ListBotConversations::new(
+                    host, scope,
+                )
+                .execute(decode_json(input.content()).map_err(ToolError::new)?, ())
+                .await
+                .map_err(ToolError::new)?,
             ),
             BotToolKind::ReadMessages => output(
-                &pl_tool_read_bot_messages::ReadBotMessages::new(host, scope)
+                &pl_tool_bots::tools::read_bot_messages::ReadBotMessages::new(host, scope)
                     .execute(decode_json(input.content()).map_err(ToolError::new)?, ())
                     .await
                     .map_err(ToolError::new)?,
             ),
             BotToolKind::SendMessage => output(
-                &pl_tool_send_bot_message::SendBotMessage::new(host, scope)
+                &pl_tool_bots::tools::send_bot_message::SendBotMessage::new(host, scope)
                     .execute(
                         decode_json(input.content()).map_err(ToolError::new)?,
                         context.call_id,

@@ -31,7 +31,7 @@ pub use scanning::{
 };
 pub use selection::{SkillSelection, SkillSelectionRequest, SkillSelector};
 
-pub(crate) use pl_tool_skill_support::is_main_skill_path;
+pub(crate) use pl_tool_skill::support::is_main_skill_path;
 
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const USAGE_FILE_NAME: &str = ".usage.json";
@@ -183,7 +183,7 @@ pub fn project_skills_dir(workspace_root: &Path, config: &SkillsConfig) -> Resul
 }
 
 pub fn validate_skill_name(name: &str) -> Result<()> {
-    pl_tool_skill_support::validate_name(name)
+    pl_tool_skill::support::validate_name(name)
         .map_err(|source| PureError::ConfigError(source.into_message()))
 }
 
