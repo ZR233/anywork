@@ -28,7 +28,6 @@ import 'package:anywork/src/features/settings/statistics/view_models/statistics_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork/src/shared/studio_code_block.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
 import 'package:flutter/material.dart';
@@ -717,17 +716,30 @@ final class _RealtimeScene {
       atom,
       timeout: remaining(),
     );
-    final outputLabel = AppLocalizations.of(tester.element(backgroundRow))
-        .timelineToolOutput;
+    final declaredOutputs = atom.contents
+        .where((content) => content.role == ChatContentRole.toolOutput)
+        .toList();
+    expect(declaredOutputs, hasLength(1));
+    final outputReference = declaredOutputs.single.reference;
+    final outputTarget = outputReference.target as BodyContentTarget;
+    expect(
+      (outputTarget.owner as ItemContentOwner).itemId,
+      atom.completionItemId,
+    );
+    final outputIdentity = contentReferenceIdentity(outputReference);
     final backgroundOutput = find.descendant(
       of: backgroundRow,
       matching: find.byWidgetPredicate(
-        (widget) => widget is StudioCodeBlock && widget.language == outputLabel,
+        (widget) =>
+            widget is TimelineContentRangeConnector &&
+            widget.itemId == block.id &&
+            widget.contentKey == ChatContentRole.toolOutput.name &&
+            contentReferenceIdentity(widget.reference) == outputIdentity,
       ),
     );
     await until(
       () => backgroundOutput.evaluate().length == 1,
-      'the exact canonical tool output section',
+      'the exact canonical declared tool output section',
       timeout: remaining(),
     );
     await until(
