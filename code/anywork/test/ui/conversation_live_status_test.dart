@@ -141,6 +141,60 @@ Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
 
 void main() {
   group('统一实时状态栏', () {
+    testWidgets('窄图标槽在父级裁剪时仍完整显示趴卧猫', (tester) async {
+      const boundaryKey = ValueKey('clipped-activity-row');
+      Widget scene(Clip clip) => _wrapWithApp(
+        RepaintBoundary(
+          key: boundaryKey,
+          child: SizedBox(
+            height: 60,
+            child: Center(
+              child: SizedBox(
+                width: 120,
+                child: ClipRect(
+                  clipBehavior: clip,
+                  child: const TimelineActivityRow(
+                    label: '思考中',
+                    active: true,
+                    header: true,
+                    expandable: false,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        width: 160,
+      );
+      Future<List<int>> pixels() async => (await tester.runAsync(() async {
+        final boundary = tester.renderObject<RenderRepaintBoundary>(
+          find.byKey(boundaryKey),
+        );
+        final image = await boundary.toImage(pixelRatio: 3);
+        try {
+          final bytes = await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          );
+          return bytes!.buffer.asUint8List();
+        } finally {
+          image.dispose();
+        }
+      }))!;
+      for (final elapsed in [0, 800, 1000, 1200]) {
+        await tester.pumpWidget(scene(Clip.none));
+        await tester.pump(Duration(milliseconds: elapsed));
+        final full = await pixels();
+        await tester.pumpWidget(scene(Clip.hardEdge));
+        final clipped = await pixels();
+        expect(
+          clipped.indexed.every((entry) => entry.$2 == full[entry.$1]),
+          isTrue,
+          reason: '父级裁剪不应切掉猫头、前爪或摆动中的尾巴的任何像素',
+        );
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('趴卧猫逐帧保持身体像素固定，只有台沿以下的尾巴摆动', (tester) async {
       final progress = AnimationController(vsync: tester);
       addTearDown(progress.dispose);

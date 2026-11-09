@@ -342,11 +342,11 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
           color: widget.color,
         );
       }
-      // 猫的轮廓需要更大的画布；保留原图标槽，书写图标与文字不移位。
+      // 横向收窄，使完整轮廓落在标题的 14px 图标槽内；保留尾巴高度。
       return SizedBox.square(
         dimension: TimelineActivityRow.iconSize,
         child: OverflowBox(
-          maxWidth: 24,
+          maxWidth: 17,
           maxHeight: 24,
           child: TimelineRestingCat(
             progress: _motion,
