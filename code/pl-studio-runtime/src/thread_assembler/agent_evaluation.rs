@@ -1,5 +1,5 @@
 //! Final evaluations are owned operations, not cancellable tool-side SQL futures.
-use super::{StudioThreadAssembler, agent_services::AgentServices};
+use super::{SessionRuntime, agent_services::AgentServices};
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
     ThreadLifecycle, ThreadSnapshot, TurnState,
@@ -15,7 +15,7 @@ use pl_protocol::{
 impl AgentServices {
     async fn evaluate_final(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         caller: &str,
         request: EvaluateAgentRequest,
     ) -> Result<EvaluateAgentReceipt> {
@@ -29,22 +29,24 @@ impl AgentServices {
                 .get(caller)
                 .context("evaluation caller is not active")?;
             ensure!(
-                parent.ready
+                parent.native.ready
                     && !state.sealed_agents.contains_key(caller)
-                    && parent.parent_id.is_none()
-                    && parent.thread.snapshot().lifecycle == ThreadLifecycle::Open,
+                    && parent.native.parent_id.is_none()
+                    && parent.native.thread.snapshot().lifecycle == ThreadLifecycle::Open,
                 "only an active parent root may evaluate its direct child"
             );
             let sealed = state.sealed_agents.contains_key(&request.target)
                 || state
                     .entries
                     .get(&request.target)
-                    .is_some_and(|entry| !entry.ready);
+                    .is_some_and(|entry| !entry.native.ready);
             (
-                state
-                    .entries
-                    .get(&request.target)
-                    .map(|entry| (entry.thread.clone(), entry.incarnation.clone())),
+                state.entries.get(&request.target).map(|entry| {
+                    (
+                        entry.native.thread.clone(),
+                        entry.native.incarnation.clone(),
+                    )
+                }),
                 sealed,
             )
         };
@@ -114,7 +116,7 @@ impl AgentServices {
                         .entries
                         .get(&request.target)
                         .is_some_and(|entry| std::sync::Arc::ptr_eq(
-                            &entry.incarnation,
+                            &entry.native.incarnation,
                             incarnation
                         )),
                 "child changed during final evaluation history read; retry with latest state"
@@ -236,7 +238,7 @@ pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
     Ok(())
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     pub(super) async fn evaluate_agent(
         &self,
         caller: String,
@@ -269,7 +271,7 @@ impl StudioThreadAssembler {
                             .state()
                             .entries
                             .get(&root)
-                            .is_some_and(|entry| entry.parent_id.is_none()),
+                            .is_some_and(|entry| entry.native.parent_id.is_none()),
                         "evaluation caller is not an active root"
                     );
                     Ok(())

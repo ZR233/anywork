@@ -337,7 +337,7 @@ impl Drop for ChildReservation {
     }
 }
 
-impl super::StudioThreadAssembler {
+impl super::SessionRuntime {
     pub(super) fn child_factory(
         &self,
         context: &pl_core::tool::opaque::CallContext,
@@ -353,11 +353,12 @@ impl super::StudioThreadAssembler {
             .entries
             .get(&context.thread_id)
             .filter(|entry| {
-                entry.ready
-                    && entry.thread.snapshot().lifecycle == pl_core::thread::ThreadLifecycle::Open
+                entry.native.ready
+                    && entry.native.thread.snapshot().lifecycle
+                        == pl_core::thread::ThreadLifecycle::Open
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(context.thread_id.clone()))?;
-        if parent.parent_id.is_some() {
+        if parent.native.parent_id.is_some() {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         state
@@ -382,12 +383,13 @@ impl super::StudioThreadAssembler {
             .entries
             .get(&context.thread_id)
             .filter(|entry| {
-                entry.ready
-                    && entry.thread.snapshot().lifecycle == pl_core::thread::ThreadLifecycle::Open
+                entry.native.ready
+                    && entry.native.thread.snapshot().lifecycle
+                        == pl_core::thread::ThreadLifecycle::Open
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(context.thread_id.clone()))?;
         // Studio's current product policy permits only root agents to create children.
-        if parent.parent_id.is_some() {
+        if parent.native.parent_id.is_some() {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         let factory = state
@@ -400,7 +402,9 @@ impl super::StudioThreadAssembler {
             state
                 .entries
                 .iter()
-                .filter(|(_, entry)| entry.parent_id.as_deref() == Some(context.thread_id.as_str()))
+                .filter(|(_, entry)| {
+                    entry.native.parent_id.as_deref() == Some(context.thread_id.as_str())
+                })
                 .map(|(id, _)| id.as_str()),
         );
         occupied.extend(

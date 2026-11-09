@@ -1,7 +1,7 @@
 //! Deterministic registry/owner interleavings; no model, real user workspace or remote endpoint.
 use super::*;
 use crate::thread_assembler::{
-    ChildThreadRequest, Entry, EntryPurpose, Preparation, StudioChildFactory, StudioThreadSpec,
+    ChildThreadRequest, EntryPurpose, Preparation, StudioChildFactory, StudioThreadSpec,
     child_resources::{UnpublishedChild, WorkspacePreparationOwner},
     children::{ChildFactory, PreparingChild},
 };
@@ -10,13 +10,15 @@ use tokio_util::sync::CancellationToken;
 
 #[test]
 fn contradictory_archive_parentage_fails_before_sealing_or_cancelling_any_owner() {
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let cancellation = CancellationToken::new();
     {
         let mut state = owner.0.state();
         state.creating.insert(
             "child".into(),
             Preparation {
+                resources: Arc::new(crate::session::NativeResources::default()),
+                settlement: None,
                 purpose: None,
                 parent_id: Some("root".into()),
                 cancellation: cancellation.clone(),
@@ -41,7 +43,7 @@ fn contradictory_archive_parentage_fails_before_sealing_or_cancelling_any_owner(
 
 #[tokio::test]
 async fn archive_seals_and_cancels_before_waiting_on_a_preparer_owned_root_permit() {
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let reservation = owner.reserve("root", None).unwrap();
     let unrelated = owner.reserve("unrelated", None).unwrap();
     let root_cancel = owner.0.state().creating["root"].cancellation.clone();
@@ -146,7 +148,7 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
     let temp = tempfile::tempdir().unwrap();
     let resource = temp.path().join("prepared-resource");
     tokio::fs::write(&resource, b"still owned").await.unwrap();
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let fail = Arc::new(AtomicBool::new(true));
     let calls = Arc::new(AtomicUsize::new(0));
     let preparation_cancel = CancellationToken::new();
@@ -156,6 +158,8 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
         state.creating.insert(
             "creating-child".into(),
             Preparation {
+                resources: Arc::new(crate::session::NativeResources::default()),
+                settlement: None,
                 purpose: None,
                 parent_id: Some("root".into()),
                 cancellation: preparation_cancel.clone(),
@@ -226,32 +230,38 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
 
 #[tokio::test]
 async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() {
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let temp = tempfile::tempdir().unwrap();
     let resource = temp.path().join("resource");
     tokio::fs::write(&resource, b"owned").await.unwrap();
     let child = pl_core::thread::ThreadHandle::resume_without_model("child".into(), None).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
+    let activation = crate::thread_assembler::ThreadActivation::native_test("child", Some("root"));
     {
         let mut state = owner.0.state();
         state.entries.insert(
             "child".into(),
-            Entry {
-                purpose: EntryPurpose::Execution,
-                workspace_usage: None,
-                close_storage: None,
-                published_resources_closed: false,
-                workspace_disposition: None,
-                cleanup: Default::default(),
-                execution: pl_core::thread::input::InputDriverOptions {
-                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
-                        std::num::NonZeroU32::new(1).unwrap(),
-                    ),
+            crate::session::AgentInstance {
+                identity: activation.agent,
+                binding: activation.binding,
+                native: crate::session::NativeThreadRuntime {
+                    resources: Arc::new(crate::session::NativeResources::default()),
+                    purpose: EntryPurpose::Execution,
+                    workspace_usage: None,
+                    close_storage: None,
+                    published_resources_closed: false,
+                    workspace_disposition: None,
+                    cleanup: Default::default(),
+                    execution: pl_core::thread::input::InputDriverOptions {
+                        max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                            std::num::NonZeroU32::new(1).unwrap(),
+                        ),
+                    },
+                    incarnation: Arc::new(()),
+                    parent_id: Some("root".into()),
+                    ready: false,
+                    thread: child,
                 },
-                incarnation: Arc::new(()),
-                parent_id: Some("root".into()),
-                ready: false,
-                thread: child,
             },
         );
         state.unpublished_children.insert(
@@ -285,7 +295,7 @@ async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() 
 
 #[tokio::test]
 async fn cancelled_archive_waiter_rejoins_the_original_unpublished_disposal() {
-    let owner = StudioThreadAssembler::default();
+    let owner = SessionRuntime::default();
     let temp = tempfile::tempdir().unwrap();
     let resource = temp.path().join("resource");
     tokio::fs::write(&resource, b"owned").await.unwrap();

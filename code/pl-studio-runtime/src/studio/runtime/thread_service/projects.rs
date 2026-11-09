@@ -350,9 +350,20 @@ impl StudioRuntime {
                 bail!("project has an active turn");
             }
         }
-        let scope = self.threads.seal_archive_scope(&roots)?;
-        let admitted = scope.preparation_identities(workspace_id);
-        let mut admitted_ids = scope.thread_ids();
+        let mut scopes = Vec::new();
+        for root in &roots {
+            let session = self.session_for_roots(std::slice::from_ref(root))?;
+            let scope = session.seal_archive_scope(std::slice::from_ref(root))?;
+            scopes.push((session, scope));
+        }
+        let admitted = scopes
+            .iter()
+            .flat_map(|(_, scope)| scope.preparation_identities(workspace_id))
+            .collect::<Vec<_>>();
+        let mut admitted_ids = scopes
+            .iter()
+            .flat_map(|(_, scope)| scope.thread_ids())
+            .collect::<Vec<_>>();
         admitted_ids.extend(threads.iter().map(|thread| thread.id.clone()));
         admitted_ids.sort();
         admitted_ids.dedup();
@@ -365,7 +376,9 @@ impl StudioRuntime {
             )
             .await?;
         admitted_ids.extend(frozen.thread_ids());
-        scope.cancel_preparations();
+        for (_, scope) in &scopes {
+            scope.cancel_preparations();
+        }
         admitted_ids.sort();
         admitted_ids.dedup();
         let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
@@ -374,10 +387,12 @@ impl StudioRuntime {
                 .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
                 .await;
         }
-        tokio::time::timeout(
-            self.archive_settle_timeout(),
-            self.threads.drain_archive_preparations(&scope),
-        )
+        tokio::time::timeout(self.archive_settle_timeout(), async {
+            for (session, scope) in &scopes {
+                session.drain_archive_preparations(scope).await?;
+            }
+            Ok::<(), crate::thread_assembler::ThreadAssemblyError>(())
+        })
         .await
         .context("project archive preparations did not join")??;
         let threads = self.load_project_archive_scope(workspace_id).await?;

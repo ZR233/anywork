@@ -1,5 +1,5 @@
 //! Last-mile admission shared by direct assembler inputs and interaction continuations.
-use super::{StudioThreadAssembler, ThreadAssemblyError, agent_services::AgentServices};
+use super::{SessionRuntime, ThreadAssemblyError, agent_services::AgentServices};
 use anyhow::{Context, Result};
 use pl_core::thread::{DeferredModelUpdatePrecondition, ThreadHandle};
 
@@ -113,7 +113,7 @@ impl AgentServices {
     }
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// The caller holds the same identity's operation permit through actual core admission.
     pub(super) async fn prepare_input_admission(
         &self,

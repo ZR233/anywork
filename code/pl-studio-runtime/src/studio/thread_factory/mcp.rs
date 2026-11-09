@@ -33,6 +33,10 @@ pub(super) struct ThreadMcpPreparation<'a> {
     pub cancellation: &'a CancellationToken,
 }
 
+type McpCloseResult = Result<(), Arc<ThreadAssemblyError>>;
+type McpCloseCompletion =
+    futures::future::Shared<futures::future::BoxFuture<'static, McpCloseResult>>;
+
 pub(crate) struct ThreadMcpOwner {
     pub(super) thread_id: String,
     pub(super) lifetime: Arc<ThreadToolLifetime>,
@@ -44,9 +48,13 @@ pub(crate) struct ThreadMcpOwner {
     state: Mutex<ThreadMcpStateSnapshot>,
     pub(super) command_lock: Arc<tokio::sync::Mutex<()>>,
     watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown: Mutex<Option<McpCloseCompletion>>,
 }
 
 impl ThreadMcpOwner {
+    pub(crate) fn cancel_producers(&self) {
+        self.lifetime.cancellation.cancel();
+    }
     fn new(
         thread_id: String,
         lifetime: Arc<ThreadToolLifetime>,
@@ -77,6 +85,7 @@ impl ThreadMcpOwner {
             state: Mutex::new(initial_state),
             command_lock: Arc::new(tokio::sync::Mutex::new(())),
             watcher: Mutex::new(None),
+            shutdown: Mutex::new(None),
         })
     }
 
@@ -97,15 +106,61 @@ impl ThreadMcpOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
     }
 
-    fn stop_watcher(&self) {
-        if let Some(handle) = self
-            .watcher
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            handle.abort();
-        }
+    async fn close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseResult {
+        use futures::FutureExt;
+        self.lifetime.cancellation.cancel();
+        let completion = {
+            let mut slot = self
+                .shutdown
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(current) = slot.as_ref()
+                && !matches!(current.peek(), Some(Err(_)))
+            {
+                current.clone()
+            } else {
+                let owner = self.clone();
+                let events = events.clone();
+                let task = tokio::spawn(async move {
+                    let _command = owner.command_lock.lock().await;
+                    let watcher = owner
+                        .watcher
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    if let Some(watcher) = watcher {
+                        watcher.abort();
+                        if let Err(source) = watcher.await
+                            && !source.is_cancelled()
+                        {
+                            return Err(Arc::new(ThreadAssemblyError::Resource {
+                                operation: "join MCP watcher",
+                                source: Box::new(source),
+                            }));
+                        }
+                    }
+                    owner.publish_shutting_down(&events);
+                    owner.runtime.shutdown().await.map_err(|source| {
+                        Arc::new(resource_error("shutdown member MCP", source))
+                    })?;
+                    owner.publish_closed(&events);
+                    Ok(())
+                });
+                let completion = async move {
+                    task.await.unwrap_or_else(|source| {
+                        Err(Arc::new(ThreadAssemblyError::Resource {
+                            operation: "join member MCP shutdown",
+                            source: Box::new(source),
+                        }))
+                    })
+                }
+                .boxed()
+                .shared();
+                *slot = Some(completion.clone());
+                completion
+            }
+        };
+        completion.await
     }
 
     fn remote_commands(&self) -> Option<Arc<RemoteCommandBackend>> {
@@ -315,7 +370,9 @@ impl StudioThreadFactory {
 
         match preparation {
             CatalogPreparation::Initial => {
-                let _ = self.shutdown_thread_mcp(thread_id).await;
+                self.shutdown_thread_mcp(thread_id)
+                    .await
+                    .map_err(|error| resource_error("close previous member MCP", error))?;
                 let runtime = McpRuntime::new(self.services.mcp_connector.clone());
                 let owner = ThreadMcpOwner::new(
                     thread_id.to_owned(),
@@ -328,10 +385,12 @@ impl StudioThreadFactory {
                 );
                 owner.start_watcher(self.services.product_events.clone());
                 let initial_snapshot = owner.read_snapshot();
-                self.mcp_owners
+                *self
+                    .resource_scope(thread_id)
+                    .ok_or(ThreadAssemblyError::Closed)?
+                    .mcp
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(thread_id.to_owned(), owner.clone());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner.clone());
                 self.services
                     .product_events
                     .emit_thread_mcp_state(initial_snapshot);
@@ -345,25 +404,36 @@ impl StudioThreadFactory {
                     }
                 };
                 if let Err(error) = reconcile_result {
-                    let _ = self.shutdown_thread_mcp(thread_id).await;
+                    if let Err(cleanup) = self.shutdown_thread_mcp(thread_id).await {
+                        return Err(ThreadAssemblyError::Cleanup {
+                            id: thread_id.into(),
+                            setup: Box::new(error),
+                            cleanup: Box::new(resource_error("close failed member MCP", cleanup)),
+                        });
+                    }
                     return Err(error);
                 }
                 owner.refresh_snapshot(&self.services.product_events).await;
                 match owner.runtime.acquire_turn_lease().await {
                     Ok(lease) => Ok(lease),
                     Err(error) => {
-                        let _ = self.shutdown_thread_mcp(thread_id).await;
-                        Err(resource_error("acquire initial Thread MCP lease", error))
+                        let setup = resource_error("acquire initial Thread MCP lease", error);
+                        if let Err(cleanup) = self.shutdown_thread_mcp(thread_id).await {
+                            return Err(ThreadAssemblyError::Cleanup {
+                                id: thread_id.into(),
+                                setup: Box::new(setup),
+                                cleanup: Box::new(resource_error(
+                                    "close failed member MCP",
+                                    cleanup,
+                                )),
+                            });
+                        }
+                        Err(setup)
                     }
                 }
             }
             CatalogPreparation::Refresh { .. } => {
-                let existing = self
-                    .mcp_owners
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(thread_id)
-                    .cloned();
+                let existing = self.mcp_owner(thread_id);
                 let owner = match existing {
                     Some(owner) => {
                         owner.update_resolved(resolved_servers, remote_commands);
@@ -382,10 +452,13 @@ impl StudioThreadFactory {
                         );
                         owner.start_watcher(self.services.product_events.clone());
                         let initial_snapshot = owner.read_snapshot();
-                        self.mcp_owners
+                        *self
+                            .resource_scope(thread_id)
+                            .ok_or(ThreadAssemblyError::Closed)?
+                            .mcp
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(thread_id.to_owned(), owner.clone());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(owner.clone());
                         self.services
                             .product_events
                             .emit_thread_mcp_state(initial_snapshot);
@@ -411,13 +484,7 @@ impl StudioThreadFactory {
     }
 
     pub(crate) async fn read_thread_mcp(&self, thread_id: &str) -> Result<ThreadMcpStateSnapshot> {
-        if let Some(owner) = self
-            .mcp_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(thread_id)
-            .cloned()
-        {
+        if let Some(owner) = self.mcp_owner(thread_id) {
             return Ok(owner.read_snapshot());
         }
         let thread = self.thread_record(thread_id).await?;
@@ -439,18 +506,16 @@ impl StudioThreadFactory {
         thread_id: &str,
         server_id: Option<&str>,
     ) -> Result<ThreadMcpStateSnapshot> {
-        let owner = self
-            .mcp_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(thread_id)
-            .cloned()
-            .ok_or_else(|| {
-                pl_protocol::studio::StudioError::invalid_argument(format!(
-                    "Thread '{thread_id}' is not currently open"
-                ))
-            })?;
+        let owner = self.mcp_owner(thread_id).ok_or_else(|| {
+            pl_protocol::studio::StudioError::invalid_argument(format!(
+                "Thread '{thread_id}' is not currently open"
+            ))
+        })?;
         let _guard = owner.command_lock.lock().await;
+        anyhow::ensure!(
+            !owner.lifetime.cancellation.is_cancelled(),
+            "member MCP is closing"
+        );
         let resolved_servers = self.services.config_runtime.resolve_thread_mcp_configs(
             &owner.scope,
             &owner.workspace_root,
@@ -484,16 +549,23 @@ impl StudioThreadFactory {
 
     pub(crate) async fn reconcile_open_threads_for_scopes(&self, scopes: &[McpScope]) {
         let include_all = scopes.iter().any(|scope| matches!(scope, McpScope::Host));
-        let owners: Vec<Arc<ThreadMcpOwner>> = self
-            .mcp_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
+        let owners = self
+            .resource_scopes()
+            .iter()
+            .filter_map(|scope| {
+                scope
+                    .mcp
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
             .filter(|owner| include_all || scopes.contains(&owner.scope))
-            .cloned()
-            .collect();
+            .collect::<Vec<_>>();
         for owner in owners {
             let _guard = owner.command_lock.lock().await;
+            if owner.lifetime.cancellation.is_cancelled() {
+                continue;
+            }
             let resolved_servers = match self.services.config_runtime.resolve_thread_mcp_configs(
                 &owner.scope,
                 &owner.workspace_root,
@@ -526,91 +598,58 @@ impl StudioThreadFactory {
         }
     }
 
-    pub(super) fn retire_thread_mcp_if_current(
-        &self,
-        id: &str,
-        lifetime: &Arc<ThreadToolLifetime>,
-    ) {
-        let removed = {
-            let mut guard = self
-                .mcp_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard
-                .get(id)
-                .is_some_and(|owner| Arc::ptr_eq(&owner.lifetime, lifetime))
-            {
-                guard.remove(id)
-            } else {
-                None
-            }
-        };
-        if let Some(owner) = removed {
-            owner.stop_watcher();
-            let product_events = self.services.product_events.clone();
-            let handle = tokio::spawn(async move {
-                owner.publish_shutting_down(&product_events);
-                let _ = owner.runtime.shutdown().await;
-                owner.publish_closed(&product_events);
-            });
-            self.retiring_mcp
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(handle);
-        }
+    fn mcp_owner(&self, id: &str) -> Option<Arc<ThreadMcpOwner>> {
+        self.resource_scope(id)?
+            .mcp
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
-    async fn drain_retiring_mcp(&self) {
-        let handles: Vec<tokio::task::JoinHandle<()>> = std::mem::take(
-            &mut *self
-                .retiring_mcp
+    pub(crate) async fn shutdown_scope_mcp(
+        &self,
+        scope: &Arc<crate::session::NativeResources>,
+    ) -> Result<()> {
+        let owner = scope
+            .mcp
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(owner) = owner {
+            #[cfg(test)]
+            if scope
+                .s2_mcp_close_failure
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for handle in handles {
-            let _ = handle.await;
+                .unwrap()
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err(std::io::Error::other("injected failed preparation MCP close").into());
+            }
+            owner
+                .close(&self.services.product_events)
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "close member MCP",
+                    source: Box::new(source),
+                })?;
+            let mut slot = scope
+                .mcp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &owner))
+            {
+                slot.take();
+            }
         }
+        Ok(())
     }
 
     pub(crate) async fn shutdown_thread_mcp(&self, id: &str) -> Result<()> {
-        let removed = self
-            .mcp_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
-        let mut shutdown_res = Ok(());
-        if let Some(owner) = removed {
-            owner.stop_watcher();
-            owner.publish_shutting_down(&self.services.product_events);
-            shutdown_res = owner.runtime.shutdown().await.map_err(Into::into);
-            owner.publish_closed(&self.services.product_events);
-        }
-        self.drain_retiring_mcp().await;
-        shutdown_res
-    }
-
-    pub(crate) async fn shutdown_all_mcp(&self) -> Result<()> {
-        let owners: Vec<Arc<ThreadMcpOwner>> = {
-            let mut guard = self
-                .mcp_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *guard).into_values().collect()
-        };
-        let mut first_error = None;
-        for owner in owners {
-            owner.stop_watcher();
-            owner.publish_shutting_down(&self.services.product_events);
-            if let Err(error) = owner.runtime.shutdown().await
-                && first_error.is_none()
-            {
-                first_error = Some(anyhow::Error::from(error));
-            }
-            owner.publish_closed(&self.services.product_events);
-        }
-        self.drain_retiring_mcp().await;
-        if let Some(error) = first_error {
-            return Err(error);
+        if let Some(scope) = self.resource_scope(id) {
+            self.shutdown_scope_mcp(&scope).await?;
         }
         Ok(())
     }

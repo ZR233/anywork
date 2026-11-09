@@ -202,13 +202,13 @@ impl StudioRuntime {
                         .insert(format!("ssh-ready:{server}"), revision.to_string());
                 }
                 let active = runtime
-                    .threads
+                    .sessions
                     .observed_threads()
                     .into_iter()
                     .filter(|(id, thread)| {
                         runtime
-                            .threads
-                            .thread(id)
+                            .session_of(id)
+                            .and_then(|session| session.thread(id))
                             .is_some_and(|current| current.same_instance(thread))
                     })
                     .collect::<Vec<_>>();
@@ -297,6 +297,12 @@ impl StudioRuntime {
         let ids: std::collections::BTreeSet<_> = active.iter().map(|(id, _)| id.clone()).collect();
         attempted.retain(|id, _| ids.contains(id));
         for (id, thread) in active {
+            let Some(resources_scope) = self
+                .session_of(&id)
+                .and_then(|session| session.native_resources(&thread).ok())
+            else {
+                continue;
+            };
             let Ok((gate, cancellation)) = self.thread_factory.tool_operation(&id) else {
                 continue;
             };
@@ -364,7 +370,7 @@ impl StudioRuntime {
                 Err(error) => match error.downcast::<pl_core::thread::ThreadError>() {
                     Ok(pl_core::thread::ThreadError::RejectedTools(resources)) => {
                         tracing::warn!(thread_id = %id, error = %resources, "retaining rejected candidate cleanup owner");
-                        self.rejected_tools.retain(thread.clone(), resources);
+                        resources_scope.candidates.retain(thread.clone(), resources);
                         // Retry the original owner once promptly. Persistent failure waits for a source event
                         // or shutdown; no new candidates accumulate while cleanup remains pending.
                         self.tool_catalog_updates.notify_one();
@@ -422,10 +428,12 @@ impl StudioRuntime {
             &issue_id,
             issue,
             || {
-                self.threads.thread(id).is_some_and(|current| {
-                    current.same_instance(thread)
-                        && current.snapshot().lifecycle == ThreadLifecycle::Open
-                })
+                self.session_of(id)
+                    .and_then(|session| session.thread(id))
+                    .is_some_and(|current| {
+                        current.same_instance(thread)
+                            && current.snapshot().lifecycle == ThreadLifecycle::Open
+                    })
             },
             |issues| {
                 self.agent_facility
@@ -478,7 +486,10 @@ impl StudioRuntime {
                     }
                     let selection = crate::studio::delegation::saved(snapshot)?
                         .context("Thread has no frozen delegation selection")?;
-                    registrations.extend(self.threads.agent_control_tools(&profiles, selection)?);
+                    registrations.extend(
+                        self.require_session(id)?
+                            .agent_control_tools(&profiles, selection)?,
+                    );
                     Some(profiles.revision)
                 }
                 crate::thread_assembler::AgentControlExposure::Disabled => None,

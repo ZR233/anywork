@@ -15,7 +15,9 @@ impl StudioRuntime {
         let (position, _) = slot.capture();
         // Choose the read source once. In particular, an execution owner installed during cold IO
         // must not supply usage for the independently captured durable State.
-        let handle = self.threads.observed_thread(thread_id);
+        let handle = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id));
         let (state, business_refs) = match handle.as_ref() {
             Some(handle) => {
                 let state = handle.snapshot();
@@ -163,7 +165,7 @@ impl StudioRuntime {
         thread_id: &str,
     ) -> Result<ThreadSnapshot> {
         if let Some((_, handle)) = self
-            .threads
+            .sessions
             .observed_threads()
             .into_iter()
             .find(|(id, _)| id == thread_id)

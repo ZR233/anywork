@@ -84,7 +84,7 @@ impl StudioRuntime {
                 source.clone(),
             )
         });
-        let thread = self.read_protocol_thread(thread_id).await?;
+        let mut thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let mut state = None;
         let mut storage = None;
@@ -183,6 +183,7 @@ impl StudioRuntime {
                     let business_refs = facet.current.business_refs();
                     model_route = facet.model_route.map(|route| route.snapshot(false));
                     if let Some(saved) = facet.saved_state.as_ref() {
+                        thread.status = crate::studio::thread_projection::status(saved);
                         runtime = Some(
                             crate::studio::thread_projection::project_runtime(
                                 thread_id,
@@ -1070,7 +1071,12 @@ mod storage_fault_tests {
         }
         if matches!(case, HistoryReadCase::Cold) {
             stage.set("cold State snapshot without execution owner");
-            assert!(runtime.threads.observed_thread(&thread.id).is_none());
+            assert!(
+                runtime
+                    .session_of(&thread.id)
+                    .and_then(|session| session.observed_thread(&thread.id))
+                    .is_none()
+            );
             let (saved, references) = runtime
                 .store
                 .history(&thread.id)
@@ -1086,7 +1092,10 @@ mod storage_fault_tests {
             assert!(snapshot.active_turn.is_none());
             assert!(snapshot.activity.is_none());
             assert!(
-                runtime.threads.observed_thread(&thread.id).is_none(),
+                runtime
+                    .session_of(&thread.id)
+                    .and_then(|session| session.observed_thread(&thread.id))
+                    .is_none(),
                 "cold State reading activated an execution owner"
             );
             assert_eq!(
@@ -1115,7 +1124,7 @@ mod storage_fault_tests {
             .context("cold history subscribe")?;
         let (events, receiver) = broadcast::channel(16);
         let baseline = runtime
-            .threads
+            .require_session(&thread.id)?
             .observed_thread(&thread.id)
             .context("explicitly activated owner")?
             .snapshot();
@@ -1187,7 +1196,7 @@ mod storage_fault_tests {
         assert!(snapshot.activity.is_none());
         assert!(initial.progress.is_none());
         let handle = runtime
-            .threads
+            .require_session(&thread.id)?
             .thread(&thread.id)
             .context("reopened owner")?;
         stage.set("patch runtime facts");

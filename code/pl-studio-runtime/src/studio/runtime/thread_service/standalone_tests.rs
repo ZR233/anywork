@@ -175,8 +175,8 @@ async fn archive_private_preparation_failed_retirement_survives_restart_and_pres
     let runtime = StudioRuntime::initialize(options(&home)).await?;
     assert!(
         runtime
-            .threads
-            .observed_thread(&identity.thread_id)
+            .session_of(&identity.thread_id)
+            .and_then(|session| session.observed_thread(&identity.thread_id))
             .is_none()
     );
     assert!(
@@ -384,7 +384,12 @@ async fn archive_temp_failure_survives_restart_and_cold_reads_do_not_recreate_te
         .read_thread(&thread.id)
         .await?
         .context("cold catalog")?;
-    assert!(runtime.threads.observed_thread(&thread.id).is_none());
+    assert!(
+        runtime
+            .session_of(&thread.id)
+            .and_then(|session| session.observed_thread(&thread.id))
+            .is_none()
+    );
     tokio::fs::remove_file(workspace.join(files.temp())).await?;
     runtime
         .archive_thread("retry-temp-second".into(), thread.id.clone())

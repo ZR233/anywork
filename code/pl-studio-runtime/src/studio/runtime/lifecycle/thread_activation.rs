@@ -23,7 +23,7 @@ impl StudioRuntime {
         // This operation already borrows the runtime. Retain only the residency owner, not
         // another full StudioRuntime clone, across activation/recovery awaits.
         let _activation_pin = self.residency.pin_many([id.to_owned()]);
-        if let Some(thread) = self.threads.thread(id) {
+        if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
             self.residency.touch(id).await;
             self.enforce_residency_limit().await;
             return Ok(thread);
@@ -33,7 +33,11 @@ impl StudioRuntime {
         let mut cursor = id.to_owned();
         loop {
             anyhow::ensure!(seen.insert(cursor.clone()), "cyclic Thread ancestry");
-            if self.threads.thread(&cursor).is_some() {
+            if self
+                .session_of(&cursor)
+                .and_then(|session| session.thread(&cursor))
+                .is_some()
+            {
                 break;
             }
             let record = self.read_owned_thread(&cursor).await?;
@@ -62,10 +66,11 @@ impl StudioRuntime {
         }
         for (identity, record) in ancestry.into_iter().rev() {
             let activated_id = identity.id().to_owned();
+            let session = self.sessions.materialize(&identity.agent.session_id)?;
             // The assembler owns/coalesces preparation. Its waiter need not inline that
             // state alongside the runtime's ancestry records and residency protection.
             if let Err(error) =
-                Box::pin(self.threads.activate(identity, self.thread_factory.clone())).await
+                Box::pin(session.activate(identity, self.thread_factory.clone())).await
             {
                 // `worktree` 会话激活失败必须显式发布该 Thread 的 Recovery，
                 // 不允许静默回落到主工作区。
@@ -90,8 +95,8 @@ impl StudioRuntime {
         }
         self.residency.touch(id).await;
         self.enforce_residency_limit().await;
-        self.threads
-            .thread(id)
+        self.session_of(id)
+            .and_then(|session| session.thread(id))
             .context("Thread activation did not publish its owner")
     }
 
@@ -100,8 +105,8 @@ impl StudioRuntime {
         self.store.ensure_agent_execution_allowed(id).await?;
         self.check_thread_read_access(&record)?;
         let live = self
-            .threads
-            .observed_thread(id)
+            .session_of(id)
+            .and_then(|session| session.observed_thread(id))
             .map(|thread| thread.snapshot());
         self.verify_thread_execution_preparation(&record, live.as_ref())
             .await?;
@@ -156,12 +161,18 @@ mod future_sizes {
                 )
             },
         );
-        check("assembler activation", |runtime: &'static StudioRuntime| {
-            runtime.threads.activate(
-                ThreadActivation::native_test("size", None),
-                runtime.thread_factory.clone(),
-            )
-        });
+        check(
+            "assembler activation",
+            |(session, runtime): (
+                &'static crate::session::SessionRuntime,
+                &'static StudioRuntime,
+            )| {
+                session.activate(
+                    ThreadActivation::native_test("size", None),
+                    runtime.thread_factory.clone(),
+                )
+            },
+        );
         check("cold children", |runtime: &'static StudioRuntime| {
             runtime.thread_observations.reconcile_children("size")
         });

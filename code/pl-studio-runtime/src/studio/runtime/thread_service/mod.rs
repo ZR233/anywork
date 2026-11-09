@@ -4,6 +4,8 @@ mod archive;
 mod archive_worktrees;
 mod delete;
 mod projects;
+#[cfg(test)]
+mod s2_delete_recovery_tests;
 mod threads;
 
 use anyhow::{Context, Result};

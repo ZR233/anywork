@@ -115,7 +115,12 @@ impl Harness {
             .product_events
             .commit_directory(delta)
             .await?;
-        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&thread.id)
+                .and_then(|session| session.observed_thread(&thread.id))
+                .is_none()
+        );
         let history = env.runtime.store.history(&thread.id).await?;
         history.prepare_write().await?;
         let database = history
@@ -1149,7 +1154,12 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
             };
             assert_eq!(bytes.as_slice(), record.payload.as_ref());
         }
-        assert!(env.runtime.threads.observed_thread(&h.thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&h.thread.id)
+                .and_then(|session| session.observed_thread(&h.thread.id))
+                .is_none()
+        );
         cold.close().await?;
         cold.reader().close().await?;
         Ok(())

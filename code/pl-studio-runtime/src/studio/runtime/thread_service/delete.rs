@@ -64,9 +64,18 @@ impl StudioRuntime {
         } else if previous.is_none() {
             return Ok(None);
         }
-        let scope = self
-            .threads
-            .seal_archive_scope(std::slice::from_ref(&root_id))?;
+        // Removing has already acknowledged every runtime owner. Later publication retries
+        // must use the durable deletion responsibility, even after the directory is gone.
+        let runtime_scope = if previous
+            .as_ref()
+            .is_none_or(|operation| operation.phase == DeletePhase::Sealed)
+        {
+            let session = self.session_for_roots(std::slice::from_ref(&root_id))?;
+            let scope = session.seal_archive_scope(std::slice::from_ref(&root_id))?;
+            Some((session, scope))
+        } else {
+            None
+        };
         let workspace_id = root
             .as_ref()
             .map(|root| root.workspace_id.as_str())
@@ -78,7 +87,10 @@ impl StudioRuntime {
             })
             .context("delete responsibility lost its original workspace")?
             .to_owned();
-        let admitted = scope.preparation_identities(&workspace_id);
+        let admitted = runtime_scope
+            .as_ref()
+            .map(|(_, scope)| scope.preparation_identities(&workspace_id))
+            .unwrap_or_default();
         let mut operation = if let Some(previous) = previous {
             previous
         } else {
@@ -107,10 +119,15 @@ impl StudioRuntime {
         };
         let ids = operation.thread_ids.clone();
         let _pins = self.residency.pin_many(ids.iter().cloned());
-        self.threads.prepare_deletion(&ids);
-        scope.cancel_preparations();
+        if let Some((session, scope)) = &runtime_scope {
+            session.prepare_deletion(&ids);
+            scope.cancel_preparations();
+        }
         let _bots = self.bots.quiesce_archive_threads(&ids).await?;
         if operation.phase == DeletePhase::Sealed {
+            let (session, scope) = runtime_scope
+                .as_ref()
+                .context("sealed deletion lost its original runtime responsibility")?;
             for id in &ids {
                 self.title_tasks
                     .cancel(
@@ -121,7 +138,7 @@ impl StudioRuntime {
             }
             tokio::time::timeout(
                 self.archive_settle_timeout(),
-                self.threads.drain_archive_preparations(&scope),
+                session.drain_archive_preparations(scope),
             )
             .await
             .context("delete preparations did not join")??;
@@ -165,7 +182,7 @@ impl StudioRuntime {
                 .iter()
                 .map(|member| member.identity.clone())
                 .collect::<Vec<_>>();
-            self.threads
+            session
                 .close_tree_for_deletion(&root_id, &identities)
                 .await
                 .context(DeleteStage("停止会话与释放存储"))?;
@@ -287,6 +304,17 @@ impl StudioRuntime {
         operation.phase = DeletePhase::Published;
         operation.members.clear();
         operation.changed()?;
+        #[cfg(test)]
+        {
+            let mut fault = self
+                .s2_delete_publication_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if fault.as_deref() == Some(root_id.as_str()) {
+                fault.take();
+                anyhow::bail!("injected failure before delete Published persistence");
+            }
+        }
         self.store.save_thread_delete(&operation).await?;
         Ok(Some(DeleteThreadCommandReply {
             result: StudioDeleteThreadResult {

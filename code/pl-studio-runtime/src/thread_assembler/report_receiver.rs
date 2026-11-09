@@ -1,7 +1,5 @@
 //! Temporary, storage-only report reception shares the ordinary identity/Entry owner.
-use super::{
-    EntryPurpose, StudioThreadAssembler, ThreadAssemblyError, agent_services::AgentServices,
-};
+use super::{EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices};
 use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, inbox::ThreadMessage};
 use std::sync::Arc;
@@ -29,20 +27,13 @@ struct ReportReceiverFailure {
     cleanup: anyhow::Error,
 }
 
-impl StudioThreadAssembler {
-    pub(crate) fn is_report_receiver(&self, id: &str) -> bool {
-        self.0
-            .state()
-            .entries
-            .get(id)
-            .is_some_and(|entry| entry.purpose == EntryPurpose::ReportReceiver)
-    }
-
+impl SessionRuntime {
     /// A saved receipt does not discharge a cancelled/failed receiver cleanup. Both ACK recovery
     /// and normal activation retry this responsibility; neither may return the receiver as ready.
     pub(super) async fn finish_report_receiver(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let incarnation = self.0.state().entries.get(id).and_then(|entry| {
-            (entry.purpose == EntryPurpose::ReportReceiver).then(|| entry.incarnation.clone())
+            (entry.native.purpose == EntryPurpose::ReportReceiver)
+                .then(|| entry.native.incarnation.clone())
         });
         if let Some(incarnation) = incarnation {
             let _operation = self.agent_operation(id).await;
@@ -59,8 +50,8 @@ impl StudioThreadAssembler {
         incarnation: &Arc<()>,
     ) -> Result<(), ThreadAssemblyError> {
         let retained = self.0.state().entries.get(id).is_some_and(|entry| {
-            entry.purpose == EntryPurpose::ReportReceiver
-                && Arc::ptr_eq(&entry.incarnation, incarnation)
+            entry.native.purpose == EntryPurpose::ReportReceiver
+                && Arc::ptr_eq(&entry.native.incarnation, incarnation)
         });
         if !retained {
             return Ok(());
@@ -80,10 +71,10 @@ impl StudioThreadAssembler {
         let removed = {
             let mut state = self.0.state();
             if state.entries.get(id).is_some_and(|entry| {
-                entry.purpose == EntryPurpose::ReportReceiver
-                    && Arc::ptr_eq(&entry.incarnation, incarnation)
+                entry.native.purpose == EntryPurpose::ReportReceiver
+                    && Arc::ptr_eq(&entry.native.incarnation, incarnation)
             }) {
-                state.entries.remove(id)
+                state.remove_entry(id)
             } else {
                 None
             }
@@ -102,7 +93,7 @@ impl AgentServices {
     /// purpose in that same Entry registry, never an executable owner or a new permanent seal.
     pub(super) async fn redeliver_parent_report(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         parent: &str,
         message: ThreadMessage,
     ) -> Result<()> {
@@ -112,7 +103,7 @@ impl AgentServices {
 
     pub(super) async fn persist_review_delivery(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         source: &str,
         fact: super::review_delivery::ReviewDeliveryFact,
     ) -> Result<super::review_delivery::ReviewDeliveryFact> {
@@ -132,7 +123,7 @@ impl AgentServices {
     /// execution. The caller must not hold the source/recipient identity gate while joining this.
     async fn write_storage_message(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         parent: &str,
         write: StorageWrite,
     ) -> Result<()> {
@@ -149,41 +140,48 @@ impl AgentServices {
                     && (state.sealed_agents.contains_key(parent) || state.closing)
                     && !state.unpublished_children.contains_key(parent)
                     && !state.preparing_children.contains_key(parent);
-                if state.creating.contains_key(parent) {
+                if state
+                    .creating
+                    .get(parent)
+                    .is_some_and(|preparation| preparation.settlement.is_none())
+                {
                     Recipient::Preparing
                 } else {
                     match state.entries.get(parent) {
                         None => Recipient::Cold(EntryPurpose::ReportReceiver),
-                        Some(entry) => match entry.purpose {
+                        Some(entry) => match entry.native.purpose {
                             EntryPurpose::ReportReceiver => {
-                                if entry.thread.snapshot().lifecycle == ThreadLifecycle::Open {
+                                if entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                                {
                                     Recipient::Temporary(
-                                        entry.thread.clone(),
-                                        entry.incarnation.clone(),
+                                        entry.native.thread.clone(),
+                                        entry.native.incarnation.clone(),
                                     )
                                 } else {
-                                    Recipient::Release(entry.incarnation.clone())
+                                    Recipient::Release(entry.native.incarnation.clone())
                                 }
                             }
                             EntryPurpose::CloseStorage => {
-                                if entry.thread.snapshot().lifecycle == ThreadLifecycle::Closed {
+                                if entry.native.thread.snapshot().lifecycle
+                                    == ThreadLifecycle::Closed
+                                {
                                     Recipient::Cold(EntryPurpose::CloseStorage)
                                 } else {
-                                    Recipient::Borrowed(entry.thread.clone())
+                                    Recipient::Borrowed(entry.native.thread.clone())
                                 }
                             }
                             EntryPurpose::Execution
-                                if (entry.ready
+                                if (entry.native.ready
                                     || closing_inbox
                                     || matches!(write, StorageWrite::ReviewDelivery(_)))
-                                    && entry.thread.snapshot().lifecycle
+                                    && entry.native.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>
                             {
-                                Recipient::Borrowed(entry.thread.clone())
+                                Recipient::Borrowed(entry.native.thread.clone())
                             }
                             EntryPurpose::Execution
                                 if matches!(write, StorageWrite::ReviewDelivery(_))
-                                    && entry.thread.snapshot().lifecycle
+                                    && entry.native.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Closed =>
                             {
                                 Recipient::Cold(EntryPurpose::CloseStorage)
@@ -238,7 +236,7 @@ impl AgentServices {
                             Err(error) => return Err(error.into()),
                         };
                     let incarnation = (purpose == EntryPurpose::ReportReceiver)
-                        .then(|| owner.0.state().entries[parent].incarnation.clone());
+                        .then(|| owner.0.state().entries[parent].native.incarnation.clone());
                     (thread, incarnation)
                 }
             };

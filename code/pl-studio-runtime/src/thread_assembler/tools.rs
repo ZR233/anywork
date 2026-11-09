@@ -759,25 +759,3 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
     );
     Ok(tools)
 }
-
-impl super::StudioThreadAssembler {
-    /// Builds the standard catalog and transfers it through the same root/child/recovery owner path.
-    ///
-    /// # Errors
-    /// Returns backend setup, declaration, history or resource-assembly failure.
-    pub async fn assemble_standard(
-        &self,
-        mut spec: StudioThreadSpec,
-        tools: StudioWorkspaceTools,
-    ) -> Result<pl_core::thread::ThreadHandle, ThreadAssemblyError> {
-        spec.agent_controls = if spec.parent_id.is_none() {
-            let selection = spec.frozen_delegation()?;
-            let profiles = self.agent_profiles_snapshot()?;
-            self.agent_control_tools(&profiles, selection)?
-        } else {
-            Vec::new()
-        };
-        let tools = StudioThreadTools::standard(tools).await?;
-        self.assemble(tools.install(spec)).await
-    }
-}

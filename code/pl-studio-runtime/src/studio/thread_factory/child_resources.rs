@@ -24,6 +24,7 @@ impl StudioChildResources for StudioThreadFactory {
                 backend: pl_protocol::AgentBackendKind::Acp,
             });
         }
+        self.bind_resource_scope(&request.id, &request.workspace_owner.native_resources())?;
         let (caller_identity, caller_binding, _) = self
             .services
             .product_events

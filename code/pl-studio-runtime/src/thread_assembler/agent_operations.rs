@@ -1,5 +1,5 @@
 //! Retained collaboration jobs. Tokio owns scheduling and joins; the driver only drains JoinSet.
-use super::{StudioThreadAssembler, agent_services::ServiceError};
+use super::{SessionRuntime, agent_services::ServiceError};
 use anyhow::{Context, Result, ensure};
 use futures::task::AtomicWaker;
 use std::{
@@ -371,7 +371,26 @@ async fn drive(owner: Weak<Shared>) {
     .await;
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
+    pub(super) fn operation_close_purpose(
+        &self,
+        id: &str,
+        requested: super::ClosePurpose,
+    ) -> super::ClosePurpose {
+        if requested == super::ClosePurpose::Delete
+            || self
+                .0
+                .state()
+                .agent_services
+                .as_ref()
+                .is_some_and(|services| services.operations.is_deleting(id))
+        {
+            super::ClosePurpose::Delete
+        } else {
+            super::ClosePurpose::Preserve
+        }
+    }
+
     pub(super) fn begin_operation_close(&self, id: &str, purpose: super::ClosePurpose) {
         if purpose == super::ClosePurpose::Delete
             && let Some(services) = self.0.state().agent_services.clone()

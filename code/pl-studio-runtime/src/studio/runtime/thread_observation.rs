@@ -449,7 +449,8 @@ impl WorkerState {
         self.pending_hook.clone()
     }
 }
-struct Observation {
+pub(crate) struct Observation {
+    owner: std::sync::Weak<crate::session::NativeResources>,
     thread: ThreadHandle,
     feed: Arc<ThreadLiveFeed>,
     state: Arc<WorkerState>,
@@ -525,13 +526,26 @@ pub(super) struct ObservationServices {
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
     pub(super) performance: ModelPerformanceOwner,
-    pub(super) threads: crate::thread_assembler::StudioThreadAssembler,
+    pub(super) sessions: crate::session::WeakSessionTable,
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+}
+impl ObservationServices {
+    fn session_of(&self, id: &str) -> Option<crate::session::SessionRuntime> {
+        if let Some((identity, _, _)) = self.events.agent_execution_identity(id) {
+            return self.sessions.upgrade()?.get(&identity.session_id);
+        }
+        self.sessions.upgrade()?.holding(id)
+    }
+
+    fn require_session(&self, id: &str) -> Result<crate::session::SessionRuntime> {
+        self.session_of(id)
+            .context("Thread has no resident session")
+    }
 }
 struct Shared {
     delivery_closed: tokio_util::sync::CancellationToken,
     projector: ObservationServices,
-    observations: Mutex<BTreeMap<String, Vec<Arc<Observation>>>>,
+    observations: Mutex<BTreeMap<String, Vec<std::sync::Weak<Observation>>>>,
     /// Stable passive slots survive absent → live → absent transitions.
     live: Mutex<BTreeMap<String, Arc<ObservationSlot>>>,
     #[cfg(test)]
@@ -541,6 +555,22 @@ struct Shared {
 pub(super) struct ThreadObservations(Arc<Shared>);
 
 impl ThreadObservations {
+    fn observations(&self, id: Option<&str>) -> Vec<(String, Arc<Observation>)> {
+        self.0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(key, _)| id.is_none_or(|id| key.as_str() == id))
+            .flat_map(|(id, entries)| {
+                entries
+                    .iter()
+                    .filter_map(std::sync::Weak::upgrade)
+                    .map(|entry| (id.clone(), entry))
+            })
+            .collect()
+    }
+
     pub(super) fn new(projector: ObservationServices) -> Self {
         Self(Arc::new(Shared {
             delivery_closed: Default::default(),
@@ -589,21 +619,14 @@ impl ThreadObservations {
     }
 
     fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
-        let observations = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entries) = observations.get(id) {
-            for observation in entries {
-                if observation.thread.same_instance(thread) {
-                    observation.feed.delivery_closed.cancel();
-                }
+        for (_, observation) in self.observations(Some(id)) {
+            if observation.thread.same_instance(thread) {
+                observation.feed.delivery_closed.cancel();
             }
         }
     }
 
-    /// Register before any asynchronous read or source lookup. This does not activate execution.
+    /// Register the passive source before asynchronous reads without activating execution.
     pub(super) fn observation_slot(&self, id: &str) -> Arc<ObservationSlot> {
         self.0
             .live
@@ -614,31 +637,43 @@ impl ThreadObservations {
             .clone()
     }
 
-    pub(super) fn install(
-        &self,
-        thread_factory: crate::studio::thread_factory::StudioThreadFactory,
-        rejected_tools: super::rejected_tools::RejectedToolOwners,
-    ) -> Result<()> {
-        let rejected_preparations = rejected_tools.clone();
+    pub(super) fn install(&self) -> Result<()> {
+        let observations = Arc::downgrade(&self.0);
         self.0
             .projector
-            .threads
-            .retain_rejected_with(move |thread, tools| rejected_preparations.retain(thread, tools));
+            .sessions
+            .upgrade()
+            .context("Session table closed")?
+            .push_installer(Arc::new(move |session| {
+                let observations = observations
+                    .upgrade()
+                    .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
+                ThreadObservations(observations)
+                    .install_session(session)
+                    .map_err(
+                        |source| crate::thread_assembler::ThreadAssemblyError::Resource {
+                            operation: "install session observations",
+                            source: source.into_boxed_dyn_error(),
+                        },
+                    )
+            }))?;
+        Ok(())
+    }
+
+    fn install_session(&self, session: &crate::session::SessionRuntime) -> Result<()> {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let synchronizing = owner.clone();
         let closing = owner.clone();
         let message_store = self.0.projector.store.clone();
-        let closing_factory = thread_factory.clone();
-        self.0.projector.threads.observe_assembly(
-            move |id, thread| {
+        session.observe_assembly(
+            move |id, thread, resources| {
                 if let Some(owner) = owner.upgrade() {
-                    ThreadObservations(owner).observe(id, thread);
+                    ThreadObservations(owner).observe(id, thread, resources);
                 }
             },
             move |id, purpose| {
                 let owner = draining.clone();
-                let thread_factory = thread_factory.clone();
                 Box::pin(async move {
                     let owner = owner
                         .upgrade()
@@ -654,9 +689,6 @@ impl ThreadObservations {
                                 source: source.into_boxed_dyn_error(),
                             }
                         })?;
-                    }
-                    if !observations.0.projector.threads.is_report_receiver(&id) {
-                        thread_factory.forget_tool_binding(&id).await;
                     }
                     observations.drain_for_purpose(&id, purpose).await.map_err(|source| {
                         crate::thread_assembler::ThreadAssemblyError::Resource {
@@ -718,15 +750,7 @@ impl ThreadObservations {
                         observations.cancel_for_deletion(&id);
                     }
                 }
-                // Cancellation is synchronous, so no new preparation can pass the gate.
-                let gate = closing_factory.stop_tool_operation(&id);
-                let rejected = rejected_tools.clone();
-                Box::pin(async move {
-                    let _guard = match gate { Some(gate) => Some(gate.lock_owned().await), None => None };
-                    rejected.retry(Some(&thread)).await.map_err(|source| crate::thread_assembler::ThreadAssemblyError::Resource {
-                        operation: "drain Thread tool candidates", source: source.into_boxed_dyn_error(),
-                    })
-                })
+                Box::pin(async { Ok(()) })
             },
             move |id| {
                 let owner = synchronizing.clone();
@@ -757,15 +781,8 @@ impl ThreadObservations {
     }
 
     fn cancel_for_deletion(&self, id: &str) {
-        let all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(observations) = all.get(id) {
-            for observation in observations {
-                observation.state.deletion.cancel();
-            }
+        for (_, observation) in self.observations(Some(id)) {
+            observation.state.deletion.cancel();
         }
     }
 
@@ -775,13 +792,10 @@ impl ThreadObservations {
         purpose: crate::thread_assembler::ClosePurpose,
     ) -> Result<()> {
         let observations = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .unwrap_or_default();
+            .observations(Some(id))
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect::<Vec<_>>();
         let feed = self.live_feed(id);
         for observation in &observations {
             anyhow::ensure!(
@@ -799,13 +813,26 @@ impl ThreadObservations {
                 observation.state.channel.stop_and_join().await?;
             }
         }
+        for observation in &observations {
+            if let Some(owner) = observation.owner.upgrade() {
+                owner
+                    .observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retain(|current| !Arc::ptr_eq(current, observation));
+            }
+        }
         let mut all = self
             .0
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entries) = all.get_mut(id) {
-            entries.retain(|entry| !observations.iter().any(|old| Arc::ptr_eq(entry, old)));
+            entries.retain(|entry| {
+                entry
+                    .upgrade()
+                    .is_some_and(|entry| !observations.iter().any(|old| Arc::ptr_eq(&entry, old)))
+            });
             if entries.is_empty() {
                 all.remove(id);
             }
@@ -817,7 +844,12 @@ impl ThreadObservations {
         Ok(())
     }
 
-    fn observe(&self, id: String, thread: ThreadHandle) {
+    fn observe(
+        &self,
+        id: String,
+        thread: ThreadHandle,
+        resources: Arc<crate::session::NativeResources>,
+    ) {
         let observed = thread.snapshot();
         let recovered_through = observed.commit_sequence;
         // Bootstrap facts/extensions can already have commits. The monotonic execution/call
@@ -901,35 +933,30 @@ impl ThreadObservations {
             }
         });
         let observation = Arc::new(Observation {
+            owner: Arc::downgrade(&resources),
             thread,
             feed: observed_feed,
             state,
             task: tokio::sync::Mutex::new(Some(task)),
         });
+        resources
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(observation.clone());
         let mut all = self
             .0
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = all.entry(id).or_default();
-        previous.retain(|entry| {
-            let progress = entry.state.progress.borrow();
-            !progress.finished || progress.error.is_some()
-        });
-        previous.push(observation);
+        previous.retain(|entry| entry.strong_count() > 0);
+        previous.push(Arc::downgrade(&observation));
     }
 
     pub(super) async fn synchronize(&self, id: Option<&str>) -> Result<()> {
         self.0.projector.writer.retry_now();
-        let observations: Vec<_> = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|(key, _)| id.is_none_or(|id| id == key.as_str()))
-            .flat_map(|(id, entries)| entries.iter().map(|entry| (id.clone(), entry.clone())))
-            .collect();
+        let observations = self.observations(id);
         for (id, observation) in observations {
             let target_snapshot = observation.thread.snapshot();
             let target = target_snapshot.commit_sequence;
@@ -977,7 +1004,11 @@ impl ThreadObservations {
             if child.parent_thread_id.as_deref() != Some(parent) {
                 continue;
             }
-            if services.threads.thread(&child.id).is_some() {
+            if services
+                .session_of(&child.id)
+                .and_then(|session| session.thread(&child.id))
+                .is_some()
+            {
                 self.synchronize(Some(&child.id)).await?;
                 continue;
             }
@@ -999,22 +1030,32 @@ impl ThreadObservations {
             directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
             // Match close/retry recovery: keep the owned delivery state out of the parent's
             // subscription future, which also nests checkpoint migration and activation.
-            Box::pin(services.threads.recover_saved_review_deliveries(&child)).await?;
+            Box::pin(
+                services
+                    .sessions
+                    .upgrade()
+                    .context("Session table closed")?
+                    .materialize(
+                        &services
+                            .events
+                            .agent_execution_identity(&child.id)
+                            .context("missing child agent identity")?
+                            .0
+                            .session_id,
+                    )?
+                    .recover_saved_review_deliveries(&child),
+            )
+            .await?;
         }
         Ok(())
     }
 
     pub(super) async fn finish(&self) -> Result<()> {
         self.synchronize(None).await?;
-        let observations: Vec<_> = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .flatten()
-            .cloned()
-            .collect();
+        let observations = self
+            .observations(None)
+            .into_iter()
+            .map(|(_, observation)| observation);
         for observation in observations {
             let mut progress = observation.state.progress.subscribe();
             loop {
@@ -1046,7 +1087,9 @@ impl StudioRuntime {
         self.thread_observations
             .synchronize(Some(thread_id))
             .await?;
-        self.threads.settle_review_deliveries(thread_id).await?;
+        self.require_session(thread_id)?
+            .settle_review_deliveries(thread_id)
+            .await?;
         self.thread_observations.synchronize(Some(thread_id)).await
     }
 }
@@ -2253,8 +2296,10 @@ async fn run(
             || {
                 worker
                     .services
-                    .threads
-                    .observed_threads()
+                    .sessions
+                    .upgrade()
+                    .map(|sessions| sessions.observed_threads())
+                    .unwrap_or_default()
                     .iter()
                     .any(|(id, thread)| id == &worker.id && thread.same_instance(&worker.thread))
             },
@@ -2459,7 +2504,7 @@ async fn transfer_terminal(services: &ObservationServices, state: &WorkerState) 
         "terminal transfer precedes handoff"
     );
     services
-        .threads
+        .require_session(&pending.thread.id)?
         .start_terminal_delivery(pending.clone())
         .await?;
     let mut slot = state
@@ -2913,6 +2958,22 @@ mod storage_fault_tests {
         store.persist_directory_summaries(&delta).await
     }
 
+    async fn publish_test_directory(store: &StudioStore, events: &ProductEventBus) -> Result<()> {
+        let catalog = store.catalog();
+        let rows = catalog
+            .sessions()
+            .iter()
+            .flat_map(|session| {
+                catalog
+                    .agents_for_session(&session.session_id)
+                    .into_iter()
+                    .map(move |agent| crate::studio::records::row_projection(session, &agent))
+            })
+            .collect();
+        events.apply_thread_delta(rows, Vec::new()).await?;
+        Ok(())
+    }
+
     fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
         let mut thread = pl_protocol::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
@@ -2932,10 +2993,14 @@ mod storage_fault_tests {
         ThreadObservations,
         ProjectionWorker,
         ThreadStorageSink,
+        crate::session::SessionTable,
     )> {
         use crate::studio::storage_fault_test_support::{close_factory, ticket};
         let resources = close_factory(store)?;
-        let threads = crate::thread_assembler::StudioThreadAssembler::default();
+        let sessions = crate::session::SessionTable::new();
+        let threads = sessions.materialize(
+            &pl_protocol::SessionId::new("terminal-parent").expect("valid fixture session"),
+        )?;
         resources.install(&threads)?;
         let services = ObservationServices {
             config: resources.config.clone(),
@@ -2948,11 +3013,11 @@ mod storage_fault_tests {
                 resources.events.clone(),
                 "terminal-fault".into(),
             ),
-            threads,
+            sessions: sessions.downgrade(),
             writer: resources.writer.clone(),
         };
         let observations = ThreadObservations::new(services.clone());
-        observations.install(resources.factory.clone(), Default::default())?;
+        observations.install()?;
         // A genuinely cold parent with a real checkpoint. Reception must use the production
         // receive-only owner, not an executable fixture Entry or a fake ACK callback.
         let parent = bound_thread("terminal-parent");
@@ -2999,6 +3064,7 @@ mod storage_fault_tests {
             target.role = "history-executor".into();
             register_test_thread(store, &target).await?;
         }
+        publish_test_directory(store, &resources.events).await?;
         let sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
         let channel = store.thread_persistence().history_channel(&child.id);
         let (progress, owner_progress) = watch::channel(Progress::default());
@@ -3033,14 +3099,15 @@ mod storage_fault_tests {
             .project(&initial.checkpoint.state, false, None)
             .await?;
         sink.flush(&child.id, 1).await?;
-        Ok((resources, observations, worker, sink))
+        // The strong table outlives the workers: services only keep a weak handle.
+        Ok((resources, observations, worker, sink, sessions))
     }
 
     #[tokio::test]
     async fn execution_only_snapshot_republishes_the_same_agent_directory_row() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink) =
+        let (resources, observations, mut worker, sink, _sessions) =
             terminal_projection_fixture(&store, false).await?;
         let result = async {
             // The history-only fixture registers durable rows after constructing its event bus.
@@ -3140,7 +3207,7 @@ mod storage_fault_tests {
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink) =
+        let (resources, observations, mut worker, sink, _sessions) =
             terminal_projection_fixture(&store, false).await?;
         let history = store.history(&worker.id).await?;
         let db = sea_orm::Database::connect(
@@ -3495,7 +3562,7 @@ mod storage_fault_tests {
         for review in [false, true] {
             let temp = tempfile::tempdir()?;
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let (resources, observations, mut worker, sink) =
+            let (resources, observations, mut worker, sink, _sessions) =
                 terminal_projection_fixture(&store, review).await?;
             let db = sea_orm::Database::connect(
                 crate::studio::paths::sqlite_file_options(
@@ -3521,7 +3588,10 @@ mod storage_fault_tests {
             assert!(
                 tokio::time::timeout(
                     Duration::from_secs(5),
-                    worker.services.threads.join_review_delivery(&worker.id)
+                    worker
+                        .services
+                        .require_session(&worker.id)?
+                        .join_review_delivery(&worker.id)
                 )
                 .await?
                 .is_err()
@@ -3550,7 +3620,10 @@ mod storage_fault_tests {
             wait_terminal_receipt(&store, &id).await?;
             tokio::time::timeout(
                 Duration::from_secs(10),
-                worker.services.threads.join_review_delivery(&worker.id),
+                worker
+                    .services
+                    .require_session(&worker.id)?
+                    .join_review_delivery(&worker.id),
             )
             .await
             .context("join repaired terminal operation")??;
@@ -3593,7 +3666,7 @@ mod storage_fault_tests {
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink) =
+        let (resources, observations, mut worker, sink, _sessions) =
             terminal_projection_fixture(&store, true).await?;
         // Another Thread has accepted operation output, not a review-retention guard. The public
         // ColdStore entry below is exactly the production OutputBudget::release backend boundary.
@@ -3693,7 +3766,10 @@ mod storage_fault_tests {
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(5),
-                worker.services.threads.join_review_delivery(&worker.id)
+                worker
+                    .services
+                    .require_session(&worker.id)?
+                    .join_review_delivery(&worker.id)
             )
             .await?
             .is_err()
@@ -3718,7 +3794,10 @@ mod storage_fault_tests {
         wait_terminal_receipt(&store, &id).await?;
         tokio::time::timeout(
             Duration::from_secs(10),
-            worker.services.threads.join_review_delivery(&worker.id),
+            worker
+                .services
+                .require_session(&worker.id)?
+                .join_review_delivery(&worker.id),
         )
         .await
         .context("join capacity-repaired terminal operation")??;
@@ -3741,8 +3820,8 @@ mod storage_fault_tests {
         assert!(
             worker
                 .services
-                .threads
-                .observed_thread("unstarted-executor")
+                .session_of("unstarted-executor")
+                .and_then(|session| session.observed_thread("unstarted-executor"))
                 .is_none()
         );
         worker.state.channel.stop_and_join().await?;
@@ -3763,9 +3842,9 @@ mod storage_fault_tests {
         use pl_core::thread::journal::ContextChange;
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink) =
+        let (resources, observations, mut worker, sink, _sessions) =
             terminal_projection_fixture(&store, true).await?;
-        let source = worker.services.threads.clone();
+        let source = worker.services.require_session(&worker.id)?;
         let parent_gate = source.agent_operation("terminal-parent").await;
         let old_text: Arc<str> = "older context body; ".repeat(256 * 1024).into();
         let old_context = Arc::downgrade(&old_text);
@@ -3930,7 +4009,7 @@ mod storage_fault_tests {
         use sea_orm::ConnectionTrait;
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink) =
+        let (resources, observations, mut worker, sink, _sessions) =
             terminal_projection_fixture(&store, true).await?;
         let db = sea_orm::Database::connect(
             crate::studio::paths::sqlite_file_options(
@@ -3947,7 +4026,7 @@ mod storage_fault_tests {
         let write = terminal_write(&worker.id, true)?;
         sink.admit(&worker.id, write.clone())?;
         worker.project(&write.checkpoint.state, false, None).await?;
-        let source = worker.services.threads.clone();
+        let source = worker.services.require_session(&worker.id)?;
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -4023,6 +4102,7 @@ mod storage_fault_tests {
         let publication = progress.clone();
         let (release, released) = tokio::sync::oneshot::channel();
         let observation = Observation {
+            owner: std::sync::Weak::new(),
             thread: owner.clone(),
             feed: Arc::new(ThreadLiveFeed::new(
                 None,
@@ -4062,6 +4142,7 @@ mod storage_fault_tests {
 
         let (progress, _) = watch::channel(Progress::default());
         let failed = Observation {
+            owner: std::sync::Weak::new(),
             thread: owner,
             feed: Arc::new(ThreadLiveFeed::new(
                 None,
@@ -4330,6 +4411,10 @@ mod storage_fault_tests {
         _temp: tempfile::TempDir,
         store: StudioStore,
         services: ObservationServices,
+        session: crate::thread_assembler::SessionRuntime,
+        // Strong session table so the weak service handle stays resolvable for the fixture's
+        // lifetime; dropping a temporary table would close every session lookup.
+        _sessions: crate::session::SessionTable,
         observations: ThreadObservations,
         writer: crate::studio::agent_host::ThreadWriteBehindWriter,
     }
@@ -4389,7 +4474,7 @@ mod storage_fault_tests {
                     if shutdown_runtime {
                         env.runtime.shutdown_runtime().await?;
                     } else {
-                        env.runtime.threads.close(id).await?;
+                        env.runtime.require_session(id)?.close(id).await?;
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -4459,7 +4544,11 @@ mod storage_fault_tests {
                 bots,
             },
         );
-        let threads = crate::thread_assembler::StudioThreadAssembler::default();
+        let sessions = crate::session::SessionTable::new();
+        let threads = sessions.materialize(
+            &pl_protocol::SessionId::new("child-terminal-report-parent")
+                .expect("valid fixture session"),
+        )?;
         threads.set_agent_services(
             config.clone(),
             store.clone(),
@@ -4480,18 +4569,17 @@ mod storage_fault_tests {
             store: store.clone(),
             events,
             performance,
-            threads,
+            sessions: sessions.downgrade(),
             writer: writer.clone(),
         };
         let observations = ThreadObservations::new(services.clone());
-        observations.install(
-            factory.clone(),
-            crate::studio::runtime::rejected_tools::RejectedToolOwners::default(),
-        )?;
+        observations.install()?;
         Ok(ObservationFixture {
             _temp: temp,
             store,
             services,
+            session: threads,
+            _sessions: sessions,
             observations,
             writer,
         })
@@ -5057,6 +5145,7 @@ mod storage_fault_tests {
         let child = child_thread(child_id, parent_id);
         register_test_thread(&fixture.store, &parent).await?;
         register_test_thread(&fixture.store, &child).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), child.clone(), None).await?;
         let channel = fixture.store.thread_persistence().history_channel(child_id);
 
@@ -5067,10 +5156,13 @@ mod storage_fault_tests {
         // Real parent receiver, activated through the production path before the child runs.
         let parent_sink =
             ThreadStorageSink::new(fixture.store.clone(), parent.clone(), None).await?;
+        let mut activation =
+            crate::thread_assembler::ThreadActivation::native_test(parent_id, None);
+        activation.agent.session_id = fixture.session.id().clone();
         let parent_handle = tokio::time::timeout(
             Duration::from_secs(10),
-            fixture.services.threads.activate(
-                crate::thread_assembler::ThreadActivation::native_test(parent_id, None),
+            fixture.session.activate(
+                activation,
                 ParentActivation {
                     store: fixture.store.clone(),
                     sink: parent_sink.clone(),
@@ -5085,9 +5177,12 @@ mod storage_fault_tests {
         handle
             .attach_storage(ColdStoreHandle::new(sink.clone()))
             .await?;
+        // The observation worker lives in the member's real resource bundle; the test keeps a
+        // strong hold so the weak global index stays observable through the whole run.
+        let bundle = Arc::new(crate::session::NativeResources::default());
         fixture
             .observations
-            .observe(child_id.to_owned(), handle.clone());
+            .observe(child_id.to_owned(), handle.clone(), bundle.clone());
         let observation = fixture
             .observations
             .0
@@ -5096,7 +5191,7 @@ mod storage_fault_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(child_id)
             .and_then(|entries| entries.last())
-            .cloned()
+            .and_then(std::sync::Weak::upgrade)
             .context("child observation registered")?;
         let mut progress = observation.state.progress.subscribe();
 

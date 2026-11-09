@@ -22,17 +22,21 @@ impl StudioRuntime {
     ) -> Result<BotInputRead> {
         let history = self.store.history(thread_id).await?;
         let Some(receipt) = history.input_identity(input_id).await? else {
-            if self.threads.thread(thread_id).is_some_and(|thread| {
-                let state = thread.snapshot();
-                state
-                    .inputs
-                    .iter()
-                    .any(|record| record.input.id == input_id)
-                    || state
-                        .terminal_inputs
+            if self
+                .session_of(thread_id)
+                .and_then(|session| session.thread(thread_id))
+                .is_some_and(|thread| {
+                    let state = thread.snapshot();
+                    state
+                        .inputs
                         .iter()
-                        .any(|record| record.id == input_id)
-            }) {
+                        .any(|record| record.input.id == input_id)
+                        || state
+                            .terminal_inputs
+                            .iter()
+                            .any(|record| record.id == input_id)
+                })
+            {
                 return Ok(BotInputRead::NotReady);
             }
             return Ok(BotInputRead::Absent);
@@ -89,7 +93,10 @@ impl StudioRuntime {
         thread_id: &str,
         local_id: &str,
     ) -> Result<Option<InteractionRequest>> {
-        if let Some(handle) = self.threads.thread(thread_id) {
+        if let Some(handle) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        {
             let snapshot = handle.snapshot();
             return crate::thread_assembler::project_thread_interaction(
                 thread_id, local_id, &snapshot,

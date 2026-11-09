@@ -47,7 +47,12 @@ async fn state_only_cold_open_prepares_supported_history_without_execution() -> 
         .await?;
         db.close().await?;
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&thread.id)
+                .and_then(|session| session.observed_thread(&thread.id))
+                .is_none()
+        );
         let history = env.runtime.store.history(&thread.id).await?;
         assert!(
             history.cold_state_facet().await.is_err(),
@@ -59,7 +64,12 @@ async fn state_only_cold_open_prepares_supported_history_without_execution() -> 
         let snapshot = state_snapshot(&mut state).await?;
         assert_eq!(snapshot.thread.id, thread.id);
         assert!(snapshot.active_turn.is_none() && snapshot.activity.is_none());
-        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&thread.id)
+                .and_then(|session| session.observed_thread(&thread.id))
+                .is_none()
+        );
         assert_eq!(env.root_provider.recorded().len(), 0);
         assert_eq!(
             serde_json::to_value(history.checkpoint().await?.context("prepared checkpoint")?)?,
@@ -207,14 +217,19 @@ async fn unconsumed_content_does_not_delay_final_state_and_cold_statistics() -> 
         content.reader().close().await?;
         phase.set("flush executed owner");
         env.runtime
-            .threads
+            .require_session(id)?
             .observed_thread(id)
             .context("executed owner")?
             .flush()
             .await?;
         phase.set("cold restart");
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let requests = env.root_provider.recorded().len();
         phase.set("cold State");
         let mut cold = env.runtime.open_conversation_state_feed(id).await?;
@@ -235,7 +250,10 @@ async fn unconsumed_content_does_not_delay_final_state_and_cold_statistics() -> 
             final_runtime.turn_response_millis
         );
         assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none(),
             "cold State activated execution"
         );
         assert_eq!(env.root_provider.recorded().len(), requests);

@@ -150,7 +150,10 @@ impl StudioRuntime {
     async fn child_states(&self, host_thread_id: &str) -> Result<Vec<(String, ThreadSnapshot)>> {
         let mut states = Vec::new();
         for child_id in self.child_thread_ids(host_thread_id).await? {
-            if let Some(thread) = self.threads.thread(&child_id) {
+            if let Some(thread) = self
+                .session_of(&child_id)
+                .and_then(|session| session.thread(&child_id))
+            {
                 states.push((child_id, thread.snapshot()));
                 continue;
             }
@@ -237,7 +240,7 @@ impl StudioRuntime {
             interaction.revision
         );
         let content = serde_json::to_string(&body)?;
-        self.threads
+        self.require_session(host_thread_id)?
             .notify_parent(
                 host_thread_id,
                 pl_core::thread::inbox::ThreadMessage {

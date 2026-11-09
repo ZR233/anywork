@@ -254,8 +254,8 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
         env.runtime.stop_tool_refresh().await?;
         let handle = env
             .runtime
-            .threads
-            .thread(id)
+            .session_of(id)
+            .and_then(|session| session.thread(id))
             .context("real Thread owner")?;
         handle
             .register_tools(json_binding_registrations(&counts)?)
@@ -275,10 +275,15 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
             support::tool_output(&env.root_provider, call)?.as_bytes(),
             expected.as_bytes()
         );
-        env.runtime.threads.close(id).await?;
+        env.runtime.require_session(id)?.close(id).await?;
         drop(handle);
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let durable = env
             .runtime
             .store
@@ -339,7 +344,10 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
         feed.close().await?;
         feed.reader().close().await?;
         assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none(),
             "cold read activated owner"
         );
         assert_eq!(counts.echo.load(Ordering::SeqCst), 1);
@@ -412,8 +420,8 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
         env.runtime.stop_tool_refresh().await?;
         let handle = env
             .runtime
-            .threads
-            .thread(id)
+            .session_of(id)
+            .and_then(|session| session.thread(id))
             .context("real Thread owner")?;
         handle
             .register_tools(json_binding_registrations(&counts)?)
@@ -429,10 +437,15 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
                 cancellation: Default::default(),
             })
             .await?;
-        env.runtime.threads.close(id).await?;
+        env.runtime.require_session(id)?.close(id).await?;
         drop(handle);
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let mut feed = env
             .runtime
             .open_conversation_feed(
@@ -517,7 +530,12 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
         }
         feed.close().await?;
         feed.reader().close().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         assert_eq!(counts.echo.load(Ordering::SeqCst), 0);
         assert_eq!(counts.fail.load(Ordering::SeqCst), 1);
         assert_eq!(counts.serialized.load(Ordering::SeqCst), 1);
@@ -1010,7 +1028,12 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         reopened.reader().close().await?;
 
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let mut cold = env
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand())
@@ -1058,7 +1081,10 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].id, pending.interaction_id);
         assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none(),
             "reading a pending Plan activated execution"
         );
         assert_eq!(env.root_provider.recorded().len(), 1);

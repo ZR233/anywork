@@ -101,7 +101,7 @@ impl StudioRuntime {
             // once the writer releases an effect from this window, its full delivery is already
             // committed in history. The following history read therefore closes that race.
             if let Some((_, handle)) = self
-                .threads
+                .sessions
                 .observed_threads()
                 .into_iter()
                 .find(|(id, _)| id == &thread_id)

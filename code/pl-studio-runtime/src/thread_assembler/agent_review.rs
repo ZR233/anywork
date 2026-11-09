@@ -1,6 +1,6 @@
 //! Frozen review relationships and restricted host feedback; ordinary send permissions are unchanged.
 pub(crate) use super::agent_evaluation::validate_idle;
-use super::{StudioThreadAssembler, observation::DurableMessageIdentity};
+use super::{SessionRuntime, observation::DurableMessageIdentity};
 use crate::studio::agent_close::terminal_report_id;
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::ThreadSnapshot;
@@ -119,7 +119,7 @@ pub(crate) fn review_message_id(agent: &str, turn: &str, sequence: u64) -> Strin
     )
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     async fn adjudicate_review_message(
         &self,
         target: &str,
@@ -380,16 +380,15 @@ impl StudioThreadAssembler {
         let Some(target) = self.thread(target_id) else {
             return reject(ReviewForwardReason::TargetUnavailable);
         };
-        let options =
-            {
-                let state = self.0.state();
-                let Some(entry) = state.entries.get(target_id).filter(|entry| {
-                    entry.ready && entry.parent_id.as_deref() == Some(parent.as_str())
-                }) else {
-                    return reject(ReviewForwardReason::TargetUnavailable);
-                };
-                entry.execution
+        let options = {
+            let state = self.0.state();
+            let Some(entry) = state.entries.get(target_id).filter(|entry| {
+                entry.native.ready && entry.native.parent_id.as_deref() == Some(parent.as_str())
+            }) else {
+                return reject(ReviewForwardReason::TargetUnavailable);
             };
+            entry.native.execution
+        };
         // Prove the original capability before logical/model preparation. The restricted branch
         // never invokes ordinary Execute/Prepare resolvers or refreshes a missing tool binding.
         let workspace_check = match services

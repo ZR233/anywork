@@ -1,5 +1,5 @@
 //! A cold owner's exact storage binding and one retained AttachCold operation.
-use super::{ClosePurpose, EntryPurpose, StudioThreadAssembler, ThreadAssemblyError};
+use super::{ClosePurpose, EntryPurpose, SessionRuntime, ThreadAssemblyError};
 use crate::studio::ThreadStorageBinding;
 use futures::{
     FutureExt,
@@ -13,7 +13,7 @@ type AttachmentCompletion = Shared<BoxFuture<'static, Result<(), Arc<ThreadError
 /// The Entry owns the binding until its real core/observation/writer joins and compare-remove.
 /// In particular, attachment success does not discard the writer incarnation.
 #[derive(Clone)]
-pub(super) enum CloseStorage {
+pub(crate) enum CloseStorage {
     /// Ordinary assembly retains AttachCold and its exact writer before extension setup can fail.
     Execution {
         completion: AttachmentCompletion,
@@ -54,12 +54,21 @@ pub(super) struct AttachmentAckGate {
     pub(super) release: tokio::sync::oneshot::Receiver<()>,
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     pub(super) async fn settle_failed_activation(
         &self,
         id: &str,
+        workspace: &super::WorkspacePreparationOwner,
     ) -> Result<(), ThreadAssemblyError> {
         use crate::studio::store::thread_preparation::PreparationSave;
+        let purpose = self.operation_close_purpose(id, ClosePurpose::Preserve);
+        #[cfg(test)]
+        self.s2_activation_settlement_checkpoint(id).await?;
+        if self.observed_thread(id).is_some() {
+            self.close(id).await?;
+        }
+        self.close_prepared_resources(id, &workspace.native_resources())
+            .await?;
         let services = { self.0.state().agent_services.clone() };
         let Some(services) = services else {
             return Ok(());
@@ -75,12 +84,11 @@ impl StudioThreadAssembler {
         if record.published {
             return Ok(());
         }
-        if self.observed_thread(id).is_some() {
-            self.close(id).await?;
-        } else if record.save == PreparationSave::Unattached {
-            // This call is made by the actual completed (not panicked/cancelled) factory owner,
-            // before publishing its outcome. No storage/core admission has taken place.
-            self.confirm_preparation_close(id, false).await?;
+        if record.save == PreparationSave::Unattached {
+            // The stopped factory (including an unwound factory) and its scope have now joined.
+            // No unconfirmed core/storage producer remains before the durable stop ACK.
+            self.confirm_preparation_close_for_purpose(id, false, purpose)
+                .await?;
         } else if !record.stopped {
             return Err(ThreadAssemblyError::Identity(
                 "failed activation still owns an unconfirmed checkpoint".into(),
@@ -92,7 +100,12 @@ impl StudioThreadAssembler {
             .await
             .map_err(preparation_storage_error)?
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
-        services.factory.retire_archive_preparation(&record).await
+        match purpose {
+            ClosePurpose::Preserve => services.factory.retire_archive_preparation(&record).await?,
+            ClosePurpose::Delete => services.factory.retire_deleted_preparation(&record).await?,
+        }
+        drop(workspace.take());
+        Ok(())
     }
 
     /// Cold archive repair is storage-only and retains the normal close binding/ACK owner.
@@ -172,7 +185,7 @@ impl StudioThreadAssembler {
                 .get(id)
                 .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
             (
-                entry.thread.clone(),
+                entry.native.thread.clone(),
                 state
                     .agent_services
                     .as_ref()
@@ -193,6 +206,7 @@ impl StudioThreadAssembler {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?
+            .native
             .close_storage = Some(CloseStorage::Execution {
             completion: completion.clone(),
             binding,
@@ -267,9 +281,9 @@ impl StudioThreadAssembler {
         loop {
             let owned = self.0.state().entries.get(id).map(|entry| {
                 (
-                    entry.incarnation.clone(),
-                    entry.thread.clone(),
-                    entry.close_storage.clone(),
+                    entry.native.incarnation.clone(),
+                    entry.native.thread.clone(),
+                    entry.native.close_storage.clone(),
                 )
             });
             let (incarnation, thread, storage) =
@@ -304,7 +318,7 @@ impl StudioThreadAssembler {
                         .state()
                         .entries
                         .get(id)
-                        .is_some_and(|entry| entry.purpose == EntryPurpose::Execution)
+                        .is_some_and(|entry| entry.native.purpose == EntryPurpose::Execution)
                     {
                         return Ok(());
                     }
@@ -328,9 +342,9 @@ impl StudioThreadAssembler {
                         let entry = state
                             .entries
                             .get_mut(id)
-                            .filter(|entry| Arc::ptr_eq(&entry.incarnation, &incarnation))
+                            .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
                             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                        entry.close_storage = Some(CloseStorage::Initialized(binding));
+                        entry.native.close_storage = Some(CloseStorage::Initialized(binding));
                     }
                     // The initialized sink supplies this exact channel; never resolve by ID later.
                     self.publish_observation(id, &thread);
@@ -340,9 +354,9 @@ impl StudioThreadAssembler {
                     let entry = state
                         .entries
                         .get(id)
-                        .filter(|entry| Arc::ptr_eq(&entry.incarnation, &incarnation))
+                        .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    if !matches!(entry.close_storage.as_ref(), Some(CloseStorage::Initialized(current))
+                    if !matches!(entry.native.close_storage.as_ref(), Some(CloseStorage::Initialized(current))
                         if Arc::ptr_eq(current, &binding))
                     {
                         continue;
@@ -369,7 +383,7 @@ impl StudioThreadAssembler {
                         .entries
                         .get_mut(id)
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    entry.close_storage = Some(CloseStorage::Attaching {
+                    entry.native.close_storage = Some(CloseStorage::Attaching {
                         binding,
                         completion,
                     });
@@ -395,9 +409,9 @@ impl StudioThreadAssembler {
                     let entry = state
                         .entries
                         .get_mut(id)
-                        .filter(|entry| Arc::ptr_eq(&entry.incarnation, &incarnation))
+                        .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    entry.close_storage = Some(CloseStorage::Attached(binding));
+                    entry.native.close_storage = Some(CloseStorage::Attached(binding));
                     return Ok(());
                 }
                 Some(CloseStorage::Attached(_)) => return Ok(()),
@@ -416,10 +430,10 @@ impl StudioThreadAssembler {
             .entries
             .get(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        match entry.close_storage.as_ref() {
+        match entry.native.close_storage.as_ref() {
             Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
             Some(CloseStorage::Attached(binding)) => Ok(Some(binding.clone())),
-            None if entry.purpose == EntryPurpose::Execution => Ok(None),
+            None if entry.native.purpose == EntryPurpose::Execution => Ok(None),
             _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
         }
     }
@@ -465,7 +479,7 @@ impl StudioThreadAssembler {
                 match state
                     .entries
                     .get(id)
-                    .and_then(|entry| entry.close_storage.as_ref())
+                    .and_then(|entry| entry.native.close_storage.as_ref())
                 {
                     Some(CloseStorage::Execution { binding, .. }) => binding.clone(),
                     Some(
@@ -488,7 +502,7 @@ impl StudioThreadAssembler {
                 .state()
                 .entries
                 .get_mut(id)
-                .and_then(|entry| entry.close_storage.as_mut())
+                .and_then(|entry| entry.native.close_storage.as_mut())
             {
                 *joined = true;
             }
@@ -499,7 +513,7 @@ impl StudioThreadAssembler {
             match state
                 .entries
                 .get(id)
-                .and_then(|entry| entry.close_storage.as_ref())
+                .and_then(|entry| entry.native.close_storage.as_ref())
             {
                 Some(CloseStorage::Execution {
                     preparation_storage: Some(token),
@@ -568,7 +582,7 @@ impl StudioThreadAssembler {
             .state()
             .entries
             .get_mut(id)
-            .and_then(|entry| entry.close_storage.as_mut())
+            .and_then(|entry| entry.native.close_storage.as_mut())
         {
             *joined = true;
         }

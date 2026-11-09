@@ -22,7 +22,7 @@ HTTP → pl-studio-server ───┘                                  ↓
 
 ### 会话与智能体身份层次
 
-产品目录身份固定分层为 **SessionRuntime → AgentInstance → Thread → Turn**（运行 owner 的拆分见 [12](./12-collaboration.md) 与 [18](./18-studio-state.md)；本节只描述身份与目录事实）：
+产品目录身份分层为 **Session → Agent → Thread → Turn**；活动资源由 `SessionRuntime`、`AgentInstance` 与具体 Native 运行时组合拥有（所有权与生命周期见 [14](./14-runtime-host.md#141-统一装配与激活)；本节只描述身份与目录事实）：
 
 - **业务会话（`SessionId`/`SessionDescriptor`）**：目录会话身份与轻量会话事实（标题、排序时间、归档、工作区关联）的唯一归属。`SessionId` 由根 Thread 的既有 ID 字节迁移而来（原值不变）。
 - **会话成员（`AgentId`/`AgentDescriptor`）**：会话内成员身份；成员关系由 `parent_agent_id` 表达（主成员为 `None`），首版迁移复用原 Thread ID 字节，但类型与字段语义分开。成员的执行后端由封闭绑定 `AgentBinding::Native`/`AgentBinding::Acp` 表达，与 root/child 成员关系正交。

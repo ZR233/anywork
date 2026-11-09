@@ -3962,7 +3962,7 @@ pub(crate) mod storage_fault_tests {
         }
         pub(crate) fn install(
             &self,
-            owner: &crate::thread_assembler::StudioThreadAssembler,
+            owner: &crate::thread_assembler::SessionRuntime,
         ) -> Result<()> {
             let performance = crate::studio::ModelPerformanceOwner::new(
                 self.store.clone(),
