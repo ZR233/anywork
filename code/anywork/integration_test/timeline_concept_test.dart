@@ -25,7 +25,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/features/status/context_usage_readout.dart';
@@ -981,7 +981,7 @@ final class _ConceptScene {
     if (member.evaluate().length != 1) return null;
     final bodies = find.descendant(
       of: member,
-      matching: find.byType(TimelinePlainText),
+      matching: find.byType(TimelineMarkdown),
     );
     final surface = tester.renderObject<RenderBox>(
       find.byKey(presentationCaptureKey),
@@ -1959,21 +1959,44 @@ final class _ConceptScene {
       }
     }
     expect(tasks.values.toSet(), hasLength(tasks.length));
-    // Independent background terminals have their own frozen block. Work
-    // headers have no source: inspect one actual head before reading originals.
-    for (final finalUnit in observed.workBlocks.toList()) {
-      final head = (await observed.readMemberPage(finalUnit.memberReference!))
-          .entries
-          .single;
-      if (head.atom.source is! BackgroundResultChatSource ||
-          head.atom.turnId != turnId) {
+    // Independent background terminals are canonical Main Single rows. Read
+    // the original completion instead of inferring results from group members.
+    for (final finalUnit in observed.singleBlocks.toList()) {
+      final row = finalUnit.body as SingleDisplayBlock;
+      final head = row.atom;
+      if (head.source is! BackgroundResultChatSource || head.turnId != turnId) {
         continue;
       }
-      expect(finalUnit.summary!.total, 1);
-      final item = (await observed.readFixtureAtoms(
-        finalUnit,
-        expectedCount: 1,
-      )).single;
+      expect(finalUnit.historyPos, greaterThan(0));
+      expect(finalUnit.memberReference, isNull);
+      expect(head.delivery, ChatDeliveryKind.independent);
+      expect(head.lifecycle, isA<TerminalChatAtom>());
+      final completionId = row.completionId;
+      expect(completionId, isNotNull);
+      expect(completionId, isNotEmpty);
+      expect(head.completionItemId, completionId);
+      expect(head.completionSeq, isNotNull);
+      final scope = lease.content.openScope(generation: lease.generation);
+      late final ChatAtom item;
+      try {
+        final completed = await scope.readCompleted(
+          recordId: completionId!,
+          demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+        );
+        expect(completed.recordId, completionId);
+        expect(completed.completionSeq, head.completionSeq);
+        expect(completed.atom.id, head.id);
+        expect(completed.atom.source, head.source);
+        expect(completed.atom.turnId, head.turnId);
+        expect(completed.atom.completionItemId, completionId);
+        expect(completed.atom.completionSeq, completed.completionSeq);
+        expect(completed.atom.delivery, ChatDeliveryKind.independent);
+        expect(completed.atom.lifecycle, isA<TerminalChatAtom>());
+        item = completed.atom;
+      } finally {
+        scope.retire();
+        expect((await scope.close()).complete, isTrue);
+      }
       expect(item.kind, ChatAtomKind.toolCall);
       final value = ChatItemPresentation.decode(item);
       final reading = value.toolCard;
@@ -1992,7 +2015,7 @@ final class _ConceptScene {
         continue;
       }
       expect(item.turnId, turnId);
-      expect(finalUnit.body, isA<WorkDisplayBlock>());
+      expect(finalUnit.body, isA<SingleDisplayBlock>());
       expect(item.source, isA<BackgroundResultChatSource>());
       expect(item.delivery, ChatDeliveryKind.independent);
       expect(item.lifecycle, isA<TerminalChatAtom>());
@@ -3688,15 +3711,17 @@ final class _ConceptScene {
         same(display),
       );
     } else {
-      await observed.revealMember(
-        result.finalAtom,
-        reference: finalUnit.memberReference!,
-      );
+      expect(finalUnit.body, isA<SingleDisplayBlock>());
+      expect(finalUnit.memberReference, isNull);
+      await observed.revealSingle(finalUnit);
+      await waitForTimelineConceptSingle(tester, finalUnit);
     }
-    final card = observed.memberRow(result.finalAtom.id);
+    final card = finalUnit == null
+        ? observed.memberRow(result.finalAtom.id)
+        : observed.itemRow(finalUnit.id);
     expect(card, findsOneWidget);
     final rendered = tester.widget<ChatItemView>(card).item;
-    expect(rendered.id, item.id);
+    expect(rendered.id, finalUnit == null ? item.id : finalUnit.id);
     expect(rendered.compatibility, ChatItemCompatibility.current);
     expect(
       rendered.attachments.map((attachment) => attachment.id),
@@ -3885,7 +3910,7 @@ final class _ConceptScene {
       final failure = <String, Object?>{
         'toolId': tool.id,
         'toolCallId': tool.toolCallId,
-        'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainStatus',
+        'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainSingle',
         'error': error.toString(),
       };
       report['imageResultUiFailure'] = failure;
@@ -3972,9 +3997,10 @@ final class _ConceptScene {
         (report['imageResultUi'] ??= <Map<String, Object?>>[])
             as List<Map<String, Object?>>;
     observations.add({
-      'domain': finalUnit == null ? 'ForegroundMembers' : 'MainStatus',
+      'domain': finalUnit == null ? 'ForegroundMembers' : 'MainSingle',
       'foregroundMemberId': result.foreground.id,
-      'rowId': item.id,
+      'rowId': finalUnit?.id ?? item.id,
+      'atomId': result.finalAtom.id,
       'toolCallId': tool.toolCallId,
       'taskId': tool.taskId,
       'status': tool.statusString,
