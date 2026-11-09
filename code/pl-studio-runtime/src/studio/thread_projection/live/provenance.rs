@@ -314,6 +314,34 @@ impl LiveProjection {
                 shape.clone(),
             );
             self.fact(&item);
+            // Freeze the canonical reference with the reliable start itself.
+            // Later preview synchronization cannot amend the cloned start fact.
+            let content = pl_protocol::ChatAtomContent {
+                role: crate::studio::runtime::chat_item::atom_content_role(&field).ok_or_else(
+                    || {
+                        ProjectionError::UnsupportedOutput(
+                            "canonical member start has no content role".into(),
+                        )
+                    },
+                )?,
+                reference: pl_protocol::ContentRef {
+                    database_id: self
+                        .current
+                        .database_id()
+                        .ok_or_else(|| {
+                            ProjectionError::History(
+                                "canonical member start has no database identity".into(),
+                            )
+                        })?
+                        .into(),
+                    target: pl_protocol::ContentTarget::Body {
+                        owner: pl_protocol::ContentOwner::Item {
+                            item_id: id.clone(),
+                        },
+                        key: field.as_key(),
+                    },
+                },
+            };
             // An empty canonical part is still an identity, including on failure without progress.
             if !self.previews.contains_key(&id) {
                 self.store_preview(
@@ -327,6 +355,7 @@ impl LiveProjection {
                 );
             }
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
+            atom.contents = vec![content];
             atom.attempt_id = Some(start.attempt_id.clone());
             atom.started_at = Some(effect.committed_at);
             atom.lifecycle = ChatAtomLifecycle::Active {

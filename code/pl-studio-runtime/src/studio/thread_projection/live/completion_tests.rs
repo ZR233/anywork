@@ -50,6 +50,64 @@ async fn publish(
     Ok(prepared)
 }
 
+fn started_body(
+    prepared: &PreparedEffect,
+    kind: ChatAtomKind,
+    database: &str,
+) -> Result<pl_protocol::ChatAtomContent> {
+    let atom = prepared
+        .current
+        .atom_facts
+        .iter()
+        .find(|atom| {
+            atom.kind == kind && matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+        })
+        .context("reliable active start")?;
+    assert_eq!(
+        atom.contents.len(),
+        1,
+        "start must carry its allocated body"
+    );
+    let content = &atom.contents[0];
+    assert_eq!(content.reference.database_id, database);
+    let pl_protocol::ContentTarget::Body { owner, key } = &content.reference.target else {
+        anyhow::bail!("start content is not a canonical body");
+    };
+    assert_eq!(
+        owner,
+        &pl_protocol::ContentOwner::Item {
+            item_id: atom.id.clone()
+        }
+    );
+    let current_key = pl_core::chat::ChatContentKey {
+        owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+        key: key.clone(),
+    };
+    let current = prepared
+        .current_state
+        .as_ref()
+        .context("frozen current owner")?
+        .contents()
+        .get(&current_key)
+        .context("start reference resolves to its real allocated body")?;
+    assert_eq!(current.descriptor.byte_length, 0, "no token is required");
+    assert_eq!(
+        prepared
+            .display
+            .as_ref()
+            .context("frozen display")?
+            .members
+            .iter()
+            .find(|member| member.head.atom.id == atom.id)
+            .context("display member")?
+            .head
+            .atom
+            .contents,
+        atom.contents
+    );
+    Ok(content.clone())
+}
+
 #[tokio::test]
 async fn reliable_permission_status_changes_update_display_without_rewriting_start() -> Result<()> {
     use pl_core::{
@@ -337,7 +395,8 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
         let mut first = effect(1);
         first.turn = Some(turn);
         first.model_member_starts = vec![started("R")].into();
-        publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
+        let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
+        started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
         let receipt = ModelMemberReceipt {
             item: CompletionPresentationItem {
@@ -388,6 +447,7 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
         let mut third = effect(3);
         third.model_member_starts = vec![text].into();
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
+        let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
         assert_eq!(chat.head_seq(), h);
         assert!(prepared.completions.is_empty());
         assert_eq!(prepared.display.as_ref().unwrap().published_through, 1);
@@ -443,6 +503,18 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
             });
             projection.stream(&chat,&thread,&state,3).await?;
         }
+        let pl_protocol::ContentTarget::Body { owner, key } = &text_body.reference.target else {
+            unreachable!("started_body checked the target");
+        };
+        let current_key = pl_core::chat::ChatContentKey {
+            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            key: key.clone(),
+        };
+        assert!(
+            projection.current.snapshot().context("streamed current")?
+                .contents().get(&current_key).context("same body after tokens")?
+                .descriptor.byte_length > 0
+        );
         let visits = presentation.lock().unwrap().finish_cost_observation();
         assert_eq!((visits.members.reads,visits.members.writes,visits.heads.reads,visits.heads.writes),(0,0,0,0));
         eprintln!("PRESENTATION_COST {}",serde_json::json!({

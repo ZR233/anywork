@@ -1315,6 +1315,50 @@ final class _ConceptScene {
     }
 
     final bodyIdentities = member.contents.map(memberBody).toList();
+    final summary = member.contents.singleWhere(
+      (content) => content.role == ChatContentRole.reasoningSummary,
+    );
+    final summaryIdentity = contentReferenceIdentity(summary.reference);
+    Future<TimelineCurrentWindowDisplay> readableMemberWindow(
+      TimelineCurrentDisplay current,
+      String description,
+    ) async {
+      TimelineCurrentWindowDisplay? observation;
+      // Borrow only the renderer's existing watch. A query here could conceal
+      // a missing production reference or a renderer that never opens it.
+      await _until(tester, () {
+        expect(current.isCurrent, isTrue);
+        final windows = current.windows
+            .where((window) => window.id == member.id)
+            .toList();
+        for (final window in windows) {
+          expect(window.error, isNull);
+        }
+        if (windows.isEmpty) return false;
+        expect(windows, hasLength(1));
+        observation = windows.single;
+        expect(
+          contentReferenceIdentity(observation!.reference),
+          summaryIdentity,
+        );
+        final window = observation!.window;
+        return window != null &&
+            utf8.decode(window.bytes).contains('梳理会话共享组件与锁定边界');
+      }, description);
+      expect(observation!.offset, 0);
+      expect(observation!.window!.offset, 0);
+      expect(observation!.window!.sealed, isFalse);
+      return observation!;
+    }
+
+    final originalWindow = await readableMemberWindow(
+      originalCurrent,
+      'the mounted original member reads the first reasoning delta',
+    );
+    final originalBody = originalWindow.window!;
+    expect(lease, same(before));
+    final originalHead = work.expansion.members!.page!.entries.single;
+    expect(originalHead.atom.id, member.id);
     final selectedThread = threadId;
     await tap(find.byKey(StudioDriverKeys.settingsOpen));
     await _until(
@@ -1331,6 +1375,7 @@ final class _ConceptScene {
     expect(before.queryCleanupError, isNull);
     expect(originalCurrent.isCurrent, isFalse);
     expect(originalCurrent.windows, isEmpty);
+    expect(originalWindow.window, isNull);
     expect(
       (await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
@@ -1350,6 +1395,7 @@ final class _ConceptScene {
           ),
       'fresh Set and the same producer-defined live Work',
     );
+    final after = lease;
     expect(
       lease.groupDisplays,
       isEmpty,
@@ -1368,6 +1414,28 @@ final class _ConceptScene {
     expect(resumed.sourceOrder, member.sourceOrder);
     expect(resumed.lifecycle, isA<ActiveChatAtom>());
     expect(resumed.contents.map(memberBody), orderedEquals(bodyIdentities));
+    final resumedHead = observed
+        .unit(work.id)
+        .expansion
+        .members!
+        .page!
+        .entries
+        .single;
+    expect(resumedHead.memberKey, originalHead.memberKey);
+    expect(resumedHead.memberOrder, originalHead.memberOrder);
+    expect(resumedHead.atom.id, member.id);
+    final resumedWindow = await readableMemberWindow(
+      after.currentDisplay!,
+      'the newly mounted member reads the same first reasoning delta',
+    );
+    expect(resumedWindow, isNot(same(originalWindow)));
+    expect(
+      contentReferenceIdentity(resumedWindow.reference),
+      contentReferenceIdentity(originalWindow.reference),
+    );
+    expect(originalWindow.window, isNull);
+    expect(lease, same(after));
+    expect(after.appliedSets, 1);
     expect(items.map((item) => item.id), orderedEquals(historyIds));
     expect(items.where((item) => item.atom!.id == member.id), isEmpty);
     expect(main.where((unit) => unit.body is WorkDisplayBlock), isEmpty);
@@ -1377,11 +1445,20 @@ final class _ConceptScene {
       'turnId': activeTurnId,
       'memberId': resumed.id,
       'memberKind': resumed.kind.name,
+      'memberKey': resumedHead.memberKey,
+      'memberOrder': resumedHead.memberOrder,
       'oldGeneration': before.generation,
       'newGeneration': lease.generation,
       'oldLeaseReleased': before.isReleased,
       'newMainSets': lease.appliedSets,
       'historyItemIds': historyIds,
+      'mountedBody': {
+        'reference': summaryIdentity.toString(),
+        'firstReasoningDeltaVerifiedBeforeAndAfter': true,
+        'originalBytes': originalBody.bytes.length,
+        'resumedBytes': resumedWindow.window!.bytes.length,
+        'originalWindowReleased': originalWindow.window == null,
+      },
       'activeContentReferences': [
         for (final content in resumed.contents)
           contentReferenceIdentity(content.reference).toString(),
