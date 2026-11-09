@@ -43,7 +43,7 @@
 
 ```sh
 python3 .github/scripts/check_tool_boundaries.py
-cargo test --locked --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
+cargo check --locked --all-targets --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
 ```
 
 依赖检查消费 Cargo 的全特性、全平台解析图，包括构建与测试依赖，并拒绝宿主依赖、
