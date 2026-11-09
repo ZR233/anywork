@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
@@ -15,10 +16,12 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_view_s
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -26,6 +29,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
+import '../support/pump_client_future.dart';
+import '../../integration_test/support/timeline_concept_images.dart';
+import '../../integration_test/support/timeline_concept_presentation.dart';
 
 const _payloadRef = ContentRef(
   databaseId: 'db',
@@ -141,7 +147,204 @@ InlinePayload _tool() => _envelope(
   ],
 );
 
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=',
+);
+
+InlinePayload _imageInput(List<String> ids) => _envelope(
+  'text',
+  {
+    'channel': 'user',
+    'attachments': [
+      for (final id in ids)
+        {
+          'id': id,
+          'modality': 'image',
+          'mediaType': 'image/png',
+          'filename': '$id.png',
+          'byteSize': _png.length,
+          'width': 1,
+          'height': 1,
+        },
+    ],
+  },
+  [inlineBody('body', 'three image input')],
+);
+
 void main() {
+  testWidgets(
+    'concept input observation waits for the mounted canonical renderer and three real images',
+    (tester) async {
+      final h = _Harness();
+      final head = _head();
+      final reply = Completer<CompletedEntry>();
+      h.content.read = (_, _) => reply.future;
+      final mediaReads = <String>[];
+      h.readAttachment = (id) async {
+        mediaReads.add(id);
+        return _png;
+      };
+      const ids = ['image-a', 'image-b', 'image-c'];
+      await h.controls.adapter.applyTimeline(
+        displayBatch([
+          DisplayBlock(
+            id: 'image-input',
+            historyPos: 1,
+            body: SingleDisplayBlock(atom: head, completionId: 'completion'),
+          ),
+        ]),
+      );
+      final message = h.controls.controller.messages.single;
+      final unit = chatItemPresentationOf(message)!.displayUnit!;
+      expect(ChatItemPresentation.forUnit(unit).attachments, isEmpty);
+      await tester.pumpWidget(h.host());
+      expect(find.byType(ChatItemView), findsNothing);
+      final timer = Timer(
+        const Duration(milliseconds: 32),
+        () => reply.complete(_entry(_atom(_imageInput(ids)))),
+      );
+      addTearDown(timer.cancel);
+      final rendered = await waitForTimelineConceptSingle(tester, unit);
+      expect(rendered.attachments.map((attachment) => attachment.id), ids);
+      await pumpClientUntil(
+        tester,
+        () =>
+            tester
+                .widgetList<TimelineImageView>(find.byType(TimelineImageView))
+                .where((view) => view.bytes != null)
+                .length ==
+            3,
+        'three decoded input images',
+      );
+      await waitForTimelineConceptInputImages(tester, rendered);
+      final input = TimelineConceptImageInput(
+        threadId: 'thread',
+        inputId: 'input',
+        drafts: [
+          for (final id in ids)
+            AttachmentDraftView(
+              id: 'draft-$id',
+              modality: AttachmentModalityView.image,
+              mediaType: 'image/png',
+              filename: '$id.png',
+              byteSize: _png.length,
+              width: 1,
+              height: 1,
+            ),
+        ],
+      );
+      final evidence = input.verifyHorizontalLayout(
+        tester,
+        item: unit,
+        attachments: rendered.attachments,
+        itemFinder: find.byType(ChatItemView),
+        thumbnailFinder: (id) =>
+            find.byKey(StudioDriverKeys.viewImageThumbnail(id)),
+      );
+      expect(evidence['attachmentResourceIds'], ids);
+      expect(mediaReads, unorderedEquals(ids));
+      expect(h.content.requests, hasLength(1));
+      expect(h.content.requests.single.$1, 'completion');
+      expect(h.content.requests.single.$2.maxItems, 1);
+      expect(h.content.requests.single.$2.maxBytes, 64 * 1024);
+      expect(
+        h.content.scopes.every((scope) => !scope.active && scope.closed),
+        isTrue,
+      );
+      expect(h.controls.controller.messages.single, same(message));
+      expect(unit.atom, same(head));
+      expect(ChatItemPresentation.forUnit(unit).attachments, isEmpty);
+      await tester.tap(
+        find.byKey(StudioDriverKeys.viewImageThumbnail(ids.first)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(StudioDriverKeys.timelineImageDialog(ids.first)),
+        findsOneWidget,
+      );
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.byKey(StudioDriverKeys.timelineImageClose));
+      await tester.pumpAndSettle();
+      await h.close(tester);
+    },
+  );
+
+  for (final ids in [
+    <String>[],
+    ['duplicate', 'duplicate', 'third'],
+  ]) {
+    testWidgets(
+      'concept input observation rejects ${ids.isEmpty ? 'empty' : 'duplicate'} canonical attachments',
+      (tester) async {
+        final h = _Harness();
+        h.content.read = (_, _) async => _entry(_atom(_imageInput(ids)));
+        await h.controls.adapter.applyTimeline(
+          displayBatch([
+            DisplayBlock(
+              id: 'invalid-image-input',
+              historyPos: 1,
+              body: SingleDisplayBlock(
+                atom: _head(),
+                completionId: 'completion',
+              ),
+            ),
+          ]),
+        );
+        final unit = chatItemPresentationOf(
+          h.controls.controller.messages.single,
+        )!.displayUnit!;
+        await tester.pumpWidget(h.host());
+        final rendered = await waitForTimelineConceptSingle(tester, unit);
+        await expectLater(
+          waitForTimelineConceptInputImages(tester, rendered),
+          throwsA(isA<TestFailure>()),
+        );
+        expect(h.content.requests, hasLength(1));
+        await h.close(tester);
+      },
+    );
+  }
+
+  testWidgets(
+    'concept Single observation cannot replace a failed production read with a test query',
+    (tester) async {
+      final h = _Harness();
+      h.content.read = (_, _) async => throw StateError('PRIVATE read failure');
+      await h.controls.adapter.applyTimeline(
+        displayBatch([
+          DisplayBlock(
+            id: 'failed-image-input',
+            historyPos: 1,
+            body: SingleDisplayBlock(atom: _head(), completionId: 'completion'),
+          ),
+        ]),
+      );
+      final unit = chatItemPresentationOf(
+        h.controls.controller.messages.single,
+      )!.displayUnit!;
+      await tester.pumpWidget(h.host());
+      Object? failure;
+      try {
+        await waitForTimelineConceptSingle(
+          tester,
+          unit,
+          timeout: const Duration(milliseconds: 64),
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure, isA<TestFailure>());
+      expect(find.text('完成内容读取失败'), findsOneWidget);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(h.content.requests, hasLength(1));
+      expect(
+        h.content.scopes.every((scope) => !scope.active && scope.closed),
+        isTrue,
+      );
+      await h.close(tester);
+    },
+  );
+
   testWidgets(
     'Main Deferred Single restores body and attachments without changing the block or atom',
     (tester) async {
@@ -436,6 +639,7 @@ class _Harness {
   final controls = _Controls();
   final content = _Content();
   final retirement = ValueNotifier(false);
+  Future<Uint8List> Function(String attachmentId)? readAttachment;
   set groupIntent(TimelineExpansionIntent value) =>
       controls.groupIntent = value;
   Widget host() => MaterialApp(
@@ -483,7 +687,7 @@ class _Harness {
         attachmentBuilder: (item) => TimelineAttachmentsConnector(
           item: item,
           resources: controls.images,
-          readAttachment: null,
+          readAttachment: readAttachment,
           isActive: () => !retirement.value,
         ),
         groupMembersBuilder: (unit) {

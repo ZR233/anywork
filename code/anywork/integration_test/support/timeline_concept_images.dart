@@ -1,13 +1,69 @@
 import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const timelineConceptImagePrompt = '读取三张设计截图，并说明无法读取的图片。';
+
+// A nonempty canonical attachment list is required before checking media;
+// every() on a Deferred head's empty list must never count as UI evidence.
+Future<void> waitForTimelineConceptInputImages(
+  WidgetTester tester,
+  ChatItemPresentation item, {
+  Duration timeout = const Duration(seconds: 60),
+}) async {
+  expect(item.compatibility, ChatItemCompatibility.current);
+  expect(item.atom!.kind, ChatAtomKind.input);
+  final attachments = item.attachments;
+  expect(attachments, hasLength(3));
+  expect(attachments.map((attachment) => attachment.id).toSet(), hasLength(3));
+  final card = find.byWidgetPredicate(
+    (widget) => widget is ChatItemView && identical(widget.item, item),
+  );
+  final deadline = tester.binding.clock.fromNowBy(timeout);
+  while (true) {
+    expect(card, findsOneWidget);
+    final views = tester
+        .widgetList<TimelineImageView>(
+          find.descendant(of: card, matching: find.byType(TimelineImageView)),
+        )
+        .toList();
+    for (final view in views) {
+      expect(view.itemId, item.id);
+      if (view.error case final error?) throw StateError('$error');
+    }
+    if (views.length == attachments.length) {
+      expect(
+        views.map((view) => view.attachment.id),
+        orderedEquals(attachments.map((attachment) => attachment.id)),
+      );
+      if (views.every(
+        (view) =>
+            view.active &&
+            !view.isTool &&
+            view.bytes != null &&
+            view.bytes!.isNotEmpty &&
+            view.width == view.attachment.width &&
+            view.height == view.attachment.height,
+      )) {
+        return;
+      }
+    }
+    if (!tester.binding.clock.now().isBefore(deadline)) {
+      fail('Three real input images did not become readable for ${item.id}');
+    }
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(tester.takeException(), isNull);
+  }
+}
+
 const _filenames = [
   'concept-input-a.png',
   'concept-input-b.png',

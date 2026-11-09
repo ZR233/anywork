@@ -42,6 +42,7 @@ import 'support/conversation_credit_observation.dart';
 import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_concept_images.dart';
+import 'support/timeline_concept_presentation.dart';
 import 'support/timeline_observation.dart';
 
 const _prompt = '把会话设计稿组件化，检查工作组与正文的交接边界。';
@@ -334,8 +335,6 @@ final class _ConceptScene {
   Iterable<ChatAtom> membersOf(String unitId) => lease.groupDisplays
       .where((display) => display.unitId == unitId)
       .expand((display) => display.atoms);
-  ChatItemPresentation presentation(TimelineDisplayUnit block) =>
-      ChatItemPresentation.forUnit(block);
   bool hasText(String text) =>
       find.textContaining(text, findRichText: true).evaluate().isNotEmpty;
   Finder unitFinder(String id) => find.byWidgetPredicate(
@@ -2156,6 +2155,31 @@ final class _ConceptScene {
     // Atomic completions are saved, but a Work without a boundary stays live.
     expect(main.any((unit) => unit.id == g1), isFalse);
     await capture('group-idle');
+    // Opt-in acceptance coordination only: keep the existing provider gate
+    // closed while an external SQLite backup captures this real open Work.
+    // The acknowledgement is written by the observer coordinator, not the UI.
+    final seedAckPath =
+        Platform.environment['ANYWORK_CONCEPT_COLD_SEED_ACK'] ?? '';
+    if (seedAckPath.isNotEmpty) {
+      final pause = Stopwatch()..start();
+      final acknowledgement = File(seedAckPath);
+      while (!acknowledgement.existsSync()) {
+        if (pause.elapsed >= const Duration(seconds: 180)) {
+          fail('Timed out waiting for verified open Work seed backup: $g1');
+        }
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(tester.takeException(), isNull);
+      }
+      final ack = jsonDecode(acknowledgement.readAsStringSync());
+      expect(ack, isA<Map<String, dynamic>>());
+      expect(ack['pass'], isTrue);
+      expect(ack['openWorkBlockIds'], contains(g1));
+      report['coldSeedCheckpoint'] = {
+        'blockId': g1,
+        'pauseMillis': pause.elapsedMilliseconds,
+        'excludedFromLatencySamples': true,
+      };
+    }
     await release('group-idle');
     await reach(
       'text',
@@ -2392,20 +2416,18 @@ final class _ConceptScene {
       'failed partial retained',
     );
     final partial = items.singleWhere((entry) => entry.atom!.id == partialAtom);
+    bool failedReceipt(TimelineDisplayUnit entry) =>
+        entry.atom!.kind == ChatAtomKind.turnReceipt &&
+        entry.atom!.source == partial.atom!.source &&
+        entry.atom!.lifecycle is TerminalChatAtom &&
+        (entry.atom!.lifecycle as TerminalChatAtom).outcome ==
+            ChatTerminalOutcome.failed;
     await _until(
       tester,
-      () => items.any(
-        (entry) =>
-            entry.atom!.kind == ChatAtomKind.turnReceipt &&
-            (presentation(entry).data['outcome'] as Map)['kind'] == 'failed',
-      ),
+      () => items.any(failedReceipt),
       'independent failed Turn receipt',
     );
-    final failure = items.lastWhere(
-      (entry) =>
-          entry.atom!.kind == ChatAtomKind.turnReceipt &&
-          (presentation(entry).data['outcome'] as Map)['kind'] == 'failed',
-    );
+    final failure = items.lastWhere(failedReceipt);
     expect(failure.id, isNot(partial.id));
     await showUnit(partial.id);
     await _until(
@@ -2414,6 +2436,8 @@ final class _ConceptScene {
       'failed partial still readable',
     );
     await showUnit(failure.id);
+    final renderedFailure = await waitForTimelineConceptSingle(tester, failure);
+    expect((renderedFailure.data['outcome'] as Map)['kind'], 'failed');
     await tap(
       find.descendant(
         of: itemFinder(failure.id),
@@ -2525,6 +2549,15 @@ final class _ConceptScene {
           expect(readable.completionSeq, entry.atom!.completionSeq);
           expect(readable.atom.id, entry.atom!.id);
           expect(readable.atom.source, source);
+          expect(readable.atom.kind, entry.atom!.kind);
+          expect(readable.atom.completionItemId, readable.recordId);
+          expect(readable.atom.completionSeq, readable.completionSeq);
+          expect(readable.atom.lifecycle, entry.atom!.lifecycle);
+          expect(readable.atom.payload, isA<InlinePayload>());
+          expect(
+            (readable.atom.payload as InlinePayload).bytes.length,
+            lessThanOrEqualTo(64 * 1024),
+          );
           readableAtom = readable.atom;
         } finally {
           scope.retire();
@@ -2776,9 +2809,13 @@ final class _ConceptScene {
         recordId: body.completionId!,
         demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
       );
+      expect(original.recordId, body.completionId);
       expect(original.atom.id, body.atom.id);
       expect(original.atom.source, heads.first.atom.source);
       expect(original.completionSeq, body.atom.completionSeq);
+      expect(original.atom.completionItemId, original.recordId);
+      expect(original.atom.completionSeq, original.completionSeq);
+      expect(original.atom.lifecycle, isA<TerminalChatAtom>());
       originals.add(original);
       // Start/member order is A -> B; atomic completion order is B -> T -> A.
       expect(originals[1].completionSeq, lessThan(originals[2].completionSeq));
@@ -3292,6 +3329,11 @@ final class _ConceptScene {
       expect(completed.atom.contentPresent, isFalse);
       expect(completed.mainPresentation, MainPresentation.hidden);
       expect(completed.run, isNull);
+      expect(completed.atom.payload, isA<InlinePayload>());
+      expect(
+        (completed.atom.payload as InlinePayload).bytes.length,
+        lessThanOrEqualTo(64 * 1024),
+      );
       final value = ChatItemPresentation.decode(completed.atom);
       expect(value.compatibility, ChatItemCompatibility.current);
       expect(value.type, 'text');
@@ -3425,6 +3467,11 @@ final class _ConceptScene {
     expect(card, findsOneWidget);
     final rendered = tester.widget<ChatItemView>(card).item;
     expect(rendered.id, item.id);
+    expect(rendered.compatibility, ChatItemCompatibility.current);
+    expect(
+      rendered.attachments.map((attachment) => attachment.id),
+      orderedEquals(item.attachments.map((attachment) => attachment.id)),
+    );
     if (finalUnit == null) {
       expect(rendered.atom!.id, result.foreground.id);
       expect(rendered.atom!.source, result.foreground.source);
@@ -3865,23 +3912,13 @@ final class _ConceptScene {
       expect(itemValue.body, isA<SingleDisplayBlock>());
       expect(itemValue.atom!.kind, ChatAtomKind.input);
       expect(observed.unit(itemValue.id).memberReference, isNull);
-      final item = presentation(itemValue);
       await showUnit(itemValue.id);
       final card = itemFinder(itemValue.id);
+      late final ChatItemPresentation item;
       try {
-        await _until(tester, () {
-          for (final view in tester.widgetList<TimelineImageView>(
-            find.descendant(of: card, matching: find.byType(TimelineImageView)),
-          )) {
-            if (view.error case final error?) throw error;
-          }
-          return item.attachments.every(
-            (attachment) => find
-                .byKey(StudioDriverKeys.viewImageThumbnail(attachment.id))
-                .evaluate()
-                .isNotEmpty,
-          );
-        }, 'three decoded real user input thumbnails');
+        item = await waitForTimelineConceptSingle(tester, itemValue);
+        input.verifyItem(itemValue, item.attachments);
+        await waitForTimelineConceptInputImages(tester, item);
       } catch (error) {
         report['inputThumbnailFailure'] = {
           'itemId': itemValue.id,
@@ -4074,31 +4111,23 @@ final class _ConceptScene {
     expect(item.atom!.completionSeq, input['completionSeq']);
     expect(item.body, isA<SingleDisplayBlock>());
     expect(item.atom!.kind, ChatAtomKind.input);
-    final attachments = presentation(item).attachments;
+    final renderedInput = await waitForTimelineConceptSingle(tester, item);
+    final attachments = renderedInput.attachments;
     expect(
       attachments.map((attachment) => attachment.id),
       orderedEquals((input['attachmentResourceIds'] as List).cast<String>()),
     );
     expect(attachments, hasLength(3));
-    await _until(
-      tester,
-      () =>
-          tester
-              .widgetList<TimelineImageView>(
-                find.descendant(
-                  of: target,
-                  matching: find.byType(TimelineImageView),
-                ),
-              )
-              .where((view) => view.bytes != null && view.error == null)
-              .length ==
-          3,
-      'cold-open user attachment bytes remain readable',
-    );
+    await waitForTimelineConceptInputImages(tester, renderedInput);
     final rectangles = [
       for (final attachment in attachments)
         tester.getRect(
-          find.byKey(StudioDriverKeys.viewImageThumbnail(attachment.id)),
+          find.descendant(
+            of: target,
+            matching: find.byKey(
+              StudioDriverKeys.viewImageThumbnail(attachment.id),
+            ),
+          ),
         ),
     ];
     for (var index = 1; index < rectangles.length; index++) {
