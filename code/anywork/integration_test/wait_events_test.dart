@@ -364,21 +364,53 @@ final class _Scene {
                 ?.turnId;
       _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
-    } catch (_) {
-      final composer = tester.widget<PromptComposerView>(
-        find.byType(PromptComposerView),
-      );
-      debugPrintSynchronously(
-        'Composer submission failure: text=${tester.widget<TextField>(input).controller!.text}, '
-        'draft=${composer.composer.draft}, pending=${composer.composer.isSubmissionPending}, '
-        'sdkDraft=${graph.client.drafts.existingComposer(graph.client.selection.state.selectedThreadId!)?.state.draft}, '
-        'execution=${composer.execution?.id}/${composer.execution?.phase}, '
-        'continuation=${composer.continuation?.claimed}, '
-        'stop=${composer.stopCommand?.phase}/${composer.stopCommand?.accepted}/${composer.stopCommand?.target.label}, '
-        'blocker=${composer.blocker}, failure=${composer.failure}, '
-        'enabled=${composer.enabled}, locked=${composer.submissionLocked}',
-      );
-      rethrow;
+    } catch (error, stack) {
+      try {
+        final composer = tester
+            .widgetList<PromptComposerView>(find.byType(PromptComposerView))
+            .singleOrNull;
+        final selected = graph.client.selection.state.selectedThreadId;
+        final diagnostic = {
+          'scene': name,
+          'error': error.toString(),
+          'selectedThreadId': selected,
+          'selectionNeedsOpen': graph.client.selection.state.needsOpen,
+          'workspacePaneThreadIds': [
+            for (final pane in tester.widgetList<AgentWorkspacePane>(
+              find.byType(AgentWorkspacePane, skipOffstage: false),
+            ))
+              pane.threadId,
+          ],
+          'text': tester
+              .widgetList<TextField>(input)
+              .singleOrNull
+              ?.controller
+              ?.text,
+          'draft': composer?.composer.draft,
+          'pending': composer?.composer.isSubmissionPending,
+          'sdkDraft': selected == null
+              ? null
+              : graph.client.drafts.existingComposer(selected)?.state.draft,
+          'execution': composer?.execution?.id,
+          'blocker': composer?.blocker?.runtimeType.toString(),
+          'failure': composer?.failure?.runtimeType.toString(),
+          'enabled': composer?.enabled,
+          'locked': composer?.submissionLocked,
+        };
+        captureReport['submissionFailure:$name'] = diagnostic;
+        debugPrintSynchronously(
+          'WAIT_SUBMISSION_FAILURE ${jsonEncode(diagnostic)}',
+        );
+        await capturePresentation(
+          tester,
+          'wait-events-$name-submission-failure.png',
+        );
+      } catch (diagnosticError) {
+        debugPrintSynchronously(
+          'WAIT_SUBMISSION_DIAGNOSTIC_FAILURE ${diagnosticError.runtimeType}',
+        );
+      }
+      Error.throwWithStackTrace(error, stack);
     }
   }
 
