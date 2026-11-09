@@ -667,9 +667,54 @@ async fn realtime_first_reply_holds_waiting_and_live_text_phases() {
             "realtime-first-token",
             "realtime-text-readable",
             "realtime-parallel-observer",
+            "realtime-background-result",
             "realtime-host-cwd-observer"
         ]
     );
+}
+
+#[tokio::test]
+async fn realtime_background_gate_keeps_reasoning_open_before_original_wait_b() {
+    let control = Control::realtime();
+    let delivery = control
+        .realtime_script("fixture-host-cwd")
+        .into_iter()
+        .find(|step| {
+            matches!(&step.request, RequestMatch::Delivery { marker, .. }
+                if marker == &realtime_delivery_marker("realtime-parallel-call-a"))
+        })
+        .expect("the observer must follow A's real independent delivery");
+    let observer = Control {
+        names: vec![control.names[3]],
+        stages: vec![control.stages[3].clone()],
+    };
+    // Exercise the original reply through the real HTTP gate/stream helper.
+    // The prompt wrapper only isolates this reply from preceding script steps.
+    let step = Step::prompt(
+        Protocol::ResponsesHttp,
+        GUI_REALTIME_PARALLEL_PROMPT,
+        0,
+        delivery.reply,
+    );
+    let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[3]).await;
+    assert_eq!(observed.len(), 8);
+    assert_eq!(observed[1]["item"]["type"], "reasoning");
+    assert_eq!(observed[2]["type"], "response.reasoning_summary_text.delta");
+    assert!(observed[..3].iter().all(|event| {
+        event["type"] != "response.output_item.done" && event["type"] != "response.completed"
+    }));
+    assert_eq!(observed[3]["item"]["type"], "reasoning");
+    assert_eq!(observed[3]["type"], "response.output_item.done");
+    assert_eq!(
+        observed[6]["item"]["call_id"],
+        "realtime-parallel-wait-b-call"
+    );
+    assert_eq!(observed[6]["item"]["name"], TOOL_WAIT_NAME);
+    assert_eq!(
+        observed[6]["item"]["arguments"],
+        realtime_wait_arguments(&["realtime-parallel-call-b"])
+    );
+    assert_eq!(observed[7]["type"], "response.completed");
 }
 
 #[tokio::test]
@@ -690,8 +735,8 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
         host.reply,
     );
     let observer = Control {
-        names: vec![control.names[3]],
-        stages: vec![control.stages[3].clone()],
+        names: vec![control.names[4]],
+        stages: vec![control.stages[4].clone()],
     };
     let observed = observe(observer, step, GUI_REALTIME_HOST_CWD_PROMPT, &[4]).await;
     assert_eq!(observed.len(), 8);

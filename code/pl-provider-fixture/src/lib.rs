@@ -2892,6 +2892,7 @@ pub struct RealtimeObservers<'a> {
     pub first_token: &'a ReplyStage,
     pub readable_text: &'a ReplyStage,
     pub parallel: &'a ReplyStage,
+    pub background_result: &'a ReplyStage,
     pub host_cwd: &'a ReplyStage,
 }
 
@@ -2918,8 +2919,10 @@ pub struct RealtimeObservers<'a> {
 /// observer has rendered them. Without it, manual observation keeps its pacing.
 /// The parallel stage holds the two parallel calls behind a completed reasoning
 /// prefix so the desktop observer can mount the original member window before
-/// the calls begin their foreground lifetime. The host-cwd stage prepares the same
-/// observation boundary for the host-cwd call.
+/// the calls begin their foreground lifetime. The background-result stage holds
+/// real foreground reasoning after the first independent result is delivered;
+/// it does not hold either command's exit or its terminal publication. The
+/// host-cwd stage prepares the same observation boundary for the host-cwd call.
 pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'_>>) -> Vec<Step> {
     let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
     let mut script = RealtimeScript::new();
@@ -3109,24 +3112,45 @@ pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'
             )),
         )
     });
-    // The first delivered result is in context. The model waits again for the
-    // still-running command by its own receipt identity before it reports the
-    // parallel work complete.
+    // The first delivered result is in context. The observer may hold this real
+    // foreground reasoning open; neither command's terminal is held. The model
+    // then waits on B's original receipt even if B completed during observation.
     script.add(|step| {
+        let calls = [RealtimeToolCall {
+            item_id: "realtime-parallel-wait-b-item",
+            call_id: "realtime-parallel-wait-b-call",
+            name: TOOL_WAIT_NAME,
+            arguments: realtime_wait_arguments(&["realtime-parallel-call-b"]),
+        }];
+        let reply = if let Some(stages) = &observers {
+            let events = responses_reasoning_tool_calls(
+                &["realtime background A delivered; foreground reasoning remains active"],
+                "realtime-parallel-wait-b",
+                "fixture-model",
+                &calls,
+            );
+            let terminal = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.done"
+                        && event["item"]["type"] == "reasoning"
+                })
+                .expect("background observer requires a real reasoning terminal");
+            stages
+                .background_result
+                .gated(events[..terminal].to_vec(), events[terminal..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-parallel-wait-b",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::delivery(
             Protocol::ResponsesHttp,
             realtime_delivery_marker("realtime-parallel-call-a"),
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-parallel-wait-b",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-parallel-wait-b-item",
-                    call_id: "realtime-parallel-wait-b-call",
-                    name: TOOL_WAIT_NAME,
-                    arguments: realtime_wait_arguments(&["realtime-parallel-call-b"]),
-                }],
-            )),
+            reply,
         )
     });
     // The second delivered result is in context; only now is the parallel work

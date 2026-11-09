@@ -132,9 +132,10 @@ impl Control {
                 "realtime-first-token",
                 "realtime-text-readable",
                 "realtime-parallel-observer",
+                "realtime-background-result",
                 "realtime-host-cwd-observer",
             ],
-            stages: (0..4).map(|_| ReplyStage::new()).collect(),
+            stages: (0..5).map(|_| ReplyStage::new()).collect(),
         }
     }
 
@@ -145,7 +146,8 @@ impl Control {
                 first_token: &self.stages[0],
                 readable_text: &self.stages[1],
                 parallel: &self.stages[2],
-                host_cwd: &self.stages[3],
+                background_result: &self.stages[3],
+                host_cwd: &self.stages[4],
             }),
         )
     }

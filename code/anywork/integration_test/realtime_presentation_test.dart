@@ -44,6 +44,9 @@ const _firstTokenObserverStage = 'realtime-first-token';
 const _readableTextObserverStage = 'realtime-text-readable';
 const _parallelObserverStage = 'realtime-parallel-observer';
 const _parallelObserverPrefix = 'realtime parallel observers ready';
+const _backgroundResultObserverStage = 'realtime-background-result';
+const _backgroundResultReasoning =
+    'realtime background A delivered; foreground reasoning remains active';
 const _hostCwdObserverStage = 'realtime-host-cwd-observer';
 const _hostCwdObserverPrefix = 'realtime host cwd observers ready';
 
@@ -87,9 +90,6 @@ void main() {
         'Production journey witnesses below; initial empty surface, failure '
         'diagnostics and synthetic component-compacting are kept separate.',
     'captureCoverageGaps': {
-      'backgroundFinalWhileForegroundActive':
-          'Existing final-receipt inspection runs after completed(); '
-          'no stable active-foreground/background-final cut is asserted here.',
       'mediaFailure': 'This strict realtime story does not read media.',
       'attachmentOnly': 'This strict realtime story submits text only.',
       'storageFailure': 'This story produces no visible storage failure.',
@@ -296,6 +296,17 @@ void main() {
         '$_parallelObserverStage released; exact two exec calls running',
         'Real expanded members in the original parallel Work window.',
       );
+      await fixtureGate(tester, provider, _backgroundResultObserverStage);
+      await scene.captureBackgroundResultWithForeground(parallelObserver);
+      await fixtureGate(
+        tester,
+        provider,
+        _backgroundResultObserverStage,
+        release: true,
+      );
+      (report['backgroundResultObserver']
+              as Map<String, Object?>)['gateReleased'] =
+          true;
       await scene.completed(answer: 'realtime parallel tools complete');
       await scene.verifyExecReceipts(const {
         'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
@@ -524,6 +535,244 @@ final class _RealtimeScene {
     expect(tester.takeException(), isNull);
     evidence['captureCompleted'] = evidence['captureRequested'];
     return evidence;
+  }
+
+  Future<void> captureBackgroundResultWithForeground(
+    _PreparedToolObserver prepared,
+  ) async {
+    final evidence = <String, Object?>{
+      'gate': _backgroundResultObserverStage,
+      'gateReached': true,
+      'gateReleased': false,
+      'holds': 'real foreground reasoning before its terminal and wait-b call',
+      'bActivityRequired': false,
+      'stage': 'awaiting original foreground member window',
+    };
+    report['backgroundResultObserver'] = evidence;
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = const Duration(seconds: 60) - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail(
+          'Timed out observing A final result with real foreground reasoning',
+        );
+      }
+      return value;
+    }
+
+    final source = ForegroundTurnChatSource(turnId: prepared.turnId);
+    await until(
+      () =>
+          _expectPreparedToolObserver(prepared) &&
+          prepared.display.atoms.any(
+            (atom) =>
+                atom.source == source &&
+                atom.kind == ChatAtomKind.reasoning &&
+                atom.lifecycle is ActiveChatAtom,
+          ),
+      'new active foreground reasoning after A delivery',
+      timeout: remaining(),
+    );
+    final reasoning = prepared.display.atoms.singleWhere(
+      (atom) =>
+          atom.source == source &&
+          atom.kind == ChatAtomKind.reasoning &&
+          atom.lifecycle is ActiveChatAtom,
+    );
+    expect(reasoning.id, isNot(prepared.prefixId));
+    final handoff = prepared.display.atoms.singleWhere(
+      (atom) =>
+          atom.source == source &&
+          atom.tool?.callId == 'realtime-parallel-call-a' &&
+          atom.delivery == ChatDeliveryKind.backgroundHandoff,
+    );
+    expect(
+      (handoff.lifecycle as TerminalChatAtom).outcome,
+      ChatTerminalOutcome.transferred,
+    );
+    final handoffCard = ChatItemPresentation.decode(handoff).toolCard;
+    expect(handoffCard, isA<DecodedToolCard>());
+    final taskId = (handoffCard as DecodedToolCard).value.taskId;
+    expect(taskId, isNotNull);
+
+    evidence['stage'] = 'awaiting A independent Main block';
+    TimelineDisplayUnit? resultBlock;
+    ChatAtom? result;
+    final inspected = <String>{};
+    while (result == null) {
+      remaining();
+      // Borrow loaded Main headers only: no history paging. Independent results
+      // have one member; unrelated multi-member Work needs no member query.
+      for (final block in observed.workBlocks.toList()) {
+        if (block.summary!.total != 1 || inspected.contains(block.id)) continue;
+        final page = await observed.readMemberPage(block.memberReference!);
+        inspected.add(block.id);
+        for (final head in page.entries) {
+          final atom = head.atom;
+          if (atom.source is BackgroundResultChatSource &&
+              atom.turnId == prepared.turnId &&
+              atom.tool?.callId == 'realtime-parallel-call-a') {
+            expect(result, isNull, reason: 'A has one independent final block');
+            expect(block.summary!.total, 1);
+            expect(page.sealed, isTrue);
+            expect(page.entries, hasLength(1));
+            expect(atom.delivery, ChatDeliveryKind.independent);
+            expect(
+              (atom.lifecycle as TerminalChatAtom).outcome,
+              ChatTerminalOutcome.completed,
+            );
+            resultBlock = block;
+            result = atom;
+          }
+        }
+      }
+      if (result == null) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
+    }
+    final block = resultBlock!;
+    final atom = result;
+    final backgroundSource = atom.source as BackgroundResultChatSource;
+    expect(block.id, isNot(prepared.display.unitId));
+    expect(block.historyPos, greaterThan(0));
+    final reference = block.memberReference!;
+    evidence.addAll({
+      'stage': 'revealing real background result and foreground reasoning',
+      'backgroundBlockId': block.id,
+      'backgroundMemberId': atom.id,
+      'backgroundMessageId': backgroundSource.messageId,
+      'foregroundBlockId': prepared.display.unitId,
+      'reasoningMemberId': reasoning.id,
+      'taskId': taskId,
+    });
+    final display = await observed.revealMember(atom, reference: reference);
+    await until(
+      () => _laidOut(observed.memberRow(atom.id)),
+      'real independently sourced A member laid out',
+      timeout: remaining(),
+    );
+    final rendered = tester
+        .widget<ChatItemView>(observed.memberRow(atom.id))
+        .item;
+    expect(rendered.atom?.source, backgroundSource);
+    expect(rendered.atom?.id, atom.id);
+    expect(rendered.toolCard, isA<DecodedToolCard>());
+    final tool = (rendered.toolCard as DecodedToolCard).value;
+    expect(tool.toolCallId, 'realtime-parallel-call-a');
+    expect(tool.taskId, taskId);
+    expect(tool.name, 'exec');
+    expect(tool.statusString, 'succeeded');
+    expect(tool.exitCode, 0);
+    expect(tool.output, contains('realtime-parallel-a-line-05'));
+    await observed.revealMember(reasoning, reference: prepared.reference);
+    await until(
+      () => _laidOut(observed.memberRow(reasoning.id)),
+      'real still-active reasoning member laid out',
+      timeout: remaining(),
+    );
+    await _revealTextFragment(
+      tester,
+      observed.memberRow(reasoning.id),
+      _backgroundResultReasoning,
+    );
+    remaining();
+    final executionId = graph.client.conversations
+        .session(lease.threadId)
+        .state
+        .runtime
+        ?.execution
+        ?.id;
+    expect(executionId, isNotNull);
+    final frozenBody = block.body;
+
+    Map<String, Object?> cut() {
+      expect(_expectPreparedToolObserver(prepared), isTrue);
+      final state = graph.client.conversations.session(lease.threadId).state;
+      expect(state.activeTurn?.turnId, prepared.turnId);
+      expect(state.activeTurn?.state.isBusy, isTrue);
+      expect(state.activeTurn?.state.isTerminal, isFalse);
+      expect(state.runtime?.execution?.id, executionId);
+      expect(state.runtime?.execution?.turnId, prepared.turnId);
+      expect(state.runtime?.execution?.phase.isStopping, isFalse);
+      final foreground = observed.unitForBlock(prepared.reference);
+      expect(foreground.id, prepared.display.unitId);
+      expect(foreground.historyPos, isNull);
+      expect(foreground.closing, isFalse);
+      expect(lease.live.value!.executionPresent, isTrue);
+      final currentReasoning = prepared.display.atoms.singleWhere(
+        (member) => member.id == reasoning.id,
+      );
+      expect(currentReasoning.source, source);
+      expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
+      expect(
+        currentReasoning.contents.map(
+          (content) => contentReferenceIdentity(content.reference).toString(),
+        ),
+        orderedEquals(
+          reasoning.contents.map(
+            (content) => contentReferenceIdentity(content.reference).toString(),
+          ),
+        ),
+      );
+      final currentResult = observed.unitForBlock(reference);
+      expect(currentResult.body, same(frozenBody));
+      expect(currentResult.historyPos, block.historyPos);
+      final member = display.atoms.singleWhere((value) => value.id == atom.id);
+      expect(member.source, backgroundSource);
+      expect(member.delivery, ChatDeliveryKind.independent);
+      expect(
+        (member.lifecycle as TerminalChatAtom).outcome,
+        ChatTerminalOutcome.completed,
+      );
+      // Both producer-defined blocks must be visible in this same native cut.
+      for (final id in [block.id, foreground.id]) {
+        final header = observed.groupHeader(id);
+        final label = tester.widget<TimelineActivityRow>(header).label;
+        expect(
+          find.descendant(of: header, matching: find.text(label)).hitTestable(),
+          findsOneWidget,
+        );
+      }
+      expect(_laidOut(observed.memberRow(reasoning.id)), isTrue);
+      return {
+        'executionId': executionId,
+        'executionPhase': state.runtime!.execution!.phase.name,
+        'turnId': prepared.turnId,
+        'foregroundBlockId': foreground.id,
+        'foregroundMemberBlockId': foreground.memberReference!.blockId,
+        'reasoningMemberId': reasoning.id,
+        'reasoningLifecycle': currentReasoning.lifecycle.runtimeType.toString(),
+        'backgroundBlockId': block.id,
+        'backgroundHistoryPos': currentResult.historyPos,
+        'backgroundMemberId': atom.id,
+        'backgroundMessageId': backgroundSource.messageId,
+        'toolCallId': tool.toolCallId,
+        'taskId': taskId,
+        'mainSets': lease.appliedSets,
+        'mainAppends': lease.appliedAppends,
+        'mainBlockIds': observed.main.map((unit) => unit.id).toList(),
+      };
+    }
+
+    evidence['stage'] = 'capturing validated coexistence cut';
+    evidence['beforeCapture'] = cut();
+    evidence['capture'] = await captureEvidence(
+      'background-final-foreground-active.png',
+      _backgroundResultObserverStage,
+      'A independent final result coexists with the original live foreground '
+          'Work and a real nonterminal reasoning member; B may already be terminal.',
+      identities: {
+        'backgroundBlockId': block.id,
+        'backgroundMemberId': atom.id,
+        'backgroundMessageId': backgroundSource.messageId,
+        'foregroundBlockId': prepared.display.unitId,
+        'reasoningMemberId': reasoning.id,
+        'taskId': taskId,
+      },
+    );
+    evidence['afterCapture'] = cut();
+    evidence['stage'] = 'capture checked; ready for gate release';
   }
 
   Future<void> captureStoppingIfVisible(ChatAtom partial) async {
