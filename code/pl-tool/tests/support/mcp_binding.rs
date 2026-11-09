@@ -182,7 +182,7 @@ async fn frozen_peer_descriptor_and_results_survive_the_new_handle() -> anyhow::
 async fn independent_resource_tools_execute_only_on_frozen_resource_assignments()
 -> anyhow::Result<()> {
     use pl_agent_tool::{Tool, typed};
-    use pl_tool_mcp_support::McpContext;
+    use pl_tool_mcp::support::McpContext;
     let root = tempfile::tempdir()?;
     let script =
         stdio::write_python_mcp_server(root.path(), "resources-peer.py", stdio::STDIO_MCP_SCRIPT);
@@ -218,9 +218,9 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
     runtime.reconcile(servers(false)).await?;
     let tools_only = published(&runtime, "tools-only").await?;
     assert!(!tools_only.has_resources());
-    let listing = typed::prepare_json()?.attach(pl_tool_list_mcp_resources::ListMcpResources::new(
-        tools_only.clone(),
-    ));
+    let listing = typed::prepare_json()?.attach(
+        pl_tool_mcp::list_resources::ListMcpResources::new(tools_only.clone()),
+    );
     let error = listing
         .execute("{}".into(), McpContext::default())
         .await
@@ -231,11 +231,11 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
     runtime.reconcile(servers(true)).await?;
     let lease = published(&runtime, "resources").await?;
     assert!(lease.has_resources());
-    let listing = typed::prepare_json()?.attach(pl_tool_list_mcp_resources::ListMcpResources::new(
-        lease.clone(),
-    ));
+    let listing = typed::prepare_json()?.attach(
+        pl_tool_mcp::list_resources::ListMcpResources::new(lease.clone()),
+    );
     let templates = typed::prepare_json()?
-        .attach(pl_tool_list_mcp_resource_templates::ListMcpResourceTemplates::new(lease.clone()));
+        .attach(pl_tool_mcp::list_resource_templates::ListMcpResourceTemplates::new(lease.clone()));
     assert_eq!(
         listing
             .execute("{}".into(), McpContext::default())
@@ -290,7 +290,7 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
             Err(ArchiveFailure)
         }
     }
-    let read = typed::prepare_json()?.attach(pl_tool_read_mcp_resource::ReadMcpResource::new(
+    let read = typed::prepare_json()?.attach(pl_tool_mcp::read_resource::ReadMcpResource::new(
         lease.clone(),
         Arc::new(DomainArchive),
     ));
@@ -313,7 +313,7 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
     };
     assert!(error.source.downcast_ref::<ArchiveFailure>().is_some());
     assert!(
-        matches!(error.observed, Some(pl_tool_mcp_support::Observed::Unarchived { protocol, .. })
+        matches!(error.observed, Some(pl_tool_mcp::support::Observed::Unarchived { protocol, .. })
         if protocol["contents"][0]["blob"] == "Ynl0ZXM=")
     );
     read.close().await?;

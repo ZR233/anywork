@@ -38,7 +38,7 @@ pub struct CommandSpawnRequest {
 pub type CommandReader = Pin<Box<dyn AsyncRead + Send>>;
 pub type CommandWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
-pub use pl_tool_process::StdinCloseState;
+pub use pl_tool_command::process::StdinCloseState;
 
 /// Cumulative helper acknowledgements, independent of local DuplexStream flush.
 #[derive(Debug, Clone)]
@@ -98,7 +98,7 @@ pub struct CommandExit {
     pub capture: Option<CommandCaptureReceipt>,
 }
 
-pub use pl_tool_process::{CommandCaptureOffsets, CommandCaptureReceipt};
+pub use pl_tool_command::process::{CommandCaptureOffsets, CommandCaptureReceipt};
 
 /// 唯一负责在真实写盘前执行预算的边界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,7 +233,7 @@ impl Drop for ManagedCommand {
     }
 }
 
-pub use pl_tool_process::CommandCaptureStream;
+pub use pl_tool_command::process::CommandCaptureStream;
 
 /// 命令完整输出在宿主和模型 workspace 中的对应位置。
 #[derive(Debug, Clone, PartialEq, Eq)]

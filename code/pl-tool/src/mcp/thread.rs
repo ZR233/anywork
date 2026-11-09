@@ -9,21 +9,22 @@ use pl_core::{
         opaque::{CallContext, Registration, ToolError},
     },
 };
-use pl_tool_mcp_support::{
+use pl_tool_mcp::support::{
     Content, FrozenTool, McpContext, McpError, McpOutput, Observed, ResultKind,
 };
 use std::sync::Arc;
 
 pub struct ThreadMcpTool<H> {
     authorization: pl_core::tool::opaque::ToolAuthorization,
-    inner: pl_tool_mcp::McpTool<McpTurnLease, DomainMediaHost<H>>,
+    inner: pl_tool_mcp::tool::McpTool<McpTurnLease, DomainMediaHost<H>>,
 }
 
 impl<H: ToolMediaHost> ThreadMcpTool<H> {
     pub fn new(lease: McpTurnLease, tool_id: &str, media: Arc<H>) -> Result<Self, ToolError> {
         let authorization = lease.authorization();
-        let inner = pl_tool_mcp::McpTool::new(lease, tool_id, Arc::new(DomainMediaHost(media)))
-            .map_err(|error| map_error(error, |content| content))?;
+        let inner =
+            pl_tool_mcp::tool::McpTool::new(lease, tool_id, Arc::new(DomainMediaHost(media)))
+                .map_err(|error| map_error(error, |content| content))?;
         Ok(Self {
             authorization,
             inner,

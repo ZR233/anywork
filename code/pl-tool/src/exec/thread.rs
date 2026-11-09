@@ -20,8 +20,10 @@ use crate::command::{
         CommandProcessManager, CommandStartRequest,
     },
 };
-use pl_tool_exec::ExecOutcome;
-use pl_tool_process::{InputRequest, InputTarget, ProcessExecutor, ProcessInput, ProcessRequest};
+use pl_tool_command::exec::ExecOutcome;
+use pl_tool_command::process::{
+    InputRequest, InputTarget, ProcessExecutor, ProcessInput, ProcessRequest,
+};
 
 /// Host-selected command scope. Dynamic input cannot grant workspace escape.
 #[derive(Debug, Clone, Copy)]
@@ -261,11 +263,11 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let tool = pl_tool_write_stdin::WriteStdinTool::new(self.definition.clone());
+        let tool = pl_tool_command::write_stdin::WriteStdinTool::new(self.definition.clone());
         let result = tool
             .execute(
                 input.content().to_owned(),
-                pl_tool_write_stdin::StdinContext {
+                pl_tool_command::write_stdin::StdinContext {
                     processes: ThreadInputPort {
                         processes: self.processes.clone(),
                         tasks: context.tasks.clone(),
@@ -275,29 +277,29 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
             )
             .await
             .map_err(|error| match error {
-                pl_tool_write_stdin::StdinError::InvalidInput(error) => {
+                pl_tool_command::write_stdin::StdinError::InvalidInput(error) => {
                     super::ExecInputError(error).into_tool_error()
                 }
-                pl_tool_write_stdin::StdinError::Process(error) => error,
-                pl_tool_write_stdin::StdinError::Cancelled => {
+                pl_tool_command::write_stdin::StdinError::Process(error) => error,
+                pl_tool_command::write_stdin::StdinError::Cancelled => {
                     ToolError::new(pl_core::thread::ThreadError::Cancelled)
                 }
-                pl_tool_write_stdin::StdinError::Encoding(error) => ToolError::new(error),
+                pl_tool_command::write_stdin::StdinError::Encoding(error) => ToolError::new(error),
             })?;
         let outcome = match &result {
-            pl_tool_write_stdin::StdinResult::Terminal { receipt_json } => {
+            pl_tool_command::write_stdin::StdinResult::Terminal { receipt_json } => {
                 return super::output::receipt_output("pl.tool.stdin", receipt_json.clone());
             }
-            pl_tool_write_stdin::StdinResult::Observed { outcome, .. } => *outcome,
+            pl_tool_command::write_stdin::StdinResult::Observed { outcome, .. } => *outcome,
         };
         let text = result
             .encode(super::output::current_receipt(&context))
             .map_err(ToolError::new)?;
         let output = super::output::receipt_output("pl.tool.exec", text)?;
         match outcome {
-            pl_tool_write_stdin::InputOutcome::Complete => Ok(output),
-            pl_tool_write_stdin::InputOutcome::Cancelled => Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)),
-            pl_tool_write_stdin::InputOutcome::Incomplete => Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output)),
+            pl_tool_command::write_stdin::InputOutcome::Complete => Ok(output),
+            pl_tool_command::write_stdin::InputOutcome::Cancelled => Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)),
+            pl_tool_command::write_stdin::InputOutcome::Incomplete => Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output)),
         }
     }
 }
@@ -354,10 +356,10 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
     ) -> Result<ToolOutput, ToolError> {
         let task_id = safe_identity(&context.call_id);
         let (observer, previews, failures) = super::progress::ExecOutputObserver::channel();
-        let tool = pl_tool_exec::ExecTool::new(self.definition.clone());
+        let tool = pl_tool_command::exec::ExecTool::new(self.definition.clone());
         let execution = tool.execute(
             input.content().to_owned(),
-            pl_tool_exec::ExecContext {
+            pl_tool_command::exec::ExecContext {
                 process: ThreadCommandPort {
                     processes: self.processes.clone(),
                     task_id: task_id.clone(),
@@ -420,10 +422,12 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
         reporter.abort();
         let _ = reporter.await;
         let mut result = result.map_err(|error| match error {
-            pl_tool_exec::ExecError::InvalidInput(error) => {
+            pl_tool_command::exec::ExecError::InvalidInput(error) => {
                 super::ExecInputError(error).into_tool_error()
             }
-            pl_tool_exec::ExecError::Process(error) => super::output::start_error(error, &context),
+            pl_tool_command::exec::ExecError::Process(error) => {
+                super::output::start_error(error, &context)
+            }
         })?;
         let snapshot = &mut result.snapshot;
         // Build the typed output fault the moment the capture failed and report it through the running

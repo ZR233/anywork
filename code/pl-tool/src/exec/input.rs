@@ -3,9 +3,9 @@ use pl_core::tool::opaque::ToolError;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct ExecInputError(#[source] pub pl_tool_process::input::ExecInputError);
+pub struct ExecInputError(#[source] pub pl_tool_command::process::input::ExecInputError);
 impl std::ops::Deref for ExecInputError {
-    type Target = pl_tool_process::input::ExecInputError;
+    type Target = pl_tool_command::process::input::ExecInputError;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -26,8 +26,8 @@ impl ExecInputError {
 pub fn parse_and_validate_exec_input(
     raw: &str,
 ) -> Result<super::ValidatedExecInput, ExecInputError> {
-    pl_tool_exec::parse_and_validate_exec_input(raw).map_err(ExecInputError)
+    pl_tool_command::exec::parse_and_validate_exec_input(raw).map_err(ExecInputError)
 }
 pub fn parse_and_validate_stdin_input(raw: &str) -> Result<super::WriteStdinInput, ExecInputError> {
-    pl_tool_write_stdin::parse_and_validate_stdin_input(raw).map_err(ExecInputError)
+    pl_tool_command::write_stdin::parse_and_validate_stdin_input(raw).map_err(ExecInputError)
 }

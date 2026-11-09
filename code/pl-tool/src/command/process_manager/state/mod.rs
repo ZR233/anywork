@@ -1,7 +1,7 @@
 //! Host-owned process transitions and capture plan.
 use super::{CommandProcessState, HeadTailBuffer, INTERNAL_BUFFER_BYTES, StreamKind};
 use crate::command::{CommandCaptureOffsets, CommandCaptureStream};
-pub use pl_tool_process::state::*;
+pub use pl_tool_command::process::state::*;
 use std::sync::Arc;
 
 /// Decision the operation's shared capture plan makes for one read chunk.

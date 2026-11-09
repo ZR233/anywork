@@ -225,7 +225,7 @@ pub struct CommandWriteRequest {
     pub max_output_chars: usize,
 }
 
-pub use pl_tool_process::{CommandOutputLimit, CommandOutputSnapshot};
+pub use pl_tool_command::process::{CommandOutputLimit, CommandOutputSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandOutputStream {

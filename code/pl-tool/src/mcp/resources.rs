@@ -14,9 +14,9 @@ use pl_core::{
 };
 use std::sync::Arc;
 
-type List = pl_tool_list_mcp_resources::ListMcpResources<McpTurnLease>;
-type Templates = pl_tool_list_mcp_resource_templates::ListMcpResourceTemplates<McpTurnLease>;
-type Read<H> = pl_tool_read_mcp_resource::ReadMcpResource<McpTurnLease, DomainMediaHost<H>>;
+type List = pl_tool_mcp::list_resources::ListMcpResources<McpTurnLease>;
+type Templates = pl_tool_mcp::list_resource_templates::ListMcpResourceTemplates<McpTurnLease>;
+type Read<H> = pl_tool_mcp::read_resource::ReadMcpResource<McpTurnLease, DomainMediaHost<H>>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum McpResourceToolKind {
@@ -38,7 +38,7 @@ impl McpResourceToolKind {
         match self {
             Self::ListResources => List::NAME,
             Self::ListResourceTemplates => Templates::NAME,
-            Self::ReadResource => pl_tool_read_mcp_resource::NAME,
+            Self::ReadResource => pl_tool_mcp::read_resource::NAME,
         }
     }
 
@@ -46,16 +46,16 @@ impl McpResourceToolKind {
         let (description, schema) = match self {
             Self::ListResources => (
                 List::DESCRIPTION,
-                pl_agent_tool::typed::input_schema_for::<pl_tool_list_mcp_resources::Input>(),
+                pl_agent_tool::typed::input_schema_for::<pl_tool_mcp::list_resources::Input>(),
             ),
             Self::ListResourceTemplates => (
                 Templates::DESCRIPTION,
-                pl_agent_tool::typed::input_schema_for::<pl_tool_list_mcp_resource_templates::Input>(
+                pl_agent_tool::typed::input_schema_for::<pl_tool_mcp::list_resource_templates::Input>(
                 ),
             ),
             Self::ReadResource => (
-                pl_tool_read_mcp_resource::DESCRIPTION,
-                pl_agent_tool::typed::input_schema_for::<pl_tool_read_mcp_resource::Input>(),
+                pl_tool_mcp::read_resource::DESCRIPTION,
+                pl_agent_tool::typed::input_schema_for::<pl_tool_mcp::read_resource::Input>(),
             ),
         };
         pl_agent_tool::ToolDefinition::json(self.name(), description, schema)

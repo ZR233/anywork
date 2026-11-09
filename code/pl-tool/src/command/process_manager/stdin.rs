@@ -8,7 +8,7 @@ pub(super) struct CommandInput {
     pub(super) progress: Option<tokio::sync::watch::Receiver<crate::command::CommandInputProgress>>,
 }
 
-pub use pl_tool_process::{CommandInputOutcome, CommandInputReceipt};
+pub use pl_tool_command::process::{CommandInputOutcome, CommandInputReceipt};
 
 impl<B: CommandBackend> CommandProcessManager<B> {
     pub async fn write_stdin(

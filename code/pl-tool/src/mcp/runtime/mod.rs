@@ -12,8 +12,8 @@ use crate::mcp::config::EffectiveMcpServerConfig;
 
 use super::connector::McpConnector;
 use super::health::McpAvailabilitySnapshot;
-pub(super) use pl_tool_mcp_support::ResourceOperation;
-use pl_tool_mcp_support::{FrozenMcpLease, FrozenTool};
+pub(super) use pl_tool_mcp::support::ResourceOperation;
+use pl_tool_mcp::support::{FrozenMcpLease, FrozenTool};
 
 mod worker;
 

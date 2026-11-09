@@ -8,7 +8,7 @@ use pl_core::{
     },
 };
 use pl_lsp::{query::LspQuery, runtime::LspRuntimeRegistry};
-use pl_tool_lsp_support::{
+use pl_tool_lsp::support::{
     CapabilityReader, LspContext, Operation, QueryRequest, QueryResult, QueryService,
 };
 use std::sync::Arc;
@@ -76,8 +76,8 @@ impl LspToolKind {
     /// Stable model declaration for this operation.
     pub fn declaration(self) -> pl_agent_tool::ToolDefinition {
         match self {
-            Self::Capabilities => pl_tool_lsp_capabilities::lsp_capabilities_definition(),
-            Self::Query => pl_tool_lsp_query::lsp_query_definition(),
+            Self::Capabilities => pl_tool_lsp::capabilities::lsp_capabilities_definition(),
+            Self::Query => pl_tool_lsp::query::lsp_query_definition(),
         }
     }
 }
@@ -163,12 +163,12 @@ impl pl_agent_tool::Tool for ThreadLspTool {
         let (encoded, text) = match self.kind {
             LspToolKind::Capabilities => {
                 let tool =
-                    pl_tool_lsp_capabilities::LspCapabilitiesTool::new(self.definition.clone());
+                    pl_tool_lsp::capabilities::LspCapabilitiesTool::new(self.definition.clone());
                 let result = tool
                     .execute(input.content().to_owned(), domain_context)
                     .await
                     .map_err(|error| match error {
-                        pl_tool_lsp_capabilities::CapabilitiesError::Cancelled => {
+                        pl_tool_lsp::capabilities::CapabilitiesError::Cancelled => {
                             ToolError::new(pl_core::thread::ThreadError::Cancelled)
                         }
                         error => ToolError::new(error),
@@ -176,15 +176,15 @@ impl pl_agent_tool::Tool for ThreadLspTool {
                 result.encode().map_err(ToolError::new)?
             }
             LspToolKind::Query => {
-                let tool = pl_tool_lsp_query::LspQueryTool::new(self.definition.clone());
+                let tool = pl_tool_lsp::query::LspQueryTool::new(self.definition.clone());
                 let result = tool
                     .execute(input.content().to_owned(), domain_context)
                     .await
                     .map_err(|error| match error {
-                        pl_tool_lsp_query::QueryError::Cancelled => {
+                        pl_tool_lsp::query::QueryError::Cancelled => {
                             ToolError::new(pl_core::thread::ThreadError::Cancelled)
                         }
-                        pl_tool_lsp_query::QueryError::Path(error) => error,
+                        pl_tool_lsp::query::QueryError::Path(error) => error,
                         error => ToolError::new(error),
                     })?;
                 result.encode().map_err(ToolError::new)?
@@ -208,16 +208,16 @@ struct ThreadLspPort {
 }
 impl CapabilityReader for ThreadLspPort {
     type Error = ToolError;
-    async fn capabilities(&self) -> Result<pl_tool_lsp_support::Capabilities, ToolError> {
+    async fn capabilities(&self) -> Result<pl_tool_lsp::support::Capabilities, ToolError> {
         let result = self
             .registry
             .capabilities_for_workspace(self.paths.workspace().root())
             .await;
-        Ok(pl_tool_lsp_support::Capabilities {
+        Ok(pl_tool_lsp::support::Capabilities {
             servers: result
                 .servers
                 .into_iter()
-                .map(|server| pl_tool_lsp_support::ServerCapabilities {
+                .map(|server| pl_tool_lsp::support::ServerCapabilities {
                     id: server.id,
                     display_name: server.display_name,
                     language_ids: server.language_ids,
