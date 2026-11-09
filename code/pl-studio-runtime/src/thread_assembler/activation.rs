@@ -141,7 +141,9 @@ impl SessionRuntime {
         } else {
             ActivationPurpose::Explicit
         };
-        self.close_failed_preparation(identity.id()).await?;
+        // A retained failed owner can carry the entire cleanup/settlement future.
+        // Isolate that retry before composing the new activation's admission state.
+        Box::pin(self.close_failed_preparation(identity.id())).await?;
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);

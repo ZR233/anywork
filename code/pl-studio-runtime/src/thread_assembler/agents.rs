@@ -22,6 +22,31 @@ struct AgentHost(Weak<Registry>);
 #[path = "agents_archive_tests.rs"]
 pub(crate) mod archive_tests;
 
+#[cfg(test)]
+mod future_sizes {
+    use super::*;
+
+    fn bounded<Input, F: std::future::Future + Send>(name: &str, _: impl FnOnce(Input) -> F) {
+        let bytes = std::mem::size_of::<F>();
+        eprintln!("{name}: {bytes} bytes");
+        assert!(bytes <= 16 * 1024, "{name} inlines {bytes} bytes");
+    }
+
+    #[test]
+    fn spawn_handoff_future_remains_bounded() {
+        // Inspect the real trait future, including its managed-operation handoff.
+        // The closure is never called: no fixture resources or leaked host are needed.
+        bounded(
+            "AgentHost spawn handoff",
+            |(host, context, request): (
+                &'static AgentHost,
+                pl_core::tool::opaque::CallContext,
+                AgentSpawn,
+            )| host.spawn(context, request),
+        );
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ControlError {
     #[error("agent coordinator is closed")]
@@ -506,16 +531,18 @@ impl AgentControlHost for AgentHost {
                         Ok(())
                     },
                     async move {
-                        Ok(host
-                            .spawn_owned(owner, context, request, parent_operation)
-                            .await)
+                        // Keep preparation/cleanup state on the heap before the existing
+                        // operation owner moves this worker through JoinSet/Tokio admission.
+                        Ok(
+                            Box::pin(host.spawn_owned(owner, context, request, parent_operation))
+                                .await,
+                        )
                     },
                 )
                 .await
                 .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
         } else {
-            self.spawn_owned(owner, context, request, parent_operation)
-                .await
+            Box::pin(self.spawn_owned(owner, context, request, parent_operation)).await
         }
     }
 

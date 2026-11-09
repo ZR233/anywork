@@ -161,19 +161,18 @@ mod future_sizes {
                 )
             },
         );
-        check("assembler activation", |runtime: &'static StudioRuntime| {
-            // Size checks construct but never poll the future. Leaking the session handle gives
-            // the borrowing activation future a place to live without running any of this.
-            let session: &'static _ = Box::leak(Box::new(
-                runtime
-                    .require_session("size")
-                    .expect("size fixture session"),
-            ));
-            session.activate(
-                ThreadActivation::native_test("size", None),
-                runtime.thread_factory.clone(),
-            )
-        });
+        check(
+            "assembler activation",
+            |(session, runtime): (
+                &'static crate::session::SessionRuntime,
+                &'static StudioRuntime,
+            )| {
+                session.activate(
+                    ThreadActivation::native_test("size", None),
+                    runtime.thread_factory.clone(),
+                )
+            },
+        );
         check("cold children", |runtime: &'static StudioRuntime| {
             runtime.thread_observations.reconcile_children("size")
         });

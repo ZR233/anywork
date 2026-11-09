@@ -84,7 +84,7 @@ impl StudioRuntime {
                 source.clone(),
             )
         });
-        let thread = self.read_protocol_thread(thread_id).await?;
+        let mut thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let mut state = None;
         let mut storage = None;
@@ -183,6 +183,7 @@ impl StudioRuntime {
                     let business_refs = facet.current.business_refs();
                     model_route = facet.model_route.map(|route| route.snapshot(false));
                     if let Some(saved) = facet.saved_state.as_ref() {
+                        thread.status = crate::studio::thread_projection::status(saved);
                         runtime = Some(
                             crate::studio::thread_projection::project_runtime(
                                 thread_id,
