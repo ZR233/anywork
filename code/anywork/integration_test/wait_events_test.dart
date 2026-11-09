@@ -87,6 +87,8 @@ void main() {
     } finally {
       trace.close();
       container.dispose();
+      final traceOutput = Platform.environment['ANYWORK_WAIT_TRACE_OUTPUT'];
+      if (traceOutput != null) await trace.write(traceOutput);
       final directory =
           Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS'];
       if (directory != null && directory.isNotEmpty) {
@@ -357,8 +359,24 @@ final class _Scene {
     if (returnLive.hitTestable().evaluate().isNotEmpty) {
       await tap(returnLive);
     }
-    final input = find.byKey(const ValueKey('composer-input'));
-    await until(() => input.evaluate().isNotEmpty, 'composer');
+    // SDK project selection can precede its keyed composer subtree. An input
+    // from the previous workspace must not qualify the new submission.
+    final composerTarget = find.byWidgetPredicate((widget) {
+      if (widget is! PromptComposerView) return false;
+      final selection = graph.client.selection.state;
+      return widget.pasteTargetId ==
+              (selection.selectedThreadId ?? selection.selectedProjectId) &&
+          widget.enabled &&
+          !widget.submissionLocked;
+    });
+    final input = find.descendant(
+      of: composerTarget,
+      matching: find.byKey(const ValueKey('composer-input')),
+    );
+    await until(
+      () => input.evaluate().length == 1,
+      'composer for the actual selected target',
+    );
     try {
       trace.snapshot(tester, name, 'before-enter');
       await tester.enterText(input, prompt);

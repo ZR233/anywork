@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
@@ -43,6 +44,10 @@ final class WaitSelectionTrace extends ProviderObserver {
       cancel();
     }
   }
+
+  Future<void> write(String path) => File(
+    path,
+  ).writeAsString('${const JsonEncoder.withIndent('  ').convert(_scenes)}\n');
 
   Map<String, Object?> _value(Object? value) {
     if (value is SelectionStoreState) {

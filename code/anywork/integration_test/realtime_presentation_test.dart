@@ -731,16 +731,16 @@ final class _RealtimeScene {
       timeout: remaining(),
     );
     await observed.revealMember(reasoning, reference: prepared.reference);
+    final reasoningRow = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineMemberAtom && widget.atom.id == reasoning.id,
+    );
     await until(
-      () => _laidOut(observed.memberRow(reasoning.id)),
+      () => _laidOut(reasoningRow),
       'real still-active reasoning member laid out',
       timeout: remaining(),
     );
-    await _revealTextFragment(
-      tester,
-      observed.memberRow(reasoning.id),
-      _backgroundResultReasoning,
-    );
+    await _revealTextFragment(tester, reasoningRow, _backgroundResultReasoning);
     remaining();
     final executionId = graph.client.conversations
         .session(lease.threadId)
@@ -822,7 +822,7 @@ final class _RealtimeScene {
             .hitTestable(),
         findsWidgets,
       );
-      expect(_laidOut(observed.memberRow(reasoning.id)), isTrue);
+      expect(_laidOut(reasoningRow), isTrue);
       return {
         'executionId': executionId,
         'executionPhase': state.runtime!.execution!.phase.name,
