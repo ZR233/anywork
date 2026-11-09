@@ -9,6 +9,7 @@ import '../../../../app/theme/material3_theme.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/app_localizations.dart';
+import '../connectors/timeline_content_connector.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/timeline_display_unit.dart';
@@ -64,13 +65,7 @@ Widget _chatItem(
 }) => ChatItemView(
   key: ValueKey(item.id),
   item: item,
-  bodyBuilder: (id, text) => TimelineMarkdown(
-    id: id,
-    text: text,
-    onLink: (_) {},
-    isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
-    imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
-  ),
+  bodyBuilder: _previewMarkdown,
   attachmentBuilder: (item) => _previewAttachments(
     item.id,
     item.attachments,
@@ -78,6 +73,78 @@ Widget _chatItem(
     resourceErrorAttachmentId: resourceErrorAttachmentId,
   ),
 );
+
+Widget _previewMarkdown(String id, String text) => TimelineMarkdown(
+  id: id,
+  text: text,
+  onLink: (_) {},
+  isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
+  imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
+);
+
+@Preview(
+  name: '正文 / 长中文 Deferred Markdown',
+  group: 'Timeline · 历史组件',
+  size: Size(820, 720),
+)
+Widget timelineLongDeferredBodyPreview() {
+  final text =
+      '# 长正文直接阅读\n\n'
+      '**正文内容**与短消息使用相同的排版、选择和换行。\n\n'
+      '- 标题、粗体和列表保持 Markdown 语义\n'
+      '- 原文只在有界窗口内呈现\n\n'
+      '| 内容 | 行为 |\n| --- | --- |\n| 长中文 | 自动换行 |\n| 普通文字 | 可选择复制 |\n\n'
+      '${'这一行没有人为插入换行，窄窗口会按照实际宽度自然排列。' * 30}\n\n'
+      '${'较长的中文正文仍然直接显示，不再出现额外的正文加载折叠。阅读时可以选择任意文字并复制，原文内容不会被插入额外字符。\n\n' * 30}';
+  final bytes = utf8.encode(text);
+  final item = TimelinePreviewFixtures.item(
+    'preview-long-deferred',
+    'text',
+    const {'channel': 'final', 'attachments': []},
+    bodies: [
+      {
+        'key': 'body',
+        'byteLength': bytes.length,
+        'reference': {
+          'databaseId': 'preview',
+          'target': {
+            'kind': 'body',
+            'owner': {'kind': 'item', 'itemId': 'preview-long-deferred'},
+            'key': 'body',
+          },
+        },
+      },
+    ],
+  );
+  return _timelinePreviewHost(
+    SelectionArea(
+      child: SingleChildScrollView(
+        child: ChatItemView(
+          item: item,
+          bodyBuilder: _previewMarkdown,
+          contentRangeBuilder: (id, key, label, reference, witness) =>
+              TimelineContentRangeConnector(
+                itemId: id,
+                contentKey: key,
+                label: label,
+                reference: reference,
+                witness: witness,
+                readContent: (_, range) async => ContentWindow(
+                  offset: range.offset,
+                  bytes: bytes.sublist(
+                    range.offset,
+                    (range.offset + range.maxBytes).clamp(0, bytes.length),
+                  ),
+                  generation: 'preview',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              ),
+        ),
+      ),
+    ),
+  );
+}
 
 Widget _previewAttachments(
   String itemId,

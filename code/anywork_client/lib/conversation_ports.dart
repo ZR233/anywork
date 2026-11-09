@@ -5,11 +5,25 @@ import 'src/studio/thread_frames.dart';
 export 'src/studio/thread_frames.dart';
 
 abstract interface class ConversationTransport {
+  /// Observes canonical state independently from content consumption.
+  Future<ConversationStateFeed> openConversationStateFeed(String threadId);
+
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
     required ReadDemand demand,
   });
+}
+
+/// One bounded state subscription. It carries only state, failure and close
+/// events; its identity, delivery sequence and ACK never belong to a content feed.
+abstract interface class ConversationStateFeed {
+  String get threadId;
+  String get subscriptionId;
+  Stream<ConversationFrame> get events;
+  Future<void> acknowledge(int deliverySequence);
+  void requestClose();
+  Future<void> close();
 }
 
 /// The original feed's read lease; queries do not share its producer's receive/credit lock.
@@ -61,6 +75,8 @@ abstract interface class ConversationFeed {
   String get threadId;
   String get subscriptionId;
   ConversationReader get reader;
+
+  /// Content-only events: Chat, Activity, Failure or Closed.
   Stream<ConversationFrame> get events;
   Future<void> acknowledge(int deliverySequence);
   void requestClose();

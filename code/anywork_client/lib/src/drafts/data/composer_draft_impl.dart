@@ -19,6 +19,9 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
 
   final DraftsDependencies _dependencies;
   final String threadId;
+  final LatestValue<List<ComposerSubmission>> _submissions =
+      LatestValue<List<ComposerSubmission>>(const <ComposerSubmission>[]);
+  final Map<String, ComposerSubmission> _submissionById = {};
   final List<Observation> _observations = [];
   int _revision = 0;
   int _generation = 0;
@@ -26,6 +29,35 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   Future<void>? _pending;
   Future<void>? _closing;
   DraftStamp? _unknownStamp;
+
+  @override
+  ValueObservation<List<ComposerSubmission>> get submissions => _submissions;
+
+  void _publishSubmission(ComposerSubmission submission) {
+    if (!_submissionById.containsKey(submission.inputId)) return;
+    _submissionById[submission.inputId] = submission;
+    _submissions.publish(List.unmodifiable(_submissionById.values));
+  }
+
+  void _removeSubmission(String inputId) {
+    if (_submissionById.remove(inputId) == null) return;
+    _submissions.publish(List.unmodifiable(_submissionById.values));
+  }
+
+  void _updateSubmissionPhase(String inputId, ComposerSubmissionPhase phase) {
+    final existing = _submissionById[inputId];
+    if (existing != null) _publishSubmission(existing.withPhase(phase));
+  }
+
+  @override
+  void markInputsPresented(Iterable<String> inputIds) {
+    var changed = false;
+    for (final inputId in inputIds) {
+      changed = _submissionById.remove(inputId) != null || changed;
+    }
+    if (changed)
+      _submissions.publish(List.unmodifiable(_submissionById.values));
+  }
 
   DraftStamp get stamp =>
       DraftStamp(draftId: 'composer:$threadId', revision: _revision);
@@ -125,6 +157,9 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     final frozenAttachments = List<String>.unmodifiable(
       state.attachments.map((item) => item.id),
     );
+    final frozenAttachmentViews = ComposerSubmission.freezeAttachments(
+      state.attachments,
+    );
     final operation = _dependencies.mutations.begin(
       target: 'submit:$threadId',
       draft: frozenStamp,
@@ -148,6 +183,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       stamp: frozenStamp,
       operation: operation,
       input: input,
+      attachments: frozenAttachmentViews,
       workspaceId: session.workspace!.thread.workspaceId,
       mode: session.workspace!.thread.mode,
       route: route,
@@ -193,6 +229,13 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       );
       _observations.removeWhere((entry) => entry.isCancelled);
       _observations.add(evidence);
+      _submissionById[frozen.input.inputId] = ComposerSubmission(
+        inputId: frozen.input.inputId,
+        text: frozen.input.text,
+        attachments: frozen.attachments,
+        phase: ComposerSubmissionPhase.sending,
+      );
+      _submissions.publish(List.unmodifiable(_submissionById.values));
     } catch (error) {
       evidence?.cancel();
       if (frozen != null) {
@@ -233,6 +276,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       } catch (error) {
         // 展示准备失败：后端尚未收到提交，这是**已知未受理**，不是未知结果。
         evidence.cancel();
+        _removeSubmission(frozen.input.inputId);
         frozen.operation.reject(error);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
@@ -260,6 +304,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     if (_closed || _dependencies.isClosed) {
       final error = StateError('Submission cancelled before backend dispatch');
       evidence.cancel();
+      _removeSubmission(frozen.input.inputId);
       frozen.operation.reject(error);
       await _dependencies.attachments.completeFrozen(
         operationId: frozen.operation.id,
@@ -277,7 +322,15 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         frozen.input,
         expectedModelRouteRevision: frozen.route.revision,
       );
+      if (receipt.inputId != frozen.input.inputId ||
+          receipt.threadId != threadId) {
+        throw StateError('Input receipt did not match the submitted request');
+      }
       acceptedReceipt = receipt;
+      _updateSubmissionPhase(
+        frozen.input.inputId,
+        ComposerSubmissionPhase.accepted,
+      );
       evidence.accept(receipt);
       final clear = !_closed && stamp == frozen.stamp;
       if (!_closed) {
@@ -313,6 +366,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       } else if (error is SubmissionNotSent ||
           isKnownSubmissionRejection(failure)) {
         evidence.cancel();
+        _removeSubmission(frozen.input.inputId);
         frozen.operation.reject(failure);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
@@ -324,6 +378,10 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       } else {
         _unknownStamp = frozen.stamp;
         frozen.operation.unknownOutcome(failure);
+        _updateSubmissionPhase(
+          frozen.input.inputId,
+          ComposerSubmissionPhase.unknownOutcome,
+        );
       }
       if (!_closed && stamp == frozen.stamp) {
         apply(
@@ -386,6 +444,7 @@ final class FrozenComposerSubmission {
     required this.stamp,
     required this.operation,
     required this.input,
+    required this.attachments,
     required this.workspaceId,
     required this.mode,
     required this.route,
@@ -393,6 +452,7 @@ final class FrozenComposerSubmission {
   final DraftStamp stamp;
   final OperationHandle operation;
   final StudioPromptInput input;
+  final List<AttachmentDraftView> attachments;
   final String workspaceId;
   final ThreadModeId mode;
   final ThreadModelRouteView route;

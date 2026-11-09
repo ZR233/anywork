@@ -15,6 +15,169 @@ import '../support/chat_fixtures.dart';
 
 void main() {
   testWidgets(
+    'composer submission is visible in the chat sliver and stays separate from draft text',
+    (tester) async {
+      final h = await _Harness.open(tester);
+      await h.owner.dispatch('a', const TimelineEnterHistory());
+      expect(h.owner.source.value!.mode, TimelineDisplayMode.history);
+      h.showSubmission(
+        ComposerSubmission(
+          inputId: 'input-pending',
+          text: '冻结的消息',
+          attachments: const [
+            AttachmentDraftView(
+              id: 'file-1',
+              modality: AttachmentModalityView.file,
+              mediaType: 'text/plain',
+              filename: 'draft.txt',
+              byteSize: 12,
+            ),
+          ],
+          phase: ComposerSubmissionPhase.sending,
+        ),
+      );
+      await tester.pump();
+      expect(h.owner.source.value!.mode, TimelineDisplayMode.live);
+      expect(h.lease.scrollController.hasClients, isTrue);
+      expect(find.text('冻结的消息'), findsOneWidget);
+      expect(find.text('draft.txt'), findsOneWidget);
+      expect(find.text('正在发送'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('composer-submission:input-pending')),
+        findsOneWidget,
+      );
+      expect(find.text('editable draft'), findsNothing);
+
+      h.showSubmission(
+        ComposerSubmission(
+          inputId: 'input-pending',
+          text: '冻结的消息',
+          attachments: const [],
+          phase: ComposerSubmissionPhase.accepted,
+        ),
+      );
+      await _frames(tester);
+      expect(find.text('已收到，等待同步'), findsOneWidget);
+
+      h.showSubmission(null);
+      await _frames(tester);
+      expect(
+        find.byKey(const ValueKey('composer-submission:input-pending')),
+        findsNothing,
+      );
+      await _frames(tester);
+      await h.drainPages(tester);
+      await h.close(tester);
+    },
+  );
+
+  testWidgets(
+    'submission intersects the viewport on the first frame from a real history offset',
+    (tester) async {
+      final composer = _SubmissionOwner();
+      final h = await _Harness.open(tester, composer: composer);
+      await h.content.deliver(
+        chatBatch([
+          for (var i = 1; i <= 28; i++)
+            chatMessage(
+              'long:$i',
+              body: 'history row $i',
+              completionSeq: 1000 + i,
+            ),
+        ], placement: ChatPlacement.append),
+      );
+      await _frames(tester);
+      final scroll = h.lease.scrollController;
+      final min = scroll.position.minScrollExtent;
+      final max = scroll.position.maxScrollExtent;
+      expect(max, greaterThan(min + 100));
+      scroll.jumpTo(min + (max - min) / 2);
+      await tester.pump();
+      expect(scroll.position.pixels, greaterThan(min + 1));
+
+      composer.publish([
+        ComposerSubmission(
+          inputId: 'input-first-frame',
+          text: '首帧必须可见',
+          attachments: const [],
+          phase: ComposerSubmissionPhase.sending,
+        ),
+      ]);
+      final preparation = h.owner.prepareComposerSubmissionDisplay(
+        'a',
+        lease: h.lease,
+      );
+      await tester.pump();
+      await preparation;
+
+      final submission = find.byKey(
+        const ValueKey('composer-submission:input-first-frame'),
+        skipOffstage: false,
+      );
+      expect(submission, findsOneWidget);
+      final viewport = find
+          .descendant(
+            of: find.byType(ChatAnimatedListReversed),
+            matching: find.byType(Viewport),
+          )
+          .first;
+      expect(
+        tester.getRect(viewport).overlaps(tester.getRect(submission)),
+        isTrue,
+        reason: 'the frozen input must intersect the Chat viewport in its first painted frame',
+      );
+
+      await _frames(tester);
+      await h.drainPages(tester);
+      await h.close(tester);
+    },
+  );
+
+  testWidgets('canonical input takes over the temporary item by inputId', (
+    tester,
+  ) async {
+    final template = chatAtomMessage('input-record', body: '规范消息正文');
+    final atom = ChatAtom(
+      id: template.id,
+      completionItemId: template.completionItemId,
+      completionSeq: 2,
+      source: const InputChatSource(inputId: 'input-canonical'),
+      sourceOrder: template.sourceOrder,
+      kind: template.kind,
+      delivery: template.delivery,
+      lifecycle: template.lifecycle,
+      contents: template.contents,
+      payload: template.payload,
+    );
+    final composer = _SubmissionOwner();
+    final h = await _Harness.open(tester, composer: composer);
+    composer.publish([
+      ComposerSubmission(
+        inputId: 'input-canonical',
+        text: '规范消息正文',
+        attachments: const [],
+        phase: ComposerSubmissionPhase.sending,
+      ),
+    ]);
+    await _frames(tester);
+    await h.content.deliver(chatBatch([statusItem(atom, completionSeq: 2)]));
+    await _frames(tester);
+    expect(composer.presented, ['input-canonical']);
+    expect(
+      find.byKey(const ValueKey('composer-submission:input-canonical')),
+      findsNothing,
+    );
+    expect(h.lease.loadedCount, 1);
+    expect(
+      h.lease.controller.messages.map((message) => message.id),
+      contains('input-record'),
+    );
+    await _frames(tester);
+    await h.drainPages(tester);
+    await h.close(tester);
+  });
+
+  testWidgets(
     'first page is visible while fill waits; every short page yields layout',
     (tester) async {
       final h = await _Harness.open(tester);
@@ -373,10 +536,11 @@ final class _Harness {
     required this.offstage,
     required double summaryHeight,
     required bool hidden,
+    _SubmissionOwner? composer,
   }) : summaryHeight = ValueNotifier(summaryHeight),
        outerOffstage = ValueNotifier(hidden) {
     owner = TimelineSessionOwner(
-      client: _Client(_Repository(_Session(content))),
+      client: _Client(_Repository(_Session(content)), composer),
     );
     owner.updateReadDemand(chatDemand);
     owner.select('a');
@@ -391,6 +555,9 @@ final class _Harness {
   bool active = true;
   final ValueNotifier<double> summaryHeight;
   final ValueNotifier<bool> outerOffstage;
+  List<ComposerSubmission> submissions = const [];
+  Observation? _composerObservation;
+  _SubmissionOwner? _composer;
   Future<void> Function()? initialEndReached;
   Future<void>? flyerLoad;
   TimelineDisplayLease get lease => owner.lease('a')!;
@@ -405,12 +572,14 @@ final class _Harness {
     double summaryHeight = 0,
     bool joinFlyer = false,
     bool hidden = false,
+    _SubmissionOwner? composer,
   }) async {
     final h = _Harness(
       height: height,
       offstage: offstage,
       summaryHeight: summaryHeight,
       hidden: hidden,
+      composer: composer,
     );
     await h.content.deliver(
       chatBatch([
@@ -418,6 +587,10 @@ final class _Harness {
       ], before: 'page:0'),
     );
     h._observation = h.owner.source.watch((_) => h._rebuild?.call(() {}));
+    h._composer = composer;
+    h._composerObservation = composer?.submissions.watch((_) {
+      h._rebuild?.call(() {});
+    });
     await tester.pumpWidget(
       MaterialApp(
         theme: pureStudioTheme(),
@@ -445,6 +618,8 @@ final class _Harness {
                           threadId: 'a',
                           controls: lease,
                           view: h.owner.source.value!,
+                          submissions:
+                              h._composer?.submissions.value ?? h.submissions,
                           onLoadOlder: () => h.owner.loadOlder(
                             'a',
                             generation: lease.generation,
@@ -511,8 +686,28 @@ final class _Harness {
     });
   }
 
+  void showSubmission(ComposerSubmission? submission) {
+    _rebuild!(() {
+      submissions = submission == null ? const [] : [submission];
+    });
+  }
+
+  Future<void> drainPages(WidgetTester tester) async {
+    for (var i = 0; i < 4; i++) {
+      final pending = requests.where((request) => !request.reply.isCompleted);
+      if (pending.isEmpty) return;
+      final request = pending.last;
+      request.reply.complete(
+        chatBatch(const [], placement: ChatPlacement.prepend),
+      );
+      await request.finished.future;
+      await _frames(tester);
+    }
+  }
+
   Future<void> close(WidgetTester tester) async {
     _observation?.cancel();
+    _composerObservation?.cancel();
     await tester.pumpWidget(const SizedBox());
     final closing = owner.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 500)),
@@ -527,9 +722,43 @@ final class _Harness {
 }
 
 final class _Client extends Fake implements AnyworkClient {
-  _Client(this.conversations);
+  _Client(this.conversations, this._composer);
   @override
   final ConversationRepository conversations;
+  final _SubmissionOwner? _composer;
+  @override
+  DraftsRepository get drafts => _DraftsRepository(_composer);
+}
+
+final class _DraftsRepository extends Fake implements DraftsRepository {
+  _DraftsRepository(this.composerOwner);
+  final _SubmissionOwner? composerOwner;
+  @override
+  ComposerDraftOwner? existingComposer(String threadId) =>
+      threadId == 'a' ? composerOwner : null;
+}
+
+final class _SubmissionOwner extends Fake implements ComposerDraftOwner {
+  final LatestValue<List<ComposerSubmission>> _submissions = LatestValue(
+    const [],
+  );
+  final List<String> presented = [];
+
+  @override
+  ValueObservation<List<ComposerSubmission>> get submissions => _submissions;
+
+  void publish(List<ComposerSubmission> value) =>
+      _submissions.publish(List.unmodifiable(value));
+
+  @override
+  void markInputsPresented(Iterable<String> inputIds) {
+    presented.addAll(inputIds);
+    final settled = inputIds.toSet();
+    publish([
+      for (final submission in _submissions.value)
+        if (!settled.contains(submission.inputId)) submission,
+    ]);
+  }
 }
 
 final class _Repository extends Fake implements ConversationRepository {

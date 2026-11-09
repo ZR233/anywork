@@ -261,6 +261,7 @@ class _TimelineContentRangeConnectorState
       onNext: _next,
       onCopy: _copy,
       witness: widget.witness,
+      bodyBuilder: TimelineBodyReadIntent.bodyBuilderOf(context),
     );
   }
 }

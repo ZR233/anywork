@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use pl_protocol::{
     ChatAtomKind, ChatPlacement, ChatScope, CompletedEntry, ContentOwner, ContentRange, ContentRef,
     ContentTarget, MainPresentation, ObservedResourceKind, PayloadData, ReadDemand,
-    ThreadSubscriptionRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ThreadSubscriptionUpdate, ThreadWorkspaceMode,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -772,9 +772,7 @@ async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch(
         ensure!(observed_status.lines().any(|line| line == "!! ignored.txt"));
         let _subscription = env
             .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: root.thread.id.clone(),
-            })
+            .open_conversation_state_feed(&root.thread.id)
             .await?;
         ensure!(
             git(path, &["rev-parse", "HEAD"])? == head
@@ -901,16 +899,9 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         );
         let _root_subscription = env
             .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: root.thread.id.clone(),
-            })
+            .open_conversation_state_feed(&root.thread.id)
             .await?;
-        let _child_subscription = env
-            .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: id.into(),
-            })
-            .await?;
+        let _child_subscription = env.runtime.open_conversation_state_feed(id).await?;
         ensure!(
             git(child_path, &["rev-parse", "HEAD"])? == head
                 && git(child_path, &["branch", "--show-current"])?.is_empty(),
@@ -975,9 +966,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
         let mut subscription = env
             .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: root.thread.id.clone(),
-            })
+            .open_conversation_state_feed(&root.thread.id)
             .await?;
         let Some(ThreadSubscriptionUpdate::Snapshot { snapshot, .. }) =
             tokio::time::timeout(Duration::from_secs(20), subscription.recv())

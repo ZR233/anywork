@@ -79,6 +79,7 @@ impl StudioRuntime {
         cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
+        let started = std::time::Instant::now();
         // Serialize turn registration with the shared shutdown admission fence.
         // Cancellation may stop admission, never abandon a started resource operation.
         let _lifecycle_guard = match cancel {
@@ -89,6 +90,13 @@ impl StudioRuntime {
             },
             None => self.lifecycle_lock.lock().await,
         };
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id = request.thread_id,
+            input_id = request.input.input_id,
+            lifecycle_wait_us = started.elapsed().as_micros() as u64,
+            "prompt lifecycle admission acquired"
+        );
         ensure_submission_not_cancelled(cancel)?;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
         // The user-facing submission stops here for a child target: the trusted association proves
@@ -127,8 +135,18 @@ impl StudioRuntime {
         } = request;
         validate_prompt_content(&input)?;
         ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
+        let started = std::time::Instant::now();
         let thread = self.ensure_thread_owner(&thread_id).await?;
+        let operation_started = std::time::Instant::now();
         let _agent_operation = self.threads.agent_operation(&thread_id).await;
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id = input.input_id,
+            owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
+            operation_wait_us = operation_started.elapsed().as_micros() as u64,
+            "prompt thread admission acquired"
+        );
         self.threads.ensure_agent_admission_open(&thread_id)?;
         // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
         let snapshot = thread.snapshot();
@@ -319,6 +337,14 @@ impl StudioRuntime {
             .product_events
             .record_attachments(attachments.clone())
             .await?;
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id,
+            preparation_elapsed_us = started.elapsed().as_micros() as u64,
+            "prompt resources prepared"
+        );
+        let admission_started = std::time::Instant::now();
         let thread_input = pl_core::thread::input::ThreadInput {
             purpose: pl_core::thread::input::InputPurpose::Message,
             id: input_id,
@@ -347,6 +373,15 @@ impl StudioRuntime {
             }
             AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
         };
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id,
+            input_id = accepted.input.id,
+            source_effect_seq = accepted.accepted_sequence,
+            core_admission_us = admission_started.elapsed().as_micros() as u64,
+            admission_elapsed_us = started.elapsed().as_micros() as u64,
+            "prompt accepted"
+        );
         // 用户消息已成功受理（含排队输入）：目录立即记录最近用户消息时间；后续模型、
         // 工具或保存失败都不回退该事实，拒绝的提交在上方 `?` 处直接返回、不记录。
         self.agent_facility

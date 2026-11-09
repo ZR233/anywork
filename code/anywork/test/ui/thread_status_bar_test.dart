@@ -36,6 +36,7 @@ void main() {
       )!;
       await session.content.ready;
       await transport.firstSetAcknowledged.future;
+      await session.source.waitFor((value) => value.hasSnapshot);
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
       addTearDown(summaries.release);
@@ -173,6 +174,7 @@ void main() {
     final session = graph.client.conversations.existingSession('thread-main')!;
     await session.content.ready;
     await transport.firstSetAcknowledged.future;
+    await session.source.waitFor((value) => value.hasSnapshot);
     final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
     final initial = session.state.workspace!;
@@ -221,7 +223,7 @@ void main() {
     chromeNotifications = 0;
     final timelineConnections = transport.feeds.length;
 
-    await transport.feeds.last.emitStateAndWait(
+    await transport.stateFeeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -251,7 +253,7 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await transport.feeds.last.emitStateAndWait(
+    await transport.stateFeeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -284,7 +286,7 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    await transport.feeds.last.emitStateAndWait(
+    await transport.stateFeeds.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -302,7 +304,7 @@ void main() {
         ),
       ),
     );
-    await transport.feeds.last.emitStateAndWait(
+    await transport.stateFeeds.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -318,7 +320,7 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    await transport.feeds.last.emitStateAndWait(
+    await transport.stateFeeds.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(

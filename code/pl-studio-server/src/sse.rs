@@ -8,7 +8,9 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
 use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
-use pl_studio_runtime::{ConversationEvent, ConversationFeed, StudioProductFrame};
+use pl_studio_runtime::{
+    ConversationEvent, ConversationFeed, ConversationStateFeed, StudioProductFrame,
+};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -296,11 +298,11 @@ impl ConversationQuery {
     }
 }
 
-/// The original runtime feed owns both chat delivery and independent reads.
+/// Content delivery and its independent read capability; state has its own SSE.
 #[utoipa::path(
     get,
     path = "/api/v1/threads/{thread_id}/events",
-    operation_id = "thread.subscribe",
+    operation_id = "thread.subscribeContent",
     params(
         ("thread_id" = String, Path, description = "Thread ID"),
         ("maxItems" = u32, Query, description = "Requested bounded item count"),
@@ -310,7 +312,7 @@ impl ConversationQuery {
         ("runIndexVersion" = Option<u32>, Query, description = "Completion run indexVersion (currently 1)"),
         ("runStartSeq" = Option<u64>, Query, description = "Completion run startSeq")
     ),
-    responses(StudioApiErrors, (status = 200, description = "Authoritative Thread stream", body = String, content_type = "text/event-stream",
+    responses(StudioApiErrors, (status = 200, description = "Thread content stream", body = String, content_type = "text/event-stream",
         headers(("X-Anywork-Conversation" = String, description = "Original feed read capability"))))
 )]
 pub(crate) async fn thread_events(
@@ -367,6 +369,105 @@ pub(crate) async fn thread_events(
         Sse::new(ReceiverStream::new(receiver))
             .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")),
     ))
+}
+
+/// State delivery never waits for the content SSE consumer or its read lease.
+#[utoipa::path(
+    get,
+    path = "/api/v1/threads/{thread_id}/state/events",
+    operation_id = "thread.subscribeState",
+    params(("thread_id" = String, Path, description = "Thread ID")),
+    responses(StudioApiErrors, (status = 200, description = "Canonical Thread state stream", body = String, content_type = "text/event-stream"))
+)]
+pub(crate) async fn thread_state_events(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let permit = state
+        .streams
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::overloaded())?;
+    let events = state
+        .runtime
+        .open_conversation_state_feed(&thread_id)
+        .await
+        .map_err(ApiError::from)?;
+    let (sender, receiver) = mpsc::channel(1);
+    let mut pending = Some((events, permit));
+    {
+        let mut owners = state
+            .conversations
+            .0
+            .lock()
+            .expect("conversation owners poisoned");
+        if !owners.closed && !state.shutdown.is_cancelled() {
+            while let Some(result) = owners.tasks.try_join_next() {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "conversation HTTP owner task failed");
+                }
+            }
+            let (events, permit) = pending.take().expect("unstarted state observation");
+            let state = state.clone();
+            owners.tasks.spawn(async move {
+                let _permit = permit;
+                run_conversation_state(&state, events, sender).await;
+            });
+        }
+    }
+    if let Some((mut events, _permit)) = pending {
+        events.request_close();
+        events.close().await.map_err(ApiError::from)?;
+        return Err(crate::conversation::stale_scope());
+    }
+    Ok(Sse::new(ReceiverStream::new(receiver))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+async fn run_conversation_state(
+    state: &AppState,
+    mut events: ConversationStateFeed,
+    sender: mpsc::Sender<Result<Event, Infallible>>,
+) {
+    let mut failure = None;
+    loop {
+        // Reserve before recv, just as for content: no extra encoded payload
+        // may accumulate while this lane's HTTP consumer is backpressured.
+        let capacity = tokio::select! {
+            biased;
+            () = state.shutdown.cancelled() => break,
+            capacity = sender.reserve() => match capacity {
+                Ok(capacity) => capacity,
+                Err(_) => break,
+            },
+        };
+        let received = tokio::select! {
+            biased;
+            () = state.shutdown.cancelled() => break,
+            () = sender.closed() => break,
+            received = events.recv() => received,
+        };
+        match received {
+            Ok(Some(update)) => match encode_state_event(&update) {
+                Ok(event) => capacity.send(Ok(event)),
+                Err(_) => break,
+            },
+            Ok(None) => break,
+            Err(error) => {
+                failure = Some(pl_studio_runtime::studio_error_from_anyhow(error));
+                break;
+            }
+        }
+    }
+    events.request_close();
+    if let Err(error) = events.close().await {
+        tracing::warn!(%error, "conversation state SSE close failed");
+        failure.get_or_insert_with(|| pl_studio_runtime::studio_error_from_anyhow(error));
+    }
+    if let Some(error) = failure {
+        let _ = send_json(&sender, &state.shutdown, "error", None, &error).await;
+    }
+    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
 }
 
 async fn run_conversation(
@@ -440,25 +541,26 @@ async fn close_conversation(events: &mut ConversationFeed, owner: &ReadOwner) {
 
 fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::Error> {
     match event {
-        ConversationEvent::State { update } => {
-            let (name, id) = match &**update {
-                ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
-                    ("snapshot", format!("thread:{}", snapshot.revision))
-                }
-                ThreadSubscriptionUpdate::Notification { notification } => (
-                    if matches!(notification.notification, ThreadNotification::Lagged { .. }) {
-                        "lagged"
-                    } else {
-                        "notification"
-                    },
-                    format!("thread:{}:{}", notification.epoch, notification.revision),
-                ),
-            };
-            encode_event(name, Some(&id), update)
-        }
         ConversationEvent::Chat { batch } => encode_event("chat", None, batch),
         ConversationEvent::Activity { snapshot } => encode_event("activity", None, snapshot),
     }
+}
+
+fn encode_state_event(update: &ThreadSubscriptionUpdate) -> Result<Event, axum::Error> {
+    let (name, id) = match update {
+        ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
+            ("snapshot", format!("thread:{}", snapshot.revision))
+        }
+        ThreadSubscriptionUpdate::Notification { notification } => (
+            if matches!(notification.notification, ThreadNotification::Lagged { .. }) {
+                "lagged"
+            } else {
+                "notification"
+            },
+            format!("thread:{}:{}", notification.epoch, notification.revision),
+        ),
+    };
+    encode_event(name, Some(&id), update)
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/contents/watch",

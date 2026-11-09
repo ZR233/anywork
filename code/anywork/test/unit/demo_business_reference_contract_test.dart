@@ -13,6 +13,48 @@ import '../support/test_statistics_feed.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'Demo state-only execution changes wake content Activity without Chat',
+    () async {
+      final (graph, transport) = await _open();
+      final session = graph.client.conversations.session('thread-main');
+      final initial = await session.activity
+          .waitFor((activity) => activity != null)
+          .timeout(const Duration(seconds: 3));
+      expect(initial!.executionPresent, isFalse);
+      final lease = graph.timeline.lease('thread-main')!;
+      final messages = List.of(lease.controller.messages);
+      final running = session.activity.waitFor(
+        (activity) => activity?.executionPresent == true,
+      );
+      final now = DateTime.now();
+
+      // This is the same state-only admission used by continuation: there is no
+      // new user input, body publication, or timer to wake the content feed.
+      transport.seedConversationState(
+        'thread-main',
+        ThreadTurnUpdate(
+          StudioTurnView(
+            turnId: 'activity-only-turn',
+            threadId: 'thread-main',
+            revision: 1,
+            state: RunningStudioTurnState(
+              startedAt: now.millisecondsSinceEpoch ~/ 1000,
+              activity: StudioTurnActivity.thinking,
+            ),
+            updatedAt: now,
+          ),
+        ),
+      );
+      await session.source
+          .waitFor((state) => state.activeTurn?.turnId == 'activity-only-turn')
+          .timeout(const Duration(seconds: 3));
+      final activity = await running.timeout(const Duration(seconds: 3));
+      expect(activity!.completedThrough, initial.completedThrough);
+      expect(lease.controller.messages, orderedEquals(messages));
+    },
+  );
+
   test('Demo interaction collection carries the canonical InteractionRequest envelope', () async {
     final (graph, transport) = await _open();
     final session = graph.client.conversations.session('thread-main');
@@ -247,6 +289,10 @@ Future<(AppGraph, DemoStudioTransport)> _open() async {
   graph.timeline.updateReadDemand(chatDemand);
   graph.setConversationPageVisible(true);
   await graph.client.directoryCommands.selectThread('thread-main');
-  await graph.client.conversations.session('thread-main').content.ready;
+  final session = graph.client.conversations.session('thread-main');
+  await session.content.ready;
+  await session.source
+      .waitFor((state) => state.hasSnapshot)
+      .timeout(const Duration(seconds: 3));
   return (graph, transport);
 }

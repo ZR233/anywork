@@ -16,6 +16,7 @@ class ConversationCurrentWindowView extends StatelessWidget {
     this.availableThrough,
     this.onFirst,
     this.onNext,
+    this.bodyBuilder,
     super.key,
   });
 
@@ -28,6 +29,7 @@ class ConversationCurrentWindowView extends StatelessWidget {
   final int? availableThrough;
   final VoidCallback? onFirst;
   final VoidCallback? onNext;
+  final Widget Function(String text)? bodyBuilder;
 
   bool get _hasRange =>
       offset != null && end != null && availableThrough != null;
@@ -68,18 +70,19 @@ class ConversationCurrentWindowView extends StatelessWidget {
                 ),
               ),
             ),
-          TimelineMarkdown(
-            id: 'current:$id',
-            text: text,
-            style: context.text.bodySmall?.copyWith(
-              color: colors.onSurface,
-              fontSize: 12.5,
-              height: 1.48,
-            ),
-            onLink: (_) {},
-            isSafeLink: (_) => false,
-            imageBuilder: (_, url) => Text(url),
-          ),
+          bodyBuilder?.call(text) ??
+              TimelineMarkdown(
+                id: 'current:$id',
+                text: text,
+                style: context.text.bodySmall?.copyWith(
+                  color: colors.onSurface,
+                  fontSize: 12.5,
+                  height: 1.48,
+                ),
+                onLink: (_) {},
+                isSafeLink: (_) => false,
+                imageBuilder: (_, url) => Text(url),
+              ),
           if (hasEarlier || hasLater)
             Padding(
               padding: const EdgeInsets.only(top: 4),

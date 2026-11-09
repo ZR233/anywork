@@ -254,15 +254,21 @@ pub(crate) struct CheckpointEffect<'a> {
     pub accounting: AccountingCommit<'a>,
 }
 
+pub(in crate::studio) struct ColdStateFacet {
+    pub current: Arc<crate::studio::thread_projection::CurrentState>,
+    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
+    pub terminal_turn: Option<pl_protocol::Turn>,
+    /// Saved core envelope from this same read. Context records stay with execution recovery;
+    /// usage, context-window and cost facts remain on the envelope.
+    pub saved_state: Option<pl_core::thread::ThreadSnapshot>,
+}
+
 pub(in crate::studio) struct ColdConversation {
     pub database_id: String,
     pub head: u64,
-    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
     pub current: pl_protocol::CurrentProjection,
     /// Actual lifecycle for the selected page/current sources at this transaction's effect cut.
     pub sources: Vec<pl_protocol::ChatSourceState>,
-    pub interactions: Vec<pl_protocol::InteractionRequest>,
-    pub terminal_turn: Option<pl_protocol::Turn>,
     pub page: ChatHistoryPage,
 }
 
@@ -1563,6 +1569,29 @@ impl HistoryStore {
         Ok(Some(current))
     }
 
+    /// Cold State baseline: current, saved route and covered terminal share one read transaction.
+    /// The saved envelope is the same transaction's usage authority. Absence does not create
+    /// history, seed usage, or install execution.
+    pub(in crate::studio) async fn cold_state_facet(&self) -> Result<Option<ColdStateFacet>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let current = conversation::completed::cold(&tx).await?;
+        let model_route = checkpoint::read_model_route_head(&tx).await?;
+        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
+        let saved_state = checkpoint::read_state_envelope(&tx, &self.state.thread_id)
+            .await?
+            .map(|checkpoint| checkpoint.state);
+        tx.commit().await?;
+        Ok(Some(ColdStateFacet {
+            current,
+            model_route,
+            terminal_turn,
+            saved_state,
+        }))
+    }
+
     /// Same domain-head projection as State, from one fresh SQLite read transaction.
     /// Missing history means this Thread has no established business read resources yet.
     pub(in crate::studio) async fn read_business_refs(
@@ -1716,9 +1745,6 @@ impl HistoryStore {
         let head = conversation::latest_append_seq(&tx).await?;
         let cold = conversation::completed::cold(&tx).await?;
         let current = cold.projection().clone();
-        let interactions = cold.interactions().to_vec();
-        let model_route = checkpoint::read_model_route_head(&tx).await?;
-        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
         let include_current = query.parent_id.is_none()
             && query.query_class == "conversation"
@@ -1752,9 +1778,6 @@ impl HistoryStore {
             head,
             current,
             sources,
-            interactions,
-            model_route,
-            terminal_turn,
             page,
         }))
     }
