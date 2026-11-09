@@ -289,8 +289,9 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
                 "failure must be actionable: {failed}"
             );
             ensure!(
-                failed["configurationPath"].as_str().is_some_and(|path|
-                    Path::new(path) == directory.join(format!("{id}.toml"))),
+                failed["configurationPath"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path) == directory.join(format!("{id}.toml"))),
                 "failure must identify its source: {failed}"
             );
         }
