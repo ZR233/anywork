@@ -119,12 +119,6 @@ pub struct ScopeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RepairLspRequest {
-    pub server_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "scope", deny_unknown_fields)]
 pub enum LspResetRequest {
     Server {

@@ -27,6 +27,7 @@ enum DocumentFamily {
     Main,
     Profile,
     Mcp,
+    Lsp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,7 +244,7 @@ fn read_resource_disk_bytes(
     let path = config_resource_path(paths, relative_path);
     match document {
         DocumentFamily::Main | DocumentFamily::Profile => Ok(fs::read(path)?),
-        DocumentFamily::Mcp => match fs::symlink_metadata(&path) {
+        DocumentFamily::Mcp | DocumentFamily::Lsp => match fs::symlink_metadata(&path) {
             Ok(meta) => {
                 ensure!(
                     !meta.file_type().is_symlink() && meta.is_file(),
@@ -255,6 +256,52 @@ fn read_resource_disk_bytes(
             Err(error) => Err(error.into()),
         },
     }
+}
+
+fn validate_lsp_disk_state(paths: &ConfigPaths, resource: &Resource) -> Result<()> {
+    if resource.document != DocumentFamily::Lsp {
+        return Ok(());
+    }
+    ensure_lsp_parent_dirs(paths)?;
+    let path = config_resource_path(paths, &resource.relative_path);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            ensure!(
+                !metadata.file_type().is_symlink() && metadata.is_file(),
+                "LSP migration resource {} is not a regular file",
+                resource.relative_path
+            );
+            ensure!(
+                digest(&fs::read(path)?) == resource.candidate_hash,
+                "existing LSP migration resource conflicts with its candidate"
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure!(
+                resource.original_hash == digest(&[]),
+                "LSP migration original state is invalid"
+            );
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn ensure_lsp_parent_dirs(paths: &ConfigPaths) -> Result<()> {
+    let lsp_dir = paths.config_dir().join("lsp");
+    let host_dir = lsp_dir.join("host");
+    for directory in [&lsp_dir, &host_dir] {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "LSP migration directory {} is not a regular directory",
+                directory.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 fn validate_mcp_resource_path(relative_path: &str) -> Result<()> {
@@ -270,6 +317,45 @@ fn validate_mcp_resource_path(relative_path: &str) -> Result<()> {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
         "invalid MCP migration resource filename `{file_name}`"
+    );
+    Ok(())
+}
+
+fn validate_lsp_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn validate_lsp_resource_path(relative_path: &str) -> Result<&str> {
+    let Some(file_name) = relative_path.strip_prefix("lsp/host/") else {
+        anyhow::bail!("invalid LSP migration resource path `{relative_path}`");
+    };
+    let Some(id) = file_name.strip_suffix(".toml") else {
+        anyhow::bail!("invalid LSP migration resource path `{relative_path}`");
+    };
+    ensure!(
+        validate_lsp_id(id),
+        "invalid LSP migration resource filename `{file_name}`"
+    );
+    Ok(id)
+}
+
+fn validate_lsp_candidate(path: &Path, relative_path: &str, content: &[u8]) -> Result<()> {
+    let expected_id = validate_lsp_resource_path(relative_path)?;
+    let raw = text(path, content, "lsp-document", 1)?;
+    let document = pl_lsp::catalog::LspServerDocument::parse(raw)
+        .map_err(|error| migration_error(path, "lsp-document", None, 1, "validate", error))?;
+    ensure!(
+        document.schema_version == 1,
+        "LSP candidate must have schema_version = 1"
+    );
+    ensure!(
+        document.id == expected_id,
+        "LSP candidate id must match its filename"
     );
     Ok(())
 }
@@ -506,6 +592,52 @@ fn prepare_legacy_mcp_plans(
     Ok(())
 }
 
+fn prepare_legacy_lsp_plans(
+    paths: &ConfigPaths,
+    original_main: &[u8],
+    plans: &mut Vec<ResourcePlan>,
+    resources: &mut Vec<Resource>,
+) -> Result<()> {
+    let raw_main = text(
+        paths.config_file(),
+        original_main,
+        "studio-config",
+        STUDIO_CONFIG_SCHEMA_VERSION,
+    )?;
+    let documents = crate::config::document_migration::extract_legacy_lsp_from_main(
+        paths.config_file(),
+        raw_main,
+    )?;
+    for (id, candidate) in documents {
+        ensure!(validate_lsp_id(&id), "invalid legacy LSP server id `{id}`");
+        let relative_path = format!("lsp/host/{id}.toml");
+        ensure_lsp_parent_dirs(paths)?;
+        let target = config_resource_path(paths, &relative_path);
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) => {
+                ensure!(
+                    !metadata.file_type().is_symlink() && metadata.is_file(),
+                    "existing LSP document `{relative_path}` is not a regular file"
+                );
+                ensure!(
+                    fs::read(&target)? == candidate,
+                    "existing LSP document `{relative_path}` conflicts with migration candidate"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let plan = ResourcePlan {
+            relative_path,
+            original: Vec::new(),
+            candidate,
+        };
+        resources.push(resource(&plan, DocumentFamily::Lsp, None, 1));
+        plans.push(plan);
+    }
+    Ok(())
+}
+
 pub(super) fn prepare(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
@@ -518,7 +650,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV31::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV32::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -532,6 +664,7 @@ pub(super) fn prepare(
             ));
             plans.push(plan);
             prepare_legacy_mcp_plans(paths, original, &mut plans, &mut resources)?;
+            prepare_legacy_lsp_plans(paths, original, &mut plans, &mut resources)?;
             (config, None)
         } else {
             (config, Some(digest(original)))
@@ -600,6 +733,9 @@ pub(super) fn prepare(
             DocumentFamily::Mcp => {
                 validate_mcp_candidate(&path, &plan.candidate)?;
             }
+            DocumentFamily::Lsp => {
+                validate_lsp_candidate(&path, &plan.relative_path, &plan.candidate)?;
+            }
         }
     }
     let directory = operation_dir(paths);
@@ -608,7 +744,9 @@ pub(super) fn prepare(
         "pending configuration migration must be resumed first"
     );
     for (plan, entry) in plans.iter().zip(&resources) {
-        if !(entry.document == DocumentFamily::Mcp && plan.original.is_empty()) {
+        if !(matches!(entry.document, DocumentFamily::Mcp | DocumentFamily::Lsp)
+            && plan.original.is_empty())
+        {
             crate::config::store::write_config_backup(
                 &config_resource_path(paths, &plan.relative_path),
                 &plan.original,
@@ -683,6 +821,13 @@ fn validate_resources(journal: &Journal) -> Result<()> {
                     "invalid MCP resource versions"
                 );
             }
+            DocumentFamily::Lsp => {
+                validate_lsp_resource_path(&resource.relative_path)?;
+                ensure!(
+                    resource.source_version.is_none() && resource.target_version == 1,
+                    "invalid LSP resource versions"
+                );
+            }
         }
     }
     if journal
@@ -708,6 +853,7 @@ fn commit(
     let directory = operation_dir(paths);
     let mut verified = Vec::with_capacity(journal.resources.len());
     for resource in &journal.resources {
+        validate_lsp_disk_state(paths, resource)?;
         let original = fs::read(
             directory
                 .join(ORIGINAL_DIR_NAME)
@@ -795,6 +941,13 @@ fn commit(
                 }
                 validate_mcp_candidate(&path, &plan.candidate)?;
             }
+            DocumentFamily::Lsp => {
+                ensure!(
+                    plan.original.is_empty(),
+                    "LSP migration resource must not replace an existing file"
+                );
+                validate_lsp_candidate(&path, &entry.relative_path, &plan.candidate)?;
+            }
         }
     }
     if journal.phase == MigrationPhase::Prepared {
@@ -813,6 +966,7 @@ fn commit(
     if journal.phase == MigrationPhase::Credentials {
         for (index, plan) in verified.iter().enumerate() {
             let entry = &mut journal.resources[index];
+            validate_lsp_disk_state(paths, entry)?;
             let path = config_resource_path(paths, &entry.relative_path);
             let hash = digest(&read_resource_disk_bytes(
                 paths,
@@ -827,7 +981,7 @@ fn commit(
                 if main.is_none() {
                     verify_profile_main_guard(paths, main_guard.as_deref())?;
                 }
-                if entry.document == DocumentFamily::Mcp
+                if matches!(entry.document, DocumentFamily::Mcp | DocumentFamily::Lsp)
                     && let Some(parent) = path.parent()
                 {
                     fs::create_dir_all(parent)?;
@@ -845,6 +999,7 @@ fn commit(
         write_journal(&directory, journal)?;
     }
     for entry in &journal.resources {
+        validate_lsp_disk_state(paths, entry)?;
         ensure!(
             digest(&read_resource_disk_bytes(
                 paths,
@@ -898,6 +1053,54 @@ workspace_mode = "directory"
         (directory, store)
     }
 
+    fn schema_31_with_lsp(store: &ConfigStore) -> Vec<u8> {
+        schema_31_with_lsp_operations(store, None)
+    }
+
+    fn schema_31_with_lsp_operations(store: &ConfigStore, operations: Option<&[&str]>) -> Vec<u8> {
+        let mut main: toml::Value =
+            toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
+        main["schema_version"] = toml::Value::Integer(31);
+        let mut server = toml::Table::new();
+        server.insert("command".into(), "language-server".into());
+        server.insert(
+            "args".into(),
+            toml::Value::Array(vec!["--stdio".into(), "--verbose".into()]),
+        );
+        server.insert(
+            "language_ids".into(),
+            toml::Value::Array(vec!["rust".into(), "toml".into()]),
+        );
+        server.insert(
+            "detection".into(),
+            toml::Value::Array(vec!["Cargo.toml".into()]),
+        );
+        server.insert(
+            "extensions".into(),
+            toml::Value::Array(vec![".rs".into(), ".toml".into()]),
+        );
+        server.insert("display_name".into(), "Custom language service".into());
+        if let Some(operations) = operations {
+            server.insert(
+                "operations".into(),
+                toml::Value::Array(
+                    operations
+                        .iter()
+                        .map(|operation| toml::Value::String((*operation).to_owned()))
+                        .collect(),
+                ),
+            );
+        }
+        let mut servers = toml::Table::new();
+        servers.insert("rust.custom-server".into(), toml::Value::Table(server));
+        let mut lsp = toml::Table::new();
+        lsp.insert("servers".into(), toml::Value::Table(servers));
+        main.as_table_mut()
+            .unwrap()
+            .insert("lsp".into(), toml::Value::Table(lsp));
+        toml::to_string(&main).unwrap().into_bytes()
+    }
+
     fn remove_post_27_authentication(main: &mut toml::Value) {
         if let Some(accounts) = main
             .get_mut("models")
@@ -910,6 +1113,165 @@ workspace_mode = "directory"
                 account.remove("chatgpt_account");
             }
         }
+    }
+
+    #[test]
+    fn schema_31_lsp_servers_are_extracted_and_removed_without_losing_fields() {
+        let (_directory, store) = fixture();
+        let original = schema_31_with_lsp(&store);
+        fs::write(store.paths().config_file(), &original).unwrap();
+
+        let migrated = store.load_for_startup().unwrap();
+
+        let document_path = store
+            .paths()
+            .config_dir()
+            .join("lsp/host/rust.custom-server.toml");
+        let document: toml::Value =
+            toml::from_str(&fs::read_to_string(document_path).unwrap()).unwrap();
+        assert_eq!(document["schema_version"].as_integer(), Some(1));
+        assert_eq!(document["id"].as_str(), Some("rust.custom-server"));
+        assert_eq!(document["command"].as_str(), Some("language-server"));
+        assert_eq!(document["args"][0].as_str(), Some("--stdio"));
+        assert_eq!(document["args"][1].as_str(), Some("--verbose"));
+        assert_eq!(document["language_ids"][0].as_str(), Some("rust"));
+        assert_eq!(document["language_ids"][1].as_str(), Some("toml"));
+        assert_eq!(document["detection"][0].as_str(), Some("Cargo.toml"));
+        assert_eq!(document["extensions"][0].as_str(), Some(".rs"));
+        assert_eq!(
+            document["display_name"].as_str(),
+            Some("Custom language service")
+        );
+
+        let main: toml::Value =
+            toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
+        assert_eq!(main["schema_version"].as_integer(), Some(32));
+        assert!(main.get("lsp").is_none());
+        assert_eq!(migrated.schema_version, 32);
+        assert!(migrated.validate_declarations().is_ok());
+        assert!(!operation_dir(store.paths()).exists());
+        let backups: Vec<_> = fs::read_dir(store.paths().config_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".migrated."))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn schema_31_lsp_operations_keep_legacy_effective_catalog_behavior() {
+        for operations in [None, Some(&[][..]), Some(&["hover"][..])] {
+            let (_directory, store) = fixture();
+            let original = schema_31_with_lsp_operations(&store, operations);
+            let original_main: toml::Value =
+                toml::from_str(std::str::from_utf8(&original).unwrap()).unwrap();
+            let old_lsp: crate::config::document_migration::wire::StudioLspConfig =
+                original_main["lsp"].clone().try_into().unwrap();
+            let old_config = &old_lsp.servers["rust.custom-server"];
+            let expected_effective = if old_config.operations.is_empty() {
+                pl_lsp::query::LspQueryOperation::all().to_vec()
+            } else {
+                old_config
+                    .operations
+                    .iter()
+                    .map(|operation| {
+                        serde_json::from_value(serde_json::to_value(operation).unwrap()).unwrap()
+                    })
+                    .collect()
+            };
+            fs::write(store.paths().config_file(), &original).unwrap();
+
+            store.load_for_startup().unwrap();
+
+            let path = store
+                .paths()
+                .config_dir()
+                .join("lsp/host/rust.custom-server.toml");
+            let migrated_source = fs::read_to_string(path).unwrap();
+            let migrated = pl_lsp::catalog::LspServerDocument::parse(&migrated_source).unwrap();
+            let actual_effective = migrated
+                .config
+                .to_catalog_server("rust.custom-server")
+                .definition
+                .operations;
+            assert_eq!(actual_effective, expected_effective);
+            match operations {
+                None | Some([]) => assert!(!migrated_source.contains("operations")),
+                Some(_) => assert!(migrated_source.contains("operations")),
+            }
+        }
+    }
+
+    #[test]
+    fn schema_31_lsp_conflict_does_not_overwrite_existing_file_or_main() {
+        let (_directory, store) = fixture();
+        let original = schema_31_with_lsp(&store);
+        fs::write(store.paths().config_file(), &original).unwrap();
+        let target = store
+            .paths()
+            .config_dir()
+            .join("lsp/host/rust.custom-server.toml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let conflict = b"local user document\n";
+        fs::write(&target, conflict).unwrap();
+
+        assert!(store.load_for_startup().is_err());
+
+        assert_eq!(fs::read(store.paths().config_file()).unwrap(), original);
+        assert_eq!(fs::read(target).unwrap(), conflict);
+    }
+
+    #[test]
+    fn schema_31_lsp_migration_resumes_after_main_candidate_was_written() {
+        let (_directory, store) = fixture();
+        let original = schema_31_with_lsp(&store);
+        fs::write(store.paths().config_file(), &original).unwrap();
+        let lsp_target = store
+            .paths()
+            .config_dir()
+            .join("lsp/host/rust.custom-server.toml");
+        let credentials = MemoryCredentialStore::default();
+        let failed = prepare(
+            store.paths(),
+            &credentials,
+            Some(&original),
+            &|path, bytes| {
+                if path == lsp_target {
+                    return Err(PureError::ConfigError(
+                        "simulated interruption before LSP resource write".into(),
+                    ));
+                }
+                atomic_write(path, bytes)
+            },
+        );
+        assert!(failed.is_err());
+        assert!(!lsp_target.exists());
+        assert_eq!(
+            toml::from_str::<toml::Value>(
+                &fs::read_to_string(store.paths().config_file()).unwrap()
+            )
+            .unwrap()["schema_version"]
+                .as_integer(),
+            Some(32)
+        );
+        assert!(
+            operation_dir(store.paths())
+                .join(JOURNAL_FILE_NAME)
+                .exists()
+        );
+
+        super::super::resume_for_startup(store.paths(), &credentials).unwrap();
+
+        assert!(lsp_target.exists());
+        assert!(!operation_dir(store.paths()).exists());
+        let current: toml::Value =
+            toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
+        assert!(current.get("lsp").is_none());
     }
 
     fn write_profile_only_journal(
@@ -1656,7 +2018,7 @@ cwd = "sub/dir"
         fs::write(paths.config_file(), &v30_bytes).unwrap();
 
         let loaded = store.load_for_startup().unwrap();
-        assert_eq!(loaded.schema_version, 31);
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
 
         let migrated_main: toml::Table =
             toml::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
@@ -1664,7 +2026,7 @@ cwd = "sub/dir"
             migrated_main
                 .get("schema_version")
                 .and_then(toml::Value::as_integer),
-            Some(31)
+            Some(i64::from(STUDIO_CONFIG_SCHEMA_VERSION))
         );
         assert!(!migrated_main.contains_key("mcp"));
 
@@ -1695,7 +2057,7 @@ cwd = "sub/dir"
             pl_protocol::McpConfigStatusKind::Disabled
         );
 
-        // Verify schema_version = 31 rejects legacy [mcp] table (no dual-read).
+        // Verify the current schema rejects legacy [mcp] tables (no dual-read).
         let mut v31_with_mcp = migrated_main;
         v31_with_mcp.insert("mcp".into(), toml::Value::Table(toml::Table::new()));
         fs::write(
@@ -1751,7 +2113,7 @@ url = "https://example.com/mcp"
         assert!(operation_dir(paths).join(JOURNAL_FILE_NAME).exists());
 
         let recovered = store.load_for_startup().unwrap();
-        assert_eq!(recovered.schema_version, 31);
+        assert_eq!(recovered.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         assert!(!operation_dir(paths).exists());
 
         let catalog = crate::config::McpCatalogResource::new(paths, &recovered.models);
@@ -1812,7 +2174,7 @@ transport = "stdio"
         fs::write(paths.config_file(), &v30_bytes).unwrap();
 
         let loaded = store.load_for_startup().unwrap();
-        assert_eq!(loaded.schema_version, 31);
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         let catalog = crate::config::McpCatalogResource::new(paths, &loaded.models);
         let snapshot = catalog
             .read_catalog(paths, &loaded.models, &pl_protocol::McpScope::Host)

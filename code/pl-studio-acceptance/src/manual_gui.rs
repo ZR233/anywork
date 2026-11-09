@@ -2794,7 +2794,10 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     if mcp_dir.is_dir() {
         fs::remove_dir_all(&mcp_dir)?;
     }
-    config.lsp.servers.clear();
+    let lsp_dir = home.join("lsp");
+    if lsp_dir.is_dir() {
+        fs::remove_dir_all(&lsp_dir)?;
+    }
     config.acp = Default::default();
     // Bots have their own canonical documents. Disable them before runtime startup, including
     // each original identity, without deleting their ledger or touching its selected credential.
@@ -2906,19 +2909,18 @@ fn write_config_with_mcp_server(
     Ok(())
 }
 
-/// One scenario-owned `[lsp.servers.<id>]` entry to declare in an isolated home.
+/// One scenario-owned LSP document to declare in an isolated home.
 ///
 /// A named spec instead of a long positional argument list: the writer stays a
 /// small call site and the fields carry their own meaning at construction.
 pub(super) struct LspServerSpec<'a> {
-    /// The `[lsp.servers.<id>]` key; must be unique across the catalog.
+    /// The document id; must be unique in this scope.
     pub(super) id: &'a str,
     /// Server program (the fixture binary in `--lsp-stdio` mode).
     pub(super) command: &'a Path,
     /// Program arguments (the mode flag and coordination file path).
     pub(super) args: &'a [String],
-    /// The unique language id the server answers. Must not be a builtin id
-    /// (the builtin rust-analyzer already owns `rust`) or the merge fails loud.
+    /// The unique language id the server answers.
     pub(super) language_id: &'a str,
     /// Workspace detection rules; empty means "all workspaces".
     pub(super) detection: &'a [String],
@@ -2926,18 +2928,12 @@ pub(super) struct LspServerSpec<'a> {
     pub(super) extensions: &'a [String],
 }
 
-/// Writes the isolated home's config with one scenario-owned `[lsp.servers.<id>]`
-/// entry.
+/// Writes the isolated home's config and one independently versioned LSP document.
 ///
 /// The shutdown acceptance points this at its own fake LSP peer (the fixture
 /// binary in `--lsp-stdio` mode) so the product starts it through the real
-/// supervised worker when the model issues an `lsp_query`; the server itself
+/// supervised worker during asynchronous preparation; the server itself
 /// spawns a SIGTERM-ignoring grandchild the product must reclaim.
-///
-/// The entry is injected into the serialized base config instead of naming
-/// `pl_lsp::catalog::LspUserServerConfig` directly, so this acceptance tool does
-/// not need a new crate dependency edge (and cannot drift a second LSP config
-/// fact source: `StudioConfig` remains the single typed owner).
 ///
 /// Private to `manual_gui` (only the descendant `shutdown` module uses it) so
 /// the private [`FixtureReady`] parameter stays within its own visibility.
@@ -2947,21 +2943,9 @@ fn write_config_with_lsp_server(
     spec: &LspServerSpec<'_>,
 ) -> Result<()> {
     let config = fixture_config(ready, ModelTransportProfile::responses_http())?;
-    // Round-trip through a `toml::Table` so the injected entry is identical to
-    // what `persist_config` / the runtime would read back from `config.toml`.
-    let mut table: toml::Table = toml::from_str(&toml::to_string(&config)?)
-        .context("failed to round-trip the isolated config for the LSP entry")?;
-    let lsp = table
-        .entry("lsp".to_owned())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let lsp = lsp.as_table_mut().context("`lsp` is not a TOML table")?;
-    let servers = lsp
-        .entry("servers".to_owned())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let servers = servers
-        .as_table_mut()
-        .context("`lsp.servers` is not a TOML table")?;
     let mut entry = toml::Table::new();
+    entry.insert("schema_version".to_owned(), toml::Value::Integer(1));
+    entry.insert("id".to_owned(), toml::Value::String(spec.id.to_owned()));
     entry.insert(
         "command".to_owned(),
         toml::Value::String(spec.command.to_string_lossy().into_owned()),
@@ -2994,9 +2978,12 @@ fn write_config_with_lsp_server(
                 .collect(),
         ),
     );
-    servers.insert(spec.id.to_owned(), toml::Value::Table(entry));
-    let config: StudioConfig = toml::from_str(&toml::to_string(&table)?)
-        .context("failed to rebuild the config with the LSP entry")?;
+    let directory = home.join("lsp/host");
+    fs::create_dir_all(&directory)?;
+    fs::write(
+        directory.join(format!("{}.toml", spec.id)),
+        toml::to_string(&entry)?,
+    )?;
     persist_config(home, &config)
 }
 

@@ -17,7 +17,7 @@ struct ProjectActivationRecoveryBlock<'a> {
 }
 
 impl StudioRuntime {
-    /// Prepares workspace services, including helper binding and executable LSP version probes.
+    /// Prepares workspace services and schedules optional language services in the background.
     /// This is not a read-only navigation/history query; blocked projects remain available through
     /// the independent directory and history reads when their access is not blocked.
     pub async fn activate_project(&self, workspace_id: &str) -> Result<()> {
@@ -53,6 +53,9 @@ impl StudioRuntime {
             .into());
         }
         let project = self.project_record(workspace_id).await?;
+        let lsp = self.external_runtimes.lsp.execution_scope(
+            &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
+        );
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
@@ -60,11 +63,12 @@ impl StudioRuntime {
                 .await?;
             let workspace_root = std::path::PathBuf::from(host.files.canonical_path());
             let settings = self.config_runtime.read()?;
-            self.external_runtimes
-                .lsp
-                .apply_user_servers(&settings.config.lsp.servers)
-                .await
-                .map_err(|error| anyhow::anyhow!("invalid [lsp.servers] configuration: {error}"))?;
+            lsp.configure_workspace_from_directory(
+                &workspace_root,
+                Some(Arc::new(host.clone())),
+                None,
+            )
+            .await;
             let fingerprint = format!(
                 "ssh:{server_id}:{}:{}:{}",
                 workspace_root.display(),
@@ -89,14 +93,6 @@ impl StudioRuntime {
                 .lsp_state
                 .begin(pl_protocol::StateOperation::Activate)
                 .await?;
-            self.external_runtimes
-                .lsp
-                .reconcile_workspace_membership_with_host(&workspace_root, Arc::new(host.clone()))
-                .await;
-            self.external_runtimes
-                .lsp
-                .probe_lsp_server(&workspace_root)
-                .await;
             let health = health(&self.external_runtimes.lsp).await;
             self.external_runtimes.lsp_state.ready(health, true).await?;
             let _ = self
@@ -117,20 +113,16 @@ impl StudioRuntime {
         }
         let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
         let settings = self.config_runtime.read()?;
-        // 自定义 LSP server 与 catalog 冲突在配置加载时已 fail-loud；此处再合并一次，
-        // 保证 registry catalog 与当前配置一致，并让 fingerprint 覆盖检测结果。
-        self.external_runtimes
-            .lsp
-            .apply_user_servers(&settings.config.lsp.servers)
-            .await
-            .map_err(|error| anyhow::anyhow!("invalid [lsp.servers] configuration: {error}"))?;
+        let host = self.local_lsp_host(&workspace_root).await;
+        lsp.configure_workspace_from_directory(
+            &workspace_root,
+            host,
+            Some(self.store.paths().home().join("lsp/host")),
+        )
+        .await;
         let fingerprint = format!(
-            "{}:{}:{}",
+            "{}:{}",
             workspace_root.display(),
-            self.external_runtimes
-                .lsp
-                .membership_fingerprint(&workspace_root)
-                .await,
             super::super::skill_catalog::skills_fingerprint(&settings.config.skills)?,
         );
         let _activation_command = self.activation.command_lock.lock().await;
@@ -151,31 +143,6 @@ impl StudioRuntime {
             .lsp_state
             .begin(pl_protocol::StateOperation::Activate)
             .await?;
-        // Linux local workspaces run their language servers under the same supervised worker
-        // resource used by local tool exec; there is no unsupervised PATH/shell fallback.
-        #[cfg(target_os = "linux")]
-        {
-            let lsp_worker = crate::worker_assets::local_worker(self.helper_source.clone()).await?;
-            let host = Arc::new(pl_tool::lsp::LocalLspHostBackend::new(
-                workspace_root.clone(),
-                lsp_worker,
-            )?);
-            self.external_runtimes
-                .lsp
-                .reconcile_workspace_membership_with_host(&workspace_root, host)
-                .await;
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            self.external_runtimes
-                .lsp
-                .reconcile_workspace_membership(&workspace_root)
-                .await;
-        }
-        self.external_runtimes
-            .lsp
-            .probe_lsp_server(&workspace_root)
-            .await;
         let health = health(&self.external_runtimes.lsp).await;
         self.external_runtimes.lsp_state.ready(health, true).await?;
         let _ = self
@@ -227,59 +194,49 @@ impl StudioRuntime {
     }
 
     pub async fn probe_lsp_server(&self, workspace_id: &str) -> Result<()> {
-        let workspace_root = self.project_workspace_root(workspace_id).await?;
+        let project = self.project_record(workspace_id).await?;
+        let lsp = self.external_runtimes.lsp.execution_scope(
+            &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
+        );
+        let (workspace_root, host, defaults) = if let Some(alias) = &project.ssh_alias {
+            let host = self
+                .ssh_manager
+                .open_workspace_host(alias, project.path.clone())
+                .await?;
+            (
+                std::path::PathBuf::from(host.files.canonical_path()),
+                Some(Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>),
+                None,
+            )
+        } else {
+            let root = resolve_workspace_root(Path::new(&project.path))?;
+            let host = self.local_lsp_host(&root).await;
+            (root, host, Some(self.store.paths().home().join("lsp/host")))
+        };
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
             .begin(pl_protocol::StateOperation::Probe)
             .await?;
-        self.external_runtimes
-            .lsp
-            .probe_lsp_server(workspace_root)
+        lsp.configure_workspace_from_directory(&workspace_root, host, defaults)
             .await;
+        lsp.retry_workspace_configuration(&workspace_root).await;
         let health = health(&self.external_runtimes.lsp).await;
         self.external_runtimes.lsp_state.ready(health, true).await?;
         Ok(())
     }
 
-    pub async fn repair_lsp_server(&self, workspace_id: &str, server_id: &str) -> Result<()> {
-        let workspace_root = self.project_workspace_root(workspace_id).await?;
-        let _command = self.external_runtimes.lsp_state.command().await;
-        self.external_runtimes
-            .lsp_state
-            .begin(pl_protocol::StateOperation::Repair)
-            .await?;
-        let result = self
-            .external_runtimes
-            .lsp
-            .repair_lsp_server(workspace_root, server_id)
-            .await
-            .map_err(anyhow::Error::from);
-        match result {
-            Ok(()) => {
-                let health = health(&self.external_runtimes.lsp).await;
-                self.external_runtimes.lsp_state.ready(health, true).await?;
-                Ok(())
-            }
-            Err(error) => {
-                self.external_runtimes.lsp_state.failed(&error).await?;
-                Err(error)
-            }
-        }
-    }
-
-    pub async fn reset_lsp(&self, scope: pl_lsp::runtime::LspScope) -> Result<()> {
+    async fn reset_lsp(
+        &self,
+        lsp: pl_lsp::runtime::LspRuntimeRegistry,
+        scope: pl_lsp::runtime::LspScope,
+    ) -> Result<()> {
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
             .begin(pl_protocol::StateOperation::Reset)
             .await?;
-        let result = self
-            .external_runtimes
-            .lsp
-            .reset_lsp(scope)
-            .await
-            .map_err(anyhow::Error::from);
+        let result = lsp.reset_lsp(scope).await.map_err(anyhow::Error::from);
         match result {
             Ok(()) => {
                 let health = health(&self.external_runtimes.lsp).await;
@@ -301,6 +258,21 @@ impl StudioRuntime {
         &self,
         request: pl_protocol::studio::LspResetRequest,
     ) -> Result<()> {
+        let workspace_id = match &request {
+            pl_protocol::studio::LspResetRequest::Server { workspace_id, .. }
+            | pl_protocol::studio::LspResetRequest::Workspace { workspace_id } => {
+                Some(workspace_id)
+            }
+            pl_protocol::studio::LspResetRequest::All => None,
+        };
+        let lsp = if let Some(id) = workspace_id {
+            let project = self.project_record(id).await?;
+            self.external_runtimes.lsp.execution_scope(
+                &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
+            )
+        } else {
+            self.external_runtimes.lsp.clone()
+        };
         let scope = match request {
             pl_protocol::studio::LspResetRequest::Server {
                 workspace_id,
@@ -316,7 +288,7 @@ impl StudioRuntime {
             }
             pl_protocol::studio::LspResetRequest::All => pl_lsp::runtime::LspScope::All,
         };
-        self.reset_lsp(scope).await
+        self.reset_lsp(lsp, scope).await
     }
 
     async fn project_workspace_root(&self, workspace_id: &str) -> Result<std::path::PathBuf> {
@@ -325,6 +297,33 @@ impl StudioRuntime {
             Ok(std::path::PathBuf::from(project.path))
         } else {
             Ok(resolve_workspace_root(Path::new(&project.path))?)
+        }
+    }
+
+    async fn local_lsp_host(&self, root: &Path) -> Option<Arc<dyn pl_lsp::host::LspHostBackend>> {
+        #[cfg(target_os = "linux")]
+        {
+            match crate::worker_assets::local_worker(self.helper_source.clone()).await {
+                Ok(worker) => match pl_tool::lsp::LocalLspHostBackend::new(root.to_owned(), worker)
+                {
+                    Ok(host) => Some(Arc::new(host)),
+                    Err(error) => {
+                        tracing::warn!(%error, "LSP host preparation failed");
+                        None
+                    }
+                },
+                Err(error) => pl_tool::lsp::LocalLspHostBackend::unavailable(
+                    root.to_owned(),
+                    format!("LSP supervised worker preparation failed: {error}"),
+                )
+                .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
+                .ok(),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = root;
+            None
         }
     }
 

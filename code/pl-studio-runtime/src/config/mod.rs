@@ -84,7 +84,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 31;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 32;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -98,21 +98,6 @@ pub(crate) fn root_agent_route_id() -> AgentRoleId {
 
 pub use pl_protocol::WebSearchContextSize;
 pub use pl_protocol::search::{WebSearchLocation, WebSearchMode};
-
-/// Studio 自有的 LSP 自定义 server 配置段（`[lsp.servers.<id>]`）。
-///
-/// 声明在 catalog 之外启动的命令式语言服务器；与内置 catalog 合并时冲突 fail-loud。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StudioLspConfig {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub servers: BTreeMap<String, pl_lsp::catalog::LspUserServerConfig>,
-}
-
-impl StudioLspConfig {
-    fn is_default(&self) -> bool {
-        self.servers.is_empty()
-    }
-}
 
 /// Studio UI 本地偏好，由 [`ConfigRuntime`] 与其余 desired settings 一起持有。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,8 +179,6 @@ pub struct StudioConfig {
     pub instructions: InstructionsConfig,
     #[serde(default, skip_serializing_if = "SkillsConfig::is_default")]
     pub skills: SkillsConfig,
-    #[serde(default, skip_serializing_if = "StudioLspConfig::is_default")]
-    pub lsp: StudioLspConfig,
     #[serde(default, skip_serializing_if = "StudioUiConfig::is_default")]
     pub ui: StudioUiConfig,
     /// ACP 接入的 desired 配置；与 `models.accounts` 是两套语义，互不进入对方的候选。
@@ -231,7 +214,6 @@ impl StudioConfig {
             runtime: RuntimeConfig::default(),
             instructions: InstructionsConfig::default(),
             skills: SkillsConfig::default(),
-            lsp: StudioLspConfig::default(),
             ui: StudioUiConfig::default(),
             acp: acp::AcpConfig::default(),
         })
@@ -284,7 +266,6 @@ impl StudioConfig {
             self.models.route_availability(route)?;
         }
         pl_tool::skill::validate_skills_config(&self.skills)?;
-        validate_lsp_servers(&self.lsp.servers)?;
         acp::validate_acp_config(&self.acp)?;
         Ok(())
     }
@@ -305,15 +286,4 @@ impl StudioConfig {
         self.models
             .resolve_route(root_agent_route_id(), self.mode_model_route(mode)?)
     }
-}
-
-/// 校验自定义 LSP server 与内置 catalog 的合并结果；冲突 fail-loud。
-fn validate_lsp_servers(
-    servers: &BTreeMap<String, pl_lsp::catalog::LspUserServerConfig>,
-) -> Result<()> {
-    pl_lsp::catalog::LspServerCatalog::with_user_servers(servers)
-        .map(|_| ())
-        .map_err(|error| {
-            PureError::ConfigError(format!("invalid [lsp.servers] configuration: {error}"))
-        })
 }

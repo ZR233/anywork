@@ -67,14 +67,6 @@ Future<BridgeLspStateSnapshot> probeLspServer({required String workspaceId}) =>
       workspaceId: workspaceId,
     );
 
-Future<BridgeLspStateSnapshot> repairLspServer({
-  required String workspaceId,
-  required String serverId,
-}) => RustLib.instance.api.crateApiStudioHandlersExternalStateRepairLspServer(
-  workspaceId: workspaceId,
-  serverId: serverId,
-);
-
 Future<BridgeLspStateSnapshot> resetLsp({required LspScopeInput input}) =>
     RustLib.instance.api.crateApiStudioHandlersExternalStateResetLsp(
       input: input,

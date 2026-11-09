@@ -575,7 +575,7 @@ impl StudioThreadTools {
     ///
     /// # Errors
     /// Returns declaration encoding or registration errors.
-    pub fn with_lsp(
+    pub async fn with_lsp(
         mut self,
         registry: pl_lsp::runtime::LspRuntimeRegistry,
         paths: pl_tool::lsp::LspPathBinding,
@@ -583,10 +583,17 @@ impl StudioThreadTools {
         if !self.capabilities.lsp {
             return Ok(self);
         }
-        for kind in [
-            pl_tool::lsp::LspToolKind::Capabilities,
-            pl_tool::lsp::LspToolKind::Query,
-        ] {
+        let mut kinds = vec![pl_tool::lsp::LspToolKind::Status];
+        let capabilities = registry
+            .capabilities_for_workspace(paths.workspace_root())
+            .await;
+        if capabilities.servers.iter().any(|server| server.ready) {
+            kinds.extend([
+                pl_tool::lsp::LspToolKind::Capabilities,
+                pl_tool::lsp::LspToolKind::Query,
+            ]);
+        }
+        for kind in kinds {
             let definition = kind.declaration();
             let declaration = prepare_registration(
                 definition.name(),

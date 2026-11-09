@@ -116,36 +116,6 @@ impl RemoteCommandBackend {
         .await
     }
 
-    /// 常驻协议进程仅传输 stdin/stdout，不创建命令捕获或消费一次性命令额度。
-    pub(super) async fn spawn_stream(
-        &self,
-        process_id: String,
-        command: String,
-        cwd: String,
-    ) -> Result<ManagedCommand> {
-        let (program, arguments) = self
-            .client
-            .shell_argv(&command)
-            .map_err(remote_exec_error)?;
-        let lease_id = RemoteProcessLeaseId::new(format!("{process_id}:lease"));
-        self.spawn_remote(
-            RemoteSpawnRequest {
-                process_id,
-                workspace_id: self.workspace_id.clone(),
-                program,
-                arguments,
-                remove_environment: vec!["BASH_ENV".into(), "ENV".into()],
-                cwd,
-                environment: BTreeMap::new(),
-                capture: RemoteCapture::None,
-                remaining_timeout_ms: None,
-                process_lease: Some(lease_id),
-            },
-            None,
-        )
-        .await
-    }
-
     async fn spawn_remote(
         &self,
         request: RemoteSpawnRequest,

@@ -1,116 +1,50 @@
-//! LSP reset：目标 client 重启或回到未启动状态。
-
-use crate::client::{DiagnosticSink, LspClient};
-
-use super::{LspAvailabilityKind, LspResult, LspRuntimeError, LspRuntimeRegistry, LspScope};
-
+//! Explicit retry invalidates only selected members and schedules background work.
+use super::{LspResult, LspRuntimeError, LspRuntimeRegistry, LspScope};
 impl LspRuntimeRegistry {
-    /// 重置目标 client；registry 保持可用，shutdown 才进入终止态。
     pub async fn reset_lsp(&self, scope: LspScope) -> LspResult<()> {
-        let _lifecycle_guard = self.lifecycle.write().await;
-        let targets = {
+        if self.is_global && scope == LspScope::All {
+            for partition in self.partition_views() {
+                partition.reset_partition(&scope).await?;
+            }
+            return Ok(());
+        }
+        self.reset_partition(&scope).await
+    }
+
+    async fn reset_partition(&self, scope: &LspScope) -> LspResult<()> {
+        let roots = {
             let mut state = self.state.lock().await;
             if state.closed {
                 return Err(LspRuntimeError::Unavailable(
-                    "LSP runtime is stopped".to_string(),
+                    "LSP runtime is stopped".into(),
                 ));
             }
-            let mut targets = Vec::new();
-            for (workspace_root, workspace) in &mut state.workspaces {
-                if !scope_matches_workspace(&scope, workspace_root) {
+            let mut roots = Vec::new();
+            for (root, workspace) in &mut state.workspaces {
+                let selected = match scope {
+                    LspScope::All => true,
+                    LspScope::Workspace { workspace_root }
+                    | LspScope::Server { workspace_root, .. } => workspace_root == root,
+                };
+                if !selected {
                     continue;
                 }
-                for (server_id, server) in &mut workspace.servers {
-                    if let LspScope::Server {
-                        server_id: target, ..
-                    } = &scope
-                        && target != server_id
-                    {
+                for (id, server) in &mut workspace.servers {
+                    if matches!(scope, LspScope::Server { server_id, .. } if server_id != id) {
                         continue;
                     }
-                    targets.push((
-                        workspace_root.clone(),
-                        server_id.clone(),
-                        server.resolved.clone(),
-                        server.driver.clone(),
-                        workspace.diagnostics.clone(),
-                        workspace.host.clone(),
-                        server.client.take(),
-                    ));
+                    server.cancel.cancel();
+                    if let Some(client) = &server.client {
+                        client.cancel();
+                    }
                 }
-                workspace.diagnostics.lock().await.clear();
+                roots.push(root.clone());
             }
-            targets
+            roots
         };
-        // Stop every previous client concurrently: they are independent owners and one slow
-        // server must not consume the budget of the others. Each replacement still starts only
-        // after every previous owner is stopped.
-        let stop_outcomes = futures::future::join_all(
-            targets
-                .iter()
-                .filter_map(|(_, _, _, _, _, _, previous)| previous.clone())
-                .map(|client| async move { client.shutdown().await }),
-        )
-        .await;
-        for outcome in stop_outcomes {
-            if let Err(error) = outcome {
-                tracing::warn!(
-                    %error,
-                    "LSP client did not confirm closure while resetting"
-                );
-            }
+        for root in roots {
+            self.refresh_workspace_configuration(root).await;
         }
-        for (workspace_root, server_id, resolved, driver, diagnostics, host, previous) in targets {
-            if previous.is_none() {
-                continue;
-            }
-            let sink = DiagnosticSink::new(
-                resolved.id.clone(),
-                resolved.workspace_root.clone(),
-                diagnostics,
-                self.updates.clone(),
-                host.as_ref()
-                    .map_or(crate::host::LspPathStyle::Native, |host| host.path_style()),
-            );
-            let client = LspClient::new(resolved, driver, sink, host);
-            let client = std::sync::Arc::new(client);
-            let start_result = client.start().await;
-            let mut state = self.state.lock().await;
-            let Some(server) = state
-                .workspaces
-                .get_mut(&workspace_root)
-                .and_then(|workspace| workspace.servers.get_mut(&server_id))
-            else {
-                if let Err(error) = client.shutdown().await {
-                    tracing::warn!(
-                        %error,
-                        "LSP client did not confirm closure while resetting"
-                    );
-                }
-                continue;
-            };
-            match start_result {
-                Ok(()) => server.client = Some(client),
-                Err(error) => {
-                    server.availability_kind = LspAvailabilityKind::Unavailable;
-                    server.availability_message = Some(error.to_string());
-                }
-            }
-        }
-        self.emit_update();
         Ok(())
-    }
-}
-
-fn scope_matches_workspace(scope: &LspScope, workspace_root: &std::path::Path) -> bool {
-    match scope {
-        LspScope::All => true,
-        LspScope::Workspace {
-            workspace_root: target,
-        }
-        | LspScope::Server {
-            workspace_root: target,
-            ..
-        } => super::workspace_key(target) == workspace_root,
     }
 }

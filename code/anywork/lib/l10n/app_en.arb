@@ -1433,16 +1433,36 @@
   "settingsMcpEmptyTitle": "No MCP servers",
   "settingsMcpEmptyMessage": "Configured MCP servers will appear here.",
   "settingsLspTitle": "Language servers",
-  "settingsLspSubtitle": "Last-known project language server status and explicit lifecycle commands.",
+  "settingsLspSubtitle": "View language server configuration sources, lifecycle phases, and runtime status.",
   "settingsLspRefresh": "Refresh",
-  "settingsLspProbe": "Probe",
-  "settingsLspRepair": "Repair",
+  "settingsLspReload": "Reload and initialize",
   "settingsLspReset": "Reset",
   "settingsLspResetWorkspace": "Reset workspace",
+  "settingsLspConfigurationMissing": "Configuration file not found",
+  "settingsLspConfigurationHint": "Configure this server in .anywork/lsp/{id}.toml.",
+  "@settingsLspConfigurationHint": {
+    "placeholders": {
+      "id": {}
+    }
+  },
+  "settingsLspPhase": "Phase: {phase}",
+  "@settingsLspPhase": {
+    "placeholders": {
+      "phase": {}
+    }
+  },
+  "settingsLspPhaseLoading": "Loading configuration",
+  "settingsLspPhaseProbing": "Probing",
+  "settingsLspPhaseStarting": "Starting",
+  "settingsLspPhaseInitializing": "Initializing",
+  "settingsLspPhaseReady": "Ready",
+  "settingsLspPhaseFailed": "Failed",
+  "settingsLspPhaseStopped": "Stopped",
+  "settingsLspPhaseDisabled": "Disabled",
   "settingsLspActivityIndexing": "Indexing",
   "settingsLspActivityBusy": "Busy",
   "settingsLspEmptyTitle": "No language servers",
-  "settingsLspEmptyMessage": "Activate a supported project to create language server membership.",
+  "settingsLspEmptyMessage": "Add an LSP configuration file to load and initialize a language server.",
   "settingsSecurityTitle": "Security",
   "settingsSecuritySubtitle": "Choose the default approval posture for this workspace.",
   "settingsSecurityModeSubtitle": "Tool execution permission is fixed to full access; workspace and worktree boundaries are not relaxed.",

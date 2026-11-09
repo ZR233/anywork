@@ -379,12 +379,6 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     await _applyLsp(() => _api.probeLspServer(workspaceId));
   });
 
-  Future<void> repairLspServer(String serverId) => _lane.run(() async {
-    final workspaceId = _client.selection.state.selectedProjectId;
-    if (workspaceId == null) return;
-    await _applyLsp(() => _api.repairLspServer(workspaceId, serverId));
-  });
-
   Future<void> resetLspServer(String serverId) => _lane.run(() async {
     final workspaceId = _client.selection.state.selectedProjectId;
     if (workspaceId == null) return;

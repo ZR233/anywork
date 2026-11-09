@@ -83,6 +83,37 @@ pub trait CapabilityReader: Send + Sync + 'static {
     fn capabilities(&self) -> impl Future<Output = Result<Capabilities, Self::Error>> + Send;
 }
 
+/// Reads lifecycle facts without discovering configuration or starting a process.
+pub trait StatusReader: Send + Sync + 'static {
+    type Error: Error + Send + Sync + 'static;
+    fn status(&self) -> impl Future<Output = Result<WorkspaceStatus, Self::Error>> + Send;
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceStatus {
+    pub workspace_root: String,
+    pub configuration_directory: String,
+    pub servers: Vec<ServerStatus>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerStatus {
+    pub id: String,
+    pub display_name: String,
+    pub language_ids: Vec<String>,
+    pub configuration_path: Option<String>,
+    pub phase: String,
+    pub availability: String,
+    pub message: Option<String>,
+    pub activity: String,
+    pub activity_title: Option<String>,
+    pub activity_message: Option<String>,
+    pub activity_percentage: Option<u32>,
+    pub last_error: Option<String>,
+}
+
 pub trait QueryService: Send + Sync + 'static {
     type Error: Error + Send + Sync + 'static;
 

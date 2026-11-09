@@ -3233,19 +3233,6 @@ class FrbStudioTransport
   }
 
   @override
-  Future<LspStateSnapshot> repairLspServer(
-    String workspaceId,
-    String serverId,
-  ) async {
-    await _ensureReady();
-    return _lspStateFromFrb(
-      await _bridgeCall(
-        () => frb.repairLspServer(workspaceId: workspaceId, serverId: serverId),
-      ),
-    );
-  }
-
-  @override
   Future<LspStateSnapshot> resetLspServer(
     String workspaceId,
     String serverId,

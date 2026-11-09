@@ -2897,22 +2897,56 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLspSubtitle =>
-      'Last-known project language server status and explicit lifecycle commands.';
+      'View language server configuration sources, lifecycle phases, and runtime status.';
 
   @override
   String get settingsLspRefresh => 'Refresh';
 
   @override
-  String get settingsLspProbe => 'Probe';
-
-  @override
-  String get settingsLspRepair => 'Repair';
+  String get settingsLspReload => 'Reload and initialize';
 
   @override
   String get settingsLspReset => 'Reset';
 
   @override
   String get settingsLspResetWorkspace => 'Reset workspace';
+
+  @override
+  String get settingsLspConfigurationMissing => 'Configuration file not found';
+
+  @override
+  String settingsLspConfigurationHint(Object id) {
+    return 'Configure this server in .anywork/lsp/$id.toml.';
+  }
+
+  @override
+  String settingsLspPhase(Object phase) {
+    return 'Phase: $phase';
+  }
+
+  @override
+  String get settingsLspPhaseLoading => 'Loading configuration';
+
+  @override
+  String get settingsLspPhaseProbing => 'Probing';
+
+  @override
+  String get settingsLspPhaseStarting => 'Starting';
+
+  @override
+  String get settingsLspPhaseInitializing => 'Initializing';
+
+  @override
+  String get settingsLspPhaseReady => 'Ready';
+
+  @override
+  String get settingsLspPhaseFailed => 'Failed';
+
+  @override
+  String get settingsLspPhaseStopped => 'Stopped';
+
+  @override
+  String get settingsLspPhaseDisabled => 'Disabled';
 
   @override
   String get settingsLspActivityIndexing => 'Indexing';
@@ -2925,7 +2959,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLspEmptyMessage =>
-      'Activate a supported project to create language server membership.';
+      'Add an LSP configuration file to load and initialize a language server.';
 
   @override
   String get settingsSecurityTitle => 'Security';

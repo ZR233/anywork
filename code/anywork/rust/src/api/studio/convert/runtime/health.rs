@@ -80,6 +80,8 @@ impl From<StudioLspHealth> for BridgeLspHealthDto {
                 .into_iter()
                 .map(|server| BridgeLspServerDto {
                     id: server.id,
+                    configuration_path: server.configuration_path,
+                    phase: server.phase,
                     display_name: server.display_name,
                     extensions: server.extensions,
                     language_ids: server.language_ids,

@@ -1128,6 +1128,8 @@ LspStateSnapshot _lspStateFromFrb(frb.BridgeLspStateSnapshot snapshot) {
         LspServerStateView(
           id: server.id,
           displayName: server.displayName,
+          configurationPath: server.configurationPath,
+          phase: server.phase,
           state: switch (server.state) {
             frb.BridgeLspServerState_Checking(:final message) =>
               LspCheckingState(message: message),

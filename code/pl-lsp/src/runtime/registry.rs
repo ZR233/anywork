@@ -1,214 +1,328 @@
-//! LSP runtime registry：进程、连接、handler、diagnostics、activity 和 snapshot 的唯一 owner。
-//!
-//! 其他 runtime 模块围绕这里的 owner 状态实现单一职责的编排步骤。
-
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tokio::sync::{Mutex, RwLock, broadcast};
-
-use crate::catalog::LspServerCatalog;
+//! Workspace-scoped runtime ownership and managed background work.
+use super::{
+    LspActivityKind, LspAvailabilityKind, LspLifecyclePhase, LspResult, LspRuntimeError,
+    LspServerSnapshot, ResolvedLspServer,
+};
+use crate::catalog::LspUserServerConfig;
 use crate::client::LspClient;
-use crate::driver::LspServerDriver;
 use crate::host::LspHostBackend;
 use crate::query::{LspDiagnostic, LspQuery, LspQueryResult};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio_util::sync::CancellationToken;
 
-use super::server::ResolvedLspServer;
-use super::{LspActivityKind, LspAvailabilityKind, LspResult, LspRuntimeError, LspServerSnapshot};
+/// A join handle is retained until the task has actually finished, even if a
+/// shutdown caller is cancelled while awaiting it.
+pub(super) type ManagedTask = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 
-/// 进程内 LSP runtime 的唯一 owner；clone 共享同一份状态。
-/// 工作区路径必须由宿主预先解析；registry 不使用本地文件系统重解释远程身份。
+pub(super) async fn join_task(task: &ManagedTask) -> Result<(), tokio::task::JoinError> {
+    let mut guard = task.lock().await;
+    let result = match guard.as_mut() {
+        Some(task) => task.await,
+        None => return Ok(()),
+    };
+    guard.take();
+    result
+}
+
 #[derive(Clone)]
 pub struct LspRuntimeRegistry {
     pub(super) state: Arc<Mutex<LspRuntimeState>>,
     pub(super) lifecycle: Arc<RwLock<()>>,
     pub(super) updates: broadcast::Sender<()>,
+    scopes: std::sync::Weak<std::sync::Mutex<ExecutionScopes>>,
+    _scope_owner: Option<Arc<std::sync::Mutex<ExecutionScopes>>>,
+    pub(super) is_global: bool,
 }
 
+#[derive(Clone, Default)]
+struct ExecutionPartition {
+    state: Arc<Mutex<LspRuntimeState>>,
+    lifecycle: Arc<RwLock<()>>,
+}
+
+#[derive(Default)]
+struct ExecutionScopes {
+    partitions: BTreeMap<String, ExecutionPartition>,
+    closed: bool,
+}
 impl std::fmt::Debug for LspRuntimeRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LspRuntimeRegistry").finish_non_exhaustive()
     }
 }
-
 impl Default for LspRuntimeRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl LspRuntimeRegistry {
-    /// 使用内置 catalog 构造 registry。
     pub fn new() -> Self {
-        Self::with_catalog(LspServerCatalog::builtin())
-    }
-
-    /// 使用宿主提供的 catalog 构造 registry（内置 catalog 可被替换或裁剪）。
-    pub fn with_catalog(catalog: LspServerCatalog) -> Self {
         let (updates, _) = broadcast::channel(64);
+        let scopes = Arc::new(std::sync::Mutex::new(ExecutionScopes::default()));
         Self {
-            state: Arc::new(Mutex::new(LspRuntimeState {
-                workspaces: BTreeMap::new(),
-                catalog,
-                closed: false,
-            })),
+            state: Arc::new(Mutex::new(LspRuntimeState::default())),
             lifecycle: Arc::new(RwLock::new(())),
             updates,
+            scopes: Arc::downgrade(&scopes),
+            _scope_owner: Some(scopes),
+            is_global: true,
+        }
+    }
+    /// Stable endpoint view. Partitions retain state, never registry views, so
+    /// the global owner and its endpoint views do not form an ownership cycle.
+    pub fn execution_scope(&self, endpoint: &str) -> Self {
+        let Some(owner) = self.scopes.upgrade() else {
+            return Self {
+                state: Arc::new(Mutex::new(LspRuntimeState {
+                    closed: true,
+                    ..Default::default()
+                })),
+                lifecycle: Default::default(),
+                updates: self.updates.clone(),
+                scopes: self.scopes.clone(),
+                _scope_owner: None,
+                is_global: false,
+            };
+        };
+        let mut scopes = owner.lock().expect("LSP execution scopes are not poisoned");
+        let closed = scopes.closed;
+        let partition = scopes
+            .partitions
+            .entry(endpoint.to_owned())
+            .or_insert_with(|| ExecutionPartition {
+                state: Arc::new(Mutex::new(LspRuntimeState {
+                    closed,
+                    ..Default::default()
+                })),
+                lifecycle: Default::default(),
+            })
+            .clone();
+        Self {
+            state: partition.state,
+            lifecycle: partition.lifecycle,
+            updates: self.updates.clone(),
+            scopes: self.scopes.clone(),
+            _scope_owner: None,
+            is_global: false,
         }
     }
 
+    pub(super) fn partition_views(&self) -> Vec<Self> {
+        let mut current = self.clone();
+        current.is_global = false;
+        current._scope_owner = None;
+        let mut views = vec![current];
+        if self.is_global {
+            let owner = self
+                .scopes
+                .upgrade()
+                .expect("global LSP registry retains scope ownership");
+            let scopes = owner.lock().expect("LSP execution scopes are not poisoned");
+            views.extend(scopes.partitions.values().map(|partition| Self {
+                state: partition.state.clone(),
+                lifecycle: partition.lifecycle.clone(),
+                updates: self.updates.clone(),
+                scopes: self.scopes.clone(),
+                _scope_owner: None,
+                is_global: false,
+            }));
+        }
+        views
+    }
     pub fn subscribe(&self) -> broadcast::Receiver<()> {
         self.updates.subscribe()
     }
-
     pub async fn query(&self, query: LspQuery) -> LspResult<LspQueryResult> {
-        let workspace_root = self.workspace_root_for_query(&query).await?;
-        self.query_in_workspace(workspace_root, query).await
+        let root = self.workspace_root_for_query(&query).await?;
+        self.query_in_workspace(root, query).await
+    }
+    pub async fn shutdown(&self) -> LspResult<()> {
+        if !self.is_global {
+            return self.shutdown_partition().await;
+        }
+        self.scopes
+            .upgrade()
+            .expect("global LSP registry retains scope ownership")
+            .lock()
+            .expect("LSP execution scopes are not poisoned")
+            .closed = true;
+        let views = self.partition_views();
+        let outcomes = futures::future::join_all(views.iter().map(Self::shutdown_partition)).await;
+        let failures: Vec<_> = outcomes
+            .into_iter()
+            .filter_map(Result::err)
+            .map(|error| error.to_string())
+            .collect();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(LspRuntimeError::Unavailable(failures.join("; ")))
+        }
     }
 
-    /// 关闭全部 workspace 的 language-server client 并确认整树回收。
-    ///
-    /// 独立 service 的关闭并发发出，任一 hang 不会阻止其它 service 收到 cancel；只有
-    /// 确认回收的 client owner 才从 registry 移除。未确认的 owner 保留在 registry 中，
-    /// 其进程由 `LspHostProcess` 自有 future / supervisor 租约在任务结束时兜底回收。
-    /// 返回 typed `Result`，让 runtime 报告真实失败而不是当作 clean。
-    pub async fn shutdown(&self) -> LspResult<()> {
-        {
+    async fn shutdown_partition(&self) -> LspResult<()> {
+        let _guard = self.lifecycle.write().await;
+        let tasks = {
             let mut state = self.state.lock().await;
             state.closed = true;
-        }
-        let _lifecycle_guard = self.lifecycle.write().await;
-        // Snapshot clients before closing; workspaces stay intact so unconfirmed owners
-        // are not dropped before the close attempt.
-        let clients: Vec<Arc<LspClient>> = {
-            let state = self.state.lock().await;
-            let mut seen = BTreeSet::new();
-            let mut clients = Vec::new();
-            for workspace in state.workspaces.values() {
-                for server in workspace.servers.values() {
-                    if let Some(client) = &server.client
-                        && seen.insert(Arc::as_ptr(client) as usize)
-                    {
-                        clients.push(client.clone());
-                    }
-                }
-            }
-            clients
-        };
-        let outcomes = futures::future::join_all(
-            clients
-                .iter()
-                .cloned()
-                .map(|client| async move { client.shutdown().await }),
-        )
-        .await;
-        let mut reclaimed = BTreeSet::new();
-        let mut failures = Vec::new();
-        for (client, outcome) in clients.iter().zip(outcomes) {
-            match outcome {
-                Ok(()) => {
-                    reclaimed.insert(Arc::as_ptr(client) as usize);
-                }
-                Err(error) => failures.push(error.to_string()),
-            }
-        }
-        {
-            let mut state = self.state.lock().await;
             for workspace in state.workspaces.values_mut() {
+                workspace.scan_cancel.cancel();
                 for server in workspace.servers.values_mut() {
-                    let reclaimable = server
-                        .client
-                        .as_ref()
-                        .is_some_and(|client| reclaimed.contains(&(Arc::as_ptr(client) as usize)));
-                    if reclaimable {
-                        server.client = None;
+                    server.cancel.cancel();
+                    if let Some(client) = &server.client {
+                        client.cancel();
                     }
                 }
-                if workspace
+            }
+            state.tasks.clone()
+        };
+        let joined = futures::future::join_all(tasks.iter().map(join_task)).await;
+        let mut failures: Vec<String> = joined
+            .into_iter()
+            .filter_map(Result::err)
+            .map(|error| error.to_string())
+            .collect();
+        let clients = {
+            let state = self.state.lock().await;
+            let mut clients = state.retired_clients.clone();
+            clients.extend(state.workspaces.values().flat_map(|workspace| {
+                workspace
                     .servers
                     .values()
-                    .all(|server| server.client.is_none())
-                {
+                    .filter_map(|server| server.client.clone())
+            }));
+            clients.extend(state.workspaces.values().flat_map(|workspace| {
+                workspace
+                    .retiring
+                    .values()
+                    .map(|(_, client)| client.clone())
+            }));
+            clients.sort_by_key(|client| Arc::as_ptr(client) as usize);
+            clients.dedup_by_key(|client| Arc::as_ptr(client) as usize);
+            clients
+        };
+        let outcomes =
+            futures::future::join_all(clients.iter().map(|client| client.shutdown())).await;
+        failures.extend(
+            outcomes
+                .into_iter()
+                .filter_map(Result::err)
+                .map(|error| error.to_string()),
+        );
+        {
+            let mut state = self.state.lock().await;
+            // Keep failed reclamation owners reachable for a later close attempt.
+            if failures.is_empty() {
+                state.retired_clients.clear();
+                for workspace in state.workspaces.values_mut() {
                     workspace.host = None;
+                    workspace.retiring.clear();
+                    for server in workspace.servers.values_mut() {
+                        server.client = None;
+                        server.set_phase(LspLifecyclePhase::Stopped, None);
+                    }
                 }
             }
+            state.tasks.clear();
         }
         self.emit_update();
         if failures.is_empty() {
             Ok(())
         } else {
             Err(LspRuntimeError::Unavailable(format!(
-                "{} LSP client(s) did not confirm process-tree reclamation: {}",
-                failures.len(),
+                "LSP shutdown failed: {}",
                 failures.join("; ")
             )))
         }
     }
-
     pub(crate) fn emit_update(&self) {
         let _ = self.updates.send(());
     }
 }
-
-pub(super) fn workspace_key(workspace_root: &std::path::Path) -> PathBuf {
-    workspace_root.to_path_buf()
+pub(super) fn workspace_key(root: &std::path::Path) -> PathBuf {
+    root.to_path_buf()
 }
-
+#[derive(Default)]
 pub(super) struct LspRuntimeState {
-    pub(super) workspaces: BTreeMap<PathBuf, LspWorkspaceState>,
-    pub(super) catalog: LspServerCatalog,
-    pub(super) closed: bool,
+    pub workspaces: BTreeMap<PathBuf, LspWorkspaceState>,
+    pub closed: bool,
+    pub tasks: Vec<ManagedTask>,
+    pub retired_clients: Vec<Arc<LspClient>>,
 }
-
 #[derive(Default)]
 pub(super) struct LspWorkspaceState {
-    pub(super) servers: BTreeMap<String, LspRuntimeServerState>,
-    pub(super) diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnostic>>>>,
-    pub(super) host: Option<Arc<dyn LspHostBackend>>,
+    pub configured: bool,
+    pub has_scanned: bool,
+    pub servers: BTreeMap<String, LspRuntimeServerState>,
+    pub host: Option<Arc<dyn LspHostBackend>>,
+    pub defaults: BTreeMap<String, LspUserServerConfig>,
+    pub defaults_directory: Option<PathBuf>,
+    pub binding_identity: Option<String>,
+    pub scan_generation: u64,
+    pub member_generation: u64,
+    pub scan_cancel: CancellationToken,
+    pub errors: Vec<LspServerSnapshot>,
+    pub retiring: BTreeMap<String, (ManagedTask, Arc<LspClient>)>,
 }
-
-/// 单个 workspace member 的运行态：解析后的定义、driver 与探测/连接状态。
 pub(super) struct LspRuntimeServerState {
-    pub(super) resolved: ResolvedLspServer,
-    pub(super) driver: Arc<dyn LspServerDriver>,
-    pub(super) availability_kind: LspAvailabilityKind,
-    pub(super) availability_message: Option<String>,
-    pub(super) last_checked_at: Option<i64>,
-    pub(super) client: Option<Arc<LspClient>>,
+    pub diagnostics: Arc<Mutex<HashMap<String, Vec<LspDiagnostic>>>>,
+    pub resolved: ResolvedLspServer,
+    pub fingerprint: String,
+    pub configuration_path: Option<String>,
+    pub phase: LspLifecyclePhase,
+    pub availability_kind: LspAvailabilityKind,
+    pub availability_message: Option<String>,
+    pub last_checked_at: Option<i64>,
+    pub client: Option<Arc<LspClient>>,
+    pub generation: u64,
+    pub cancel: CancellationToken,
+    pub task: Option<ManagedTask>,
 }
-
 impl LspRuntimeServerState {
-    pub(super) fn new(
-        resolved: ResolvedLspServer,
-        driver: Arc<dyn LspServerDriver>,
-        availability_kind: LspAvailabilityKind,
-        availability_message: Option<String>,
-        last_checked_at: Option<i64>,
-    ) -> Self {
-        Self {
-            resolved,
-            driver,
-            availability_kind,
-            availability_message,
-            last_checked_at,
-            client: None,
-        }
+    pub fn healthy(&self) -> bool {
+        self.phase == LspLifecyclePhase::Ready
+            && self.client.as_ref().is_some_and(|client| client.is_ready())
     }
-
-    /// membership 合并时是否保留既有探测结果与 client。
-    pub(super) fn preserves_across_reconcile(&self) -> bool {
-        self.availability_kind != LspAvailabilityKind::Disabled
+    pub fn set_phase(&mut self, phase: LspLifecyclePhase, message: Option<String>) {
+        self.phase = phase;
+        self.availability_kind = match phase {
+            LspLifecyclePhase::Ready => LspAvailabilityKind::Available,
+            LspLifecyclePhase::Disabled => LspAvailabilityKind::Disabled,
+            LspLifecyclePhase::Failed | LspLifecyclePhase::Stopped => {
+                LspAvailabilityKind::Unavailable
+            }
+            _ => LspAvailabilityKind::Checking,
+        };
+        self.availability_message = message;
+        self.last_checked_at = Some(crate::clock::unix_seconds());
     }
-
-    pub(super) fn snapshot(&self, diagnostic_count: usize) -> LspServerSnapshot {
+    pub fn snapshot(&self, diagnostic_count: usize) -> LspServerSnapshot {
+        // Liveness is an atomic read, not a probe or restart.
+        let exited = self.phase == LspLifecyclePhase::Ready && !self.healthy();
         LspServerSnapshot {
             id: self.resolved.id.clone(),
+            configuration_path: self.configuration_path.clone(),
+            phase: if exited {
+                LspLifecyclePhase::Failed
+            } else {
+                self.phase
+            },
             display_name: self.resolved.display_name.clone(),
             extensions: self.resolved.extensions.clone(),
             language_ids: self.resolved.language_ids.clone(),
-            availability_kind: self.availability_kind.clone(),
-            availability_message: self.availability_message.clone(),
+            availability_kind: if exited {
+                LspAvailabilityKind::Unavailable
+            } else {
+                self.availability_kind.clone()
+            },
+            availability_message: if exited {
+                Some("LSP connection closed".into())
+            } else {
+                self.availability_message.clone()
+            },
             last_checked_at: self.last_checked_at,
             diagnostic_count,
             activity_kind: LspActivityKind::Idle,

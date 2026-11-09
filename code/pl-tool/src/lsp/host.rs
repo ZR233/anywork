@@ -1,7 +1,7 @@
 //! Local workspace LSP host: filesystem primitives plus supervised language servers.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -10,19 +10,21 @@ use pl_lsp::host::{
     LspHostSpawnRequest,
 };
 
-use crate::command::LocalCommandBackend;
+use crate::command::LocalWorkerExecutable;
 use crate::workspace::ToolPathPolicy;
-use crate::workspace::path_safety::real_directory_entries_async;
+use pl_remote_helper::client::{
+    ManagedWorker, ProcessCommand, ProcessTermination, WorkerClientError,
+};
 
 /// 本地 workspace 的 LSP 宿主。
 ///
-/// 文件原语在 workspace 边界内直接读取本地文件系统；language server 交给本地命令后端
+/// 文件原语在 workspace 边界内直接读取本地文件系统；language server 交给既有 helper
 /// 的 per-child 监督 owner 启动，因此进程树随宿主生存，并在终止时按
 /// `SIGTERM → 2s → SIGKILL` 整树回收，而不是只结束 leader。
 #[derive(Debug, Clone)]
 pub struct LocalLspHostBackend {
     policy: ToolPathPolicy,
-    commands: LocalCommandBackend,
+    worker_executable: Result<Arc<dyn LocalWorkerExecutable>, String>,
 }
 
 impl LocalLspHostBackend {
@@ -43,9 +45,24 @@ impl LocalLspHostBackend {
         let workspace_root = workspace_root.into();
         let policy =
             ToolPathPolicy::new(workspace_root.clone(), false, "lsp_host").map_err(host_error)?;
-        let commands =
-            LocalCommandBackend::new(workspace_root).with_worker_executable(worker_executable);
-        Ok(Self { policy, commands })
+        Ok(Self {
+            policy,
+            worker_executable: Ok(Arc::new(worker_executable)),
+        })
+    }
+
+    /// Preserve workspace configuration/status access when the supervised worker
+    /// cannot be prepared. No process may start through this host.
+    pub fn unavailable(
+        workspace_root: impl Into<PathBuf>,
+        reason: impl Into<String>,
+    ) -> Result<Self, LspHostError> {
+        let policy =
+            ToolPathPolicy::new(workspace_root.into(), false, "lsp_host").map_err(host_error)?;
+        Ok(Self {
+            policy,
+            worker_executable: Err(reason.into()),
+        })
     }
 }
 
@@ -54,7 +71,14 @@ impl LspHostBackend for LocalLspHostBackend {
         pl_lsp::host::LspPathStyle::Native
     }
     fn identity(&self) -> String {
-        format!("local:{}", self.policy.root().display())
+        let worker = match &self.worker_executable {
+            // A Studio build fixes the worker image. Temporary fd paths are
+            // resource leases, not execution-host identities; reconstructing
+            // tools must not restart healthy language servers.
+            Ok(_) => "available".to_string(),
+            Err(reason) => format!("unavailable:{reason}"),
+        };
+        format!("local:{}:{worker}", self.policy.root().display())
     }
 
     fn read_file<'a>(
@@ -121,6 +145,7 @@ impl LspHostBackend for LocalLspHostBackend {
     fn list_directory<'a>(
         &'a self,
         path: &'a Path,
+        max_entries: usize,
     ) -> BoxFuture<'a, Result<Vec<String>, LspHostError>> {
         async move {
             // Contract matches the remote host and the trait doc: first-level *names*
@@ -130,18 +155,19 @@ impl LspHostBackend for LocalLspHostBackend {
                 .policy
                 .resolve_existing_directory(path, &display)
                 .map_err(host_error)?;
-            let entries = real_directory_entries_async(&resolved)
-                .await
-                .map_err(host_error)?;
-            Ok(entries
-                .into_iter()
-                .filter_map(|entry| {
-                    entry
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .map(str::to_string)
-                })
-                .collect())
+            let mut entries = tokio::fs::read_dir(resolved).await.map_err(host_error)?;
+            let mut names = Vec::new();
+            while let Some(entry) = entries.next_entry().await.map_err(host_error)? {
+                if !entry.file_type().await.map_err(host_error)?.is_symlink() {
+                    if names.len() == max_entries {
+                        return Err(LspHostError::new(format!(
+                            "LSP directory exceeds {max_entries} entries"
+                        )));
+                    }
+                    names.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+            Ok(names)
         }
         .boxed()
     }
@@ -151,31 +177,65 @@ impl LspHostBackend for LocalLspHostBackend {
         request: LspHostSpawnRequest,
     ) -> BoxFuture<'a, Result<LspHostProcess, LspHostError>> {
         async move {
-            let mut process = self
-                .commands
-                .spawn_argv(OsStr::new(&request.program), &request.args, &request.cwd)
-                .await
-                .map_err(host_error)?;
-            let stdin = process.take_stdin();
-            let stdout = process.take_stdout();
-            let stderr = process.take_stderr();
-            let cancellation = process.cancellation();
+            let worker = self
+                .worker_executable
+                .as_ref()
+                .map_err(|reason| LspHostError::new(reason.clone()))?
+                .clone();
+            let mut specification = ProcessCommand::new(request.program)
+                .args(request.args)
+                .current_dir(self.resolve_existing(&request.cwd)?);
+            for (key, value) in request.env {
+                specification = specification.env(key, value);
+            }
+            let start = crate::command::CommandStartControl::new(
+                request.deadline,
+                request.cancellation,
+                Default::default(),
+            );
+            let mut process =
+                ManagedWorker::spawn_controlled(worker.worker_path(), specification, &start)
+                    .await
+                    .map_err(host_error)?;
+            let stdin = process
+                .take_stdin()
+                .map(|io| Box::pin(io) as std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>);
+            let stdout = process
+                .take_stdout()
+                .map(|io| Box::pin(io) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>);
+            let stderr = process
+                .take_stderr()
+                .map(|io| Box::pin(io) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>);
+            let control = process.control();
+            let cleanup_failures = control.cleanup_failures();
             Ok(LspHostProcess::new(
                 stdin,
                 stdout,
                 stderr,
                 async move {
-                    process
-                        .wait()
-                        .await
-                        .map(|exit| LspHostProcessExit {
-                            exit_code: exit.exit_code,
-                        })
-                        .map_err(host_error)
+                    let _worker_owner = worker;
+                    match process.wait().await {
+                        Ok(exit) => Ok(LspHostProcessExit {
+                            exit_code: match exit {
+                                ProcessTermination::ExitCode(code) => Some(code),
+                                ProcessTermination::Signal(_) => None,
+                            },
+                        }),
+                        Err(error @ WorkerClientError::StartFailed { .. })
+                            if cleanup_failures.borrow().is_none() =>
+                        {
+                            // ManagedWorker::wait has reaped the supervisor. A
+                            // typed StartFailed means no business tree existed.
+                            Err(LspHostError::reclaimed_start_failure(error.to_string()))
+                        }
+                        Err(error) => Err(host_error(error)),
+                    }
                 },
                 move || {
                     async move {
-                        cancellation.cancel();
+                        if control.cancel().await.is_err() {
+                            control.close();
+                        }
                     }
                     .boxed()
                 },
