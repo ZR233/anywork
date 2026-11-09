@@ -133,9 +133,13 @@ final class TimelineOutputConsumption {
     var members = 0;
     int? laterOrder;
     while (true) {
-      final handle = await _within(lease.openDisplayMembers(
-        reference: reference, window: window, demand: demand,
-      ));
+      final handle = await _within(
+        lease.openDisplayMembers(
+          reference: reference,
+          window: window,
+          demand: demand,
+        ),
+      );
       _memberScopes += 1;
       DisplayMemberPage page;
       try {
@@ -148,16 +152,21 @@ final class TimelineOutputConsumption {
         // This is an explicit history inventory demand. Membership/order are
         // read from the producer's display index, never recomputed from seq.
         for (final member in page.entries.reversed) {
-          if (laterOrder != null) expectSync(member.memberOrder, lessThan(laterOrder));
+          if (laterOrder != null)
+            expectSync(member.memberOrder, lessThan(laterOrder));
           laterOrder = member.memberOrder;
           members += 1;
           final atom = member.atom;
           if (atom.source != source) continue;
           expectSync(atom.turnId, turnId);
           expectSync(atom.lifecycle, isA<TerminalChatAtom>());
-          expectSync((atom.lifecycle as TerminalChatAtom).outcome, ChatTerminalOutcome.completed);
+          expectSync(
+            (atom.lifecycle as TerminalChatAtom).outcome,
+            ChatTerminalOutcome.completed,
+          );
           expectSync(atom.completionSeq, isNotNull);
-          if ((atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.reasoning) &&
+          if ((atom.kind == ChatAtomKind.text ||
+                  atom.kind == ChatAtomKind.reasoning) &&
               !_outputs.contains(member.completionId)) {
             expectSync(member.completionId, isNotNull);
             await _readFrozen(_scope, member.completionId!, atom.contents);
@@ -172,8 +181,12 @@ final class TimelineOutputConsumption {
       if (before == null) break;
       window = BeforeDisplayMembers(memberOrder: before);
     }
-    expectSync(members, unit.summary!.total,
-      reason: 'Frozen block membership and its authoritative header agree exactly');
+    expectSync(
+      members,
+      unit.summary!.total,
+      reason:
+          'Frozen block membership and its authoritative header agree exactly',
+    );
   }
 
   Future<void> readMany({
@@ -188,8 +201,11 @@ final class TimelineOutputConsumption {
     Future<void> consume(TimelineDisplayUnit unit) async {
       final position = unit.historyPos!;
       if (admitted[unit.id] == position) return;
-      expectSync(admitted.containsKey(unit.id), isFalse,
-        reason: 'An already frozen block can never grow or change position');
+      expectSync(
+        admitted.containsKey(unit.id),
+        isFalse,
+        reason: 'An already frozen block can never grow or change position',
+      );
       expectSync(positions.containsKey(position), isFalse);
       admitted[unit.id] = position;
       positions[position] = unit.id;
@@ -199,7 +215,10 @@ final class TimelineOutputConsumption {
         case SingleDisplayBlock(:final atom, :final completionId):
           if (atom.source == source && atom.kind == ChatAtomKind.text) {
             expectSync(atom.turnId, turnId);
-            expectSync((atom.lifecycle as TerminalChatAtom).outcome, ChatTerminalOutcome.completed);
+            expectSync(
+              (atom.lifecycle as TerminalChatAtom).outcome,
+              ChatTerminalOutcome.completed,
+            );
             expectSync(completionId, isNotNull);
             await _readFrozen(_scope, completionId!, atom.contents);
           }

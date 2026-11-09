@@ -1477,7 +1477,10 @@ sdk.TimelineBatch _mainBatch({
         sdk.DisplayBlock(
           id: entry.recordId,
           historyPos: start + i,
-          body: sdk.SingleDisplayBlock(atom: entry.atom, completionId: entry.recordId),
+          body: sdk.SingleDisplayBlock(
+            atom: entry.atom,
+            completionId: entry.recordId,
+          ),
         ),
     ],
   );

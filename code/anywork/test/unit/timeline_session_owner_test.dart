@@ -27,13 +27,15 @@ void main() {
     final h = _Harness();
     await h.openA([]);
     final lease = h.owner.lease('a')!;
-    final container = ProviderContainer(overrides: [
-      anyworkClientProvider.overrideWithValue(_Client(h.repository)),
-      timelineSessionOwnerProvider.overrideWithValue(h.owner),
-      threadSessionStoreProvider('a').overrideWithValue(
-        const ThreadSessionState(threadId: 'a', hasSnapshot: true),
-      ),
-    ]);
+    final container = ProviderContainer(
+      overrides: [
+        anyworkClientProvider.overrideWithValue(_Client(h.repository)),
+        timelineSessionOwnerProvider.overrideWithValue(h.owner),
+        threadSessionStoreProvider('a').overrideWithValue(
+          const ThreadSessionState(threadId: 'a', hasSnapshot: true),
+        ),
+      ],
+    );
     final provider = conversationActivityViewModelProvider('a');
     final observation = container.listen(provider, (_, _) {});
     await container.pump();
@@ -41,20 +43,42 @@ void main() {
     final global = h.owner.source.value;
     final appends = lease.appliedAppends;
     final next = LiveDisplayWindow(
-      revision: 2, historyThrough: 0, executionPresent: true,
-      blocks: [LiveDisplayBlock(
-        id: 'work', blockOrder: 1, closing: false, body: displayWork('work', 1).body,
-      )],
+      revision: 2,
+      historyThrough: 0,
+      executionPresent: true,
+      blocks: [
+        LiveDisplayBlock(
+          id: 'work',
+          blockOrder: 1,
+          closing: false,
+          body: displayWork('work', 1).body,
+        ),
+      ],
     );
-    await h.a.deliver(displayBatch(
-      [], placement: ChatPlacement.append, from: 0, through: 0, live: next,
-    ));
+    await h.a.deliver(
+      displayBatch(
+        [],
+        placement: ChatPlacement.append,
+        from: 0,
+        through: 0,
+        live: next,
+      ),
+    );
     await container.pump();
     expect(h.owner.source.value, same(global));
-    expect((container.read(provider)!.region as ContentRealtimeRegion).live, same(next));
-    await h.a.deliver(displayBatch(
-      [], placement: ChatPlacement.append, from: 0, through: 0, live: _emptyLive(0),
-    ));
+    expect(
+      (container.read(provider)!.region as ContentRealtimeRegion).live,
+      same(next),
+    );
+    await h.a.deliver(
+      displayBatch(
+        [],
+        placement: ChatPlacement.append,
+        from: 0,
+        through: 0,
+        live: _emptyLive(0),
+      ),
+    );
     await container.pump();
     expect(container.read(provider)!.region, isA<HiddenRealtimeRegion>());
     expect(lease.appliedAppends, appends);
@@ -833,11 +857,13 @@ final class _Content extends Fake implements TimelineContent {
     await consumer!.applyTimeline(batch, next);
     if (batch.placement != ChatPlacement.prepend) live.publish(next);
   }
+
   @override
   void refresh() => refreshes++;
   @override
   TimelineQueryScope openScope({required int generation}) {
-    final scope = _Scope(threadId, generation, consumer!, live)..payloads = payloads;
+    final scope = _Scope(threadId, generation, consumer!, live)
+      ..payloads = payloads;
     scopes.add(scope);
     return scope;
   }
@@ -949,11 +975,16 @@ TimelineBatch _batch(
   from: placement == ChatPlacement.append
       ? entries.first.completionSeq - 1
       : null,
-  live: placement == ChatPlacement.set ? _emptyLive(entries.lastOrNull?.completionSeq ?? 0) : null,
+  live: placement == ChatPlacement.set
+      ? _emptyLive(entries.lastOrNull?.completionSeq ?? 0)
+      : null,
 );
 
 LiveDisplayWindow _emptyLive(int through) => LiveDisplayWindow(
-  revision: 1, historyThrough: through, executionPresent: false, blocks: [],
+  revision: 1,
+  historyThrough: through,
+  executionPresent: false,
+  blocks: [],
 );
 
 TimelineBatch _timeline({
@@ -963,7 +994,10 @@ TimelineBatch _timeline({
   int? fromSeq,
   required int throughSeq,
 }) => displayBatch(
-  entries.map(displaySingle).toList(), placement: placement,
-  before: before, from: fromSeq, through: throughSeq,
+  entries.map(displaySingle).toList(),
+  placement: placement,
+  before: before,
+  from: fromSeq,
+  through: throughSeq,
   live: placement == ChatPlacement.set ? _emptyLive(throughSeq) : null,
 );

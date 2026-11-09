@@ -117,7 +117,9 @@ class TimelineWebSearchToolCard extends StatelessWidget {
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: Icons.travel_explore,
         label: _webSearchLabel(context, item, data),
-        active: item.executionPresent && _toolActiveStatuses.contains(item.statusString),
+        active:
+            item.executionPresent &&
+            _toolActiveStatuses.contains(item.statusString),
         isIssue: timelineIssueStatuses.contains(item.statusString),
         expanded: expanded,
         expandable: children.isNotEmpty,
@@ -391,9 +393,14 @@ class TimelineToolDetails extends StatelessWidget {
       icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
           ? Icons.stop_circle_outlined
           : _toolCategoryIcon(category),
-      label: !item.executionPresent && _toolActiveStatuses.contains(item.statusString)
-        ? '工具尚未恢复' : _toolRowLabel(context, item, category, targets.label),
-      active: item.executionPresent && _toolActiveStatuses.contains(item.statusString),
+      label:
+          !item.executionPresent &&
+              _toolActiveStatuses.contains(item.statusString)
+          ? '工具尚未恢复'
+          : _toolRowLabel(context, item, category, targets.label),
+      active:
+          item.executionPresent &&
+          _toolActiveStatuses.contains(item.statusString),
       isIssue: timelineIssueStatuses.contains(item.statusString),
       expanded: expanded,
       expandable: expandable,

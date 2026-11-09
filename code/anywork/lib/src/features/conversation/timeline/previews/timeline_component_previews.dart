@@ -512,11 +512,15 @@ class _OverlapCurrentPreview extends StatefulWidget {
 class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
   final activity = TimelinePreviewFixtures.overlapActivity;
   late final units = [
-    TimelineDisplayUnit(block: DisplayBlock(
-      id: 'overlap-text',
-      historyPos: 1,
-      body: SingleDisplayBlock(atom: TimelinePreviewFixtures.overlapText.atom),
-    )),
+    TimelineDisplayUnit(
+      block: DisplayBlock(
+        id: 'overlap-text',
+        historyPos: 1,
+        body: SingleDisplayBlock(
+          atom: TimelinePreviewFixtures.overlapText.atom,
+        ),
+      ),
+    ),
   ];
 
   @override

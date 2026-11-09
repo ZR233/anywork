@@ -18,7 +18,9 @@ class ConversationRealtimeNotices extends StatelessWidget {
     children: [
       for (final notice in notices)
         switch (notice) {
-          ExecutionRealtimeNotice(:final view) => ConversationActivityStatus(view: view),
+          ExecutionRealtimeNotice(:final view) => ConversationActivityStatus(
+            view: view,
+          ),
           UnrestoredRealtimeNotice() => const Text('上次执行未收束，尚未恢复'),
         },
     ],

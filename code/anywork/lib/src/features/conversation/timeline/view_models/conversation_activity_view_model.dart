@@ -18,15 +18,15 @@ ConversationActivityState? projectConversationActivityState({
 }) {
   final interaction = activePendingInteraction(interactions);
   final region = projectConversationRealtime(
-    storage: storage, interaction: interaction, live: live, status: status,
+    storage: storage,
+    interaction: interaction,
+    live: live,
+    status: status,
   );
   final view = region is ContentRealtimeRegion
-    ? region.notices.whereType<ExecutionRealtimeNotice>().firstOrNull?.view
-    : null;
-  return ConversationActivityState(
-    view: view,
-    region: region,
-  );
+      ? region.notices.whereType<ExecutionRealtimeNotice>().firstOrNull?.view
+      : null;
+  return ConversationActivityState(view: view, region: region);
 }
 
 /// Observes only the activity component's current owner. Visibility and the
@@ -45,6 +45,7 @@ ConversationActivityState? conversationActivityViewModel(
     void liveChanged() {
       if (ref.mounted) ref.invalidateSelf();
     }
+
     lease.live.addListener(liveChanged);
     ref.onDispose(() => lease.live.removeListener(liveChanged));
   }

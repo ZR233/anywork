@@ -28,41 +28,43 @@ class ConversationActivityConnector extends ConsumerWidget {
     StudioDriverState.publishConversationActivity(state?.view);
     final children = <Widget>[];
     switch (state?.region) {
-    case ContentRealtimeRegion region when content != null:
-      ref.watch(timelineViewModelProvider(threadId));
-      final timeline = ref.read(timelineSessionOwnerProvider);
-      final lease = timeline.lease(threadId);
-      if (lease != null && identical(lease.content, content)) {
-        children.add(
-          ConversationCurrentConnector(
-            key: ValueKey((threadId, content, lease.generation)),
-            session: sessionState,
-            content: content,
-            region: region,
-            live: lease.live,
-            liveUnit: lease.liveUnit,
-            loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
-            onExpandedChanged: StudioDriverState.publishActivityExpanded,
-            registerDisplay: lease.registerCurrentDisplay,
-            images: lease.imageResources,
-            readAttachment: (id) => ref
-                .read(anyworkClientProvider)
-                .readAttachmentBytes(threadId, id),
-            isDisplayActive: () =>
-                !lease.retirement.value &&
-                identical(timeline.lease(threadId), lease) &&
-                identical(lease.content, content),
-          ),
-        );
-      } else {
-        children.add(ConversationActivityBar(children: [
-          ConversationRealtimeNotices(notices: region.notices),
-        ]));
-      }
-    case HiddenRealtimeRegion() || DockRealtimeRegion() || null:
-      break;
-    case ContentRealtimeRegion():
-      break;
+      case ContentRealtimeRegion region when content != null:
+        ref.watch(timelineViewModelProvider(threadId));
+        final timeline = ref.read(timelineSessionOwnerProvider);
+        final lease = timeline.lease(threadId);
+        if (lease != null && identical(lease.content, content)) {
+          children.add(
+            ConversationCurrentConnector(
+              key: ValueKey((threadId, content, lease.generation)),
+              session: sessionState,
+              content: content,
+              region: region,
+              live: lease.live,
+              liveUnit: lease.liveUnit,
+              loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
+              onExpandedChanged: StudioDriverState.publishActivityExpanded,
+              registerDisplay: lease.registerCurrentDisplay,
+              images: lease.imageResources,
+              readAttachment: (id) => ref
+                  .read(anyworkClientProvider)
+                  .readAttachmentBytes(threadId, id),
+              isDisplayActive: () =>
+                  !lease.retirement.value &&
+                  identical(timeline.lease(threadId), lease) &&
+                  identical(lease.content, content),
+            ),
+          );
+        } else {
+          children.add(
+            ConversationActivityBar(
+              children: [ConversationRealtimeNotices(notices: region.notices)],
+            ),
+          );
+        }
+      case HiddenRealtimeRegion() || DockRealtimeRegion() || null:
+        break;
+      case ContentRealtimeRegion():
+        break;
     }
     final reference = sessionState.businessRefs?.interactions;
     if (content != null &&

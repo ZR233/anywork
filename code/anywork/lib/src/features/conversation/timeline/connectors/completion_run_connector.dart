@@ -34,7 +34,8 @@ class CompletionRunConnector extends StatefulWidget {
   State<CompletionRunConnector> createState() => _MembersState();
 }
 
-class _MembersState extends State<CompletionRunConnector> implements TimelineGroupDisplay, TimelineMemberDisplay {
+class _MembersState extends State<CompletionRunConnector>
+    implements TimelineGroupDisplay, TimelineMemberDisplay {
   VoidCallback? _unregister;
   VoidCallback? _unregisterMember;
   final Set<TimelineMemberDisplay> _members = {};
@@ -44,20 +45,24 @@ class _MembersState extends State<CompletionRunConnector> implements TimelineGro
   @override
   DisplayBlockRef? get blockReference => widget.unit.memberReference;
   @override
-  bool get isCurrent => mounted && !widget.unit.expansion.isRetired &&
-    widget.unit.expansion.expanded == true &&
-    (widget.unit.expansion.isDisplayActive?.call() ?? true);
+  bool get isCurrent =>
+      mounted &&
+      !widget.unit.expansion.isRetired &&
+      widget.unit.expansion.expanded == true &&
+      (widget.unit.expansion.isDisplayActive?.call() ?? true);
   @override
   bool get expanded => isCurrent && widget.unit.expansion.expanded == true;
   @override
-  String? get before => isCurrent ? _controller?.page?.before?.toString() : null;
+  String? get before =>
+      isCurrent ? _controller?.page?.before?.toString() : null;
   @override
   bool get loading => isCurrent && (_controller?.loading ?? true);
   @override
   Object? get error => isCurrent ? _controller?.error : null;
   @override
   Iterable<ChatAtom> get atoms => isCurrent
-    ? _controller?.page?.entries.map((entry) => entry.atom) ?? const [] : const [];
+      ? _controller?.page?.entries.map((entry) => entry.atom) ?? const []
+      : const [];
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows sync* {
     if (!isCurrent) return;
@@ -65,6 +70,7 @@ class _MembersState extends State<CompletionRunConnector> implements TimelineGro
       yield* member.windows;
     }
   }
+
   @override
   void initState() {
     super.initState();
@@ -80,6 +86,7 @@ class _MembersState extends State<CompletionRunConnector> implements TimelineGro
       );
     }
   }
+
   @override
   void dispose() {
     _unregister?.call();
@@ -88,6 +95,7 @@ class _MembersState extends State<CompletionRunConnector> implements TimelineGro
     // The display lease, not this parent Widget position, owns the member demand.
     super.dispose();
   }
+
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
@@ -99,32 +107,49 @@ class _MembersState extends State<CompletionRunConnector> implements TimelineGro
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (controller.error case final error?)
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(error.toString()),
-              TextButton(onPressed: controller.retry, child: const Text('重试')),
-            ]),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(error.toString()),
+                TextButton(
+                  onPressed: controller.retry,
+                  child: const Text('重试'),
+                ),
+              ],
+            ),
           if (controller.loading) const LinearProgressIndicator(),
-          Wrap(children: [
-            if (controller.page?.before case final before?)
-              TextButton(
-                onPressed: () => controller.select(BeforeDisplayMembers(memberOrder: before)),
-                child: const Text('更早成员'),
-              ),
-            if (controller.window is BeforeDisplayMembers)
-              TextButton(
-                onPressed: () => controller.select(const LatestDisplayMembers()),
-                child: const Text('最新成员'),
-              ),
-          ]),
-          for (final entry in controller.page?.entries ?? const <DisplayMemberHead>[])
+          Wrap(
+            children: [
+              if (controller.page?.before case final before?)
+                TextButton(
+                  onPressed: () => controller.select(
+                    BeforeDisplayMembers(memberOrder: before),
+                  ),
+                  child: const Text('更早成员'),
+                ),
+              if (controller.window is BeforeDisplayMembers)
+                TextButton(
+                  onPressed: () =>
+                      controller.select(const LatestDisplayMembers()),
+                  child: const Text('最新成员'),
+                ),
+            ],
+          ),
+          for (final entry
+              in controller.page?.entries ?? const <DisplayMemberHead>[])
             TimelineMemberAtom(
-              key: ValueKey((blockReference, entry.memberKey, controller.disclosure(entry.memberKey))),
+              key: ValueKey((
+                blockReference,
+                entry.memberKey,
+                controller.disclosure(entry.memberKey),
+              )),
               atom: entry.atom,
               disclosure: controller.disclosure(entry.memberKey),
               executionPresent: widget.unit.executionPresent,
               content: widget.content,
               retirement: widget.unit.expansion.retirement,
-              isActive: () => isCurrent && widget.unit.expansion.expanded == true,
+              isActive: () =>
+                  isCurrent && widget.unit.expansion.expanded == true,
               images: widget.images,
               readAttachment: widget.readAttachment,
               monotonicMicros: widget.monotonicMicros,

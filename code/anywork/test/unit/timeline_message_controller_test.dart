@@ -20,12 +20,14 @@ void main() {
       final adapter = TimelineMessageController(stock, generation: 7);
       await adapter.applyTimeline(
         displayBatch([
-          displaySingle(completionEntry(
-            'completion',
-            1,
-            presentation: MainPresentation.single,
-            text: '中文 🐱',
-          )),
+          displaySingle(
+            completionEntry(
+              'completion',
+              1,
+              presentation: MainPresentation.single,
+              text: '中文 🐱',
+            ),
+          ),
         ]),
       );
       final card = chatItemPresentationOf(stock.messages.single)!;
@@ -80,7 +82,9 @@ void main() {
   test('retirement rejects admission and leaves the component lifetime with its owner', () async {
     final stock = InMemoryChatController();
     final adapter = TimelineMessageController(stock, generation: 7);
-    await adapter.applyTimeline(displayBatch([displaySingle(completionEntry('loaded', 1))]));
+    await adapter.applyTimeline(
+      displayBatch([displaySingle(completionEntry('loaded', 1))]),
+    );
     adapter.retireDisplays();
     await expectLater(
       () => adapter.applyTimeline(displayBatch([])),
