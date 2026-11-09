@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 活动状态的竖尾图标；动画时钟由活动指示组件持有。
 class TimelineCatTail extends StatelessWidget {

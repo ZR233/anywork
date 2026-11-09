@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../platform/external_url_launcher.dart';
@@ -63,7 +63,7 @@ class _AccountEditorConnectorState
     scheduleMicrotask(() {
       if (!_hasCurrentSession() ||
           !widget.session.isEditorCurrent(widget.editor) ||
-          !ref.exists(accountEditorViewModelProvider(widget.editor))) {
+          !ref.read(accountEditorViewModelProvider(widget.editor).exists)) {
         return;
       }
       final strings = accountStrings(l10n);
@@ -84,7 +84,7 @@ class _AccountEditorConnectorState
   bool _hasCurrentSession() {
     if (!mounted) return false;
     final provider = accountEditorSessionViewModelProvider(widget.entry);
-    return ref.exists(provider) &&
+    return ref.read(provider.exists) &&
         identical(ref.read(provider.notifier), widget.slot) &&
         widget.slot.isCurrentOwner(widget.session) &&
         widget.session.isActive;
@@ -104,7 +104,7 @@ class _AccountEditorConnectorState
         _hasCurrentSession() &&
         identical(widget.session, session) &&
         session.isEditorCurrent(source) &&
-        ref.exists(editorProvider) &&
+        ref.read(editorProvider.exists) &&
         identical(ref.read(editorProvider.notifier), owner);
   }
 
@@ -132,7 +132,7 @@ class _AccountEditorConnectorState
     final source = widget.editor;
     final session = widget.session;
     final editorProvider = accountEditorViewModelProvider(source);
-    if (!_hasCurrentSession() || !ref.exists(editorProvider)) return;
+    if (!_hasCurrentSession() || !ref.read(editorProvider.exists)) return;
     final owner = ref.read(editorProvider.notifier);
     if (!_isCurrent(session, source, owner, sourceRoute)) return;
     final token = owner.leaveToken();
@@ -180,7 +180,7 @@ class _AccountEditorConnectorState
         entryContext.mounted &&
         identical(ModalRoute.of(entryContext), sourceRoute) &&
         sourceRoute.isCurrent &&
-        container.exists(sessionProvider) &&
+        container.read(sessionProvider.exists) &&
         identical(container.read(sessionProvider.notifier), slot) &&
         slot.isCurrentOwner(session) &&
         session.isActive;
@@ -188,12 +188,13 @@ class _AccountEditorConnectorState
     final source = widget.editor;
     if (template == source.template) return;
     final sourceProvider = accountEditorViewModelProvider(source);
-    if (!container.exists(sourceProvider)) return;
+    if (!container.read(sourceProvider.exists)) return;
     final sourceOwner = container.read(sourceProvider.notifier);
     final modelsProvider = source.target.kind == AccountKind.native
         ? accountModelsViewModelProvider(source.target)
         : null;
-    final models = modelsProvider != null && container.exists(modelsProvider)
+    final models =
+        modelsProvider != null && container.read(modelsProvider.exists)
         ? container.read(modelsProvider.notifier)
         : null;
     final compactToken = models?.compactLeaveToken();
@@ -216,7 +217,7 @@ class _AccountEditorConnectorState
       return;
     }
     if (models != null &&
-        (!container.exists(modelsProvider!) ||
+        (!container.read(modelsProvider!.exists) ||
             !identical(container.read(modelsProvider.notifier), models) ||
             !models.matchesCompactLeaveToken(compactToken!) ||
             models.compactLeaveBlocked())) {
@@ -224,7 +225,7 @@ class _AccountEditorConnectorState
     }
     if (models == null &&
         modelsProvider != null &&
-        container.exists(modelsProvider)) {
+        container.read(modelsProvider.exists)) {
       return;
     }
     if (!sourceCurrent()) return;
@@ -241,13 +242,13 @@ class _AccountEditorConnectorState
     }
     if (next.target.kind != AccountKind.acp) return;
     final editorProvider = accountEditorViewModelProvider(next);
-    if (!sourceCurrent() || !container.exists(editorProvider)) return;
+    if (!sourceCurrent() || !container.read(editorProvider.exists)) return;
     final nextOwner = container.read(editorProvider.notifier);
     final nextToken = nextOwner.leaveToken();
     await container.read(editorProvider.future);
     if (sourceCurrent() &&
         session.isEditorCurrent(next) &&
-        container.exists(editorProvider) &&
+        container.read(editorProvider.exists) &&
         identical(container.read(editorProvider.notifier), nextOwner) &&
         nextOwner.matchesLeaveToken(nextToken) &&
         !nextOwner.leaveBlocked() &&
@@ -311,8 +312,8 @@ class _AccountEditorConnectorState
               !identical(widget.session, session) ||
               widget.editor != source ||
               !session.isEditorCurrent(source) ||
-              !ref.exists(provider) ||
-              !ref.exists(modelsProvider) ||
+              !ref.read(provider.exists) ||
+              !ref.read(modelsProvider.exists) ||
               !identical(ref.read(modelsProvider.notifier), modelsOwner)) {
             return;
           }
@@ -350,7 +351,7 @@ class _AccountEditorConnectorState
         if (_hasCurrentSession() &&
             widget.session.isEditorCurrent(source) &&
             widget.editor == source &&
-            ref.exists(acpProvider) &&
+            ref.read(acpProvider.exists) &&
             identical(ref.read(acpProvider.notifier), acpOwner)) {
           acpOwner.setStrings(strings);
         }
@@ -513,14 +514,14 @@ class _AccountEditorConnectorState
               final modelsProvider = accountModelsViewModelProvider(
                 source.target,
               );
-              if (!ref.exists(modelsProvider)) return;
+              if (!ref.read(modelsProvider.exists)) return;
               final modelsOwner = ref.read(modelsProvider.notifier);
               final compactToken = modelsOwner.compactLeaveToken();
               bool canRemoveSaved() =>
                   _isCurrent(session, source, owner, sourceRoute) &&
                   owner.matchesLeaveToken(token) &&
                   owner.isSavedModel(key) &&
-                  ref.exists(modelsProvider) &&
+                  ref.read(modelsProvider.exists) &&
                   identical(ref.read(modelsProvider.notifier), modelsOwner) &&
                   modelsOwner.canRemove(expectedToken: compactToken);
               if (!canRemoveSaved()) return;
@@ -633,7 +634,7 @@ class _AccountEditorEntryConnectorState
   bool _hasCurrentOwner() {
     if (!mounted) return false;
     final provider = accountEditorSessionViewModelProvider(widget.entry);
-    return ref.exists(provider) &&
+    return ref.read(provider.exists) &&
         identical(ref.read(provider.notifier), _slot) &&
         _slot.isCurrentOwner(_session) &&
         _session.isActive;

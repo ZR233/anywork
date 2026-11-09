@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';

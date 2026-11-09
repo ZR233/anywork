@@ -3,7 +3,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_code_block.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -11,7 +11,10 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 Widget host(Widget child) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );
@@ -55,6 +58,97 @@ void main() {
     await tester.tap(find.text('危险链接', findRichText: true));
     await tester.pumpAndSettle();
     expect(launched, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Timeline Markdown HTML 链接无危险手势且图片经过受控入口', (tester) async {
+    const source =
+        '<b>HTML 正文</b>\n\n'
+        '<a href="javascript:alert(1)">危险 HTML 链接</a>\n\n'
+        '<script>隐藏脚本</script>\n\n'
+        '<img src="https://fixture.invalid/html.png" alt="HTML 图片">\n\n'
+        '![Markdown 图片](https://fixture.invalid/markdown.png)';
+    final images = <String>{};
+    await tester.pumpWidget(
+      host(
+        SingleChildScrollView(
+          child: TimelineMarkdown(
+            id: 'html-safety',
+            text: source,
+            onLink: (_) => fail('危险 HTML 链接不应触发动作'),
+            isSafeLink: (_) => false,
+            imageBuilder: (_, url) {
+              images.add(url);
+              return SizedBox(key: ValueKey(url), width: 20, height: 20);
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('HTML 正文', findRichText: true), findsOneWidget);
+    expect(find.text('危险 HTML 链接', findRichText: true), findsOneWidget);
+    expect(find.textContaining('隐藏脚本', findRichText: true), findsNothing);
+    bool interactive(InlineSpan span) =>
+        span is TextSpan &&
+        (span.recognizer != null || (span.children?.any(interactive) ?? false));
+    for (final rich in tester.widgetList<RichText>(
+      find.descendant(
+        of: find.byType(TimelineMarkdown),
+        matching: find.byType(RichText),
+      ),
+    )) {
+      expect(interactive(rich.text), isFalse);
+    }
+    expect(images, {
+      'https://fixture.invalid/html.png',
+      'https://fixture.invalid/markdown.png',
+    });
+    for (final url in images) {
+      expect(find.byKey(ValueKey(url)), findsOneWidget);
+    }
+    expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, source);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Timeline Markdown 引用标签仅安全目标具有点击手势', (tester) async {
+    const source =
+        '安全引用 [1]，危险引用 [2]，无目标引用 [3]。\n\n'
+        '[1]: https://fixture.invalid/source\n'
+        '[2]: javascript:alert';
+    final launched = <String>[];
+    await tester.pumpWidget(
+      host(
+        TimelineMarkdown(
+          id: 'source-tag-safety',
+          text: source,
+          onLink: launched.add,
+          isSafeLink: (url) => url == 'https://fixture.invalid/source',
+          imageBuilder: (_, _) => throw StateError('没有图片'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final id in ['1', '2', '3']) {
+      expect(find.text(id), findsOneWidget);
+      final gestures = tester.widgetList<GestureDetector>(
+        find.ancestor(
+          of: find.text(id),
+          matching: find.byType(GestureDetector),
+        ),
+      );
+      expect(
+        gestures.where((gesture) => gesture.onTap != null),
+        hasLength(id == '1' ? 1 : 0),
+        reason: '危险或无目标引用必须没有点击手势',
+      );
+    }
+    await tester.tap(find.text('1'));
+    await tester.pumpAndSettle();
+    expect(launched, ['https://fixture.invalid/source']);
+    expect(tester.widget<GptMarkdown>(find.byType(GptMarkdown)).data, source);
     expect(tester.takeException(), isNull);
   });
 

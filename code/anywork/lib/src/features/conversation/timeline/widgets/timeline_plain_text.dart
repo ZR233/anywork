@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 已完成正文的标准 Flutter 排版；原文由 SelectionArea 统一选择和复制。
 class TimelinePlainText extends StatelessWidget {

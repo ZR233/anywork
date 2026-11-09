@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';

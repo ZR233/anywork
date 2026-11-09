@@ -15,7 +15,7 @@ import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -247,11 +247,16 @@ final class _Scene {
     bool Function() ready,
     String description, {
     Duration timeout = const Duration(seconds: 60),
+    String Function()? diagnostic,
   }) async {
     final clock = Stopwatch()..start();
     while (!ready()) {
       if (clock.elapsed >= timeout) {
-        fail('Timed out waiting for $description');
+        final details = diagnostic?.call();
+        fail(
+          'Timed out waiting for $description'
+          '${details == null ? '' : '\n$details'}',
+        );
       }
       await tester.pump(const Duration(milliseconds: 50));
       expect(tester.takeException(), isNull);
@@ -314,56 +319,98 @@ final class _Scene {
     StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
     StudioTurnView? turn;
-    await until(() {
-      final id = graph.client.selection.state.selectedThreadId;
-      if (id == null) return false;
-      _submittedThreadId ??= id;
-      if (id != _submittedThreadId) return false;
-      final candidate = graph.client.conversations.session(id).state.lastTurn;
-      if (candidate == null ||
-          candidate.threadId != id ||
-          candidate.turnId == _priorTurnId ||
-          candidate.turnId == after) {
-        return false;
-      }
-      _submittedTurnId ??= candidate.turnId;
-      if (candidate.turnId != _submittedTurnId) return false;
-      turn = candidate;
-      final originalLease = graph.timeline.lease(id);
-      if (!candidate.state.isTerminal ||
-          candidate.state.status != outcome ||
-          originalLease == null) {
-        return false;
-      }
-      final source = ForegroundTurnChatSource(turnId: candidate.turnId);
-      // State proves completion; Main must separately accept this source and
-      // mount its original viewport within this same wait budget before reveal.
-      if (!observed.entries.any((item) => item.atom.source == source) ||
-          observed.activity.any((entry) => entry.atom.source == source)) {
-        return false;
-      }
-      final mainScrollable = find.byWidgetPredicate(
-        (widget) =>
-            widget is Scrollable &&
-            identical(widget.controller, originalLease.scrollController),
-      );
-      if (mainScrollable.evaluate().length != 1) return false;
-      if (outcome == StudioTurnStatus.cancelled) {
-        final receipts = observed.entries
-            .where(
-              (item) =>
-                  item.atom.source == source &&
-                  item.mainPresentation == MainPresentation.single &&
-                  item.atom.kind == ChatAtomKind.turnReceipt,
-            )
-            .toList();
-        expect(receipts.length, lessThanOrEqualTo(1));
-        return (receipts.singleOrNull?.atom.lifecycle as TerminalChatAtom?)
-                ?.outcome ==
-            ChatTerminalOutcome.cancelled;
-      }
-      return true;
-    }, '${outcome.name} Turn');
+    await until(
+      () {
+        final id = graph.client.selection.state.selectedThreadId;
+        if (id == null) return false;
+        _submittedThreadId ??= id;
+        if (id != _submittedThreadId) return false;
+        final candidate = graph.client.conversations.session(id).state.lastTurn;
+        if (candidate == null ||
+            candidate.threadId != id ||
+            candidate.turnId == _priorTurnId ||
+            candidate.turnId == after) {
+          return false;
+        }
+        _submittedTurnId ??= candidate.turnId;
+        if (candidate.turnId != _submittedTurnId) return false;
+        turn = candidate;
+        final originalLease = graph.timeline.lease(id);
+        if (!candidate.state.isTerminal ||
+            candidate.state.status != outcome ||
+            originalLease == null) {
+          return false;
+        }
+        final source = ForegroundTurnChatSource(turnId: candidate.turnId);
+        // State proves completion; Main must separately accept this source and
+        // mount its original viewport within this same wait budget before reveal.
+        if (!observed.entries.any((item) => item.atom.source == source) ||
+            observed.activity.any((entry) => entry.atom.source == source)) {
+          return false;
+        }
+        final mainScrollable = find.byWidgetPredicate(
+          (widget) =>
+              widget is Scrollable &&
+              identical(widget.controller, originalLease.scrollController),
+        );
+        if (mainScrollable.evaluate().length != 1) return false;
+        if (outcome == StudioTurnStatus.cancelled) {
+          final receipts = observed.entries
+              .where(
+                (item) =>
+                    item.atom.source == source &&
+                    item.mainPresentation == MainPresentation.single &&
+                    item.atom.kind == ChatAtomKind.turnReceipt,
+              )
+              .toList();
+          expect(receipts.length, lessThanOrEqualTo(1));
+          return (receipts.singleOrNull?.atom.lifecycle as TerminalChatAtom?)
+                  ?.outcome ==
+              ChatTerminalOutcome.cancelled;
+        }
+        return true;
+      },
+      '${outcome.name} Turn',
+      diagnostic: () {
+        final id = graph.client.selection.state.selectedThreadId;
+        final candidate = id == null
+            ? null
+            : graph.client.conversations.session(id).state.lastTurn;
+        final originalLease = id == null ? null : graph.timeline.lease(id);
+        final source = candidate == null
+            ? null
+            : ForegroundTurnChatSource(turnId: candidate.turnId);
+        final mainCount = originalLease == null
+            ? null
+            : observed.entries
+                  .where((item) => item.atom.source == source)
+                  .length;
+        final activeCount = originalLease == null
+            ? null
+            : observed.activity
+                  .where((entry) => entry.atom.source == source)
+                  .length;
+        final viewportCount = originalLease == null
+            ? null
+            : find
+                  .byWidgetPredicate(
+                    (widget) =>
+                        widget is Scrollable &&
+                        identical(
+                          widget.controller,
+                          originalLease.scrollController,
+                        ),
+                  )
+                  .evaluate()
+                  .length;
+        return 'selectedThread=$id submittedThread=$_submittedThreadId '
+            'submittedTurn=$_submittedTurnId priorTurn=$_priorTurnId after=$after '
+            'candidate=${candidate?.turnId}/${candidate?.state.status} '
+            'terminal=${candidate?.state.isTerminal} expected=$outcome '
+            'lease=${originalLease != null} mainCount=$mainCount '
+            'activeCount=$activeCount viewportCount=$viewportCount';
+      },
+    );
     final original = turn!;
     latestTurnId = original.turnId;
     expect(original.state.status, outcome);

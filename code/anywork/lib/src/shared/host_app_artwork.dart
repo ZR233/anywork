@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Pure native artwork presentation. The connector supplies optional icon bytes.
 class HostAppArtwork extends StatelessWidget {

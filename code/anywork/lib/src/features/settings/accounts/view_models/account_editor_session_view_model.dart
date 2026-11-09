@@ -273,7 +273,7 @@ final class AccountEditorSessionOwner {
       return token == null &&
           (account == null ||
               account.kind != AccountKind.native ||
-              !_ref.exists(accountModelsViewModelProvider(account)));
+              !_ref.read(accountModelsViewModelProvider(account).exists));
     }
     if (token == null ||
         account == null ||
@@ -281,7 +281,7 @@ final class AccountEditorSessionOwner {
       return false;
     }
     final provider = accountModelsViewModelProvider(account);
-    return _ref.exists(provider) &&
+    return _ref.read(provider.exists) &&
         identical(_ref.read(provider.notifier), models) &&
         models.matchesCompactLeaveToken(token) &&
         !models.compactLeaveBlocked();

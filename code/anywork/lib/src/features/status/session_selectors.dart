@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/model_directory.dart';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

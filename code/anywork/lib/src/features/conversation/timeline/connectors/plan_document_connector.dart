@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../state/content_reference_identity.dart';

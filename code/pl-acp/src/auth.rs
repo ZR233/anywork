@@ -398,7 +398,7 @@ impl RedactedRpcFailure {
     }
 
     fn is_auth_required(&self) -> bool {
-        self.error.code == ErrorCode::AuthRequired
+        self.error.code == ErrorCode::AUTH_REQUIRED
     }
 }
 
@@ -449,15 +449,16 @@ where
     );
     let flow_stream = stream.clone();
     let (foreground_tx, mut foreground_rx) = tokio::sync::oneshot::channel();
-    let connection = Client.builder().name("anywork-acp-auth").connect_with(
-        transport,
-        async move |connection| {
-            let outcome = flow::negotiate(connection, request, flow_stream).await;
-            // 前台结论只在这里发布一次；随后 SDK 的排空不再改动它。
-            let _ = foreground_tx.send(outcome);
-            Ok(())
-        },
-    );
+    let connection =
+        Client
+            .v1()
+            .name("anywork-acp-auth")
+            .connect_with(transport, async move |connection| {
+                let outcome = flow::negotiate(connection, request, flow_stream).await;
+                // 前台结论只在这里发布一次；随后 SDK 的排空不再改动它。
+                let _ = foreground_tx.send(outcome);
+                Ok(())
+            });
     let mut connection = std::pin::pin!(connection);
 
     // 阶段一：等前台发布结论，期间必须持续驱动连接 future。

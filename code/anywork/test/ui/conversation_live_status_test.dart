@@ -17,7 +17,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reas
 import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -30,7 +30,10 @@ Widget _wrapWithApp(
   return MaterialApp(
     locale: const Locale('zh'),
     theme: pureStudioTheme(locale: const Locale('zh')),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    localizationsDelegates: [
+      AppLocalizations.delegate,
+      ...GlobalMaterialLocalizations.delegates,
+    ],
     supportedLocales: AppLocalizations.supportedLocales,
     builder: (context, appChild) => MediaQuery(
       data: MediaQuery.of(

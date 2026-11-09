@@ -37,7 +37,7 @@ impl ResourcePolicy {
                 "memory share divisor must be positive",
             ));
         }
-        let mut system = sysinfo::System::new();
+        let mut system = sysinfo::System::new().map_err(io::Error::other)?;
         system.refresh_memory();
         let mut available = system.available_memory();
         if let Some(group) = system.cgroup_limits() {

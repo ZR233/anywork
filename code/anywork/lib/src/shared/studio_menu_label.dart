@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Quiet menu label shared by the start page and the active agent composer.
 /// The owning menu supplies focus, hover, semantics and activation behavior.

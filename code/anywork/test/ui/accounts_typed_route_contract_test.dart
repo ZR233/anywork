@@ -26,7 +26,7 @@ import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart'
     show OperationPhase, OperationState, ResourceStamp;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -57,7 +57,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).hasValue,
           'details model owner',
         );
@@ -187,7 +187,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).asData?.value.editor != null,
           'loading edit session',
         );
@@ -378,7 +378,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).asData?.value.editor != null,
           'source session',
         );
@@ -427,7 +427,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(nextProvider) &&
+              h.container.read(nextProvider.exists) &&
               h.container.read(nextProvider).asData?.value.editor != null,
           'destination session',
         );
@@ -562,7 +562,7 @@ void main() {
           await pumpClientUntil(
             tester,
             () =>
-                h.container.exists(sessionProvider) &&
+                h.container.read(sessionProvider.exists) &&
                 h.container.read(sessionProvider).asData?.value.editor != null,
             'save source session',
           );
@@ -773,7 +773,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).hasValue,
           'manual deletion model owner',
         );
@@ -964,7 +964,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).hasValue,
           'account deletion model owner',
         );
@@ -1056,7 +1056,7 @@ void main() {
               .remove(
                 nativeKey,
                 isCompactClean: () =>
-                    h.container.exists(provider) &&
+                    h.container.read(provider.exists) &&
                     identical(h.container.read(provider.notifier), models) &&
                     models.canRemove(expectedToken: removalToken),
               ),
@@ -1118,7 +1118,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).hasValue,
           'clean deletion model context',
         );
@@ -1222,7 +1222,7 @@ void main() {
         );
         final editor = h.container.read(editorProvider.notifier);
         final modelsProvider = accountModelsViewModelProvider(key.target);
-        expect(h.container.exists(modelsProvider), isFalse);
+        expect(h.container.read(modelsProvider.exists), isFalse);
         final nativeView = find.byType(NativeAccountEditorView);
         final l10n = AppLocalizations.of(tester.element(nativeView));
         await tester.enterText(
@@ -1323,7 +1323,7 @@ void main() {
                       .native
                       ?.accountKey ==
                   key.target &&
-              h.container.exists(modelsProvider) &&
+              h.container.read(modelsProvider.exists) &&
               h.container.read(modelsProvider).hasValue,
           'confirmed Create retains the production Models resource',
         );
@@ -1457,7 +1457,7 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
-              h.container.exists(provider) &&
+              h.container.read(provider.exists) &&
               h.container.read(provider).hasValue,
           'compact owner for the real leave warning',
         );
@@ -1637,7 +1637,7 @@ void main() {
           expect(oldState.mounted, isFalse);
           expect(oldSession.isActive, isFalse);
           expect(
-            h.container.exists(slot),
+            h.container.read(slot.exists),
             isTrue,
             reason: 'A legal public observer retains this finished family.',
           );
@@ -2163,7 +2163,10 @@ Widget _routerApp(ProviderContainer container, GoRouter router) =>
       container: container,
       child: MaterialApp.router(
         theme: pureStudioTheme(),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         locale: const Locale('en'),
         routerConfig: router,

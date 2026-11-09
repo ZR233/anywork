@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Shares the footer's remaining height between live activity and read-only
 /// details without taking space from the actionable composer below it.

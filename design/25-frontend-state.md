@@ -172,6 +172,8 @@ SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发
 
 ChatController、焦点、滚动、feed、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
 
+应用的 Material 组件、主题扩展和本地化统一使用 Flutter 官方独立 `material_ui`，保持既有 Material 3 视觉、路由与状态所有权。仍依赖 SDK 内旧 Material 类型的第三方组件通过官方 `MaterialUiCompatibilityBridge` 消费同一应用主题和本地化；桥接仅承担第三方类型边界，不维护第二套产品主题、状态或组件实现。应用、预览与测试使用同一组件体系，不为单个 Markdown 组件手工映射平行主题。
+
 轮次、目录与命令仍按各自权威版本收敛；updatedAt 不替代版本，线程身份不被会话快照反写。历史原子发布后无 revision/saved/lifecycle 合并，后续费用校准、消费绑定和任务状态由实时领域表达。
 
 侧栏的搜索编辑器、筛选选择、归档视图、项目展开、滚动、悬停／焦点和最近指针模式属于生产组件的局部界面状态，使用 Flutter 官方组件及其 `State` 生命周期管理；预览宿主不维护第二套交互状态。纯侧栏入口不依赖 Client、AppGraph、ProviderScope 或 FRB，连接器只绑定不可变呈现值与类型化业务意图。

@@ -361,7 +361,11 @@ async fn fragmented_sse_preserves_unicode_multiline_data_and_all_line_endings() 
         // One-byte HTTP chunks split both CRLF and multibyte UTF-8 characters.
         // Multiline data must remain one JSON event; comments are not events.
         let body = concat!(
-            ": comment\r\n",
+            "\u{feff}: comment\r\n",
+            "ignored-extension: value\r\n",
+            "event: previous\r\nevent: message\r\n",
+            "id: previous\r\nid: current\r\n",
+            "retry: 10\r\nretry: invalid\r\nretry: 20\r\n",
             "data: {\"id\":\"chat-1\",\"model\":\"fixture\",\r",
             "data: \"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\r\r",
             "data: {\"id\":\"chat-1\",\"model\":\"fixture\",\"choices\":[{\"delta\":{\"content\":\" 🌍\"},\"finish_reason\":null}]}\n\n",
