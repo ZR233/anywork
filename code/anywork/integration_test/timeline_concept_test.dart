@@ -2740,7 +2740,38 @@ final class _ConceptScene {
           expect(readable.atom.kind, entry.atom!.kind);
           expect(readable.atom.completionItemId, readable.recordId);
           expect(readable.atom.completionSeq, readable.completionSeq);
-          expect(readable.atom.lifecycle, entry.atom!.lifecycle);
+          final expectedLifecycle = entry.atom!.lifecycle as TerminalChatAtom;
+          // Separate wire reads produce separate lifecycle objects. Compare
+          // every terminal fact rather than requiring Dart object identity.
+          expect(
+            readable.atom.lifecycle,
+            isA<TerminalChatAtom>()
+                .having(
+                  (value) => value.started?.effectSeq,
+                  'started.effectSeq',
+                  expectedLifecycle.started?.effectSeq,
+                )
+                .having(
+                  (value) => value.started?.suborder,
+                  'started.suborder',
+                  expectedLifecycle.started?.suborder,
+                )
+                .having(
+                  (value) => value.ended?.effectSeq,
+                  'ended.effectSeq',
+                  expectedLifecycle.ended?.effectSeq,
+                )
+                .having(
+                  (value) => value.ended?.suborder,
+                  'ended.suborder',
+                  expectedLifecycle.ended?.suborder,
+                )
+                .having(
+                  (value) => value.outcome,
+                  'outcome',
+                  expectedLifecycle.outcome,
+                ),
+          );
           expect(readable.atom.payload, isA<InlinePayload>());
           expect(
             (readable.atom.payload as InlinePayload).bytes.length,
