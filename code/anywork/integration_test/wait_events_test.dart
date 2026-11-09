@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -306,12 +307,19 @@ final class _Scene {
   }
 
   Future<void> until(
-    bool Function() ready,
+    FutureOr<bool> Function() ready,
     String description, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
     final clock = Stopwatch()..start();
-    while (!ready()) {
+    while (true) {
+      final remaining = timeout - clock.elapsed;
+      if (await Future<bool>.sync(ready).timeout(
+        remaining > Duration.zero ? remaining : Duration.zero,
+        onTimeout: () => false,
+      )) {
+        return;
+      }
       if (clock.elapsed >= timeout) {
         fail('Timed out waiting for $description');
       }
@@ -376,56 +384,108 @@ final class _Scene {
     StudioTurnStatus outcome = StudioTurnStatus.completed,
   }) async {
     StudioTurnView? turn;
-    await until(() {
-      final id = graph.client.selection.state.selectedThreadId;
-      if (id == null) return false;
-      _submittedThreadId ??= id;
-      if (id != _submittedThreadId) return false;
-      final candidate = graph.client.conversations.session(id).state.lastTurn;
-      if (candidate == null ||
-          candidate.threadId != id ||
-          candidate.turnId == _priorTurnId ||
-          candidate.turnId == after) {
-        return false;
+    try {
+      await until(() async {
+        final id = graph.client.selection.state.selectedThreadId;
+        if (id == null) return false;
+        _submittedThreadId ??= id;
+        if (id != _submittedThreadId) return false;
+        final candidate = graph.client.conversations.session(id).state.lastTurn;
+        if (candidate == null ||
+            candidate.threadId != id ||
+            candidate.turnId == _priorTurnId ||
+            candidate.turnId == after) {
+          return false;
+        }
+        _submittedTurnId ??= candidate.turnId;
+        if (candidate.turnId != _submittedTurnId) return false;
+        turn = candidate;
+        final originalLease = graph.timeline.lease(id);
+        if (!candidate.state.isTerminal ||
+            candidate.state.status != outcome ||
+            originalLease == null ||
+            !originalLease.isMounted ||
+            originalLease.isRetired) {
+          return false;
+        }
+        final source = ForegroundTurnChatSource(turnId: candidate.turnId);
+        // State proves completion; Main must separately accept this source and
+        // mount its original viewport within this same wait budget before reveal.
+        // An independent background timer may still be live after this Turn.
+        if (observed.liveBlocks.any((block) => block.source == source)) {
+          return false;
+        }
+        final mainScrollable = find.byWidgetPredicate(
+          (widget) =>
+              widget is Scrollable &&
+              identical(widget.controller, originalLease.scrollController),
+        );
+        if (mainScrollable.evaluate().length != 1) return false;
+        if (!await observed.hasHistoricalSource(source)) return false;
+        // A bounded member query cannot qualify a later selection/generation.
+        if (graph.client.selection.state.selectedThreadId != id ||
+            !identical(graph.timeline.lease(id), originalLease) ||
+            !originalLease.isMounted ||
+            originalLease.isRetired) {
+          return false;
+        }
+        final current = graph.client.conversations
+            .existingSession(id)
+            ?.state
+            .lastTurn;
+        if (current?.turnId != candidate.turnId ||
+            current?.state.isTerminal != true ||
+            current?.state.status != outcome ||
+            observed.liveBlocks.any((block) => block.source == source)) {
+          return false;
+        }
+        if (outcome == StudioTurnStatus.cancelled) {
+          final receipts = observed.singleBlocks
+              .where(
+                (item) =>
+                    item.atom!.source == source &&
+                    item.atom!.kind == ChatAtomKind.turnReceipt,
+              )
+              .toList();
+          expect(receipts.length, lessThanOrEqualTo(1));
+          return (receipts.singleOrNull?.atom?.lifecycle as TerminalChatAtom?)
+                  ?.outcome ==
+              ChatTerminalOutcome.cancelled;
+        }
+        return true;
+      }, '${outcome.name} Turn');
+    } catch (_) {
+      if (!captureReport.containsKey('turnWaitFailure')) {
+        final selected = graph.client.selection.state.selectedThreadId;
+        final sessionId = selected ?? _submittedThreadId;
+        try {
+          final cut = timelineWaitFailureSnapshot(
+            tester: tester,
+            selectedThreadId: selected,
+            submittedThreadId: _submittedThreadId,
+            submittedTurnId: _submittedTurnId,
+            previousTurnId: _priorTurnId,
+            afterTurnId: after,
+            targetTurnId: turn?.turnId,
+            expectedOutcome: outcome.name,
+            lease: selected == null ? null : graph.timeline.lease(selected),
+            session: sessionId == null
+                ? null
+                : graph.client.conversations.existingSession(sessionId)?.state,
+          );
+          captureReport['turnWaitFailure'] = cut;
+          debugPrintSynchronously('WAIT_TURN_FAILURE ${jsonEncode(cut)}');
+        } catch (diagnosticError) {
+          captureReport['turnWaitFailure'] = {
+            'diagnosticFailureKind': diagnosticError.runtimeType.toString(),
+          };
+          debugPrintSynchronously(
+            'WAIT_TURN_FAILURE ${jsonEncode(captureReport['turnWaitFailure'])}',
+          );
+        }
       }
-      _submittedTurnId ??= candidate.turnId;
-      if (candidate.turnId != _submittedTurnId) return false;
-      turn = candidate;
-      final originalLease = graph.timeline.lease(id);
-      if (!candidate.state.isTerminal ||
-          candidate.state.status != outcome ||
-          originalLease == null) {
-        return false;
-      }
-      final source = ForegroundTurnChatSource(turnId: candidate.turnId);
-      // State proves completion; Main must separately accept this source and
-      // mount its original viewport within this same wait budget before reveal.
-      // An independent background timer may still be live after this Turn.
-      if (!observed.singleBlocks.any((item) => item.atom!.source == source) ||
-          observed.liveBlocks.any((block) => block.source == source)) {
-        return false;
-      }
-      final mainScrollable = find.byWidgetPredicate(
-        (widget) =>
-            widget is Scrollable &&
-            identical(widget.controller, originalLease.scrollController),
-      );
-      if (mainScrollable.evaluate().length != 1) return false;
-      if (outcome == StudioTurnStatus.cancelled) {
-        final receipts = observed.singleBlocks
-            .where(
-              (item) =>
-                  item.atom!.source == source &&
-                  item.atom!.kind == ChatAtomKind.turnReceipt,
-            )
-            .toList();
-        expect(receipts.length, lessThanOrEqualTo(1));
-        return (receipts.singleOrNull?.atom?.lifecycle as TerminalChatAtom?)
-                ?.outcome ==
-            ChatTerminalOutcome.cancelled;
-      }
-      return true;
-    }, '${outcome.name} Turn');
+      rethrow;
+    }
     final original = turn!;
     latestTurnId = original.turnId;
     expect(original.state.status, outcome);

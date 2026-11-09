@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:anywork/src/domain/models/composer_primary_action.dart';
+import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -14,6 +16,178 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+Map<String, Object?> _sourceCut(ChatSourceId source) => switch (source) {
+  ForegroundTurnChatSource(:final turnId) => {
+    'kind': 'foregroundTurn',
+    'turnId': turnId,
+  },
+  InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
+  InboxMessageChatSource(:final sourceId, :final messageId) => {
+    'kind': 'inboxMessage',
+    'sourceId': sourceId,
+    'messageId': messageId,
+  },
+  BackgroundResultChatSource(:final messageId) => {
+    'kind': 'backgroundResult',
+    'messageId': messageId,
+  },
+  OperationChatSource(:final operationId) => {
+    'kind': 'operation',
+    'operationId': operationId,
+  },
+  ReceiptChatSource(:final receiptId) => {
+    'kind': 'receipt',
+    'receiptId': receiptId,
+  },
+};
+
+Map<String, Object?> _atomCut(ChatAtom atom) => {
+  'atomId': atom.id,
+  'kind': atom.kind.name,
+  'source': _sourceCut(atom.source),
+  'turnId': atom.turnId,
+  'lifecycle': atom.lifecycle.runtimeType.toString(),
+  'completionItemId': atom.completionItemId,
+  'completionSeq': atom.completionSeq,
+};
+
+// One synchronous failure cut of public identities, never body/payload/draft
+// text, a query, or a new Session. Work headers deliberately have no source.
+Map<String, Object?> timelineWaitFailureSnapshot({
+  required WidgetTester tester,
+  required String? selectedThreadId,
+  required String? submittedThreadId,
+  required String? submittedTurnId,
+  required String? previousTurnId,
+  required TimelineDisplayLease? lease,
+  required ThreadSessionState? session,
+  String? afterTurnId,
+  String? targetTurnId,
+  required String expectedOutcome,
+}) {
+  Map<String, Object?>? turn(StudioTurnView? value) => value == null
+      ? null
+      : {
+          'threadId': value.threadId,
+          'turnId': value.turnId,
+          'status': value.state.status.name,
+          'isBusy': value.state.isBusy,
+          'isTerminal': value.state.isTerminal,
+        };
+  Map<String, Object?> body(DisplayBlockBody value, String id) =>
+      switch (value) {
+        SingleDisplayBlock(:final atom) => {
+          'bodyKind': 'single',
+          ..._atomCut(atom),
+        },
+        WorkDisplayBlock(:final members, :final summary) => {
+          'bodyKind': 'work',
+          'source': null,
+          'sourceEvidence':
+              'bounded member heads, not a source on the Work header',
+          'memberBlockId': members.blockId,
+          'total': summary.total,
+          'terminal': summary.terminal,
+          'mountedMembers': [
+            for (final display
+                in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
+              if (display.unitId == id && display.isCurrent)
+                for (final atom in display.atoms) _atomCut(atom),
+          ],
+        },
+      };
+  final main = lease == null || lease.isReleased
+      ? const <TimelineDisplayUnit>[]
+      : TimelineObservation(tester, () => lease).main.toList();
+  final live = lease?.isReleased == false ? lease?.live.value : null;
+  final execution = session?.runtime?.execution;
+  final composers = tester
+      .widgetList<PromptComposerView>(find.byType(PromptComposerView))
+      .toList();
+  return {
+    'selectedThreadId': selectedThreadId,
+    'submittedThreadId': submittedThreadId,
+    'submittedTurnId': submittedTurnId,
+    'previousTurnId': previousTurnId,
+    'afterTurnId': afterTurnId,
+    'targetTurnId': targetTurnId,
+    'expectedOutcome': expectedOutcome,
+    'candidateTurn': turn(session?.lastTurn),
+    'activeTurn': turn(session?.activeTurn),
+    'execution': execution == null
+        ? null
+        : {
+            'id': execution.id,
+            'turnId': execution.turnId,
+            'phase': execution.phase.name,
+          },
+    'lease': lease == null
+        ? null
+        : {
+            'threadId': lease.threadId,
+            'generation': lease.generation,
+            'selectionId': lease.selectionId,
+            'mounted': lease.isMounted,
+            'retired': lease.isRetired,
+            'released': lease.isReleased,
+            'appliedSets': lease.appliedSets,
+          },
+    'historyBlockCount': main.length,
+    'historyTailLimit': 64,
+    'historyTruncated': main.length > 64,
+    'history': [
+      for (final unit in main.skip(main.length > 64 ? main.length - 64 : 0))
+        {
+          'blockId': unit.id,
+          'historyPos': unit.historyPos,
+          ...body(unit.body, unit.id),
+        },
+    ],
+    'live': live == null
+        ? null
+        : {
+            'revision': live.revision,
+            'historyThrough': live.historyThrough,
+            'executionPresent': live.executionPresent,
+            'blocks': [
+              for (final block in live.blocks)
+                {
+                  'blockId': block.id,
+                  'blockOrder': block.blockOrder,
+                  ...body(block.body, block.id),
+                  'source': block.source == null
+                      ? null
+                      : _sourceCut(block.source!),
+                  'closing': block.closing,
+                },
+            ],
+          },
+    'mainScrollableCount': lease == null || lease.isReleased
+        ? 0
+        : find
+              .byWidgetPredicate(
+                (widget) =>
+                    widget is Scrollable &&
+                    identical(widget.controller, lease.scrollController),
+              )
+              .evaluate()
+              .length,
+    'composer': [
+      for (final composer in composers)
+        {
+          'enabled': composer.enabled,
+          'submissionLocked': composer.submissionLocked,
+          'blockerKind': composer.blocker?.runtimeType.toString(),
+          'failureKind': composer.failure?.runtimeType.toString(),
+          'failureReason': switch (composer.failure) {
+            ComposerFailureBlocker(:final reason) => reason?.name,
+            _ => null,
+          },
+        },
+    ],
+  };
+}
 
 // Work uses a dedicated single-line header, not TimelineActivityRow. Borrow its
 // actual label Text without the separate elapsed Text or any private widget API.
@@ -166,6 +340,23 @@ final class TimelineObservation {
       if (page.entries.single.atom.source == source) matched.add(block);
     }
     return matched;
+  }
+
+  Future<bool> hasHistoricalSource(ChatSourceId source) async {
+    final original = lease;
+    if (singleBlocks.any((unit) => unit.atom!.source == source)) return true;
+    // A tool-only successful Turn need not manufacture a Single/receipt.
+    // Borrow only one bounded member head per already admitted Work.
+    for (final block in workBlocks.toList()) {
+      final page = await readMemberPage(block.memberReference!);
+      expect(lease, same(original));
+      final admitted = main.where((unit) => unit.id == block.id).single;
+      expect(admitted.historyPos, block.historyPos);
+      expect(admitted.memberReference, block.memberReference);
+      expect(page.entries, hasLength(1));
+      if (page.entries.single.atom.source == source) return true;
+    }
+    return false;
   }
 
   /// Explicit finite fixture inventory. UI still owns just its selected page.

@@ -167,7 +167,7 @@ void main() {
     );
     await graph.client.directoryCommands.openProject(project);
     graph.setConversationPageVisible(true);
-    scene = _TimelineScene(tester, graph);
+    scene = _TimelineScene(tester, graph, report);
 
     if (phase == 'live') {
       await _runLive(scene, project, baselineFile, report);
@@ -456,10 +456,11 @@ typedef _StreamingWindow = ({ContentRef reference, String text});
 typedef _StreamingBody = ({String prefix, Rect visibleGlyphBounds});
 
 final class _TimelineScene {
-  _TimelineScene(this.tester, this.graph);
+  _TimelineScene(this.tester, this.graph, this.report);
 
   final WidgetTester tester;
   final AppGraph graph;
+  final Map<String, Object?> report;
   String? latestTurnId;
   String? _submittedThreadId;
   String? _priorTurnId;
@@ -919,29 +920,63 @@ final class _TimelineScene {
   }
 
   Future<void> waitForTerminalTurn(String turnId) async {
-    await until(
-      () {
+    try {
+      await until(
+        () {
+          final selected = graph.client.selection.state.selectedThreadId;
+          if (selected == null || selected != _submittedThreadId) return false;
+          final display = graph.timeline.lease(selected);
+          if (display == null || !display.isMounted || display.isRetired) {
+            return false;
+          }
+          final live = display.live.value;
+          final state = graph.client.conversations.session(selected).state;
+          final completed = state.lastTurn;
+          return turnId == _submittedTurnId &&
+              completed?.threadId == selected &&
+              completed?.turnId == turnId &&
+              completed?.state.status == StudioTurnStatus.completed &&
+              completed?.state.isTerminal == true &&
+              state.activeTurn?.turnId != turnId &&
+              live != null &&
+              live.blocks.isEmpty;
+        },
+        'terminal canonical Turn $turnId',
+        timeout: const Duration(minutes: 6),
+      );
+    } catch (_) {
+      if (!report.containsKey('terminalTurnWaitFailure')) {
         final selected = graph.client.selection.state.selectedThreadId;
-        if (selected == null || selected != _submittedThreadId) return false;
-        final display = graph.timeline.lease(selected);
-        if (display == null || !display.isMounted || display.isRetired) {
-          return false;
+        final sessionId = selected ?? _submittedThreadId;
+        try {
+          final cut = timelineWaitFailureSnapshot(
+            tester: tester,
+            selectedThreadId: selected,
+            submittedThreadId: _submittedThreadId,
+            submittedTurnId: _submittedTurnId,
+            previousTurnId: _priorTurnId,
+            targetTurnId: turnId,
+            expectedOutcome: StudioTurnStatus.completed.name,
+            lease: selected == null ? null : graph.timeline.lease(selected),
+            session: sessionId == null
+                ? null
+                : graph.client.conversations.existingSession(sessionId)?.state,
+          );
+          report['terminalTurnWaitFailure'] = cut;
+          debugPrintSynchronously(
+            'TIMELINE_TERMINAL_FAILURE ${jsonEncode(cut)}',
+          );
+        } catch (diagnosticError) {
+          report['terminalTurnWaitFailure'] = {
+            'diagnosticFailureKind': diagnosticError.runtimeType.toString(),
+          };
+          debugPrintSynchronously(
+            'TIMELINE_TERMINAL_FAILURE ${jsonEncode(report['terminalTurnWaitFailure'])}',
+          );
         }
-        final live = display.live.value;
-        final state = graph.client.conversations.session(selected).state;
-        final completed = state.lastTurn;
-        return turnId == _submittedTurnId &&
-            completed?.threadId == selected &&
-            completed?.turnId == turnId &&
-            completed?.state.status == StudioTurnStatus.completed &&
-            completed?.state.isTerminal == true &&
-            state.activeTurn?.turnId != turnId &&
-            live != null &&
-            live.blocks.isEmpty;
-      },
-      'terminal canonical Turn $turnId',
-      timeout: const Duration(minutes: 6),
-    );
+      }
+      rethrow;
+    }
   }
 
   Future<TimelineDisplayLease> readyLease(String description) async {

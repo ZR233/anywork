@@ -2453,7 +2453,10 @@ final class _ConceptScene {
         historyPos: completedTextB.historyPos!,
         single: completedTextB.body as SingleDisplayBlock,
       );
-      await credit.observeSuccessors();
+      await credit.observeSuccessors(
+        blockId: completedTextB.id,
+        historyPos: completedTextB.historyPos!,
+      );
       await credit.verifyClosed(
         (completedTextB.body as SingleDisplayBlock).completionId!,
       );

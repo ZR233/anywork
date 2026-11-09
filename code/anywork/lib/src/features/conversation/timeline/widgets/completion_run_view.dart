@@ -117,10 +117,18 @@ class _CompletionRunViewState extends State<CompletionRunView> {
                     : Builder(builder: widget.childBuilder),
               ),
             ),
-      expansibleBuilder: (context, header, body, animation) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, body],
+      expansibleBuilder: (context, header, body, animation) => LayoutBuilder(
+        builder: (context, constraints) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            if (live && constraints.hasBoundedHeight)
+              Flexible(fit: FlexFit.loose, child: body)
+            else
+              body,
+          ],
+        ),
       ),
     );
   }

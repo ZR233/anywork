@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
@@ -98,6 +99,117 @@ void main() {
         expect((a.center.dy - b.center.dy).abs(), lessThan(2));
         expect(b.right, lessThanOrEqualTo(c.left));
         expect(c.right, lessThanOrEqualTo(width));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
+  for (final bounded in [true, false]) {
+    testWidgets(
+      'live Work scrolls all members with ${bounded ? '162px' : 'unbounded'} parent height',
+      (tester) async {
+        var reads = 0;
+        final expanded = <bool>[];
+        final work = CompletionRunView(
+          id: 'constrained',
+          location: WorkDisplayLocation.live,
+          summary: _summary(createdAt: null, thought: '当前工作概要'),
+          executionPresent: true,
+          initiallyExpanded: false,
+          onExpandedChanged: expanded.add,
+          childBuilder: (_) {
+            reads++;
+            return Column(
+              children: [
+                for (var index = 0; index < 12; index++)
+                  TimelineActivityRow(
+                    label: '成员 $index',
+                    icon: Icons.terminal,
+                    expandable: false,
+                  ),
+              ],
+            );
+          },
+        );
+        await tester.pumpWidget(
+          _host(
+            bounded
+                ? SizedBox(height: 162, child: work)
+                : SingleChildScrollView(child: work),
+            width: 390,
+          ),
+        );
+        final header = find.byKey(
+          const ValueKey('completion-run-header:constrained'),
+        );
+        expect(reads, 0);
+        expect(find.text('成员 0'), findsNothing);
+        await tester.tap(header);
+        for (var frame = 0; frame < 6; frame++) {
+          await tester.pump(const Duration(milliseconds: 32));
+          expect(tester.takeException(), isNull);
+        }
+        await tester.pumpAndSettle();
+        expect(reads, greaterThan(0));
+        final workFinder = find.byType(CompletionRunView);
+        final viewport = find.descendant(
+          of: workFinder,
+          matching: find.byType(SingleChildScrollView),
+        );
+        expect(viewport, findsOneWidget);
+        final viewportRect = tester.getRect(viewport);
+        final headerRect = tester.getRect(header);
+        final workRect = tester.getRect(workFinder);
+        expect(viewportRect.height, greaterThan(0));
+        expect(viewportRect.height, lessThanOrEqualTo(186));
+        expect(viewportRect.top, greaterThanOrEqualTo(headerRect.bottom));
+        if (bounded) {
+          expect(workRect.height, 162);
+          expect(viewportRect.bottom, lessThanOrEqualTo(workRect.bottom));
+        } else {
+          expect(viewportRect.height, 186);
+        }
+        expect(header.hitTestable(), findsOneWidget);
+        expect(find.text('当前工作概要').hitTestable(), findsOneWidget);
+        expect(
+          find
+              .descendant(
+                of: header,
+                matching: find.byIcon(Icons.keyboard_arrow_down_rounded),
+              )
+              .hitTestable(),
+          findsOneWidget,
+        );
+        final scrollable = find.descendant(
+          of: workFinder,
+          matching: find.byType(Scrollable),
+        );
+        expect(scrollable, findsOneWidget);
+        final position = tester.state<ScrollableState>(scrollable).position;
+        expect(position.maxScrollExtent, greaterThan(0));
+        final last = find.text('成员 11');
+        expect(last.hitTestable(), findsNothing);
+        await tester.dragUntilVisible(last, scrollable, const Offset(0, -80));
+        await tester.pumpAndSettle();
+        expect(position.pixels, greaterThan(0));
+        expect(last.hitTestable(), findsOneWidget);
+        expect(header.hitTestable(), findsOneWidget);
+        await tester.tap(header);
+        await tester.pump(const Duration(milliseconds: 32));
+        expect(tester.takeException(), isNull);
+        await tester.pumpAndSettle();
+        expect(find.text('成员 11'), findsNothing);
+        expect(expanded, [true, false]);
+        expect(
+          find
+              .descendant(
+                of: header,
+                matching: find.byIcon(Icons.chevron_right_rounded),
+              )
+              .hitTestable(),
+          findsOneWidget,
+        );
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       },
@@ -211,8 +323,11 @@ void main() {
             location: WorkDisplayLocation.history,
             summary: _summary(failed: 1, cancelled: 1, transferred: 1),
             initiallyExpanded: false,
-            childBuilder: (_) =>
-                const SizedBox(height: 500, child: Text('历史成员')),
+            childBuilder: (_) => const SizedBox(
+              key: ValueKey('history-members'),
+              height: 500,
+              child: Text('历史成员'),
+            ),
           ),
         ),
       );
@@ -227,6 +342,14 @@ void main() {
       await tester.tap(header);
       await tester.pumpAndSettle();
       expect(find.text('历史成员'), findsOneWidget);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('history-members'))).height,
+        500,
+      );
+      expect(
+        tester.getSize(find.byType(CompletionRunView)).height,
+        greaterThan(500),
+      );
       expect(find.byType(Scrollable), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());

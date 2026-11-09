@@ -232,7 +232,7 @@ void main() {
           (args) =>
               args['placement'] == 'set' &&
               args['generation'] == samples.last['generation'],
-        )['acceptedEntries'],
+        )['acceptedBlocks'],
         samples.last['initialControllerMessages'],
       );
       expect(
