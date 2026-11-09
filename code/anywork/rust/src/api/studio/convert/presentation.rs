@@ -226,6 +226,29 @@ mod tests {
     }
 
     #[test]
+    fn live_source_preserves_unknown_and_independent_ownership() {
+        let mut window = protocol::LiveDisplayWindow {
+            revision: 1,
+            history_through: 0,
+            execution_present: false,
+            blocks: vec![protocol::LiveDisplayBlock {
+                id: "not-an-encoded-turn".into(),
+                block_order: 1,
+                source: None,
+                body: work(),
+                closing: false,
+            }],
+            older: None,
+        };
+        assert!(live_window(window.clone()).blocks[0].source.is_none());
+        window.blocks[0].source = Some(protocol::ChatSourceId::Input {
+            input_id: "independent-input".into(),
+        });
+        assert!(matches!(&live_window(window).blocks[0].source,
+            Some(BridgeChatSourceId::Input { input_id }) if input_id == "independent-input"));
+    }
+
+    #[test]
     fn unsupported_presentation_is_rejected_before_bridge_delivery() {
         let mut value = cut();
         value.presentation_version = 0;

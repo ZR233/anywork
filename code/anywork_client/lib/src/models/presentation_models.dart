@@ -88,11 +88,13 @@ final class LiveDisplayBlock {
     required this.blockOrder,
     required this.body,
     required this.closing,
+    this.source,
   });
   final String id;
   final int blockOrder;
   final DisplayBlockBody body;
   final bool closing;
+  final ChatSourceId? source;
 }
 
 final class LiveDisplayWindow {

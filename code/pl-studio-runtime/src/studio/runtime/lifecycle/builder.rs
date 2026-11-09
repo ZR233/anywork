@@ -114,19 +114,27 @@ impl StudioRuntime {
                 bots: bots.clone(),
             },
         );
-        let threads = crate::thread_assembler::StudioThreadAssembler::default();
-        threads.set_agent_services(
-            config_runtime.clone(),
-            store.clone(),
-            product_events.clone(),
-            thread_factory.clone(),
-            model_performance.clone(),
-            recovery.clone(),
-        )?;
-        threads.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
-            config_runtime.clone(),
-            thread_factory.clone(),
-        ))?;
+        let sessions = crate::session::SessionTable::new();
+        let service_config = config_runtime.clone();
+        let service_store = store.clone();
+        let service_events = product_events.clone();
+        let service_factory = thread_factory.clone();
+        let service_performance = model_performance.clone();
+        let service_recovery = recovery.clone();
+        sessions.push_installer(std::sync::Arc::new(move |session| {
+            session.set_agent_services(
+                service_config.clone(),
+                service_store.clone(),
+                service_events.clone(),
+                service_factory.clone(),
+                service_performance.clone(),
+                service_recovery.clone(),
+            )?;
+            session.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
+                service_config.clone(),
+                service_factory.clone(),
+            ))
+        }))?;
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),
@@ -134,13 +142,14 @@ impl StudioRuntime {
                 store: store.clone(),
                 events: product_events.clone(),
                 performance: model_performance.clone(),
-                threads: threads.clone(),
+                sessions: sessions.downgrade(),
                 writer: persistence.clone(),
                 recovery: recovery.clone(),
             },
         );
-        let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
-        thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
+        let rejected_tools =
+            super::super::rejected_tools::RejectedToolOwners::new(sessions.downgrade());
+        thread_observations.install()?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         let mut runtime = Self {
             owner_epoch,
@@ -153,7 +162,9 @@ impl StudioRuntime {
             tool_refresh: Default::default(),
             rejected_tools,
             tool_catalog_updates: Default::default(),
-            threads,
+            sessions,
+            #[cfg(test)]
+            s2_delete_publication_failure: Default::default(),
             thread_factory,
             instance_lock: RuntimeLockOwner::new(None),
             store,
@@ -202,17 +213,24 @@ impl StudioRuntime {
         runtime.bot_host = Some(keep);
         // An internal scheduling activation reports its failure through the runtime's single Recovery
         // registry, exactly like an explicit activation does.
-        let recovering = runtime.clone();
+        let recovering = std::sync::Arc::downgrade(
+            runtime
+                .bot_host
+                .as_ref()
+                .expect("runtime host installed above"),
+        );
         runtime
-            .threads
-            .set_workspace_recovery(Some(std::sync::Arc::new(move |thread, error| {
+            .sessions
+            .install_workspace_recovery(std::sync::Arc::new(move |thread, error| {
                 let recovering = recovering.clone();
                 Box::pin(async move {
-                    recovering
-                        .publish_session_workspace_issue(&thread, &error)
-                        .await;
+                    if let Some(recovering) = recovering.upgrade() {
+                        recovering
+                            .publish_session_workspace_issue(&thread, &error)
+                            .await;
+                    }
                 })
-            })))?;
+            }))?;
         Ok(runtime)
     }
 }

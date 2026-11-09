@@ -164,7 +164,12 @@ class _WorkHeader extends StatelessWidget {
         : summary.running == 0
         ? l10n.timelineGroupWaitingForNext
         : l10n.timelineGroupWorking;
-    final thought = summary.thinkingSummary?.trim();
+    final thought =
+        [summary.thinkingSummary, activity?.thinkingSummary, activity?.summary]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .firstOrNull;
     final status = live && !cold && thought?.isNotEmpty == true
         ? thought!
         : fallback;

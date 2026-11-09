@@ -304,6 +304,44 @@ void main() {
   );
 
   testWidgets(
+    'merged current notice retains its bounded overview without reading members',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+      h.blocks = [_work('work')];
+      h.notices = [
+        const ExecutionRealtimeNotice(
+          ConversationActivityView(
+            identity: 'thinking',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+            thinkingSummary: '有界思考概要',
+            summary: '状态概要',
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(find.text('有界思考概要'), findsOneWidget);
+      h.notices = [
+        const ExecutionRealtimeNotice(
+          ConversationActivityView(
+            identity: 'thinking',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+            summary: '状态概要',
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(find.text('状态概要'), findsOneWidget);
+      expect(h.content.reads, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'unproven Turn keeps its independent notice; cold Work keeps its unrestored message',
     (tester) async {
       final h = _LiveHarness();
@@ -342,6 +380,7 @@ LiveDisplayBlock _work(String id, {bool closing = false, String? thought}) =>
       id: id,
       blockOrder: id == 'older' ? 1 : 2,
       closing: closing,
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
       body: WorkDisplayBlock(
         summary: _summary(createdAt: null, thought: thought),
         members: DisplayBlockRef(databaseId: 'db', blockId: id),

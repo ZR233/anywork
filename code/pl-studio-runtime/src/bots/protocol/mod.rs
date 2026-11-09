@@ -9,6 +9,7 @@ pub(crate) mod addons;
 pub(crate) mod cardkit;
 pub(crate) mod endpoint;
 pub(crate) mod error;
+pub(crate) mod files;
 pub(crate) mod frame;
 pub(crate) mod http;
 pub(crate) mod im;

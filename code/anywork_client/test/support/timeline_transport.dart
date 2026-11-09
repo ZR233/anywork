@@ -226,6 +226,115 @@ class TestConversationFeed implements ConversationFeed {
   }
 }
 
+/// The scripted state-side feed: identity, sequence and ACK stay independent
+/// of any content feed. It has no reader because state carries no reads.
+class TestConversationStateFeed implements ConversationStateFeed {
+  TestConversationStateFeed({
+    this.threadId = 'thread',
+    this.subscriptionId = 'state-sub',
+  });
+  @override
+  final String threadId;
+  @override
+  final String subscriptionId;
+  final StreamController<ConversationFrame> _events = StreamController(
+    sync: true,
+  );
+  final List<int> acknowledgements = [];
+  final Map<int, Completer<void>> _acked = {};
+  final Map<int, Completer<void>> _ackStarted = {};
+  int _sequence = 0;
+  bool _requested = false;
+  final requestCloseStarted = Completer<void>();
+  final closeStarted = Completer<void>();
+  final closeCompleted = Completer<void>();
+  Completer<void>? closeGate;
+  Object? closeFailure;
+  Object? ackFailure;
+  Completer<void>? ackGate;
+  int closeCalls = 0;
+  int requestCloseCalls = 0;
+  int eventConsumers = 0;
+  @override
+  Stream<ConversationFrame> get events {
+    if (++eventConsumers != 1) throw StateError('A feed permits one consumer');
+    return _events.stream;
+  }
+
+  int send(
+    ConversationEvent event, {
+    int? sequence,
+    String? frameThread,
+    String? frameSubscription,
+  }) {
+    final terminal =
+        event is ConversationClosedEvent || event is ConversationFailureEvent;
+    final number = sequence ?? (terminal ? _sequence : ++_sequence);
+    if (_requested) return number;
+    _events.add(
+      ConversationFrame(
+        threadId: frameThread ?? threadId,
+        subscriptionId: frameSubscription ?? subscriptionId,
+        deliverySequence: number,
+        event: event,
+      ),
+    );
+    return number;
+  }
+
+  Future<void> deliver(ConversationEvent event) async {
+    if (_requested) throw StateError('Cannot deliver to a closed feed');
+    if (event is ConversationClosedEvent || event is ConversationFailureEvent) {
+      send(event);
+      return;
+    }
+    final number = _sequence + 1;
+    final ack = acknowledged(number);
+    send(event);
+    await ack;
+  }
+
+  Future<void> acknowledged(int sequence) {
+    if (acknowledgements.contains(sequence)) return Future.value();
+    return (_acked[sequence] ??= Completer<void>()).future;
+  }
+
+  Future<void> ackStarted(int sequence) =>
+      (_ackStarted[sequence] ??= Completer<void>()).future;
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    final started = _ackStarted.putIfAbsent(
+      deliverySequence,
+      Completer<void>.new,
+    );
+    if (!started.isCompleted) started.complete();
+    await ackGate?.future;
+    if (ackFailure case final failure?) throw failure;
+    acknowledgements.add(deliverySequence);
+    _acked.remove(deliverySequence)?.complete();
+  }
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+    if (_requested) return;
+    _requested = true;
+    if (!requestCloseStarted.isCompleted) requestCloseStarted.complete();
+    unawaited(_events.close());
+  }
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
+    requestClose();
+    if (!closeStarted.isCompleted) closeStarted.complete();
+    await closeGate?.future;
+    if (closeFailure case final failure?) throw failure;
+    if (!closeCompleted.isCompleted) closeCompleted.complete();
+  }
+}
+
 class TestConversationReader implements ConversationReader {
   TestConversationReader({this.threadId = 'thread'});
   @override
@@ -433,11 +542,15 @@ class TestConversationTransport extends StudioTransport
     })
   >
   opens = [];
+  final List<({String threadId, Completer<ConversationStateFeed> result})>
+  stateOpens = [];
+  ConversationStateFeed Function(String threadId, int index)? stateFeedFactory;
   final List<ProductTopic> productTopics = [];
   final Map<ProductTopic, Completer<void>> _topicOpening = {};
   final Map<ProductTopic, StreamController<ProductTopicFrame>> _topicStreams =
       {};
   final Map<int, Completer<void>> _opening = {};
+  final Map<int, Completer<void>> _stateOpening = {};
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
@@ -459,6 +572,26 @@ class TestConversationTransport extends StudioTransport
   Future<void> opened(int index) => opens.length > index
       ? Future.value()
       : (_opening[index] ??= Completer<void>()).future;
+
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(String threadId) {
+    final result = Completer<ConversationStateFeed>();
+    final index = stateOpens.length;
+    stateOpens.add((threadId: threadId, result: result));
+    _stateOpening.remove(index)?.complete();
+    final factory = stateFeedFactory;
+    if (factory == null) return result.future;
+    try {
+      result.complete(factory(threadId, index));
+    } catch (error, stackTrace) {
+      result.completeError(error, stackTrace);
+    }
+    return result.future;
+  }
+
+  Future<void> stateOpened(int index) => stateOpens.length > index
+      ? Future.value()
+      : (_stateOpening[index] ??= Completer<void>()).future;
 
   Future<void> productTopicOpened(ProductTopic topic) =>
       _topicStreams.containsKey(topic)
@@ -503,6 +636,14 @@ class TestConversationTransport extends StudioTransport
 class ConversationFixture {
   ConversationFixture({TestConversationTransport? transport})
     : transport = transport ?? TestConversationTransport() {
+    this.transport.stateFeedFactory = (threadId, index) {
+      final feed = TestConversationStateFeed(
+        threadId: threadId,
+        subscriptionId: 'state-sub-${index + 1}',
+      );
+      stateFeeds[threadId] = feed;
+      return feed;
+    };
     client = AnyworkClient(
       transport: this.transport,
       clientId: 'conversation-test',
@@ -511,8 +652,15 @@ class ConversationFixture {
   final TestConversationTransport transport;
   late final AnyworkClient client;
   final Map<String, TestCompletionConsumer> consumers = {};
+
+  /// Latest auto-wired state feed per thread; state delivery goes through it.
+  /// The transport call is synchronous, so the entry exists right after
+  /// `setVisibleThread` recorded the open.
+  final Map<String, TestConversationStateFeed> stateFeeds = {};
   ConversationRepository get repository => client.conversations;
   ConversationSession session([String id = 'thread']) => repository.session(id);
+  TestConversationStateFeed stateFeed([String id = 'thread']) =>
+      stateFeeds[id] ?? (throw StateError('No state feed opened for $id yet'));
   TestCompletionConsumer attach(String id, {required ReadDemand demand}) =>
       consumers.putIfAbsent(id, () {
         final consumer = TestCompletionConsumer();

@@ -29,6 +29,7 @@ mod chatgpt_auth;
 mod command_receipts;
 mod conversation_feed;
 mod conversation_reader;
+mod conversation_state_feed;
 mod delegation_models;
 mod directory_observation;
 mod history;
@@ -43,8 +44,9 @@ pub(super) mod presentation_feed;
 pub(super) mod presentation_reader;
 mod product_subscription;
 mod prompt_runner;
-mod rejected_tools;
+pub(crate) mod rejected_tools;
 mod residency;
+mod session_entry;
 pub(crate) mod session_tools;
 mod settings_api;
 mod shutdown_progress;
@@ -60,12 +62,12 @@ mod timeline_backlog_tests;
 mod tool_refresh;
 pub use conversation_feed::{ConversationEvent, ConversationFeed};
 pub use conversation_reader::{ContentWatch, ConversationReader};
+pub use conversation_state_feed::ConversationStateFeed;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
-pub use presentation_feed::TimelineFeed;
+pub use presentation_feed::{TimelineEvent, TimelineFeed};
 pub use presentation_reader::DisplayMembers;
 pub use product_subscription::StudioProductTopicSubscription;
-pub use thread_stream::StudioThreadSubscription;
-mod thread_observation;
+pub(crate) mod thread_observation;
 mod thread_title;
 mod updater;
 
@@ -200,7 +202,9 @@ pub struct StudioRuntime {
     tool_refresh: background_task::BackgroundTaskSlot,
     rejected_tools: rejected_tools::RejectedToolOwners,
     tool_catalog_updates: std::sync::Arc<tokio::sync::Notify>,
-    threads: crate::thread_assembler::StudioThreadAssembler,
+    sessions: crate::session::SessionTable,
+    #[cfg(test)]
+    s2_delete_publication_failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,
     instance_lock: super::runtime_lock::RuntimeLockOwner,
     store: StudioStore,
@@ -385,7 +389,10 @@ impl StudioRuntime {
         // one CoreHandle, before the caller verifies the fence with `resume_thread_history`. A retry
         // that is not yet durable surfaces its typed failure and leaves the Thread paused; only its
         // success lets the existing explicit resume release the latch.
-        if let Some(thread) = self.threads.thread(thread_id) {
+        if let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        {
             thread.retry_output_storage().await?;
         }
         Ok(self.persistence_queue_snapshot())
@@ -405,7 +412,10 @@ impl StudioRuntime {
         thread_id: &str,
         fault_generation: u64,
     ) -> Result<pl_protocol::PersistenceQueueSnapshot> {
-        if let Some(thread) = self.threads.thread(thread_id) {
+        if let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        {
             thread.resume_storage(fault_generation).await?;
         }
         Ok(self.persistence_queue_snapshot())
@@ -435,7 +445,7 @@ impl StudioRuntime {
     /// 用于 idle 判断。UI 不消费此列表（它从 per-thread 流读取 busy 状态）。
     async fn derive_active_turns(&self) -> Result<Vec<StudioActiveTurn>> {
         Ok(self
-            .threads
+            .sessions
             .observed_threads()
             .into_iter()
             .flat_map(|(thread_id, handle)| {
@@ -459,7 +469,7 @@ impl StudioRuntime {
             roots.insert(self.read_owned_thread(id).await?.root_thread_id);
         }
         for root in roots {
-            self.threads.close_tree(&root).await?;
+            self.require_session(&root)?.close_tree(&root).await?;
         }
         Ok(())
     }

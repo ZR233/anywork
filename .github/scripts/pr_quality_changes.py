@@ -94,6 +94,7 @@ _RUST_EXACT = frozenset(
 )
 _RUST_PREFIXES = (
     "code/pl-",
+    "code/tools/",
     "code/anywork/rust/",
     "code/anywork/lib/src/rust/",
 )

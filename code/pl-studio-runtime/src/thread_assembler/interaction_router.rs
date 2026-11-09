@@ -1,5 +1,5 @@
 //! Product interaction routing reads only canonical Thread snapshots.
-use super::{StudioThreadAssembler, decode_interaction_key};
+use super::{SessionRuntime, decode_interaction_key};
 use pl_protocol::{
     ChildInteractionSummary, InteractionRequest, InteractionResolution, InteractionStatus,
 };
@@ -78,7 +78,7 @@ fn is_child_plan_diagnostic(snapshot: &pl_core::thread::ThreadSnapshot, local_id
     })
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Reads a current product interaction without constructing a second mutable interaction owner.
     ///
     /// # Errors
@@ -93,7 +93,7 @@ impl StudioThreadAssembler {
             .state()
             .entries
             .get(thread_id)
-            .map(|entry| entry.thread.clone())
+            .map(|entry| entry.native.thread.clone())
         else {
             return Ok(None);
         };

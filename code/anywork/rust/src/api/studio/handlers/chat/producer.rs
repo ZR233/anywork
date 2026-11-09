@@ -2,10 +2,8 @@
 use std::sync::Arc;
 
 use pl_protocol::studio::StudioErrorCode;
-use pl_studio_runtime::ConversationEvent;
 
 use super::owner::{ConversationOwner, error};
-use crate::api::studio::convert::{chat, presentation, thread_stream::bridge_thread_update};
 use crate::api::studio::types::{BridgeConversationEvent, BridgeConversationFrame, BridgeError};
 use crate::frb_generated::{SseEncode, StreamSink};
 
@@ -65,18 +63,12 @@ async fn pump(
             Ok(Some(event)) => event,
             Ok(None) => return Some(BridgeConversationEvent::Closed),
             Err(error) => {
-                return Some(BridgeConversationEvent::Failure {
-                    error: error.into(),
-                });
+                return Some(BridgeConversationEvent::Failure { error });
             }
         };
         if owner.producer_cancel.is_cancelled() {
             return Some(BridgeConversationEvent::Closed);
         }
-        let event = match convert(event) {
-            Ok(event) => event,
-            Err(error) => return Some(BridgeConversationEvent::Failure { error }),
-        };
         match publish(owner, post, event) {
             Publication::Sent => {}
             Publication::Closing => return Some(BridgeConversationEvent::Closed),
@@ -84,23 +76,6 @@ async fn pump(
             Publication::Failed(error) => return Some(BridgeConversationEvent::Failure { error }),
         }
     }
-}
-
-fn convert(event: ConversationEvent) -> Result<BridgeConversationEvent, BridgeError> {
-    Ok(match event {
-        ConversationEvent::State { update } => BridgeConversationEvent::State {
-            update: Box::new(bridge_thread_update(*update)?),
-        },
-        ConversationEvent::Chat { batch } => BridgeConversationEvent::Chat {
-            batch: Box::new(chat::batch(*batch)),
-        },
-        ConversationEvent::Activity { snapshot } => BridgeConversationEvent::Activity {
-            snapshot: Box::new(chat::activity((*snapshot).clone())),
-        },
-        ConversationEvent::Timeline { batch } => BridgeConversationEvent::Timeline {
-            batch: Box::new(presentation::batch(*batch)?),
-        },
-    })
 }
 
 enum Publication {

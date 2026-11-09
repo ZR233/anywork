@@ -38,13 +38,7 @@ pub struct CommandSpawnRequest {
 pub type CommandReader = Pin<Box<dyn AsyncRead + Send>>;
 pub type CommandWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StdinCloseState {
-    Open,
-    Closing,
-    Closed,
-}
+pub use pl_tool_command::process::StdinCloseState;
 
 /// Cumulative helper acknowledgements, independent of local DuplexStream flush.
 #[derive(Debug, Clone)]
@@ -104,42 +98,7 @@ pub struct CommandExit {
     pub capture: Option<CommandCaptureReceipt>,
 }
 
-/// 实际捕获写入者交回的终态磁盘计量，拒绝量只包含实际观察到但未接纳的块。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandCaptureReceipt {
-    pub captured_bytes: u64,
-    pub limit_bytes: u64,
-    /// 主捕获文件的确认偏移，与包含所有副本的计费成本分开。
-    pub confirmed: CommandCaptureOffsets,
-    pub charged_bytes: u64,
-    pub refused_bytes: u64,
-}
-
-/// Each raw stream advances only after its writer confirms the append.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandCaptureOffsets {
-    pub stdout: u64,
-    pub stderr: u64,
-}
-
-impl CommandCaptureOffsets {
-    pub fn total(self) -> u64 {
-        self.stdout.saturating_add(self.stderr)
-    }
-    pub fn get(self, stream: CommandCaptureStream) -> u64 {
-        match stream {
-            CommandCaptureStream::Stdout => self.stdout,
-            CommandCaptureStream::Stderr => self.stderr,
-        }
-    }
-    pub fn set(&mut self, stream: CommandCaptureStream, value: u64) {
-        match stream {
-            CommandCaptureStream::Stdout => self.stdout = value,
-            CommandCaptureStream::Stderr => self.stderr = value,
-        }
-    }
-}
+pub use pl_tool_command::process::{CommandCaptureOffsets, CommandCaptureReceipt};
 
 /// 唯一负责在真实写盘前执行预算的边界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,11 +233,7 @@ impl Drop for ManagedCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandCaptureStream {
-    Stdout,
-    Stderr,
-}
+pub use pl_tool_command::process::CommandCaptureStream;
 
 /// 命令完整输出在宿主和模型 workspace 中的对应位置。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -263,22 +263,9 @@ fn demand() -> ReadDemand {
 async fn chat(feed: &mut ConversationFeed, scope: &ChatScope) -> Result<ChatBatch> {
     loop {
         match feed.recv().await?.context("A34 feed ended")? {
-            ConversationEvent::Timeline { .. } => bail!("completion-level feed received Timeline"),
             ConversationEvent::Chat { batch } => {
                 batch.validate_for(scope)?;
                 return Ok(*batch);
-            }
-            ConversationEvent::State { update } => {
-                if let ThreadSubscriptionUpdate::Snapshot {
-                    completed_history_version,
-                    snapshot,
-                } = *update
-                {
-                    ensure!(completed_history_version == 1 && snapshot.schema_version == 17);
-                    if !snapshot.interactions.is_empty() {
-                        ensure!(snapshot.business_refs.interactions.is_some());
-                    }
-                }
             }
             ConversationEvent::Activity { .. } => {}
         }

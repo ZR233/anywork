@@ -158,11 +158,10 @@ async fn business_ref_notifications_advance_state_without_authorizing_completion
     watch
         .select_target(&fixture.host.runtime, "input", Some("target"))
         .await?;
-    let snapshot = pl_protocol::ThreadSnapshot::empty(&inbound.creation_id);
-    watch.state(ThreadSubscriptionUpdate::Snapshot {
-        completed_history_version: pl_protocol::COMPLETED_HISTORY_VERSION,
-        snapshot: Box::new(snapshot),
-    })?;
+    let baseline = watch
+        .state_revision
+        .ok_or_else(|| anyhow::anyhow!("real State baseline was not consumed"))?;
+    let epoch = watch.state_epoch.unwrap_or(1);
     for (revision, notification) in [
         ThreadNotification::BusinessRefsChanged {
             references: pl_protocol::ThreadBusinessRefs::empty(),
@@ -175,17 +174,132 @@ async fn business_ref_notifications_advance_state_without_authorizing_completion
         watch.state(ThreadSubscriptionUpdate::Notification {
             notification: Box::new(pl_protocol::ThreadNotificationEnvelope::new(
                 &inbound.creation_id,
-                1,
-                revision as u64,
-                revision as u64 + 1,
+                epoch,
+                baseline + revision as u64,
+                baseline + revision as u64 + 1,
                 1,
                 notification,
             )),
         })?;
     }
-    assert_eq!(watch.state_revision, Some(2));
-    assert_eq!(watch.state_epoch, Some(1));
+    assert_eq!(watch.state_revision, Some(baseline + 2));
+    assert_eq!(watch.state_epoch, Some(epoch));
     assert!(watch.terminal("target").is_none());
+    watch.close().await?;
+    fixture.shutdown().await
+}
+
+#[tokio::test]
+async fn explicit_files_require_actual_saved_receipt_target_turn_and_foreground_tool()
+-> anyhow::Result<()> {
+    use super::super::content::ReplyItemKind;
+    use pl_core::context::{ContextContent, OpaquePayload, ResourceReference};
+    use pl_tool::file_display::*;
+    let fixture = Fixture::new().await?;
+    let inbound = fixture.inbound("reply-file-display", true).await?;
+    let mut watch = ReplyWatch::open(&fixture.host.runtime, &inbound.creation_id).await?;
+    watch
+        .select_target(&fixture.host.runtime, "input", Some("target"))
+        .await?;
+    let reader = watch.reader();
+    let resource = ResourceReference::new(
+        "pl.studio.resource:test".into(),
+        format!("sha256:{}", "ab".repeat(32)),
+        7,
+        "text/markdown".into(),
+    )?;
+    let receipt = FileDisplayReceipt {
+        caption: Some("chosen file".into()),
+        files: vec![
+            FileDisplayResult::Ready {
+                resource: resource.clone(),
+                filename: "report.md".into(),
+                modality: pl_protocol::AttachmentModality::File,
+                origin: FileDisplayOrigin::Local {
+                    path: "/private/work/report.md".into(),
+                },
+            },
+            FileDisplayResult::Failed {
+                filename: "missing.md".into(),
+                message: "not found".into(),
+            },
+        ],
+    };
+    let payload = OpaquePayload::new(
+        FILE_DISPLAY_FORMAT,
+        FILE_DISPLAY_VERSION,
+        serde_json::to_string(&receipt)?,
+    )?;
+    let artifacts = serde_json::to_vec(&vec![ContextContent::Opaque { payload }])?;
+    let mut display = message(
+        "display-record",
+        Some("target"),
+        "tool",
+        serde_json::json!({
+            "invocation":{"toolCallId":"display-call","name":TOOL_SHOW_FILES,"presentationContract":FILE_DISPLAY_PRESENTATION},
+            "state":{"kind":"succeeded","completedAt":1,"output":{"attachments":[],"exitCode":null}},
+        }),
+        serde_json::json!([{
+            "key":"tool.output-artifacts", "byteLength":artifacts.len(), "inline":artifacts,
+        }]),
+    );
+    display.atom.kind = ChatAtomKind::ToolCall;
+    display.atom.tool = Some(pl_protocol::ChatToolIdentity {
+        call_id: "display-call".into(),
+        name: TOOL_SHOW_FILES.into(),
+    });
+    let decoded = decode_entry(&reader, &display, "target")
+        .await?
+        .expect("explicit display");
+    let ReplyItemKind::Files {
+        call_id, receipt, ..
+    } = decoded.kind
+    else {
+        panic!("not a file display")
+    };
+    assert_eq!(call_id, "display-call");
+    assert_eq!(receipt.files.len(), 2);
+    assert!(
+        decode_entry(&reader, &display, "other-turn")
+            .await?
+            .is_none()
+    );
+    let mut background = display.clone();
+    background.atom.source = ChatSourceId::BackgroundResult {
+        message_id: "background".into(),
+    };
+    assert!(
+        decode_entry(&reader, &background, "target")
+            .await?
+            .is_none()
+    );
+    let mut unrelated = display.clone();
+    unrelated.atom.tool = Some(pl_protocol::ChatToolIdentity {
+        call_id: "display-call".into(),
+        name: "view_image".into(),
+    });
+    let mut raw: serde_json::Value = match &unrelated.atom.payload {
+        Some(PayloadData::Inline { bytes }) => serde_json::from_slice(bytes)?,
+        _ => unreachable!(),
+    };
+    raw["data"]["invocation"]["name"] = "view_image".into();
+    raw["data"]["invocation"]["presentationContract"] = "builtin.view_image@1".into();
+    unrelated.atom.payload = Some(PayloadData::Inline {
+        bytes: serde_json::to_vec(&raw)?,
+    });
+    assert!(decode_entry(&reader, &unrelated, "target").await?.is_none());
+    // A bare archived resource is not a verified display, even with a forged declaration name.
+    let bare = serde_json::to_vec(&vec![resource])?;
+    raw = match &display.atom.payload {
+        Some(PayloadData::Inline { bytes }) => serde_json::from_slice(bytes)?,
+        _ => unreachable!(),
+    };
+    raw["bodies"][0]["byteLength"] = bare.len().into();
+    raw["bodies"][0]["inline"] = serde_json::to_value(bare)?;
+    display.atom.payload = Some(PayloadData::Inline {
+        bytes: serde_json::to_vec(&raw)?,
+    });
+    assert!(decode_entry(&reader, &display, "target").await.is_err());
     watch.close().await?;
     fixture.shutdown().await
 }
@@ -245,11 +359,7 @@ async fn bot_input_retry_preserves_one_frozen_record_and_new_message_keeps_its_i
                 .is_err()
         );
         async fn completed(runtime: &StudioRuntime, id: &str, input: &str) -> anyhow::Result<()> {
-            let mut subscription = runtime
-                .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                    thread_id: id.into(),
-                })
-                .await?;
+            let mut subscription = runtime.open_conversation_state_feed(id).await?;
             tokio::time::timeout(Duration::from_secs(20), async {
                 while let Some(update) = subscription.recv().await? {
                     if let ThreadSubscriptionUpdate::Notification { notification } = update
@@ -361,6 +471,184 @@ async fn bot_input_retry_preserves_one_frozen_record_and_new_message_keeps_its_i
     env.finish(result).await
 }
 
+#[derive(Debug)]
+enum SelectedOutput {
+    Caption(crate::channel_output::ChannelTarget, String, String),
+    File(
+        crate::channel_output::ChannelTarget,
+        String,
+        crate::channel_output::FileDelivery,
+        Vec<u8>,
+    ),
+}
+
+struct SelectedOutputPort(std::sync::Arc<tokio::sync::Mutex<Vec<SelectedOutput>>>);
+
+impl crate::channel_output::ChannelOutputPort for SelectedOutputPort {
+    async fn send_caption(
+        &self,
+        target: &crate::channel_output::ChannelTarget,
+        operation: &str,
+        caption: &str,
+        _: &CancellationToken,
+    ) -> crate::channel_output::ChannelDeliveryResult {
+        self.0.lock().await.push(SelectedOutput::Caption(
+            target.clone(),
+            operation.into(),
+            caption.into(),
+        ));
+        crate::channel_output::ChannelDeliveryResult::Confirmed {
+            message_ids: vec![crate::channel_output::PlatformMessageId(
+                "second-caption".into(),
+            )],
+        }
+    }
+
+    async fn send_file(
+        &self,
+        target: &crate::channel_output::ChannelTarget,
+        operation: &str,
+        file: &crate::channel_output::FileDelivery,
+        bytes: Vec<u8>,
+        _: &CancellationToken,
+    ) -> crate::channel_output::ChannelDeliveryResult {
+        self.0.lock().await.push(SelectedOutput::File(
+            target.clone(),
+            operation.into(),
+            file.clone(),
+            bytes,
+        ));
+        crate::channel_output::ChannelDeliveryResult::Confirmed {
+            message_ids: vec![crate::channel_output::PlatformMessageId(
+                "second-file".into(),
+            )],
+        }
+    }
+}
+
+#[tokio::test]
+async fn automatic_file_dispatch_uses_selected_binding_without_any_feishu_configuration()
+-> anyhow::Result<()> {
+    use super::super::owner::ReplyRun;
+    use crate::channel_output::{ChannelOutputBinding, ChannelTarget};
+    use crate::runtime_test_support as support;
+    let env = support::Environment::new(
+        vec![
+            support::prompt_step(
+                "binding-explicit",
+                0,
+                support::tool_reply(
+                    "show_files",
+                    "selected-display-call",
+                    serde_json::json!({
+                        "caption":"selected caption",
+                        "files":[{"kind":"workspace","path":"selected.md"}],
+                    }),
+                ),
+            ),
+            support::prompt_step(
+                "binding-explicit",
+                1,
+                support::text_reply("done", "binding-final"),
+            ),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let bytes = b"# original selected bytes\n";
+        tokio::fs::write(env.repo.join("selected.md"), bytes).await?;
+        tokio::fs::write(env.repo.join("unselected.md"), b"do not deliver").await?;
+        assert!(env.runtime.read_bots().await?.bots.is_empty());
+        let thread = env
+            .start(pl_protocol::ThreadWorkspaceMode::Local, "binding-explicit")
+            .await?
+            .thread;
+        let turn = support::completed_prompt(&env.runtime, &thread.id, "binding-explicit").await?;
+        let mut watch = ReplyWatch::open(&env.runtime, &thread.id).await?;
+        let observed = async {
+            watch
+                .select_target(&env.runtime, "input-binding-explicit", Some(&turn.id))
+                .await?;
+            let projection = watch.projection().expect("target projection");
+            assert_eq!(projection.file_displays().count(), 1);
+            let calls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let target = ChannelTarget {
+                adapter: "second-test-channel".into(),
+                account_id: "no-feishu-account".into(),
+                conversation_id: "selected-second-conversation".into(),
+            };
+            let mut run = ReplyRun {
+                output: ChannelOutputBinding::new(
+                    target.clone(),
+                    SelectedOutputPort(calls.clone()),
+                ),
+                bot_id: "no-bot-config".into(),
+                chat_id: "not-the-selected-target".into(),
+                message_id: "source-message".into(),
+                text: String::new(),
+                attachments: Vec::new(),
+                worker_id: "source-owner".into(),
+                thread_id: thread.id.clone(),
+                original_input: "input-binding-explicit".into(),
+                watch_input: "input-binding-explicit".into(),
+                hinted: Default::default(),
+                delivered_displays: Default::default(),
+                file_delivery_diagnostic: None,
+                card: None,
+                next_observation: tokio::time::Instant::now(),
+            };
+            let reader = watch.reader();
+            super::super::files::deliver_file_displays(
+                &env.runtime,
+                &reader,
+                &mut run,
+                &turn.id,
+                &projection,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            // The actual automatic entry, not a direct driver call, owns replay suppression.
+            super::super::files::deliver_file_displays(
+                &env.runtime,
+                &reader,
+                &mut run,
+                &turn.id,
+                &projection,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            let calls = calls.lock().await;
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            let [
+                SelectedOutput::Caption(caption_target, caption_operation, caption),
+                SelectedOutput::File(file_target, file_operation, file, actual_bytes),
+            ] = calls.as_slice()
+            else {
+                anyhow::bail!("caption and file did not go through selected binding in order");
+            };
+            assert_eq!(caption_target, &target);
+            assert_eq!(file_target, &target);
+            assert_eq!(caption, "selected caption");
+            assert_ne!(caption_operation, file_operation);
+            assert_eq!(file.filename, "selected.md");
+            assert_eq!(actual_bytes, bytes);
+            file.resource.verify(actual_bytes)?;
+            assert!(run.file_delivery_diagnostic.is_none());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let closed = watch.close().await;
+        observed?;
+        closed?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
 #[test]
 fn inbound_role_claims_do_not_bypass_trust_or_merge_distinct_platform_messages()
 -> anyhow::Result<()> {
@@ -442,21 +730,22 @@ async fn receive_production_activity(
 ) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let event = watch
-                .feed
-                .recv()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("feed ended before activity"))?;
-            match event {
-                ConversationEvent::Timeline { .. } => {
-                    anyhow::bail!("completion-level bot feed received Timeline")
+            tokio::select! {
+                biased;
+                update = watch.state_feed.recv() => {
+                    let update = update?
+                        .ok_or_else(|| anyhow::anyhow!("state feed ended before activity"))?;
+                    watch.state(update)?;
                 }
-                ConversationEvent::State { update } => watch.state(*update)?,
-                ConversationEvent::Chat { batch } => {
+                event = watch.feed.recv() => {
+                    let event = event?
+                        .ok_or_else(|| anyhow::anyhow!("feed ended before activity"))?;
+                    match event {
+                        ConversationEvent::Chat { batch } => {
                     watch.stage(*batch)?;
                     watch.finish_pending().await?;
                 }
-                ConversationEvent::Activity { snapshot } => {
+                        ConversationEvent::Activity { snapshot } => {
                     let found = snapshot.execution_present
                         && snapshot.entries.iter().any(|entry| {
                             entry.atom.turn_id.as_deref() == Some(target)
@@ -472,6 +761,8 @@ async fn receive_production_activity(
                                 .is_some_and(|text| text.contains(value)))
                     {
                         return Ok::<_, anyhow::Error>(());
+                    }
+                }
                     }
                 }
             }

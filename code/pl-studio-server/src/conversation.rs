@@ -11,7 +11,9 @@ use pl_protocol::{
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
-use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineFeed};
+use pl_studio_runtime::{
+    ConversationEvent, ConversationFeed, ConversationReader, TimelineEvent, TimelineFeed,
+};
 use serde::Deserialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -63,6 +65,11 @@ pub(crate) enum NativeFeed {
     Timeline(Box<TimelineFeed>),
 }
 
+pub(crate) enum NativeEvent {
+    Conversation(ConversationEvent),
+    Timeline(TimelineEvent),
+}
+
 impl NativeFeed {
     pub(crate) fn subscription_id(&self) -> &str {
         match self {
@@ -78,10 +85,13 @@ impl NativeFeed {
         }
     }
 
-    pub(crate) async fn recv(&mut self) -> anyhow::Result<Option<ConversationEvent>> {
+    pub(crate) async fn recv(&mut self) -> anyhow::Result<Option<NativeEvent>> {
         match self {
-            Self::Conversation(feed) => feed.recv().await,
-            Self::Timeline(feed) => feed.receive().await.map(Some),
+            Self::Conversation(feed) => feed
+                .recv()
+                .await
+                .map(|event| event.map(NativeEvent::Conversation)),
+            Self::Timeline(feed) => feed.receive().await.map(NativeEvent::Timeline).map(Some),
         }
     }
 

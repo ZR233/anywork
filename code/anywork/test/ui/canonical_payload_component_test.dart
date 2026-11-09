@@ -50,6 +50,7 @@ ChatAtom _atom(
   String id = 'atom',
   ChatSourceId source = const InputChatSource(inputId: 'input'),
   ChatAtomKind kind = ChatAtomKind.input,
+  List<ChatAtomContent>? contents,
 }) => ChatAtom(
   id: id,
   completionItemId: 'completion',
@@ -63,15 +64,23 @@ ChatAtom _atom(
     ended: null,
     outcome: ChatTerminalOutcome.completed,
   ),
-  contents: kind == ChatAtomKind.input
-      ? const [ChatAtomContent(role: ChatContentRole.body, reference: _bodyRef)]
-      : const [],
+  contents:
+      contents ??
+      (kind == ChatAtomKind.input
+          ? const [
+              ChatAtomContent(role: ChatContentRole.body, reference: _bodyRef),
+            ]
+          : const []),
   payload: payload,
 );
 
-ChatAtom _head({ChatAtomKind kind = ChatAtomKind.input}) => _atom(
+ChatAtom _head({
+  ChatAtomKind kind = ChatAtomKind.input,
+  List<ChatAtomContent>? contents,
+}) => _atom(
   const DeferredPayload(reference: _payloadRef, byteLength: 1000),
   kind: kind,
+  contents: contents,
 );
 
 CompletedEntry _entry(ChatAtom atom) => CompletedEntry(
@@ -198,12 +207,30 @@ void main() {
       final unit = chatItemPresentationOf(message)!.displayUnit!;
       expect(ChatItemPresentation.forUnit(unit).attachments, isEmpty);
       await tester.pumpWidget(h.host());
-      expect(find.byType(ChatItemView), findsNothing);
+      expect(find.byType(ChatItemView), findsOneWidget);
+      expect(
+        tester
+            .widget<ChatItemView>(find.byType(ChatItemView))
+            .item
+            .compatibility,
+        ChatItemCompatibility.deferred,
+      );
+      expect(find.byType(TimelineAttachmentsConnector), findsNothing);
       final timer = Timer(
         const Duration(milliseconds: 32),
         () => reply.complete(_entry(_atom(_imageInput(ids)))),
       );
       addTearDown(timer.cancel);
+      await pumpClientUntil(
+        tester,
+        () =>
+            tester
+                .widget<ChatItemView>(find.byType(ChatItemView))
+                .item
+                .compatibility ==
+            ChatItemCompatibility.current,
+        'canonical metadata delivered to the existing public Body renderer',
+      );
       final rendered = await waitForTimelineConceptSingle(tester, unit);
       expect(rendered.attachments.map((attachment) => attachment.id), ids);
       await pumpClientUntil(
@@ -294,6 +321,7 @@ void main() {
           h.controls.controller.messages.single,
         )!.displayUnit!;
         await tester.pumpWidget(h.host());
+        await tester.pumpAndSettle();
         final rendered = await waitForTimelineConceptSingle(tester, unit);
         await expectLater(
           waitForTimelineConceptInputImages(tester, rendered),
@@ -323,6 +351,7 @@ void main() {
         h.controls.controller.messages.single,
       )!.displayUnit!;
       await tester.pumpWidget(h.host());
+      await tester.pumpAndSettle();
       Object? failure;
       try {
         await waitForTimelineConceptSingle(
@@ -335,6 +364,7 @@ void main() {
       }
       expect(failure, isA<TestFailure>());
       expect(find.text('完成内容读取失败'), findsOneWidget);
+      expect(find.text('原始输入正文'), findsOneWidget);
       expect(find.textContaining('PRIVATE'), findsNothing);
       expect(h.content.requests, hasLength(1));
       expect(
@@ -365,19 +395,38 @@ void main() {
       final message = h.controls.controller.messages.single;
       final presentation = chatItemPresentationOf(message)!;
       await tester.pumpWidget(h.host());
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(h.content.requests.single.$1, 'completion');
       expect(h.content.requests.single.$2.maxItems, 1);
       expect(h.content.requests.single.$2.maxBytes, 64 * 1024);
+      // The producer's public Body is independent of the pending metadata.
+      expect(find.text('原始输入正文'), findsOneWidget);
+      expect(find.text('原附件.txt'), findsNothing);
+      expect(find.text('正在读取完成内容…'), findsOneWidget);
+      final itemFinder = find.byType(ChatItemView);
+      final bodyFinder = find.byType(TimelineContentRangeConnector);
+      expect(itemFinder, findsOneWidget);
+      expect(bodyFinder, findsOneWidget);
+      final itemState = tester.state(itemFinder);
+      final bodyState = tester.state(bodyFinder);
+      final bodyElement = tester.element(bodyFinder);
+      expect(h.content.bodyRequests, hasLength(1));
+      expect(h.content.bodyRequests.single.$1, _bodyRef);
+      expect(h.content.bodyRequests.single.$2.offset, 0);
+      expect(h.content.bodyRequests.single.$2.maxBytes, 64 * 1024);
       gate.complete(original);
       await tester.pumpAndSettle();
       expect(find.text('原附件.txt'), findsOneWidget);
-      // The body remains a separate bounded content read, not part of metadata IO.
-      await tester.tap(find.text('body · 18 字节'));
-      await tester.pumpAndSettle();
       expect(find.text('原始输入正文'), findsOneWidget);
-      expect(h.content.bodyRequests.single.$1, _bodyRef);
-      expect(h.content.bodyRequests.single.$2.maxBytes, 64 * 1024);
+      expect(find.text('正在读取完成内容…'), findsNothing);
+      expect(tester.state(itemFinder), same(itemState));
+      expect(tester.state(bodyFinder), same(bodyState));
+      expect(tester.element(bodyFinder), same(bodyElement));
+      expect(
+        h.content.bodyRequests,
+        hasLength(1),
+        reason: 'metadata delivery retains the original Body window owner',
+      );
       final rendered = tester
           .widget<ChatItemView>(find.byType(ChatItemView))
           .item;
@@ -396,6 +445,9 @@ void main() {
         hasLength(1),
         reason: 'stable rebuild does not reread canonical metadata',
       );
+      expect(h.content.bodyRequests, hasLength(1));
+      expect(find.text('原始输入正文'), findsOneWidget);
+      expect(tester.state(bodyFinder), same(bodyState));
       await h.close(tester);
     },
   );
@@ -546,10 +598,51 @@ void main() {
         expect(find.textContaining('PRIVATE'), findsNothing);
         expect(find.byType(TimelineToolDetails), findsNothing);
         expect(h.content.requests, hasLength(1));
+        expect(h.content.requests.single.$1, 'completion');
+        expect(h.content.requests.single.$2.maxItems, 1);
+        expect(h.content.requests.single.$2.maxBytes, 64 * 1024);
+        expect(find.text('原始输入正文'), findsOneWidget);
+        expect(find.text('原附件.txt'), findsNothing);
+        expect(find.byType(TimelineAttachmentsConnector), findsNothing);
+        expect(h.content.bodyRequests, hasLength(1));
+        expect(h.content.bodyRequests.single.$1, _bodyRef);
+        expect(h.content.bodyRequests.single.$2.offset, 0);
+        expect(h.content.bodyRequests.single.$2.maxBytes, 64 * 1024);
         await h.close(tester);
       },
     );
   }
+
+  testWidgets(
+    'Deferred Input without a public Body declaration remains restricted',
+    (tester) async {
+      final h = _Harness();
+      final head = _head(contents: const []);
+      h.content.read = (_, _) async => _entry(head);
+      await h.controls.adapter.applyTimeline(
+        displayBatch([
+          DisplayBlock(
+            id: 'restricted-block',
+            historyPos: 1,
+            body: SingleDisplayBlock(atom: head, completionId: 'completion'),
+          ),
+        ]),
+      );
+      await tester.pumpWidget(h.host());
+      await tester.pumpAndSettle();
+      expect(find.text('完成内容超出单次读取预算（64 KiB）'), findsOneWidget);
+      expect(find.byType(TimelineContentRangeConnector), findsNothing);
+      expect(find.byType(TimelineAttachmentsConnector), findsNothing);
+      expect(find.byType(TimelineToolDetails), findsNothing);
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(h.content.requests, hasLength(1));
+      expect(h.content.requests.single.$1, 'completion');
+      expect(h.content.requests.single.$2.maxItems, 1);
+      expect(h.content.requests.single.$2.maxBytes, 64 * 1024);
+      expect(h.content.bodyRequests, isEmpty);
+      await h.close(tester);
+    },
+  );
 }
 
 class _Content extends Fake implements ConversationContent {
@@ -680,9 +773,18 @@ class _Harness {
               label: label,
               reference: reference,
               witness: witness,
-              readContent: (reference, range) => content
-                  .openScope(generation: 1)
-                  .readContent(reference: reference, range: range),
+              readContent: (reference, range) async {
+                final scope = content.openScope(generation: 1);
+                try {
+                  return await scope.readContent(
+                    reference: reference,
+                    range: range,
+                  );
+                } finally {
+                  scope.retire();
+                  await scope.close();
+                }
+              },
             ),
         attachmentBuilder: (item) => TimelineAttachmentsConnector(
           item: item,

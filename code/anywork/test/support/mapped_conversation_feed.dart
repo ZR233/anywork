@@ -4,15 +4,11 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// A test-only typed frame projection around a real feed. Identity, ACK and close stay native-owned.
+/// A test-only reader override. Identity, events, ACK and close stay native-owned.
 class MappedConversationFeed implements ConversationFeed {
-  MappedConversationFeed(
-    this.inner,
-    this.mapState, {
-    ConversationReader? reader,
-  }) : reader = reader ?? inner.reader;
+  MappedConversationFeed(this.inner, {ConversationReader? reader})
+    : reader = reader ?? inner.reader;
   final ConversationFeed inner;
-  final ThreadStreamFrame Function(ThreadStreamFrame frame) mapState;
   @override
   String get threadId => inner.threadId;
   @override
@@ -20,19 +16,7 @@ class MappedConversationFeed implements ConversationFeed {
   @override
   final ConversationReader reader;
   @override
-  Stream<ConversationFrame> get events => inner.events.map(
-    (frame) => ConversationFrame(
-      threadId: frame.threadId,
-      subscriptionId: frame.subscriptionId,
-      deliverySequence: frame.deliverySequence,
-      event: switch (frame.event) {
-        ConversationStateEvent(:final frame) => ConversationStateEvent(
-          frame: mapState(frame),
-        ),
-        final event => event,
-      },
-    ),
-  );
+  Stream<ConversationFrame> get events => inner.events;
   @override
   Future<void> acknowledge(int deliverySequence) =>
       inner.acknowledge(deliverySequence);
@@ -42,10 +26,10 @@ class MappedConversationFeed implements ConversationFeed {
   Future<void> close() => inner.close();
 }
 
-/// Preserves the display query capability while mapping only State frames.
+/// Preserves the display query capability while overriding the reader.
 final class MappedTimelineFeed extends MappedConversationFeed
     implements TimelineFeed {
-  MappedTimelineFeed(TimelineFeed super.inner, super.mapState, {super.reader});
+  MappedTimelineFeed(TimelineFeed super.inner, {super.reader});
   TimelineFeed get timeline => inner as TimelineFeed;
   @override
   Future<TimelineBatch> loadTimelineOlder({
@@ -76,13 +60,11 @@ class ScriptedConversationFeed implements ConversationFeed {
     required String subscriptionId,
     required ChatBatch Function() initial,
     ConversationReader? reader,
-    ThreadStreamFrame Function()? state,
   }) : this._(
          threadId: threadId,
          subscriptionId: subscriptionId,
          initial: () => ConversationChatEvent(batch: initial()),
          reader: reader,
-         state: state,
        );
 
   ScriptedConversationFeed._({
@@ -90,20 +72,13 @@ class ScriptedConversationFeed implements ConversationFeed {
     required this.subscriptionId,
     required ConversationEvent Function() initial,
     ConversationReader? reader,
-    ThreadStreamFrame Function()? state,
   }) : reader = reader ?? _UnusedReader(threadId) {
     _events = StreamController<ConversationFrame>(
       onListen: () {
         listenCalls++;
         scheduleMicrotask(() {
           if (closed) return;
-          unawaited(() async {
-            if (state != null) {
-              emitState(state());
-              await Future.any([accepted(deliveredFrames), _stopped.future]);
-            }
-            if (!closed) publish(initial());
-          }());
+          publish(initial());
         });
       },
       onCancel: requestClose,
@@ -119,7 +94,6 @@ class ScriptedConversationFeed implements ConversationFeed {
   final Set<int> _unacknowledged = {};
   final List<int> acknowledgements = [];
   final Map<int, Completer<void>> _accepted = {};
-  final _stopped = Completer<void>();
   Future<void> accepted(int sequence) => acknowledgements.contains(sequence)
       ? Future.value()
       : (_accepted[sequence] ??= Completer<void>()).future;
@@ -173,8 +147,6 @@ class ScriptedConversationFeed implements ConversationFeed {
   }
 
   void emit(ChatBatch batch) => publish(ConversationChatEvent(batch: batch));
-  void emitState(ThreadStreamFrame frame) =>
-      publish(ConversationStateEvent(frame: frame));
 
   @override
   void requestClose() {
@@ -182,7 +154,6 @@ class ScriptedConversationFeed implements ConversationFeed {
     // 终帧不获取 credit，也不等待 ACK。
     publish(const ConversationClosedEvent());
     closed = true;
-    _stopped.complete();
     reader.requestClose();
   }
 
@@ -209,7 +180,6 @@ final class ScriptedTimelineFeed extends ScriptedConversationFeed
   ScriptedTimelineFeed({
     required this.queries,
     required TimelineBatch Function() initial,
-    super.state,
   }) : super._(
          threadId: queries.threadId,
          subscriptionId: queries.subscriptionId,
@@ -250,6 +220,148 @@ final class ScriptedTimelineFeed extends ScriptedConversationFeed
     await super.close();
     await queries.close();
   }
+}
+
+/// 状态侧脚本化发送端：只承载 State/Failure/Closed，身份与 credit 独立于内容连接。
+class ScriptedConversationStateFeed implements ConversationStateFeed {
+  ScriptedConversationStateFeed({
+    required this.threadId,
+    this.subscriptionId = 'state-sub',
+    ThreadStreamFrame Function()? initialState,
+  }) {
+    _events = StreamController<ConversationFrame>(
+      onListen: () {
+        listenCalls++;
+        scheduleMicrotask(() {
+          if (closed) return;
+          unawaited(() async {
+            if (initialState != null) {
+              emitState(initialState());
+              await Future.any([accepted(deliveredFrames), _stopped.future]);
+            }
+          }());
+        });
+      },
+      onCancel: requestClose,
+    );
+  }
+  @override
+  final String threadId;
+  @override
+  final String subscriptionId;
+  late final StreamController<ConversationFrame> _events;
+  final Set<int> _unacknowledged = {};
+  final List<int> acknowledgements = [];
+  final Map<int, Completer<void>> _accepted = {};
+  final _stopped = Completer<void>();
+  Future<void> accepted(int sequence) => acknowledgements.contains(sequence)
+      ? Future.value()
+      : (_accepted[sequence] ??= Completer<void>()).future;
+  int listenCalls = 0;
+  int deliveredFrames = 0;
+  int closeCalls = 0;
+  bool closed = false;
+  bool _terminalSent = false;
+  bool _claimed = false;
+  Future<void>? _closing;
+
+  @override
+  Stream<ConversationFrame> get events {
+    if (_claimed) throw StateError('A feed has one consumer');
+    _claimed = true;
+    return _events.stream;
+  }
+
+  void publish(ConversationEvent event) {
+    if (closed) throw StateError('The feed has closed');
+    final terminal =
+        event is ConversationClosedEvent || event is ConversationFailureEvent;
+    if (_terminalSent) {
+      if (terminal) return;
+      throw StateError('Data after the terminal frame');
+    }
+    if (event is ConversationChatEvent ||
+        event is ConversationTimelineEvent ||
+        event is ConversationActivityEvent) {
+      throw StateError('Content never flows on the state feed');
+    }
+    if (terminal) _terminalSent = true;
+    if (!terminal) {
+      if (_unacknowledged.isNotEmpty) {
+        throw StateError('The single data credit is owned');
+      }
+      _unacknowledged.add(++deliveredFrames);
+    }
+    _events.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: deliveredFrames,
+        event: event,
+      ),
+    );
+  }
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    if (!_unacknowledged.remove(deliverySequence)) {
+      throw StateError('ACK does not own a credit');
+    }
+    acknowledgements.add(deliverySequence);
+    _accepted.remove(deliverySequence)?.complete();
+  }
+
+  void emitState(ThreadStreamFrame frame) =>
+      publish(ConversationStateEvent(frame: frame));
+
+  @override
+  void requestClose() {
+    if (closed) return;
+    // 终帧不获取 credit，也不等待 ACK。
+    publish(const ConversationClosedEvent());
+    closed = true;
+    _stopped.complete();
+  }
+
+  @override
+  Future<void> close() => _closing ??= _close();
+  Future<void> _close() async {
+    closeCalls++;
+    requestClose();
+    unawaited(_events.close());
+  }
+}
+
+/// A test-only typed frame projection around a real state feed.
+final class MappedConversationStateFeed implements ConversationStateFeed {
+  MappedConversationStateFeed(this.inner, this.mapState);
+  final ConversationStateFeed inner;
+  final ThreadStreamFrame Function(ThreadStreamFrame frame) mapState;
+  @override
+  String get threadId => inner.threadId;
+  @override
+  String get subscriptionId => inner.subscriptionId;
+  @override
+  Stream<ConversationFrame> get events => inner.events.map(
+    (frame) => ConversationFrame(
+      threadId: frame.threadId,
+      subscriptionId: frame.subscriptionId,
+      deliverySequence: frame.deliverySequence,
+      event: switch (frame.event) {
+        ConversationStateEvent(:final frame) => ConversationStateEvent(
+          frame: mapState(frame),
+        ),
+        final event => event,
+      },
+    ),
+  );
+  @override
+  Future<void> acknowledge(int deliverySequence) =>
+      inner.acknowledge(deliverySequence);
+  @override
+  void requestClose() => inner.requestClose();
+  @override
+  Future<void> close() => inner.close();
 }
 
 final class _UnusedReader extends Fake implements ConversationReader {

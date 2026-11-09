@@ -1,4 +1,5 @@
 use super::*;
+use crate::studio::ConversationStateFeed;
 use anyhow::{Context, Result, bail};
 use pl_core::chat::ChatKey;
 use pl_provider_fixture::{Protocol, Reply, ReplyStage, RequestMatch, Step};
@@ -6,7 +7,6 @@ use std::{collections::HashMap, time::Duration};
 
 use crate::runtime_test_support as support;
 mod allocation;
-mod coalescing;
 pub(in crate::studio::runtime) mod completed_runs;
 mod state_activity;
 
@@ -254,8 +254,8 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
         env.runtime.stop_tool_refresh().await?;
         let handle = env
             .runtime
-            .threads
-            .thread(id)
+            .session_of(id)
+            .and_then(|session| session.thread(id))
             .context("real Thread owner")?;
         handle
             .register_tools(json_binding_registrations(&counts)?)
@@ -275,10 +275,15 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
             support::tool_output(&env.root_provider, call)?.as_bytes(),
             expected.as_bytes()
         );
-        env.runtime.threads.close(id).await?;
+        env.runtime.require_session(id)?.close(id).await?;
         drop(handle);
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let durable = env
             .runtime
             .store
@@ -339,7 +344,10 @@ async fn json_echo_binding_survives_cold_read() -> Result<()> {
         feed.close().await?;
         feed.reader().close().await?;
         assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none(),
             "cold read activated owner"
         );
         assert_eq!(counts.echo.load(Ordering::SeqCst), 1);
@@ -412,8 +420,8 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
         env.runtime.stop_tool_refresh().await?;
         let handle = env
             .runtime
-            .threads
-            .thread(id)
+            .session_of(id)
+            .and_then(|session| session.thread(id))
             .context("real Thread owner")?;
         handle
             .register_tools(json_binding_registrations(&counts)?)
@@ -429,10 +437,15 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
                 cancellation: Default::default(),
             })
             .await?;
-        env.runtime.threads.close(id).await?;
+        env.runtime.require_session(id)?.close(id).await?;
         drop(handle);
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let mut feed = env
             .runtime
             .open_conversation_feed(
@@ -517,7 +530,12 @@ async fn json_output_encoding_failure_is_not_reexecuted() -> Result<()> {
         }
         feed.close().await?;
         feed.reader().close().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         assert_eq!(counts.echo.load(Ordering::SeqCst), 0);
         assert_eq!(counts.fail.load(Ordering::SeqCst), 1);
         assert_eq!(counts.serialized.load(Ordering::SeqCst), 1);
@@ -531,9 +549,6 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match feed.recv().await?.context("feed ended")? {
-                ConversationEvent::Timeline { .. } => {
-                    bail!("completion-level feed received Timeline")
-                }
                 ConversationEvent::Chat { batch } => {
                     batch.validate_for(&feed.reader.inner.scope)?;
                     assert!(
@@ -543,13 +558,13 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
                     assert!(batch.encoded_len()? <= feed.demand.max_bytes as usize);
                     return Ok(*batch);
                 }
-                ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
+                ConversationEvent::Activity { .. } => {}
             }
         }
     })
     .await?
 }
-fn demand() -> ReadDemand {
+pub(in crate::studio::runtime) fn demand() -> ReadDemand {
     ReadDemand {
         max_items: 8,
         max_bytes: 128 * 1024,
@@ -604,18 +619,9 @@ fn answer() -> InteractionResolution {
     })
 }
 
-async fn initial_snapshot(feed: &mut ConversationFeed) -> Result<ThreadSnapshot> {
-    let ConversationEvent::Chat { batch } = feed.recv().await?.context("missing initial Chat")?
-    else {
-        bail!("conversation must start with Chat");
-    };
-    assert_eq!(batch.placement, ChatPlacement::Set);
-    let ConversationEvent::State { update } =
-        feed.recv().await?.context("missing initial State")?
-    else {
-        bail!("Chat Set must be followed by State");
-    };
-    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = *update else {
+async fn initial_snapshot(state: &mut ConversationStateFeed) -> Result<ThreadSnapshot> {
+    let update = state.recv().await?.context("missing initial State")?;
+    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = update else {
         bail!("first State must be a snapshot");
     };
     Ok(*snapshot)
@@ -628,7 +634,7 @@ fn assert_notification_revision(notification: &ThreadNotificationEnvelope, revis
 }
 
 async fn finish_question(
-    feed: &mut ConversationFeed,
+    state: &mut ConversationStateFeed,
     interaction_id: &str,
     pending_revision: u64,
     mut revision: u64,
@@ -637,42 +643,32 @@ async fn finish_question(
 ) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            match feed
+            let update = state
                 .recv()
                 .await?
-                .context("feed ended before terminal State")?
-            {
-                ConversationEvent::Timeline { .. } => {
-                    bail!("completion-level feed received Timeline")
-                }
-                ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
-                ConversationEvent::State { update } => {
-                    let ThreadSubscriptionUpdate::Notification { notification } = *update else {
-                        bail!("live question flow emitted a second State snapshot");
-                    };
-                    assert_notification_revision(&notification, &mut revision);
-                    match notification.notification {
-                        ThreadNotification::InteractionChanged { interaction }
-                            if interaction.interaction_id == interaction_id =>
-                        {
-                            match interaction.status() {
-                                InteractionStatus::Pending => {
-                                    assert_eq!(interaction.revision, pending_revision);
-                                    *pending += 1;
-                                }
-                                InteractionStatus::Resolved => {
-                                    assert_eq!(interaction.revision, pending_revision + 1);
-                                    *resolved += 1;
-                                }
-                                status => bail!("question reached unexpected status {status:?}"),
-                            }
+                .context("state feed ended before terminal State")?;
+            let ThreadSubscriptionUpdate::Notification { notification } = update else {
+                bail!("live question flow emitted a second State snapshot");
+            };
+            assert_notification_revision(&notification, &mut revision);
+            match notification.notification {
+                ThreadNotification::InteractionChanged { interaction }
+                    if interaction.interaction_id == interaction_id =>
+                {
+                    match interaction.status() {
+                        InteractionStatus::Pending => {
+                            assert_eq!(interaction.revision, pending_revision);
+                            *pending += 1;
                         }
-                        ThreadNotification::TurnCompleted { .. } if *resolved == 1 => {
-                            return Ok(());
+                        InteractionStatus::Resolved => {
+                            assert_eq!(interaction.revision, pending_revision + 1);
+                            *resolved += 1;
                         }
-                        _ => {}
+                        status => bail!("question reached unexpected status {status:?}"),
                     }
                 }
+                ThreadNotification::TurnCompleted { .. } if *resolved == 1 => return Ok(()),
+                _ => {}
             }
         }
     })
@@ -729,11 +725,8 @@ async fn question_cut_late_open_starts_with_published_pending_and_delivers_one_a
             .await?;
         let id = &thread.thread.id;
         let (pending, publication_revision) = published_pending(&env, id).await?;
-        let mut feed = env
-            .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
-            .await?;
-        let snapshot = initial_snapshot(&mut feed).await?;
+        let mut state = env.runtime.open_conversation_state_feed(id).await?;
+        let snapshot = initial_snapshot(&mut state).await?;
         assert_eq!(snapshot.revision, publication_revision);
         assert_eq!(
             snapshot.interactions.as_slice(),
@@ -754,7 +747,7 @@ async fn question_cut_late_open_starts_with_published_pending_and_delivers_one_a
         let mut repeated_pending = 0;
         let mut resolved = 0;
         finish_question(
-            &mut feed,
+            &mut state,
             &pending.interaction_id,
             pending.revision,
             snapshot.revision,
@@ -767,8 +760,7 @@ async fn question_cut_late_open_starts_with_published_pending_and_delivers_one_a
             "baseline pending question was notified again"
         );
         assert_eq!(resolved, 1);
-        feed.close().await?;
-        feed.reader().close().await?;
+        state.close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -793,7 +785,8 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
-        let snapshot = initial_snapshot(&mut feed).await?;
+        let mut state = env.runtime.open_conversation_state_feed(id).await?;
+        let snapshot = initial_snapshot(&mut state).await?;
         assert!(
             snapshot.interactions.is_empty(),
             "held tool interaction entered the initial cut"
@@ -803,28 +796,19 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
         let mut state_revision = snapshot.revision;
         let pending = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                match feed
+                let update = state
                     .recv()
                     .await?
-                    .context("feed ended before pending question")?
+                    .context("state feed ended before pending question")?;
+                let ThreadSubscriptionUpdate::Notification { notification } = update else {
+                    bail!("live question flow emitted a second State snapshot");
+                };
+                assert_notification_revision(&notification, &mut state_revision);
+                if let ThreadNotification::InteractionChanged { interaction } =
+                    notification.notification
+                    && interaction.status() == InteractionStatus::Pending
                 {
-                    ConversationEvent::Timeline { .. } => {
-                        bail!("completion-level feed received Timeline")
-                    }
-                    ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
-                    ConversationEvent::State { update } => {
-                        let ThreadSubscriptionUpdate::Notification { notification } = *update
-                        else {
-                            bail!("live question flow emitted a second State snapshot");
-                        };
-                        assert_notification_revision(&notification, &mut state_revision);
-                        if let ThreadNotification::InteractionChanged { interaction } =
-                            notification.notification
-                            && interaction.status() == InteractionStatus::Pending
-                        {
-                            return Ok::<_, anyhow::Error>(interaction);
-                        }
-                    }
+                    return Ok::<_, anyhow::Error>(interaction);
                 }
             }
         })
@@ -858,7 +842,7 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
             )
             .await?;
         finish_question(
-            &mut feed,
+            &mut state,
             &pending.interaction_id,
             pending.revision,
             state_revision,
@@ -883,6 +867,7 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
         assert_ne!(current_refs.interactions.as_ref(), Some(&pending_resource));
         feed.close().await?;
         feed.reader().close().await?;
+        state.close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -890,13 +875,11 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
     env.finish(result).await
 }
 
-async fn state_snapshot(feed: &mut ConversationFeed) -> Result<Box<ThreadSnapshot>> {
-    let ConversationEvent::State { update } =
-        feed.recv().await?.context("missing State baseline")?
-    else {
-        bail!("Set must be followed by the State baseline");
-    };
-    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = *update else {
+pub(in crate::studio::runtime) async fn state_snapshot(
+    state: &mut ConversationStateFeed,
+) -> Result<Box<ThreadSnapshot>> {
+    let update = state.recv().await?.context("missing State baseline")?;
+    let ThreadSubscriptionUpdate::Snapshot { snapshot, .. } = update else {
         bail!("first State must be a snapshot");
     };
     Ok(snapshot)
@@ -962,13 +945,18 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
+        let mut live_state = env.runtime.open_conversation_state_feed(id).await?;
         assert_eq!(chat(&mut live).await?.placement, ChatPlacement::Set);
-        assert!(state_snapshot(&mut live).await?.interactions.is_empty());
+        assert!(
+            state_snapshot(&mut live_state)
+                .await?
+                .interactions
+                .is_empty()
+        );
         stage.release();
         let pending = tokio::time::timeout(Duration::from_secs(20), async {
-            while let Some(event) = live.recv().await? {
-                if let ConversationEvent::State { update } = event
-                    && let ThreadSubscriptionUpdate::Notification { notification } = *update
+            while let Some(update) = live_state.recv().await? {
+                if let ThreadSubscriptionUpdate::Notification { notification } = update
                     && let ThreadNotification::InteractionChanged { interaction } =
                         notification.notification
                     && interaction.status() == InteractionStatus::Pending
@@ -990,6 +978,7 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         let completed = support::completed_prompt(&env.runtime, id, "pending-plan-feed").await?;
         assert!(matches!(completed.state, TurnState::Completed(_)));
         live.close().await?;
+        live_state.close().await?;
         live.reader().close().await?;
 
         let mut reopened = env
@@ -997,7 +986,8 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
         assert_eq!(chat(&mut reopened).await?.placement, ChatPlacement::Set);
-        let baseline = state_snapshot(&mut reopened).await?;
+        let mut reopened_state = env.runtime.open_conversation_state_feed(id).await?;
+        let baseline = state_snapshot(&mut reopened_state).await?;
         assert_eq!(baseline.interactions, vec![pending.clone()]);
         assert_eq!(
             reopened.reader().read_business_refs().await?,
@@ -1034,16 +1024,23 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].id, pending.interaction_id);
         reopened.close().await?;
+        reopened_state.close().await?;
         reopened.reader().close().await?;
 
         env.restart().await?;
-        assert!(env.runtime.threads.observed_thread(id).is_none());
+        assert!(
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none()
+        );
         let mut cold = env
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
-        let baseline = state_snapshot(&mut cold).await?;
+        let mut cold_state = env.runtime.open_conversation_state_feed(id).await?;
+        let baseline = state_snapshot(&mut cold_state).await?;
         assert!(
             baseline.activity.is_none(),
             "cold read invented execution activity"
@@ -1084,19 +1081,18 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].id, pending.interaction_id);
         assert!(
-            env.runtime.threads.observed_thread(id).is_none(),
+            env.runtime
+                .session_of(id)
+                .and_then(|session| session.observed_thread(id))
+                .is_none(),
             "reading a pending Plan activated execution"
         );
         assert_eq!(env.root_provider.recorded().len(), 1);
         cold.close().await?;
+        cold_state.close().await?;
         cold.reader().close().await?;
 
-        let mut continuation = env
-            .runtime
-            .subscribe_thread(ThreadSubscriptionRequest {
-                thread_id: id.clone(),
-            })
-            .await?;
+        let mut continuation = env.runtime.open_conversation_state_feed(id).await?;
         let resolved = env
             .runtime
             .resolve_interaction(
@@ -1116,6 +1112,17 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             )
             .await?;
         assert_eq!(resolved.interaction.status(), InteractionStatus::Resolved);
+        // The answer command, not observation, activates execution. That installs
+        // a new source and intentionally invalidates the old cold qualification.
+        let error = continuation.recv().await.unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .and_then(|error| error.reason()),
+            Some("conversationResyncRequired")
+        );
+        continuation.close().await?;
+        let mut continuation = env.runtime.open_conversation_state_feed(id).await?;
         tokio::time::timeout(Duration::from_secs(20), async {
             while let Some(update) = continuation.recv().await? {
                 if let ThreadSubscriptionUpdate::Notification { notification } = update
@@ -1133,131 +1140,27 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
             bail!("approved Plan did not complete its continuation");
         })
         .await??;
-        drop(continuation);
+        continuation.close().await?;
         assert_eq!(env.root_provider.recorded().len(), 2);
         let mut approved = env
             .runtime
             .open_conversation_feed(id, ChatScope::Main, demand())
             .await?;
         assert_eq!(chat(&mut approved).await?.placement, ChatPlacement::Set);
+        let mut approved_state = env.runtime.open_conversation_state_feed(id).await?;
         assert!(
-            state_snapshot(&mut approved).await?.interactions.is_empty(),
+            state_snapshot(&mut approved_state)
+                .await?
+                .interactions
+                .is_empty(),
             "answered Plan returned as pending"
         );
         approved.close().await?;
+        approved_state.close().await?;
         approved.reader().close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
     stage.release();
-    env.finish(result).await
-}
-
-#[tokio::test]
-async fn retained_terminal_state_requires_coverage_and_no_active_turn_and_is_deduplicated()
--> Result<()> {
-    let env = support::Environment::new(vec![], vec![]).await?;
-    let result = async {
-        let thread = env
-            .runtime
-            .create_thread(&env.project.id, "retained State qualification")
-            .await?;
-        let mut feed = env
-            .runtime
-            .open_conversation_feed(&thread.id, ChatScope::Main, demand())
-            .await?;
-        assert_eq!(chat(&mut feed).await?.placement, ChatPlacement::Set);
-        let _snapshot = feed.recv().await?.context("initial State snapshot")?;
-        completed_runs::activity(&mut feed).await?;
-        assert!(feed.pending.is_empty());
-        let uncovered = feed
-            .state_effect_floor
-            .checked_add(1)
-            .context("test State cut exhausted")?;
-        let terminal = Turn {
-            input_id: Some("original-input".into()),
-            id: "original-turn".into(),
-            thread_id: thread.id.clone(),
-            revision: uncovered,
-            state: TurnState::Completed(CompletedTurnState::new(
-                Some(1),
-                2,
-                TurnCompletion::Normal,
-            )),
-            updated_at: 2,
-        };
-        let revision = feed.state_revision;
-        feed.reflect_terminal(terminal.clone())?;
-        assert!(feed.pending.is_empty(), "future terminal crossed the cut");
-        assert_eq!(feed.state_revision, revision);
-
-        feed.state_effect_floor = terminal.revision;
-        feed.active_turn = Some("newer-active-turn".into());
-        feed.reflect_terminal(terminal.clone())?;
-        assert!(feed.pending.is_empty(), "older terminal hid an active Turn");
-        assert_eq!(feed.state_revision, revision);
-
-        feed.active_turn = None;
-        feed.reflect_terminal(terminal.clone())?;
-        assert_eq!(feed.pending.len(), 1);
-        assert_eq!(feed.state_revision, revision + 1);
-        feed.reflect_terminal(terminal.clone())?;
-        feed.state_event(ThreadLiveEvent::Committed {
-            sequence: terminal.revision + 1,
-            changes: vec![LiveEvent::Turn {
-                turn: terminal.clone(),
-                event: TurnEvent::Completed,
-            }],
-        })?;
-        assert_eq!(
-            feed.pending.len(),
-            1,
-            "retained/live duplicate spent a frame"
-        );
-        assert_eq!(feed.state_revision, revision + 1);
-
-        let newer = Turn {
-            revision: terminal.revision + 1,
-            ..terminal
-        };
-        feed.reflect_terminal(newer)?;
-        assert_eq!(feed.pending.len(), 2, "newer same-Turn fact was suppressed");
-        assert_eq!(feed.state_revision, revision + 2);
-        feed.state_event(ThreadLiveEvent::UnframedCommit {
-            sequence: feed.state_effect_floor,
-        })?;
-        assert_eq!(feed.pending.len(), 2, "covered gap spent a State frame");
-        assert_eq!(feed.state_revision, revision + 2);
-        for _ in 0..2 {
-            assert!(matches!(
-                feed.recv().await?,
-                Some(ConversationEvent::State { .. })
-            ));
-        }
-        let (events, state) = tokio::sync::broadcast::channel(1);
-        feed.state = Some(super::super::thread_observation::StateReceiver::new(
-            state,
-            Default::default(),
-        ));
-        feed.state_turn = true;
-        events.send(ThreadLiveEvent::UnframedCommit {
-            sequence: feed.state_effect_floor + 1,
-        })?;
-        let error = feed.recv().await.unwrap_err();
-        assert_eq!(
-            error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
-                .and_then(|error| error.reason()),
-            Some("conversationResyncRequired")
-        );
-        assert!(
-            feed.reader().ensure().is_err(),
-            "uncovered State gap left the old read qualification active"
-        );
-        feed.close().await?;
-        feed.reader().close().await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
     env.finish(result).await
 }

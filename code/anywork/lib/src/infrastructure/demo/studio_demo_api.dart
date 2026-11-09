@@ -339,6 +339,9 @@ class DemoStudioTransport extends StudioTransport
     for (final feed in _ownedConversationFeeds.toList()) {
       feed.requestClose();
     }
+    for (final feed in _ownedConversationStateFeeds.toList()) {
+      feed.requestClose();
+    }
     for (final reader in _ownedHistoryReaders.toList()) {
       reader.requestClose();
     }
@@ -924,13 +927,19 @@ class DemoStudioTransport extends StudioTransport
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
   final Map<String, Set<_DemoConversationFeed>> _conversationFeeds = {};
+  final Map<String, Set<_DemoConversationStateFeed>> _conversationStateFeeds =
+      {};
   final Set<_DemoReader> _ownedHistoryReaders = {};
   // 受管句柄不等于 GUI demand：未监听句柄和迟到 factory 也有真实关闭责任。
   final Set<ConversationFeed> _ownedConversationFeeds =
       Set<ConversationFeed>.identity();
+  final Set<ConversationStateFeed> _ownedConversationStateFeeds =
+      Set<ConversationStateFeed>.identity();
   final Set<Future<void>> _openingConversationFeeds = {};
   final Map<ConversationFeed, Future<void>> _conversationCloses =
       Map<ConversationFeed, Future<void>>.identity();
+  final Map<ConversationStateFeed, Future<void>> _conversationStateCloses =
+      Map<ConversationStateFeed, Future<void>>.identity();
 
   Future<void> _closeDemoConversation(ConversationFeed feed) {
     final existing = _conversationCloses[feed];
@@ -959,13 +968,39 @@ class DemoStudioTransport extends StudioTransport
     await Future.wait([
       for (final feed in _ownedConversationFeeds.toList())
         _closeDemoConversation(feed),
+      for (final feed in _ownedConversationStateFeeds.toList())
+        _closeDemoStateFeed(feed),
       for (final reader in _ownedHistoryReaders.toList()) reader.close(),
       ..._openingConversationFeeds,
     ]);
     // 迟到 factory 自己汇合其返回的 owner。失败 owner 留在集合供下次 cleanup。
-    if (_ownedConversationFeeds.isNotEmpty) {
+    if (_ownedConversationFeeds.isNotEmpty ||
+        _ownedConversationStateFeeds.isNotEmpty) {
       throw StateError('Demo conversation close still has unresolved owners');
     }
+  }
+
+  Future<void> _closeDemoStateFeed(ConversationStateFeed feed) {
+    final existing = _conversationStateCloses[feed];
+    if (existing != null) return existing;
+    final joined = Completer<void>();
+    _conversationStateCloses[feed] = joined.future;
+    Future<void> closeOwned() async {
+      try {
+        feed.requestClose();
+        await feed.close();
+        _ownedConversationStateFeeds.remove(feed);
+        joined.complete();
+      } catch (error, stack) {
+        // 失败 owner 仍留在 owned；只清本轮 in-flight，允许下次真实重试。
+        joined.completeError(error, stack);
+      } finally {
+        _conversationStateCloses.remove(feed);
+      }
+    }
+
+    unawaited(closeOwned());
+    return joined.future;
   }
 
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
@@ -4611,6 +4646,44 @@ class DemoStudioTransport extends StudioTransport
     }
   }
 
+  /// 独立状态订阅：只承载 State/Failure/Closed，身份、序号与 ACK 都与内容连接无关。
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async {
+    _ensureDemoRunning();
+    if (!_workspaces.containsKey(threadId)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Unknown Demo conversation',
+        retryable: false,
+        correlationId: 'demo-conversation-not-found',
+      );
+    }
+    final connection = _DemoConversationStateFeed(this, threadId);
+    _ownedConversationStateFeeds.add(connection);
+    final factory = _conversationStateFeedFactory;
+    if (factory == null) return connection;
+    final opening = Completer<void>();
+    _openingConversationFeeds.add(opening.future);
+    try {
+      final feed = await factory(threadId, connection);
+      _ownedConversationStateFeeds.add(feed);
+      if (_runtimeExiting) {
+        await _closeDemoStateFeed(feed);
+        await connection.close();
+        throw _conversationClosedFailure;
+      }
+      return feed;
+    } catch (_) {
+      await connection.close();
+      rethrow;
+    } finally {
+      opening.complete();
+      _openingConversationFeeds.remove(opening.future);
+    }
+  }
+
   @visibleForTesting
   void seedDisplayBlocks({
     required String threadId,
@@ -4623,6 +4696,24 @@ class DemoStudioTransport extends StudioTransport
     final history = _historyOf(threadId);
     history.installDisplay(blocks: blocks, live: live, members: members);
     _publishContent(threadId);
+  }
+
+  /// 测试专用：包装状态订阅，用于状态流故障注入（首帧失败、断流、EOF、慢打开）。
+  Future<ConversationStateFeed> Function(
+    String threadId,
+    ConversationStateFeed connection,
+  )?
+  _conversationStateFeedFactory;
+
+  @visibleForTesting
+  set conversationStateFeedFactory(
+    Future<ConversationStateFeed> Function(
+      String threadId,
+      ConversationStateFeed connection,
+    )?
+    factory,
+  ) {
+    _conversationStateFeedFactory = factory;
   }
 
   /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
@@ -6947,15 +7038,18 @@ class DemoStudioTransport extends StudioTransport
       // the feed orders completion admission before publishing the live exit.
       _publishContent(threadId);
     }
-    final receivers = _conversationFeeds[threadId];
+    final receivers = _conversationStateFeeds[threadId];
     if (receivers != null && receivers.isNotEmpty) {
-      final frame = ThreadNotificationFrame(
-        threadId: threadId,
-        revision: revision,
-        update: update,
-      );
       for (final feed in receivers.toList()) {
-        feed._stateChanged(frame);
+        feed._stateChanged();
+      }
+    }
+    // Activity-facing state facts (execution presence) also wake the content
+    // owner's live Activity snapshot, exactly like the former combined feed's
+    // pending-current duty; state frames themselves never flow through content.
+    if (update is ThreadRuntimeUpdate) {
+      for (final feed in [...?_conversationFeeds[threadId]]) {
+        feed._contentChanged();
       }
     }
     // The stop target is an execution identity and the continue target is a

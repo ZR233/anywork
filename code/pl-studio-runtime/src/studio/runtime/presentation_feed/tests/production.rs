@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    ConversationEvent,
     runtime_test_support::Environment,
     studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
 };
@@ -12,13 +13,8 @@ pub(super) async fn timeline(feed: &mut TimelineFeed) -> Result<TimelineBatch> {
     tokio::time::timeout(
         crate::runtime_test_support::integration_test_deadline()?,
         async {
-            loop {
-                match feed.receive().await? {
-                    ConversationEvent::Timeline { batch } => return Ok(*batch),
-                    ConversationEvent::State { .. } => {}
-                    event => anyhow::bail!("presentation feed emitted atomic event: {event:?}"),
-                }
-            }
+            let TimelineEvent::Timeline { batch } = feed.receive().await?;
+            Ok(*batch)
         },
     )
     .await?
@@ -31,10 +27,7 @@ async fn atomic(feed: &mut ConversationFeed) -> Result<pl_protocol::ChatBatch> {
             loop {
                 match feed.recv().await?.context("completion feed ended")? {
                     ConversationEvent::Chat { batch } => return Ok(*batch),
-                    ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
-                    ConversationEvent::Timeline { .. } => {
-                        anyhow::bail!("completion feed emitted Timeline")
-                    }
+                    ConversationEvent::Activity { .. } => {}
                 }
             }
         },
@@ -182,7 +175,7 @@ async fn reliable_text_start_advances_p_without_h_and_member_completion_advances
                 {
                     break;
                 }
-                ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
+                ConversationEvent::Activity { .. } => {}
                 event => anyhow::bail!("text start manufactured atomic completion: {event:?}"),
             }
         }
@@ -193,6 +186,79 @@ async fn reliable_text_start_advances_p_without_h_and_member_completion_advances
         reader.close().await?;
         completed.reader().close().await?;
         completed.close().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn live_source_matches_original_hot_and_cold_headers_without_reading_members() -> Result<()> {
+    use sea_orm::{ConnectionTrait, Database};
+    let env = Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let prepared = h.effect(vec![start("source-work", true)], vec![]).await?;
+        let original = prepared
+            .display
+            .as_ref()
+            .context("prepared display")?
+            .blocks[0]
+            .header
+            .clone();
+        persist(&h, &prepared).await?;
+        let path = env
+            .runtime
+            .store
+            .session_paths(&h.thread.workspace_id, &h.thread.id)?
+            .history_database();
+        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        let mut hot_feed = env
+            .runtime
+            .open_timeline_feed(&h.thread.id, demand(1))
+            .await?;
+        let hot_reader = hot_feed.reader().clone();
+        // Both leases validate the real schema first. Removing the table afterwards makes
+        // any subsequent member query fail; headers must suffice for source delivery.
+        db.execute_unprepared(
+            "ALTER TABLE conversation_display_members RENAME TO unavailable_members",
+        )
+        .await?;
+        let hot = hot_reader.initial_timeline(demand(1)).await;
+        db.execute_unprepared(
+            "ALTER TABLE unavailable_members RENAME TO conversation_display_members",
+        )
+        .await?;
+        let hot = hot?.live.context("hot live window")?;
+        assert_eq!(hot.blocks[0].id, original.id);
+        assert_eq!(hot.blocks[0].source.as_ref(), Some(&original.source));
+        hot_feed.close().await?;
+        hot_reader.close().await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .retire(&h.source);
+        let mut cold_feed = env
+            .runtime
+            .open_timeline_feed(&h.thread.id, demand(1))
+            .await?;
+        let cold_reader = cold_feed.reader().clone();
+        db.execute_unprepared(
+            "ALTER TABLE conversation_display_members RENAME TO unavailable_members",
+        )
+        .await?;
+        let cold = cold_reader.initial_timeline(demand(1)).await;
+        db.execute_unprepared(
+            "ALTER TABLE unavailable_members RENAME TO conversation_display_members",
+        )
+        .await?;
+        let cold = cold?.live.context("cold saved open header")?;
+        assert!(!cold.execution_present);
+        assert_eq!(cold.blocks, hot.blocks);
+        assert_eq!(cold.blocks[0].source.as_ref(), Some(&original.source));
+        cold_feed.close().await?;
+        cold_reader.close().await?;
+        db.close().await?;
         Ok(())
     }
     .await;

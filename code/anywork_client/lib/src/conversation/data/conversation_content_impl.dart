@@ -17,9 +17,6 @@ final class ConversationContentImpl implements TimelineContent {
   ConversationContentImpl({
     required this.threadId,
     required ConversationTransport transport,
-    required this.onState,
-    required this.onFailure,
-    required this.onAttempt,
     this.scope = const MainChatScope(),
     this.initialDemand,
   }) : _transport = transport,
@@ -27,9 +24,6 @@ final class ConversationContentImpl implements TimelineContent {
   @override
   final String threadId;
   final ConversationTransport _transport;
-  final void Function(AttemptId, ThreadStreamFrame) onState;
-  final void Function(AttemptId, Object, bool) onFailure;
-  final void Function(AttemptId) onAttempt;
   final ChatScope scope;
   final ReadDemand? initialDemand;
   final LatestValue<ActivitySnapshot?> _activity = LatestValue(null);
@@ -208,8 +202,6 @@ final class ConversationContentImpl implements TimelineContent {
     try {
       _state.publish(ChatOpening<bool>(threadId));
       if (!_live(a)) return;
-      onAttempt(a.id);
-      if (!_live(a)) return;
       final ConversationFeed feed;
       if (a.consumer.consumer is TimelineBatchConsumer) {
         final transport = _transport;
@@ -305,23 +297,12 @@ final class ConversationContentImpl implements TimelineContent {
     final work = _enqueue(a, () async {
       if (!_eligible(a, a.consumer)) return;
       switch (frame.event) {
-        case ConversationStateEvent(:final frame):
-          if (frame case ThreadSnapshotFrame(
-            :final completedHistoryVersion,
-            :final schemaVersion,
-          )) {
-            if (completedHistoryVersion != 1) {
-              throw ProtocolVersionMismatch(received: completedHistoryVersion);
-            }
-            if (schemaVersion != threadSchemaVersion) {
-              throw ProtocolVersionMismatch(
-                received: schemaVersion,
-                supported: threadSchemaVersion,
-                field: 'threadSchemaVersion',
-              );
-            }
-          }
-          onState(a.id, frame);
+        case ConversationStateEvent():
+          // State arrives on its own bounded feed; a content feed carrying a
+          // state event is a protocol violation, never a second reduction path.
+          throw const ConversationContinuityError(
+            'state event on content feed',
+          );
         case ConversationChatEvent(:final batch):
           if (a.consumer.consumer is TimelineBatchConsumer) {
             throw const ConversationContinuityError(
@@ -355,8 +336,9 @@ final class ConversationContentImpl implements TimelineContent {
     );
   }
 
-  /// The sole admission queue for State, streamed Chat and query Chat. Query IO
+  /// The sole admission queue for streamed and queried content. Query IO
   /// starts before entering this queue, so a consumer await never blocks reads.
+  // State frames are rejected here; canonical state owns its own feed.
   Future<void> _enqueue(_Attempt a, Future<void> Function() operation) {
     final queued = Stopwatch()..start();
     final work = a.serial.then((_) {
@@ -591,12 +573,15 @@ final class ConversationContentImpl implements TimelineContent {
   }
 
   /// Only affected read resources retire; feed/history/draft ownership stays intact.
+  ///
+  /// Called by the session when the independent state stream replaces the
+  /// business references; it applies to the current live content attempt
+  /// because read scopes never change owners.
   void businessRefsChanged(
-    AttemptId attemptId,
     ThreadBusinessRefs? previous,
     ThreadBusinessRefs next,
   ) {
-    final attempt = _attempts[attemptId];
+    final attempt = _current;
     if (attempt == null || !_live(attempt) || previous == next) return;
     for (final scope in List.of(attempt.scopes)) {
       scope.businessRefsChanged(previous, next);
@@ -646,8 +631,6 @@ final class ConversationContentImpl implements TimelineContent {
     final exhausted =
         versionMismatch || _retries >= const RetryPolicy().delays.length;
     a.retryable = !versionMismatch;
-    onFailure(a.id, error, exhausted);
-    if (!_live(a)) return;
     _state.publish(
       exhausted
           ? ChatFailed<bool>(threadId, error: error)

@@ -86,6 +86,7 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
       LiveDisplayBlock(
         id: block.id,
         blockOrder: _exactTimelineInt(block.blockOrder, 'live block order'),
+        source: block.source == null ? null : _chatSourceFromFrb(block.source!),
         body: _displayBodyFromFrb(block.body),
         closing: block.closing,
       ),

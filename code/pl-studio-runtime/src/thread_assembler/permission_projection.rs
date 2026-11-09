@@ -1,5 +1,5 @@
 //! Typed Studio approval projection over authoritative core permission facts.
-use super::{StudioThreadAssembler, approval::ApprovalPrompt};
+use super::{SessionRuntime, approval::ApprovalPrompt};
 use pl_core::{
     context::OpaquePayload,
     thread::permissions::{
@@ -201,7 +201,7 @@ pub fn project_execution_permission(
     Ok(projected)
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Resolves a typed UI decision on the resident canonical owner and returns its resulting DTO.
     ///
     /// # Errors
@@ -221,7 +221,7 @@ impl StudioThreadAssembler {
                 .state()
                 .entries
                 .get(thread_id)
-                .map(|entry| entry.thread.clone())
+                .map(|entry| entry.native.thread.clone())
         }
         .ok_or_else(|| PermissionProjectionError::MissingThread(thread_id.into()))?;
         let snapshot = thread.snapshot();

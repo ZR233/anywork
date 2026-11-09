@@ -23,6 +23,15 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
 
     fn default_cwd(&self) -> impl Future<Output = Result<String>> + Send;
 
+    /// A validated absolute host locator, only for a backend whose files are local.
+    /// Remote backends must retain the default `None`, regardless of their path syntax.
+    fn local_file_path(
+        &self,
+        _request: WorkspaceFileStatRequest,
+    ) -> impl Future<Output = Result<Option<String>>> + Send {
+        async { Ok(None) }
+    }
+
     /// Returns absence only for a missing path; access and transport failures remain errors.
     fn stat_optional(
         &self,
@@ -88,6 +97,10 @@ where
 {
     async fn default_cwd(&self) -> Result<String> {
         self.backend.default_cwd().await
+    }
+
+    async fn local_file_path(&self, request: WorkspaceFileStatRequest) -> Result<Option<String>> {
+        self.backend.local_file_path(request).await
     }
 
     async fn stat_optional(

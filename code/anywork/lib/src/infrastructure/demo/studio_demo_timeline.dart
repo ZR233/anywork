@@ -311,6 +311,9 @@ extension _DemoDisplayHistory on _DemoHistory {
           (displayHeads[displayRef(script.id)]?.isNotEmpty ?? false))
         LiveDisplayBlock(
           id: script.id,
+          source: script.turnId == null
+              ? null
+              : ForegroundTurnChatSource(turnId: script.turnId!),
           blockOrder:
               (displayLiveSeed?.blocks.lastOrNull?.blockOrder ?? 0) +
               displayScripts.keys.toList().indexOf(script.id) +
@@ -360,6 +363,7 @@ Object _liveJson(LiveDisplayWindow live) => {
       {
         'id': b.id,
         'blockOrder': b.blockOrder,
+        if (b.source != null) 'source': chatSourceIdToJson(b.source!),
         'body': _displayBodyJson(b.body),
         'closing': b.closing,
       },
@@ -415,6 +419,7 @@ extension _DemoTimelineReader on _DemoReader {
       final candidate = LiveDisplayBlock(
         id: b.id,
         blockOrder: b.blockOrder,
+        source: b.source,
         body: fitDisplay(b.body),
         closing: b.closing,
       );

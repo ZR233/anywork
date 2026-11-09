@@ -141,7 +141,9 @@ impl StudioStore {
         let scope = ArchiveScope::Workspace(workspace.clone());
         let tx = self.database().begin().await?;
         let now = crate::studio::unix_seconds();
-        if let Some(mut source) = load_object::<ThreadArchiveOperation>(&tx, &scope.key()).await? {
+        if let Some(mut source) =
+            super::object::load_deletion_aux::<ThreadArchiveOperation>(&tx, &scope.key()).await?
+        {
             let before = source.thread_ids();
             source
                 .members
@@ -169,7 +171,26 @@ impl StudioStore {
                 put_object(&tx, &scope.key(), &source, now).await?;
             }
         }
-        put_object(&tx, &archive.scope.key(), archive, now).await?;
+        let original =
+            super::object::load_object_row::<ThreadArchiveOperation>(&tx, &archive.scope.key())
+                .await?;
+        let writable = original.is_none()
+            || super::object::load_deletion_aux::<ThreadArchiveOperation>(
+                &tx,
+                &archive.scope.key(),
+            )
+            .await?
+            .is_some();
+        if writable {
+            put_object(&tx, &archive.scope.key(), archive, now).await?;
+        } else {
+            // Unknown auxiliary bytes remain untouched. A known worktree requires its own
+            // durable removal fence, which cannot be written over an undecodable owner.
+            ensure!(
+                archive.worktrees.is_empty(),
+                "deletion worktree progress has no writable original owner"
+            );
+        }
         put_object(&tx, &deletion.root_id, deletion, now).await?;
         tx.commit().await?;
         Ok(())
@@ -188,7 +209,8 @@ impl StudioStore {
             use super::thread_archive::{ArchivePhase, ThreadArchiveOperation};
             let scope = ArchiveScope::Workspace(member.identity.workspace_id.clone());
             if let Some(mut source) =
-                load_object::<ThreadArchiveOperation>(&tx, &scope.key()).await?
+                super::object::load_deletion_aux::<ThreadArchiveOperation>(&tx, &scope.key())
+                    .await?
             {
                 let before = source.thread_ids().len();
                 source

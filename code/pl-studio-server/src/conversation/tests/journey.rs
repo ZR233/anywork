@@ -4,12 +4,13 @@ use std::{collections::HashSet, pin::Pin};
 
 use anyhow::{Context, Result, bail, ensure};
 use axum::body::Bytes;
+use axum::response::IntoResponse;
 use futures::{Stream, StreamExt};
 use pl_protocol::{
     ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, CompletionRunRef,
     ContentManifestPage, ContentOwner, ContentTarget, ContentWindow, PayloadData, ReadDemand,
-    ThreadItemKind, ThreadNotification, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
-    ThreadWorkspaceMode, Turn, TurnState,
+    ThreadItemKind, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn,
+    TurnState,
     studio::{
         CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
         SubmitPromptRequest,
@@ -436,11 +437,7 @@ async fn complete(
 ) -> Result<Turn> {
     // Subscribe before releasing the provider barrier: a fast completion must
     // not be recovered by guessing from Main items or a later snapshot.
-    let mut events = runtime
-        .subscribe_thread(ThreadSubscriptionRequest {
-            thread_id: thread.into(),
-        })
-        .await?;
+    let mut events = runtime.open_conversation_state_feed(thread).await?;
     stage.release();
     tokio::time::timeout(DEADLINE, async {
         while let Some(update) = events.recv().await? {
@@ -461,6 +458,8 @@ async fn complete(
                     "fixture input did not complete successfully: {:?}",
                     turn.state
                 );
+                events.request_close();
+                events.close().await?;
                 return Ok(turn);
             }
         }
@@ -786,7 +785,45 @@ async fn real_http_nonempty_history_independent_queries_and_watch_lifecycle() ->
     let result = async {
         let thread = env.create().await?;
         tokio::time::timeout(DEADLINE, first_stage.wait_reached()).await?;
+        // Leave the content handler body completely unpolled: its first bounded
+        // send window will fill. State must still reach its authoritative final
+        // sample without draining that window or opening a second content feed.
+        let paused_content = super::open(&env.state, &thread).await?;
+        let state_response = crate::sse::thread_state_events(
+            axum::extract::State(env.state.clone()),
+            axum::extract::Path(thread.clone()),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{}", error.0))?
+        .into_response();
+        ensure!(!state_response.headers().contains_key(CONVERSATION_HEADER));
+        let mut independent_state = SseBody::handler(state_response.into_body());
+        let (kind, value) = independent_state.event().await?.context("State baseline")?;
+        ensure!(kind == "snapshot");
+        let baseline: ThreadSubscriptionUpdate = serde_json::from_value(value)?;
+        ensure!(matches!(baseline, ThreadSubscriptionUpdate::Snapshot { .. }));
         let first_turn = complete(&env.runtime, &thread, &first_stage, FIRST).await?;
+        let mut saw_terminal = false;
+        let mut saw_final_usage = false;
+        while !saw_terminal || !saw_final_usage {
+            let (kind, value) = independent_state.event().await?.context("State update")?;
+            ensure!(kind == "notification", "unexpected State event {kind}: {value}");
+            let update: ThreadSubscriptionUpdate = serde_json::from_value(value)?;
+            if let ThreadSubscriptionUpdate::Notification { notification } = update {
+                match notification.notification {
+                    ThreadNotification::TurnCompleted { turn } => {
+                        saw_terminal |= turn.id == first_turn.id;
+                    }
+                    ThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
+                        saw_final_usage |= runtime.live_usage.is_none()
+                            && runtime.turn_completion_tokens > 0;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        drop(independent_state);
+        drop(paused_content);
         let turn_id = first_turn.id.clone();
         let parent = turn_parent_key(&turn_id);
         let (capability, mut main) = env.open(&thread, None, 1).await?;

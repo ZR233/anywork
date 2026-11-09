@@ -9,6 +9,7 @@ use std::sync::{
 /// waiting for preparation. A published Entry takes over before this owner is released.
 #[derive(Debug, Default)]
 struct PreparationResources {
+    native: Arc<crate::session::NativeResources>,
     usage: Option<super::WorkspaceUsageLease>,
     review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
     admission: Option<PreparationAdmission>,
@@ -29,11 +30,12 @@ impl WorkspacePreparationOwner {
             usage: Some(proof.usage()),
             review: Some(proof),
             admission: None,
+            native: Default::default(),
         })))
     }
     pub(crate) fn bind_admission(
         &self,
-        assembler: &super::StudioThreadAssembler,
+        assembler: &super::SessionRuntime,
         id: &str,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), ThreadAssemblyError> {
@@ -90,6 +92,19 @@ impl WorkspacePreparationOwner {
             .review
             .take()
     }
+    pub(crate) fn native_resources(&self) -> Arc<crate::session::NativeResources> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .native
+            .clone()
+    }
+    pub(crate) fn bind_native_resources(&self, native: Arc<crate::session::NativeResources>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .native = native;
+    }
     pub(crate) fn retain(&self, usage: &super::WorkspaceUsageLease) {
         let previous = self
             .0
@@ -109,7 +124,7 @@ impl WorkspacePreparationOwner {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct CleanupGate {
+pub(crate) struct CleanupGate {
     busy: AtomicBool,
     changed: tokio::sync::Notify,
 }
@@ -153,7 +168,7 @@ pub(super) struct UnpublishedChild {
     pub(super) disposal: DisposalTask,
 }
 
-impl super::StudioThreadAssembler {
+impl super::SessionRuntime {
     pub(super) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.closing
@@ -172,10 +187,10 @@ impl super::StudioThreadAssembler {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
-        if entry.thread.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Open {
+        if entry.native.thread.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Open {
             return Err(ThreadAssemblyError::Closed);
         }
-        entry.ready = true;
+        entry.native.ready = true;
         let unpublished = state.unpublished_children.remove(id);
         drop(state);
         drop(unpublished);
@@ -239,8 +254,8 @@ impl super::StudioThreadAssembler {
             super::ClosePurpose::Preserve
         };
         let closing = self.0.state().entries.get_mut(id).map(|entry| {
-            entry.ready = false;
-            entry.thread.clone()
+            entry.native.ready = false;
+            entry.native.thread.clone()
         });
         if let Some(thread) = closing {
             drop(self.prepare_close_for_purpose(id, &thread, purpose));
@@ -250,14 +265,22 @@ impl super::StudioThreadAssembler {
         let operation = self.agent_operation(id).await;
         self.close_thread_for_purpose(id, operation, purpose)
             .await?;
+        self.close_prepared_resources(id, &pending.workspace.native_resources())
+            .await?;
         let services = { self.0.state().agent_services.clone() };
+        let has_preparation = if let Some(services) = &services {
+            if purpose == super::ClosePurpose::Delete {
+                services.store.thread_preparation_for_deletion(id).await
+            } else {
+                services.store.thread_preparation(id).await
+            }
+            .map_err(retirement_error)?
+            .is_some()
+        } else {
+            false
+        };
         if let Some(services) = &services
-            && services
-                .store
-                .thread_preparation(id)
-                .await
-                .map_err(retirement_error)?
-                .is_some()
+            && has_preparation
         {
             if purpose == super::ClosePurpose::Delete {
                 services
@@ -282,12 +305,7 @@ impl super::StudioThreadAssembler {
         };
         let retain_disposition = async {
             if let Some(services) = &services
-                && services
-                    .store
-                    .thread_preparation(id)
-                    .await
-                    .map_err(retirement_error)?
-                    .is_some()
+                && has_preparation
             {
                 use crate::studio::store::thread_preparation::PreparationDisposition;
                 services
@@ -336,12 +354,7 @@ impl super::StudioThreadAssembler {
             return Err(error);
         }
         if let Some(services) = services
-            && services
-                .store
-                .thread_preparation(id)
-                .await
-                .map_err(retirement_error)?
-                .is_some()
+            && has_preparation
         {
             services
                 .store

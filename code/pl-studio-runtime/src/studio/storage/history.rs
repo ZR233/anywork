@@ -254,15 +254,21 @@ pub(crate) struct CheckpointEffect<'a> {
     pub accounting: AccountingCommit<'a>,
 }
 
+pub(in crate::studio) struct ColdStateFacet {
+    pub current: Arc<crate::studio::thread_projection::CurrentState>,
+    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
+    pub terminal_turn: Option<pl_protocol::Turn>,
+    /// Saved core envelope from this same read. Context records stay with execution recovery;
+    /// usage, context-window and cost facts remain on the envelope.
+    pub saved_state: Option<pl_core::thread::ThreadSnapshot>,
+}
+
 pub(in crate::studio) struct ColdConversation {
     pub database_id: String,
     pub head: u64,
-    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
     pub current: pl_protocol::CurrentProjection,
     /// Actual lifecycle for the selected page/current sources at this transaction's effect cut.
     pub sources: Vec<pl_protocol::ChatSourceState>,
-    pub interactions: Vec<pl_protocol::InteractionRequest>,
-    pub terminal_turn: Option<pl_protocol::Turn>,
     pub page: ChatHistoryPage,
 }
 
@@ -1563,29 +1569,45 @@ impl HistoryStore {
         Ok(Some(current))
     }
 
-    /// State-only cold baseline for the display feed; no completion page or model context.
-    pub(in crate::studio) async fn cold_conversation_state(
+    /// Cold State baseline: current, saved route and covered terminal share one read transaction.
+    /// The saved envelope is the same transaction's usage authority. Absence does not create
+    /// history, seed usage, or install execution.
+    pub(in crate::studio) async fn cold_state_facet(&self) -> Result<Option<ColdStateFacet>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let current = conversation::completed::cold(&tx).await?;
+        let model_route = checkpoint::read_model_route_head(&tx).await?;
+        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
+        let saved_state = checkpoint::read_state_envelope(&tx, &self.state.thread_id)
+            .await?
+            .map(|checkpoint| checkpoint.state);
+        tx.commit().await?;
+        Ok(Some(ColdStateFacet {
+            current,
+            model_route,
+            terminal_turn,
+            saved_state,
+        }))
+    }
+
+    /// Presentation read qualification without completion bodies, State replay or execution.
+    pub(in crate::studio) async fn cold_presentation_baseline(
         &self,
     ) -> Result<Option<ColdConversation>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let cold = conversation::completed::cold(&tx).await?;
+        let current = conversation::completed::cold(&tx).await?;
         let head = conversation::latest_append_seq(&tx).await?;
-        let current = cold.projection().clone();
-        let interactions = cold.interactions().to_vec();
-        let model_route = checkpoint::read_model_route_head(&tx).await?;
-        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         tx.commit().await?;
         Ok(Some(ColdConversation {
             database_id: connection.database_id.clone(),
             head,
-            model_route,
-            current,
+            current: current.projection().clone(),
             sources: Vec::new(),
-            interactions,
-            terminal_turn,
             page: ChatHistoryPage {
                 items: Vec::new(),
                 exhausted: true,
@@ -1746,9 +1768,6 @@ impl HistoryStore {
         let head = conversation::latest_append_seq(&tx).await?;
         let cold = conversation::completed::cold(&tx).await?;
         let current = cold.projection().clone();
-        let interactions = cold.interactions().to_vec();
-        let model_route = checkpoint::read_model_route_head(&tx).await?;
-        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         demand.validate()?;
         let include_current = query.parent_id.is_none()
             && query.query_class == "conversation"
@@ -1782,9 +1801,6 @@ impl HistoryStore {
             head,
             current,
             sources,
-            interactions,
-            model_route,
-            terminal_turn,
             page,
         }))
     }
@@ -3114,6 +3130,35 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    if schema::version(db).await? == 19 {
+        // A current fixture may also contain an open Work with no immutable completion.
+        // Prove every original/display collection empty before dropping any v19 structure.
+        for table in [
+            "conversation_items",
+            "conversation_display_blocks",
+            "conversation_display_members",
+        ] {
+            let count: i64 = db
+                .query_one_raw(statement(
+                    &format!("SELECT COUNT(*) AS count FROM {table}"),
+                    vec![],
+                ))
+                .await?
+                .context("fixture original/display output")?
+                .try_get("", "count")?;
+            ensure!(count == 0, "legacy fixture must not discard {table} facts");
+        }
+        db.execute_unprepared(
+            "DROP TABLE conversation_display_members;
+             DROP TABLE conversation_display_blocks;
+             ALTER TABLE history_meta DROP COLUMN display_published_through;
+             ALTER TABLE history_meta DROP COLUMN display_applied_effect;
+             DELETE FROM seaql_migrations
+             WHERE version='m20261109_000001_display_snapshots';
+             UPDATE history_meta SET schema_version=18 WHERE id=1;",
+        )
+        .await?;
+    }
     if schema::version(db).await? == 18 {
         let row = db
             .query_one_raw(statement(
@@ -3272,6 +3317,112 @@ mod storage_fault_tests {
         fn manifest_bytes(&self, descriptor: &pl_core::chat::ContentDescriptor) -> usize {
             256 + 6 * (descriptor.key.owner.as_str().len() + descriptor.key.key.len())
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_fixture_downgrade_rejects_original_and_open_work_before_any_ddl() -> Result<()>
+    {
+        use pl_core::chat::{ChatDraft, ChatItem};
+        use pl_protocol::{
+            ChatActiveStatus, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition,
+            ChatSourceId,
+        };
+
+        for open_work in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let store =
+                HistoryStore::open(&dir.path().join("history.sqlite"), "fixture-guard").await?;
+            store.prepare_write().await?;
+            let connection = store.writer().await?;
+            let db = &connection.db;
+            let mut atom: pl_protocol::ChatAtom =
+                serde_json::from_slice(&conversation::tests::metadata("preserved-original"))?;
+            if open_work {
+                atom.kind = ChatAtomKind::ToolCall;
+                atom.source = ChatSourceId::ForegroundTurn {
+                    turn_id: "fixture-turn".into(),
+                };
+                atom.delivery = ChatDeliveryKind::Foreground;
+                atom.completion_item_id = None;
+                atom.started_at = Some(10);
+                atom.lifecycle = ChatAtomLifecycle::Active {
+                    started: Some(ChatFactPosition {
+                        effect_seq: 1,
+                        suborder: 0,
+                    }),
+                    status: ChatActiveStatus::Running,
+                };
+                let mut owner =
+                    crate::studio::thread_projection::presentation::PresentationState::default();
+                owner.bind(&connection.database_id)?;
+                let delta = owner.prepare(1, 10, &[atom], &[], &[])?;
+                conversation::display::apply(db, &delta).await?;
+            } else {
+                let mut draft = ChatDraft::new(
+                    "preserved-original",
+                    "conversation",
+                    Arc::<[u8]>::from(b"preserved completion".as_slice()),
+                );
+                draft.metadata = serde_json::to_vec(&atom)?.into();
+                draft.read_hint =
+                    crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
+                let record = ChatItem::complete(
+                    draft,
+                    1,
+                    Some(pl_core::chat::ChatRunPosition {
+                        start_seq: 1,
+                        ordinal: 1,
+                    }),
+                );
+                conversation::append_records(db, [&record], true).await?;
+            }
+            let shape = || {
+                statement(
+                    "SELECT group_concat(sql, char(10)) AS definition
+                 FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+                    vec![],
+                )
+            };
+            let before: String = db
+                .query_one_raw(shape())
+                .await?
+                .context("fixture DDL")?
+                .try_get("", "definition")?;
+            let error = restore_empty_pre_completion_fixture(db)
+                .await
+                .expect_err("neither original completions nor an open Work may be discarded");
+            assert!(
+                error.to_string().contains(if open_work {
+                    "conversation_display_blocks"
+                } else {
+                    "conversation_items"
+                }),
+                "{error:#}"
+            );
+            assert_eq!(schema::version(db).await?, 19);
+            let after: String = db
+                .query_one_raw(shape())
+                .await?
+                .context("retained fixture DDL")?
+                .try_get("", "definition")?;
+            assert_eq!(after, before, "refusal must precede every schema mutation");
+            for (table, expected) in [
+                ("conversation_items", i64::from(!open_work)),
+                ("conversation_display_blocks", i64::from(open_work)),
+                ("conversation_display_members", i64::from(open_work)),
+            ] {
+                let count: i64 = db
+                    .query_one_raw(statement(
+                        &format!("SELECT COUNT(*) AS count FROM {table}"),
+                        vec![],
+                    ))
+                    .await?
+                    .context("retained fixture facts")?
+                    .try_get("", "count")?;
+                assert_eq!(count, expected, "{table}");
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

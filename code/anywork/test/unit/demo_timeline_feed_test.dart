@@ -17,14 +17,16 @@ void main() {
 
   test('Demo GUI starts with Timeline Set; completion originals keep their own positions', () async {
     final api = await _open();
+    final state = await api.openConversationStateFeed(_thread);
+    final states = StreamIterator(state.events);
+    addTearDown(states.cancel);
+    await _nextState(states, 1);
     final feed = await api.openTimelineFeed(_thread, demand: chatDemand);
+    expect(feed.subscriptionId, isNot(state.subscriptionId));
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    expect(await events.moveNext(), isTrue);
-    expect(events.current.event, isA<ConversationStateEvent>());
-    await feed.acknowledge(events.current.deliverySequence);
-    expect(await events.moveNext(), isTrue);
-    final batch = (events.current.event as ConversationTimelineEvent).batch;
+    // State still owns its credit; Timeline Set and queries do not wait for it.
+    final batch = await _nextTimeline(events, 1);
     expect(batch.placement, ChatPlacement.set);
     expect(batch.blocks.map((b) => b.historyPos), [1, 2, 3]);
     expect(batch.throughPos, 3);
@@ -53,6 +55,7 @@ void main() {
     expect(batch.blocks.last.historyPos, 3);
     await members.close();
     await feed.close();
+    await state.close();
   });
 
   test('completion seed does not synthesize display; explicit P and member pagination are independent of H', () async {
@@ -61,13 +64,7 @@ void main() {
     api.seedTimelineItems(_thread, [entry]);
     var feed = await api.openTimelineFeed(_thread, demand: chatDemand);
     var events = StreamIterator(feed.events);
-    await events.moveNext();
-    await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    expect(
-      (events.current.event as ConversationTimelineEvent).batch.throughPos,
-      3,
-    );
+    expect((await _nextTimeline(events, 1)).throughPos, 3);
     await feed.close();
     await events.cancel();
 
@@ -99,10 +96,7 @@ void main() {
     feed = await api.openTimelineFeed(_thread, demand: _one);
     events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext();
-    await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    final batch = (events.current.event as ConversationTimelineEvent).batch;
+    final batch = await _nextTimeline(events, 1);
     expect(batch.blocks.single.historyPos, 5);
     expect(batch.throughPos, 5);
     // No ACK of Set: all three query paths are independent of producer credit.
@@ -170,11 +164,7 @@ void main() {
     final feed = await api.openTimelineFeed(_thread, demand: _one);
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext();
-    await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    final live =
-        (events.current.event as ConversationTimelineEvent).batch.live!;
+    final live = (await _nextTimeline(events, 1)).live!;
     expect(live.blocks.single.id, 'live-3');
     final older = await feed.loadLiveOlder(before: live.older!, demand: _one);
     expect(older.blocks.single.id, 'live-2');
@@ -206,20 +196,35 @@ void main() {
 
   test('script members complete in the same live Work; body explicitly hands off and seals Single', () async {
     final api = await _open();
+    final state = await api.openConversationStateFeed(_thread);
+    final states = StreamIterator(state.events);
+    addTearDown(states.cancel);
+    final workspace = await _nextState(states, 1);
     final feed = await api.openTimelineFeed(_thread, demand: chatDemand);
-    final started = Completer<ThreadWorkspace>();
+    expect(feed.subscriptionId, isNot(state.subscriptionId));
+    final started = Completer<void>();
+    final startedTurn = Completer<String>();
     final finished = Completer<void>();
     final batches = <TimelineBatch>[];
     final originalBeforeSeal = Completer<CompletedEntry>();
     String? turnId;
+    var timelineSequence = 0;
     final subscription = feed.events.listen((frame) async {
-      if (frame.event case ConversationStateEvent(
-        frame: ThreadSnapshotFrame(:final workspace),
-      )) {
-        if (!started.isCompleted) started.complete(workspace);
-        if (workspace.activeTurn != null) turnId = workspace.activeTurn!.turnId;
+      if (frame.event is ConversationClosedEvent) return;
+      if (frame.event case ConversationFailureEvent(:final failure)) {
+        if (!finished.isCompleted) finished.completeError(failure);
+        return;
       }
+      expect(frame.deliverySequence, ++timelineSequence);
+      expect(frame.event, isA<ConversationTimelineEvent>());
       if (frame.event case ConversationTimelineEvent(:final batch)) {
+        expect(
+          batch.placement,
+          timelineSequence == 1 ? ChatPlacement.set : ChatPlacement.append,
+        );
+        if (batch.placement != ChatPlacement.set) {
+          turnId = await startedTurn.future;
+        }
         batches.add(batch);
         for (final live in batch.live?.blocks ?? <LiveDisplayBlock>[]) {
           if (live.body case WorkDisplayBlock(:final summary)
@@ -239,15 +244,12 @@ void main() {
           if (!finished.isCompleted) finished.complete();
         }
       }
-      if (frame.event case ConversationFailureEvent(:final failure)) {
-        if (!finished.isCompleted) finished.completeError(failure);
-      }
-      if (frame.event is! ConversationClosedEvent) {
-        await feed.acknowledge(frame.deliverySequence);
-      }
+      await feed.acknowledge(frame.deliverySequence);
+      if (!started.isCompleted) started.complete();
     });
     addTearDown(subscription.cancel);
-    final workspace = await started.future;
+    await started.future;
+    await state.acknowledge(states.current.deliverySequence);
     await api.submitPrompt(
       _thread,
       const StudioPromptInput(
@@ -257,6 +259,15 @@ void main() {
       ),
       expectedModelRouteRevision: workspace.modelRoute!.revision,
     );
+    var stateSequence = 1;
+    String? activeTurnId;
+    while (activeTurnId == null) {
+      final current = await _nextState(states, ++stateSequence);
+      activeTurnId = current.activeTurn?.turnId;
+      await state.acknowledge(states.current.deliverySequence);
+    }
+    turnId = activeTurnId;
+    startedTurn.complete(activeTurnId);
     await finished.future.timeout(const Duration(seconds: 5));
     expect((await originalBeforeSeal.future).recordId, '$turnId:reasoning');
     final workId = '$turnId:work';
@@ -304,19 +315,22 @@ void main() {
       isFalse,
     );
     await feed.close();
+    await state.close();
   });
 
   test('actual stop seals the scripted Work as cancelled without forging member success', () async {
     final api = await _open(_SlowStoryDemo());
+    final state = await api.openConversationStateFeed(_thread);
+    final states = StreamIterator(state.events);
+    addTearDown(states.cancel);
+    final workspace = await _nextState(states, 1);
     final feed = await api.openTimelineFeed(_thread, demand: chatDemand);
+    expect(feed.subscriptionId, isNot(state.subscriptionId));
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext();
-    final workspace =
-        ((events.current.event as ConversationStateEvent).frame
-                as ThreadSnapshotFrame)
-            .workspace;
+    await _nextTimeline(events, 1);
     await feed.acknowledge(events.current.deliverySequence);
+    await state.acknowledge(states.current.deliverySequence);
     await api.submitPrompt(
       _thread,
       const StudioPromptInput(
@@ -327,22 +341,23 @@ void main() {
       expectedModelRouteRevision: workspace.modelRoute!.revision,
     );
     String? executionId;
+    var stateSequence = 1;
+    while (executionId == null) {
+      final current = await _nextState(states, ++stateSequence);
+      executionId = current.runtime.execution?.id;
+      await state.acknowledge(states.current.deliverySequence);
+    }
     LiveDisplayBlock? work;
-    while (await events.moveNext()) {
-      if (events.current.event case ConversationStateEvent(
-        frame: ThreadSnapshotFrame(:final workspace),
-      )) {
-        executionId = workspace.runtime.execution?.id ?? executionId;
-      }
-      if (events.current.event case ConversationTimelineEvent(:final batch)) {
-        work = batch.live?.blocks
-            .where((b) => b.body is WorkDisplayBlock)
-            .firstOrNull;
-        if (work != null) break;
-      }
+    var timelineSequence = 1;
+    while (work == null) {
+      final batch = await _nextTimeline(events, ++timelineSequence);
+      work = batch.live?.blocks
+          .where((b) => b.body is WorkDisplayBlock)
+          .firstOrNull;
+      if (work != null) break;
       await feed.acknowledge(events.current.deliverySequence);
     }
-    final body = work!.body as WorkDisplayBlock;
+    final body = work.body as WorkDisplayBlock;
     final members = await feed.openDisplayMembers(
       reference: body.members,
       window: const LatestDisplayMembers(),
@@ -354,7 +369,7 @@ void main() {
     final next = members.next();
     await api.stopThread(
       _thread,
-      executionId!,
+      executionId,
       operationId: const OperationId('stop-story'),
     );
     final cancelled = (await next)!;
@@ -374,18 +389,18 @@ void main() {
     );
     await feed.acknowledge(events.current.deliverySequence);
     DisplayBlock? sealed;
-    while (await events.moveNext()) {
-      if (events.current.event case ConversationTimelineEvent(:final batch)) {
-        sealed = batch.blocks.where((b) => b.id == work!.id).firstOrNull;
-        if (sealed != null) {
-          expect(batch.live!.blocks, isEmpty);
-          break;
-        }
+    while (sealed == null) {
+      final batch = await _nextTimeline(events, ++timelineSequence);
+      sealed = batch.blocks.where((b) => b.id == work!.id).firstOrNull;
+      if (sealed != null) {
+        expect(batch.live!.blocks, isEmpty);
+        break;
       }
       await feed.acknowledge(events.current.deliverySequence);
     }
-    expect((sealed!.body as WorkDisplayBlock).summary.cancelled, 1);
+    expect((sealed.body as WorkDisplayBlock).summary.cancelled, 1);
     await feed.close();
+    await state.close();
   });
 
   test('partial append keeps live unchanged until the matching sealed prefix arrives', () async {
@@ -411,18 +426,8 @@ void main() {
     final feed = await api.openTimelineFeed(_thread, demand: _one);
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext();
-    await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    expect(
-      (events.current.event as ConversationTimelineEvent)
-          .batch
-          .live!
-          .blocks
-          .single
-          .id,
-      'handoff-2',
-    );
+    final initial = await _nextTimeline(events, 1);
+    expect(initial.live!.blocks.single.id, 'handoff-2');
     api.seedDisplayBlocks(
       threadId: _thread,
       blocks: [
@@ -437,15 +442,13 @@ void main() {
       ),
     );
     await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    final first = (events.current.event as ConversationTimelineEvent).batch;
+    final first = await _nextTimeline(events, 2);
     expect(first.fromPos, 3);
     expect(first.throughPos, 4);
     expect(first.blocks.single.id, 'handoff-1');
     expect(first.live, isNull);
     await feed.acknowledge(events.current.deliverySequence);
-    await events.moveNext();
-    final second = (events.current.event as ConversationTimelineEvent).batch;
+    final second = await _nextTimeline(events, 3);
     expect(second.fromPos, 4);
     expect(second.throughPos, 5);
     expect(second.blocks.single.id, 'handoff-2');
@@ -460,13 +463,7 @@ void main() {
       final feed = await api.openTimelineFeed(_thread, demand: _one);
       final events = StreamIterator(feed.events);
       addTearDown(events.cancel);
-      await events.moveNext();
-      await feed.acknowledge(events.current.deliverySequence);
-      await events.moveNext();
-      expect(
-        (events.current.event as ConversationTimelineEvent).batch.throughPos,
-        3,
-      );
+      expect((await _nextTimeline(events, 1)).throughPos, 3);
 
       LiveDisplayWindow live(int through, String id) => LiveDisplayWindow(
         revision: through,
@@ -490,8 +487,7 @@ void main() {
         live: live(5, 'live-at-five'),
       );
       await feed.acknowledge(events.current.deliverySequence);
-      await events.moveNext();
-      final first = (events.current.event as ConversationTimelineEvent).batch;
+      final first = await _nextTimeline(events, 2);
       expect(first.fromPos, 3);
       expect(first.throughPos, 4);
       expect(first.live, isNull);
@@ -502,8 +498,7 @@ void main() {
         live: live(6, 'live-at-six'),
       );
       await feed.acknowledge(events.current.deliverySequence);
-      await events.moveNext();
-      final target = (events.current.event as ConversationTimelineEvent).batch;
+      final target = await _nextTimeline(events, 3);
       expect(target.fromPos, 4);
       expect(target.throughPos, 5);
       expect(target.blocks.single.id, 'fixed-5');
@@ -516,8 +511,7 @@ void main() {
       expect(target.live!.blocks.single.id, 'live-at-five');
 
       await feed.acknowledge(events.current.deliverySequence);
-      await events.moveNext();
-      final newer = (events.current.event as ConversationTimelineEvent).batch;
+      final newer = await _nextTimeline(events, 4);
       expect(newer.fromPos, 5);
       expect(newer.throughPos, 6);
       expect(newer.blocks.single.id, 'newer-6');
@@ -658,10 +652,7 @@ void main() {
       final feed = await api.openTimelineFeed(_thread, demand: chatDemand);
       final events = StreamIterator(feed.events);
       addTearDown(events.cancel);
-      await events.moveNext();
-      await feed.acknowledge(events.current.deliverySequence);
-      await events.moveNext();
-      final before = (events.current.event as ConversationTimelineEvent).batch;
+      final before = await _nextTimeline(events, 1);
       DisplayMembers? memberRead;
       DisplayMemberPage? initialPage;
       if (original is WorkDisplayBlock) {
@@ -708,11 +699,7 @@ void main() {
       final afterFeed = await api.openTimelineFeed(_thread, demand: chatDemand);
       final afterEvents = StreamIterator(afterFeed.events);
       addTearDown(afterEvents.cancel);
-      await afterEvents.moveNext();
-      await afterFeed.acknowledge(afterEvents.current.deliverySequence);
-      await afterEvents.moveNext();
-      final after =
-          (afterEvents.current.event as ConversationTimelineEvent).batch;
+      final after = await _nextTimeline(afterEvents, 1);
       expect(after.throughPos, before.throughPos, reason: conflict);
       expect(after.blocks.map((b) => b.id), before.blocks.map((b) => b.id));
       expect(after.live!.revision, before.live!.revision);
@@ -746,9 +733,7 @@ void main() {
         ),
       );
       await afterFeed.acknowledge(afterEvents.current.deliverySequence);
-      await afterEvents.moveNext();
-      final valid =
-          (afterEvents.current.event as ConversationTimelineEvent).batch;
+      final valid = await _nextTimeline(afterEvents, 2);
       expect(valid.fromPos, 3);
       expect(valid.throughPos, 4);
       expect(valid.blocks.single.id, ref.blockId);
@@ -819,7 +804,7 @@ void main() {
     final feed = await api.openTimelineFeed(_thread, demand: chatDemand);
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext(); // Own credit with State; never ACK it.
+    await _nextTimeline(events, 1); // Own Timeline Set credit; never ACK it.
     final members = await feed.openDisplayMembers(
       reference: ref,
       window: const LatestDisplayMembers(),
@@ -841,6 +826,7 @@ void main() {
     expect(await waiting, isNull);
     expect(await events.moveNext(), isTrue);
     expect(events.current.event, isA<ConversationClosedEvent>());
+    expect(events.current.deliverySequence, 1);
     expect(await events.moveNext(), isFalse);
     await expectLater(
       feed.reader.readBusinessRefs(),
@@ -855,8 +841,7 @@ void main() {
       () async =>
           expect(await api.cancelDartSubscriptions(budgetMs: 1000), isEmpty),
     );
-    api.timelineFeedFactory = (_, feed) async =>
-        MappedTimelineFeed(feed, (state) => state);
+    api.timelineFeedFactory = (_, feed) async => MappedTimelineFeed(feed);
     final feed = await api.openTimelineFeed(
       _thread,
       demand: chatDemand,
@@ -867,15 +852,19 @@ void main() {
     feed.initialGate = gate;
     final events = StreamIterator(feed.events);
     addTearDown(events.cancel);
-    await events.moveNext();
-    expect(feed.acknowledgements, isEmpty);
-    await feed.acknowledge(events.current.deliverySequence);
+    var delivered = false;
+    final initial = _nextTimeline(events, 1).then((batch) {
+      delivered = true;
+      return batch;
+    });
     await feed.initialEntered.future;
-    expect(feed.deliveredFrames, 1);
+    expect(delivered, isFalse);
+    expect(feed.acknowledgements, isEmpty);
+    expect(feed.deliveredFrames, 0);
     gate.complete();
-    await events.moveNext();
-    expect(events.current.event, isA<ConversationTimelineEvent>());
-    final batch = (events.current.event as ConversationTimelineEvent).batch;
+    final batch = await initial;
+    expect(feed.deliveredFrames, 1);
+    expect(feed.acknowledgements, isEmpty);
     final work =
         batch.blocks.firstWhere((b) => b.body is WorkDisplayBlock).body
             as WorkDisplayBlock;
@@ -886,9 +875,43 @@ void main() {
     );
     expect((await members.next())!.sealed, isTrue);
     expect(feed.detailCalls, 1);
+    expect(feed.acknowledgements, isEmpty);
+    await feed.acknowledge(events.current.deliverySequence);
+    expect(feed.acknowledgements, [1]);
     await feed.close();
     expect(feed.joined.isCompleted, isTrue);
   });
+}
+
+Future<TimelineBatch> _nextTimeline(
+  StreamIterator<ConversationFrame> events,
+  int sequence,
+) async {
+  expect(await events.moveNext(), isTrue);
+  final frame = events.current;
+  expect(frame.threadId, _thread);
+  expect(frame.deliverySequence, sequence);
+  expect(frame.event, isA<ConversationTimelineEvent>());
+  final batch = (frame.event as ConversationTimelineEvent).batch;
+  expect(
+    batch.placement,
+    sequence == 1 ? ChatPlacement.set : ChatPlacement.append,
+  );
+  return batch;
+}
+
+Future<ThreadWorkspace> _nextState(
+  StreamIterator<ConversationFrame> events,
+  int sequence,
+) async {
+  expect(await events.moveNext(), isTrue);
+  final frame = events.current;
+  expect(frame.threadId, _thread);
+  expect(frame.deliverySequence, sequence);
+  expect(frame.event, isA<ConversationStateEvent>());
+  final state = (frame.event as ConversationStateEvent).frame;
+  expect(state, isA<ThreadSnapshotFrame>());
+  return (state as ThreadSnapshotFrame).workspace;
 }
 
 Future<_FastDemo> _open([_FastDemo? transport]) async {

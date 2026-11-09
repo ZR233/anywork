@@ -156,7 +156,8 @@ impl QueryTool {
             let state = registry.state();
             if state.closing
                 || !state.entries.get(&context.thread_id).is_some_and(|entry| {
-                    entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    entry.native.ready
+                        && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
                 })
             {
                 bail!("agent query caller is not active");
@@ -166,7 +167,7 @@ impl QueryTool {
                 .clone()
                 .context("agent product queries were not configured")?
         };
-        let owner = StudioThreadAssembler(registry.clone());
+        let owner = SessionRuntime(registry.clone());
         let selection = {
             let state = registry.state();
             let caller = state
@@ -174,9 +175,12 @@ impl QueryTool {
                 .get(&context.thread_id)
                 .context("agent caller is missing")?;
             if !matches!(self.kind, Kind::Session) {
-                anyhow::ensure!(caller.parent_id.is_none(), "delegation tools are root-only");
+                anyhow::ensure!(
+                    caller.native.parent_id.is_none(),
+                    "delegation tools are root-only"
+                );
             }
-            crate::studio::delegation::saved(&caller.thread.snapshot())?
+            crate::studio::delegation::saved(&caller.native.thread.snapshot())?
                 .context("agent caller has no frozen delegation selection")?
         };
         if matches!(self.kind, Kind::Models | Kind::Model) {
@@ -204,6 +208,7 @@ impl QueryTool {
             }
             Kind::Models => output(
                 &services
+                    .delegation_models()
                     .list_delegation_models(
                         pl_agent_tool::typed::decode_json(input.content())
                             .map_err(ToolError::new)?,
@@ -212,6 +217,7 @@ impl QueryTool {
             ),
             Kind::Model => output(
                 &services
+                    .delegation_models()
                     .get_delegation_model(
                         pl_agent_tool::typed::decode_json(input.content())
                             .map_err(ToolError::new)?,
@@ -231,6 +237,14 @@ impl QueryTool {
     }
 }
 impl AgentServices {
+    fn delegation_models(&self) -> super::delegation_models::DelegationModels {
+        super::delegation_models::DelegationModels {
+            config: self.config.clone(),
+            store: self.store.clone(),
+            performance: self.performance.clone(),
+        }
+    }
+
     pub(super) async fn saved_agents(
         &self,
         caller: &str,
@@ -263,7 +277,7 @@ impl AgentServices {
 
     pub(super) async fn activate_child(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         caller: &str,
         target: &str,
     ) -> Result<()> {
@@ -315,7 +329,7 @@ impl AgentServices {
 
     pub(super) async fn activate_verified_review_child(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         caller: &str,
         target: &str,
         proof: crate::studio::thread_factory::VerifiedLocalResume,
@@ -401,7 +415,7 @@ impl AgentServices {
     }
     async fn session_page(
         &self,
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         input: SessionInput,
         path: Vec<pl_protocol::AgentId>,
     ) -> Result<AgentSessionPage> {
@@ -492,7 +506,7 @@ fn output(value: &impl Serialize) -> Result<ToolOutput> {
         vec![pl_core::context::ContextContent::Text { text: text.into() }],
     ))
 }
-impl StudioThreadAssembler {
+impl SessionRuntime {
     pub(crate) fn set_agent_services(
         &self,
         config: crate::config::ConfigRuntime,

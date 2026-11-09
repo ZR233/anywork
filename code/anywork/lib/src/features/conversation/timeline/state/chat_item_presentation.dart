@@ -50,6 +50,30 @@ final class ChatItemPresentation {
   final ChatAtom? atom;
   late final ToolCardReading toolCard = readToolCard(this);
 
+  // The original producer's declaration, not envelope metadata, grants Body
+  // intent. Keeping it on the original atom also keeps it stable after decode.
+  late final List<int> publicInputBodyIndices = _publicInputBodyIndices();
+  bool get hasPublicInputBody => publicInputBodyIndices.isNotEmpty;
+
+  List<int> _publicInputBodyIndices() {
+    final input = atom;
+    if (input == null ||
+        input.source is! InputChatSource ||
+        input.kind != ChatAtomKind.input ||
+        input.payload is! DeferredPayload) {
+      return const [];
+    }
+    return List.unmodifiable([
+      for (var index = 0; index < input.contents.length; index++)
+        if (input.contents[index].role == ChatContentRole.body)
+          if (input.contents[index].reference.target case BodyContentTarget(
+            key: 'body',
+            owner: ItemContentOwner(itemId: final ownerItemId),
+          ))
+            if (ownerItemId == (input.completionItemId ?? input.id)) index,
+    ]);
+  }
+
   ChatItemPresentation resolvePayload(InlinePayload payload) {
     final value = decodePayload(id, payload);
     return ChatItemPresentation(
@@ -66,6 +90,15 @@ final class ChatItemPresentation {
       displayUnit: displayUnit,
       atom: atom,
     );
+  }
+
+  bool get presentsFiles {
+    if (type != 'tool' || presentationContract != 'builtin.show_files@1') {
+      return false;
+    }
+    final state = chatObject(data['state'], 'state');
+    return state['kind'] == 'succeeded' ||
+        (state['kind'] == 'failed' && body('tool.output-artifacts') != null);
   }
 
   /// Structural empty text still exists in owner metadata. Deferred/unknown

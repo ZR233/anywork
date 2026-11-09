@@ -20,27 +20,25 @@ async fn timeline_uses_original_credit_and_lock_free_read_lease() -> Result<()> 
         ));
         owner.install_lifecycle(|_| {})?;
         let mut port = start_port(&owner).await;
-        let (sequence, before) = loop {
-            let frame = receive(&mut port).await?;
-            match frame.event {
-                BridgeConversationEvent::State { .. } => {
-                    owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?
-                }
-                BridgeConversationEvent::Timeline { batch } => {
-                    ensure!(batch.presentation_version == pl_protocol::PRESENTATION_VERSION);
-                    ensure!(batch.placement == crate::api::studio::types::BridgeChatPlacement::Set);
-                    break (
-                        frame.delivery_sequence,
-                        batch.before.context("fixture needs older display blocks")?,
-                    );
-                }
-                event => anyhow::bail!("GUI feed emitted non-timeline event: {event:?}"),
+        let frame = receive(&mut port).await?;
+        let (sequence, before) = match frame.event {
+            BridgeConversationEvent::Timeline { batch } => {
+                ensure!(batch.presentation_version == pl_protocol::PRESENTATION_VERSION);
+                ensure!(batch.placement == crate::api::studio::types::BridgeChatPlacement::Set);
+                (
+                    frame.delivery_sequence,
+                    batch.before.context("fixture needs older display blocks")?,
+                )
             }
+            event => anyhow::bail!("GUI feed emitted non-timeline event: {event:?}"),
         };
         ensure!(owner.native.try_lock().is_err());
         let page = tokio::time::timeout(
             Duration::from_secs(5),
-            owner.reader.load_timeline_older(&before, chat_demand()),
+            owner
+                .content()?
+                .reader
+                .load_timeline_older(&before, chat_demand()),
         )
         .await??;
         ensure!(page.placement == pl_protocol::ChatPlacement::Prepend);
@@ -62,6 +60,7 @@ async fn timeline_uses_original_credit_and_lock_free_read_lease() -> Result<()> 
         ensure!(port.recv().await.is_none());
         // Producer retirement must not steal the read owner's independent responsibility.
         owner
+            .content()?
             .reader
             .load_timeline_older(&before, chat_demand())
             .await?;
@@ -70,6 +69,7 @@ async fn timeline_uses_original_credit_and_lock_free_read_lease() -> Result<()> 
         ensure!(owner.native.lock().await.is_none());
         ensure!(
             owner
+                .content()?
                 .reader
                 .load_timeline_older(&before, chat_demand())
                 .await

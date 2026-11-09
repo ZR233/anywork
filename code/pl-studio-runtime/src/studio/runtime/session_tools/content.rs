@@ -428,14 +428,11 @@ pub(super) async fn get(
         .cloned()
         .ok_or_else(stale_scope)?;
     let result = async {
-        let (baseline, activity) = initial_state_activity(&resource, batch.through_seq).await?;
+        let activity = initial_activity(&resource, batch.through_seq).await?;
         // Get is a one-shot business query, including the original small
         // runtime/activity summary. It does not refresh a GUI subscription.
         let snapshot = runtime.thread_snapshot(session).await?;
-        ensure!(
-            baseline.thread.id == snapshot.thread.id,
-            "Get state identity conflict"
-        );
+        ensure!(snapshot.thread.id == session, "Get state identity conflict");
         // A one-shot content tool reads the same domain heads that State
         // publishes. Activity and history do not confer interaction authority.
         let references = reader.read_business_refs().await?;
@@ -506,67 +503,36 @@ pub(super) async fn get(
     operation_and_cleanup(result, owners.close(reader.subscription_id()).await)
 }
 
-async fn initial_state_activity(
+async fn initial_activity(
+    resource: &ReadResource,
+    through_seq: u64,
+) -> Result<Arc<pl_protocol::ActivitySnapshot>> {
+    let mut feed = resource.feed.lock().await;
+    match feed.recv().await? {
+        Some(crate::studio::ConversationEvent::Activity { snapshot }) => {
+            ensure!(
+                snapshot.completed_through == through_seq,
+                "initial Activity completion prefix conflict"
+            );
+            Ok(snapshot)
+        }
+        _ => anyhow::bail!("missing initial Activity snapshot"),
+    }
+}
+
+async fn opened_facts(
+    runtime: &StudioRuntime,
+    session: &str,
     resource: &ReadResource,
     through_seq: u64,
 ) -> Result<(
-    Box<pl_protocol::ThreadSnapshot>,
+    pl_protocol::ThreadSnapshot,
     Arc<pl_protocol::ActivitySnapshot>,
 )> {
-    let mut feed = resource.feed.lock().await;
-    let snapshot =
-        match feed.recv().await? {
-            Some(crate::studio::ConversationEvent::State { update }) => {
-                match *update {
-                    pl_protocol::ThreadSubscriptionUpdate::Snapshot {
-                        completed_history_version,
-                        snapshot,
-                    } => {
-                        ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
-                    pl_protocol::studio::StudioError::new(
-                        pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                        "Unsupported completed history version", false,
-                    ).with_reason(pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
-                        serde_json::json!({"expected":pl_protocol::COMPLETED_HISTORY_VERSION,
-                            "actual":completed_history_version})));
-                        ensure!(
-                            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
-                            pl_protocol::studio::StudioError::new(
-                                pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                                "Unsupported State schema version",
-                                false,
-                            )
-                            .with_reason(
-                                pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
-                                serde_json::json!({"expected":pl_protocol::THREAD_SCHEMA_VERSION,
-                                    "actual":snapshot.schema_version})
-                            )
-                        );
-                        snapshot
-                    }
-                    _ => anyhow::bail!("unsupported or missing completed State baseline"),
-                }
-            }
-            _ => anyhow::bail!("missing registered State baseline"),
-        };
-    loop {
-        match feed.recv().await? {
-            Some(crate::studio::ConversationEvent::Activity { snapshot: activity }) => {
-                ensure!(
-                    activity.completed_through == through_seq,
-                    "initial Activity completion prefix conflict"
-                );
-                return Ok((snapshot, activity));
-            }
-            // Cold/retained real terminal notifications can follow the baseline.
-            Some(crate::studio::ConversationEvent::State { update })
-                if matches!(
-                    *update,
-                    pl_protocol::ThreadSubscriptionUpdate::Notification { .. }
-                ) => {}
-            _ => anyhow::bail!("missing initial Activity snapshot"),
-        }
-    }
+    let activity = initial_activity(resource, through_seq).await?;
+    // One-shot tool output reads the point-in-time helper. It does not open a second assembler.
+    let state = runtime.thread_snapshot(session).await?;
+    Ok((state, activity))
 }
 
 #[cfg(test)]
@@ -673,7 +639,7 @@ pub(super) async fn read(
                     .cloned()
                     .ok_or_else(stale_scope)?;
                 let (state, activity) =
-                    initial_state_activity(&resource, batch.through_seq).await?;
+                    opened_facts(runtime, &args.session_id, &resource, batch.through_seq).await?;
                 return output(&serde_json::json!({"readScope":id,"chat":batch,
                     "state":state,"activity":activity,"businessRefs":references}));
             }
@@ -735,7 +701,8 @@ pub(super) async fn read(
                 .get(id)
                 .cloned()
                 .ok_or_else(stale_scope)?;
-            let (state, activity) = initial_state_activity(&resource, batch.through_seq).await?;
+            let (state, activity) =
+                opened_facts(runtime, &args.session_id, &resource, batch.through_seq).await?;
             output(
                 &serde_json::json!({"readScope":id,"chat":batch,"state":state,"activity":activity}),
             )
@@ -926,8 +893,7 @@ pub(super) async fn search(
                         .get(reader.subscription_id())
                         .cloned()
                         .ok_or_else(stale_scope)?;
-                    search_read(cancel, initial_state_activity(&resource, page.through_seq))
-                        .await?;
+                    search_read(cancel, initial_activity(&resource, page.through_seq)).await?;
                     (reader, Some(page))
                 }
             };
@@ -999,8 +965,7 @@ pub(super) async fn search(
                         .get(&id)
                         .cloned()
                         .ok_or_else(stale_scope)?;
-                    search_read(cancel, initial_state_activity(&resource, first.through_seq))
-                        .await?;
+                    search_read(cancel, initial_activity(&resource, first.through_seq)).await?;
                     cursor.run = Some(RunCursor {
                         read_scope_id: id,
                         before: None,

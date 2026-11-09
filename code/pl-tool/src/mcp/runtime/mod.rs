@@ -12,6 +12,8 @@ use crate::mcp::config::EffectiveMcpServerConfig;
 
 use super::connector::McpConnector;
 use super::health::McpAvailabilitySnapshot;
+pub(super) use pl_tool_mcp::support::ResourceOperation;
+use pl_tool_mcp::support::{FrozenMcpLease, FrozenTool};
 
 mod worker;
 
@@ -21,8 +23,8 @@ pub struct McpGeneration(pub u64);
 
 /// 远端 annotations 解析出的 typed 安全提示。
 ///
-/// 解析失败时全字段为 `None`（保守默认）；hints 只参与 effect 推导，icons 与
-/// 其余 annotations 仅作为展示与审计信息。
+/// 解析失败时全字段为 `None`（保守默认）；hints、icons 与其余 annotations
+/// 仅作为展示与审计信息，不能授予本地权限。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolSafetyHints {
@@ -84,7 +86,6 @@ impl McpRuntime {
         });
         let shutdown_completion = ShutdownCompletion::default();
         let handle = McpRuntimeHandle {
-            authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
             commands: commands.clone(),
             updates: updates.clone(),
             shutdown_completion: shutdown_completion.clone(),
@@ -108,7 +109,6 @@ impl McpRuntime {
 /// 产品 facade 和工具持有的非泛型 MCP 命令句柄。
 #[derive(Clone)]
 pub struct McpRuntimeHandle {
-    authorization: pl_core::tool::opaque::ToolAuthorization,
     commands: mpsc::UnboundedSender<RuntimeCommand>,
     updates: broadcast::Sender<()>,
     /// Single-owned closing completion shared by every handle clone and the worker.
@@ -187,6 +187,7 @@ impl McpRuntimeHandle {
         let snapshot = response.await.map_err(runtime_stopped)??;
         Ok(McpTurnLease {
             generation: snapshot.generation,
+            authorization: snapshot.authorization,
             tools: Arc::new(snapshot.tools),
             server_ids: Arc::new(snapshot.server_ids),
             resource_server_ids: Arc::new(snapshot.resource_server_ids),
@@ -301,19 +302,29 @@ impl McpRuntimeHandle {
 }
 
 /// 固定 generation 的 MCP 工具、资源和调用入口。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct McpTurnLease {
     generation: McpGeneration,
+    authorization: pl_core::tool::opaque::ToolAuthorization,
     tools: Arc<Vec<McpRuntimeToolDescriptor>>,
     server_ids: Arc<Vec<String>>,
     resource_server_ids: Arc<Vec<String>>,
     guard: Arc<McpLeaseGuard>,
 }
 
+impl fmt::Debug for McpTurnLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpTurnLease")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
 impl McpTurnLease {
-    /// Runtime-local generation authority, independent from stable model declarations.
+    /// Captured at publication; subsequent generations cannot change this lease's authority.
     pub fn authorization(&self) -> pl_core::tool::opaque::ToolAuthorization {
-        self.guard.handle.authorization.scoped(self.generation.0)
+        self.authorization.clone()
     }
 
     pub fn generation(&self) -> McpGeneration {
@@ -404,15 +415,58 @@ pub enum McpResetScope {
     All,
 }
 
-#[derive(Debug, Clone)]
-pub(super) enum ResourceOperation {
-    ListResources { cursor: Option<String> },
-    ListResourceTemplates { cursor: Option<String> },
-    ReadResource { uri: String },
+impl FrozenMcpLease for McpTurnLease {
+    type Error = PureError;
+
+    fn generation(&self) -> u64 {
+        self.generation.0
+    }
+
+    fn tool(&self, exposed_name: &str) -> Option<FrozenTool> {
+        self.tools
+            .iter()
+            .find(|tool| tool.exposed_name == exposed_name)
+            .map(FrozenTool::from)
+    }
+
+    fn resource_server_ids(&self) -> &[String] {
+        &self.resource_server_ids
+    }
+
+    async fn call_tool(
+        &self,
+        server_id: String,
+        raw_name: String,
+        arguments: Value,
+    ) -> Result<CallToolResult> {
+        self.call_tool(server_id, raw_name, arguments).await
+    }
+
+    async fn resource_query(
+        &self,
+        server_id: Option<String>,
+        operation: ResourceOperation,
+    ) -> Result<Value> {
+        self.resource_query(server_id, operation).await
+    }
+}
+
+impl From<&McpRuntimeToolDescriptor> for FrozenTool {
+    fn from(tool: &McpRuntimeToolDescriptor) -> Self {
+        Self {
+            server_id: tool.server_id.clone(),
+            raw_name: tool.raw_name.clone(),
+            exposed_name: tool.exposed_name.clone(),
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+            output_schema: tool.output_schema.clone(),
+        }
+    }
 }
 
 pub(super) struct LeaseSnapshot {
     generation: McpGeneration,
+    authorization: pl_core::tool::opaque::ToolAuthorization,
     tools: Vec<McpRuntimeToolDescriptor>,
     server_ids: Vec<String>,
     resource_server_ids: Vec<String>,

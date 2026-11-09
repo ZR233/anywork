@@ -1,7 +1,7 @@
 //! Product observation registration; callbacks execute outside the registry lock.
 use super::*;
 
-type Observe = dyn Fn(String, ThreadHandle) + Send + Sync;
+type Observe = dyn Fn(String, ThreadHandle, Arc<crate::session::NativeResources>) + Send + Sync;
 type BeforeClose = dyn Fn(
         String,
         ThreadHandle,
@@ -87,10 +87,13 @@ impl std::fmt::Debug for AssemblyObservation {
         f.write_str("AssemblyObservation")
     }
 }
-impl StudioThreadAssembler {
+impl SessionRuntime {
     pub(crate) fn observe_assembly(
         &self,
-        observe: impl Fn(String, ThreadHandle) + Send + Sync + 'static,
+        observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
+        + Send
+        + Sync
+        + 'static,
         drain: impl Fn(
             String,
             ClosePurpose,
@@ -142,14 +145,16 @@ impl StudioThreadAssembler {
             }) = state
                 .entries
                 .get_mut(id)
-                .and_then(|entry| entry.close_storage.as_mut())
+                .and_then(|entry| entry.native.close_storage.as_mut())
             {
                 *observation_installed = true;
             }
             state.observation.clone()
         };
-        if let Some(observer) = observer {
-            (observer.0)(id.to_owned(), thread.clone());
+        if let Some(observer) = observer
+            && let Ok(resources) = self.native_resources(thread)
+        {
+            (observer.0)(id.to_owned(), thread.clone(), resources);
         }
     }
     pub(super) async fn drain_observation(&self, id: &str) -> Result<(), ThreadAssemblyError> {
@@ -197,7 +202,7 @@ impl StudioThreadAssembler {
             state
                 .entries
                 .get(id)
-                .and_then(|entry| entry.close_storage.as_ref()),
+                .and_then(|entry| entry.native.close_storage.as_ref()),
             Some(super::CloseStorage::Execution {
                 observation_installed: false,
                 ..
@@ -347,14 +352,45 @@ impl StudioThreadAssembler {
         thread: &ThreadHandle,
         purpose: ClosePurpose,
     ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>> {
+        let purpose = self.operation_close_purpose(id, purpose);
+        let resources = self.native_resources(thread);
+        let lifetime = resources.as_ref().ok().and_then(|scope| {
+            scope
+                .binding
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(|binding| binding.lifetime.clone())
+        });
+        if let Some(lifetime) = &lifetime {
+            lifetime.cancellation.cancel();
+        }
         if purpose == ClosePurpose::Delete {
             thread.prepare_close_for_deletion();
         }
         let observer = self.0.state().observation.clone();
-        match observer {
-            Some(observer) => (observer.3)(id.to_owned(), thread.clone(), purpose),
-            None => Box::pin(async { Ok(()) }),
-        }
+        let observed =
+            observer.map(|observer| (observer.3)(id.to_owned(), thread.clone(), purpose));
+        let thread = thread.clone();
+        Box::pin(async move {
+            let scope = resources?;
+            let _guard = match &lifetime {
+                Some(lifetime) => Some(lifetime.gate.lock().await),
+                None => None,
+            };
+            scope
+                .candidates
+                .retry(Some(&thread))
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "close Native tool candidates",
+                    source: source.into_boxed_dyn_error(),
+                })?;
+            if let Some(observed) = observed {
+                observed.await?;
+            }
+            Ok(())
+        })
     }
 
     /// Adjudicates one message delivery against the target Thread's durable identity index.
@@ -425,9 +461,10 @@ impl StudioThreadAssembler {
                     .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?,
             )
             .filter(|entry| {
-                entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                entry.native.ready
+                    && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
             })
-            .map(|entry| (entry.thread.clone(), entry.execution))
+            .map(|entry| (entry.native.thread.clone(), entry.native.execution))
         };
         let Some((thread, execution)) = target else {
             return Ok(ParentMessageDelivery::Skipped(
@@ -652,7 +689,7 @@ mod storage_fault_tests {
     }
 
     struct Fixture {
-        owner: StudioThreadAssembler,
+        owner: SessionRuntime,
         store: StudioStore,
         live: LiveOwners,
         closes: Arc<Mutex<Vec<WorkspaceRelease>>>,
@@ -662,7 +699,7 @@ mod storage_fault_tests {
     }
     impl Fixture {
         fn new(store: StudioStore) -> Result<Self> {
-            let owner = StudioThreadAssembler::default();
+            let owner = SessionRuntime::open(pl_protocol::SessionId::new("parent")?);
             let live = LiveOwners::default();
             let draining = live.clone();
             let syncing = live.clone();
@@ -678,7 +715,7 @@ mod storage_fault_tests {
             let late_drain_fault = fail_drain_after_writer.clone();
             owner.set_child_factory(ResourceIo(closes.clone()))?;
             owner.observe_assembly(
-                move |id, thread| {
+                move |id, thread, _| {
                     let projection = spawn_live_projection_for_thread(observing.clone(), &id);
                     let channel = observing.thread_persistence().history_channel(&id);
                     observed.lock().unwrap().insert(
@@ -760,6 +797,12 @@ mod storage_fault_tests {
             thread
         }
 
+        fn activation(&self, id: &str, parent: Option<&str>) -> ThreadActivation {
+            let mut activation = ThreadActivation::native_test(id, parent);
+            activation.agent.session_id = self.owner.id().clone();
+            activation
+        }
+
         async fn add(&self, id: &str, parent: Option<&str>) -> Result<ThreadHandle> {
             self.add_with_workspace(id, parent, None).await
         }
@@ -782,24 +825,30 @@ mod storage_fault_tests {
             thread
                 .attach_storage(ColdStoreHandle::new(sink.clone()))
                 .await?;
-            self.owner.0.state().entries.insert(
+            let activation = self.activation(id, parent);
+            self.owner.0.state().insert_entry(
                 id.into(),
-                Entry {
-                    purpose: super::super::EntryPurpose::Execution,
-                    workspace_usage: None,
-                    thread: thread.clone(),
-                    parent_id: parent.map(str::to_owned),
-                    ready: true,
-                    incarnation: Arc::new(()),
-                    execution: pl_core::thread::input::InputDriverOptions {
-                        max_model_steps: pl_core::thread::ModelStepLimit::Limited(
-                            std::num::NonZeroU32::new(1).unwrap(),
-                        ),
+                crate::session::AgentInstance {
+                    identity: activation.agent,
+                    binding: activation.binding,
+                    native: crate::session::NativeThreadRuntime {
+                        resources: Arc::new(crate::session::NativeResources::default()),
+                        purpose: super::super::EntryPurpose::Execution,
+                        workspace_usage: None,
+                        thread: thread.clone(),
+                        parent_id: parent.map(str::to_owned),
+                        ready: true,
+                        incarnation: Arc::new(()),
+                        execution: pl_core::thread::input::InputDriverOptions {
+                            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                                std::num::NonZeroU32::new(1).unwrap(),
+                            ),
+                        },
+                        cleanup: Default::default(),
+                        close_storage: None,
+                        published_resources_closed: false,
+                        workspace_disposition: None,
                     },
-                    cleanup: Default::default(),
-                    close_storage: None,
-                    published_resources_closed: false,
-                    workspace_disposition: None,
                 },
             );
             self.owner.publish_observation(id, &thread);
@@ -876,7 +925,7 @@ mod storage_fault_tests {
         let preparation = resources
             .unpublished_workspace("unpublished-directory", &root)
             .await?;
-        let owner = StudioThreadAssembler::default();
+        let owner = SessionRuntime::default();
         let (entered, mut observed) = tokio::sync::watch::channel(false);
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         owner.0.state().unpublished_children.insert(
@@ -1007,7 +1056,7 @@ mod storage_fault_tests {
             history.checkpoint().await?.unwrap().state.lifecycle,
             ThreadLifecycle::Closed
         );
-        assert!(fixture.owner.close_all().await.is_empty());
+        assert!(fixture.owner.close_session().await.is_empty());
         fixture.stop_writers().await?;
         Ok(())
     }
@@ -1147,7 +1196,7 @@ mod storage_fault_tests {
                 .await
         });
         registered.await?;
-        let mut shutdown = Box::pin(fixture.owner.close_all());
+        let mut shutdown = Box::pin(fixture.owner.close_session());
         assert!(futures::poll!(shutdown.as_mut()).is_pending());
         assert!(fixture.owner.0.state().closing);
         release
@@ -1234,7 +1283,7 @@ mod storage_fault_tests {
                 .await?,
             ParentReportAcknowledgement::Absent
         );
-        assert!(restarted.owner.close_all().await.is_empty());
+        assert!(restarted.owner.close_session().await.is_empty());
         restarted.stop_writers().await?;
         resources.shutdown().await?;
         Ok(())

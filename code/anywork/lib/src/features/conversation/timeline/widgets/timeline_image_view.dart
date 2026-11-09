@@ -103,6 +103,14 @@ class _TimelineImageViewState extends State<TimelineImageView> {
             fit: BoxFit.contain,
             width: width.toDouble(),
             height: height.toDouble(),
+            errorBuilder: (context, error, stack) => Tooltip(
+              message: error.toString(),
+              child: TextButton.icon(
+                onPressed: widget.active ? widget.onRetry : null,
+                icon: const Icon(Icons.broken_image_outlined),
+                label: const Text('图片解码失败，重试'),
+              ),
+            ),
           ),
         ),
       ),
@@ -135,7 +143,11 @@ class _TimelineImageViewState extends State<TimelineImageView> {
               Expanded(
                 child: InteractiveViewer(
                   maxScale: 8,
-                  child: Image(image: provider, fit: BoxFit.contain),
+                  child: Image(
+                    image: provider,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, error, _) => Text('图片解码失败：$error'),
+                  ),
                 ),
               ),
             ],

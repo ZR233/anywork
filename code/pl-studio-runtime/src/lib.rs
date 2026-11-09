@@ -28,6 +28,7 @@ pub mod approval;
 pub use approval::PermissionMode;
 mod account_usage;
 mod bots;
+pub mod channel_output;
 mod compaction;
 pub mod config;
 mod config_editor;
@@ -42,6 +43,7 @@ pub use studio::accounts;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub use studio::benchmark;
+pub(crate) mod session;
 pub mod thread_assembler;
 mod updater;
 mod worker_assets;
@@ -94,18 +96,18 @@ pub use protocol::{
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ContentWatch,
-    ConversationEvent, ConversationFeed, ConversationReader, DisplayMembers, PersistenceState,
-    PersistenceStateSnapshot, ProductEventBus, SkillSearchResult, SkillsStateSnapshot,
-    SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError, StudioHostKind, StudioInstance,
-    StudioInstanceLease, StudioProductTopicSubscription, StudioRecoveryImpact, StudioRecoveryIssue,
-    StudioRecoveryIssueAction, StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
-    StudioRecoveryWorktreeOwner, StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions,
-    StudioRuntimeSnapshot, StudioRuntimeStateKind, StudioStartNewThreadResponse,
-    StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
-    StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeInspection,
-    StudioWorktreeRecoveryPreview, ThreadMetadataObservation, ThreadPreparationObserver,
-    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, ThreadsObservation,
-    TimelineFeed, WorkspaceRecord,
+    ConversationEvent, ConversationFeed, ConversationReader, ConversationStateFeed, DisplayMembers,
+    PersistenceState, PersistenceStateSnapshot, ProductEventBus, SkillSearchResult,
+    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
+    StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
+    StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
+    StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
+    StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioUpdateStateSnapshot,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
+    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
+    ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

@@ -1174,42 +1174,39 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   }
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
-    String threadId, {
-    required ReadDemand demand,
-  }) async {
-    return MappedTimelineFeed(
-      await super.openTimelineFeed(threadId, demand: demand),
-      (frame) => switch (frame) {
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async => MappedConversationStateFeed(
+    await super.openConversationStateFeed(threadId),
+    (frame) => switch (frame) {
+      ThreadSnapshotFrame(
+        :final workspace,
+        :final completedHistoryVersion,
+        :final schemaVersion,
+      ) =>
         ThreadSnapshotFrame(
-          :final workspace,
-          :final completedHistoryVersion,
-          :final schemaVersion,
-        ) =>
-          ThreadSnapshotFrame(
-            workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-            completedHistoryVersion: completedHistoryVersion,
-            schemaVersion: schemaVersion,
-          ),
-        ThreadNotificationFrame() => switch (frame.update) {
-          ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
-            ThreadNotificationFrame(
-              threadId: frame.threadId,
-              revision: frame.revision,
-              epoch: frame.epoch,
-              baseRevision: frame.baseRevision,
-              update: ThreadRuntimeUpdate(
-                runtime: _runtime(runtime),
-                todo: todo,
-                modelRoute: modelRoute,
-              ),
+          workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
+          completedHistoryVersion: completedHistoryVersion,
+          schemaVersion: schemaVersion,
+        ),
+      ThreadNotificationFrame() => switch (frame.update) {
+        ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
+          ThreadNotificationFrame(
+            threadId: frame.threadId,
+            revision: frame.revision,
+            epoch: frame.epoch,
+            baseRevision: frame.baseRevision,
+            update: ThreadRuntimeUpdate(
+              runtime: _runtime(runtime),
+              todo: todo,
+              modelRoute: modelRoute,
             ),
-          _ => frame,
-        },
+          ),
         _ => frame,
       },
-    );
-  }
+      _ => frame,
+    },
+  );
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
     rows: [for (final row in page.rows) _thread(row)],

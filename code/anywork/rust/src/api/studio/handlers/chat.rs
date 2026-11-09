@@ -1,4 +1,4 @@
-//! One combined conversation observation, a single FRB push consumer, and independent read queries.
+//! Independent content/state observations sharing bounded delivery and retained native joins.
 mod close_failures;
 mod content_watch;
 mod owner;
@@ -28,7 +28,74 @@ pub struct BridgeConversationFeed {
     inner: Arc<ConversationOwner>,
 }
 
-/// Opens exactly one native combined feed, without a second tail or a separately rebuilt baseline.
+/// State-only observation. It owns no content reader and does not activate execution.
+pub struct BridgeConversationStateFeed {
+    inner: Arc<ConversationOwner>,
+}
+
+pub async fn open_conversation_state_feed(
+    thread_id: String,
+) -> Result<BridgeConversationStateFeed, BridgeError> {
+    let bridge = active_bridge().await?;
+    let cancel = bridge.shutdown.child_token();
+    let feed = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(closed()),
+        feed = bridge.studio.open_conversation_state_feed(&thread_id) => feed?,
+    };
+    let inner = Arc::new(ConversationOwner::new_state(feed, cancel));
+    let opening = inner.cancel.clone().drop_guard();
+    bridge
+        .subscriptions
+        .register_conversation(&inner, &bridge.shutdown)?;
+    drop(opening.disarm());
+    Ok(BridgeConversationStateFeed { inner })
+}
+
+impl BridgeConversationStateFeed {
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn thread_id(&self) -> String {
+        self.inner.thread_id.clone()
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn subscription_id(&self) -> String {
+        self.inner.subscription_id.clone()
+    }
+
+    pub async fn events(
+        &self,
+        sink: StreamSink<BridgeConversationFrame>,
+    ) -> Result<(), BridgeError> {
+        self.inner.start(sink).await
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn acknowledge(
+        &self,
+        subscription_id: String,
+        delivery_sequence: u64,
+    ) -> Result<(), BridgeError> {
+        self.inner.acknowledge(&subscription_id, delivery_sequence)
+    }
+
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_close(&self) {
+        self.inner.request_close();
+    }
+
+    pub async fn close(&self) -> Result<(), BridgeError> {
+        self.inner.close().await
+    }
+}
+
+impl Drop for BridgeConversationStateFeed {
+    fn drop(&mut self) {
+        self.inner.request_close();
+    }
+}
+
+/// Opens exactly one native content feed, without a second tail or a rebuilt baseline.
 /// Cancellation before publication drops the native feed through its own RAII boundary.
 pub async fn open_conversation_feed(
     thread_id: String,
@@ -66,9 +133,10 @@ impl BridgeConversationFeed {
     ) -> Result<String, BridgeError> {
         self.inner.ensure_read_open()?;
         self.inner
+            .content()?
             .watches
             .open(
-                &self.inner.reader,
+                &self.inner.content()?.reader,
                 &self.inner.cancel,
                 chat::protocol_content_ref(reference),
                 chat::range(range),
@@ -81,17 +149,17 @@ impl BridgeConversationFeed {
         &self,
         watch_id: String,
     ) -> Result<Option<BridgeContentWindow>, BridgeError> {
-        self.inner.watches.next(&watch_id).await
+        self.inner.content()?.watches.next(&watch_id).await
     }
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close_content_watch(&self, watch_id: String) -> Result<(), BridgeError> {
-        self.inner.watches.request_close(&watch_id)
+        self.inner.content()?.watches.request_close(&watch_id)
     }
 
     /// Cancels first, then joins the retained native watch before releasing its identity/capacity.
     pub async fn close_content_watch(&self, watch_id: String) -> Result<(), BridgeError> {
-        self.inner.watches.close(&watch_id).await
+        self.inner.content()?.watches.close(&watch_id).await
     }
 
     /// Queries share the original read lease, never the producer's native receive/credit mutex.
@@ -103,6 +171,7 @@ impl BridgeConversationFeed {
         self.inner.ensure_read_open()?;
         let batch = self
             .inner
+            .content()?
             .reader
             .load_older(&before, chat::demand(demand))
             .await?;
@@ -133,6 +202,7 @@ impl BridgeConversationFeed {
         self.inner.ensure_read_open()?;
         let entry = self
             .inner
+            .content()?
             .reader
             .read_completed(&record_id, chat::demand(demand))
             .await?;
@@ -143,7 +213,7 @@ impl BridgeConversationFeed {
     /// Reads business-resource references from the existing independent read lease.
     pub async fn read_business_refs(&self) -> Result<BridgeThreadBusinessRefs, BridgeError> {
         self.inner.ensure_read_open()?;
-        let references = self.inner.reader.read_business_refs().await?;
+        let references = self.inner.content()?.reader.read_business_refs().await?;
         self.inner.ensure_read_open()?;
         Ok(chat::business_refs(references))
     }
@@ -157,6 +227,7 @@ impl BridgeConversationFeed {
         self.inner.ensure_read_open()?;
         let page = self
             .inner
+            .content()?
             .reader
             .list_contents(&item_id, continuation.as_deref(), chat::demand(demand))
             .await?;
@@ -172,6 +243,7 @@ impl BridgeConversationFeed {
         self.inner.ensure_read_open()?;
         let window = self
             .inner
+            .content()?
             .reader
             .read_content(&chat::protocol_content_ref(reference), chat::range(range))
             .await?;
@@ -188,6 +260,7 @@ impl BridgeConversationFeed {
         self.inner.ensure_read_open()?;
         let page = self
             .inner
+            .content()?
             .reader
             .page_current(
                 &chat::protocol_collection_ref(reference),

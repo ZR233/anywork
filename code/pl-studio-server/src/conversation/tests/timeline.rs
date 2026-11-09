@@ -96,6 +96,38 @@ async fn timeline_open_events_and_close_share_original_capability() -> Result<()
                 .context("invalid cursor admitted")?;
             ensure!(error.0.code == StudioErrorCode::InvalidArgument);
             ensure!(error.0.reason() != Some("staleReadScope"));
+            let mut stream = stream.map(|response| response.into_body().into_data_stream());
+            if let Some(body) = stream.as_mut() {
+                // The query above ran while content was unconsumed. The first
+                // ordinary frame must still be the original Timeline Set, not
+                // a duplicated State baseline from the former mixed feed.
+                let batch = tokio::time::timeout(DEADLINE, async {
+                    let mut wire = String::new();
+                    loop {
+                        let bytes = body.next().await.context("Timeline ended before Set")??;
+                        wire.push_str(std::str::from_utf8(&bytes)?);
+                        let Some((event, _)) = wire.split_once("\n\n") else {
+                            continue;
+                        };
+                        ensure!(
+                            event.lines().any(|line| line == "event: timeline"),
+                            "non-Timeline first frame: {event}"
+                        );
+                        let data = event
+                            .lines()
+                            .find_map(|line| line.strip_prefix("data: "))
+                            .context("Timeline frame has no data")?;
+                        return serde_json::from_str::<pl_protocol::TimelineBatch>(data)
+                            .map_err(anyhow::Error::from);
+                    }
+                })
+                .await??;
+                batch
+                    .validate()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                ensure!(batch.placement == ChatPlacement::Set);
+                ensure!(batch.live.is_some(), "Set must carry its original live cut");
+            }
             api(tokio::time::timeout(
                 DEADLINE,
                 crate::timeline::close(

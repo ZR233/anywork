@@ -6,6 +6,12 @@
 
 **原子内容完成立即保存；展示段在真实边界确定且成员收束后整体进入 Timeline。** 内容完成与展示完成有独立序号，不能把完成记录数当成历史卡片数。工作组中的已完成成员保留在实时区，已经交接的历史块不再接新成员或更新摘要。
 
+显式用户文件展示沿原工具完成记录封存，不增加独立历史 writer。`builtin.show_files@1` 的 renderer 消费 [09](./09-tool-runtime.md) 定义的 `pl.tool.files@1`，保留成功／失败顺序，成功附件从同一回执的可靠资源引用派生。归档资源的读取资格同时覆盖驻留、pending 和持久回执，冷重开不重新执行工具或读取源文件。旧图片展示格式保留必要只读解码。
+
+新文件展示工具的原子由原 Native owner 标记为 `Independent`，沿既有分类规则产生 `Single`，使文件格直接出现在主时间线，而不隐藏在默认折叠的工作记录中。保留原 Turn 来源、调用身份与完成顺序，不由 Flutter 解析 payload 后重新分类；普通工具及旧图片历史的分类不变。
+
+图片复用原图片 owner；Markdown 和保存按需读取原资源，二进制不进入 ViewState。来源定位元数据不能授予额外读取权限。外部交付状态归发送领域，不回写不可变完成记录；历史打开、GUI 重绘和重新订阅不得发送外部消息。渠道交付使用 [27](./27-bots.md) 的明确来源绑定，不以时间线可见性或附件存在推导外发资格。
+
 | 所有者 | 职责 |
 | --- | --- |
 | 原 Core Thread / 业务 producer | 真实执行准入、成员开始/终态、来源事实、可靠 effect、检查点与上下文 |
@@ -28,6 +34,8 @@ State 与内容是独立资源：Repository 是 Dart State 唯一写入口，Sta
 受信宿主明确允许公开的外部正文，在目标 Thread 原 inbox 准入时沿原 message ID 冻结，保留来源、作者和频道。外部平台已转换为 ThreadInput 的只走输入链；后台最终结果走原工具完成链，不因 inbox 转发或出站通知重复发布。文字中的角色、批准或工具完成声明不获得权限。
 
 输入/外部消息形成独立 Single，不能仅因输入到来就伪造前台边界或工具终态。隐藏续接和诊断保持原公开资格；公开答案及计划决议由原唯一回执产生。GUI 命令回执不手动插入历史。
+
+客户端发送回显不是完成历史：沿 [25.8.1](./25-frontend-state.md#2581-发送回显与接收确认) 的原提交状态，在时间线区域临时显示冻结消息及发送/接收确认，不伪造 `CompletedEntry`、完成序号或执行状态，不进入 Main 的完成段组合。原消费者应用同身份规范输入后由正式卡片接管；命令成功、保存进度或下一 Turn 启动均不是等待回显出现的条件。后端仍按原提交顺序校验和发布，不为视觉响应绕过身份冲突、附件资源准备、存储背压或旧 Turn 的安全收束。
 
 ### 模型成员的可靠封口与交接
 
@@ -117,6 +125,8 @@ ThreadBusinessRefs 只含 `plan: Option<CurrentPlanHead>` 与 `interactions: Opt
 
 引用由原 Plan/交互 owner 在同一切面先建立可读内容后发布，只有真实领域变化才换代；token、查询、保存 ACK 和 GUI 组交接不推动它。冷读以同一短事务取得领域字段、Plan 引用和交互集合，不把无执行 owner 当成无业务引用。
 
+状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，完成级内容通道交付 Chat、Activity、Failure、Closed，GUI 展示通道交付 Timeline、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
+
 plan=None 为真无计划；Some/document=None 为有计划无文档。interactions=None 为未建立资源，已初始化空集合可有有效引用，不能吞失败为空。交互集合的 interaction_collection_revision 随原 Core checkpoint 保存，描述 permissions/interactions 联合集合，不用剩余单项最大 revision 或无关 effect 序号代替。transfer 与 resident 剪裁实际改变集合时分别 checked 推进，重复剪裁不推进；旧 schema6 缺字段只初始化 0，不猜过去代次或重写原件。
 
 原 reader 的 read_business_refs 与 State 基线共用领域投影。一次性工具可查询，GUI 持续跟踪只消费 State，不在命令/Timeline 后补偿刷新。不恢复 ChatBatch.current，不把组和正文放进 State。
@@ -140,6 +150,10 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空 completi
 引用换代只退役受影响详情；折叠、换窗或离开撤销本视图资格并汇合读取，不关闭其他观察或执行。搜索区分借入 cursor 与新建未交付资格，失败回收后者，完整结果成功后才退休旧资格，不驱逐其他 scope 或突破原上限。清理失败保留待 join 义务，不掩盖业务错误。
 
 原 Main/Run/Children 完成查询、read_completed 与内容工具继续服务原子用途，Run 列不删除、不反写；GUI 不再用它们分组，也不提供失败后回落旧 Run 的旁路。原件读取的预算、parent 资格和精确完成身份仍有效。
+
+正文窗口已包含完整正文时不显示范围导航，超出窗口明确显示当前范围及下一段操作，不自动累计无限全文。正文不增加键名或字节数折叠栏；原始 ItemPayload/诊断查看器仍按原始内容展示，不将 JSON 信封当 Markdown。缺少公开 Body 声明不阻止已合法解码信封中的附件沿原附件路径呈现，正文读取也不自动公开原始请求。
+
+已声明公开 Body 的 Input 在 canonical metadata 恢复之前即可沿原内容窗口呈现；metadata 读取只补足附件等已公开元数据，不是正文准入条件。恢复等待、64 KiB 预算限制、解码失败或身份错误均不得遮蔽这份独立且合法的正文；metadata 的限制或错误单独明确呈现，不回显原信封。恢复成功后仍只有一份正文组件和原正文读取 owner，沿同一 item/ref/generation 保持读取资格，不重复显示或再读同一窗口；附件按原成功身份核对后才取得读取资格。没有公开声明的 Input 仍沿原 canonical 限制，不能把其他域当正文绕过。读取资格判定在原呈现模型内复用，不在包装器与 Widget 各复制一套放宽规则。
 
 ## 26.8 Flutter 状态栏与唯一组件集合
 

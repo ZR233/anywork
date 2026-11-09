@@ -49,6 +49,10 @@ final class UnrestoredRealtimeNotice extends RealtimeNotice {
   if (latest == null || latest.closing || latest.body is! WorkDisplayBlock) {
     return null;
   }
+  final source = latest.source;
+  if (source is! ForegroundTurnChatSource || source.turnId != activeTurnId) {
+    return null;
+  }
   for (final notice in notices) {
     if (notice is! ExecutionRealtimeNotice) continue;
     final view = notice.view;

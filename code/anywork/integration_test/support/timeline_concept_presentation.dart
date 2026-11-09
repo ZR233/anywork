@@ -33,15 +33,20 @@ Future<ChatItemPresentation> waitForTimelineConceptSingle(
       }
       expect(item.atom?.completionSeq, body.atom.completionSeq);
       expect(item.atom?.lifecycle, body.atom.lifecycle);
-      expect(
-        item.compatibility,
-        ChatItemCompatibility.current,
-        reason: 'Only the canonical mounted business renderer is evidence',
-      );
-      return item;
+      // Public Input Body may mount before its independent canonical metadata
+      // finishes. It is valid visible content, but not evidence of completed
+      // metadata/attachment recovery. Keep the original bounded wait.
+      if (item.compatibility != ChatItemCompatibility.deferred) {
+        expect(
+          item.compatibility,
+          ChatItemCompatibility.current,
+          reason: 'Only the canonical mounted business renderer is evidence',
+        );
+        return item;
+      }
     }
     if (!tester.binding.clock.now().isBefore(deadline)) {
-      fail('Canonical Single renderer did not mount for ${unit.id}');
+      fail('Canonical Single renderer did not resolve for ${unit.id}');
     }
     await tester.pump(const Duration(milliseconds: 16));
     expect(tester.takeException(), isNull);

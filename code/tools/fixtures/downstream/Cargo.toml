@@ -1,0 +1,27 @@
+[package]
+name = "pl-tools-downstream"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Deliberately outside the product workspace: independent consumers cannot rely
+# on the host's feature unification. Every complete family is renamed here.
+[workspace]
+
+[dependencies]
+filesystem = { package = "pl-tool-filesystem", path = "../../filesystem" }
+command = { package = "pl-tool-command", path = "../../command" }
+git = { package = "pl-tool-git", path = "../../git" }
+lsp = { package = "pl-tool-lsp", path = "../../lsp" }
+mcp = { package = "pl-tool-mcp", path = "../../mcp" }
+search = { package = "pl-tool-search", path = "../../search" }
+media = { package = "pl-tool-media", path = "../../media" }
+skill = { package = "pl-tool-skill", path = "../../skill" }
+bots = { package = "pl-tool-bots", path = "../../bots" }
+
+[dev-dependencies]
+pl-agent-tool = { path = "../../../pl-agent-tool", features = ["typed"] }
+pl-tool-media-support = { path = "../../support/media" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }

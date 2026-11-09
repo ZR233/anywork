@@ -133,8 +133,8 @@ pub use thread::{
     CacheUsageSummary, THREAD_SCHEMA_VERSION, Thread, ThreadContextDisposition,
     ThreadModelRouteSnapshot, ThreadNotification, ThreadNotificationEnvelope,
     ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage, ThreadRuntimeUsageState,
-    ThreadSnapshot, ThreadStatus, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
-    ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineTurn,
+    ThreadSnapshot, ThreadStatus, ThreadSubscriptionUpdate, ThreadTurnHistory, ThreadTurnPage,
+    ThreadWorkspaceMode, TimelineTurn,
 };
 mod session_entry;
 pub use session_entry::SessionEntry;

@@ -36,6 +36,7 @@ use sea_orm::{
     QueryResult, Statement, TransactionTrait, Value,
 };
 use tokio::sync::{Notify, watch};
+use tracing::Instrument;
 
 use crate::hash::merge_costs;
 
@@ -666,28 +667,36 @@ impl CallsStore {
         // the caller is cancelled. close() also waits for this same log lock.
         let writer = self.writer.clone();
         let thread_ids = thread_ids.to_vec();
-        tokio::spawn(async move {
-            let mut log = writer.log.lock().await;
-            log.delete_threads(&writer.db, &ids).await?;
-            let tx = writer.db.begin().await?;
-            for id in &thread_ids {
-                for table in [
-                    "call_log_index",
-                    "call_usage_summary",
-                    "performance_samples",
-                    "legacy_call_fences",
-                    "legacy_auxiliary_usage",
-                ] {
-                    tx.execute_raw(statement(
-                        &format!("DELETE FROM {table} WHERE thread_id=?"),
-                        vec![id.clone().into()],
-                    ))
-                    .await?;
+        let span = tracing::info_span!(
+            "calls_delete_threads",
+            operation = "permanent_delete_calls",
+            thread_count = thread_ids.len(),
+        );
+        tokio::spawn(
+            async move {
+                let mut log = writer.log.lock().await;
+                log.delete_threads(&writer.db, &ids).await?;
+                let tx = writer.db.begin().await?;
+                for id in &thread_ids {
+                    for table in [
+                        "call_log_index",
+                        "call_usage_summary",
+                        "performance_samples",
+                        "legacy_call_fences",
+                        "legacy_auxiliary_usage",
+                    ] {
+                        tx.execute_raw(statement(
+                            &format!("DELETE FROM {table} WHERE thread_id=?"),
+                            vec![id.clone().into()],
+                        ))
+                        .await?;
+                    }
                 }
+                tx.commit().await?;
+                Ok::<_, anyhow::Error>(())
             }
-            tx.commit().await?;
-            Ok::<_, anyhow::Error>(())
-        })
+            .instrument(span),
+        )
         .await
         .context("failed to join calls deletion")??;
         Ok(())
@@ -1817,6 +1826,53 @@ fn is_retryable_write(message: &str) -> bool {
 #[cfg(test)]
 mod storage_fault_tests {
     use super::*;
+    use std::sync::Arc;
+    use tracing::{Subscriber, field::Visit, span};
+
+    #[derive(Clone, Default)]
+    struct CapturedCallLog(Arc<Mutex<Vec<String>>>);
+
+    impl Visit for CapturedCallLog {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}={value}", field.name()));
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl Subscriber for CapturedCallLog {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attributes: &span::Attributes<'_>) -> span::Id {
+            attributes.record(&mut self.clone());
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            span::Id::from_u64(NEXT.fetch_add(1, Ordering::Relaxed))
+        }
+
+        fn record(&self, _: &span::Id, values: &span::Record<'_>) {
+            values.record(&mut self.clone());
+        }
+
+        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            event.record(&mut self.clone());
+        }
+
+        fn enter(&self, _: &span::Id) {}
+
+        fn exit(&self, _: &span::Id) {}
+    }
 
     #[tokio::test]
     async fn permanent_delete_calls_removes_all_body_revisions_and_preserves_neighbor_after_restart()
@@ -2045,6 +2101,246 @@ mod storage_fault_tests {
                 pl_core::context::content_hash(&bytes[offset..offset + length])
             );
         }
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_skips_unidentifiable_records_and_recovers_after_restart() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::prepare(&path).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store.writer.log.lock().await.close();
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT segment FROM call_log_index WHERE thread_id='neighbor'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        let segment: String = row.try_get("", "segment")?;
+        let log_path = temp.path().join("logs").join(&segment);
+        let original = tokio::fs::read(&log_path).await?;
+        let mut expected = Vec::new();
+        for line in original.split_inclusive(|byte| *byte == b'\n') {
+            let text = std::str::from_utf8(&line[..line.len() - 1])?;
+            let value: serde_json::Value = serde_json::from_str(text)?;
+            if value["threadId"] != "deleted" {
+                expected.extend_from_slice(line);
+            }
+        }
+
+        let secret = b"synthetic-secret-must-not-be-logged";
+        let malformed = [b"{\"diagnostic\":\"".as_slice(), secret, b"\",INVALID}\n"].concat();
+        let empty_identity = b"{\"threadId\":\"\",\"callId\":\"unknown\",\"kind\":\"attempt\"}\n";
+        let incomplete = [b"{\"threadId\":\"".as_slice(), secret].concat();
+        let mut on_disk = original;
+        on_disk.extend_from_slice(&malformed);
+        on_disk.extend_from_slice(empty_identity);
+        on_disk.extend_from_slice(&incomplete);
+        expected.extend_from_slice(&malformed);
+        expected.extend_from_slice(empty_identity);
+        expected.extend_from_slice(&incomplete);
+        tokio::fs::write(&log_path, on_disk).await?;
+
+        let captured = CapturedCallLog::default();
+        let dispatch = tracing::Dispatch::new(captured.clone());
+        let _capture = tracing::dispatcher::set_default(&dispatch);
+        store.delete_threads(&["deleted".into()]).await?;
+        let records = captured.0.lock().unwrap().join("\n");
+        for expected_field in [
+            "reason=json_syntax",
+            "decision=preserve_and_skip_index",
+            "segment=",
+            "line=",
+            "offset=",
+        ] {
+            assert!(
+                records.contains(expected_field),
+                "missing {expected_field} in {records}"
+            );
+        }
+        assert!(
+            !records.contains(std::str::from_utf8(secret)?),
+            "raw malformed record leaked into call-log diagnostics"
+        );
+        assert_eq!(tokio::fs::read(&log_path).await?, expected);
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT thread_id,offset,length,content_hash FROM call_log_index WHERE segment=?",
+                vec![segment.clone().into()],
+            ))
+            .await?;
+        assert!(!rows.is_empty());
+        for row in rows {
+            assert_eq!(row.try_get::<String>("", "thread_id")?, "neighbor");
+            let offset = row.try_get::<i64>("", "offset")? as usize;
+            let length = row.try_get::<i64>("", "length")? as usize;
+            assert_eq!(
+                row.try_get::<String>("", "content_hash")?,
+                pl_core::context::content_hash(&expected[offset..offset + length])
+            );
+        }
+        store.close().await?;
+
+        let reopened = CallsStore::open(&path).await?;
+        reopened.delete_threads(&["deleted".into()]).await?;
+        let remaining = indexed_bodies(&reopened).await?;
+        assert!(!remaining.is_empty());
+        assert!(
+            remaining
+                .iter()
+                .all(|record| record.thread_id == "neighbor")
+        );
+        assert_eq!(tokio::fs::read(&log_path).await?, expected);
+        reopened.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_preserves_incomplete_tail_across_index_failure_restart_and_append()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::prepare(&path).await?;
+        let pending = batch(vec![billing("deleted")?, billing("neighbor")?]);
+        let (_, failures, deferred) = apply_batch(&store.writer, &pending).await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store.writer.log.lock().await.close();
+
+        let row = store
+            .writer
+            .db
+            .query_one_raw(statement(
+                "SELECT segment FROM call_log_index WHERE thread_id='neighbor'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        let segment: String = row.try_get("", "segment")?;
+        let log_dir = temp.path().join("logs");
+        let log_path = log_dir.join(&segment);
+        let incomplete = b"{unknown-tail-with-secret-bytes";
+        let mut bytes = tokio::fs::read(&log_path).await?;
+        bytes.extend_from_slice(incomplete);
+        tokio::fs::write(&log_path, bytes).await?;
+
+        store
+            .writer
+            .db
+            .execute_unprepared(
+                "CREATE TABLE tail_repair_parent(id INTEGER PRIMARY KEY);
+             CREATE TABLE tail_repair_probe(parent INTEGER REFERENCES tail_repair_parent(id)
+                 DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER reject_tail_locator_repair AFTER INSERT ON call_log_index
+             WHEN NEW.thread_id='neighbor' BEGIN
+                 INSERT INTO tail_repair_probe VALUES(1);
+             END;",
+            )
+            .await?;
+        let error = store.delete_threads(&["deleted".into()]).await.unwrap_err();
+        assert!(error.to_string().contains("FOREIGN KEY constraint failed"));
+        assert!(tokio::fs::read(&log_path).await?.ends_with(incomplete));
+        let mut entries = tokio::fs::read_dir(&log_dir).await?;
+        let mut segments = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            segments.push(entry.path());
+        }
+        assert_eq!(
+            segments.len(),
+            2,
+            "a durable later segment must seal the bad tail"
+        );
+        let barrier = segments
+            .into_iter()
+            .find(|candidate| candidate != &log_path)
+            .expect("the segment barrier exists");
+        assert_eq!(tokio::fs::metadata(barrier).await?.len(), 0);
+
+        store
+            .writer
+            .db
+            .execute_unprepared("DROP TRIGGER reject_tail_locator_repair")
+            .await?;
+        store.close().await?;
+
+        let reopened = CallsStore::prepare(&path).await?;
+        assert!(tokio::fs::read(&log_path).await?.ends_with(incomplete));
+        let recovered = indexed_bodies(&reopened).await?;
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].thread_id, "neighbor");
+        reopened.delete_threads(&["deleted".into()]).await?;
+
+        let mut materials = reopened.subscribe_materials();
+        reopened.record_effect(&attempt_effect("neighbor", "append-after-restart", 3));
+        reopened.start().await;
+        wait_material_ticket(&mut materials, reopened.admitted_ticket()).await?;
+        assert!(tokio::fs::read(&log_path).await?.ends_with(incomplete));
+        let recovered = indexed_bodies(&reopened).await?;
+        assert!(
+            recovered
+                .iter()
+                .all(|record| record.thread_id == "neighbor")
+        );
+        assert!(
+            recovered
+                .iter()
+                .any(|record| record.call_id == "append-after-restart")
+        );
+        reopened.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_clears_database_when_log_directory_is_missing() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
+        let (_, failures, deferred) = apply_batch(
+            &store.writer,
+            &batch(vec![billing("deleted")?, billing("neighbor")?]),
+        )
+        .await?;
+        assert!(failures.is_empty() && deferred.is_none());
+        store.writer.log.lock().await.close();
+        let log_dir = temp.path().join("logs");
+        tokio::fs::remove_dir_all(&log_dir).await?;
+
+        let captured = CapturedCallLog::default();
+        let dispatch = tracing::Dispatch::new(captured.clone());
+        let _capture = tracing::dispatcher::set_default(&dispatch);
+        store.delete_threads(&["deleted".into()]).await?;
+        let records = captured.0.lock().unwrap().join("\n");
+        for expected in [
+            "reason=log_directory_missing",
+            "decision=treat_missing_directory_as_empty",
+        ] {
+            assert!(
+                records.contains(expected),
+                "missing {expected} in {records}"
+            );
+        }
+        let rows = store
+            .writer
+            .db
+            .query_all_raw(statement(
+                "SELECT thread_id FROM call_log_index ORDER BY thread_id",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].try_get::<String>("", "thread_id")?, "neighbor");
+        assert!(!tokio::fs::try_exists(&log_dir).await?);
         store.close().await?;
         Ok(())
     }

@@ -4,8 +4,8 @@
 //! The original owner supplies a fixed P/live cut and its pending/SQLite heads.
 
 use super::{
-    ConversationEvent, ConversationFeed, ConversationReader, StudioRuntime,
-    conversation_reader::resync, presentation_reader::encoded_size,
+    ConversationFeed, ConversationReader, StudioRuntime, conversation_reader::resync,
+    presentation_reader::encoded_size,
 };
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
@@ -16,7 +16,12 @@ use pl_protocol::{
 #[cfg(test)]
 mod tests;
 
-/// Presentation facade over the original State/read/close owner. No Chat receive is consumed here.
+#[derive(Debug, Clone)]
+pub enum TimelineEvent {
+    Timeline { batch: Box<TimelineBatch> },
+}
+
+/// Presentation-only facade over the original read/close owner. State has a separate feed.
 pub struct TimelineFeed {
     shared: ConversationFeed,
     initial: Option<TimelineBatch>,
@@ -24,7 +29,6 @@ pub struct TimelineFeed {
     demand: ReadDemand,
     seen_serial: u64,
     last_live: Option<LiveDisplayWindow>,
-    state_turn: bool,
 }
 
 impl StudioRuntime {
@@ -36,7 +40,7 @@ impl StudioRuntime {
         let shared = self
             .open_feed_resources(thread_id, pl_protocol::ChatScope::Main, demand, false)
             .await?;
-        // State/progress registrations already exist before this original read lease captures P0.
+        // Progress registration already exists before this original read lease captures P0.
         let initial = shared.reader().initial_timeline(demand).await?;
         let through = initial.through_pos;
         let last_live = initial.live.clone();
@@ -47,7 +51,6 @@ impl StudioRuntime {
             demand,
             seen_serial: 0,
             last_live,
-            state_turn: true,
         })
     }
 }
@@ -85,7 +88,7 @@ impl TimelineFeed {
     ) -> Result<LiveDisplayWindow> {
         self.reader().load_live_older(before, demand).await
     }
-    pub async fn receive(&mut self) -> Result<ConversationEvent> {
+    pub async fn receive(&mut self) -> Result<TimelineEvent> {
         let result = self.receive_inner().await;
         if let Err(error) = &result {
             if error
@@ -101,7 +104,7 @@ impl TimelineFeed {
         }
         result
     }
-    async fn receive_inner(&mut self) -> Result<ConversationEvent> {
+    async fn receive_inner(&mut self) -> Result<TimelineEvent> {
         loop {
             self.reader().ensure()?;
             ensure!(
@@ -109,17 +112,9 @@ impl TimelineFeed {
                 ChatError::Cancelled
             );
             if let Some(batch) = self.initial.take() {
-                return Ok(ConversationEvent::Timeline {
+                return Ok(TimelineEvent::Timeline {
                     batch: Box::new(batch),
                 });
-            }
-            if self.state_turn {
-                self.state_turn = false;
-                if let Some(update) = self.shared.take_state()? {
-                    return Ok(ConversationEvent::State {
-                        update: Box::new(update),
-                    });
-                }
             }
             if self.delivery.target_through().is_none()
                 && let Some(source) = self.shared.current_progress()
@@ -199,19 +194,11 @@ impl TimelineFeed {
                     !self.shared.cancellation_token().is_cancelled(),
                     ChatError::Cancelled
                 );
-                self.state_turn = true;
-                return Ok(ConversationEvent::Timeline {
+                return Ok(TimelineEvent::Timeline {
                     batch: Box::new(batch),
                 });
             }
-            // Give queued State an opportunity even when a token woke progress without a display
-            // change. The same original wait handles storage, terminal, source retirement and close.
-            self.state_turn = true;
-            if let Some(update) = self.shared.take_state()? {
-                return Ok(ConversationEvent::State {
-                    update: Box::new(update),
-                });
-            }
+            // Only publication/current changes wake this facade. State has its own observation.
             self.shared.wait_change().await?;
         }
     }

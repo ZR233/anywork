@@ -6,9 +6,8 @@ use pl_core::{
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
-pub(super) struct RejectedToolOwners {
+pub(crate) struct NativeToolCandidates {
     entries: Arc<Mutex<Vec<Arc<Entry>>>>,
-    stop: Arc<Mutex<tokio_util::sync::CancellationToken>>,
 }
 struct Entry {
     thread: ThreadHandle,
@@ -17,6 +16,7 @@ struct Entry {
     resources: Mutex<Option<Resources>>,
 }
 enum Resources {
+    Failed(Arc<tokio::task::JoinError>),
     Rejected(Box<RejectedTools>),
     // The owned transfer may retire candidates or register a final reconfiguration.
     Retiring(tokio::task::JoinHandle<Result<(), TransferFailure>>),
@@ -57,22 +57,15 @@ struct RetirementFailure {
     rejection: Option<String>,
 }
 
-impl RejectedToolOwners {
-    pub(super) fn start(&self) -> tokio_util::sync::CancellationToken {
-        let token = tokio_util::sync::CancellationToken::new();
-        *self
-            .stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = token.clone();
-        token
-    }
-    pub(super) fn stop(&self) {
-        self.stop
+impl NativeToolCandidates {
+    pub(crate) fn has_obligations(&self) -> bool {
+        !self
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancel();
+            .is_empty()
     }
-    pub(super) fn retain(&self, thread: ThreadHandle, resources: Box<RejectedTools>) {
+    pub(crate) fn retain(&self, thread: ThreadHandle, resources: Box<RejectedTools>) {
         self.insert(thread, Resources::Rejected(resources), None);
     }
 
@@ -186,7 +179,7 @@ impl RejectedToolOwners {
             .push(entry.clone());
         entry
     }
-    pub(super) async fn retry(&self, thread: Option<&ThreadHandle>) -> anyhow::Result<()> {
+    pub(crate) async fn retry(&self, thread: Option<&ThreadHandle>) -> anyhow::Result<()> {
         let entries = self
             .entries
             .lock()
@@ -195,8 +188,11 @@ impl RejectedToolOwners {
             .filter(|entry| thread.is_none_or(|thread| thread.same_instance(&entry.thread)))
             .cloned()
             .collect::<Vec<_>>();
-        for entry in entries {
-            self.retry_entry(entry).await?;
+        let outcomes =
+            futures::future::join_all(entries.into_iter().map(|entry| self.retry_entry(entry)))
+                .await;
+        for outcome in outcomes {
+            outcome?;
         }
         Ok(())
     }
@@ -232,8 +228,14 @@ impl RejectedToolOwners {
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
-                        self.remove(&entry);
-                        return Err(error.into());
+                        let error = Arc::new(error);
+                        lease.resources = Some(Resources::Failed(error.clone()));
+                        return Err(anyhow::Error::new(
+                            crate::thread_assembler::ThreadAssemblyError::Resource {
+                                operation: "join Native candidate transfer",
+                                source: Box::new(error),
+                            },
+                        ));
                     }
                 };
                 if let Err(error) = result {
@@ -258,6 +260,14 @@ impl RejectedToolOwners {
                     }
                 }
             }
+            Some(Resources::Failed(error)) => {
+                return Err(anyhow::Error::new(
+                    crate::thread_assembler::ThreadAssemblyError::Resource {
+                        operation: "join Native candidate transfer",
+                        source: Box::new(error.clone()),
+                    },
+                ));
+            }
             None => {}
         }
         self.remove(&entry);
@@ -269,5 +279,87 @@ impl RejectedToolOwners {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|current| !Arc::ptr_eq(current, entry));
+    }
+}
+
+/// The application schedules retries through weak Session positions; it owns no candidates.
+#[derive(Clone)]
+pub(super) struct RejectedToolOwners {
+    sessions: crate::session::WeakSessionTable,
+    stop: Arc<Mutex<tokio_util::sync::CancellationToken>>,
+}
+impl RejectedToolOwners {
+    pub(super) fn new(sessions: crate::session::WeakSessionTable) -> Self {
+        Self {
+            sessions,
+            stop: Default::default(),
+        }
+    }
+    pub(super) fn start(&self) -> tokio_util::sync::CancellationToken {
+        let token = tokio_util::sync::CancellationToken::new();
+        *self
+            .stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = token.clone();
+        token
+    }
+    pub(super) fn stop(&self) {
+        self.stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel();
+    }
+    fn pool(&self, thread: &ThreadHandle) -> anyhow::Result<NativeToolCandidates> {
+        let sessions = self.sessions.upgrade().ok_or(ThreadError::Closed)?;
+        sessions
+            .resident_sessions()
+            .into_iter()
+            .find_map(|session| session.native_resources(thread).ok())
+            .map(|scope| scope.candidates.clone())
+            .ok_or_else(|| ThreadError::Closed.into())
+    }
+    pub(super) async fn retire(
+        &self,
+        thread: ThreadHandle,
+        tools: Vec<Registration>,
+        operation: String,
+    ) -> anyhow::Result<()> {
+        self.pool(&thread)?.retire(thread, tools, operation).await
+    }
+    pub(super) async fn reconfigure<T, F, C>(
+        &self,
+        thread: ThreadHandle,
+        update: IdleReconfiguration,
+        operation: String,
+        complete: F,
+    ) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(ThreadSnapshot) -> C + Send + 'static,
+        C: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+    {
+        self.pool(&thread)?
+            .reconfigure(thread, update, operation, complete)
+            .await
+    }
+    pub(super) async fn retry(&self, thread: Option<&ThreadHandle>) -> anyhow::Result<()> {
+        if let Some(thread) = thread {
+            return self.pool(thread)?.retry(Some(thread)).await;
+        }
+        let Some(sessions) = self.sessions.upgrade() else {
+            return Ok(());
+        };
+        let scopes = sessions
+            .resident_sessions()
+            .into_iter()
+            .flat_map(|session| session.resource_scopes())
+            .collect::<Vec<_>>();
+        let outcomes =
+            futures::future::join_all(scopes.iter().map(|scope| scope.candidates.retry(None)))
+                .await;
+        for outcome in outcomes {
+            outcome?;
+        }
+        Ok(())
     }
 }

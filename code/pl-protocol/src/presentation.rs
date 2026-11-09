@@ -200,6 +200,44 @@ mod tests {
     }
 
     #[test]
+    fn live_source_round_trips_and_missing_old_evidence_stays_unknown() {
+        let mut block = LiveDisplayBlock {
+            id: "opaque-block".into(),
+            block_order: 1,
+            source: None,
+            body: work("opaque-block"),
+            closing: false,
+        };
+        let old = serde_json::to_value(&block).unwrap();
+        assert!(old.get("source").is_none());
+        assert_eq!(
+            serde_json::from_value::<LiveDisplayBlock>(old)
+                .unwrap()
+                .source,
+            None
+        );
+        for source in [
+            ChatSourceId::ForegroundTurn {
+                turn_id: "original-turn".into(),
+            },
+            ChatSourceId::Input {
+                input_id: "independent-input".into(),
+            },
+            ChatSourceId::BackgroundResult {
+                message_id: "background-result".into(),
+            },
+        ] {
+            block.source = Some(source.clone());
+            let wire = serde_json::to_value(&block).unwrap();
+            assert_eq!(wire["source"], serde_json::to_value(source).unwrap());
+            assert_eq!(
+                serde_json::from_value::<LiveDisplayBlock>(wire).unwrap(),
+                block
+            );
+        }
+    }
+
+    #[test]
     fn work_creation_and_elapsed_evidence_round_trip_without_backfilling_old_heads() {
         let old = serde_json::to_value(WorkSummary::default()).unwrap();
         assert!(old.get("createdAt").is_none());

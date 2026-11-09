@@ -227,9 +227,7 @@ async fn empty_production_feed_shares_query_qualification_and_close_wakes_receiv
             .runtime
             .open_timeline_feed(&thread.id, demand(1))
             .await?;
-        let ConversationEvent::Timeline { batch } = feed.receive().await? else {
-            anyhow::bail!("presentation feed must start with one Timeline Set");
-        };
+        let TimelineEvent::Timeline { batch } = feed.receive().await?;
         assert_eq!(batch.placement, ChatPlacement::Set);
         assert!(batch.blocks.is_empty());
         assert_eq!(batch.through_pos, 0);
@@ -239,10 +237,12 @@ async fn empty_production_feed_shares_query_qualification_and_close_wakes_receiv
             initial_live.execution_present,
             "create_thread installs the real resident owner, even before its first work block"
         );
+        let mut state = env.runtime.open_conversation_state_feed(&thread.id).await?;
         assert!(matches!(
-            feed.receive().await?,
-            ConversationEvent::State { .. }
+            state.recv().await?,
+            Some(pl_protocol::ThreadSubscriptionUpdate::Snapshot { .. })
         ));
+        state.close().await?;
         let reader = feed.reader().clone();
         let cancellation = feed.cancellation_token();
         {

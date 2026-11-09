@@ -265,7 +265,12 @@ mod tests {
                 },
             ))
             .await?;
-        assert!(runtime.threads.thread(&child_id).is_none());
+        assert!(
+            runtime
+                .session_of(&child_id)
+                .and_then(|session| session.thread(&child_id))
+                .is_none()
+        );
         assert!(
             runtime
                 .read_product_baseline(&StudioProductTopic::ChildInteractions {
@@ -319,7 +324,12 @@ mod tests {
                 interaction.kind == pl_protocol::InteractionKind::ToolApproval
             })
         );
-        assert!(runtime.threads.thread(&child_id).is_none());
+        assert!(
+            runtime
+                .session_of(&child_id)
+                .and_then(|session| session.thread(&child_id))
+                .is_none()
+        );
 
         let nonempty = baseline_state(
             runtime
@@ -413,7 +423,12 @@ mod tests {
                 .is_empty()
         );
         assert!(removed.state.revision() > republished.state.revision());
-        assert!(runtime.threads.thread(&child_id).is_none());
+        assert!(
+            runtime
+                .session_of(&child_id)
+                .and_then(|session| session.thread(&child_id))
+                .is_none()
+        );
 
         let child_row = {
             let catalog = runtime.store.catalog();

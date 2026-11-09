@@ -400,7 +400,10 @@ impl StudioThreadTools {
     >(
         mut self,
         binding: StudioGitBinding<B, P>,
-    ) -> Result<Self, ThreadAssemblyError> {
+    ) -> Result<Self, ThreadAssemblyError>
+    where
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         if !self.capabilities.git {
             return Ok(self);
         }
@@ -706,10 +709,12 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
         view_image.definition(),
         ToolCallPolicy::DirectOnly,
     )?;
-    let show_image = prepare_native_tool::<pl_tool::image_card::ThreadShowImageTool>()?;
+    let show_files = prepare_native_tool::<
+        pl_tool::file_display::ThreadShowFilesTool<B, super::media::MediaHost>,
+    >()?;
     let show_registration = prepare_registration(
-        "show_image",
-        show_image.definition(),
+        "show_files",
+        show_files.definition(),
         ToolCallPolicy::DirectOnly,
     )?;
     let stat = prepare_native_tool::<pl_tool::workspace_file::ThreadStatPathTool<B>>()?;
@@ -721,16 +726,20 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
     tools.push(
         view_registration
             .attach(ToolHandle::new(view_image.attach(
-                pl_tool::image::ThreadViewImageTool::new(backend.clone(), media),
+                pl_tool::image::ThreadViewImageTool::new(backend.clone(), media.clone()),
             )))
             .with_presentation_contract(ToolPresentationContract::new("builtin.view_image@1"))
             .with_authorization(workspace.authorization()),
     );
     tools.push(
         show_registration
-            .attach(ToolHandle::new(
-                show_image.attach(pl_tool::image_card::ThreadShowImageTool::new()),
+            .attach(ToolHandle::new(show_files.attach(
+                pl_tool::file_display::ThreadShowFilesTool::new(backend.clone(), media),
+            )))
+            .with_presentation_contract(ToolPresentationContract::new(
+                pl_tool::file_display::FILE_DISPLAY_PRESENTATION,
             ))
+            .with_authorization(workspace.authorization())
             .foreground_coexisting(),
     );
     tools.push(
@@ -752,26 +761,4 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
             .with_authorization(authorization),
     );
     Ok(tools)
-}
-
-impl super::StudioThreadAssembler {
-    /// Builds the standard catalog and transfers it through the same root/child/recovery owner path.
-    ///
-    /// # Errors
-    /// Returns backend setup, declaration, history or resource-assembly failure.
-    pub async fn assemble_standard(
-        &self,
-        mut spec: StudioThreadSpec,
-        tools: StudioWorkspaceTools,
-    ) -> Result<pl_core::thread::ThreadHandle, ThreadAssemblyError> {
-        spec.agent_controls = if spec.parent_id.is_none() {
-            let selection = spec.frozen_delegation()?;
-            let profiles = self.agent_profiles_snapshot()?;
-            self.agent_control_tools(&profiles, selection)?
-        } else {
-            Vec::new()
-        };
-        let tools = StudioThreadTools::standard(tools).await?;
-        self.assemble(tools.install(spec)).await
-    }
 }

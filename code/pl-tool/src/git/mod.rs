@@ -1,148 +1,143 @@
-//! git 工具:workspace 配置与 [`GitTool`] 适配器。
+//! Anywork binding for the eight independently executable Git tools.
 //!
-//! 按域拆分:`schema` 承载工具类型与输入 schema,`policy` 承载安全策略,
-//! `credential` 承载凭据注入,执行后端由宿主显式提供,
-//! `commands` 承载各 git 子命令语义,`runner` 承载带凭据注入与脱敏的执行管道。
+//! Repository selection, authorization, cancellation and history mapping stay
+//! here; declarations, argument validation and Git orchestration live in tools.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde_json::Value;
-
-use pl_agent_tool::typed::decode_json;
+use pl_agent_tool::{Tool, ToolDefinition};
 use pl_core::tool::{ToolOutput, opaque::ToolError};
+use pl_tool_git::{
+    GitCommand, GitCommandOutput, GitError, GitExecutor, GitNetwork, GitOutput, GitRunner,
+};
 
-mod commands;
-mod credential;
-mod policy;
-mod runner;
+use crate::execution::{ExecutionBackend, ExecutionRequest};
+
+mod error;
 mod schema;
-
-use crate::execution::ExecutionBackend;
-pub use credential::*;
-
-pub use policy::GitPolicy;
+pub use error::GitHostError;
+pub use pl_tool_git::{
+    GIT_TOKEN_ENV, GitCredential, GitCredentialOperation, GitCredentialProvider,
+    GitCredentialRequest, GitPolicy, GitWorkspaceConfig, NoGitCredentialProvider,
+    git_askpass_script,
+};
 pub use schema::*;
 
-/// git 工具运行配置。
-#[derive(Debug, Clone, PartialEq)]
-pub struct GitWorkspaceConfig {
-    pub worktree: PathBuf,
-    pub git_binary: PathBuf,
-    pub policy: GitPolicy,
-    /// 允许执行宿主直接使用其原生 Git 凭据链，而不注入本地 provider token。
-    pub native_credentials: bool,
-    pub default_push_branch: Option<String>,
-    pub remote_url: Option<String>,
-    pub workspace_info: BTreeMap<String, Value>,
+#[derive(Debug)]
+struct HostGitBackend<B>(Arc<B>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct HostGitExecutionError(#[source] pl_tool_git::BoxError);
+
+impl<B> GitExecutor for HostGitBackend<B>
+where
+    B: ExecutionBackend,
+    B::Error: Into<pl_tool_git::BoxError>,
+{
+    type Error = HostGitExecutionError;
+
+    async fn run(&self, command: GitCommand) -> Result<GitCommandOutput, Self::Error> {
+        let output = self
+            .0
+            .run(ExecutionRequest {
+                program: command.program,
+                args: command.args,
+                cwd: command.cwd,
+                env: command.env,
+                timeout: command.timeout,
+            })
+            .await
+            .map_err(|source| HostGitExecutionError(source.into()))?;
+        Ok(GitCommandOutput {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
 }
 
-impl GitWorkspaceConfig {
-    pub fn local(worktree: impl Into<PathBuf>) -> Self {
-        Self {
-            worktree: worktree.into(),
-            git_binary: PathBuf::from("git"),
-            policy: GitPolicy::default(),
-            native_credentials: false,
-            default_push_branch: None,
-            remote_url: None,
-            workspace_info: BTreeMap::new(),
-        }
-    }
-
-    pub fn with_native_credentials(mut self) -> Self {
-        self.native_credentials = true;
-        self
-    }
+#[derive(Debug)]
+enum BoundGit<B, P> {
+    Status(pl_tool_git::status::GitStatus<HostGitBackend<B>>),
+    Diff(pl_tool_git::diff::GitDiff<HostGitBackend<B>>),
+    Branch(pl_tool_git::branch::GitBranch<HostGitBackend<B>>),
+    Fetch(pl_tool_git::fetch::GitFetch<HostGitBackend<B>, P>),
+    Commit(pl_tool_git::commit::GitCommit<HostGitBackend<B>>),
+    Push(pl_tool_git::push::GitPush<HostGitBackend<B>, P>),
+    WorkspaceInfo(pl_tool_git::workspace_info::GitWorkspaceInfo),
+    SyncDefaultBranch(pl_tool_git::sync_default_branch::GitSyncDefaultBranch<HostGitBackend<B>, P>),
 }
 
-/// 单个 git tool 适配器。
+/// Static product adaptation; this type contains no Git command planning.
 #[derive(Debug)]
 pub struct GitTool<B, P> {
-    definition: pl_agent_tool::ToolDefinition,
     kind: GitToolKind,
-    config: GitWorkspaceConfig,
-    backend: Arc<B>,
-    credential_provider: Arc<P>,
+    bound: BoundGit<B, P>,
 }
 
-impl<B, P> GitTool<B, P> {
+impl<B, P> GitTool<B, P>
+where
+    B: ExecutionBackend + 'static,
+    B::Error: Into<pl_tool_git::BoxError>,
+    P: GitCredentialProvider + 'static,
+{
     pub fn new(
         kind: GitToolKind,
         config: GitWorkspaceConfig,
         backend: Arc<B>,
         credential_provider: Arc<P>,
-        definition: pl_agent_tool::ToolDefinition,
+        definition: ToolDefinition,
     ) -> Self {
-        Self {
-            definition,
-            kind,
-            config,
-            backend,
-            credential_provider,
-        }
-    }
-
-    fn name(&self) -> &str {
-        self.kind.name()
-    }
-}
-
-impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> GitTool<B, P> {
-    async fn invoke(&self, input: &str) -> Result<ToolOutput, ToolError> {
-        let outcome = match self.kind {
+        let runner = GitRunner::new(config.clone(), Arc::new(HostGitBackend(backend)));
+        let bound = match kind {
             GitToolKind::Status => {
-                decode_json::<GitEmptyInput>(input).map_err(ToolError::new)?;
-                self.run_plain(vec!["status", "--short", "--branch"]).await
+                BoundGit::Status(pl_tool_git::status::GitStatus::new(runner, definition))
             }
             GitToolKind::Diff => {
-                self.run_diff(decode_json(input).map_err(ToolError::new)?)
-                    .await
+                BoundGit::Diff(pl_tool_git::diff::GitDiff::new(runner, definition))
             }
             GitToolKind::Branch => {
-                self.run_branch(decode_json(input).map_err(ToolError::new)?)
-                    .await
+                BoundGit::Branch(pl_tool_git::branch::GitBranch::new(runner, definition))
             }
-            GitToolKind::Fetch => {
-                self.run_fetch(decode_json(input).map_err(ToolError::new)?)
-                    .await
-            }
+            GitToolKind::Fetch => BoundGit::Fetch(pl_tool_git::fetch::GitFetch::new(
+                GitNetwork::new(runner, credential_provider),
+                definition,
+            )),
             GitToolKind::Commit => {
-                self.run_commit(decode_json(input).map_err(ToolError::new)?)
-                    .await
+                BoundGit::Commit(pl_tool_git::commit::GitCommit::new(runner, definition))
             }
-            GitToolKind::Push => {
-                self.run_push(decode_json(input).map_err(ToolError::new)?)
-                    .await
-            }
-            GitToolKind::WorkspaceInfo => {
-                decode_json::<GitEmptyInput>(input).map_err(ToolError::new)?;
-                self.workspace_info()
-            }
-            GitToolKind::SyncDefaultBranch => {
-                self.run_sync_default_branch(decode_json(input).map_err(ToolError::new)?)
-                    .await
-            }
+            GitToolKind::Push => BoundGit::Push(pl_tool_git::push::GitPush::new(
+                GitNetwork::new(runner, credential_provider),
+                definition,
+            )),
+            GitToolKind::WorkspaceInfo => BoundGit::WorkspaceInfo(
+                pl_tool_git::workspace_info::GitWorkspaceInfo::new(config, definition),
+            ),
+            GitToolKind::SyncDefaultBranch => BoundGit::SyncDefaultBranch(
+                pl_tool_git::sync_default_branch::GitSyncDefaultBranch::new(
+                    GitNetwork::new(runner, credential_provider),
+                    definition,
+                ),
+            ),
         };
-        match outcome {
-            Ok(outcome) => dynamic_output(&outcome),
-            Err(source) => {
-                let observed = runner::observed_failure(&source)
-                    .map(dynamic_output)
-                    .transpose()?;
-                let error = ToolError::new(source);
-                Err(match observed {
-                    Some(output) => error.with_output(output),
-                    None => error,
-                })
-            }
+        Self { kind, bound }
+    }
+
+    async fn invoke(&self, input: String) -> Result<GitOutput, GitError> {
+        match &self.bound {
+            BoundGit::Status(tool) => tool.execute(input, ()).await,
+            BoundGit::Diff(tool) => tool.execute(input, ()).await,
+            BoundGit::Branch(tool) => tool.execute(input, ()).await,
+            BoundGit::Fetch(tool) => tool.execute(input, ()).await,
+            BoundGit::Commit(tool) => tool.execute(input, ()).await,
+            BoundGit::Push(tool) => tool.execute(input, ()).await,
+            BoundGit::WorkspaceInfo(tool) => tool.execute(input, ()).await,
+            BoundGit::SyncDefaultBranch(tool) => tool.execute(input, ()).await,
         }
     }
 
-    /// Transfers a Git executor under the host's explicit repository/credential policy identity.
-    ///
-    /// All fallible declaration and identity checks belong to the supplied preparation.
+    /// Transfers this statically adapted instance under the host's policy identity.
     pub fn registration(
         self,
         prepared: pl_core::tool::opaque::PreparedRegistration,
@@ -154,45 +149,62 @@ impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> GitTool<
     }
 }
 
-impl<B: ExecutionBackend + 'static, P: GitCredentialProvider + 'static> pl_agent_tool::Tool
-    for GitTool<B, P>
+impl<B, P> Tool for GitTool<B, P>
+where
+    B: ExecutionBackend + 'static,
+    B::Error: Into<pl_tool_git::BoxError>,
+    P: GitCredentialProvider + 'static,
 {
     type Input = pl_core::context::OpaquePayload;
     type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
+    type Output = ToolOutput;
+    type Error = ToolError;
 
-    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
-        &self.definition
+    fn definition(&self) -> &ToolDefinition {
+        match &self.bound {
+            BoundGit::Status(tool) => tool.definition(),
+            BoundGit::Diff(tool) => tool.definition(),
+            BoundGit::Branch(tool) => tool.definition(),
+            BoundGit::Fetch(tool) => tool.definition(),
+            BoundGit::Commit(tool) => tool.definition(),
+            BoundGit::Push(tool) => tool.definition(),
+            BoundGit::WorkspaceInfo(tool) => tool.definition(),
+            BoundGit::SyncDefaultBranch(tool) => tool.definition(),
+        }
     }
 
     async fn execute(
         &self,
         input: pl_core::context::OpaquePayload,
         context: pl_core::tool::opaque::CallContext,
-    ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        use pl_core::tool::opaque::ToolError;
+    ) -> Result<ToolOutput, ToolError> {
         if input.format() != "application/json" || input.version() != 1 {
             return Err(ToolError::new(crate::tool_error(
-                self.name(),
+                self.kind.name(),
                 "unsupported Git argument encoding",
             )));
         }
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        self.invoke(input.content()).await
+        match self.invoke(input.content().to_owned()).await {
+            Ok(output) => dynamic_output(&output),
+            Err(source) => {
+                let observed = source.observed().as_ref().map(dynamic_output).transpose()?;
+                let error = ToolError::new(GitHostError::new(self.kind.name(), source));
+                Err(match observed {
+                    Some(output) => error.with_output(output),
+                    None => error,
+                })
+            }
+        }
     }
 }
 
-fn dynamic_output(
-    outcome: &runner::GitToolOutcome,
-) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-    use pl_core::{
-        context::{ContextContent, OpaquePayload},
-        tool::opaque::ToolError,
-    };
-    let preview = pl_output::bounded_text(&outcome.description, 12 * 1024, 0);
+fn dynamic_output(outcome: &GitOutput) -> Result<ToolOutput, ToolError> {
+    use pl_core::context::{ContextContent, OpaquePayload};
+    let description = outcome.payload().to_string();
+    let preview = pl_output::bounded_text(&description, 12 * 1024, 0);
     let context = if preview.truncated {
         format!(
             "{}\n[Git preview omitted {} bytes; full result retained in history.]",
@@ -201,9 +213,8 @@ fn dynamic_output(
     } else {
         preview.text
     };
-    Ok(pl_core::tool::ToolOutput::new(
-        OpaquePayload::new("pl.tool.git", 1, outcome.description.clone())
-            .map_err(ToolError::new)?,
+    Ok(ToolOutput::new(
+        OpaquePayload::new("pl.tool.git", 1, description).map_err(ToolError::new)?,
         vec![ContextContent::Text {
             text: Arc::from(context),
         }],

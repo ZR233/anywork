@@ -130,7 +130,10 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         let record = self.read_owned_thread(&thread_id).await?;
         ensure_thread_not_archived(&record, UserThreadAction::Stop)?;
-        let Some(thread) = self.threads.thread(&thread_id) else {
+        let Some(thread) = self
+            .session_of(&thread_id)
+            .and_then(|session| session.thread(&thread_id))
+        else {
             // A cold Thread owns no execution, so the observed identity cannot be current.
             return Err(stale_identity(
                 StudioErrorReason::StaleExecution,
@@ -214,8 +217,12 @@ impl StudioRuntime {
                 receipt: view.receipt,
             });
         }
-        let agent_operation = self.threads.agent_operation(&thread_id).await;
-        self.threads.ensure_agent_admission_open(&thread_id)?;
+        let agent_operation = self
+            .require_session(&thread_id)?
+            .agent_operation(&thread_id)
+            .await;
+        self.require_session(&thread_id)?
+            .ensure_agent_admission_open(&thread_id)?;
         self.ensure_prompt_runtime_ready().await?;
         let thread = self.ensure_thread_owner(&thread_id).await?;
         // An explicit continuation is also where a main session repairs the decision notices it may
@@ -493,7 +500,10 @@ impl StudioRuntime {
                 request,
             )?));
         }
-        let Some(thread) = self.threads.thread(thread_id) else {
+        let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        else {
             return Ok(None);
         };
         let snapshot = thread.snapshot();

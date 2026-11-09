@@ -86,6 +86,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeedPtr;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeConversationStateFeedPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_BridgeDisplayMembersPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr;
 
@@ -129,6 +133,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationFeed
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeConversationStateFeed
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     dynamic raw,
   );
 
@@ -193,6 +203,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeConversationStateFeed
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    dynamic raw,
+  );
+
+  @protected
   BridgeDisplayMembers
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     dynamic raw,
@@ -252,6 +268,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationFeed
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeConversationStateFeed
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     dynamic raw,
   );
 
@@ -566,6 +588,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatScope dco_decode_box_autoadd_bridge_chat_scope(dynamic raw);
+
+  @protected
+  BridgeChatSourceId dco_decode_box_autoadd_bridge_chat_source_id(dynamic raw);
 
   @protected
   BridgeChatSourceState dco_decode_box_autoadd_bridge_chat_source_state(
@@ -3727,6 +3752,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(dynamic raw);
 
   @protected
+  BridgeChatSourceId? dco_decode_opt_box_autoadd_bridge_chat_source_id(
+    dynamic raw,
+  );
+
+  @protected
   BridgeChatSourceState? dco_decode_opt_box_autoadd_bridge_chat_source_state(
     dynamic raw,
   );
@@ -4113,6 +4143,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeConversationStateFeed
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDisplayMembers
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     SseDeserializer deserializer,
@@ -4169,6 +4205,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationFeed
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeConversationStateFeed
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     SseDeserializer deserializer,
   );
 
@@ -4234,6 +4276,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationFeed
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeConversationStateFeed
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     SseDeserializer deserializer,
   );
 
@@ -4598,6 +4646,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChatScope sse_decode_box_autoadd_bridge_chat_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeChatSourceId sse_decode_box_autoadd_bridge_chat_source_id(
     SseDeserializer deserializer,
   );
 
@@ -8599,6 +8652,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatSourceId? sse_decode_opt_box_autoadd_bridge_chat_source_id(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatSourceState? sse_decode_opt_box_autoadd_bridge_chat_source_state(
     SseDeserializer deserializer,
   );
@@ -9097,6 +9155,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    BridgeConversationStateFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     BridgeDisplayMembers self,
     SseSerializer serializer,
@@ -9162,6 +9227,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
     BridgeConversationFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    BridgeConversationStateFeed self,
     SseSerializer serializer,
   );
 
@@ -9238,6 +9310,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed(
     BridgeConversationFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    BridgeConversationStateFeed self,
     SseSerializer serializer,
   );
 
@@ -9654,6 +9733,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_chat_scope(
     BridgeChatScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_chat_source_id(
+    BridgeChatSourceId self,
     SseSerializer serializer,
   );
 
@@ -14404,6 +14489,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_source_id(
+    BridgeChatSourceId? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_chat_source_state(
     BridgeChatSourceState? self,
     SseSerializer serializer,
@@ -15015,6 +15106,40 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeed =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationFeedPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void

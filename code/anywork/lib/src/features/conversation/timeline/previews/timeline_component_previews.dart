@@ -9,9 +9,11 @@ import '../../../../app/theme/material3_theme.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/app_localizations.dart';
+import '../connectors/timeline_content_connector.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/timeline_file_presentation.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../views/timeline_view.dart';
@@ -63,13 +65,7 @@ Widget _chatItem(
 }) => ChatItemView(
   key: ValueKey(item.id),
   item: item,
-  bodyBuilder: (id, text) => TimelineMarkdown(
-    id: id,
-    text: text,
-    onLink: (_) {},
-    isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
-    imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
-  ),
+  bodyBuilder: _previewMarkdown,
   attachmentBuilder: (item) => _previewAttachments(
     item.id,
     item.attachments,
@@ -77,6 +73,139 @@ Widget _chatItem(
     resourceErrorAttachmentId: resourceErrorAttachmentId,
   ),
 );
+
+Widget _previewMarkdown(String id, String text) => TimelineMarkdown(
+  id: id,
+  text: text,
+  onLink: (_) {},
+  isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
+  imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
+);
+
+@Preview(name: '用户长输入 / 临时发送回显', group: 'Timeline · 历史组件', size: Size(820, 720))
+@Preview(
+  name: '用户长输入 / 临时发送回显 · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineLongUserSubmissionPreview() => _timelinePreviewHost(
+  SingleChildScrollView(
+    child: ComposerSubmissionList(
+      submissions: [
+        TimelinePreviewFixtures.longUserSubmission(
+          ComposerSubmissionPhase.sending,
+        ),
+      ],
+      bodyBuilder: _previewMarkdown,
+    ),
+  ),
+);
+
+@Preview(
+  name: '用户长输入 / 正式 Input · 外层 Deferred',
+  group: 'Timeline · 历史组件',
+  size: Size(820, 720),
+)
+@Preview(
+  name: '用户长输入 / 正式 Input · 外层 Deferred · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineLongUserDeferredPreview() {
+  final bytes = utf8.encode(TimelinePreviewFixtures.longUserInput);
+  return _timelinePreviewHost(
+    SelectionArea(
+      child: SingleChildScrollView(
+        child: ChatItemView(
+          item: TimelinePreviewFixtures.deferredUserInput,
+          bodyBuilder: _previewMarkdown,
+          contentRangeBuilder: (id, key, label, reference, witness) =>
+              TimelineContentRangeConnector(
+                itemId: id,
+                contentKey: key,
+                label: label,
+                reference: reference,
+                witness: witness,
+                readContent: (_, range) async => ContentWindow(
+                  offset: range.offset,
+                  bytes: bytes.sublist(
+                    range.offset,
+                    (range.offset + range.maxBytes).clamp(0, bytes.length),
+                  ),
+                  generation: 'preview',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              ),
+        ),
+      ),
+    ),
+  );
+}
+
+@Preview(
+  name: '正文 / 长中文 Deferred Markdown',
+  group: 'Timeline · 历史组件',
+  size: Size(820, 720),
+)
+Widget timelineLongDeferredBodyPreview() {
+  final text =
+      '# 长正文直接阅读\n\n'
+      '**正文内容**与短消息使用相同的排版、选择和换行。\n\n'
+      '- 标题、粗体和列表保持 Markdown 语义\n'
+      '- 原文只在有界窗口内呈现\n\n'
+      '| 内容 | 行为 |\n| --- | --- |\n| 长中文 | 自动换行 |\n| 普通文字 | 可选择复制 |\n\n'
+      '${'这一行没有人为插入换行，窄窗口会按照实际宽度自然排列。' * 30}\n\n'
+      '${'较长的中文正文仍然直接显示，不再出现额外的正文加载折叠。阅读时可以选择任意文字并复制，原文内容不会被插入额外字符。\n\n' * 30}';
+  final bytes = utf8.encode(text);
+  final item = TimelinePreviewFixtures.item(
+    'preview-long-deferred',
+    'text',
+    const {'channel': 'final', 'attachments': []},
+    bodies: [
+      {
+        'key': 'body',
+        'byteLength': bytes.length,
+        'reference': {
+          'databaseId': 'preview',
+          'target': {
+            'kind': 'body',
+            'owner': {'kind': 'item', 'itemId': 'preview-long-deferred'},
+            'key': 'body',
+          },
+        },
+      },
+    ],
+  );
+  return _timelinePreviewHost(
+    SelectionArea(
+      child: SingleChildScrollView(
+        child: ChatItemView(
+          item: item,
+          bodyBuilder: _previewMarkdown,
+          contentRangeBuilder: (id, key, label, reference, witness) =>
+              TimelineContentRangeConnector(
+                itemId: id,
+                contentKey: key,
+                label: label,
+                reference: reference,
+                witness: witness,
+                readContent: (_, range) async => ContentWindow(
+                  offset: range.offset,
+                  bytes: bytes.sublist(
+                    range.offset,
+                    (range.offset + range.maxBytes).clamp(0, bytes.length),
+                  ),
+                  generation: 'preview',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              ),
+        ),
+      ),
+    ),
+  );
+}
 
 Widget _previewAttachments(
   String itemId,
@@ -97,6 +226,56 @@ Widget _previewAttachments(
     width: TimelinePreviewFixtures.imageWidth,
     height: TimelinePreviewFixtures.imageHeight,
     error: attachment.id == resourceErrorAttachmentId ? '合成读取失败' : null,
+  ),
+);
+
+@Preview(name: '文件 / 混合附件与局部失败', group: 'Timeline · 文件', size: Size(820, 480))
+@Preview(name: '文件 / 窄窗自然换行', group: 'Timeline · 文件', size: Size(320, 700))
+Widget timelineFilesPreview() => _timelinePreviewHost(
+  SingleChildScrollView(
+    child: TimelineAttachmentsView(
+      attachments: const [],
+      caption: '本次交付',
+      files: [
+        TimelineFileEntry.archived(TimelinePreviewFixtures.imageAttachment),
+        const TimelineFileEntry(
+          filename: '实现说明与验收记录.markdown',
+          origin: TimelineFileOrigin.remote,
+          attachment: ThreadAttachmentView(
+            id: 'preview-markdown',
+            filename: '实现说明与验收记录.markdown',
+            modality: AttachmentModalityView.file,
+            mediaType: 'text/markdown',
+            byteSize: 2048,
+          ),
+        ),
+        const TimelineFileEntry(
+          filename: 'project-delivery.zip',
+          attachment: ThreadAttachmentView(
+            id: 'preview-archive',
+            modality: AttachmentModalityView.file,
+            mediaType: 'application/zip',
+            byteSize: 4096,
+          ),
+        ),
+        const TimelineFileEntry(
+          filename: 'missing-report.pdf',
+          error: '文件不可读取',
+        ),
+      ],
+      imageBuilder: (attachment) => TimelineImageView(
+        itemId: 'preview-files',
+        attachment: attachment,
+        isTool: true,
+        active: true,
+        imageIdentity: ('preview-files', attachment.id),
+        bytes: TimelinePreviewFixtures.imageBytes,
+        width: TimelinePreviewFixtures.imageWidth,
+        height: TimelinePreviewFixtures.imageHeight,
+      ),
+      onSave: (_) {},
+      onOpen: (_) {},
+    ),
   ),
 );
 

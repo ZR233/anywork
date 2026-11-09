@@ -1501,13 +1501,6 @@ class _DemoConversationFeed implements ConversationFeed {
     }
     _completed = reader.h0;
     _currentRevision = _history.revision;
-    _initialState = ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        schemaVersion: threadSchemaVersion,
-        completedHistoryVersion: 1,
-        workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-      ),
-    );
     // No await separates source registration and capture. Failed preparation
     // has not admitted an owned resource; events.listen never creates the cut.
     _api._ownedHistoryReaders.add(reader);
@@ -1529,14 +1522,12 @@ class _DemoConversationFeed implements ConversationFeed {
   @override
   final _DemoReader reader;
   ChatBatch? _initial;
-  ConversationStateEvent? _initialState;
   late int _completed, _currentRevision;
   int _sent = 0, _acked = 0, _phase = 0;
   bool _started = false,
       _claimed = false,
       _closed = false,
       _ended = false,
-      _pendingState = false,
       _pendingCurrent = false;
   Future<void>? _closing;
   late final StreamController<ConversationFrame> _controller = StreamController(
@@ -1599,12 +1590,6 @@ class _DemoConversationFeed implements ConversationFeed {
     try {
       if (_phase == 0) {
         _phase = 1;
-        _send(_initialState!);
-        _initialState = null;
-        return;
-      }
-      if (_phase == 1) {
-        _phase = 2;
         if (timeline) {
           final batch = _initialTimeline!;
           _displayThrough = batch.throughPos;
@@ -1617,25 +1602,12 @@ class _DemoConversationFeed implements ConversationFeed {
         _initial = null;
         return;
       }
-      if (!timeline && _phase == 2 && reader.scope is MainChatScope) {
-        _phase = 3;
+      if (!timeline && _phase == 1 && reader.scope is MainChatScope) {
+        _phase = 2;
         _send(ConversationActivityEvent(snapshot: _activity()));
         return;
       }
-      _phase = 3;
-      if (_pendingState) {
-        _pendingState = false;
-        _send(
-          ConversationStateEvent(
-            frame: ThreadSnapshotFrame(
-              schemaVersion: threadSchemaVersion,
-              completedHistoryVersion: 1,
-              workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-            ),
-          ),
-        );
-        return;
-      }
+      _phase = 2;
       if (timeline) {
         if (_displayTarget != null ||
             _displayThrough < _history.displayHead ||
@@ -1714,13 +1686,6 @@ class _DemoConversationFeed implements ConversationFeed {
     }
   }
 
-  void _stateChanged(ThreadStreamFrame frame) {
-    if (_closed || _ended) return;
-    _pendingState = true;
-    _pendingCurrent = true;
-    _flush();
-  }
-
   void _contentChanged() {
     if (_closed || _ended) return;
     _pendingCurrent = true;
@@ -1754,7 +1719,6 @@ class _DemoConversationFeed implements ConversationFeed {
     _initial = null;
     _initialTimeline = null;
     _displayTarget = null;
-    _initialState = null;
     _unregister();
     if (!_ended) {
       _ended = true;
@@ -1768,6 +1732,158 @@ class _DemoConversationFeed implements ConversationFeed {
     return _closing ??= () async {
       await reader.close();
       _api._ownedConversationFeeds.remove(this);
+    }().whenComplete(() => _closing = null);
+  }
+}
+
+/// The independent Demo state subscription. It carries only State, Failure and
+/// Closed frames with its own identity, sequence and ACK budget; content never
+/// flows here and state never flows through the content feed.
+final class _DemoConversationStateFeed implements ConversationStateFeed {
+  _DemoConversationStateFeed(this._api, this.threadId)
+    : subscriptionId = 'demo-state:${newStudioCorrelationId()}' {
+    _initialState = ConversationStateEvent(
+      frame: ThreadSnapshotFrame(
+        schemaVersion: threadSchemaVersion,
+        completedHistoryVersion: 1,
+        workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
+      ),
+    );
+    // No await separates source registration and capture. Failed preparation
+    // has not admitted an owned resource; events.listen never creates the cut.
+    _api._ownedConversationStateFeeds.add(this);
+    (_api._conversationStateFeeds[threadId] ??= {}).add(this);
+  }
+
+  final DemoStudioTransport _api;
+  @override
+  final String threadId;
+  @override
+  final String subscriptionId;
+  ConversationStateEvent? _initialState;
+  int _sent = 0, _acked = 0;
+  bool _started = false,
+      _claimed = false,
+      _closed = false,
+      _ended = false,
+      _pending = false;
+  Future<void>? _closing;
+  late final StreamController<ConversationFrame> _controller = StreamController(
+    onListen: () {
+      _started = true;
+      _flush();
+    },
+    onCancel: () {
+      if (!_ended) {
+        requestClose();
+        return close();
+      }
+    },
+  );
+
+  @override
+  Stream<ConversationFrame> get events {
+    if (_closed) throw _conversationClosedFailure;
+    if (_claimed) {
+      throw _demoQueryFailure('Conversation state events already consumed');
+    }
+    _claimed = true;
+    return _controller.stream;
+  }
+
+  void _send(ConversationEvent event, {bool terminal = false}) {
+    if (!_started || _ended) return;
+    if (!terminal) _sent++;
+    _controller.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: _sent,
+        event: event,
+      ),
+    );
+    if (terminal) {
+      _ended = true;
+      _unregister();
+      unawaited(_controller.close());
+    }
+  }
+
+  // State changes coalesce into one snapshot per delivery credit, captured at
+  // the flush cut; the SDK gate keeps snapshot application monotonic.
+  void _flush() {
+    if (_closed || _ended || !_started || _sent != _acked) return;
+    try {
+      if (_initialState != null) {
+        final initial = _initialState!;
+        _initialState = null;
+        _send(initial);
+        return;
+      }
+      if (_pending) {
+        _pending = false;
+        _send(
+          ConversationStateEvent(
+            frame: ThreadSnapshotFrame(
+              schemaVersion: threadSchemaVersion,
+              completedHistoryVersion: 1,
+              workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      _send(
+        ConversationFailureEvent(
+          failure: _studioFailure(error) as StudioFailure,
+        ),
+        terminal: true,
+      );
+    }
+  }
+
+  void _stateChanged() {
+    if (_closed || _ended) return;
+    _pending = true;
+    _flush();
+  }
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    if (_closed) throw _conversationClosedFailure;
+    if (deliverySequence < 0 || deliverySequence > _sent) {
+      throw _demoQueryFailure('ACK exceeds sent state sequence');
+    }
+    if (deliverySequence <= _acked) return;
+    _acked = deliverySequence;
+    _flush();
+  }
+
+  void _unregister() {
+    _api._conversationStateFeeds[threadId]?.remove(this);
+    if (_api._conversationStateFeeds[threadId]?.isEmpty ?? false) {
+      _api._conversationStateFeeds.remove(threadId);
+    }
+  }
+
+  @override
+  void requestClose() {
+    if (_closed) return;
+    _send(const ConversationClosedEvent(), terminal: true);
+    _closed = true;
+    _initialState = null;
+    _unregister();
+    if (!_ended) {
+      _ended = true;
+      unawaited(_controller.close());
+    }
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    return _closing ??= () async {
+      _api._ownedConversationStateFeeds.remove(this);
     }().whenComplete(() => _closing = null);
   }
 }

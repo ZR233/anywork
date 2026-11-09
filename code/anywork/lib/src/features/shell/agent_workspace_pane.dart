@@ -152,6 +152,15 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   /// 不重建时间线（滚动、订阅、焦点）与计划正文滚动。
   final GlobalKey _timelineHostKey = GlobalKey(debugLabel: 'timeline-host');
   final GlobalKey _planPanelKey = GlobalKey(debugLabel: 'plan-panel');
+  final GlobalKey _filePanelKey = GlobalKey(debugLabel: 'file-panel');
+  FileReadingRequest? _openedFile;
+  bool _fullWidthFile = false;
+
+  @override
+  void didUpdateWidget(covariant AgentWorkspacePane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.threadId != oldWidget.threadId) _openedFile = null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -189,6 +198,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         final planOpen =
             planIdentity != null &&
             _openedPlanByThread[threadId] == planIdentity;
+        final readingOpen = planOpen || _openedFile != null;
         // 能否并排只看真实可用宽度：窄窗口直接全宽阅读，不把文档挤进狭小侧栏，
         // 也不提供无意义的分隔条与宽度切换。判定不读当前拖动宽度，因此拖动过程中
         // 不会跨人为阈值重建布局。
@@ -214,10 +224,11 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                     pendingPlan.interactionId) {
               return;
             }
-            setState(
-              () => _openedPlanByThread[threadId] =
-                  'interaction:${pendingPlan.interactionId}',
-            );
+            setState(() {
+              _openedFile = null;
+              _openedPlanByThread[threadId] =
+                  'interaction:${pendingPlan.interactionId}';
+            });
           });
         }
         final splitPlan =
@@ -238,7 +249,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
           key: _scaffoldKey,
           backgroundColor: context.colors.surface,
           endDrawerEnableOpenDragGesture: false,
-          endDrawer: !planOpen && todoInDrawer && todo != null
+          endDrawer: !readingOpen && todoInDrawer && todo != null
               ? Drawer(
                   width: 328,
                   backgroundColor: context.colors.surfaceContainer,
@@ -277,9 +288,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                     threadId: threadId,
                     maxHeight: footerMaxHeight,
                     scrollPlan: pendingPlan != null,
-                    showTodo: !planOpen && todo != null,
-                    todoExpanded: !planOpen && todoExpanded,
-                    onToggleTodo: planOpen || todo == null
+                    showTodo: !readingOpen && todo != null,
+                    todoExpanded: !readingOpen && todoExpanded,
+                    onToggleTodo: readingOpen || todo == null
                         ? null
                         : () {
                             if (todoInDrawer) {
@@ -299,7 +310,10 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                   ),
                   // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
                   todoPanel:
-                      !planOpen && !todoInDrawer && todo != null && todoExpanded
+                      !readingOpen &&
+                          !todoInDrawer &&
+                          todo != null &&
+                          todoExpanded
                       ? TodoPanel(
                           key: const ValueKey('todo-side-panel'),
                           todo: todo,
@@ -329,16 +343,44 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   }) {
     final timeline = KeyedSubtree(
       key: _timelineHostKey,
-      child: _AgentTimelineHost(
-        threadId: threadId,
-        planConfirmation: pendingPlan,
-        planExpanded: planOpen,
-        onPlanToggle: pendingPlan == null
-            ? null
-            : () => _togglePlan(
-                threadId,
-                'interaction:${pendingPlan.interactionId}',
-              ),
+      child: FileReadingScope(
+        onOpen: (request) {
+          if (!request.isActive()) return;
+          final conversations = ref.read(anyworkClientProvider).conversations;
+          final session = conversations.existingSession(threadId);
+          final content = session?.content;
+          final attempt = content?.currentAttemptId;
+          setState(() {
+            // A document is a shell-local demand, not a borrow from a virtual
+            // timeline row. Scrolling that row away must not retire the panel.
+            _openedFile = FileReadingRequest(
+              identity: request.identity,
+              filename: request.filename,
+              readBytes: request.readBytes,
+              isActive: () =>
+                  mounted &&
+                  widget.threadId == threadId &&
+                  conversations.visibleThreadId.value == threadId &&
+                  identical(conversations.existingSession(threadId), session) &&
+                  content != null &&
+                  !content.isClosed &&
+                  content.currentAttemptId == attempt,
+            );
+            _fullWidthFile = false;
+            _openedPlanByThread.remove(threadId);
+          });
+        },
+        child: _AgentTimelineHost(
+          threadId: threadId,
+          planConfirmation: pendingPlan,
+          planExpanded: planOpen,
+          onPlanToggle: pendingPlan == null
+              ? null
+              : () => _togglePlan(
+                  threadId,
+                  'interaction:${pendingPlan.interactionId}',
+                ),
+        ),
       ),
     );
     final planPanel = presentedPlan == null
@@ -352,7 +394,21 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               sideBySideFeasible: sideBySideFeasible,
             ),
           );
-    if (splitPlan && planPanel != null) {
+    final file = _openedFile;
+    final filePanel = file == null
+        ? null
+        : FileReadingPanel(
+            key: _filePanelKey,
+            request: file,
+            onClose: () => setState(() => _openedFile = null),
+            fullWidth: !sideBySideFeasible || _fullWidthFile,
+            onToggleReadingMode: sideBySideFeasible
+                ? () => setState(() => _fullWidthFile = !_fullWidthFile)
+                : null,
+          );
+    final panel = filePanel ?? (planOpen ? planPanel : null);
+    if ((file != null ? sideBySideFeasible && !_fullWidthFile : splitPlan) &&
+        panel != null) {
       return _PlanSplitView(
         initialPlanWidth: _planPanelWidth,
         defaultPlanWidth: _defaultPlanPanelWidth,
@@ -364,13 +420,13 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         dividerLabel: context.l10n.planResize,
         onPlanWidthChanged: (width) => _planPanelWidth = width,
         conversation: timeline,
-        plan: planPanel,
+        plan: panel,
       );
     }
     return Stack(
       children: [
         Positioned.fill(child: timeline),
-        if (planOpen && planPanel != null) Positioned.fill(child: planPanel),
+        if (panel != null) Positioned.fill(child: panel),
       ],
     );
   }
@@ -384,6 +440,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   void _togglePlan(String threadId, String identity) {
     setState(() {
+      _openedFile = null;
       if (_openedPlanByThread[threadId] == identity) {
         _openedPlanByThread.remove(threadId);
       } else {
@@ -393,7 +450,10 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   }
 
   void _openPlan(String threadId, String identity) {
-    setState(() => _openedPlanByThread[threadId] = identity);
+    setState(() {
+      _openedFile = null;
+      _openedPlanByThread[threadId] = identity;
+    });
   }
 
   void _closePlan(String threadId) {

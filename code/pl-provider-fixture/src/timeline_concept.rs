@@ -126,6 +126,47 @@ impl Default for Control {
 }
 
 impl Control {
+    /// Holds the first real model response while the UI submits a second input.
+    pub fn message_submission() -> Self {
+        Self {
+            names: vec!["submission-first-running"],
+            stages: vec![ReplyStage::new()],
+        }
+    }
+
+    pub fn message_submission_script(&self) -> Vec<Step> {
+        let first = "请保持第一轮运行，我将继续发送一条消息。";
+        let second = "这是运行中的第二条消息，请确认收到。";
+        let mut script = RealtimeScript::new();
+        script.optional_title(&session_title_prompt(first));
+        script.add(|index| {
+            let events = responses_text("第一轮处理完成。", "submission-first", "fixture-model");
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                first,
+                index,
+                self.stages[0].gated(events[..1].to_vec(), events[1..].to_vec()),
+            )
+        });
+        // Title generation is independent of the foreground request. The first
+        // Turn can be interrupted before that background request is scheduled.
+        script.optional_title(&session_title_prompt(first));
+        script.add(|index| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                second,
+                index,
+                Reply::Sse(responses_text(
+                    "第二条消息已处理。",
+                    "submission-second",
+                    "fixture-model",
+                )),
+            )
+        });
+        script.optional_title(&session_title_prompt(first));
+        script.finish()
+    }
+
     pub fn realtime() -> Self {
         Self {
             names: vec![

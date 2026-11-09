@@ -79,6 +79,10 @@ pub(crate) struct ManagedBot {
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) token: TokenLease,
     pub(crate) send_rate: super::send::SendRate,
+    /// One file-delivery owner through ledger read, both HTTP stages and durable drain.
+    pub(crate) file_delivery: Mutex<()>,
+    #[cfg(test)]
+    pub(crate) file_delivery_waiting: Notify,
     pub(crate) bot_open_id: Mutex<Option<(u64, String)>>,
     pub(crate) admission: tokio::sync::Mutex<()>,
     pub(crate) admission_closed: AtomicBool,

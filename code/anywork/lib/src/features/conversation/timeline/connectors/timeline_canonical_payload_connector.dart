@@ -212,6 +212,21 @@ class _TimelineCanonicalPayloadConnectorState
     if (widget.item.compatibility != ChatItemCompatibility.deferred) {
       return widget.render(widget.item);
     }
+    if (widget.item.hasPublicInputBody) {
+      // Keep the same outer layout and renderer slot across metadata delivery.
+      // Only metadata/media changes; the public Body retains its original
+      // item/reference/generation and bounded content-window owner.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          widget.render(_resolved ?? widget.item),
+          if (_error case final error?)
+            Text(error)
+          else if (_resolved == null)
+            const Text('正在读取完成内容…'),
+        ],
+      );
+    }
     if (_resolved case final item?) return widget.render(item);
     return Text(_error ?? '正在读取完成内容…');
   }

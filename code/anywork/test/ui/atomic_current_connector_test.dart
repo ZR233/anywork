@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
@@ -338,6 +339,12 @@ void main() {
       scope.watches.single.add(_window('实际活动正文'));
       await _flush(tester);
       expect(find.text('实际活动正文'), findsOneWidget);
+      expect(find.byType(SelectionArea), findsOneWidget);
+      expect(
+        tester.widget<TimelineMarkdown>(find.byType(TimelineMarkdown)).style,
+        isNull,
+        reason: '文本活动沿用普通正文样式，工具和思考窗口仍由原样式呈现',
+      );
       final tail = tester
           .widget<TimelineCatTail>(find.byType(TimelineCatTail))
           .progress;

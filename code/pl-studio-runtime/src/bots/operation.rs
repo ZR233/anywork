@@ -2157,6 +2157,9 @@ impl BotOperationOwner {
             ),
             bot_open_id: Mutex::new(None),
             send_rate: super::send::SendRate::new(),
+            file_delivery: Mutex::new(()),
+            #[cfg(test)]
+            file_delivery_waiting: tokio::sync::Notify::new(),
             admission: Mutex::new(()),
             admission_closed: AtomicBool::new(false),
             submitting: AtomicBool::new(false),

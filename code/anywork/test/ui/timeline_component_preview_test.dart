@@ -9,6 +9,7 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -33,12 +34,23 @@ void main() {
         narrow ? timelineSpacingNarrowPreview() : timelineSpacingPreview(),
       );
       await tester.pumpAndSettle();
+      final workHeaders = find.byType(CompletionRunView);
+      expect(workHeaders, findsNWidgets(2));
+      Finder workHeader(int index) =>
+          find.byKey(ValueKey('completion-run-header:spacing-group-$index'));
+      for (final work in tester.widgetList<CompletionRunView>(workHeaders)) {
+        expect(work.summary.total, 3);
+        expect(work.summary.terminal, 3);
+        expect(work.summary.elapsedMs, 125000);
+        expect(work.location, WorkDisplayLocation.history);
+        expect(work.initiallyExpanded, isFalse);
+      }
       final items = [
         find.byKey(const ValueKey('chat-item:spacing-intro')),
         find.byKey(const ValueKey('chat-item:spacing-plain')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-0')),
+        workHeader(0),
         find.byKey(const ValueKey('chat-item:spacing-result-0')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-1')),
+        workHeader(1),
         find.byKey(const ValueKey('chat-item:spacing-result-1')),
       ];
       final gaps = [
@@ -140,17 +152,16 @@ void main() {
         if (id != 'drafting') {
           final panel = tester.getRect(find.byType(PlanDetailView));
           final document = tester.getRect(find.byType(PlanDocumentTheme));
-          final columnInset = panel.width > 720 ? (panel.width - 720) / 2 : 0.0;
           final padding = panel.width < 520 ? 20.0 : 24.0;
           expect(
             document.left,
-            closeTo(panel.left + columnInset + padding, 1),
+            closeTo(panel.left + padding, 1),
             reason: '$id 的短正文也必须对齐阅读列左缘，不能按内容宽度居中',
           );
           expect(
             document.right,
-            closeTo(panel.right - columnInset - padding, 1),
-            reason: '$id 的正文应填满有界阅读列',
+            closeTo(panel.right - padding, 1),
+            reason: '$id 的正文应填满面板实际可用宽度',
           );
         }
       }

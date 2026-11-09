@@ -54,6 +54,7 @@ impl BridgeTimelineFeed {
         let owner = &self.conversation.inner;
         owner.ensure_read_open()?;
         let batch = owner
+            .content()?
             .reader
             .load_timeline_older(&before, chat::demand(demand))
             .await?;
@@ -69,6 +70,7 @@ impl BridgeTimelineFeed {
         let owner = &self.conversation.inner;
         owner.ensure_read_open()?;
         let window = owner
+            .content()?
             .reader
             .load_live_older(&before, chat::demand(demand))
             .await?;
@@ -85,9 +87,10 @@ impl BridgeTimelineFeed {
         let owner = &self.conversation.inner;
         owner.ensure_read_open()?;
         let id = owner
+            .content()?
             .watches
             .open_members(
-                &owner.reader,
+                &owner.content()?.reader,
                 &owner.cancel,
                 presentation::protocol_block_ref(reference),
                 presentation::member_window(window),
@@ -211,22 +214,24 @@ pub struct BridgeDisplayMembers {
 
 impl BridgeDisplayMembers {
     pub async fn next(&self) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
-        self.owner.watches.next_members(&self.id).await
+        self.owner.content()?.watches.next_members(&self.id).await
     }
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close(&self) -> Result<(), BridgeError> {
-        self.owner.watches.request_close(&self.id)
+        self.owner.content()?.watches.request_close(&self.id)
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.owner.watches.close(&self.id).await
+        self.owner.content()?.watches.close(&self.id).await
     }
 }
 
 impl Drop for BridgeDisplayMembers {
     fn drop(&mut self) {
         // The conversation registry retains the exact slot and its join obligation.
-        let _ = self.owner.watches.request_close(&self.id);
+        if let Ok(content) = self.owner.content() {
+            let _ = content.watches.request_close(&self.id);
+        }
     }
 }

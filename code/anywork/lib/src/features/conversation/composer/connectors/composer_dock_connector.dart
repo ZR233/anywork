@@ -14,6 +14,7 @@ import '../../../../platform/dropped_attachments.dart';
 import '../../../../platform/file_picking.dart';
 import '../../../../platform/dropped_file.dart';
 import '../../../../presentation/providers/client_provider.dart';
+import '../../timeline/view_models/timeline_view_model.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../status/session_selectors.dart';
@@ -652,10 +653,29 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
             // 草案 owner 先同步冻结目标、payload、route 与 operation，再等待展示准备；
             // 这里只捕当前 Thread 身份，不改动已冻结的目标（design/26 §26.8）。
             final target = row.threadId;
+            final timelineOwner = ref.read(timelineSessionOwnerProvider);
+            final lease = timelineOwner.lease(target);
+            final route = ModalRoute.of(context);
             unawaited(
               ref
                   .read(composerDockViewModelProvider(target).notifier)
-                  .submit(target),
+                  .submit(
+                    target,
+                    beforeSubmit: () async {
+                      if (!context.mounted ||
+                          route?.isCurrent != true ||
+                          lease == null ||
+                          !lease.isMounted ||
+                          timelineOwner.lease(target) != lease ||
+                          lease.isRetired) {
+                        return;
+                      }
+                      await timelineOwner.prepareComposerSubmissionDisplay(
+                        target,
+                        lease: lease,
+                      );
+                    },
+                  ),
             );
           },
           onStop: _requestStop,

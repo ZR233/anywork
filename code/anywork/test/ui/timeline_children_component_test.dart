@@ -1045,6 +1045,14 @@ final class _Transport implements ConversationTransport {
   final opened = Completer<void>();
   ChatScope? scope;
   ReadDemand? demand;
+
+  /// Children and Run never own Thread state; the seam still returns a real
+  /// scripted state feed instead of reporting success without a resource.
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async => TestConversationStateFeed(threadId: threadId);
+
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {

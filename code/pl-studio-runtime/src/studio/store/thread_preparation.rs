@@ -149,6 +149,40 @@ impl StudioStore {
         load_object(self.database(), id).await
     }
 
+    pub(crate) async fn thread_preparation_for_deletion(
+        &self,
+        id: &str,
+    ) -> Result<Option<ThreadPreparationRecord>> {
+        super::object::load_deletion_aux(self.database(), id).await
+    }
+
+    pub(in crate::studio) async fn begin_deletion_preparation(
+        &self,
+        identity: PreparationIdentity,
+        published: bool,
+    ) -> Result<()> {
+        // An existing unreadable record is not an empty slot. Never replace its owner/binding.
+        if super::object::load_object_row::<ThreadPreparationRecord>(
+            self.database(),
+            &identity.thread_id,
+        )
+        .await?
+        .is_some()
+        {
+            if let Some(previous) = self
+                .thread_preparation_for_deletion(&identity.thread_id)
+                .await?
+            {
+                ensure!(
+                    previous.identity == identity,
+                    "preparation original owner changed"
+                );
+            }
+            return Ok(());
+        }
+        self.begin_removal_preparation(identity, published).await
+    }
+
     pub(crate) async fn thread_preparations(&self) -> Result<Vec<ThreadPreparationRecord>> {
         use crate::studio::entity::studio_object;
         studio_object::Entity::find()

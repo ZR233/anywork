@@ -4,7 +4,10 @@ use std::{collections::HashSet, io::Write};
 use super::*;
 use crate::api::studio::{
     handlers::chat::tests::MODEL,
-    types::{BridgeChatBatch, BridgeChatPlacement, BridgeContentRange},
+    types::{
+        BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeThreadNotification,
+        BridgeThreadSubscriptionUpdate, BridgeTurnState,
+    },
 };
 use pl_provider_fixture::{ReplyStage, responses_text_chunks};
 
@@ -23,7 +26,7 @@ async fn chat(
         );
         *sent = frame.delivery_sequence;
         match frame.event {
-            BridgeConversationEvent::State { .. } | BridgeConversationEvent::Activity { .. } => {
+            BridgeConversationEvent::Activity { .. } => {
                 owner.acknowledge(&owner.subscription_id, *sent)?;
             }
             BridgeConversationEvent::Chat { batch } => return Ok((*sent, *batch)),
@@ -32,29 +35,82 @@ async fn chat(
     }
 }
 
-async fn activity(
+async fn next_content(
     owner: &ConversationOwner,
     port: &mut mpsc::Receiver<BridgeConversationFrame>,
     sent: &mut u64,
-) -> Result<(u64, crate::api::studio::types::BridgeActivitySnapshot)> {
+) -> Result<BridgeConversationFrame> {
+    let frame = receive(port).await?;
+    ensure!(frame.thread_id == owner.thread_id);
+    ensure!(frame.subscription_id == owner.subscription_id);
+    ensure!(
+        frame.delivery_sequence == *sent + 1,
+        "duplicated or skipped delivery prefix"
+    );
+    *sent = frame.delivery_sequence;
+    Ok(frame)
+}
+
+/// State proves business completion and execution removal independently of content retirement.
+pub(super) async fn observe_stopped_execution(
+    owner: &ConversationOwner,
+    port: &mut mpsc::Receiver<BridgeConversationFrame>,
+) -> Result<String> {
+    let mut sent = 0;
+    let mut completed = None;
+    let mut executing_turn = None;
+    let mut execution_cleared = false;
     loop {
-        let frame = receive(port).await?;
-        ensure!(frame.thread_id == owner.thread_id);
-        ensure!(frame.subscription_id == owner.subscription_id);
-        ensure!(
-            frame.delivery_sequence == *sent + 1,
-            "duplicated or skipped delivery prefix"
-        );
-        *sent = frame.delivery_sequence;
-        match frame.event {
-            BridgeConversationEvent::State { .. } => {
-                owner.acknowledge(&owner.subscription_id, *sent)?;
+        let frame = next_content(owner, port, &mut sent).await.with_context(|| {
+            format!(
+                "waiting for State TurnCompleted and execution removal: completed={completed:?}; executing_turn={executing_turn:?}; execution_cleared={execution_cleared}"
+            )
+        })?;
+        let BridgeConversationEvent::State { update } = frame.event else {
+            anyhow::bail!("unexpected event on State feed: {:?}", frame.event);
+        };
+        match *update {
+            BridgeThreadSubscriptionUpdate::Notification { notification } => {
+                match notification.notification {
+                    BridgeThreadNotification::TurnCompleted { turn }
+                        if turn.input_id.as_deref() == Some("input-bridge-live") =>
+                    {
+                        ensure!(
+                            matches!(turn.state, BridgeTurnState::Completed { .. }),
+                            "followup Turn failed: {:?}",
+                            turn.state
+                        );
+                        ensure!(
+                            completed.replace(turn.id).is_none(),
+                            "duplicate typed terminal"
+                        );
+                    }
+                    BridgeThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
+                        match runtime.execution {
+                            Some(execution) => {
+                                if let Some(turn_id) = execution.turn_id {
+                                    executing_turn = Some(turn_id);
+                                }
+                                execution_cleared = false;
+                            }
+                            None => execution_cleared = executing_turn.is_some(),
+                        }
+                    }
+                    BridgeThreadNotification::Lagged { dropped } => {
+                        anyhow::bail!("State feed dropped {dropped} notifications");
+                    }
+                    _ => {}
+                }
             }
-            BridgeConversationEvent::Activity { snapshot } => return Ok((*sent, *snapshot)),
-            BridgeConversationEvent::Chat { .. } => {
-                anyhow::bail!("unexpected Chat before Activity cut")
-            }
-            event => anyhow::bail!("unexpected live terminal: {event:?}"),
+            BridgeThreadSubscriptionUpdate::Snapshot { .. } => {}
+        }
+        owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
+        if execution_cleared && let Some(turn_id) = completed {
+            ensure!(
+                executing_turn.as_ref() == Some(&turn_id),
+                "cleared execution belonged to another Turn"
+            );
+            return Ok(turn_id);
         }
     }
 }
@@ -93,7 +149,14 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         &[&head, &appended],
     );
     let env = Environment::with_followup(Some(reply)).await?;
+    let state_owner = managed_state(
+        env.runtime
+            .open_conversation_state_feed(&env.thread_id)
+            .await?,
+    );
+    let mut state_port = start_port(&state_owner).await;
     let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let content = async {
         let owner = managed(env.feed().await?);
         let facade = BridgeConversationFeed { inner: Arc::clone(&owner) };
         let mut port = start_port(&owner).await;
@@ -101,6 +164,7 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         let (set_seq, initial) = chat(&owner, &mut port, &mut sent).await?;
         ensure!(initial.placement == BridgeChatPlacement::Set);
         ensure!(initial.from_seq.is_none());
+        let mut accepted_through = initial.through_seq;
         let before = initial.before.context("nonempty fixture must have an older page")?;
         let old = facade.load_older(before.clone(), BridgeReadDemand {
             max_items: 16, max_bytes: 64 * 1024,
@@ -138,19 +202,28 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         env.submit_followup().await?;
         tokio::time::timeout(Duration::from_secs(5), head.wait_reached()).await?;
 
-        // Chat completion and Activity are separate credit-bearing events. ACK each preceding
-        // Chat; hold the exact Activity snapshot that carries the live body owner.
+        // Activity may advance without another completion. ACK all preceding ordinary
+        // events; hold the exact Activity snapshot that carries the live body owner.
         let (held_seq, reference, activity_id, turn_id, held_snapshot) = loop {
-            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
-            ensure!(batch.placement == BridgeChatPlacement::Append
-                && batch.before.is_none()
-                && batch.from_seq.is_some_and(|from| from < batch.through_seq));
-            let accepted_through = batch.through_seq;
-            for entry in batch.entries {
-                ensure!(completed_records.insert(entry.record_id));
-            }
-            owner.acknowledge(&owner.subscription_id, chat_seq)?;
-            let (sequence, snapshot) = activity(&owner, &mut port, &mut sent).await?;
+            let frame = next_content(&owner, &mut port, &mut sent).await
+                .context("waiting for the live body Activity")?;
+            let sequence = frame.delivery_sequence;
+            let snapshot = match frame.event {
+                BridgeConversationEvent::Chat { batch } => {
+                    ensure!(batch.placement == BridgeChatPlacement::Append
+                        && batch.before.is_none()
+                        && batch.from_seq == Some(accepted_through)
+                        && batch.through_seq > accepted_through);
+                    accepted_through = batch.through_seq;
+                    for entry in batch.entries {
+                        ensure!(completed_records.insert(entry.record_id));
+                    }
+                    owner.acknowledge(&owner.subscription_id, sequence)?;
+                    continue;
+                }
+                BridgeConversationEvent::Activity { snapshot } => snapshot,
+                event => anyhow::bail!("unexpected live event: {event:?}"),
+            };
             ensure!(snapshot.revision > 0);
             ensure!(snapshot.completed_through == accepted_through,
                 "Activity arrived ahead of or behind the accepted completion prefix");
@@ -172,12 +245,19 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                 other => anyhow::bail!("text body has unexpected activity identity: {other:?}"),
             };
             ensure!(identity == &entry.atom.id);
-            let prefix_window = facade.read_content(body.reference.clone(), range.clone()).await
-                .map_err(|error| anyhow::anyhow!("Activity body read while credit held: {error:?}"))?;
-            if prefix_window.bytes != prefix.as_bytes()[3..15] {
-                owner.acknowledge(&owner.subscription_id, sequence)?;
-                continue;
-            }
+            // The identity may be published before its first bytes. Observe readiness through
+            // the original body watch, not by guessing a valid nonzero offset from Activity.
+            let readiness = facade.open_content_watch(
+                body.reference.clone(),
+                BridgeContentRange { offset: 0, max_bytes: 15 },
+            ).await?;
+            let prefix_window = loop {
+                let next = window(&facade, &readiness, "watch.prefix.readiness").await?;
+                if next.available_through >= 15 { break next; }
+                ensure!(!next.sealed, "live body sealed before its required prefix");
+            };
+            ensure!(prefix_window.bytes == prefix.as_bytes()[..15]);
+            facade.close_content_watch(readiness).await?;
             let reference = body.reference.clone();
             let activity_id = identity.clone();
             let turn_id = entry.atom.turn_id.clone().context("Activity omitted Turn identity")?;
@@ -233,10 +313,20 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
 
         let mut completed_body = None;
         let mut retired = false;
-        for _ in 0..64 {
-            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
-            ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
-            for entry in batch.entries {
+        let mut last_activity = None;
+        while !retired {
+            let frame = next_content(&owner, &mut port, &mut sent).await
+                .with_context(|| format!(
+                    "waiting for completed body and Activity retirement: completed_body={completed_body:?}; last_activity={last_activity:?}"
+                ))?;
+            match frame.event {
+                BridgeConversationEvent::Chat { batch } => {
+                    ensure!(batch.placement == BridgeChatPlacement::Append
+                        && batch.before.is_none()
+                        && batch.from_seq == Some(accepted_through)
+                        && batch.through_seq > accepted_through);
+                    accepted_through = batch.through_seq;
+                    for entry in batch.entries {
                 ensure!(completed_records.insert(entry.record_id.clone()));
                 if entry.record_id == match &reference.target {
                     crate::api::studio::types::BridgeContentTarget::Body {
@@ -248,11 +338,24 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
                     ensure!(entry.atom.turn_id.as_deref() == Some(turn_id.as_str()));
                     completed_body = Some(entry.record_id.clone());
                 }
+                    }
+                }
+                BridgeConversationEvent::Activity { snapshot } => {
+                    ensure!(snapshot.completed_through == accepted_through);
+                    last_activity = Some((snapshot.execution_present, snapshot.entries.len()));
+                    retired = !snapshot.entries.iter().any(|entry| {
+                        matches!(&entry.identity,
+                            crate::api::studio::types::BridgeActivityIdentity::ModelPart { atom_id }
+                                if atom_id == &activity_id)
+                    });
+                    if retired {
+                        ensure!(completed_body.is_some(),
+                            "Activity member retired before its completion prefix was accepted");
+                    }
+                }
+                event => anyhow::bail!("unexpected completion event: {event:?}"),
             }
-            owner.acknowledge(&owner.subscription_id, chat_seq)?;
-            let (activity_seq, snapshot) = activity(&owner, &mut port, &mut sent).await?;
-            retired = !snapshot.execution_present && snapshot.entries.is_empty();
-            owner.acknowledge(&owner.subscription_id, activity_seq)?;
+            owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
             if retired {
                 ensure!(completed_body.is_some(), "Activity retired before response completion appeared");
                 break;
@@ -282,9 +385,20 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
         ensure!(replacement_facade.read_content(reference, range).await?.bytes == final_window.bytes);
         replacement_facade.close().await?;
         writeln!(std::io::stdout(), "typed Activity→CompletedEntry lifecycle; ACK held at Activity revision {}; independent older/read/watch while credit occupied; final watch close, point read, lease retirement and replacement qualification verified", held_snapshot.revision)?;
+        Ok::<_, anyhow::Error>(turn_id)
+        };
+        let (content, state) = tokio::join!(
+            content,
+            observe_stopped_execution(&state_owner, &mut state_port),
+        );
+        let content_turn = content?;
+        let state_turn = state?;
+        ensure!(content_turn == state_turn, "content and State observed different Turns");
         Ok(())
     }).await.context("live FRB lifecycle exceeded its bounded test budget").and_then(|result| result);
     head.release();
     appended.release();
-    env.finish(result).await
+    let state_close = state_owner.close().await;
+    env.finish(result.and(state_close.map_err(anyhow::Error::from)))
+        .await
 }

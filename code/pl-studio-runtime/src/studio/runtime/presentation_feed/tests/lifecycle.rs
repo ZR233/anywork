@@ -21,10 +21,15 @@ async fn parked_feed_and_member_receives_do_not_block_queries_and_close_only_the
             .await?;
         let initial = timeline(&mut feed).await?;
         let reference = work_reference(&initial.live.context("live Work")?)?;
+        let mut state = env
+            .runtime
+            .open_conversation_state_feed(&h.thread.id)
+            .await?;
         assert!(matches!(
-            feed.receive().await?,
-            ConversationEvent::State { .. }
+            state.recv().await?,
+            Some(pl_protocol::ThreadSubscriptionUpdate::Snapshot { .. })
         ));
+        state.close().await?;
         let reader = feed.reader().clone();
         let feed_cancel = feed.cancellation_token();
         {

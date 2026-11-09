@@ -119,7 +119,12 @@ impl Harness {
             .product_events
             .commit_directory(delta)
             .await?;
-        assert!(env.runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&thread.id)
+                .and_then(|session| session.observed_thread(&thread.id))
+                .is_none()
+        );
         let history = env.runtime.store.history(&thread.id).await?;
         history.prepare_write().await?;
         let database = history
@@ -388,16 +393,10 @@ async fn save_effect(
 
 pub(super) async fn activity(feed: &mut ConversationFeed) -> Result<Arc<ActivitySnapshot>> {
     tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            match feed.recv().await?.context("activity feed ended")? {
-                ConversationEvent::Timeline { .. } => {
-                    bail!("completion-level feed received Timeline")
-                }
-                ConversationEvent::Activity { snapshot } => return Ok(snapshot),
-                ConversationEvent::State { .. } => {}
-                ConversationEvent::Chat { .. } => {
-                    bail!("Activity crossed an unaccepted completion batch")
-                }
+        match feed.recv().await?.context("activity feed ended")? {
+            ConversationEvent::Activity { snapshot } => Ok(snapshot),
+            ConversationEvent::Chat { .. } => {
+                bail!("Activity crossed an unaccepted completion batch")
             }
         }
     })
@@ -501,6 +500,7 @@ async fn slow_observer_keeps_only_latest_activity_and_queries_do_not_need_stream
         h.save(&prepared).await?;
         // Pure activity updates never allocate completion sequences or write history.
         let head = h.session.head_seq();
+        let state = h.source.subscribe();
         for _ in 0..1024 {
             h.source.publish_test_conversation(
                 &h.session,
@@ -510,7 +510,7 @@ async fn slow_observer_keeps_only_latest_activity_and_queries_do_not_need_stream
         assert_eq!(h.session.head_seq(), head);
         assert_eq!(h.session.durable_seq(), head);
         assert_eq!(
-            feed.state.as_ref().unwrap().len(),
+            state.len(),
             0,
             "token/current-only publications must not emit BusinessRefsChanged"
         );
@@ -875,6 +875,55 @@ async fn admit(
     h.sequence = effect.sequence;
     Ok(prepared)
 }
+
+async fn redeliver_frozen(
+    h: &mut Harness,
+    prepared: &Arc<PreparedEffect>,
+) -> Result<Arc<PreparedEffect>> {
+    let display = prepared.display.as_ref().context("frozen display delta")?;
+    let digest = display.digest()?;
+    let owner = h.projection.presentation();
+    let before = owner.lock().unwrap().capture(None, 8, 0, 8);
+    let source = h
+        .source
+        .current_conversation()
+        .context("original publication")?;
+    let mut replay = Arc::clone(prepared);
+    h.projection
+        .publish_prepared(&h.session, &mut replay)
+        .await?;
+    assert!(Arc::ptr_eq(&replay, prepared));
+    let replay_display = replay.display.as_ref().context("retained display delta")?;
+    assert!(Arc::ptr_eq(replay_display, display));
+    assert_eq!(replay_display.digest()?, digest);
+    assert!(Arc::ptr_eq(
+        replay
+            .current
+            .display
+            .as_ref()
+            .context("current display delta")?,
+        display,
+    ));
+    assert!(Arc::ptr_eq(&replay.completions, &prepared.completions));
+    let after = owner.lock().unwrap().capture(None, 8, 0, 8);
+    assert_eq!(
+        (after.published, after.durable, after.revision),
+        (before.published, before.durable, before.revision),
+        "redelivery must not allocate another presentation position or revision",
+    );
+    assert_eq!(after.open, before.open);
+    assert_eq!(after.pending, before.pending);
+    // admit already exercised the original source publication. LiveOwner consumes that
+    // current_state publication right once; retrying its frozen handoff creates no Activity.
+    assert!(Arc::ptr_eq(
+        &h.source
+            .current_conversation()
+            .context("retained publication")?,
+        &source,
+    ));
+    Ok(replay)
+}
+
 fn input_record(id: &str, seq: u64) -> Result<pl_core::thread::input::InputRecord> {
     use pl_core::thread::input::*;
     Ok(InputRecord {
@@ -1093,7 +1142,7 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
         );
         assert_eq!(activity(&mut feed).await?.completed_through, 4);
         let frozen = prepared.completions.clone();
-        let replay = admit(&mut h, &state, &effect).await?;
+        let replay = redeliver_frozen(&mut h, &prepared).await?;
         assert_eq!(h.session.head_seq(), 4);
         for record in replay.completions.iter() {
             assert!(
@@ -1102,11 +1151,19 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
                     .any(|original| original.as_ref() == record.as_ref())
             );
         }
-        // Already sealed tools need not be regenerated. Repeating the complete
-        // original frozen write also exercises the actual writer's replay.
-        assert_eq!(activity(&mut feed).await?.completed_through, 4);
+        // No new publication right accompanies a retained handoff. In addition to
+        // the unchanged P/live cut above, neither another Chat nor Activity is owed.
+        {
+            let receiving = feed.recv();
+            tokio::pin!(receiving);
+            assert!(matches!(
+                futures::poll!(&mut receiving),
+                std::task::Poll::Pending
+            ));
+        }
+        // The unique writer receives the exact original frozen batch twice.
         h.save(&prepared).await?;
-        h.save(&prepared).await?;
+        h.save(&replay).await?;
         assert_eq!(h.session.head_seq(), 4);
         assert_eq!(h.session.durable_seq(), 4);
         for record in frozen.iter() {
@@ -1157,7 +1214,12 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
             };
             assert_eq!(bytes.as_slice(), record.payload.as_ref());
         }
-        assert!(env.runtime.threads.observed_thread(&h.thread.id).is_none());
+        assert!(
+            env.runtime
+                .session_of(&h.thread.id)
+                .and_then(|session| session.observed_thread(&h.thread.id))
+                .is_none()
+        );
         cold.close().await?;
         cold.reader().close().await?;
         Ok(())
@@ -1171,6 +1233,7 @@ async fn one_effect_freezes_input_inbox_and_reverse_tool_terminals_in_one_sequen
 #[tokio::test]
 async fn queued_inputs_and_unconsumed_parent_message_are_frozen_once_before_execution() -> Result<()>
 {
+    use pl_core::chat::ChatHistory;
     use pl_core::thread::{
         inbox::{InboxRecord, ThreadMessage},
         input::{InputChange, InputState},
@@ -1228,7 +1291,7 @@ async fn queued_inputs_and_unconsumed_parent_message_are_frozen_once_before_exec
         let external: ChatAtom = serde_json::from_slice(&prepared.completions[2].header.metadata)?;
         assert!(matches!(external.source, ChatSourceId::InboxMessage { .. }));
         assert!(external.tool.is_none());
-        let repeated = admit(&mut h, &state, &effect).await?;
+        let repeated = redeliver_frozen(&mut h, &prepared).await?;
         assert_eq!(h.session.head_seq(), 3);
         assert!(
             repeated.completions.iter().any(
@@ -1236,6 +1299,17 @@ async fn queued_inputs_and_unconsumed_parent_message_are_frozen_once_before_exec
             )
         );
         h.save(&prepared).await?;
+        h.save(&repeated).await?;
+        assert_eq!(h.session.durable_seq(), 3);
+        for record in prepared.completions.iter() {
+            assert_eq!(
+                ChatHistory::item(&h.history, &record.header.item_id)
+                    .await?
+                    .context("retained queued input/inbox completion")?,
+                **record,
+                "double-save changed a frozen input/inbox identity, source or payload",
+            );
+        }
         for (sequence, next) in [
             (
                 2,
@@ -1283,12 +1357,17 @@ async fn queued_inputs_and_unconsumed_parent_message_are_frozen_once_before_exec
         conflicting.input.payload = OpaquePayload::new("pl.studio.prompt", 1,
             serde_json::json!({"text":"changed body","presentation":"visible","attachments":[],"request":null}).to_string())?;
         let conflict_state = CoreSnapshot { inputs: vec![conflicting.clone()].into(), ..Default::default() };
-        let mut conflict = effect.clone();
-        conflict.inputs = vec![InputChange::Accepted(conflicting)].into();
-        if let Ok((_, mut prepared)) = h.projection.prepare(&h.thread, &conflict, &conflict_state, false).await {
-            assert!(h.projection.publish_prepared(&h.session, &mut prepared).await.is_err(),
-                "same accepted ID with different frozen bytes was silently replayed");
-        }
+        // This is a new contradictory acceptance after the two real transitions,
+        // not the old effect relabelled to bypass the already-folded gate.
+        let conflict = ThreadEffectBatch {
+            thread_id: h.thread.id.clone(),
+            sequence: 4,
+            committed_at: 14,
+            inputs: vec![InputChange::Accepted(conflicting)].into(),
+            ..Default::default()
+        };
+        assert!(admit(&mut h, &conflict_state, &conflict).await.is_err(),
+            "a later acceptance reused an existing ID with different frozen bytes");
         assert_eq!(h.session.head_seq(), 3);
         feed.close().await?;
         feed.reader().close().await?;

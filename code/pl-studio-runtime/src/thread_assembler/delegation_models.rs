@@ -1,5 +1,4 @@
 //! Read-only candidate projections over the config, performance and evaluation owners.
-use super::{StudioThreadAssembler, agent_services::AgentServices};
 use anyhow::{Context, Result};
 use pl_model::{
     config::{AccountId, AccountModelEntry, ModelRouteConfig, ReasoningEffort},
@@ -12,8 +11,15 @@ use pl_protocol::{
     ModelModalityDto,
 };
 
-impl AgentServices {
-    pub(super) async fn list_delegation_models(
+#[derive(Clone)]
+pub(crate) struct DelegationModels {
+    pub(crate) config: crate::config::ConfigRuntime,
+    pub(crate) store: crate::studio::StudioStore,
+    pub(crate) performance: crate::studio::ModelPerformanceOwner,
+}
+
+impl DelegationModels {
+    pub(crate) async fn list_delegation_models(
         &self,
         request: ListDelegationModelsRequest,
     ) -> Result<DelegationModelList> {
@@ -143,7 +149,7 @@ impl AgentServices {
         })
     }
 
-    pub(super) async fn get_delegation_model(
+    pub(crate) async fn get_delegation_model(
         &self,
         request: GetDelegationModelRequest,
     ) -> Result<DelegationModelDetail> {
@@ -267,32 +273,5 @@ async fn performance_summary(
         average_ttft_millis: summary.average_ttft_millis,
         ttft_sample_count: summary.ttft_sample_count,
         updated_at: Some(updated_at),
-    }
-}
-
-impl StudioThreadAssembler {
-    pub(crate) async fn list_delegation_models(
-        &self,
-        request: ListDelegationModelsRequest,
-    ) -> Result<DelegationModelList> {
-        let services = self
-            .0
-            .state()
-            .agent_services
-            .clone()
-            .context("delegation services are unavailable")?;
-        services.list_delegation_models(request).await
-    }
-    pub(crate) async fn get_delegation_model(
-        &self,
-        request: GetDelegationModelRequest,
-    ) -> Result<DelegationModelDetail> {
-        let services = self
-            .0
-            .state()
-            .agent_services
-            .clone()
-            .context("delegation services are unavailable")?;
-        services.get_delegation_model(request).await
     }
 }

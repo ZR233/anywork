@@ -8,27 +8,7 @@ pub(super) struct CommandInput {
     pub(super) progress: Option<tokio::sync::watch::Receiver<crate::command::CommandInputProgress>>,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CommandInputOutcome {
-    Complete,
-    Cancelled,
-    Partial,
-    Failed,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandInputReceipt {
-    pub accepted_bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote_confirmed_bytes: Option<u64>,
-    pub delivery_pending: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub close_state: Option<crate::command::StdinCloseState>,
-    pub outcome: CommandInputOutcome,
-    pub detail: Option<String>,
-}
+pub use pl_tool_command::process::{CommandInputOutcome, CommandInputReceipt};
 
 impl<B: CommandBackend> CommandProcessManager<B> {
     pub async fn write_stdin(

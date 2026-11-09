@@ -153,6 +153,18 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    if (item.hasPublicInputBody) {
+      // This branch and its Body positions remain the same while metadata is
+      // pending, restricted, or resolved. Metadata never replaces the read owner.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final index in item.publicInputBodyIndices)
+            _declaredContent(item.atom!, index),
+          _publicInputMedia(),
+        ],
+      );
+    }
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
@@ -162,19 +174,8 @@ class _ChatItemViewState extends State<ChatItemView> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (atom.contents.isEmpty) const Text('内容状态未知'),
-            for (
-              var index = 0;
-              index < atom.contents.length;
-              index++
-            )
-              widget.contentRangeBuilder?.call(
-                    unit.id,
-                    'content-$index',
-                    '查看内容',
-                    atom.contents[index].reference,
-                    _contentWitness,
-                  ) ??
-                  const Text('内容读取尚未就绪'),
+            for (var index = 0; index < atom.contents.length; index++)
+              _declaredContent(atom, index),
           ],
         );
       }
@@ -223,10 +224,26 @@ class _ChatItemViewState extends State<ChatItemView> {
     );
   }
 
+  Widget _publicInputMedia() {
+    if (item.compatibility != ChatItemCompatibility.current) {
+      return const SizedBox.shrink();
+    }
+    try {
+      if (item.type != 'text') {
+        throw const FormatException('Input metadata must be text');
+      }
+      return _media();
+    } on FormatException {
+      // A malformed metadata domain cannot take the independently declared
+      // public Body down with it, or expose the original envelope as a fallback.
+      return const Text('完成内容格式无法解析');
+    }
+  }
+
   Widget _content(BuildContext context) => switch (item.type) {
     'text' => _text(context),
     'thinking' => _thinking(context),
-    'tool' => _tool(context),
+    'tool' => item.presentsFiles ? _media() : _tool(context),
     'turn' => _turn(context),
     'plan' => _plan(context),
     'skill' => _record(
@@ -263,7 +280,7 @@ class _ChatItemViewState extends State<ChatItemView> {
           key: StudioDriverKeys.parentAgentLabel(item.id),
           style: context.text.bodySmall,
         ),
-      for (final body in _textBodies) _body(body),
+      for (final body in _textBodies) _body(body, disclosed: true),
       _media(),
       // The independent Turn receipt owns terminal reasons. Accepted partial
       // text stays readable without repeating its failure/stop diagnostics.
@@ -327,7 +344,7 @@ class _ChatItemViewState extends State<ChatItemView> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final body in bodies) _body(body),
+                for (final body in bodies) _body(body, disclosed: true),
                 _outcomeNotice(outcome),
               ],
             ),
@@ -708,9 +725,42 @@ class _ChatItemViewState extends State<ChatItemView> {
       children: children,
     ),
   );
-  Widget _body(ChatBodyPresentation body, {bool code = false}) {
+  Widget _declaredContent(ChatAtom atom, int index) {
+    final content = atom.contents[index];
+    final id = '${item.id}:content-$index';
+    final range =
+        widget.contentRangeBuilder?.call(
+          item.id,
+          'content-$index',
+          '查看内容',
+          content.reference,
+          _contentWitness,
+        ) ??
+        const Text('内容读取尚未就绪');
+    return content.role == ChatContentRole.body &&
+            (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input)
+        ? TimelineBodyReadIntent(
+            bodyBuilder: (text) =>
+                widget.bodyBuilder?.call(id, text) ??
+                TimelinePlainText(id: id, text: text),
+            child: range,
+          )
+        : range;
+  }
+
+  Widget _body(
+    ChatBodyPresentation body, {
+    bool code = false,
+    bool disclosed = false,
+  }) {
+    final id = '${item.id}:${body.key}';
+    Widget render(String text) => code
+        ? StudioCodeBlock(text: text, horizontalScroll: false)
+        : widget.bodyBuilder?.call(id, text) ??
+              TimelinePlainText(id: id, text: text);
     if (body.reference case final reference?) {
-      return widget.contentRangeBuilder?.call(
+      final range =
+          widget.contentRangeBuilder?.call(
             item.id,
             body.key,
             '${body.key} · ${body.byteLength} 字节',
@@ -718,6 +768,9 @@ class _ChatItemViewState extends State<ChatItemView> {
             _contentWitness,
           ) ??
           Text('${body.key} · 内容读取尚未就绪');
+      return disclosed
+          ? TimelineBodyReadIntent(bodyBuilder: render, child: range)
+          : range;
     }
     final bytes = body.inline;
     if (bytes == null) return Text('${body.key} · 未提供内容或引用');
@@ -727,12 +780,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     } on FormatException catch (error) {
       return Text('${body.key} · ${error.message}');
     }
-    final id = '${item.id}:${body.key}';
-    final child = code
-        ? StudioCodeBlock(text: text, horizontalScroll: false)
-        : widget.bodyBuilder?.call(id, text) ??
-              TimelinePlainText(id: id, text: text);
-    return _contentWitness(text, child);
+    return _contentWitness(text, render(text));
   }
 
   Widget _contentWitness(String text, Widget child) {

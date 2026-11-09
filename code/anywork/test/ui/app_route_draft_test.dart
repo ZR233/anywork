@@ -122,6 +122,11 @@ void main() {
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
+      expect(
+        transport.stateFeeds,
+        isEmpty,
+        reason: 'Navigating without a Thread opens no state subscription',
+      );
 
       // Raw completions and producer-chosen display positions are seeded separately.
       const firstPosition = 5;

@@ -1,6 +1,6 @@
 //! Product-owned relationship checks and descendant shutdown over generic Thread handles.
 use super::observation::DeliveryDisposition;
-use super::{Registry, State, StudioThreadAssembler, ThreadAssemblyError};
+use super::{Registry, SessionRuntime, State, ThreadAssemblyError};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{ThreadLifecycle, input::InputState, task::TaskStatus},
@@ -22,6 +22,31 @@ struct AgentHost(Weak<Registry>);
 #[path = "agents_archive_tests.rs"]
 pub(crate) mod archive_tests;
 
+#[cfg(test)]
+mod future_sizes {
+    use super::*;
+
+    fn bounded<Input, F: std::future::Future + Send>(name: &str, _: impl FnOnce(Input) -> F) {
+        let bytes = std::mem::size_of::<F>();
+        eprintln!("{name}: {bytes} bytes");
+        assert!(bytes <= 16 * 1024, "{name} inlines {bytes} bytes");
+    }
+
+    #[test]
+    fn spawn_handoff_future_remains_bounded() {
+        // Inspect the real trait future, including its managed-operation handoff.
+        // The closure is never called: no fixture resources or leaked host are needed.
+        bounded(
+            "AgentHost spawn handoff",
+            |(host, context, request): (
+                &'static AgentHost,
+                pl_core::tool::opaque::CallContext,
+                AgentSpawn,
+            )| host.spawn(context, request),
+        );
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ControlError {
     #[error("agent coordinator is closed")]
@@ -37,10 +62,10 @@ enum ControlError {
 }
 
 impl AgentHost {
-    fn owner(&self) -> Result<StudioThreadAssembler, ToolError> {
+    fn owner(&self) -> Result<SessionRuntime, ToolError> {
         self.0
             .upgrade()
-            .map(StudioThreadAssembler)
+            .map(SessionRuntime)
             .ok_or_else(|| ToolError::new(ControlError::Closed))
     }
 }
@@ -57,14 +82,14 @@ fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ToolError> {
             .get(id)
             .ok_or_else(|| ToolError::new(ControlError::Missing(id.into())))?;
         path.push(id.to_owned());
-        cursor = entry.parent_id.as_deref();
+        cursor = entry.native.parent_id.as_deref();
     }
     Ok(path)
 }
 
 fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ToolError> {
     if !state.entries.get(caller).is_some_and(|entry| {
-        entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+        entry.native.ready && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
     }) {
         return Err(ToolError::new(ControlError::Missing(caller.into())));
     }
@@ -167,7 +192,7 @@ struct SpawnCleanupError {
 }
 
 async fn cleanup_spawn_failure(
-    owner: &StudioThreadAssembler,
+    owner: &SessionRuntime,
     id: &str,
     operation: ThreadAssemblyError,
 ) -> ToolError {
@@ -183,7 +208,7 @@ async fn cleanup_spawn_failure(
 
 impl AgentHost {
     async fn ensure_archive_execution_admission(
-        owner: &StudioThreadAssembler,
+        owner: &SessionRuntime,
         id: &str,
     ) -> Result<(), ToolError> {
         let services = { owner.0.state().agent_services.clone() };
@@ -205,7 +230,7 @@ impl AgentHost {
 
     async fn spawn_owned(
         &self,
-        owner: StudioThreadAssembler,
+        owner: SessionRuntime,
         context: pl_core::tool::opaque::CallContext,
         request: AgentSpawn,
         _parent_operation: tokio::sync::OwnedMutexGuard<()>,
@@ -220,7 +245,7 @@ impl AgentHost {
                 .entries
                 .get(&context.thread_id)
                 .ok_or_else(|| ToolError::new(ControlError::Missing(context.thread_id.clone())))?;
-            crate::studio::delegation::saved(&caller.thread.snapshot())
+            crate::studio::delegation::saved(&caller.native.thread.snapshot())
                 .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
                 .ok_or_else(|| {
                     ToolError::new(ControlError::Missing("saved delegation selection".into()))
@@ -506,16 +531,18 @@ impl AgentControlHost for AgentHost {
                         Ok(())
                     },
                     async move {
-                        Ok(host
-                            .spawn_owned(owner, context, request, parent_operation)
-                            .await)
+                        // Keep preparation/cleanup state on the heap before the existing
+                        // operation owner moves this worker through JoinSet/Tokio admission.
+                        Ok(
+                            Box::pin(host.spawn_owned(owner, context, request, parent_operation))
+                                .await,
+                        )
                     },
                 )
                 .await
                 .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
         } else {
-            self.spawn_owned(owner, context, request, parent_operation)
-                .await
+            Box::pin(self.spawn_owned(owner, context, request, parent_operation)).await
         }
     }
 
@@ -557,14 +584,16 @@ impl AgentControlHost for AgentHost {
             let entry = state
                 .entries
                 .get(&message.target)
-                .filter(|entry| entry.ready && entry.parent_id.as_deref() == Some(caller))
+                .filter(|entry| {
+                    entry.native.ready && entry.native.parent_id.as_deref() == Some(caller)
+                })
                 .ok_or_else(|| {
                     ToolError::new(ControlError::Relationship {
                         caller: caller.into(),
                         target: message.target.clone(),
                     })
                 })?;
-            (entry.thread.clone(), entry.execution)
+            (entry.native.thread.clone(), entry.native.execution)
         };
         let delivery = pl_core::thread::inbox::ThreadMessage {
             kind: pl_core::context::AgentMessageKind::Report,
@@ -618,7 +647,11 @@ impl AgentControlHost for AgentHost {
             if state.closing {
                 return Err(ToolError::new(ControlError::Closed));
             }
-            if !state.entries.get(caller).is_some_and(|entry| entry.ready) {
+            if !state
+                .entries
+                .get(caller)
+                .is_some_and(|entry| entry.native.ready)
+            {
                 return Err(ToolError::new(ControlError::Missing(caller.into())));
             }
             let path = ancestry(&state, caller)?;
@@ -642,27 +675,27 @@ impl AgentControlHost for AgentHost {
                 )?;
             }
             for (id, entry) in &state.entries {
-                let snapshot = entry.thread.snapshot();
+                let snapshot = entry.native.thread.snapshot();
                 if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
-                if !entry.ready && snapshot.lifecycle == ThreadLifecycle::Open {
+                if !entry.native.ready && snapshot.lifecycle == ThreadLifecycle::Open {
                     if !rows.contains_key(id) {
                         push_preparing_row(
                             &state,
                             root,
                             &mut rows,
                             id,
-                            entry.parent_id.as_deref(),
+                            entry.native.parent_id.as_deref(),
                         )?;
                     }
                     continue;
                 }
                 rows.insert(
                     id.clone(),
-                    agent_row(id, entry.parent_id.as_deref(), &snapshot).map_err(|error| {
-                        ToolError::new(super::agent_services::ServiceError(error))
-                    })?,
+                    agent_row(id, entry.native.parent_id.as_deref(), &snapshot).map_err(
+                        |error| ToolError::new(super::agent_services::ServiceError(error)),
+                    )?,
                 );
             }
             rows.into_values().collect::<Vec<_>>()
@@ -697,7 +730,10 @@ impl AgentControlHost for AgentHost {
                 .entries
                 .get(target)
                 .ok_or_else(|| ToolError::new(ControlError::Missing(target.into())))?;
-            (entry.thread.clone(), entry.thread.snapshot().execution)
+            (
+                entry.native.thread.clone(),
+                entry.native.thread.snapshot().execution,
+            )
         };
         let Some(execution) = execution else {
             return Err(ToolError::new(ControlError::StaleExecution(target.into())));
@@ -741,7 +777,7 @@ impl AgentControlHost for AgentHost {
                                 .state()
                                 .entries
                                 .get(&root)
-                                .is_some_and(|entry| entry.parent_id.is_none()),
+                                .is_some_and(|entry| entry.native.parent_id.is_none()),
                             "only a root may close child agents"
                         );
                         Ok(())
@@ -769,7 +805,7 @@ impl AgentControlHost for AgentHost {
     }
 }
 
-impl StudioThreadAssembler {
+impl SessionRuntime {
     /// Creates control frontends and a query view from one published Profile generation.
     /// Tools hold a weak coordinator reference and cannot keep their registry alive.
     ///

@@ -4,6 +4,7 @@ use super::content::{
     Coverage, FinalError, ReplyItem, decode_activity, decode_entry, demand, read_failure,
 };
 use super::projection::{ReplyProjection, gap};
+use crate::studio::ConversationStateFeed;
 use crate::studio::{ConversationEvent, ConversationFeed, ConversationReader, StudioRuntime};
 use pl_protocol::{
     ActivitySnapshot, ChatBatch, ChatPlacement, ChatScope, ThreadNotification,
@@ -29,6 +30,7 @@ struct PendingActivity {
 
 pub(super) struct ReplyWatch {
     feed: ConversationFeed,
+    state_feed: ConversationStateFeed,
     input_id: Option<String>,
     turn_id: Option<String>,
     projection: Option<ReplyProjection>,
@@ -47,13 +49,11 @@ pub(super) struct ReplyWatch {
 
 impl ReplyWatch {
     pub(super) async fn open(runtime: &StudioRuntime, thread_id: &str) -> Result<Self, FinalError> {
-        let feed = runtime
-            .open_conversation_feed(thread_id, ChatScope::Main, demand())
-            .await
-            .map_err(|error| read_failure("bot conversation feed open failed", error))?;
-        // No await after acquisition: the caller immediately owns both close duties.
+        let (feed, state_feed) = open_pair(runtime, thread_id, ChatScope::Main).await?;
+        // No await after both acquisitions: the caller immediately owns every close duty.
         Ok(Self {
             feed,
+            state_feed,
             input_id: None,
             turn_id: None,
             projection: None,
@@ -140,13 +140,12 @@ impl ReplyWatch {
     /// Reconnection creates a new feed/Set and reconstructs only the reliable target.
     /// No public Core position, parsed cursor or old projection proves continuity.
     pub(super) async fn reconnect(&mut self, runtime: &StudioRuntime) -> Result<(), FinalError> {
-        self.close().await?;
+        let thread_id = self.feed.thread_id().to_owned();
         let scope = self.scope()?;
-        let feed = runtime
-            .open_conversation_feed(self.feed.thread_id(), scope, demand())
-            .await
-            .map_err(|error| read_failure("bot conversation feed reopen failed", error))?;
+        self.close().await?;
+        let (feed, state_feed) = open_pair(runtime, &thread_id, scope).await?;
         self.feed = feed;
+        self.state_feed = state_feed;
         self.projection = None;
         self.pending = None;
         self.pending_activity = None;
@@ -204,29 +203,33 @@ impl ReplyWatch {
         if self.pending_activity.is_some() {
             return self.finish_activity().await;
         }
-        let event = self
-            .feed
-            .recv()
-            .await
-            .map_err(|error| read_failure("bot conversation feed failed; new Set required", error))?
-            .ok_or_else(|| gap("bot conversation feed ended before reply completed"))?;
-        match event {
-            ConversationEvent::Timeline { .. } => Err(gap(
-                "completion-level bot feed received a presentation event",
-            )),
-            ConversationEvent::State { update } => self.state(*update),
-            ConversationEvent::Chat { batch } => {
-                if (!self.chat_ready && batch.placement != ChatPlacement::Set)
-                    || (self.chat_ready && !matches!(batch.placement, ChatPlacement::Append))
-                {
-                    return Err(gap("reply feed expected first Set then Append"));
-                }
-                self.stage(*batch)?;
-                self.finish_pending().await
+        tokio::select! {
+            biased;
+            result = self.state_feed.recv() => {
+                let update = result
+                    .map_err(|error| read_failure("bot state feed failed; new baseline required", error))?
+                    .ok_or_else(|| gap("bot state feed ended before reply completed"))?;
+                self.state(update)
             }
-            ConversationEvent::Activity { snapshot } => {
-                self.stage_activity(snapshot)?;
-                self.finish_activity().await
+            result = self.feed.recv() => {
+                let event = result
+                    .map_err(|error| read_failure("bot conversation feed failed; new Set required", error))?
+                    .ok_or_else(|| gap("bot conversation feed ended before reply completed"))?;
+                match event {
+                    ConversationEvent::Chat { batch } => {
+                        if (!self.chat_ready && batch.placement != ChatPlacement::Set)
+                            || (self.chat_ready && !matches!(batch.placement, ChatPlacement::Append))
+                        {
+                            return Err(gap("reply feed expected first Set then Append"));
+                        }
+                        self.stage(*batch)?;
+                        self.finish_pending().await
+                    }
+                    ConversationEvent::Activity { snapshot } => {
+                        self.stage_activity(snapshot)?;
+                        self.finish_activity().await
+                    }
+                }
             }
         }
     }
@@ -471,21 +474,70 @@ impl ReplyWatch {
     pub(super) async fn close(&mut self) -> Result<(), FinalError> {
         let reader = self.reader();
         self.feed.request_close();
-        let feed = self
-            .feed
-            .close()
-            .await
-            .map_err(|error| read_failure("bot conversation feed close failed", error));
-        let reader = reader
-            .close()
-            .await
-            .map_err(|error| read_failure("bot conversation reader close failed", error));
-        match (feed, reader) {
-            (Ok(()), result) | (result, Ok(())) => result,
-            (Err(first), Err(second)) => Err(FinalError::Attention(format!(
-                "reply close failed on both owners: {first:?}; {second:?}"
-            ))),
+        self.state_feed.request_close();
+        let (feed, state, reader) = tokio::join!(
+            async {
+                self.feed
+                    .close()
+                    .await
+                    .map_err(|error| read_failure("bot conversation feed close failed", error))
+            },
+            async {
+                self.state_feed
+                    .close()
+                    .await
+                    .map_err(|error| read_failure("bot state feed close failed", error))
+            },
+            async {
+                reader
+                    .close()
+                    .await
+                    .map_err(|error| read_failure("bot conversation reader close failed", error))
+            },
+        );
+        join_close([feed, state, reader])
+    }
+}
+
+async fn open_pair(
+    runtime: &StudioRuntime,
+    thread_id: &str,
+    scope: ChatScope,
+) -> Result<(ConversationFeed, ConversationStateFeed), FinalError> {
+    let feed = runtime
+        .open_conversation_feed(thread_id, scope, demand())
+        .await
+        .map_err(|error| read_failure("bot conversation feed open failed", error))?;
+    match runtime.open_conversation_state_feed(thread_id).await {
+        Ok(state_feed) => Ok((feed, state_feed)),
+        Err(error) => {
+            let mut feed = feed;
+            feed.request_close();
+            let reader = feed.reader().clone();
+            let feed_close = feed.close().await;
+            let reader_close = reader.close().await;
+            let opened = read_failure("bot state feed open failed", error);
+            if feed_close.is_err() || reader_close.is_err() {
+                return Err(FinalError::Attention(format!(
+                    "{opened}; closing the content feed also failed: {feed_close:?}; {reader_close:?}"
+                )));
+            }
+            Err(opened)
         }
+    }
+}
+
+fn join_close(results: [Result<(), FinalError>; 3]) -> Result<(), FinalError> {
+    let errors = results
+        .into_iter()
+        .filter_map(Result::err)
+        .collect::<Vec<_>>();
+    match errors.len() {
+        0 => Ok(()),
+        1 => Err(errors.into_iter().next().expect("one close error")),
+        _ => Err(FinalError::Attention(format!(
+            "reply close failed on multiple owners: {errors:?}"
+        ))),
     }
 }
 

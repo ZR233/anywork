@@ -8,6 +8,21 @@ use secrecy::{ExposeSecret, SecretString};
 
 const WEB_SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[derive(Debug, thiserror::Error)]
+pub enum WebSearchError {
+    #[error("web search request failed: {0}")]
+    Transport(#[source] reqwest::Error),
+    #[error("web search request returned {status}: {body}")]
+    Status {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("invalid web search response: {0}")]
+    Response(#[source] reqwest::Error),
+    #[error("web search command mapping failed: {0}")]
+    Commands(#[from] serde_json::Error),
+}
+
 /// Explicit standalone search transport parameters. Credentials are supplied by the host.
 #[derive(Default)]
 pub struct SearchEndpoint {
@@ -65,7 +80,10 @@ impl WebSearchClient {
         })
     }
 
-    pub async fn search(&self, request: &SearchRequest) -> Result<SearchResponse> {
+    pub async fn search(
+        &self,
+        request: &SearchRequest,
+    ) -> std::result::Result<SearchResponse, WebSearchError> {
         let response = self
             .client
             .post(&self.endpoint)
@@ -74,19 +92,20 @@ impl WebSearchClient {
             .json(request)
             .send()
             .await
-            .map_err(|error| PureError::LlmError(format!("web search request failed: {error}")))?;
+            .map_err(WebSearchError::Transport)?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text().await.map_err(WebSearchError::Response)?;
             let message = body.chars().take(1000).collect::<String>();
-            return Err(PureError::LlmError(format!(
-                "web search request returned {status}: {message}"
-            )));
+            return Err(WebSearchError::Status {
+                status,
+                body: message,
+            });
         }
         response
             .json::<SearchResponse>()
             .await
-            .map_err(|error| PureError::LlmError(format!("invalid web search response: {error}")))
+            .map_err(WebSearchError::Response)
     }
 }
 

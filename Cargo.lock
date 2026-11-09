@@ -4261,6 +4261,16 @@ dependencies = [
  "pl-protocol",
  "pl-remote-helper",
  "pl-skill-core",
+ "pl-tool-bots",
+ "pl-tool-command",
+ "pl-tool-filesystem",
+ "pl-tool-git",
+ "pl-tool-lsp",
+ "pl-tool-mcp",
+ "pl-tool-media",
+ "pl-tool-media-support",
+ "pl-tool-search",
+ "pl-tool-skill",
  "process-wrap",
  "reqwest",
  "rmcp",
@@ -4280,6 +4290,132 @@ dependencies = [
  "which",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pl-tool-bots"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-command"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-output",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-filesystem"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-patch",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-git"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "schemars 1.2.3",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-lsp"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-output",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "pl-agent-tool",
+ "pl-output",
+ "pl-tool-media-support",
+ "rmcp",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-tool-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pl-agent-tool",
+ "pl-tool-media-support",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "pl-tool-media-support"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-tool-search"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "pl-agent-tool",
+ "pl-output",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "pl-tool-skill"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-skill-core",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
 ]
 
 [[package]]

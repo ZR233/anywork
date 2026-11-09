@@ -153,19 +153,25 @@ sealed class BridgeDisplayMemberWindow with _$BridgeDisplayMemberWindow {
 class BridgeLiveDisplayBlock {
   final String id;
   final BigInt blockOrder;
+  final BridgeChatSourceId? source;
   final BridgeDisplayBlockBody body;
   final bool closing;
 
   const BridgeLiveDisplayBlock({
     required this.id,
     required this.blockOrder,
+    this.source,
     required this.body,
     required this.closing,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^ blockOrder.hashCode ^ body.hashCode ^ closing.hashCode;
+      id.hashCode ^
+      blockOrder.hashCode ^
+      source.hashCode ^
+      body.hashCode ^
+      closing.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -174,6 +180,7 @@ class BridgeLiveDisplayBlock {
           runtimeType == other.runtimeType &&
           id == other.id &&
           blockOrder == other.blockOrder &&
+          source == other.source &&
           body == other.body &&
           closing == other.closing;
 }

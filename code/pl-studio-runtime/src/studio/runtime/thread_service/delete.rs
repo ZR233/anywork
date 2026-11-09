@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
+use tracing::Instrument;
 
 use super::super::{DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime};
 use crate::studio::{
@@ -23,11 +24,13 @@ impl StudioRuntime {
     ) -> Result<Option<DeleteThreadCommandReply>> {
         Self::validate_operation_id(&operation_id)?;
         let runtime = self.clone();
+        let span =
+            tracing::info_span!("permanent_delete", deletion_id = %operation_id, root = %thread_id);
         self.run_thread_lifecycle_operation(async move {
             let started = std::time::Instant::now();
             match runtime.delete_thread_owned(operation_id, thread_id.clone()).await {
                 Ok(reply) => {
-                    tracing::info!(%thread_id, elapsed_ms = started.elapsed().as_millis() as u64, "会话永久删除完成");
+                    tracing::info!(%thread_id, outcome = "completed", elapsed_ms = started.elapsed().as_millis() as u64, "会话永久删除完成");
                     Ok(reply)
                 }
                 Err(error) => {
@@ -35,11 +38,11 @@ impl StudioRuntime {
                     let public = deletion_error(&error, stage, &thread_id);
                     tracing::error!(%thread_id, %stage, correlation_id = %public.correlation_id,
                         error_code = public.code.label(), elapsed_ms = started.elapsed().as_millis() as u64,
-                        message = %public.message, "会话永久删除失败");
+                        reason = deletion_reason(&error), outcome = "incomplete", "会话永久删除失败");
                     Err(error.context(public))
                 }
             }
-        })
+        }.instrument(span))
         .await
     }
 
@@ -64,9 +67,18 @@ impl StudioRuntime {
         } else if previous.is_none() {
             return Ok(None);
         }
-        let scope = self
-            .threads
-            .seal_archive_scope(std::slice::from_ref(&root_id))?;
+        // Removing has already acknowledged every runtime owner. Later publication retries
+        // must use the durable deletion responsibility, even after the directory is gone.
+        let runtime_scope = if previous
+            .as_ref()
+            .is_none_or(|operation| operation.phase == DeletePhase::Sealed)
+        {
+            let session = self.session_for_roots(std::slice::from_ref(&root_id))?;
+            let scope = session.seal_archive_scope(std::slice::from_ref(&root_id))?;
+            Some((session, scope))
+        } else {
+            None
+        };
         let workspace_id = root
             .as_ref()
             .map(|root| root.workspace_id.as_str())
@@ -78,7 +90,10 @@ impl StudioRuntime {
             })
             .context("delete responsibility lost its original workspace")?
             .to_owned();
-        let admitted = scope.preparation_identities(&workspace_id);
+        let admitted = runtime_scope
+            .as_ref()
+            .map(|(_, scope)| scope.preparation_identities(&workspace_id))
+            .unwrap_or_default();
         let mut operation = if let Some(previous) = previous {
             previous
         } else {
@@ -107,10 +122,15 @@ impl StudioRuntime {
         };
         let ids = operation.thread_ids.clone();
         let _pins = self.residency.pin_many(ids.iter().cloned());
-        self.threads.prepare_deletion(&ids);
-        scope.cancel_preparations();
+        if let Some((session, scope)) = &runtime_scope {
+            session.prepare_deletion(&ids);
+            scope.cancel_preparations();
+        }
         let _bots = self.bots.quiesce_archive_threads(&ids).await?;
         if operation.phase == DeletePhase::Sealed {
+            let (session, scope) = runtime_scope
+                .as_ref()
+                .context("sealed deletion lost its original runtime responsibility")?;
             for id in &ids {
                 self.title_tasks
                     .cancel(
@@ -121,7 +141,7 @@ impl StudioRuntime {
             }
             tokio::time::timeout(
                 self.archive_settle_timeout(),
-                self.threads.drain_archive_preparations(&scope),
+                session.drain_archive_preparations(scope),
             )
             .await
             .context("delete preparations did not join")??;
@@ -130,7 +150,7 @@ impl StudioRuntime {
                 tree.iter().all(|thread| ids.contains(&thread.id)),
                 "delete scope gained an unfrozen member"
             );
-            let mut archive = self
+            let archive = self
                 .freeze_thread_removal(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
                 .await?;
             ensure!(
@@ -165,22 +185,21 @@ impl StudioRuntime {
                 .iter()
                 .map(|member| member.identity.clone())
                 .collect::<Vec<_>>();
-            self.threads
+            session
                 .close_tree_for_deletion(&root_id, &identities)
                 .await
                 .context(DeleteStage("停止会话与释放存储"))?;
-            self.retire_private_deleted_members(&archive).await?;
+            deletion_step(
+                &root_id,
+                "退役私有准备责任",
+                self.retire_private_deleted_members(&archive),
+            )
+            .await?;
             for id in &ids {
                 self.residency.remove(id).await;
             }
             // Git owns worktree removal. Dedicated execution and host roots are removed below
             // as a whole; archive temp migration/cleanup would only traverse them twice.
-            deletion_step(
-                &root_id,
-                "删除专属工作树",
-                self.clean_archive_worktrees(&mut archive),
-            )
-            .await?;
             // Worktrees may contain this member's entire execution SessionFiles root.
             for member in &mut operation.members {
                 member.execution_removal_started = false;
@@ -222,35 +241,110 @@ impl StudioRuntime {
                 .product_events
                 .drain_directory_writes()
                 .await?;
-            deletion_step(
-                &root_id,
+            let mut failures = DeletionFailures::default();
+            let mut blocked_worktrees = Vec::new();
+            // Worktree progress is retained by its original archive owner. Removing means all
+            // producers have joined, not that each independent physical target has disappeared.
+            if let Some(mut archive) =
+                crate::studio::store::object::load_deletion_aux::<ThreadArchiveOperation>(
+                    self.store.database(),
+                    &ArchiveScope::Thread(root_id.clone()).key(),
+                )
+                .await?
+            {
+                failures.record(
+                    "删除专属工作树",
+                    self.clean_deleted_worktrees(&mut archive).await,
+                );
+                blocked_worktrees.extend(
+                    archive
+                        .worktrees
+                        .iter()
+                        .filter(|worktree| !worktree.cleaned)
+                        .map(|worktree| worktree.identity.clone()),
+                );
+                for member in &mut operation.members {
+                    if let PreparationBinding::Bound { identity } = &member.execution
+                        && archive
+                            .worktrees
+                            .iter()
+                            .any(|worktree| worktree.cleaned && identity.within(&worktree.identity))
+                    {
+                        member.execution_deleted = true;
+                    }
+                }
+                operation.changed()?;
+                self.store.save_thread_delete(&operation).await?;
+            }
+            failures.record(
                 "删除调用记录",
-                self.store.calls().delete_threads(&ids),
-            )
-            .await?;
-            self.bots.delete_threads(&ids).await?;
-            self.delete_thread_settings(&ids)?;
+                deletion_step(
+                    &root_id,
+                    "删除调用记录",
+                    self.store.calls().delete_threads(&ids),
+                )
+                .await,
+            );
+            failures.record(
+                "删除机器人关联",
+                deletion_step(&root_id, "删除机器人关联", async {
+                    self.bots.delete_threads(&ids).await?;
+                    Ok(())
+                })
+                .await,
+            );
+            failures.record("删除会话设置", self.delete_thread_settings(&ids));
             let mut remote_hosts = Vec::new();
             for index in 0..operation.members.len() {
                 let member = operation.members[index].clone();
                 if !member.execution_deleted {
-                    deletion_step(
-                        &root_id,
-                        "删除执行端目录",
-                        self.delete_execution_session(&mut operation, index, &mut remote_hosts),
-                    )
-                    .await?;
+                    if matches!(&member.execution, PreparationBinding::Bound { identity }
+                        if blocked_worktrees.iter().any(|worktree| identity.within(worktree)))
+                    {
+                        tracing::warn!(stage = "删除执行端目录", member = %member.identity.thread_id,
+                            reason = "worktree_unresolved", decision = "preserve", outcome = "incomplete",
+                            "保留未确认工作树内的执行目录");
+                        failures.record(
+                            "删除执行端目录",
+                            Err(anyhow::anyhow!(
+                                "original worktree removal remains unresolved"
+                            )),
+                        );
+                    } else {
+                        failures.record(
+                            "删除执行端目录",
+                            deletion_step(
+                                &member.identity.thread_id,
+                                "删除执行端目录",
+                                self.delete_execution_session(
+                                    &mut operation,
+                                    index,
+                                    &mut remote_hosts,
+                                ),
+                            )
+                            .await,
+                        );
+                    }
                 }
                 if !member.host_deleted {
-                    deletion_step(
-                        &root_id,
+                    failures.record(
                         "删除宿主会话目录",
-                        self.delete_host_session(&mut operation, index),
-                    )
-                    .await?;
+                        deletion_step(
+                            &member.identity.thread_id,
+                            "删除宿主会话目录",
+                            self.delete_host_session(&mut operation, index),
+                        )
+                        .await,
+                    );
                 }
             }
-            self.store.delete_thread_product_data(&operation).await?;
+            // Product retirement would erase original lease/preparation responsibilities needed
+            // by failed physical items. Keep those until all independent work has succeeded.
+            failures.finish()?;
+            self.store
+                .delete_thread_product_data(&operation)
+                .await
+                .context(DeleteStage("删除产品记录"))?;
             for id in &ids {
                 self.agent_facility.worktrees.forget_deleted(id)?;
                 self.recovery.delete_thread(id);
@@ -287,6 +381,17 @@ impl StudioRuntime {
         operation.phase = DeletePhase::Published;
         operation.members.clear();
         operation.changed()?;
+        #[cfg(test)]
+        {
+            let mut fault = self
+                .s2_delete_publication_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if fault.as_deref() == Some(root_id.as_str()) {
+                fault.take();
+                anyhow::bail!("injected failure before delete Published persistence");
+            }
+        }
         self.store.save_thread_delete(&operation).await?;
         Ok(Some(DeleteThreadCommandReply {
             result: StudioDeleteThreadResult {
@@ -308,17 +413,26 @@ impl StudioRuntime {
         for member in &archive.private_members {
             let record = self
                 .store
-                .thread_preparation(&member.identity.thread_id)
-                .await?
-                .context("private deletion responsibility is missing")?;
-            ensure!(
-                record.identity == member.identity && record.binding == member.binding,
-                "private deletion original binding changed"
-            );
-            ensure!(
-                record.stopped,
-                "private deletion producers have not actually stopped"
-            );
+                .thread_preparation_for_deletion(&member.identity.thread_id)
+                .await?;
+            let Some(record) = record else {
+                tracing::info!(stage = "retire_private", member = %member.identity.thread_id,
+                    reason = "preparation_unavailable", decision = "use_frozen_binding",
+                    outcome = "skipped", "删除跳过不可用的准备记录");
+                continue;
+            };
+            if record.identity != member.identity || record.binding != member.binding {
+                tracing::warn!(stage = "退役私有准备责任", member = %member.identity.thread_id,
+                    reason = "private_binding_changed", decision = "retain_retry",
+                    outcome = "incomplete", "私有准备责任仍未收束");
+                return Err(PrivateDeletionError::BindingChanged.into());
+            }
+            if !record.stopped {
+                tracing::warn!(stage = "退役私有准备责任", member = %member.identity.thread_id,
+                    reason = "private_producers_not_stopped", decision = "retain_retry",
+                    outcome = "incomplete", "私有准备责任仍未收束");
+                return Err(PrivateDeletionError::ProducersNotStopped.into());
+            }
             if !record.retired {
                 self.thread_factory
                     .retire_deleted_preparation(&record)
@@ -433,9 +547,11 @@ impl StudioRuntime {
             );
             return Ok(());
         }
-        operation.members[index].execution_removal_started = true;
-        operation.changed()?;
-        self.store.save_thread_delete(operation).await?;
+        let mut intent = operation.clone();
+        intent.members[index].execution_removal_started = true;
+        intent.changed()?;
+        self.store.save_thread_delete(&intent).await?;
+        *operation = intent;
         if let Err(error) = backend.remove_session(&files).await {
             if error.definitely_not_started() {
                 operation.members[index].execution_removal_started = false;
@@ -466,9 +582,11 @@ impl StudioRuntime {
                 unresolved_removal("宿主会话目录")
             );
         } else {
-            operation.members[index].host_removal_started = true;
-            operation.changed()?;
-            self.store.save_thread_delete(operation).await?;
+            let mut intent = operation.clone();
+            intent.members[index].host_removal_started = true;
+            intent.changed()?;
+            self.store.save_thread_delete(&intent).await?;
+            *operation = intent;
             let anchor = member
                 .host_session
                 .ancestors()
@@ -505,15 +623,107 @@ impl StudioRuntime {
 #[error("{0}")]
 struct DeleteStage(&'static str);
 
-async fn deletion_step<T>(
+#[derive(Debug, thiserror::Error)]
+enum PrivateDeletionError {
+    #[error("private deletion original binding changed")]
+    BindingChanged,
+    #[error("private deletion producers have not actually stopped")]
+    ProducersNotStopped,
+}
+
+pub(super) async fn deletion_step<T>(
     thread_id: &str,
     stage: &'static str,
     operation: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     let started = std::time::Instant::now();
     let result = operation.await.context(DeleteStage(stage));
-    tracing::info!(%thread_id, %stage, elapsed_ms = started.elapsed().as_millis() as u64, success = result.is_ok(), "会话删除阶段结束");
+    match &result {
+        Ok(_) => tracing::info!(member = %thread_id, %stage,
+            elapsed_ms = started.elapsed().as_millis() as u64, reason = "completed",
+            decision = "continue", outcome = "completed", "会话删除阶段结束"),
+        Err(error) => {
+            let io = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<std::io::Error>());
+            let parse = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<serde_json::Error>());
+            tracing::warn!(member = %thread_id, %stage,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                reason = deletion_reason(error), decision = "retain_retry", outcome = "incomplete",
+                io_kind = ?io.map(std::io::Error::kind),
+                os_code = io.and_then(std::io::Error::raw_os_error),
+                line = parse.map(serde_json::Error::line),
+                column = parse.map(serde_json::Error::column), "会话删除阶段结束");
+        }
+    }
     result
+}
+
+fn deletion_reason(error: &anyhow::Error) -> &'static str {
+    if let Some(private) = error.downcast_ref::<PrivateDeletionError>() {
+        return match private {
+            PrivateDeletionError::BindingChanged => "private_binding_changed",
+            PrivateDeletionError::ProducersNotStopped => "private_producers_not_stopped",
+        };
+    }
+    if error.chain().any(|source| source.is::<std::io::Error>()) {
+        "filesystem"
+    } else if error.chain().any(|source| source.is::<serde_json::Error>()) {
+        "decode"
+    } else if error
+        .chain()
+        .any(|source| source.is::<pl_tool::remote::RemoteClientError>())
+    {
+        "remote"
+    } else if error
+        .chain()
+        .any(|source| source.is::<path_safety::PathSafetyError>())
+    {
+        "path_boundary"
+    } else if error.chain().any(|source| source.is::<sea_orm::DbErr>()) {
+        "database"
+    } else if error.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<crate::thread_assembler::ThreadAssemblyError>(),
+            Some(crate::thread_assembler::ThreadAssemblyError::Preparing(_))
+        )
+    }) {
+        "preparation_owner_remaining"
+    } else {
+        "owner_or_storage"
+    }
+}
+
+#[derive(Default)]
+pub(super) struct DeletionFailures {
+    first: Option<anyhow::Error>,
+    incomplete: Vec<(&'static str, &'static str)>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("permanent deletion has incomplete stages: {0:?}")]
+struct IncompleteDeletion(Vec<(&'static str, &'static str)>);
+
+impl DeletionFailures {
+    pub(super) fn record(&mut self, stage: &'static str, result: Result<()>) {
+        if let Err(error) = result {
+            self.incomplete.push((stage, deletion_reason(&error)));
+            tracing::warn!(%stage, reason = deletion_reason(&error), decision = "continue_independent",
+                outcome = "incomplete", "删除保留未完成责任并继续独立项");
+            if self.first.is_none() {
+                self.first = Some(error.context(DeleteStage(stage)));
+            }
+        }
+    }
+
+    pub(super) fn finish(self) -> Result<()> {
+        match self.first {
+            Some(first) => Err(first.context(IncompleteDeletion(self.incomplete))),
+            None => Ok(()),
+        }
+    }
 }
 
 fn unresolved_removal(target: &str) -> pl_protocol::studio::StudioError {
@@ -638,6 +848,33 @@ async fn host_session_exists(session: &Path) -> Result<bool> {
 #[cfg(test)]
 mod error_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn private_retirement_failure_keeps_stage_and_safe_reason() {
+        for (cause, reason) in [
+            (
+                PrivateDeletionError::BindingChanged,
+                "private_binding_changed",
+            ),
+            (
+                PrivateDeletionError::ProducersNotStopped,
+                "private_producers_not_stopped",
+            ),
+        ] {
+            let error = deletion_step::<()>("fixture-private", "退役私有准备责任", async {
+                Err(cause.into())
+            })
+            .await
+            .unwrap_err();
+            let stage = error.downcast_ref::<DeleteStage>().unwrap().0;
+            let public = deletion_error(&error, stage, "fixture-root");
+            assert_eq!(stage, "退役私有准备责任");
+            assert_eq!(deletion_reason(&error), reason);
+            assert_eq!(public.details.as_ref().unwrap()["stage"], stage);
+            assert!(public.message.contains(stage));
+            assert!(!public.message.contains("private deletion"));
+        }
+    }
 
     #[test]
     fn deletion_context_preserves_typed_permission_and_original_details() {

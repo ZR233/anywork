@@ -67,6 +67,74 @@ ConversationRealtimeRegion _project(PendingInteraction? interaction) =>
     );
 
 void main() {
+  for (final (label, source, accepted) in <(String, ChatSourceId?, bool)>[
+    ('unknown', null, false),
+    ('old foreground', const ForegroundTurnChatSource(turnId: 'old'), false),
+    (
+      'background',
+      const BackgroundResultChatSource(messageId: 'background'),
+      false,
+    ),
+    (
+      'current foreground',
+      const ForegroundTurnChatSource(turnId: 'turn'),
+      true,
+    ),
+  ]) {
+    test('normal notice requires same-cut foreground source: $label', () {
+      final live = LiveDisplayWindow(
+        revision: 3,
+        historyThrough: 0,
+        executionPresent: true,
+        blocks: [
+          LiveDisplayBlock(
+            id: 'opaque-block',
+            blockOrder: 1,
+            closing: false,
+            source: source,
+            body: displayWork('opaque-block', 1).body,
+          ),
+        ],
+      );
+      final region = projectConversationRealtime(
+        storage: null,
+        interaction: null,
+        live: live,
+        status: const ThreadActivityView(
+          threadId: 'thread',
+          identity: 'same-current-notice',
+          revision: 3,
+          turnId: 'turn',
+          kind: ThreadActivityKind.thinking,
+          summary: '可靠状态概要',
+          thinkingSummary: '有界思考概要',
+          thinkingSeconds: 17,
+        ),
+      ) as ContentRealtimeRegion;
+      final placement = currentWorkNotice(
+        live: region.live,
+        activeTurnId: 'turn',
+        notices: region.notices,
+      );
+      expect(placement != null, accepted);
+      if (accepted) {
+        final matched = placement!;
+        expect(matched.blockId, 'opaque-block');
+        expect(matched.notice, same(region.notices.single));
+        expect(matched.notice.view.summary, '可靠状态概要');
+        expect(matched.notice.view.thinkingSummary, '有界思考概要');
+        expect(
+          currentWorkNotice(
+            live: region.live,
+            activeTurnId: 'another-turn',
+            notices: region.notices,
+          ),
+          isNull,
+        );
+      }
+    });
+  }
+
   test('realtime projection preserves the actual thinking phase timing', () {
     final region = projectConversationRealtime(
       storage: null,
