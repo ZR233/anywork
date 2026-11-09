@@ -1613,8 +1613,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
-        // 保留整个临时根与配置绝对路径（不只 home），供发布视觉复查复用。
-        if result.is_ok() && options.retain_environment {
+        // Explicit retention also preserves failed runs for state/checkpoint diagnosis.
+        if options.retain_environment {
             keep_isolated_environment(working, &home, &output, Some(&project))?;
         }
         return result;

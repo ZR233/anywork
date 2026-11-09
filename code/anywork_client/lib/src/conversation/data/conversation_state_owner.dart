@@ -153,6 +153,7 @@ final class ConversationStateOwner {
     }
     a.received = frame.deliverySequence;
     a.ledger[frame.deliverySequence] = false;
+    final sequence = frame.deliverySequence;
     final work = _enqueue(a, () async {
       if (!_live(a)) return;
       switch (frame.event) {
@@ -173,6 +174,17 @@ final class ConversationStateOwner {
             }
           }
           onState(a.id, frame);
+          if (_live(a)) {
+            if (frame is ThreadSnapshotFrame) {
+              a.baselineRevision ??= frame.workspace.revision;
+            } else if (frame is ThreadNotificationFrame &&
+                a.baselineRevision != null &&
+                frame.revision > a.baselineRevision!) {
+              // A baseline alone cannot turn a reconnect loop into recovery.
+              // Wait for real forward State progress and its successful ACK.
+              a.recoveryAfterSequence ??= sequence;
+            }
+          }
         case ConversationChatEvent() ||
             ConversationTimelineEvent() ||
             ConversationActivityEvent() ||
@@ -223,6 +235,7 @@ final class ConversationStateOwner {
           if (!_live(a)) return;
           a.ledger.remove(next);
           a.acked = next;
+          if (a.recoveryAfterSequence == next) _retries = 0;
         }
       }),
     );
@@ -403,6 +416,8 @@ final class _StateAttempt {
   bool retryable = true;
   int received = 0;
   int acked = 0;
+  int? baselineRevision;
+  int? recoveryAfterSequence;
   bool acking = false;
   bool retired = false;
   Object? error;
