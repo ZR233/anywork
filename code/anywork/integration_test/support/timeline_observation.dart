@@ -1675,7 +1675,10 @@ final class TimelineObservation {
           // Borrow after navigation. This exact-card header remains the
           // target if layout replaces its Element; retirement is not a click.
           await tapGroupHeader(id, timeout: remaining());
-          expect(groupExpanded(id), isFalse);
+          // Collapsing a tall history card may virtualize its header out of
+          // Main. Check the retained expansion intent before revealing it
+          // again; absence of an Element is not the collapsed UI assertion.
+          expect(unit(id).expansion.expanded, isFalse);
           clicked.add(id);
           sample('after-click', id: id);
           requireOwnerAndCollapsedCards();
@@ -1691,6 +1694,10 @@ final class TimelineObservation {
             timeout: remaining(),
           );
           expect(original.error, isNull);
+          if (unit(id).historyPos != null) {
+            await reveal(groupHeader(id), id, timeout: remaining());
+          }
+          expect(groupExpanded(id), isFalse);
         } else {
           expect(unit(id).expansion.expanded, isFalse);
         }

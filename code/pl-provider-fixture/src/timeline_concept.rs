@@ -401,7 +401,10 @@ impl Control {
         let mut chunks = vec![first];
         let mut full_text = HOT_UPDATE_HEAD.to_owned();
         for index in 1..=20 {
-            let delta = format!(" [{index:02}]");
+            // The sample observes four literal glyphs, not Markdown's numeric
+            // source-tag chip. Use inline code without changing the
+            // displayed marker or the independently held delta gates.
+            let delta = format!(" `[{index:02}]`");
             full_text.push_str(&delta);
             chunks.push(vec![json!({
                 "type":"response.output_text.delta",
@@ -667,7 +670,7 @@ mod hot_update_wire_tests {
             if index == 0 {
                 assert_eq!(delta["delta"], HOT_UPDATE_HEAD);
             } else {
-                let expected = format!(" [{index:02}]");
+                let expected = format!(" `[{index:02}]`");
                 assert_eq!(delta["delta"], expected);
                 full_text.push_str(&expected);
             }

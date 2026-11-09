@@ -988,7 +988,10 @@ final class _ConceptScene {
     );
     for (final rich
         in find
-            .descendant(of: bodies, matching: find.byType(RichText))
+            .descendant(
+              of: bodies,
+              matching: find.byWidgetPredicate((widget) => widget is RichText),
+            )
             .evaluate()) {
       final paragraph = rich.findRenderObject();
       if (paragraph is! RenderParagraph ||
