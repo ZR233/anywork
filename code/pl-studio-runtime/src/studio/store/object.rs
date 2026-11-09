@@ -136,3 +136,84 @@ where
     .one(db)
     .await?)
 }
+
+/// Only deletion may ignore an undecodable auxiliary row. Database failures still propagate,
+/// and a skipped row is never repaired or overwritten using an inferred identity.
+pub(in crate::studio) async fn load_deletion_aux<T>(
+    db: &impl ConnectionTrait,
+    owner_id: &str,
+) -> Result<Option<T>>
+where
+    T: PersistedStudioObject,
+{
+    Ok(load_object_row::<T>(db, owner_id)
+        .await?
+        .and_then(decode_deletion_aux::<T>))
+}
+
+pub(in crate::studio) async fn list_deletion_aux<T>(db: &impl ConnectionTrait) -> Result<Vec<T>>
+where
+    T: PersistedStudioObject,
+{
+    use sea_orm::{ColumnTrait, QueryFilter};
+    Ok(studio_object::Entity::find()
+        .filter(studio_object::Column::OwnerKind.eq(T::OWNER_KIND))
+        .filter(studio_object::Column::ObjectKind.eq(T::OBJECT_KIND))
+        .all(db)
+        .await?
+        .into_iter()
+        .filter_map(decode_deletion_aux::<T>)
+        .collect())
+}
+
+fn decode_deletion_aux<T: PersistedStudioObject>(row: studio_object::Model) -> Option<T> {
+    let started = std::time::Instant::now();
+    let owner = row.owner_id.clone();
+    let reason = if row.schema_version != T::SCHEMA_VERSION {
+        "aux_schema"
+    } else if content_hash(row.payload_json.as_bytes()) != row.payload_hash {
+        "aux_hash"
+    } else {
+        "aux_invariant"
+    };
+    match decode_object::<T>(row) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let parse = error.downcast_ref::<serde_json::Error>();
+            // The allowlist identifies known preparation invariants without formatting a
+            // payload-bearing serde/anyhow error. Unknown validation failures stay categorical.
+            let reason = if parse.is_some() {
+                "aux_json"
+            } else {
+                match error.to_string().as_str() {
+                    "preparation identity mismatch" => "preparation_identity",
+                    "cyclic preparation identity" => "preparation_cycle",
+                    "preparation retirement precedes producer ACK" => "preparation_retirement_ack",
+                    "preparation stop precedes save ACK" => "preparation_save_ack",
+                    "deletion stop ACK is missing" => "preparation_deletion_ack",
+                    "attached obligation cannot be unattached" => "preparation_attachment",
+                    "missing storage incarnation" => "preparation_incarnation",
+                    "preparation save does not match its original closed receipt" => {
+                        "preparation_closed_receipt"
+                    }
+                    "private save has no original storage obligation" => "preparation_storage",
+                    "temp cleanup precedes original resource retirement" => "preparation_cleanup",
+                    _ => reason,
+                }
+            };
+            tracing::warn!(
+                stage = "read_aux",
+                member = %owner,
+                object_kind = T::OBJECT_KIND,
+                reason,
+                decision = "preserve_unknown_skip",
+                outcome = "skipped",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                line = parse.map(serde_json::Error::line),
+                column = parse.map(serde_json::Error::column),
+                "删除跳过不可解码的辅助记录"
+            );
+            None
+        }
+    }
+}

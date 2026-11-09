@@ -1209,11 +1209,7 @@ impl SessionRuntime {
             let live = targets
                 .iter()
                 .map(|(_, id)| id.as_str())
-                .filter(|id| {
-                    state.entries.contains_key(*id)
-                        || (purpose == ClosePurpose::Delete
-                            && state.failed_preparations.contains_key(*id))
-                })
+                .filter(|id| purpose == ClosePurpose::Delete || state.entries.contains_key(*id))
                 .collect::<BTreeSet<_>>();
             let mut dependencies: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for id in &live {
@@ -1254,7 +1250,59 @@ impl SessionRuntime {
             .await
             .into_iter();
         match failures.next() {
-            None => Ok(()),
+            None => {
+                if purpose == ClosePurpose::Delete {
+                    // All frozen identities, including cold intermediates, passed through the
+                    // operation seals and real collaboration joins above. Check every registry
+                    // owner before acknowledging a durable private preparation.
+                    let services = {
+                        let state = self.0.state();
+                        for member in members {
+                            let id = &member.thread_id;
+                            if state.entries.contains_key(id)
+                                || state.creating.contains_key(id)
+                                || state.preparing_children.contains_key(id)
+                                || state.unpublished_children.contains_key(id)
+                                || state.failed_preparations.contains_key(id)
+                                || state.pending_activation.contains_key(id)
+                            {
+                                return Err(ThreadAssemblyError::Preparing(id.clone()));
+                            }
+                        }
+                        state.agent_services.clone()
+                    };
+                    if let Some(services) = services {
+                        for member in members {
+                            let record = services
+                                .store
+                                .thread_preparation_for_deletion(&member.thread_id)
+                                .await
+                                .map_err(|source| ThreadAssemblyError::Resource {
+                                    operation: "read deletion preparation",
+                                    source: source.into(),
+                                })?;
+                            if let Some(record) = record {
+                                if record.identity != *member {
+                                    return Err(ThreadAssemblyError::Identity(
+                                        member.thread_id.clone(),
+                                    ));
+                                }
+                                if !record.published && !record.deletion_stopped {
+                                    services
+                                        .store
+                                        .confirm_preparation_stop_for_deletion(&member.thread_id)
+                                        .await
+                                        .map_err(|source| ThreadAssemblyError::Resource {
+                                            operation: "acknowledge drained deletion preparation",
+                                            source: source.into(),
+                                        })?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
             Some((id, first)) => Err(ThreadAssemblyError::SubtreeClose {
                 id,
                 first: Box::new(first),

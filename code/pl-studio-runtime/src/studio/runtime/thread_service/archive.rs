@@ -139,8 +139,25 @@ impl StudioRuntime {
         admitted: &[PreparationIdentity],
         purpose: ArchivePurpose,
     ) -> Result<ThreadArchiveOperation> {
-        let mut previous = self.store.thread_archive(&scope).await?;
-        let archives = self.store.thread_archives().await?;
+        use crate::studio::store::object::{list_deletion_aux, load_deletion_aux};
+        let mut previous = if purpose == ArchivePurpose::Delete {
+            load_deletion_aux(self.store.database(), &scope.key()).await?
+        } else {
+            self.store.thread_archive(&scope).await?
+        };
+        let deletion = if purpose == ArchivePurpose::Delete
+            && let ArchiveScope::Thread(root) = &scope
+        {
+            self.store.thread_delete(root).await?
+        } else {
+            None
+        };
+        let missing_delete_progress = deletion.is_some() && previous.is_none();
+        let archives = if purpose == ArchivePurpose::Delete {
+            list_deletion_aux(self.store.database()).await?
+        } else {
+            self.store.thread_archives().await?
+        };
         if purpose == ArchivePurpose::Preserve {
             for deletion in self.store.thread_deletes().await? {
                 if deletion.phase == crate::studio::store::thread_delete::DeletePhase::Published {
@@ -172,22 +189,70 @@ impl StudioRuntime {
                     merge_removal_root(&mut original, source, root)?;
                 }
             }
+            if let Some(deletion) = &deletion {
+                self.restore_deleted_members(&mut original, deletion)
+                    .await?;
+            }
             previous = Some(original);
         }
         let mut catalog_projection = threads.to_vec();
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
         {
-            for member in &operation.private_members {
-                if !catalog_projection
-                    .iter()
-                    .any(|thread| thread.id == member.identity.thread_id)
-                    && let Some(canonical) =
-                        self.store.read_thread(&member.identity.thread_id).await?
+            for id in operation
+                .private_members
+                .iter()
+                .map(|member| &member.identity.thread_id)
+                .chain(
+                    operation
+                        .members
+                        .iter()
+                        .filter(|_| purpose == ArchivePurpose::Delete)
+                        .map(|member| &member.thread_id),
+                )
+            {
+                if !catalog_projection.iter().any(|thread| thread.id == *id)
+                    && let Some(canonical) = self.store.read_thread(id).await?
                 {
                     // Missing from a filtered tree is not proof of never having a catalog row.
                     // Validate its original identity below even if its current ancestry changed.
                     catalog_projection.push(canonical);
+                }
+            }
+            if purpose == ArchivePurpose::Delete {
+                for member in &operation.members {
+                    if catalog_projection
+                        .iter()
+                        .any(|thread| thread.id == member.thread_id)
+                    {
+                        continue;
+                    }
+                    // The canonical row is truly absent. Keep the frozen paths, but still
+                    // reject conflicting original preparation or execution-binding records.
+                    if let Some(record) = self
+                        .store
+                        .thread_preparation_for_deletion(&member.thread_id)
+                        .await?
+                    {
+                        ensure!(
+                            record.identity.workspace_id == member.workspace_id
+                                && record.identity.parent_id == member.parent_id
+                                && record.identity.root_id == member.root_id,
+                            "archive canonical member changed identity"
+                        );
+                        if let PreparationBinding::Bound { identity } = &record.binding {
+                            ensure!(
+                                *identity == member.execution,
+                                "archive canonical member rebound during preparation"
+                            );
+                        }
+                    }
+                    if let Some(current) = self.store.workspace_identity(&member.thread_id).await? {
+                        ensure!(
+                            current == member.execution,
+                            "archive original physical binding changed"
+                        );
+                    }
                 }
             }
         }
@@ -195,7 +260,12 @@ impl StudioRuntime {
         // These original responsibilities outlive both the registry owner and a failed first
         // threadArchive write. Discover by trusted identity, never by scanning physical paths.
         let mut admitted = admitted.to_vec();
-        for record in self.store.thread_preparations().await? {
+        let preparations = if purpose == ArchivePurpose::Delete {
+            list_deletion_aux(self.store.database()).await?
+        } else {
+            self.store.thread_preparations().await?
+        };
+        for record in preparations {
             let in_scope = match &scope {
                 ArchiveScope::Thread(root) => record.identity.root_id == *root,
                 ArchiveScope::Workspace(workspace) => record.identity.workspace_id == *workspace,
@@ -211,6 +281,21 @@ impl StudioRuntime {
                 admitted.push(record.identity);
             }
         }
+        if let Some(deletion) = &deletion {
+            ensure!(
+                threads
+                    .iter()
+                    .all(|thread| deletion.thread_ids.contains(&thread.id))
+                    && admitted
+                        .iter()
+                        .all(|identity| deletion.thread_ids.contains(&identity.thread_id))
+                    && previous.as_ref().is_none_or(|operation| operation
+                        .thread_ids()
+                        .iter()
+                        .all(|id| deletion.thread_ids.contains(id))),
+                "delete scope gained an unfrozen member"
+            );
+        }
         if let Some(operation) = &previous
             && operation.phase != ArchivePhase::Published
         {
@@ -219,7 +304,8 @@ impl StudioRuntime {
                 .iter()
                 .map(|member| &member.thread_id)
                 .collect::<std::collections::BTreeSet<_>>();
-            // Public members owe catalog presence; private identities may be present or absent.
+            // Preservation owes public catalog presence. Deletion keeps frozen identities and
+            // bindings even after their canonical rows disappear; it never reconstructs them.
             // After save, the catalog and admitted preparation projections cannot grow this union.
             let frozen = required_catalog
                 .iter()
@@ -236,7 +322,7 @@ impl StudioRuntime {
                 .map(|thread| &thread.id)
                 .collect::<std::collections::BTreeSet<_>>();
             ensure!(
-                required_catalog.is_subset(&actual),
+                purpose == ArchivePurpose::Delete || required_catalog.is_subset(&actual),
                 "archive scope changed while cleanup was pending"
             );
             ensure!(
@@ -272,12 +358,16 @@ impl StudioRuntime {
             .unwrap_or_default();
         for identity in &admitted {
             if purpose == ArchivePurpose::Delete {
-                self.store
-                    .begin_removal_preparation(
-                        identity.clone(),
-                        threads.iter().any(|thread| thread.id == identity.thread_id),
-                    )
-                    .await?;
+                // A durable deletion already owns every admitted identity. Recreating a lost
+                // preparation would discard its frozen binding and invent a new obligation.
+                if deletion.is_none() {
+                    self.store
+                        .begin_deletion_preparation(
+                            identity.clone(),
+                            threads.iter().any(|thread| thread.id == identity.thread_id),
+                        )
+                        .await?;
+                }
             } else {
                 self.store
                     .begin_thread_preparation(identity.clone())
@@ -285,7 +375,13 @@ impl StudioRuntime {
             }
         }
         for thread in threads {
-            let preparation = self.store.thread_preparation(&thread.id).await?;
+            let preparation = if purpose == ArchivePurpose::Delete {
+                load_deletion_aux::<crate::studio::store::thread_preparation::ThreadPreparationRecord>(
+                    self.store.database(), &thread.id,
+                ).await?
+            } else {
+                self.store.thread_preparation(&thread.id).await?
+            };
             let public = members.iter().find(|member| member.thread_id == thread.id);
             let private = previous
                 .as_ref()
@@ -404,7 +500,7 @@ impl StudioRuntime {
                 // typed original-owner record commits. This is not absence-based recovery.
                 if purpose == ArchivePurpose::Delete {
                     self.store
-                        .begin_removal_preparation(identity.clone(), false)
+                        .begin_deletion_preparation(identity.clone(), false)
                         .await?;
                 } else {
                     self.store
@@ -415,11 +511,22 @@ impl StudioRuntime {
             }
         }
         for identity in private_identities {
-            let mut record = self
-                .store
-                .thread_preparation(&identity.thread_id)
-                .await?
-                .context("archive lost its original private preparation responsibility")?;
+            let record = if purpose == ArchivePurpose::Delete {
+                load_deletion_aux(self.store.database(), &identity.thread_id).await?
+            } else {
+                self.store.thread_preparation(&identity.thread_id).await?
+            };
+            let Some(mut record) = record else {
+                if purpose == ArchivePurpose::Delete {
+                    // Keep any previously frozen private binding. Absence or corruption grants
+                    // no authority to reconstruct an execution path or overwrite the bad row.
+                    tracing::info!(stage = "freeze_private", member = %identity.thread_id,
+                        reason = "preparation_unavailable", decision = "retain_frozen_binding",
+                        outcome = "skipped", "删除沿用原冻结责任");
+                    continue;
+                }
+                anyhow::bail!("archive lost its original private preparation responsibility");
+            };
             ensure!(
                 record.identity == identity,
                 "private archive identity changed"
@@ -563,6 +670,10 @@ impl StudioRuntime {
                 });
             }
         }
+        ensure!(
+            !missing_delete_progress || worktrees.is_empty(),
+            "deletion worktree progress has no readable original owner"
+        );
         // Before worktree cleanup was part of this operation, Cleaned acknowledged temp only.
         // Keep its original save ACK while completing the newly recorded lease responsibility.
         if phase == ArchivePhase::Cleaned && worktrees.iter().any(|worktree| !worktree.cleaned) {
@@ -577,6 +688,116 @@ impl StudioRuntime {
             phase,
         };
         Ok(operation)
+    }
+
+    async fn restore_deleted_members(
+        &self,
+        archive: &mut ThreadArchiveOperation,
+        deletion: &crate::studio::store::thread_delete::ThreadDeleteOperation,
+    ) -> Result<()> {
+        // The durable deletion is the complete identity/binding authority. Auxiliary archive
+        // rows may retain progress, but losing them cannot shrink this frozen responsibility.
+        for frozen in &deletion.members {
+            let record = self
+                .store
+                .thread_preparation_for_deletion(&frozen.identity.thread_id)
+                .await?;
+            if let Some(record) = &record {
+                ensure!(
+                    record.identity == frozen.identity,
+                    "delete preparation original identity changed"
+                );
+                if let (
+                    PreparationBinding::Bound { identity: original },
+                    PreparationBinding::Bound { identity: current },
+                ) = (&frozen.execution, &record.binding)
+                {
+                    ensure!(
+                        original == current,
+                        "delete preparation original binding changed"
+                    );
+                }
+            }
+            if let Some(member) = archive
+                .members
+                .iter()
+                .find(|member| member.thread_id == frozen.identity.thread_id)
+            {
+                ensure!(
+                    member.workspace_id == frozen.identity.workspace_id
+                        && member.root_id == frozen.identity.root_id
+                        && member.parent_id == frozen.identity.parent_id
+                        && member.host_session == frozen.host_session,
+                    "delete archive member changed its original identity"
+                );
+                if let PreparationBinding::Bound { identity } = &frozen.execution {
+                    ensure!(
+                        *identity == member.execution,
+                        "delete archive original binding changed"
+                    );
+                }
+                continue;
+            }
+            if let Some(member) = archive
+                .private_members
+                .iter_mut()
+                .find(|member| member.identity.thread_id == frozen.identity.thread_id)
+            {
+                ensure!(
+                    member.identity == frozen.identity
+                        && member.host_session == frozen.host_session,
+                    "delete archive member changed its original identity"
+                );
+                if let PreparationBinding::Bound { .. } = &frozen.execution {
+                    ensure!(
+                        member.binding == PreparationBinding::Unbound
+                            || member.binding == frozen.execution,
+                        "delete archive original binding changed"
+                    );
+                    member.binding = frozen.execution.clone();
+                }
+                continue;
+            }
+            let binding = if frozen.execution == PreparationBinding::Unbound {
+                record
+                    .as_ref()
+                    .map(|record| record.binding.clone())
+                    .unwrap_or(PreparationBinding::Unbound)
+            } else {
+                frozen.execution.clone()
+            };
+            let host_temp = frozen.host_session.join("temp");
+            if let PreparationBinding::Bound { identity } = &binding
+                && record.as_ref().is_none_or(|record| record.published)
+            {
+                archive.members.push(ArchiveMember {
+                    thread_id: frozen.identity.thread_id.clone(),
+                    workspace_id: frozen.identity.workspace_id.clone(),
+                    root_id: frozen.identity.root_id.clone(),
+                    parent_id: frozen.identity.parent_id.clone(),
+                    host_session: frozen.host_session.clone(),
+                    host_temp,
+                    execution: identity.clone(),
+                    host_cleaned: false,
+                    execution_cleaned: false,
+                });
+            } else {
+                archive.private_members.push(PrivateArchiveMember {
+                    identity: frozen.identity.clone(),
+                    host_session: frozen.host_session.clone(),
+                    host_temp,
+                    binding,
+                    stopped: record.as_ref().is_some_and(|record| record.stopped),
+                    save: record
+                        .as_ref()
+                        .map_or(PreparationSave::Unattached, |record| record.save),
+                    retired: record.as_ref().is_some_and(|record| record.retired),
+                    host_cleaned: false,
+                    execution_cleaned: false,
+                });
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn archive_save_confirmed(
