@@ -33,6 +33,15 @@ pl-tool-read-mcp-resource = { workspace = true }
 pl-tool-view-image = { workspace = true }
 pl-tool-generate-image = { workspace = true }
 pl-tool-show-image = { workspace = true }
+pl-tool-git-status = { workspace = true }
+pl-tool-git-diff = { workspace = true }
+pl-tool-git-branch = { workspace = true }
+pl-tool-git-fetch = { workspace = true }
+pl-tool-git-commit = { workspace = true }
+pl-tool-git-push = { workspace = true }
+pl-tool-git-workspace-info = { workspace = true }
+pl-tool-git-sync-default-branch = { workspace = true }
+pl-tool-git-support = { workspace = true }
 getrandom = { workspace = true }
 h2 = { workspace = true }
 http = { workspace = true }

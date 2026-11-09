@@ -37,6 +37,15 @@ members = [
     "code/tools/view-image",
     "code/tools/generate-image",
     "code/tools/show-image",
+    "code/tools/git-status",
+    "code/tools/git-diff",
+    "code/tools/git-branch",
+    "code/tools/git-fetch",
+    "code/tools/git-commit",
+    "code/tools/git-push",
+    "code/tools/git-workspace-info",
+    "code/tools/git-sync-default-branch",
+    "code/tools/support/git",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -200,6 +209,15 @@ pl-tool-read-mcp-resource = { path = "code/tools/read-mcp-resource" }
 pl-tool-view-image = { path = "code/tools/view-image" }
 pl-tool-generate-image = { path = "code/tools/generate-image" }
 pl-tool-show-image = { path = "code/tools/show-image" }
+pl-tool-git-status = { path = "code/tools/git-status" }
+pl-tool-git-diff = { path = "code/tools/git-diff" }
+pl-tool-git-branch = { path = "code/tools/git-branch" }
+pl-tool-git-fetch = { path = "code/tools/git-fetch" }
+pl-tool-git-commit = { path = "code/tools/git-commit" }
+pl-tool-git-push = { path = "code/tools/git-push" }
+pl-tool-git-workspace-info = { path = "code/tools/git-workspace-info" }
+pl-tool-git-sync-default-branch = { path = "code/tools/git-sync-default-branch" }
+pl-tool-git-support = { path = "code/tools/support/git" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }

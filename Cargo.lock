@@ -4268,6 +4268,15 @@ dependencies = [
  "pl-tool-exec",
  "pl-tool-filesystem",
  "pl-tool-generate-image",
+ "pl-tool-git-branch",
+ "pl-tool-git-commit",
+ "pl-tool-git-diff",
+ "pl-tool-git-fetch",
+ "pl-tool-git-push",
+ "pl-tool-git-status",
+ "pl-tool-git-support",
+ "pl-tool-git-sync-default-branch",
+ "pl-tool-git-workspace-info",
  "pl-tool-list-mcp-resource-templates",
  "pl-tool-list-mcp-resources",
  "pl-tool-lsp-capabilities",
@@ -4375,6 +4384,99 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "pl-tool-git-branch"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-commit"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-diff"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-fetch"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-push"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-status"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+]
+
+[[package]]
+name = "pl-tool-git-support"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "secrecy",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pl-tool-git-sync-default-branch"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-tool-git-workspace-info"
+version = "0.1.0"
+dependencies = [
+ "pl-agent-tool",
+ "pl-tool-git-support",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

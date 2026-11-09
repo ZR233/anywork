@@ -1,14 +1,12 @@
 use std::path::{Component, Path};
 
-use pl_protocol::PureError;
+use crate::GitError;
 
-use crate::tool_error;
-
-/// git workspace 安全策略。
+/// Repository-scoped Git argument restrictions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitPolicy {
-    pub(super) allowed_remote: String,
-    pub(super) default_branch: String,
+    allowed_remote: String,
+    pub default_branch: String,
 }
 
 impl Default for GitPolicy {
@@ -28,11 +26,11 @@ impl GitPolicy {
         }
     }
 
-    pub fn validate_remote(&self, remote: &str) -> Result<(), PureError> {
+    pub fn validate_remote(&self, remote: &str) -> Result<(), GitError> {
         if remote == self.allowed_remote {
             Ok(())
         } else {
-            Err(tool_error(
+            Err(GitError::invalid(
                 "git",
                 format!(
                     "unsupported git remote `{remote}`; only `{}` is allowed",
@@ -42,7 +40,7 @@ impl GitPolicy {
         }
     }
 
-    pub fn validate_branch(&self, branch: &str) -> Result<(), PureError> {
+    pub fn validate_branch(&self, branch: &str) -> Result<(), GitError> {
         if branch.trim().is_empty()
             || branch.starts_with('/')
             || branch.ends_with('/')
@@ -54,12 +52,15 @@ impl GitPolicy {
             || branch.ends_with(".lock")
             || branch.chars().any(char::is_control)
         {
-            return Err(tool_error("git", format!("unsafe git branch `{branch}`")));
+            return Err(GitError::invalid(
+                "git",
+                format!("unsafe git branch `{branch}`"),
+            ));
         }
         Ok(())
     }
 
-    pub fn validate_path(&self, path: &str) -> Result<(), PureError> {
+    pub fn validate_path(&self, path: &str) -> Result<(), GitError> {
         let normalized = path.trim();
         if normalized.is_empty()
             || normalized != path
@@ -72,12 +73,15 @@ impl GitPolicy {
                 .components()
                 .any(|component| matches!(component, Component::ParentDir))
         {
-            return Err(tool_error("git", format!("unsafe git path `{path}`")));
+            return Err(GitError::invalid(
+                "git",
+                format!("unsafe git path `{path}`"),
+            ));
         }
         Ok(())
     }
 
-    pub fn validate_fetch_refspec(&self, refspec: Option<&str>) -> Result<(), PureError> {
+    pub fn validate_fetch_refspec(&self, refspec: Option<&str>) -> Result<(), GitError> {
         let Some(refspec) = refspec else {
             return Ok(());
         };
@@ -87,7 +91,7 @@ impl GitPolicy {
         {
             Ok(())
         } else {
-            Err(tool_error(
+            Err(GitError::invalid(
                 "git",
                 format!("unsupported git fetch refspec `{refspec}`"),
             ))
