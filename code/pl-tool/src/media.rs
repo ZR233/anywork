@@ -1,7 +1,7 @@
 //! Shared exact-byte media retention and frozen model projection for tools.
 pub use pl_core::context::{ContextContent, ResourceReference};
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
-pub use pl_tool_media::{
+pub use pl_tool_media_support::{
     ImageOutputLimits, Media as ToolMedia, MediaKind as ToolMediaKind,
     PreparedImage as PreparedToolImage,
 };
@@ -26,7 +26,7 @@ pub trait ToolMediaHost: Send + Sync + std::fmt::Debug + 'static {
 /// Product resource and delivery adaptation; neither representation enters independent tools.
 pub(crate) struct DomainMediaHost<H>(pub(crate) Arc<H>);
 
-impl<H: ToolMediaHost> pl_tool_media::MediaHost for DomainMediaHost<H> {
+impl<H: ToolMediaHost> pl_tool_media_support::MediaHost for DomainMediaHost<H> {
     type Reference = ResourceReference;
     type Projection = Vec<ContextContent>;
     type Error = ToolError;
@@ -34,11 +34,11 @@ impl<H: ToolMediaHost> pl_tool_media::MediaHost for DomainMediaHost<H> {
     async fn retain(
         &self,
         media: ToolMedia,
-    ) -> Result<pl_tool_media::Retained<Self::Reference, Self::Projection>, ToolError> {
+    ) -> Result<pl_tool_media_support::Retained<Self::Reference, Self::Projection>, ToolError> {
         let bytes = media.bytes.clone();
         let retained = self.0.retain(media).await?;
         retained.reference.verify(&bytes).map_err(ToolError::new)?;
-        Ok(pl_tool_media::Retained {
+        Ok(pl_tool_media_support::Retained {
             reference: retained.reference,
             projection: retained.context,
         })

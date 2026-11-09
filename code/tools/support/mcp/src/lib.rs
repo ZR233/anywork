@@ -2,7 +2,7 @@
 use std::{error::Error, fmt, future::Future, sync::Mutex};
 
 use pl_agent_tool::ToolDefinition;
-use pl_tool_media::{CancellationToken, ImageOutputLimits};
+use pl_tool_media_support::{CancellationToken, ImageOutputLimits};
 use rmcp::model::CallToolResult;
 use serde_json::Value;
 

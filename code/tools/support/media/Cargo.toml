@@ -1,5 +1,5 @@
 [package]
-name = "pl-tool-media"
+name = "pl-tool-media-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

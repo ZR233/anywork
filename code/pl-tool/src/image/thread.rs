@@ -120,7 +120,7 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadVi
                 input,
                 pl_tool_view_image::Context {
                     reader,
-                    image: pl_tool_media::ImageContext {
+                    image: pl_tool_media_support::ImageContext {
                         limits,
                         cancellation: context.cancellation,
                     },

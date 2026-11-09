@@ -7,5 +7,5 @@ license.workspace = true
 [dependencies]
 pl-agent-tool = { workspace = true, features = ["typed"] }
 pl-tool-mcp-support = { workspace = true }
-pl-tool-media = { workspace = true }
+pl-tool-media-support = { workspace = true }
 serde_json = { workspace = true }

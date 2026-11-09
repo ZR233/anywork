@@ -4289,7 +4289,7 @@ dependencies = [
  "pl-tool-lsp-support",
  "pl-tool-mcp",
  "pl-tool-mcp-support",
- "pl-tool-media",
+ "pl-tool-media-support",
  "pl-tool-move-path",
  "pl-tool-process",
  "pl-tool-read-bot-messages",
@@ -4423,7 +4423,7 @@ name = "pl-tool-generate-image"
 version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
- "pl-tool-media",
+ "pl-tool-media-support",
  "schemars 1.2.3",
  "serde",
  "thiserror 2.0.21",
@@ -4601,7 +4601,7 @@ version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
  "pl-tool-mcp-support",
- "pl-tool-media",
+ "pl-tool-media-support",
  "serde_json",
 ]
 
@@ -4612,13 +4612,13 @@ dependencies = [
  "base64 0.23.1",
  "pl-agent-tool",
  "pl-output",
- "pl-tool-media",
+ "pl-tool-media-support",
  "rmcp",
  "serde_json",
 ]
 
 [[package]]
-name = "pl-tool-media"
+name = "pl-tool-media-support"
 version = "0.1.0"
 dependencies = [
  "image",
@@ -4664,7 +4664,7 @@ version = "0.1.0"
 dependencies = [
  "pl-agent-tool",
  "pl-tool-mcp-support",
- "pl-tool-media",
+ "pl-tool-media-support",
  "schemars 1.2.3",
  "serde",
 ]
@@ -4761,7 +4761,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "pl-agent-tool",
- "pl-tool-media",
+ "pl-tool-media-support",
  "schemars 1.2.3",
  "serde",
  "thiserror 2.0.21",

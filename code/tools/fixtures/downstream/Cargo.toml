@@ -48,7 +48,7 @@ mcp_read = { package = "pl-tool-read-mcp-resource", path = "../../read-mcp-resou
 
 [dev-dependencies]
 pl-agent-tool = { path = "../../../pl-agent-tool", features = ["typed"] }
-pl-tool-media = { path = "../../support/media" }
+pl-tool-media-support = { path = "../../support/media" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt"] }

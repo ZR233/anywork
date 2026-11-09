@@ -6,7 +6,7 @@ pub use thread::{
     saved_view_image_receipt,
 };
 
-pub use pl_tool_media::ImageOutputLimits;
+pub use pl_tool_media_support::ImageOutputLimits;
 pub use pl_tool_view_image::{Input as ViewImageInput, NAME as TOOL_VIEW_IMAGE};
 
 pub use thread::thread_view_image_tool_definition;

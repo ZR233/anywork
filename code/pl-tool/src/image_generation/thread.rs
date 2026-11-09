@@ -104,7 +104,7 @@ impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
         input: Self::Args,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        let context = pl_tool_media::ImageContext {
+        let context = pl_tool_media_support::ImageContext {
             limits: image_limits(context.model_projection.as_ref())?,
             cancellation: context.cancellation,
         };

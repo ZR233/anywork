@@ -6,7 +6,7 @@ use pl_tool_mcp_support::{
 };
 pub const NAME: &str = "read_mcp_resource";
 pub const DESCRIPTION: &str = "Read a specific resource from an MCP server.";
-use pl_tool_media::MediaHost;
+use pl_tool_media_support::MediaHost;
 use std::sync::Arc;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

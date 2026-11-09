@@ -4,7 +4,7 @@ use pl_tool_mcp_support::{
     FrozenMcpLease, FrozenTool, LeaseSlot, McpContext, McpError, McpOutput, Observed, ResultKind,
     project_content,
 };
-use pl_tool_media::MediaHost;
+use pl_tool_media_support::MediaHost;
 use serde_json::Value;
 use std::sync::Arc;
 

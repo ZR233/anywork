@@ -2,7 +2,7 @@
 use generate_image as pl_tool_generate_image;
 use pl_agent_tool::{Tool, typed};
 use pl_tool_generate_image::{GenerateImage, GeneratedImage, ImageGenerator};
-use pl_tool_media::{ImageContext, ImageOutputLimits, Media, MediaHost, Retained};
+use pl_tool_media_support::{ImageContext, ImageOutputLimits, Media, MediaHost, Retained};
 use show_image as pl_tool_show_image;
 use std::{
     io::Cursor,
@@ -112,7 +112,7 @@ async fn read_normalize_generate_and_select_run_without_product_types() {
     assert_eq!((output.model_width, output.model_height), (4, 2));
     assert_eq!(
         reads.lock().unwrap().as_slice(),
-        &[("capture.png".into(), pl_tool_media::MAX_SOURCE_BYTES)]
+        &[("capture.png".into(), pl_tool_media_support::MAX_SOURCE_BYTES)]
     );
     let requests = Arc::new(Mutex::new(Vec::new()));
     let generator = typed::prepare_json().unwrap().attach(GenerateImage::new(

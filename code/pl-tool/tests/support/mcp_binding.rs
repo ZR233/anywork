@@ -278,14 +278,14 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
     );
 
     struct DomainArchive;
-    impl pl_tool_media::MediaHost for DomainArchive {
+    impl pl_tool_media_support::MediaHost for DomainArchive {
         type Reference = String;
         type Projection = ();
         type Error = ArchiveFailure;
         async fn retain(
             &self,
-            media: pl_tool_media::Media,
-        ) -> Result<pl_tool_media::Retained<String, ()>, Self::Error> {
+            media: pl_tool_media_support::Media,
+        ) -> Result<pl_tool_media_support::Retained<String, ()>, Self::Error> {
             assert_eq!(media.bytes.as_ref(), b"bytes");
             Err(ArchiveFailure)
         }

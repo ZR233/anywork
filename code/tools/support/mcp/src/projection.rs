@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use pl_tool_media::{
+use pl_tool_media_support::{
     ImageOutputLimits, MAX_SOURCE_BYTES, Media, MediaHost, MediaKind, PreparedImage, prepare_image,
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};

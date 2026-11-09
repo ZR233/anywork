@@ -24,7 +24,7 @@ pl-tool-lsp-capabilities = { workspace = true }
 pl-tool-lsp-query = { workspace = true }
 pl-tool-process = { workspace = true }
 pl-tool-lsp-support = { workspace = true }
-pl-tool-media = { workspace = true }
+pl-tool-media-support = { workspace = true }
 pl-tool-mcp-support = { workspace = true }
 pl-tool-mcp = { workspace = true }
 pl-tool-list-mcp-resources = { workspace = true }

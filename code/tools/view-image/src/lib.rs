@@ -1,6 +1,6 @@
 //! Workspace image reads over a host-authorized byte source and exact-byte media store.
 use pl_agent_tool::typed::TypedTool;
-use pl_tool_media::{
+use pl_tool_media_support::{
     ImageContext, MAX_SOURCE_BYTES, Media, MediaHost, MediaKind, PreparedImage, Retained,
     prepare_image,
 };
@@ -108,7 +108,7 @@ impl<B: ImageReader, H: MediaHost> TypedTool for ViewImage<B, H> {
             return Err(ViewImageError::invalid("image read cancelled"));
         }
         let format = image::guess_format(&bytes).map_err(ViewImageError::new)?;
-        let source_type = pl_tool_media::media_type(format)
+        let source_type = pl_tool_media_support::media_type(format)
             .ok_or_else(|| ViewImageError::invalid("unsupported image header"))?;
         let total_limit = limits.max_total_bytes;
         let normalized = prepare_image(NAME, bytes.clone(), None, limits)

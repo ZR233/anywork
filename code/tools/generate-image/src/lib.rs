@@ -1,6 +1,6 @@
 //! Image generation orchestration over an already selected service; no provider HTTP code.
 use pl_agent_tool::typed::TypedTool;
-use pl_tool_media::{
+use pl_tool_media_support::{
     ImageContext, Media, MediaHost, MediaKind, PreparedImage, Retained, prepare_image,
 };
 use std::{error::Error, future::Future, sync::Arc};

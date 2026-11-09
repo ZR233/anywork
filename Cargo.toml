@@ -213,7 +213,7 @@ pl-tool-lsp-capabilities = { path = "code/tools/lsp-capabilities" }
 pl-tool-lsp-query = { path = "code/tools/lsp-query" }
 pl-tool-process = { path = "code/tools/support/process" }
 pl-tool-lsp-support = { path = "code/tools/support/lsp" }
-pl-tool-media = { path = "code/tools/support/media" }
+pl-tool-media-support = { path = "code/tools/support/media" }
 pl-tool-mcp-support = { path = "code/tools/support/mcp" }
 pl-tool-mcp = { path = "code/tools/mcp" }
 pl-tool-list-mcp-resources = { path = "code/tools/list-mcp-resources" }
