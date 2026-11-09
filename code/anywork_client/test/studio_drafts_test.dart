@@ -1216,6 +1216,175 @@ void main() {
     await _close(client, transport);
   });
 
+  test('composer submission is immediately observable and presented identity cannot be revived', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('frozen before wait');
+    await owner.addLocalAttachments(['/frozen.bin']);
+    final preparation = Completer<void>();
+    var prepared = false;
+    final submission = owner.submit(
+      beforeSubmit: () async {
+        prepared = true;
+        await preparation.future;
+      },
+    );
+
+    final sending = owner.submissions.value.single;
+    expect(sending.phase, ComposerSubmissionPhase.sending);
+    expect(sending.text, 'frozen before wait');
+    expect(sending.attachments.single.id, 'attachment-1-0');
+    expect(prepared, isTrue);
+
+    owner
+      ..updateDraft('new editable draft')
+      ..markInputsPresented([sending.inputId]);
+    expect(owner.submissions.value, isEmpty);
+    preparation.complete();
+    final input = await transport.promptEntered.future;
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 9,
+      ),
+    );
+    await submission;
+    expect(owner.state.draft, 'new editable draft');
+    expect(owner.submissions.value, isEmpty);
+    await _close(client, transport);
+  });
+
+  test(
+    'accepted echo survives draft reset until its input is presented',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('received input');
+      final submission = owner.submit();
+      final input = await transport.promptEntered.future;
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: input.inputId,
+          cursor: 10,
+        ),
+      );
+      await submission;
+
+      expect(owner.state.draft, isEmpty);
+      expect(owner.submissions.value.single.inputId, input.inputId);
+      expect(
+        owner.submissions.value.single.phase,
+        ComposerSubmissionPhase.accepted,
+      );
+      owner.markInputsPresented([input.inputId]);
+      expect(owner.submissions.value, isEmpty);
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'attachment-only composer submission publishes frozen attachment echo',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread');
+      await owner.addLocalAttachments(['/image.png']);
+      final submission = owner.submit();
+      final echo = owner.submissions.value.single;
+      expect(echo.text, isEmpty);
+      expect(echo.attachments.single.id, 'attachment-1-0');
+      owner.markInputsPresented([echo.inputId]);
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: echo.inputId,
+          cursor: 11,
+        ),
+      );
+      await submission;
+      expect(owner.submissions.value, isEmpty);
+      await _close(client, transport);
+    },
+  );
+
+  test('synchronous composer reentry cannot replace the frozen attachment snapshot', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')..updateDraft('frozen text');
+    await owner.addLocalAttachments(['/frozen.bin']);
+    final preparation = Completer<void>();
+    final reentrant = owner.source.watch((state) {
+      if (state.isSubmissionPending && owner.state.draft == 'frozen text') {
+        owner.updateDraft('synchronous reentrant edit');
+      }
+    });
+
+    final submission = owner.submit(beforeSubmit: () => preparation.future);
+    final frozen = owner.submissions.value.single;
+    expect(owner.state.draft, 'synchronous reentrant edit');
+    expect(frozen.text, 'frozen text');
+    expect(frozen.attachments.single.id, 'attachment-1-0');
+
+    preparation.complete();
+    final input = await transport.promptEntered.future;
+    expect(input.text, frozen.text);
+    expect(input.attachmentDraftIds, [frozen.attachments.single.id]);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 12,
+      ),
+    );
+    await submission;
+    expect(
+      identical(
+        owner.submissions.value.single.attachments.single,
+        frozen.attachments.single,
+      ),
+      isTrue,
+      reason:
+          'Advancing phase reuses the frozen attachment and preview snapshot',
+    );
+    reentrant.cancel();
+    await _close(client, transport);
+  });
+
+  test('composer submission preview bytes are isolated and read-only', () {
+    final original = Uint8List.fromList([1, 2, 3]);
+    final submission = ComposerSubmission(
+      inputId: 'input',
+      text: 'preview',
+      attachments: [
+        AttachmentDraftView(
+          id: 'attachment',
+          modality: AttachmentModalityView.image,
+          mediaType: 'image/png',
+          filename: 'image.png',
+          byteSize: original.length,
+          previewBytes: original,
+        ),
+      ],
+      phase: ComposerSubmissionPhase.sending,
+    );
+    original[0] = 9;
+    final preview = submission.attachments.single.previewBytes!;
+    expect(preview, [1, 2, 3]);
+    expect(() => preview[0] = 7, throwsUnsupportedError);
+  });
+
   test('actual start owner freezes complete route without settings writes and preserves later edits', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
@@ -2074,8 +2243,14 @@ void main() {
     await owner.addLocalAttachments(['/payload.bin']);
     final submission = owner.submit();
     await transport.promptEntered.future;
+    final inputId = owner.submissions.value.single.inputId;
     transport.promptReply.completeError(StateError('reply transport closed'));
     await submission;
+    expect(owner.submissions.value.single.inputId, inputId);
+    expect(
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.unknownOutcome,
+    );
     expect(
       client.mutations.operations.single.phase,
       OperationPhase.unknownOutcome,
@@ -3217,6 +3392,7 @@ void main() {
     await owner.submit();
 
     expect(transport.promptCalls, 1);
+    expect(owner.submissions.value, isEmpty);
     expect(
       owner.state.draft,
       '继续这个子任务',
