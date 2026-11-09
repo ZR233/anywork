@@ -233,28 +233,48 @@ async fn live_append_range_watch_replacement_and_retired_facade_keep_original_qu
 
         let mut completed_body = None;
         let mut retired = false;
+        let mut accepted_through = held_snapshot.completed_through;
+        // Completion and Activity are independent events. Token/retirement-only
+        // Activity must be consumed here, not silently ACKed while waiting for Chat.
         for _ in 0..64 {
-            let (chat_seq, batch) = chat(&owner, &mut port, &mut sent).await?;
-            ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
-            for entry in batch.entries {
-                ensure!(completed_records.insert(entry.record_id.clone()));
-                if entry.record_id == match &reference.target {
-                    crate::api::studio::types::BridgeContentTarget::Body {
-                        owner: crate::api::studio::types::BridgeContentOwner::Item { item_id }, ..
-                    } => item_id.clone(),
-                    _ => String::new(),
-                } {
-                    ensure!(entry.atom.id == activity_id);
-                    ensure!(entry.atom.turn_id.as_deref() == Some(turn_id.as_str()));
-                    completed_body = Some(entry.record_id.clone());
+            let frame = receive(&mut port).await?;
+            ensure!(frame.thread_id == owner.thread_id);
+            ensure!(frame.subscription_id == owner.subscription_id);
+            ensure!(frame.delivery_sequence == sent + 1, "duplicated or skipped delivery prefix");
+            sent = frame.delivery_sequence;
+            match frame.event {
+                BridgeConversationEvent::State { .. } => {}
+                BridgeConversationEvent::Chat { batch } => {
+                    ensure!(batch.placement == BridgeChatPlacement::Append && batch.before.is_none());
+                    ensure!(batch.from_seq == Some(accepted_through));
+                    accepted_through = batch.through_seq;
+                    for entry in batch.entries {
+                        ensure!(completed_records.insert(entry.record_id.clone()));
+                        if entry.record_id == match &reference.target {
+                            crate::api::studio::types::BridgeContentTarget::Body {
+                                owner: crate::api::studio::types::BridgeContentOwner::Item { item_id }, ..
+                            } => item_id.clone(),
+                            _ => String::new(),
+                        } {
+                            ensure!(entry.atom.id == activity_id);
+                            ensure!(entry.atom.turn_id.as_deref() == Some(turn_id.as_str()));
+                            completed_body = Some(entry.record_id.clone());
+                        }
+                    }
                 }
+                BridgeConversationEvent::Activity { snapshot } => {
+                    ensure!(snapshot.revision > 0 && snapshot.completed_through == accepted_through,
+                        "Activity did not match the accepted completion prefix");
+                    retired = !snapshot.execution_present && snapshot.entries.is_empty();
+                    if retired {
+                        ensure!(completed_body.is_some(),
+                            "Activity retired before response completion appeared");
+                    }
+                }
+                event => anyhow::bail!("unexpected completion terminal: {event:?}"),
             }
-            owner.acknowledge(&owner.subscription_id, chat_seq)?;
-            let (activity_seq, snapshot) = activity(&owner, &mut port, &mut sent).await?;
-            retired = !snapshot.execution_present && snapshot.entries.is_empty();
-            owner.acknowledge(&owner.subscription_id, activity_seq)?;
+            owner.acknowledge(&owner.subscription_id, sent)?;
             if retired {
-                ensure!(completed_body.is_some(), "Activity retired before response completion appeared");
                 break;
             }
         }
