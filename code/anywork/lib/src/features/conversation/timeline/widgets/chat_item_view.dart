@@ -166,7 +166,7 @@ class _ChatItemViewState extends State<ChatItemView> {
               index < unit.entry.atom.contents.length;
               index++
             )
-              _declaredContent(unit, index),
+              _declaredContent(unit.entry.atom, index),
           ],
         );
       }
@@ -185,6 +185,34 @@ class _ChatItemViewState extends State<ChatItemView> {
       arguments: {'itemId': item.id},
     );
     if (item.reference case final reference?) {
+      final atom = item.atom;
+      // The public Input body is a producer declaration independent of the
+      // raw envelope's transport budget. Never read/decode that envelope to
+      // recover text or grant its retained diagnostic domains body intent.
+      if (item.compatibility == ChatItemCompatibility.deferred &&
+          atom != null &&
+          atom.source is InputChatSource &&
+          atom.kind == ChatAtomKind.input) {
+        final indices = [
+          for (var index = 0; index < atom.contents.length; index++)
+            if (atom.contents[index].role == ChatContentRole.body)
+              if (atom.contents[index].reference.target case BodyContentTarget(
+                key: 'body',
+                owner: ItemContentOwner(itemId: final ownerItemId),
+              ))
+                // Completion content retains its original item identity even
+                // when the atom or display card has a different identity.
+                if (ownerItemId == (atom.completionItemId ?? atom.id)) index,
+        ];
+        if (indices.isNotEmpty) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final index in indices) _declaredContent(atom, index),
+            ],
+          );
+        }
+      }
       return widget.contentRangeBuilder?.call(
             item.id,
             'payload',
@@ -700,13 +728,12 @@ class _ChatItemViewState extends State<ChatItemView> {
       children: children,
     ),
   );
-  Widget _declaredContent(TimelineDisplayUnit unit, int index) {
-    final atom = unit.entry.atom;
+  Widget _declaredContent(ChatAtom atom, int index) {
     final content = atom.contents[index];
-    final id = '${unit.id}:content-$index';
+    final id = '${item.id}:content-$index';
     final range =
         widget.contentRangeBuilder?.call(
-          unit.id,
+          item.id,
           'content-$index',
           '查看内容',
           content.reference,

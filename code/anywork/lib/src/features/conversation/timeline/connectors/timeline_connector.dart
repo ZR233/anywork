@@ -12,6 +12,7 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
+import '../widgets/timeline_markdown.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
@@ -162,6 +163,25 @@ class _TimelineConnectorBodyState
     final observedView = state.asData?.value;
     final view = observedView?.threadId == threadId ? observedView : null;
     final lease = owner.lease(threadId);
+    void link(String raw) {
+      final url = safeExternalWebUrl(raw);
+      if (url == null ||
+          !mounted ||
+          _observedThreadId != threadId ||
+          (lease?.isRetired ?? false) ||
+          !identical(owner.lease(threadId), lease)) {
+        return;
+      }
+      unawaited(
+        ref.read(externalUrlLauncherProvider)(url).catchError((Object error) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(error.toString())));
+          }
+        }),
+      );
+    }
+
     void retry() => ref
         .read(anyworkClientProvider)
         .conversations
@@ -198,7 +218,21 @@ class _TimelineConnectorBodyState
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               Text(error?.toString() ?? context.l10n.workspaceLoading),
-              ComposerSubmissionList(submissions: _submissions),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: ComposerSubmissionList(
+                    submissions: _submissions,
+                    bodyBuilder: (id, text) => TimelineMarkdown(
+                      id: id,
+                      text: text,
+                      onLink: link,
+                      isSafeLink: (raw) => safeExternalWebUrl(raw) != null,
+                      imageBuilder: (_, url) =>
+                          TimelineRemoteImageConnector(url: url),
+                    ),
+                  ),
+                ),
+              ),
               if (failedView != null && failedSession != null)
                 TextButton(
                   key: StudioDriverKeys.timelineRetryConnection,
@@ -222,18 +256,6 @@ class _TimelineConnectorBodyState
     }
     bool active() =>
         identical(owner.lease(threadId), lease) && !lease.isRetired;
-    void link(String raw) {
-      final url = safeExternalWebUrl(raw);
-      if (url == null || !active()) return;
-      unawaited(
-        ref.read(externalUrlLauncherProvider)(url).catchError((Object error) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text(error.toString())));
-          }
-        }),
-      );
-    }
 
     final plan = widget.planConfirmation;
     return TimelineView(
