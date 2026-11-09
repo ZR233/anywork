@@ -122,6 +122,11 @@ void main() {
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
+      expect(
+        transport.stateFeeds,
+        isEmpty,
+        reason: 'Navigating without a Thread opens no state subscription',
+      );
 
       // Demo's _rootWorkspace installs turn-demo user/reasoning/tool/final
       // at positions 1..4. seedTimelineItems appends after that explicit fixture.

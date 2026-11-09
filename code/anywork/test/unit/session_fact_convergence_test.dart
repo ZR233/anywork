@@ -223,12 +223,13 @@ void main() {
     Future<T> stage<T>(String label, Future<T> work) => work.timeout(
       const Duration(seconds: 5),
       onTimeout: () => throw TestFailure(
-        '$label 超时；connection=${session.content.state.value.runtimeType}，'
+        '$label 超时；content=${session.content.state.value.runtimeType}，'
+        'phase=${session.state.sync.phase}，'
         'revision=${session.state.watermark.revision}，'
         'epoch=${session.state.watermark.epoch}，'
-        'feeds=${transport.feeds.length}，'
-        'delivered=${transport.feeds.last.deliveredFrames}，'
-        'acks=${transport.feeds.last.acknowledgements}',
+        'stateFeeds=${transport.stateFeeds.length}，'
+        'delivered=${transport.stateFeeds.last.deliveredFrames}，'
+        'acks=${transport.stateFeeds.last.acknowledgements}',
       ),
     );
 
@@ -238,7 +239,7 @@ void main() {
       '初始 workspace revision=4 ACK',
       transport.publishWorkspace(workspace.copyWith(revision: 4)),
     );
-    final feed = transport.feeds.last;
+    final feed = transport.stateFeeds.last;
     await stage(
       'notification revision=5 ACK',
       feed.emitStateAndWait(_notification(revision: 5, epoch: 1)),
@@ -266,8 +267,8 @@ void main() {
       _notification(revision: 7, epoch: 1, baseRevision: 3),
       _notification(revision: 7, epoch: 2),
     ]) {
-      // 新 attempt 的 Demo 状态快照会重置 epoch；先经真实 feed 建立合法 epoch=1，
-      // 再验证跨 epoch，不能把 epoch=2 误当成该 attempt 的首次 epoch。
+      // 新状态 attempt 的 Demo 快照会重置 epoch；先经真实状态 feed 建立合法
+      // epoch=1，再验证跨 epoch，不能把 epoch=2 误当成该 attempt 的首次 epoch。
       final label =
           'invalid revision=${invalid.revision} '
           'epoch=${invalid.epoch} base=${invalid.baseRevision}';
@@ -275,15 +276,14 @@ void main() {
         '$label workspace revision=5 ACK',
         transport.publishWorkspace(workspace.copyWith(revision: 5)),
       );
-      final current = transport.feeds.last;
+      final current = transport.stateFeeds.last;
       await stage(
         '$label notification revision=6 ACK',
         current.emitStateAndWait(_notification(revision: 6, epoch: 1)),
       );
       expect(session.state.watermark.revision, 6);
       expect(session.state.watermark.epoch, 1);
-      final attempt = session.content.currentAttemptId;
-      final count = transport.feeds.length;
+      final count = transport.stateFeeds.length;
       final rejected = stage(
         '$label reconnecting',
         session.source.waitFor(
@@ -293,21 +293,18 @@ void main() {
       current.emitState(invalid);
       await rejected;
       await stage(
-        '$label 新 attempt ready',
-        session.content.state.waitFor(
-          (state) =>
-              state is ChatReady<bool> &&
-              session.content.currentAttemptId != attempt,
+        '$label 新状态基线',
+        session.source.waitFor(
+          (state) => state.sync.phase == DomainSyncPhase.ready,
         ),
       );
       expect(
-        transport.feeds.length,
+        transport.stateFeeds.length,
         count + 1,
-        reason: '缺口、错误 base 或跨 epoch 都重新建立 feed',
+        reason: '缺口、错误 base 或跨 epoch 都重新建立状态 feed',
       );
-      expect(session.content.currentAttemptId, isNot(attempt));
       expect(current.requestCloseCalls, greaterThanOrEqualTo(1));
-      await stage('$label 旧 feed joined', current.joined.future);
+      await stage('$label 旧状态 feed joined', current.joined.future);
       expect(current.closeCalls, 1);
       expect(
         session.state.watermark.revision,

@@ -67,11 +67,9 @@ fn cold_recovery_futures_remain_bounded() {
             future_size(|runtime: &'static StudioRuntime| runtime.ensure_thread_owner("size")),
         ),
         (
-            "thread subscription",
+            "state observation",
             future_size(|runtime: &'static StudioRuntime| {
-                runtime.subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                    thread_id: "size".into(),
-                })
+                runtime.open_conversation_state_feed("size")
             }),
         ),
         (

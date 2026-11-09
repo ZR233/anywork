@@ -82,10 +82,6 @@ final class ConversationRepositoryImpl
       scope: scope,
       initialDemand: demand,
       transport: transport,
-      // Member windows have independent qualification and never publish Main state.
-      onState: (_, _) {},
-      onAttempt: (_) {},
-      onFailure: (_, _, _) {},
     );
     _children.add(owner);
     owner.setDemand(true);

@@ -109,7 +109,7 @@ ActivitySnapshot 含 revision、completed_through、execution_present、entries�
 冷打开没有执行 owner 时保持摘要为空；客户端不得仅凭 `execution_present` 猜测阶段，
 也不以较早摘要清除或复活已经完成的内容。
 
-Frame 保留 thread/subscription/delivery sequence 与有界信用，事件为 Chat、Activity、State、Failure、Closed。首个 State/握手声明 completedHistoryVersion=1；不支持明确 ProtocolVersionMismatch，不双解码。ACK 在实际串行接纳完成且原 lease 有效后推进，不等布局、query、详情或 SQLite。低层已读位置不冒充外层 ACK；连续性丢失关闭原资格，新句柄以 Set 重同步。
+状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，内容通道交付 Chat、Activity、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
 
 ### 业务引用由 State 交付
 

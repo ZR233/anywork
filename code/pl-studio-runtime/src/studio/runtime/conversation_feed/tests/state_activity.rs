@@ -65,30 +65,41 @@ async fn publish(h: &mut Harness, state: &CoreSnapshot) -> Result<Option<ThreadA
 
 async fn expect_update(
     feed: &mut ConversationFeed,
+    state: &mut ConversationStateFeed,
     expected: Option<&ThreadActivity>,
     notifications: usize,
 ) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(20), async {
-        let mut seen = 0;
+        for _ in 0..notifications {
+            loop {
+                let update = state.recv().await?.context("State summary feed ended")?;
+                if let ThreadSubscriptionUpdate::Notification { notification } = update
+                    && let ThreadNotification::ActivityChanged { activity } =
+                        notification.notification
+                {
+                    assert_eq!(activity.as_deref(), expected);
+                    break;
+                }
+            }
+        }
         loop {
             match feed.recv().await?.context("summary feed ended")? {
-                ConversationEvent::State { update } => {
-                    if let ThreadSubscriptionUpdate::Notification { notification } = *update
-                        && let ThreadNotification::ActivityChanged { activity } =
-                            notification.notification
-                    {
-                        assert_eq!(activity.as_deref(), expected);
-                        seen += 1;
-                    }
-                }
                 ConversationEvent::Activity { snapshot } => {
                     assert_eq!(snapshot.completed_through, feed.delivered);
                     assert!(
                         snapshot.entries.is_empty(),
                         "summary invented a body member"
                     );
-                    assert_eq!(feed.state_activity.as_ref(), expected);
-                    assert_eq!(seen, notifications);
+                    if notifications == 0 {
+                        // No producer remains in flight in this synthetic cut.
+                        // Allow the State owner's bounded coalescing interval.
+                        assert!(
+                            tokio::time::timeout(Duration::from_millis(100), state.recv())
+                                .await
+                                .is_err(),
+                            "unchanged or retired phase emitted a State frame"
+                        );
+                    }
                     return Ok(());
                 }
                 ConversationEvent::Chat { .. } => {
@@ -114,7 +125,11 @@ async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entrie
             .await?;
         let set = chat(&mut feed).await?;
         assert!(set.entries.is_empty());
-        let baseline = state_snapshot(&mut feed).await?;
+        let mut state_feed = env
+            .runtime
+            .open_conversation_state_feed(&h.thread.id)
+            .await?;
+        let baseline = state_snapshot(&mut state_feed).await?;
         assert_eq!(baseline.activity.as_ref(), Some(&first));
         assert!(baseline.active_turn.is_some());
         let snapshot = activity(&mut feed).await?;
@@ -130,12 +145,12 @@ async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entrie
             .await?
             .context("preparing summary")?;
         assert_eq!(preparing.kind, ThreadActivityKind::Preparing);
-        expect_update(&mut feed, Some(&preparing), 1).await?;
+        expect_update(&mut feed, &mut state_feed, Some(&preparing), 1).await?;
         state.observation_revision = 12;
         state.execution.as_mut().unwrap().phase = ExecutionPhase::Stopping;
         let stopping = publish(&mut h, &state).await?.context("stopping summary")?;
         assert_eq!(stopping.kind, ThreadActivityKind::Stopping);
-        expect_update(&mut feed, Some(&stopping), 1).await?;
+        expect_update(&mut feed, &mut state_feed, Some(&stopping), 1).await?;
         let idle = CoreSnapshot {
             observation_revision: 13,
             turns: vec![TurnRecord {
@@ -149,7 +164,7 @@ async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entrie
             ..Default::default()
         };
         assert!(publish(&mut h, &idle).await?.is_none());
-        expect_update(&mut feed, None, 1).await?;
+        expect_update(&mut feed, &mut state_feed, None, 1).await?;
 
         // Older or same-cut events must neither revive the summary nor replace
         // the retained baseline for a subscriber opening after this clear.
@@ -161,15 +176,26 @@ async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entrie
             ..Default::default()
         };
         publish(&mut h, &next_idle).await?;
-        expect_update(&mut feed, None, 0).await?;
+        expect_update(&mut feed, &mut state_feed, None, 0).await?;
         let mut reopened = env
             .runtime
             .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
             .await?;
         chat(&mut reopened).await?;
-        assert!(state_snapshot(&mut reopened).await?.activity.is_none());
+        let mut reopened_state = env
+            .runtime
+            .open_conversation_state_feed(&h.thread.id)
+            .await?;
+        assert!(
+            state_snapshot(&mut reopened_state)
+                .await?
+                .activity
+                .is_none()
+        );
+        reopened_state.close().await?;
         reopened.close().await?;
         reopened.reader().close().await?;
+        state_feed.close().await?;
         feed.close().await?;
         feed.reader().close().await?;
         Ok(())
@@ -189,12 +215,16 @@ async fn idle_to_thinking_summary_and_old_epoch_events_keep_the_original_qualifi
             .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
             .await?;
         chat(&mut old).await?;
-        assert!(state_snapshot(&mut old).await?.activity.is_none());
+        let mut old_state = env
+            .runtime
+            .open_conversation_state_feed(&h.thread.id)
+            .await?;
+        assert!(state_snapshot(&mut old_state).await?.activity.is_none());
         activity(&mut old).await?;
         let summary = publish(&mut h, &thinking(10)?)
             .await?
             .context("thinking summary")?;
-        expect_update(&mut old, Some(&summary), 1).await?;
+        expect_update(&mut old, &mut old_state, Some(&summary), 1).await?;
 
         let retired = h.source.clone();
         let slot = env
@@ -231,12 +261,17 @@ async fn idle_to_thinking_summary_and_old_epoch_events_keep_the_original_qualifi
         slot.install(h.source.clone());
         retired.publish_test_state_activity(999, Some(summary.clone()));
         assert!(old.recv().await.is_err());
+        assert!(old_state.recv().await.is_err());
         let mut new = env
             .runtime
             .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
             .await?;
         chat(&mut new).await?;
-        assert!(state_snapshot(&mut new).await?.activity.is_none());
+        let mut new_state = env
+            .runtime
+            .open_conversation_state_feed(&h.thread.id)
+            .await?;
+        assert!(state_snapshot(&mut new_state).await?.activity.is_none());
         activity(&mut new).await?;
         retired.publish_test_state_activity(1000, Some(summary));
         publish(
@@ -247,7 +282,9 @@ async fn idle_to_thinking_summary_and_old_epoch_events_keep_the_original_qualifi
             },
         )
         .await?;
-        expect_update(&mut new, None, 0).await?;
+        expect_update(&mut new, &mut new_state, None, 0).await?;
+        old_state.close().await?;
+        new_state.close().await?;
         old.close().await?;
         old.reader().close().await?;
         new.reader().ensure()?;

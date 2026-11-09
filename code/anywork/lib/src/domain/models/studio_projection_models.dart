@@ -2,7 +2,6 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
-import 'agent_workspace_view.dart';
 import 'studio_state.dart';
 
 part 'studio_projection_models.freezed.dart';
@@ -112,19 +111,4 @@ abstract class StatusBarView with _$StatusBarView {
     @Default(<String>[]) List<String> activeMcpServers,
     @Default(<String>[]) List<String> activeLspServers,
   }) = _StatusBarView;
-
-  factory StatusBarView.fromWorkspace(AgentWorkspaceView workspace) {
-    final runtime = workspace.runtime;
-    return StatusBarView(
-      row: workspace.row,
-      accounts: workspace.accounts,
-      roles: workspace.roles,
-      isBusy: workspace.isBusy,
-      modelRoute: workspace.modelRoute,
-      workflowRun: runtime.workflow?.currentRun,
-      activeSkills: runtime.activeSkills,
-      activeMcpServers: runtime.activeMcpServers,
-      activeLspServers: runtime.activeLspServers,
-    );
-  }
 }

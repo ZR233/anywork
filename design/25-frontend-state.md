@@ -148,7 +148,7 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。分页条数、编码字节、流量控制、缓存淘汰及领域业务校验各自保留，不以移除数量限制推导内存恒定或无限并发性能保证。
 
-会话 feed、read lease、呈现 owner 和 UI controller 是不同资源。原 facade 组合 feed 与独立 read lease；SDK owner 管连接、机械串行接纳、Activity/State 与操作。Flutter 原 ChatController 唯一持已加载代表 Message，原呈现 owner 管段/成员游标、选择代次和资源，不另存原子/分组全量镜像；资源不跨 AppGraph 共享。
+状态 feed、内容 feed、read lease、呈现 owner 和 UI controller 是不同资源。内容 facade 组合内容 feed 与独立 read lease，状态 facade 只持状态观察；SDK 会话 owner 管独立状态接纳与操作，内容 owner 管内容连接、机械串行接纳与 Activity 完成屏障，生命周期边界见 [§25.15](#2515-会话草稿与呈现分域)。Flutter 原 ChatController 唯一持已加载代表 Message，原呈现 owner 管段/成员游标、选择代次和资源，不另存原子/分组全量镜像；资源不跨 AppGraph 共享。
 
 范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
 
@@ -400,7 +400,7 @@ ChatGPT 账号的列表身份与套餐来自权威账号摘要的已验证元数
 
 conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 data 实现，领域消费者不依赖 Flutter、Riverpod 或 FRB。ConversationRepository 持有各域当前态、观察/操作资源与传输责任，DraftsRepository 持有冻结提交和附件归属；不经旧 AnyworkClient 转发，不建立历史镜像。
 
-五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。Activity 是有完成前缀屏障的独立活动快照，State 保留真实业务状态，Children 不写全局活动。loadOlder/readCompleted/内容查询沿独立 read lease，在应用队列外执行，不竞争 recv/credit 锁；ACK 只归 feed owner，见 [07](./07-streaming.md)。
+五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。会话 Repository 是 State 的唯一 Dart writer，通过独立状态观察接纳首快照与连续通知；内容观察只交付 Chat 与 Activity，不再转发另一份 State。状态与内容按同一可见会话需求登记，但各自持有资源、确认及恢复代次，正文消费受阻时仍能接纳状态变化；状态断流只重建状态基线，不清空内容或草稿。Activity 是有完成前缀屏障的独立活动快照，State 保留真实业务状态，Children 不写全局活动。loadOlder/readCompleted/内容查询沿独立 read lease，在应用队列外执行，不竞争 recv/credit 锁；ACK 只归各自 feed owner，背压、关闭与迟到结果资格见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。
 
 Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，公开内容只由 Chat 接纳。
 

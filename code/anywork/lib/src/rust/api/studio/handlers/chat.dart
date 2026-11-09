@@ -14,9 +14,15 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
 
-/// Opens exactly one native combined feed, without a second tail or a separately rebuilt baseline.
+Future<BridgeConversationStateFeed> openConversationStateFeed({
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersChatOpenConversationStateFeed(
+  threadId: threadId,
+);
+
+/// Opens exactly one native content feed, without a second tail or a rebuilt baseline.
 /// Cancellation before publication drops the native feed through its own RAII boundary.
 Future<BridgeConversationFeed> openConversationFeed({
   required String threadId,
@@ -93,6 +99,24 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   void requestClose();
 
   void requestCloseContentWatch({required String watchId});
+
+  String subscriptionId();
+
+  String threadId();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeConversationStateFeed>>
+abstract class BridgeConversationStateFeed implements RustOpaqueInterface {
+  void acknowledge({
+    required String subscriptionId,
+    required BigInt deliverySequence,
+  });
+
+  Future<void> close();
+
+  Stream<BridgeConversationFrame> events();
+
+  void requestClose();
 
   String subscriptionId();
 

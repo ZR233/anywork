@@ -158,11 +158,10 @@ async fn business_ref_notifications_advance_state_without_authorizing_completion
     watch
         .select_target(&fixture.host.runtime, "input", Some("target"))
         .await?;
-    let snapshot = pl_protocol::ThreadSnapshot::empty(&inbound.creation_id);
-    watch.state(ThreadSubscriptionUpdate::Snapshot {
-        completed_history_version: pl_protocol::COMPLETED_HISTORY_VERSION,
-        snapshot: Box::new(snapshot),
-    })?;
+    let baseline = watch
+        .state_revision
+        .ok_or_else(|| anyhow::anyhow!("real State baseline was not consumed"))?;
+    let epoch = watch.state_epoch.unwrap_or(1);
     for (revision, notification) in [
         ThreadNotification::BusinessRefsChanged {
             references: pl_protocol::ThreadBusinessRefs::empty(),
@@ -175,16 +174,16 @@ async fn business_ref_notifications_advance_state_without_authorizing_completion
         watch.state(ThreadSubscriptionUpdate::Notification {
             notification: Box::new(pl_protocol::ThreadNotificationEnvelope::new(
                 &inbound.creation_id,
-                1,
-                revision as u64,
-                revision as u64 + 1,
+                epoch,
+                baseline + revision as u64,
+                baseline + revision as u64 + 1,
                 1,
                 notification,
             )),
         })?;
     }
-    assert_eq!(watch.state_revision, Some(2));
-    assert_eq!(watch.state_epoch, Some(1));
+    assert_eq!(watch.state_revision, Some(baseline + 2));
+    assert_eq!(watch.state_epoch, Some(epoch));
     assert!(watch.terminal("target").is_none());
     watch.close().await?;
     fixture.shutdown().await
@@ -245,11 +244,7 @@ async fn bot_input_retry_preserves_one_frozen_record_and_new_message_keeps_its_i
                 .is_err()
         );
         async fn completed(runtime: &StudioRuntime, id: &str, input: &str) -> anyhow::Result<()> {
-            let mut subscription = runtime
-                .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                    thread_id: id.into(),
-                })
-                .await?;
+            let mut subscription = runtime.open_conversation_state_feed(id).await?;
             tokio::time::timeout(Duration::from_secs(20), async {
                 while let Some(update) = subscription.recv().await? {
                     if let ThreadSubscriptionUpdate::Notification { notification } = update
@@ -442,18 +437,22 @@ async fn receive_production_activity(
 ) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let event = watch
-                .feed
-                .recv()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("feed ended before activity"))?;
-            match event {
-                ConversationEvent::State { update } => watch.state(*update)?,
-                ConversationEvent::Chat { batch } => {
+            tokio::select! {
+                biased;
+                update = watch.state_feed.recv() => {
+                    let update = update?
+                        .ok_or_else(|| anyhow::anyhow!("state feed ended before activity"))?;
+                    watch.state(update)?;
+                }
+                event = watch.feed.recv() => {
+                    let event = event?
+                        .ok_or_else(|| anyhow::anyhow!("feed ended before activity"))?;
+                    match event {
+                        ConversationEvent::Chat { batch } => {
                     watch.stage(*batch)?;
                     watch.finish_pending().await?;
                 }
-                ConversationEvent::Activity { snapshot } => {
+                        ConversationEvent::Activity { snapshot } => {
                     let found = snapshot.execution_present
                         && snapshot.entries.iter().any(|entry| {
                             entry.atom.turn_id.as_deref() == Some(target)
@@ -469,6 +468,8 @@ async fn receive_production_activity(
                                 .is_some_and(|text| text.contains(value)))
                     {
                         return Ok::<_, anyhow::Error>(());
+                    }
+                }
                     }
                 }
             }

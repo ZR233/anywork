@@ -9,6 +9,7 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -33,12 +34,20 @@ void main() {
         narrow ? timelineSpacingNarrowPreview() : timelineSpacingPreview(),
       );
       await tester.pumpAndSettle();
+      final workHeaders = find.byType(CompletionRunView);
+      expect(workHeaders, findsNWidgets(2));
+      Finder workHeader(int index) => find.byWidgetPredicate(
+        (widget) =>
+            widget is CompletionRunView &&
+            widget.presentation.representative.recordId ==
+                'spacing-group-$index',
+      );
       final items = [
         find.byKey(const ValueKey('chat-item:spacing-intro')),
         find.byKey(const ValueKey('chat-item:spacing-plain')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-0')),
+        workHeader(0),
         find.byKey(const ValueKey('chat-item:spacing-result-0')),
-        find.byKey(const ValueKey('source-unit-header:spacing-group-1')),
+        workHeader(1),
         find.byKey(const ValueKey('chat-item:spacing-result-1')),
       ];
       final gaps = [

@@ -51,7 +51,6 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
     let initial = loop {
         match native.recv().await?.context("initial feed ended")? {
             pl_studio_runtime::ConversationEvent::Chat { batch } => break batch,
-            pl_studio_runtime::ConversationEvent::State { .. } => {}
             pl_studio_runtime::ConversationEvent::Activity { .. } => {}
         }
     };
@@ -122,6 +121,7 @@ async fn overlapping_next_is_rejected_and_close_cancels_before_waiting_for_recv_
             .await?;
         let owner = facade
             .inner
+            .content()?
             .watches
             .lookup(&id)?
             .context("watch not registered")?;
@@ -146,7 +146,7 @@ async fn overlapping_next_is_rejected_and_close_cancels_before_waiting_for_recv_
         );
         close?;
         drop(release);
-        ensure!(facade.inner.watches.lookup(&id)?.is_none());
+        ensure!(facade.inner.content()?.watches.lookup(&id)?.is_none());
         facade.close_content_watch(id.clone()).await?;
         facade.request_close_content_watch(id.clone())?;
         ensure!(facade.next_content_window(id.clone()).await?.is_none());
@@ -173,6 +173,7 @@ async fn cancelling_next_keeps_the_original_watch_and_failure_retains_its_id_unt
             .await?;
         let owner = facade
             .inner
+            .content()?
             .watches
             .lookup(&id)?
             .context("watch not registered")?;
@@ -182,7 +183,7 @@ async fn cancelling_next_keeps_the_original_watch_and_failure_retains_its_id_unt
         drop(next);
         drop(release);
         ensure!(
-            facade.inner.watches.lookup(&id)?.is_some(),
+            facade.inner.content()?.watches.lookup(&id)?.is_some(),
             "cancelling next is not close"
         );
         let failure = error(
@@ -192,11 +193,11 @@ async fn cancelling_next_keeps_the_original_watch_and_failure_retains_its_id_unt
         *owner.hooks.close_failure.lock().unwrap() = Some(failure.clone());
         ensure!(facade.close_content_watch(id.clone()).await.unwrap_err() == failure);
         ensure!(
-            facade.inner.watches.lookup(&id)?.is_some(),
+            facade.inner.content()?.watches.lookup(&id)?.is_some(),
             "a failed close must retain identity and capacity"
         );
         facade.close_content_watch(id.clone()).await?;
-        ensure!(facade.inner.watches.lookup(&id)?.is_none());
+        ensure!(facade.inner.content()?.watches.lookup(&id)?.is_none());
         facade.close_content_watch(id).await?;
         ensure!(
             !facade
@@ -219,10 +220,11 @@ async fn cancelled_open_and_close_waiters_keep_the_original_future_until_join() 
         let (facade, reference) = conversation(&env).await?;
         let (entered, reached_open) = oneshot::channel();
         let (release, held) = oneshot::channel();
-        let reader = facade.inner.reader.clone();
+        let reader = facade.inner.content()?.reader.clone();
         let reference = chat::protocol_content_ref(reference);
         let id = facade
             .inner
+            .content()?
             .watches
             .registry
             .lock()
@@ -246,6 +248,7 @@ async fn cancelled_open_and_close_waiters_keep_the_original_future_until_join() 
             .unwrap();
         let owner = facade
             .inner
+            .content()?
             .watches
             .lookup(&id)?
             .context("opening watch not registered")?;
@@ -268,7 +271,7 @@ async fn cancelled_open_and_close_waiters_keep_the_original_future_until_join() 
             .send(())
             .map_err(|_| anyhow::anyhow!("native open was abandoned"))?;
         retry.await?;
-        ensure!(facade.inner.watches.lookup(&id)?.is_none());
+        ensure!(facade.inner.content()?.watches.lookup(&id)?.is_none());
         facade.close().await?;
         Ok(())
     }
@@ -315,7 +318,7 @@ async fn eof_keeps_explicit_ownership_and_capacity_and_foreign_ids_are_rejected(
         ensure!(window.sealed);
         ensure!(facade.next_content_window(first.clone()).await?.is_none());
         ensure!(
-            facade.inner.watches.lookup(&first)?.is_some(),
+            facade.inner.content()?.watches.lookup(&first)?.is_some(),
             "EOF does not substitute for explicit close"
         );
         facade.close_content_watch(first.clone()).await?;
@@ -346,6 +349,7 @@ async fn facade_close_keeps_all_watch_failures_and_still_closes_feed_and_read() 
         for (id, failure) in [(&first, &one), (&second, &two)] {
             let owner = facade
                 .inner
+                .content()?
                 .watches
                 .lookup(id)?
                 .context("watch not registered")?;
@@ -377,6 +381,7 @@ async fn facade_close_keeps_all_watch_failures_and_still_closes_feed_and_read() 
         );
         let read_failure = facade
             .inner
+            .content()?
             .reader
             .read_content(&chat::protocol_content_ref(reference), chat::range(range()))
             .await
@@ -386,8 +391,8 @@ async fn facade_close_keeps_all_watch_failures_and_still_closes_feed_and_read() 
         // The facade may itself have retried them while retaining its original failure diagnostics.
         facade.close_content_watch(first.clone()).await?;
         facade.close_content_watch(second.clone()).await?;
-        ensure!(facade.inner.watches.lookup(&first)?.is_none());
-        ensure!(facade.inner.watches.lookup(&second)?.is_none());
+        ensure!(facade.inner.content()?.watches.lookup(&first)?.is_none());
+        ensure!(facade.inner.content()?.watches.lookup(&second)?.is_none());
         ensure!(
             facade.close().await.is_err(),
             "retained facade cleanup diagnostics must not disappear"
