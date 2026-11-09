@@ -6,14 +6,16 @@ import 'package:anywork_client/studio_client.dart';
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends DemoStudioTransport {
   final List<RecordingConversationFeed> feeds = [];
-  final Map<String, Completer<RecordingConversationFeed>> _feedWaiters = {};
+  final List<RecordingConversationStateFeed> stateFeeds = [];
+  final Map<String, Completer<RecordingConversationStateFeed>>
+  _stateFeedWaiters = {};
   final bootstrapDelivered = Completer<void>();
   int bootstrapCalls = 0;
   Object? failNextInitial;
 
-  /// 在当前实际 feed 投递状态事实，并等待 SDK 处理后的显式 ACK。
+  /// 在当前实际状态订阅投递状态事实，并等待 SDK 处理后的显式 ACK。
   Future<void> publishWorkspace(ThreadWorkspace workspace) async {
-    final feed = await _activeFeed(workspace.thread.id);
+    final feed = await _activeStateFeed(workspace.thread.id);
     await feed.emitStateAndWait(
       ThreadSnapshotFrame(
         workspace: workspace,
@@ -23,13 +25,16 @@ class RecordingDemoTransport extends DemoStudioTransport {
     );
   }
 
-  /// Waits for the actual visible-demand feed; it never opens or fabricates one.
-  Future<RecordingConversationFeed> _activeFeed(String threadId) async {
-    final current = feeds
+  /// Waits for the actual visible-demand state feed; it never fabricates one.
+  Future<RecordingConversationStateFeed> _activeStateFeed(
+    String threadId,
+  ) async {
+    final current = stateFeeds
         .where((feed) => feed.threadId == threadId && !feed._closed)
         .lastOrNull;
     if (current != null) return current;
-    return (_feedWaiters[threadId] ??= Completer<RecordingConversationFeed>())
+    return (_stateFeedWaiters[threadId] ??=
+            Completer<RecordingConversationStateFeed>())
         .future;
   }
 
@@ -60,7 +65,18 @@ class RecordingDemoTransport extends DemoStudioTransport {
       initialFailure: failure,
     );
     feeds.add(feed);
-    _feedWaiters.remove(threadId)?.complete(feed);
+    return feed;
+  }
+
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async {
+    final feed = RecordingConversationStateFeed(
+      inner: await super.openConversationStateFeed(threadId),
+    );
+    stateFeeds.add(feed);
+    _stateFeedWaiters.remove(threadId)?.complete(feed);
     return feed;
   }
 }
@@ -77,7 +93,6 @@ class RecordingConversationFeed implements ConversationFeed {
   @override
   ConversationReader get reader => inner.reader;
   Object? initialFailure;
-  void Function(ThreadStreamFrame)? onState;
   void Function()? onClosed;
   Completer<void>? initialGate;
   final initialEntered = Completer<void>();
@@ -94,11 +109,8 @@ class RecordingConversationFeed implements ConversationFeed {
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
-  int? completedHistoryVersion;
-  int? schemaVersion;
   int get deliveredFrames => _sequence;
   final Map<int, int> _nativeSequences = {};
-  final Map<int, Completer<void>> _ackWaiters = {};
   StreamSubscription<ConversationFrame>? _subscription;
   Future<void>? _closing;
   final Set<Future<void>> _pending = {};
@@ -150,16 +162,6 @@ class RecordingConversationFeed implements ConversationFeed {
 
   Future<void> _forward(ConversationFrame frame) async {
     final event = frame.event;
-    if (event case ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        completedHistoryVersion: final historyVersion,
-        schemaVersion: final stateVersion,
-      ),
-    )) {
-      completedHistoryVersion = historyVersion;
-      schemaVersion = stateVersion;
-    }
-    if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
     if (event case ConversationChatEvent(
       batch: ChatBatch(placement: ChatPlacement.set),
     )) {
@@ -223,6 +225,146 @@ class RecordingConversationFeed implements ConversationFeed {
     if (!_closed) _events.addError(error);
   }
 
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    acknowledgements.add(deliverySequence);
+    final native = _nativeSequences[deliverySequence];
+    if (native != null) await inner.acknowledge(native);
+    _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
+  }
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+    if (_closed) return;
+    _closed = true;
+    onClosed?.call();
+    inner.requestClose();
+    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    return _closing ??= _join();
+  }
+
+  Future<void> _join() async {
+    closeCalls++;
+    try {
+      await inner.close();
+      await Future.wait(_pending.toList());
+      await _subscription?.cancel();
+      if (_claimed) unawaited(_events.close());
+      if (!joined.isCompleted) joined.complete();
+    } catch (_) {
+      _closing = null;
+      rethrow;
+    }
+  }
+}
+
+/// The state-channel recorder: identity, sequence and ACK stay on the
+/// independent state subscription; content never flows through it.
+class RecordingConversationStateFeed implements ConversationStateFeed {
+  RecordingConversationStateFeed({required this.inner});
+  final ConversationStateFeed inner;
+  @override
+  String get threadId => inner.threadId;
+  @override
+  String get subscriptionId => inner.subscriptionId;
+  void Function(ThreadStreamFrame)? onState;
+  void Function()? onClosed;
+  final joined = Completer<void>();
+  int requestCloseCalls = 0;
+  int closeCalls = 0;
+  final acknowledgements = <int>[];
+  int? completedHistoryVersion;
+  int? schemaVersion;
+  int _sequence = 0;
+  int get deliveredFrames => _sequence;
+  final Map<int, int> _nativeSequences = {};
+  final Map<int, Completer<void>> _ackWaiters = {};
+  StreamSubscription<ConversationFrame>? _subscription;
+  bool _closed = false;
+  bool _claimed = false;
+  Future<void>? _closing;
+  final Set<Future<void>> _pending = {};
+  late final StreamController<ConversationFrame> _events = StreamController(
+    onListen: _listen,
+    onCancel: () {
+      requestClose();
+      return close();
+    },
+  );
+
+  @override
+  Stream<ConversationFrame> get events {
+    if (_claimed) throw StateError('Recording state feed already consumed');
+    _claimed = true;
+    return _events.stream;
+  }
+
+  void _listen() {
+    if (_closed) {
+      unawaited(_events.close());
+      return;
+    }
+    _subscription = inner.events.listen(
+      (frame) {
+        if (_closed) return;
+        final work = _forward(frame);
+        _pending.add(work);
+        unawaited(
+          work.then<void>(
+            (_) {
+              _pending.remove(work);
+            },
+            onError: (Object error, StackTrace stack) {
+              _pending.remove(work);
+              if (!_closed) _events.addError(error, stack);
+            },
+          ),
+        );
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!_closed) _events.addError(error, stack);
+      },
+      onDone: () {
+        if (!_closed) unawaited(_events.close());
+      },
+    );
+  }
+
+  Future<void> _forward(ConversationFrame frame) async {
+    final event = frame.event;
+    if (event case ConversationStateEvent(
+      frame: ThreadSnapshotFrame(
+        completedHistoryVersion: final historyVersion,
+        schemaVersion: final stateVersion,
+      ),
+    )) {
+      completedHistoryVersion = historyVersion;
+      schemaVersion = stateVersion;
+    }
+    if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
+    final terminal =
+        event is ConversationClosedEvent || event is ConversationFailureEvent;
+    final sequence = terminal ? _sequence : ++_sequence;
+    if (!terminal) _nativeSequences[sequence] = frame.deliverySequence;
+    if (!_closed) {
+      _events.add(
+        ConversationFrame(
+          threadId: threadId,
+          subscriptionId: subscriptionId,
+          deliverySequence: sequence,
+          event: event,
+        ),
+      );
+    }
+  }
+
+  /// An explicit scripted state frame, not a second reducer.
   void emitState(ThreadStreamFrame frame) {
     if (_closed) return;
     onState?.call(frame);
@@ -237,11 +379,15 @@ class RecordingConversationFeed implements ConversationFeed {
   }
 
   Future<void> emitStateAndWait(ThreadStreamFrame frame) {
-    if (_closed) return Future.error(StateError('Recording feed is closed'));
+    if (_closed) return Future.error(StateError('Recording state feed closed'));
     final accepted = Completer<void>();
     _ackWaiters[_sequence + 1] = accepted;
     emitState(frame);
     return accepted.future;
+  }
+
+  void emitError(Object error) {
+    if (!_closed) _events.addError(error);
   }
 
   @override
@@ -264,7 +410,6 @@ class RecordingConversationFeed implements ConversationFeed {
       waiter.completeError(StateError('Feed closed before state ACK'));
     }
     _ackWaiters.clear();
-    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
   }
 
   @override

@@ -26,7 +26,7 @@ void main() {
     owner.select('thread');
     final session = client.conversations.session('thread');
     await session.content.ready;
-    await transport.main.accepted(2);
+    await transport.main.accepted(1);
     final mainLease = owner.lease('thread')!;
     final mainCurrent = session.activity.value;
     final children = await client.conversations.openChildren(
@@ -83,7 +83,7 @@ void main() {
         chatMessage('main-next', completionSeq: 2),
       ], placement: ChatPlacement.append),
     );
-    await transport.main.accepted(3);
+    await transport.main.accepted(2);
     expect(mainLease.controller.messages.map((message) => message.id), [
       'main',
       'main-next',
@@ -292,7 +292,7 @@ void main() {
     final content = h.client.conversations.session('thread').content;
     content.refresh();
     await content.ready;
-    await h.transport.feed.accepted(2);
+    await h.transport.feed.accepted(1);
     final next = h.lease;
     expect(next.chatKey, isNot(oldKey));
     expect(next.scrollController.keepScrollOffset, isFalse);
@@ -356,7 +356,7 @@ final class _Harness {
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
     await client.conversations.session('thread').content.ready;
-    await transport.feed.accepted(2);
+    await transport.feed.accepted(1);
   }
 
   Future<void> append(List<CompletedEntry> messages) async {
@@ -374,11 +374,6 @@ final class _LeaseTransport extends Fake implements StudioTransport {
     feed = ScriptedConversationFeed(
       threadId: 'thread',
       subscriptionId: 'lease',
-      state: () => ThreadSnapshotFrame(
-        workspace: chatWorkspace('thread'),
-        completedHistoryVersion: 1,
-        schemaVersion: threadSchemaVersion,
-      ),
       initial: () => initial,
       reader: reader,
     );
@@ -387,6 +382,22 @@ final class _LeaseTransport extends Fake implements StudioTransport {
   late ScriptedConversationFeed feed;
   _Reader reader = _Reader();
   int opens = 0;
+
+  /// The independent state subscription carries only state facts; each attempt
+  /// owns its own single-consumer feed.
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async => ScriptedConversationStateFeed(
+    threadId: 'thread',
+    subscriptionId: 'lease-state',
+    initialState: () => ThreadSnapshotFrame(
+      workspace: chatWorkspace('thread'),
+      completedHistoryVersion: 1,
+      schemaVersion: threadSchemaVersion,
+    ),
+  );
+
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
@@ -437,11 +448,6 @@ final class _ScopedTransport extends Fake implements StudioTransport {
   late final main = ScriptedConversationFeed(
     threadId: 'thread',
     subscriptionId: 'main',
-    state: () => ThreadSnapshotFrame(
-      workspace: chatWorkspace('thread'),
-      completedHistoryVersion: 1,
-      schemaVersion: threadSchemaVersion,
-    ),
     reader: mainReader,
     initial: () => chatBatch([chatMessage('main')]),
   );
@@ -456,6 +462,21 @@ final class _ScopedTransport extends Fake implements StudioTransport {
     ),
   );
   final scopes = <ChatScope>[];
+
+  /// Main owns the independent state subscription; Children stay content-only.
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async => ScriptedConversationStateFeed(
+    threadId: 'thread',
+    subscriptionId: 'main-state',
+    initialState: () => ThreadSnapshotFrame(
+      workspace: chatWorkspace('thread'),
+      completedHistoryVersion: 1,
+      schemaVersion: threadSchemaVersion,
+    ),
+  );
+
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {

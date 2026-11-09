@@ -119,6 +119,7 @@ impl StateReceiver {
     }
 
     /// Captures the queued observation prefix without consuming it or reserving capacity.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.receiver.len()
     }
@@ -1556,9 +1557,20 @@ impl LiveOwner {
         // to this charged slot, including when an earlier attempt failed or was cancelled.
         self.publish_retained()?;
         if let Some(pending) = self.pending.as_mut() {
-            self.projection
+            let started = std::time::Instant::now();
+            let result = self
+                .projection
                 .publish_prepared(&self.chat, &mut pending.prepared)
-                .await?;
+                .await;
+            tracing::debug!(
+                target: "conversation_work",
+                thread_id = self.thread.id,
+                source_effect_seq = pending.prepared.sequence,
+                completion_publication_elapsed_us = started.elapsed().as_micros() as u64,
+                success = result.is_ok(),
+                "completion publication finished"
+            );
+            result?;
         }
         // Charge the original frozen completion batch before publishing its
         // latest activity boundary. Slow readers do not reserve execution capacity.
@@ -1572,6 +1584,12 @@ impl LiveOwner {
             if pending.mode == HandoffMode::Live {
                 self.feed
                     .publish_conversation(&self.chat, current.clone())?;
+                tracing::debug!(
+                    target: "conversation_work",
+                    thread_id = self.thread.id,
+                    source_effect_seq = pending.prepared.sequence,
+                    "conversation feed published"
+                );
             }
             let prepared = Arc::get_mut(&mut pending.prepared)
                 .context("prepared effect is shared before its reliable handoff")?;

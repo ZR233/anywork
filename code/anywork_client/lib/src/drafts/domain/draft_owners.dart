@@ -7,6 +7,7 @@ import '../../observation/latest_value.dart';
 abstract interface class ComposerDraftOwner {
   ComposerThreadState get state;
   ValueObservation<ComposerThreadState> get source;
+  ValueObservation<List<ComposerSubmission>> get submissions;
   String get threadId;
   DraftStamp get stamp;
   void updateDraft(String value);
@@ -16,6 +17,7 @@ abstract interface class ComposerDraftOwner {
   Future<void> addClipboardImage(Uint8List pngBytes);
   Future<void> removeAttachment(String draftId);
   Future<void> submit({Future<void> Function()? beforeSubmit});
+  void markInputsPresented(Iterable<String> inputIds);
   Future<void> discard();
   Future<void> close();
 }

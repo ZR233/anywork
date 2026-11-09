@@ -33,7 +33,7 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
         loop {
             match feed.recv().await?.context("feed ended before Chat")? {
                 ConversationEvent::Chat { batch } => return Ok(*batch),
-                ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
+                ConversationEvent::Activity { .. } => {}
             }
         }
     })
@@ -202,16 +202,15 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
         ensure!(runtime.active_skills.iter().any(|name| name == SKILL));
         // The State snapshot supplies the actual Turn independently of Activity
         // and completion history. Successful Turn receipts are hidden from Main.
-        let mut main = env.runtime.open_conversation_feed(thread_id, ChatScope::Main, demand())
+        let mut main = env.runtime.open_conversation_state_feed(thread_id)
             .await.context("open current Turn's public Main head")?;
         let parent_id = tokio::time::timeout(DEADLINE, async {
             loop {
                 let event = main.recv().await?.context("Main ended before State")?;
-                if let ConversationEvent::State { update } = event
-                    && let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                if let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
                         completed_history_version,
                         snapshot,
-                    } = *update
+                    } = event
                 {
                     ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION);
                     if let Some(head) = snapshot.active_turn
@@ -224,7 +223,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
                 }
             }
         }).await.context("public active Turn head did not arrive");
-        let main_closed = close_feed(&mut main).await;
+        let main_closed = main.close().await;
         let parent_id = parent_id
             .with_context(|| format!("Main feed close: {main_closed:?}"))?
             .with_context(|| format!("Main feed close: {main_closed:?}"))?;

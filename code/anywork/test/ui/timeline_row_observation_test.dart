@@ -167,7 +167,9 @@ void main() {
         final old = controller.messages.single;
         final card = old.metadata![chatItemPresentationKey];
         await adapter.applyBatch(
-          chatBatch([chatMessage('next')], placement: ChatPlacement.append),
+          chatBatch([
+            chatMessage('next', completionSeq: 2),
+          ], placement: ChatPlacement.append),
         );
         await tester.pumpWidget(build());
         expect(controller.messages.first, same(old));

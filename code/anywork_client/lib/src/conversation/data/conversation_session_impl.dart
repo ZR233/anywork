@@ -11,12 +11,14 @@ import '../../studio/stores/domain_sync.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
 import 'conversation_content_impl.dart';
+import 'conversation_state_owner.dart';
 import 'state_reducer.dart';
 import 'thread_stream_gate.dart';
 import 'input_turn_facts.dart';
 import '../domain/conversation_errors.dart';
 
-/// One canonical state mirror and one combined feed owner. No public setter.
+/// One canonical state mirror, one independent state feed owner and one content
+/// feed owner. No public setter.
 final class ConversationSessionImpl implements ConversationSession {
   ConversationSessionImpl(
     this.threadId, {
@@ -25,12 +27,16 @@ final class ConversationSessionImpl implements ConversationSession {
     required InputFactRegistry inputFacts,
   }) : _inputFacts = inputFacts,
        _source = LatestValue(ThreadSessionState(threadId: threadId)) {
-    _content = ConversationContentImpl(
+    _state = ConversationStateOwner(
       threadId: threadId,
       transport: transport,
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,
+    );
+    _content = ConversationContentImpl(
+      threadId: threadId,
+      transport: transport,
     );
     _directoryDemand = directory.observeThread(threadId);
     _directoryObservation = _directoryDemand.state.watch(
@@ -43,12 +49,14 @@ final class ConversationSessionImpl implements ConversationSession {
   final ThreadDirectoryStore directory;
   final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
+  late final ConversationStateOwner _state;
   late final ConversationContentImpl _content;
   late final DirectoryObservation<ThreadMetadataFrame> _directoryDemand;
   late final Observation _directoryObservation;
   _RuntimeResync? _resync;
   bool _closed = false;
   Future<CloseReport>? _closing;
+  int _visibilityGeneration = 0;
 
   @override
   ThreadSessionState get state => _source.value;
@@ -59,19 +67,32 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   ValueObservation<ActivitySnapshot?> get activity => _content.activity;
   @override
-  bool get isActive => _content.hasDemand;
+  // The session's real visible demand: the state owner turns on first, so
+  // this must already read true during that synchronous window, or a
+  // reentrant visibility switch cannot revoke the stale stack.
+  bool get isActive => _state.hasDemand || _content.hasDemand;
   @override
   bool get isClosed => _closed;
 
   void setVisible(bool visible) {
+    final generation = ++_visibilityGeneration;
     if (!visible) {
       _cancelResync();
+      _state.setDemand(false);
       _content.setDemand(false);
       _source.publish(state.copyWith(sync: const DomainSyncStatus()));
-    } else {
-      if (_closed) throw StateError('Conversation is closed');
-      _content.setDemand(true);
+      return;
     }
+    if (_closed) throw StateError('Conversation is closed');
+    // State opens first: its synchronous connecting publication may reenter
+    // visibility switching. A reentrant revoke (or an A -> B -> A cascade)
+    // bumps the generation, so this stale stack can never resurrect content
+    // demand; only the newest stack owns the recovery. A synchronous close
+    // from that publication seals this session, so it must also stop here
+    // instead of demanding from a closed content owner.
+    _state.setDemand(true);
+    if (_closed || generation != _visibilityGeneration) return;
+    _content.setDemand(true);
   }
 
   SessionDirectoryRow? get _identity => _directoryDemand.state.value.frame?.row;
@@ -123,17 +144,13 @@ final class ConversationSessionImpl implements ConversationSession {
         final previousRefs = state.businessRefs;
         _source.publish(candidate);
         if (identical(state, candidate)) {
-          _content.businessRefsChanged(
-            attemptId,
-            previousRefs,
-            candidate.businessRefs!,
-          );
+          _content.businessRefsChanged(previousRefs, candidate.businessRefs!);
         }
         if (identical(state, candidate)) _publishCurrentInputFacts(candidate);
         if (eligible != null &&
             identical(_resync, eligible) &&
             eligible.expectedAttempt == attemptId &&
-            _content.currentAttemptId == attemptId) {
+            _state.currentAttemptId == attemptId) {
           _resync = null;
           if (!eligible.completer.isCompleted) {
             eligible.completer.complete(candidate.workspace!);
@@ -163,7 +180,6 @@ final class ConversationSessionImpl implements ConversationSession {
             _source.publish(candidate);
             if (identical(state, candidate)) {
               _content.businessRefsChanged(
-                attemptId,
                 previousRefs,
                 candidate.businessRefs!,
               );
@@ -190,7 +206,7 @@ final class ConversationSessionImpl implements ConversationSession {
     if (eligible != null &&
         identical(_resync, eligible) &&
         eligible.expectedAttempt == attemptId &&
-        _content.currentAttemptId == attemptId) {
+        _state.currentAttemptId == attemptId) {
       _resync = null;
       if (!eligible.completer.isCompleted) {
         eligible.completer.completeError(error);
@@ -204,7 +220,10 @@ final class ConversationSessionImpl implements ConversationSession {
   }
 
   @override
-  void refresh() => _content.refresh();
+  void refresh() {
+    _state.refresh();
+    _content.refresh();
+  }
 
   @override
   Future<ThreadWorkspace> resyncRuntime() {
@@ -214,7 +233,9 @@ final class ConversationSessionImpl implements ConversationSession {
     if (pending != null) return pending.completer.future;
     final result = _RuntimeResync();
     _resync = result;
-    _content.refresh();
+    // A state resync rebuilds only the state baseline; valid content and
+    // drafts keep their live owner.
+    _state.refresh();
     return result.completer.future;
   }
 
@@ -228,7 +249,14 @@ final class ConversationSessionImpl implements ConversationSession {
 
   Future<CloseReport> retire({DateTime? deadline}) {
     setVisible(false);
-    return _content.joinRetired(deadline: deadline);
+    return Future.wait([
+      _state.joinRetired(deadline: deadline),
+      _content.joinRetired(deadline: deadline),
+    ]).then(
+      (reports) => CloseReport(
+        unresolved: [for (final report in reports) ...report.unresolved],
+      ),
+    );
   }
 
   Future<CloseReport> close({DateTime? deadline}) =>
@@ -250,13 +278,49 @@ final class ConversationSessionImpl implements ConversationSession {
         );
       },
     );
-    final content = await _content.close(deadline: deadline);
+    // Seal both owners synchronously before joining either: a blocked state
+    // join must not leave content admitting or ACKing until the deadline.
+    // Either side failing never skips the other side's close.
+    final stateClosing = _state.close(deadline: deadline);
+    final contentClosing = _content.close(deadline: deadline);
+    Object? closeError;
+    StackTrace? closeStack;
+    CloseReport? stateFeed;
+    CloseReport? content;
+    try {
+      stateFeed = await stateClosing;
+    } catch (error, stack) {
+      closeError = error;
+      closeStack = stack;
+    }
+    try {
+      content = await contentClosing;
+    } catch (error, stack) {
+      closeError ??= error;
+      closeStack ??= stack;
+    }
     await directoryWork;
-    return CloseReport(unresolved: [...content.unresolved, ...unresolved]);
+    if (closeError != null) {
+      Error.throwWithStackTrace(closeError, closeStack!);
+    }
+    return CloseReport(
+      unresolved: [
+        ...?stateFeed?.unresolved,
+        ...?content?.unresolved,
+        ...unresolved,
+      ],
+    );
   }
 
   Future<CloseReport> retryCleanup({DateTime? deadline}) =>
-      _content.retryCleanup(deadline: deadline);
+      Future.wait([
+        _state.retryCleanup(deadline: deadline),
+        _content.retryCleanup(deadline: deadline),
+      ]).then(
+        (reports) => CloseReport(
+          unresolved: [for (final report in reports) ...report.unresolved],
+        ),
+      );
 
   void seedInputFacts(String inputId, void Function(InputTurnFact) onFact) {
     final seen = <String>{};

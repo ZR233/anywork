@@ -172,7 +172,7 @@ impl std::fmt::Debug for StudioThreadSpec {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadAssemblyError {
-    #[error("Agent backend {backend:?} is not executable in S1; ACP execution requires S4")]
+    #[error("Agent backend {backend:?} is not supported by the Native runtime")]
     UnsupportedBackend {
         backend: pl_protocol::AgentBackendKind,
     },

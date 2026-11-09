@@ -19,7 +19,13 @@ void main() {
     );
     final transport = RecordingDemoTransport();
     final opened = Completer<_AckObservedFeed>();
+    final stateOpened = Completer<_AckObservedStateFeed>();
     final release = Completer<void>();
+    transport.conversationStateFeedFactory = (threadId, inner) async {
+      final observed = _AckObservedStateFeed(inner: inner);
+      stateOpened.complete(observed);
+      return observed;
+    };
     transport.conversationFeedFactory = (threadId, inner) async {
       final held = _AckObservedFeed(inner: inner, record: record)
         ..initialGate = release;
@@ -90,11 +96,13 @@ void main() {
     await graph.client.directoryCommands.selectThread(row.threadId);
     final held = await opened.future;
     await held.initialEntered.future;
-    await held.stateAckCompleted.future;
+    final stateFeed = await stateOpened.future;
+    await stateFeed.stateAckCompleted.future;
     expect(session.content.state.value, isA<ChatOpening<bool>>());
     expect(graph.timeline.lease('thread-main'), isNull);
     expect(held.initialCalls, 1);
-    expect(held.acknowledgements, [1], reason: '状态已归约；内容尚未交付，不能提前ACK其序号');
+    expect(stateFeed.acknowledgements, [1]);
+    expect(held.acknowledgements, isEmpty, reason: '独立状态已确认；尚未交付的内容不能提前ACK');
     diagnose('before release');
     final first = session.content.ready;
     final second = session.content.ready;
@@ -115,7 +123,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(firstCompleted, isFalse);
     expect(secondCompleted, isFalse);
-    expect(held.acknowledgements, [1]);
+    expect(held.acknowledgements, isEmpty);
     record({
       'feedStage': 'before release',
       'initialCalls': held.initialCalls,
@@ -125,6 +133,8 @@ void main() {
     });
     release.complete();
     await Future.wait([first, second]);
+    await held.firstAckCompleted.future;
+    expect(held.acknowledgements, [1]);
     diagnose('both ready completed');
     record({
       'heldFeed': held.subscriptionId,
@@ -150,7 +160,7 @@ final class _AckObservedFeed extends RecordingConversationFeed {
   _AckObservedFeed({required super.inner, required this.record});
 
   final void Function(Map<String, Object?>) record;
-  final stateAckCompleted = Completer<void>();
+  final firstAckCompleted = Completer<void>();
 
   @override
   Stream<ConversationFrame> get events => super.events.map((frame) {
@@ -178,6 +188,20 @@ final class _AckObservedFeed extends RecordingConversationFeed {
       'deliverySequence': deliverySequence,
       'acknowledgements': [...acknowledgements],
     });
+    if (deliverySequence == 1 && !firstAckCompleted.isCompleted) {
+      firstAckCompleted.complete();
+    }
+  }
+}
+
+final class _AckObservedStateFeed extends RecordingConversationStateFeed {
+  _AckObservedStateFeed({required super.inner});
+
+  final stateAckCompleted = Completer<void>();
+
+  @override
+  Future<void> acknowledge(int deliverySequence) async {
+    await super.acknowledge(deliverySequence);
     if (deliverySequence == 1 && !stateAckCompleted.isCompleted) {
       stateAckCompleted.complete();
     }

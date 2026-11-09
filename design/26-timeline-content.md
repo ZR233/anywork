@@ -25,6 +25,8 @@
 
 完成封存模块从本次可靠 Accepted/inbox 材料和原提交时间生成 draft，复用原内容及附件 manifest；不提供绕过鉴权/终态的公开 append_history。隐藏续接、内部控制和诊断沿原资格隐藏，公开答案/计划决议仍由原唯一回执产生。GUI 命令回执只结算操作，不再手动插入历史；保存 ACK 只推进 D。执行历史 ThreadItem 继续反映输入消费/Turn 状态，不把其后续可变值当作原完成输入重新发布。
 
+客户端发送回显不是完成历史：沿 [25.8.1](./25-frontend-state.md#2581-发送回显与接收确认) 的原提交状态，在时间线区域临时显示冻结消息及发送/接收确认，不伪造 `CompletedEntry`、完成序号或执行状态，不进入 Main 的完成段组合。原消费者应用同身份规范输入后由正式卡片接管；命令成功、保存进度或下一 Turn 启动均不是等待回显出现的条件。后端仍按原提交顺序校验和发布，不为视觉响应绕过身份冲突、附件资源准备、存储背压或旧 Turn 的安全收束。
+
 ### 模型成员的可靠封口与交接
 
 独立成员终态通过原可靠 producer/effect 路径接纳，不能被可合并 progress 吞掉，也不能等整个 attempt 结束。记录发布即进入历史并退出相应实际活动；不保留整组整体移动的视觉保证。真实 Plan、待决交互及配置继续由原 State/领域 owner 管理，不以活动消失或完成正文替代业务决议。
@@ -109,7 +111,7 @@ ActivitySnapshot 含 revision、completed_through、execution_present、entries�
 冷打开没有执行 owner 时保持摘要为空；客户端不得仅凭 `execution_present` 猜测阶段，
 也不以较早摘要清除或复活已经完成的内容。
 
-Frame 保留 thread/subscription/delivery sequence 与有界信用，事件为 Chat、Activity、State、Failure、Closed。首个 State/握手声明 completedHistoryVersion=1；不支持明确 ProtocolVersionMismatch，不双解码。ACK 在实际串行接纳完成且原 lease 有效后推进，不等布局、query、详情或 SQLite。低层已读位置不冒充外层 ACK；连续性丢失关闭原资格，新句柄以 Set 重同步。
+状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，内容通道交付 Chat、Activity、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
 
 ### 业务引用由 State 交付
 
@@ -134,6 +136,8 @@ plan=None 表示真无 Plan，Some/document=None 表示有 Plan 但真无文档�
 该字段为原 checkpoint 中的增量领域元信息：旧 schema6 Core 状态缺失时只初始化为0，表示升级后首次基线，不根据旧材料猜测过去的集合代次；后续由原 owner 真实变化推进。此初始化不重写 `conversation_items` 原字节、不另建表或迁移流水线，也不改变 Native State schema17 的必填 `business_refs` 与版本拒绝。Runtime 的热源、冷源和 `business_refs_at` 直接消费所属切面的同一版本；恢复补存旧 transfer 不得把已经公开的新资源切面倒退。
 
 listContents 取得 manifest，readContent 按 range 返回窗口，watchContent 观察有界当前窗口，pageCurrent 读取 revision 绑定的真实业务集合。它们不是聊天列表，不强制塞入 ChatBatch。ContentRef 区分原 ItemPayload 与 Body，绑定库/资格；按 offset 索引只读目标和必要边界块，不能先拼全文再切片。窗口保留 offset、bytes、generation、availableThrough、sealed。
+
+可见文本正文的展示不由长度或 Inline/Deferred 传输方式决定：挂载的正文直接读取有界窗口，复用普通消息的 Markdown、选择/复制、自动换行及安全链接/媒体策略，不增加正文键名或字节数折叠栏。一个窗口已包含完整正文时不显示范围导航；超出窗口仍明确显示范围和下一段操作，不自动累计无限全文。工作卡、工具和思考详情的语义折叠保持不变，只有其已展开内容才取得读取资格；原始 ItemPayload/诊断查看器仍按原始内容展示，不将 JSON 信封误当作 Markdown 正文。
 
 交互详情是结构化请求，不把单个正文窗口当成完整 JSON。对 Deferred 的一个交互请求，UI 在原独立查询资格内以窗口读取、累计最多1 MiB完整信封后才解码；超过预算明确报告该详情资源过大，不截断伪装成功，也不显示原始 JSON。窗口之间须保持引用、generation、总长度与 sealed 条件一致，按字节累计后统一解码 UTF-8；引用换代、折叠或关闭立即撤销资格并汇合在途读取。显示与复制均只允许 canonical 解码和敏感字段过滤后的公开内容，不提供原始交互信封的“复制当前段”、下载或错误回显旁路。普通正文窗口的分段复制行为不因此改变。
 

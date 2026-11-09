@@ -3173,11 +3173,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         // The retired child's first saved-state lookup decides whether an owner may be installed.
         // It must happen after migration even when that lookup proves the child is not sealed.
         let child = &children[0].0;
-        let mut subscription = runtime
-            .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                thread_id: child.id.clone(),
-            })
-            .await?;
+        let mut subscription = runtime.open_conversation_state_feed(&child.id).await?;
         anyhow::ensure!(
             subscription.recv().await?.is_some(),
             "missing retired child baseline"
@@ -3186,9 +3182,7 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
         // The composer can ask for child interactions while the root subscription is opening.
         // That read must wait for storage preparation, without activating a child itself.
         let (subscription, interactions) = tokio::join!(
-            runtime.subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                thread_id: root.id.clone(),
-            }),
+            runtime.open_conversation_state_feed(&root.id),
             runtime.read_child_interactions(&root.id),
         );
         let mut subscription = subscription?;

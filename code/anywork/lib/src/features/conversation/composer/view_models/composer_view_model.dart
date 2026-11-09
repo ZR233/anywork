@@ -295,8 +295,14 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
     });
   }
 
-  Future<void> submit(String threadId) =>
-      ref.read(anyworkClientProvider).drafts.composer(threadId).submit();
+  Future<void> submit(
+    String threadId, {
+    Future<void> Function()? beforeSubmit,
+  }) => ref
+      .read(anyworkClientProvider)
+      .drafts
+      .composer(threadId)
+      .submit(beforeSubmit: beforeSubmit);
 
   void updateDraft(String threadId, String text) => ref
       .read(anyworkClientProvider)

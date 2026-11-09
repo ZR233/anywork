@@ -295,11 +295,13 @@ void main() {
       'missing or unsupported completedHistoryVersion=$version fails without decoder fallback or retry',
       () async {
         final (fixture, _, feed) = await _open();
-        final content = fixture.session().content;
-        final failed = content.state.waitFor(
-          (value) => value is ChatFailed<bool>,
+        final state = fixture.stateFeed();
+        final failed = fixture.session().source.waitFor(
+          (value) =>
+              value.sync.phase == DomainSyncPhase.failed &&
+              value.sync.retryExhausted,
         );
-        feed.send(
+        state.send(
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
               schemaVersion: 17,
@@ -308,17 +310,22 @@ void main() {
             ),
           ),
         );
-        final state = await failed as ChatFailed<bool>;
+        await failed;
         expect(
-          state.error,
-          isA<ProtocolVersionMismatch>().having(
-            (error) => error.received,
-            'received',
-            version,
+          fixture.session().state.sync.errorMessage,
+          allOf(
+            contains('ProtocolVersionMismatch'),
+            contains('completedHistoryVersion=$version'),
           ),
         );
         expect(fixture.session().state.hasSnapshot, isFalse);
+        expect(state.acknowledgements, isEmpty);
         expect(feed.acknowledgements, [1]);
+        expect(
+          feed.requestCloseCalls,
+          0,
+          reason: 'a state rejection never retires the content owner',
+        );
         expect((await fixture.close()).complete, isTrue);
         expect(fixture.transport.opens, hasLength(1));
       },

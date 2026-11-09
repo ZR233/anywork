@@ -7,8 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 
-import '../support/chat_fixtures.dart'
-    show workItem, chatMessage, chatWorkspace;
+import '../support/chat_fixtures.dart' show workItem, chatMessage;
+import '../support/mapped_conversation_feed.dart';
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
@@ -94,7 +94,6 @@ void main() {
     expect(feed.reader.loads, 0);
     expect(feed.acks, [
       1,
-      2,
     ], reason: 'Queries do not own feed credit or history admission');
     expect((await h.owner.close()).complete, isTrue);
   });
@@ -148,7 +147,7 @@ void main() {
         await rejected;
         expect((await close).complete, isTrue);
         expect(h.consumer.batches, hasLength(1));
-        expect(feed.acks, [1, 2]);
+        expect(feed.acks, [1]);
         expect((await h.owner.close()).complete, isTrue);
       },
     );
@@ -242,7 +241,11 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(h.consumer.batches.length, 1);
       expect(h.owner.activity.value, isNull);
-      expect(feed.acks, [1]);
+      expect(
+        feed.acks,
+        isEmpty,
+        reason: 'Content credit waits for actual component acceptance',
+      );
       final pageAccepted = Completer<void>();
       h.consumer.block = pageAccepted.future;
       initialAccepted.complete();
@@ -258,7 +261,7 @@ void main() {
       pageAccepted.complete();
       expect((await older).before, 'older');
       expect(h.consumer.batches.first.throughSeq, 1);
-      expect(feed.acks, [1, 2]); // A query is not another transport delivery.
+      expect(feed.acks, [1]); // A query is not another transport delivery.
       expect((await h.owner.close()).complete, isTrue);
     },
   );
@@ -278,7 +281,7 @@ void main() {
     feed.sendScenario(3, ConversationActivityEvent(snapshot: _activity(2)));
     await Future<void>.delayed(Duration.zero);
     expect(h.owner.activity.value!.revision, 1);
-    expect(feed.acks, [1, 2, 3]);
+    expect(feed.acks, [1, 2]);
     gate.complete();
     await feed.ackScenario(3);
     expect(h.owner.activity.value!.revision, 2);
@@ -306,13 +309,26 @@ void main() {
         await h.consumer.entered.future;
       }
       feed.sendScenario(sequence, const ConversationClosedEvent());
-      await h.failed.future;
+      // Terminal classification publishes the connection phase on its own
+      // observation surface instead of a removed content callback.
+      final terminal = await h.owner.state.waitFor(
+        (state) => state is ChatReconnecting<bool> || state is ChatFailed<bool>,
+      );
       // Even an accepted component operation cannot publish after this barrier.
       gate.complete();
       expect((await h.owner.close()).complete, isTrue);
-      expect(feed.acks, [1]);
+      expect(
+        feed.acks,
+        isEmpty,
+        reason: 'Terminal frames never return content credit',
+      );
       expect(h.owner.activity.value, isNull);
-      expect(h.failures.single, isA<ConversationStreamEnded>());
+      final error = switch (terminal) {
+        ChatReconnecting<bool>(:final error) => error,
+        ChatFailed<bool>(:final error) => error,
+        _ => null,
+      };
+      expect(error, isA<ConversationStreamEnded>());
     });
   }
 
@@ -343,7 +359,11 @@ void main() {
       gate.complete();
       await h.owner.joinRetired();
       expect(next.batches.single.entries.single.completionSeq, 2);
-      expect(first.acks, [1]);
+      expect(
+        first.acks,
+        isEmpty,
+        reason: 'A retired attempt never returns content credit',
+      );
       expect((await h.owner.close()).complete, isTrue);
     },
   );
@@ -561,22 +581,13 @@ final class _Harness {
       threadId: 'thread',
       transport: transport,
       scope: scope,
-      onState: (_, _) {},
-      onAttempt: (_) {},
-      onFailure: (_, error, _) {
-        failures.add(error);
-        if (!failed.isCompleted) failed.complete();
-      },
     );
   }
   final transport = _Transport();
   final consumer = _Consumer();
-  final failures = <Object>[];
-  final failed = Completer<void>();
   Future<_Feed> opened() async {
     final feed = await transport.opened.future;
     await feed.listening.future;
-    await feed._wireAck(1);
     return feed;
   }
 
@@ -609,6 +620,15 @@ final class _Transport implements ConversationTransport {
   final opened = Completer<_Feed>();
   final feeds = <_Feed>[];
   final scopes = <ChatScope>[];
+
+  /// The state channel has its own subscription and is never observed here, so
+  /// this content fixture exposes a real scripted state feed instead of
+  /// borrowing content delivery.
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async => ScriptedConversationStateFeed(threadId: threadId);
+
   @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
@@ -640,23 +660,7 @@ final class _Feed implements ConversationFeed {
   int closes = 0;
   @override
   Stream<ConversationFrame> get events {
-    if (!listening.isCompleted) {
-      controller.add(
-        ConversationFrame(
-          threadId: threadId,
-          subscriptionId: subscriptionId,
-          deliverySequence: 1,
-          event: ConversationStateEvent(
-            frame: ThreadSnapshotFrame(
-              workspace: chatWorkspace(threadId),
-              completedHistoryVersion: 1,
-              schemaVersion: threadSchemaVersion,
-            ),
-          ),
-        ),
-      );
-      listening.complete();
-    }
+    if (!listening.isCompleted) listening.complete();
     return controller.stream;
   }
 
@@ -664,11 +668,11 @@ final class _Feed implements ConversationFeed {
     ConversationFrame(
       threadId: threadId,
       subscriptionId: subscriptionId,
-      deliverySequence: sequence + 1,
+      deliverySequence: sequence,
       event: event,
     ),
   );
-  Future<void> ackScenario(int sequence) => _wireAck(sequence + 1);
+  Future<void> ackScenario(int sequence) => _wireAck(sequence);
   Future<void> _wireAck(int sequence) => acks.contains(sequence)
       ? Future.value()
       : (waiting[sequence] ??= Completer<void>()).future;

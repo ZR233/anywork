@@ -92,7 +92,7 @@ class _TimelineDemandViewportState extends State<_TimelineDemandViewport> {
   );
 }
 
-class _TimelineConnectorBody extends ConsumerWidget {
+class _TimelineConnectorBody extends ConsumerStatefulWidget {
   const _TimelineConnectorBody({
     required this.threadId,
     this.planConfirmation,
@@ -105,7 +105,58 @@ class _TimelineConnectorBody extends ConsumerWidget {
   final VoidCallback? onPlanToggle;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_TimelineConnectorBody> createState() =>
+      _TimelineConnectorBodyState();
+}
+
+class _TimelineConnectorBodyState
+    extends ConsumerState<_TimelineConnectorBody> {
+  Observation? _submissionsObservation;
+  List<ComposerSubmission> _submissions = const [];
+  String? _observedThreadId;
+
+  void _observeSubmissions(String threadId) {
+    _submissionsObservation?.cancel();
+    _observedThreadId = threadId;
+    final composer = ref
+        .read(anyworkClientProvider)
+        .drafts
+        .existingComposer(threadId);
+    if (composer == null) {
+      _submissions = const [];
+      return;
+    }
+    final watch = composer.submissions.watchLatest((value) {
+      if (!mounted || _observedThreadId != threadId) return;
+      setState(() => _submissions = value);
+    });
+    _submissions = watch.value;
+    _submissionsObservation = watch.observation;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _observeSubmissions(widget.threadId);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineConnectorBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId) {
+      _observeSubmissions(widget.threadId);
+    }
+  }
+
+  @override
+  void dispose() {
+    _submissionsObservation?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final threadId = widget.threadId;
     final state = ref.watch(timelineViewModelProvider(threadId));
     final owner = ref.read(timelineSessionOwnerProvider);
     final observedView = state.asData?.value;
@@ -147,6 +198,7 @@ class _TimelineConnectorBody extends ConsumerWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               Text(error?.toString() ?? context.l10n.workspaceLoading),
+              ComposerSubmissionList(submissions: _submissions),
               if (failedView != null && failedSession != null)
                 TextButton(
                   key: StudioDriverKeys.timelineRetryConnection,
@@ -183,11 +235,12 @@ class _TimelineConnectorBody extends ConsumerWidget {
       );
     }
 
-    final plan = planConfirmation;
+    final plan = widget.planConfirmation;
     return TimelineView(
       key: lease.chatKey,
       threadId: threadId,
       view: view,
+      submissions: _submissions,
       controls: lease,
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
@@ -256,9 +309,9 @@ class _TimelineConnectorBody extends ConsumerWidget {
               child: SelectionContainer.disabled(
                 child: TextButton.icon(
                   key: StudioDriverKeys.planSummary,
-                  onPressed: onPlanToggle,
+                  onPressed: widget.onPlanToggle,
                   icon: Icon(
-                    planExpanded ? Icons.expand_less : Icons.expand_more,
+                    widget.planExpanded ? Icons.expand_less : Icons.expand_more,
                   ),
                   label: Text(plan.title),
                 ),

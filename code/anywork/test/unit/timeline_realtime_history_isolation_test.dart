@@ -7,6 +7,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
 // Main Activity and State facts traverse the real SDK and display owner.
@@ -136,16 +137,16 @@ void main() {
       state: ThreadRuntimeUsageState.live,
       observationSequence: 2,
     );
-    Future<void> publish(ThreadWorkspaceUpdate update) => feed
-        .emitAndWait(
-          ConversationStateEvent(
-            frame: ThreadNotificationFrame(
-              threadId: threadId,
-              epoch: session.state.streamEpoch ?? 1,
-              baseRevision: session.state.revision,
-              revision: session.state.revision + 1,
-              update: update,
-            ),
+    Future<void> publish(ThreadWorkspaceUpdate update) => transport
+        .stateFeeds
+        .last
+        .emitStateAndWait(
+          ThreadNotificationFrame(
+            threadId: threadId,
+            epoch: session.state.streamEpoch ?? 1,
+            baseRevision: session.state.revision,
+            revision: session.state.revision + 1,
+            update: update,
           ),
         )
         .timeout(const Duration(seconds: 5));
@@ -271,6 +272,18 @@ void main() {
 
 final class _IsolationTransport extends DemoStudioTransport {
   final feeds = <_InjectingFeed>[];
+  final stateFeeds = <RecordingConversationStateFeed>[];
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async {
+    final feed = RecordingConversationStateFeed(
+      inner: await super.openConversationStateFeed(threadId),
+    );
+    stateFeeds.add(feed);
+    return feed;
+  }
+
   @override
   Duration get shutdownPhaseDelay => Duration.zero;
   @override

@@ -464,12 +464,8 @@ impl Collection {
             .check_limit(self.threads.len() < MAX_THREADS, "thread budget exceeded")?;
         scene.check()?;
         let admitted = std::time::Instant::now();
-        let stream = runtime
-            .subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
-                thread_id: id.into(),
-            })
-            .await;
-        scene.returned("subscribe_thread", admitted, manifest);
+        let stream = runtime.open_conversation_state_feed(id).await;
+        scene.returned("open_conversation_state_feed", admitted, manifest);
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
