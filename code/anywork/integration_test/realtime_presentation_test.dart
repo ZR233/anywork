@@ -772,6 +772,7 @@ final class _RealtimeScene {
       tester,
       backgroundOutput,
       'realtime-parallel-a-line-05',
+      expectedScrollPosition: lease.scrollController.position,
     );
     remaining();
     final executionId = graph.client.conversations
@@ -3379,8 +3380,9 @@ bool _laidOut(Finder finder) {
 Future<void> _revealTextFragment(
   WidgetTester tester,
   Finder finder,
-  String fragment,
-) async {
+  String fragment, {
+  ScrollPosition? expectedScrollPosition,
+}) async {
   expect(_laidOut(finder), isTrue);
   // Consume the existing layout allowance before measuring the glyphs: an
   // admitted body can still be inside an expanding outer disclosure.
@@ -3408,7 +3410,25 @@ Future<void> _revealTextFragment(
   final bounds = boxes
       .map((box) => box.toRect())
       .reduce((left, right) => left.expandToInclude(right));
-  paragraph.showOnScreen(rect: bounds);
+  final viewport = RenderAbstractViewport.of(paragraph);
+  final position = Scrollable.of(tester.element(text)).position;
+  if (expectedScrollPosition != null) {
+    expect(position, same(expectedScrollPosition));
+  }
+  // Center the actual glyph range in its own viewport. Edge-only implicit
+  // reveal can leave the first line clipped after a disclosure changes layout.
+  final reveal = viewport.getOffsetToReveal(paragraph, 0.5, rect: bounds);
+  await position.moveTo(reveal.offset, duration: Duration.zero);
+  await tester.pump();
+  expect(tester.takeException(), isNull);
+  expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
+  // Preserve outward reveal for callers inside nested disclosures, using the
+  // current glyph geometry rather than the pre-scroll measurement.
+  final currentBounds = paragraph
+      .getBoxesForSelection(selection)
+      .map((box) => box.toRect())
+      .reduce((left, right) => left.expandToInclude(right));
+  paragraph.showOnScreen(rect: currentBounds);
   await tester.pump();
   expect(tester.takeException(), isNull);
   expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
