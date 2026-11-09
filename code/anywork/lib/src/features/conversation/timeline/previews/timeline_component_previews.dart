@@ -82,6 +82,67 @@ Widget _previewMarkdown(String id, String text) => TimelineMarkdown(
   imageBuilder: (_, _) => const Text('外部图片需要显式加载'),
 );
 
+@Preview(name: '用户长输入 / 临时发送回显', group: 'Timeline · 历史组件', size: Size(820, 720))
+@Preview(
+  name: '用户长输入 / 临时发送回显 · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineLongUserSubmissionPreview() => _timelinePreviewHost(
+  SingleChildScrollView(
+    child: ComposerSubmissionList(
+      submissions: [
+        TimelinePreviewFixtures.longUserSubmission(
+          ComposerSubmissionPhase.sending,
+        ),
+      ],
+      bodyBuilder: _previewMarkdown,
+    ),
+  ),
+);
+
+@Preview(
+  name: '用户长输入 / 正式 Input · 外层 Deferred',
+  group: 'Timeline · 历史组件',
+  size: Size(820, 720),
+)
+@Preview(
+  name: '用户长输入 / 正式 Input · 外层 Deferred · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineLongUserDeferredPreview() {
+  final bytes = utf8.encode(TimelinePreviewFixtures.longUserInput);
+  return _timelinePreviewHost(
+    SelectionArea(
+      child: SingleChildScrollView(
+        child: ChatItemView(
+          item: TimelinePreviewFixtures.deferredUserInput,
+          bodyBuilder: _previewMarkdown,
+          contentRangeBuilder: (id, key, label, reference, witness) =>
+              TimelineContentRangeConnector(
+                itemId: id,
+                contentKey: key,
+                label: label,
+                reference: reference,
+                witness: witness,
+                readContent: (_, range) async => ContentWindow(
+                  offset: range.offset,
+                  bytes: bytes.sublist(
+                    range.offset,
+                    (range.offset + range.maxBytes).clamp(0, bytes.length),
+                  ),
+                  generation: 'preview',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              ),
+        ),
+      ),
+    ),
+  );
+}
+
 @Preview(
   name: '正文 / 长中文 Deferred Markdown',
   group: 'Timeline · 历史组件',
