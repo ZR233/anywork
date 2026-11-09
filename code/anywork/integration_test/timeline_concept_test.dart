@@ -1392,6 +1392,7 @@ final class _ConceptScene {
   }
 
   Future<void> idle() async {
+    final current = lease.currentDisplay;
     await _until(
       tester,
       () =>
@@ -1403,6 +1404,15 @@ final class _ConceptScene {
               .isEmpty,
       'idle with no current strip',
     );
+    expect(
+      find.byType(ConversationCurrentConnector, skipOffstage: false),
+      findsNothing,
+    );
+    expect(lease.currentDisplay, isNull);
+    if (current != null) {
+      expect(current.isCurrent, isFalse);
+      expect(current.windows, isEmpty);
+    }
   }
 
   Future<void> showUnit(String id) async {
@@ -1898,11 +1908,13 @@ final class _ConceptScene {
     await _until(tester, () => !lease.hasOlder, 'empty conversation EOF');
     expect(lease.controller.messages, isEmpty);
     expect(live, isEmpty);
-    // Keep the original current observer mounted across activity transitions,
-    // while an idle empty conversation must render no content or activity.
-    expect(find.byType(ConversationCurrentConnector), findsOneWidget);
-    expect(lease.currentDisplay!.isCurrent, isTrue);
-    expect(lease.currentDisplay!.windows, isEmpty);
+    // Hidden has no mounted current observer or borrowed content windows.
+    // Content or real State notices mount their own observer when needed.
+    expect(
+      find.byType(ConversationCurrentConnector, skipOffstage: false),
+      findsNothing,
+    );
+    expect(lease.currentDisplay, isNull);
     expect(find.byType(ConversationActivityBar), findsNothing);
     expect(find.byType(TimelineActivityRow), findsNothing);
     expect(find.byType(TimelineDisplayUnitView), findsNothing);
