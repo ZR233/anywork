@@ -14,49 +14,16 @@ members = [
     "code/pl-core",
     "code/pl-dev-support",
     "code/pl-tool",
-    "code/tools/apply-patch",
-    "code/tools/stat-path",
-    "code/tools/write-file",
-    "code/tools/create-directory",
-    "code/tools/delete-path",
-    "code/tools/copy-path",
-    "code/tools/move-path",
-    "code/tools/support/filesystem",
-    "code/tools/exec",
-    "code/tools/write-stdin",
-    "code/tools/lsp-capabilities",
-    "code/tools/lsp-query",
-    "code/tools/support/process",
-    "code/tools/support/lsp",
-    "code/tools/support/media",
-    "code/tools/support/mcp",
+    "code/tools/filesystem",
+    "code/tools/command",
+    "code/tools/git",
+    "code/tools/lsp",
     "code/tools/mcp",
-    "code/tools/list-mcp-resources",
-    "code/tools/list-mcp-resource-templates",
-    "code/tools/read-mcp-resource",
+    "code/tools/search",
     "code/tools/media",
-    "code/tools/git-status",
-    "code/tools/git-diff",
-    "code/tools/git-branch",
-    "code/tools/git-fetch",
-    "code/tools/git-commit",
-    "code/tools/git-push",
-    "code/tools/git-workspace-info",
-    "code/tools/git-sync-default-branch",
-    "code/tools/support/git",
-    "code/tools/web-search",
-    "code/tools/deepseek-web-search",
-    "code/tools/deepseek-web-fetch",
-    "code/tools/skills-list",
-    "code/tools/skill-view",
-    "code/tools/skill-manage",
-    "code/tools/list-bots",
-    "code/tools/list-bot-conversations",
-    "code/tools/read-bot-messages",
-    "code/tools/send-bot-message",
-    "code/tools/support/search",
-    "code/tools/support/skill",
-    "code/tools/support/bots",
+    "code/tools/skill",
+    "code/tools/bots",
+    "code/tools/support/media",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
     "code/pl-studio-acceptance",
@@ -197,49 +164,16 @@ pl-skill-core = { path = "code/pl-skill-core" }
 pl-core = { path = "code/pl-core" }
 pl-dev-support = { path = "code/pl-dev-support" }
 pl-tool = { path = "code/pl-tool" }
-pl-tool-apply-patch = { path = "code/tools/apply-patch" }
-pl-tool-stat-path = { path = "code/tools/stat-path" }
-pl-tool-write-file = { path = "code/tools/write-file" }
-pl-tool-create-directory = { path = "code/tools/create-directory" }
-pl-tool-delete-path = { path = "code/tools/delete-path" }
-pl-tool-copy-path = { path = "code/tools/copy-path" }
-pl-tool-move-path = { path = "code/tools/move-path" }
-pl-tool-filesystem = { path = "code/tools/support/filesystem" }
-pl-tool-exec = { path = "code/tools/exec" }
-pl-tool-write-stdin = { path = "code/tools/write-stdin" }
-pl-tool-lsp-capabilities = { path = "code/tools/lsp-capabilities" }
-pl-tool-lsp-query = { path = "code/tools/lsp-query" }
-pl-tool-process = { path = "code/tools/support/process" }
-pl-tool-lsp-support = { path = "code/tools/support/lsp" }
-pl-tool-media-support = { path = "code/tools/support/media" }
-pl-tool-mcp-support = { path = "code/tools/support/mcp" }
+pl-tool-filesystem = { path = "code/tools/filesystem" }
+pl-tool-command = { path = "code/tools/command" }
+pl-tool-git = { path = "code/tools/git" }
+pl-tool-lsp = { path = "code/tools/lsp" }
 pl-tool-mcp = { path = "code/tools/mcp" }
-pl-tool-list-mcp-resources = { path = "code/tools/list-mcp-resources" }
-pl-tool-list-mcp-resource-templates = { path = "code/tools/list-mcp-resource-templates" }
-pl-tool-read-mcp-resource = { path = "code/tools/read-mcp-resource" }
+pl-tool-search = { path = "code/tools/search" }
 pl-tool-media = { path = "code/tools/media" }
-pl-tool-git-status = { path = "code/tools/git-status" }
-pl-tool-git-diff = { path = "code/tools/git-diff" }
-pl-tool-git-branch = { path = "code/tools/git-branch" }
-pl-tool-git-fetch = { path = "code/tools/git-fetch" }
-pl-tool-git-commit = { path = "code/tools/git-commit" }
-pl-tool-git-push = { path = "code/tools/git-push" }
-pl-tool-git-workspace-info = { path = "code/tools/git-workspace-info" }
-pl-tool-git-sync-default-branch = { path = "code/tools/git-sync-default-branch" }
-pl-tool-git-support = { path = "code/tools/support/git" }
-pl-tool-web-search = { path = "code/tools/web-search" }
-pl-tool-deepseek-web-search = { path = "code/tools/deepseek-web-search" }
-pl-tool-deepseek-web-fetch = { path = "code/tools/deepseek-web-fetch" }
-pl-tool-skills-list = { path = "code/tools/skills-list" }
-pl-tool-skill-view = { path = "code/tools/skill-view" }
-pl-tool-skill-manage = { path = "code/tools/skill-manage" }
-pl-tool-list-bots = { path = "code/tools/list-bots" }
-pl-tool-list-bot-conversations = { path = "code/tools/list-bot-conversations" }
-pl-tool-read-bot-messages = { path = "code/tools/read-bot-messages" }
-pl-tool-send-bot-message = { path = "code/tools/send-bot-message" }
-pl-tool-search-support = { path = "code/tools/support/search" }
-pl-tool-skill-support = { path = "code/tools/support/skill" }
-pl-tool-bot-support = { path = "code/tools/support/bots" }
+pl-tool-skill = { path = "code/tools/skill" }
+pl-tool-bots = { path = "code/tools/bots" }
+pl-tool-media-support = { path = "code/tools/support/media" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
