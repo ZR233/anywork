@@ -3744,11 +3744,12 @@ final class _ConceptScene {
     expect(details, findsOneWidget);
     final detailsElement = tester.element(details);
     final renderedTool = tester.widget<TimelineToolDetails>(details).item;
+    expect(renderedTool.id, rendered.id);
     expect(renderedTool.toolCallId, tool.toolCallId);
     expect(renderedTool.outcome, tool.outcome);
     final disclosure = find.descendant(
       of: details,
-      matching: find.byKey(ValueKey('timeline-tool-details:${tool.id}')),
+      matching: find.byKey(ValueKey('timeline-tool-details:${rendered.id}')),
     );
     expect(disclosure, findsOneWidget);
     final disclosureElement = tester.element(disclosure);
@@ -3855,7 +3856,7 @@ final class _ConceptScene {
       final views = tester.widgetList<TimelineImageView>(images);
       expect(views, hasLength(1));
       final view = views.single;
-      expect(view.itemId, item.id);
+      expect(view.itemId, rendered.id);
       expect(view.attachment.id, item.attachments.single.id);
       expect(view.isTool, isTrue);
       if (missing) {
@@ -3865,7 +3866,7 @@ final class _ConceptScene {
         expect(view.error, isNull);
         expect(view.bytes, isNotEmpty);
         final entry = StudioDriverKeys.toolImageEntryId(
-          item.id,
+          rendered.id,
           item.attachments.single.id,
         );
         await observed.tap(
@@ -3912,6 +3913,7 @@ final class _ConceptScene {
       // A laid-out title can still be clipped or covered after the Viewer closes.
       final failure = <String, Object?>{
         'toolId': tool.id,
+        'rowId': rendered.id,
         'toolCallId': tool.toolCallId,
         'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainSingle',
         'error': error.toString(),

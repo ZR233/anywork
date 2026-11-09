@@ -3110,9 +3110,13 @@ final class _RealtimeScene {
           _submittedTurnId ??= turn.turnId;
           expect(turn.turnId, _submittedTurnId);
         }
-        // Active and terminal members share one producer-defined live Work.
+        // The gated observer already proved the source and opened its Work.
+        // Do not query every historical Work before sampling a one-second
+        // foreground-call window; borrow the same admitted reference instead.
         final units = [
-          if (turn != null && turn.turnId == _submittedTurnId)
+          if (preparedObserver != null)
+            observed.unitForBlock(preparedObserver.reference)
+          else if (turn != null && turn.turnId == _submittedTurnId)
             ...await observed.workForSource(
               ForegroundTurnChatSource(turnId: turn.turnId),
             ),
@@ -3130,7 +3134,24 @@ final class _RealtimeScene {
             _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
         if (preparedObserver != null) {
-          expect(groupIds, {preparedObserver.display.unitId});
+          expect(units.single.id, preparedObserver.display.unitId);
+          expect(units.single.historyPos, isNull);
+          expect(lease.live.value!.executionPresent, isTrue);
+          expect(observed.liveWork.map((unit) => unit.id).toList(), [
+            preparedObserver.display.unitId,
+          ]);
+          if (observerReady) {
+            final display = lease.groupDisplays.singleWhere(
+              (display) => display.unitId == preparedObserver.display.unitId,
+            );
+            for (final atom in display.atoms) {
+              expect(
+                atom.source,
+                ForegroundTurnChatSource(turnId: preparedObserver.turnId),
+              );
+              expect(atom.turnId, preparedObserver.turnId);
+            }
+          }
         }
         final tools = !observerReady
             ? null
@@ -3258,19 +3279,40 @@ final class _RealtimeScene {
                   ),
                 );
           }
+          // Freeze the successful frame before any asynchronous provenance
+          // query. A later background handoff cannot invalidate this witness.
+          final runningFrameJson =
+              '${const JsonEncoder.withIndent('  ').convert({
+                'turnId': _submittedTurnId,
+                'expectedCallIds': expectedCallIds.toList(),
+                'observations': observations,
+                'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
+              })}\n';
+          if (preparedObserver != null) {
+            preparedObserver.evidence['runningFrame'] = jsonDecode(
+              runningFrameJson,
+            );
+            final sourceWork = await observed.workForSource(
+              ForegroundTurnChatSource(turnId: preparedObserver.turnId),
+            );
+            expect(sourceWork, hasLength(1));
+            expect(sourceWork.single.id, preparedObserver.display.unitId);
+            expect(
+              sourceWork.single.memberReference,
+              preparedObserver.reference,
+            );
+            preparedObserver.evidence['sourceRecheckAfterRunningCut'] = {
+              'unitId': sourceWork.single.id,
+              'databaseId': sourceWork.single.memberReference!.databaseId,
+              'blockId': sourceWork.single.memberReference!.blockId,
+            };
+          }
           final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
           await File.fromUri(
             Directory(output).uri.resolve(
               'realtime-tool-observation-${++_toolObservationSequence}.json',
             ),
-          ).writeAsString(
-            '${const JsonEncoder.withIndent('  ').convert({
-              'turnId': _submittedTurnId,
-              'expectedCallIds': expectedCallIds.toList(),
-              'observations': observations,
-              'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
-            })}\n',
-          );
+          ).writeAsString(runningFrameJson);
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
