@@ -590,7 +590,10 @@ final class _RealtimeScene {
       (handoff.lifecycle as TerminalChatAtom).outcome,
       ChatTerminalOutcome.transferred,
     );
-    final handoffCard = ChatItemPresentation.decode(handoff).toolCard;
+    final handoffCard = (await _readCompletedPresentation(
+      handoff,
+      timeout: remaining(),
+    )).toolCard;
     expect(handoffCard, isA<DecodedToolCard>());
     final taskId = (handoffCard as DecodedToolCard).value.taskId;
     expect(taskId, isNotNull);
@@ -647,14 +650,12 @@ final class _RealtimeScene {
       'taskId': taskId,
     });
     final display = await observed.revealMember(atom, reference: reference);
-    await until(
-      () => _laidOut(observed.memberRow(atom.id)),
-      'real independently sourced A member laid out',
+    final rendered = await _awaitCanonicalRow(
+      observed.memberRow(atom.id),
+      atom,
+      type: 'tool',
       timeout: remaining(),
     );
-    final rendered = tester
-        .widget<ChatItemView>(observed.memberRow(atom.id))
-        .item;
     expect(rendered.atom?.source, backgroundSource);
     expect(rendered.atom?.id, atom.id);
     expect(rendered.toolCard, isA<DecodedToolCard>());
@@ -844,6 +845,7 @@ final class _RealtimeScene {
         )
         .toList();
     expect(reasoning, isNotEmpty);
+    late ChatItemPresentation rendered;
     for (final atom in reasoning) {
       final reference = observed.unitForMember(atom.id).memberReference!;
       final display = await observed.revealMember(atom, reference: reference);
@@ -851,15 +853,14 @@ final class _RealtimeScene {
         display.atoms.where((member) => member.id == atom.id),
         hasLength(1),
       );
-      await until(
-        () => _laidOut(observed.memberRow(atom.id)),
-        'reasoning member in its original Main work segment',
+      rendered = await _awaitCanonicalRow(
+        observed.memberRow(atom.id),
+        atom,
+        type: 'thinking',
       );
-      final row = observed.memberRow(atom.id);
-      expect(tester.widget<ChatItemView>(row).item.type, 'thinking');
       expect(display.error, isNull);
     }
-    return ChatItemPresentation.decode(reasoning.last);
+    return rendered;
   }
 
   Future<void> closeLatestTurnGroups() async {
@@ -955,16 +956,13 @@ final class _RealtimeScene {
       (reasoning.lifecycle as TerminalChatAtom).outcome,
       ChatTerminalOutcome.completed,
     );
-    expect(reasoning.payload, isA<InlinePayload>());
     expect(reasoning.contents, isNotEmpty);
     await observed.revealMember(reasoning, reference: reference);
-    await until(
-      () => _laidOut(observed.memberRow(reasoning.id)),
-      'laid out completed observer reasoning member',
+    final rendered = await _awaitCanonicalRow(
+      observed.memberRow(reasoning.id),
+      reasoning,
+      type: 'thinking',
     );
-    final rendered = tester
-        .widget<ChatItemView>(observed.memberRow(reasoning.id))
-        .item;
     expect(rendered.atom?.id, reasoning.id);
     expect(rendered.compatibility, ChatItemCompatibility.current);
     expect(rendered.type, 'thinking');
@@ -1160,24 +1158,88 @@ final class _RealtimeScene {
             item.atom!.source == ForegroundTurnChatSource(turnId: turn.turnId),
       );
 
-  void _expectSmallTurnReceipt(TimelineDisplayUnit item) {
-    final payload = item.atom!.payload;
-    final byteLength = payload is InlinePayload
-        ? payload.bytes.length
-        : payload is DeferredPayload
-        ? payload.byteLength
-        : null;
-    final reason =
-        'Known small realtime fixture requires Inline/current business '
-        'presentation within the original frame =${item.id}, '
-        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
-        'Over-budget payloads may remain Deferred in the product.';
-    expect(payload is InlinePayload, isTrue, reason: reason);
-    expect(
-      ChatItemPresentation.forUnit(observed.unit(item.id)).compatibility,
-      ChatItemCompatibility.current,
-      reason: reason,
+  Future<ChatItemPresentation> _readCompletedPresentation(
+    ChatAtom head, {
+    required Duration timeout,
+  }) async {
+    expect(head.lifecycle, isA<TerminalChatAtom>());
+    expect(head.completionItemId, isNotNull);
+    expect(head.completionSeq, isNotNull);
+    final original = lease;
+    final scope = original.content.openScope(generation: original.generation);
+    try {
+      final entry = await scope
+          .readCompleted(
+            recordId: head.completionItemId!,
+            demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+          )
+          .timeout(timeout);
+      expect(lease, same(original));
+      expect(original.isRetired, isFalse);
+      expect(entry.recordId, head.completionItemId);
+      expect(entry.completionSeq, head.completionSeq);
+      expect(entry.atom.id, head.id);
+      expect(entry.atom.source, head.source);
+      expect(entry.atom.kind, head.kind);
+      expect(entry.atom.delivery, head.delivery);
+      expect(entry.atom.completionItemId, head.completionItemId);
+      expect(entry.atom.completionSeq, head.completionSeq);
+      expect(entry.atom.lifecycle, isA<TerminalChatAtom>());
+      expect(
+        (entry.atom.lifecycle as TerminalChatAtom).outcome,
+        (head.lifecycle as TerminalChatAtom).outcome,
+      );
+      final value = ChatItemPresentation.decode(entry.atom);
+      expect(
+        value.compatibility,
+        ChatItemCompatibility.current,
+        reason: 'The canonical fixture envelope must fit one 64KiB read',
+      );
+      return value;
+    } finally {
+      scope.retire();
+      expect(
+        (await scope.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        )).complete,
+        isTrue,
+      );
+    }
+  }
+
+  Future<ChatItemPresentation> _awaitCanonicalRow(
+    Finder row,
+    ChatAtom head, {
+    required String type,
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    late ChatItemPresentation rendered;
+    await until(
+      () {
+        if (row.evaluate().length != 1 || !_laidOut(row)) return false;
+        final value = tester.widget<ChatItemView>(row).item;
+        if (value.compatibility == ChatItemCompatibility.deferred) return false;
+        expect(value.compatibility, ChatItemCompatibility.current);
+        expect(value.type, type);
+        expect(value.atom?.id, head.id);
+        expect(value.atom?.source, head.source);
+        expect(value.atom?.completionItemId, head.completionItemId);
+        expect(value.atom?.completionSeq, head.completionSeq);
+        rendered = value;
+        return true;
+      },
+      'canonical $type renderer for ${head.id}',
+      timeout: timeout,
     );
+    return rendered;
+  }
+
+  void _expectTurnReceiptHead(TimelineDisplayUnit item) {
+    expect(item.body, isA<SingleDisplayBlock>());
+    expect(item.atom!.kind, ChatAtomKind.turnReceipt);
+    expect(item.atom!.lifecycle, isA<TerminalChatAtom>());
+    expect(observed.unit(item.id).atom!.id, item.atom!.id);
+    expect(observed.unit(item.id).atom!.source, item.atom!.source);
   }
 
   Finder _turnReceiptTitle(TimelineDisplayUnit item) {
@@ -1221,10 +1283,10 @@ final class _RealtimeScene {
     final item = _turnReceipt(turn);
     expect(item.body, isA<SingleDisplayBlock>());
     expect(item.atom!.kind, ChatAtomKind.turnReceipt);
-    _expectSmallTurnReceipt(item);
+    _expectTurnReceiptHead(item);
     await observed.revealSingle(item);
     final row = observed.itemRow(item.id);
-    final receipt = tester.widget<ChatItemView>(row).item;
+    final receipt = await _awaitCanonicalRow(row, item.atom!, type: 'turn');
     expect(receipt.type, 'turn');
     expect((receipt.data['outcome'] as Map)['kind'], expectedOutcome);
     final title = _turnReceiptTitle(item);
@@ -1797,6 +1859,17 @@ final class _RealtimeScene {
     final clock = Stopwatch()..start();
     Map<String, Object?>? lastObservation;
     String? previousObservation;
+    final canonical = <String, ChatItemPresentation>{};
+    Duration remaining() {
+      final value = const Duration(seconds: 60) - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail(
+          'Timed out waiting for original exec terminals and each '
+          'independently sourced final result: ${jsonEncode(lastObservation)}',
+        );
+      }
+      return value;
+    }
 
     Map<String, Object?> sourceFacts(ChatSourceId value) =>
         value is ForegroundTurnChatSource
@@ -1823,7 +1896,7 @@ final class _RealtimeScene {
           display?.atoms.length == run.summary!.total;
     }
 
-    List<_ExecReceipt> targets() {
+    Future<List<_ExecReceipt>> targets() async {
       final result = <_ExecReceipt>[];
       final candidates = <Map<String, Object?>>[];
       final counts = {for (final call in expected.keys) call: 0};
@@ -1840,12 +1913,12 @@ final class _RealtimeScene {
         ...snapshot,
       };
 
-      ChatItemPresentation read(
-        PayloadData? payload,
+      Future<ChatItemPresentation> read(
+        ChatAtom atom,
         Map<String, Object?> candidate,
-        ChatItemPresentation Function() decode,
-      ) {
+      ) async {
         candidates.add(candidate);
+        final payload = atom.payload;
         candidate['payloadKind'] = payload.runtimeType.toString();
         candidate['payloadBytes'] = payload is InlinePayload
             ? payload.bytes.length
@@ -1857,14 +1930,15 @@ final class _RealtimeScene {
             payload.reference,
           ).toString();
         }
-        expect(
-          payload,
-          isA<InlinePayload>(),
-          reason:
-              'Small fixture receipt needs its original Inline envelope: '
-              '${jsonEncode(candidate)}',
+        expect(atom.completionItemId, isNotNull);
+        final recordId = atom.completionItemId!;
+        final value = canonical[recordId] ??= await _readCompletedPresentation(
+          atom,
+          timeout: remaining(),
         );
-        final value = decode();
+        expect(value.atom?.id, atom.id);
+        expect(value.atom?.source, atom.source);
+        expect(value.atom?.completionSeq, atom.completionSeq);
         final reading = value.toolCard;
         candidate['compatibility'] = value.compatibility.name;
         candidate['decoder'] = reading.runtimeType.toString();
@@ -1882,7 +1956,7 @@ final class _RealtimeScene {
           reading,
           isA<DecodedToolCard>(),
           reason:
-              'Receipt envelope must decode without a Deferred loader: '
+              'Canonical receipt envelope must decode within one bounded read: '
               '${jsonEncode(candidate)}',
         );
         return value;
@@ -1917,11 +1991,7 @@ final class _RealtimeScene {
           'completionItemId': atom.completionItemId,
           'groupId': observed.unitForBlock(reference).id,
         };
-        final value = read(
-          atom.payload,
-          candidate,
-          () => ChatItemPresentation.decode(atom),
-        );
+        final value = await read(atom, candidate);
         final tool = (value.toolCard as DecodedToolCard).value;
         expect(tool.toolCallId, atom.tool!.callId);
         expect(tool.name, atom.tool!.name);
@@ -2013,17 +2083,6 @@ final class _RealtimeScene {
 
     var receipts = <_ExecReceipt>[];
     try {
-      Duration remaining() {
-        final value = const Duration(seconds: 60) - clock.elapsed;
-        if (value <= Duration.zero) {
-          fail(
-            'Timed out waiting for original exec terminals and each '
-            'independently sourced final result: ${jsonEncode(lastObservation)}',
-          );
-        }
-        return value;
-      }
-
       Future<void> readRun(TimelineDisplayUnit unit) async {
         final display = await observed.openWork(unit.id, timeout: remaining());
         await observed.selectLatestMembers(display, timeout: remaining());
@@ -2076,7 +2135,7 @@ final class _RealtimeScene {
             backgroundBlocks.add(block);
           }
         }
-        targets();
+        await targets();
         // Block heads do not qualify provenance. Inspect actual member pages
         // before counting independently sourced final receipts.
         for (final run in backgroundRuns().toList()) {
@@ -2085,7 +2144,7 @@ final class _RealtimeScene {
             openedBackgroundRuns.add(run.id);
           }
         }
-        receipts = targets();
+        receipts = await targets();
         final terminalCalls = observed.mountedMembers
             .where(
               (atom) =>
@@ -2152,6 +2211,12 @@ final class _RealtimeScene {
           atom,
           reference: target.reference,
         );
+        final restored = await _awaitCanonicalRow(
+          observed.memberRow(atom.id),
+          atom,
+          type: 'tool',
+        );
+        expect(restored.toolCard, isA<DecodedToolCard>());
         final item = target.value;
         final rowId = atom.id;
         final contentItemId = atom.completionItemId!;
@@ -2635,11 +2700,13 @@ final class _RealtimeScene {
       timeout: const Duration(minutes: 3),
     );
     if (kind == StudioTurnStatus.failed || kind == StudioTurnStatus.cancelled) {
-      _expectSmallTurnReceipt(receipt!);
+      _expectTurnReceiptHead(receipt!);
       await observed.revealSingle(receipt!);
-      final rendered = tester
-          .widget<ChatItemView>(observed.itemRow(receipt!.id))
-          .item;
+      final rendered = await _awaitCanonicalRow(
+        observed.itemRow(receipt!.id),
+        receipt!.atom!,
+        type: 'turn',
+      );
       expect(rendered.compatibility, ChatItemCompatibility.current);
       expect(rendered.type, 'turn');
       expect((rendered.data['outcome'] as Map)['kind'], kind.name);
@@ -2804,9 +2871,11 @@ final class _RealtimeScene {
   }
 
   Finder _unscopedToolCard(ChatAtom atom) {
-    final reading = atom.payload == null
-        ? null
-        : ChatItemPresentation.decode(atom).toolCard;
+    final reading = tester
+        .widgetList<ChatItemView>(observed.memberRow(atom.id))
+        .singleOrNull
+        ?.item
+        .toolCard;
     // Use the renderer's same typed facts for active and completed waits.
     final wait =
         atom.wait ?? (reading is DecodedToolCard ? reading.value.wait : null);

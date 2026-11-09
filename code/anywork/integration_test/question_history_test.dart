@@ -953,27 +953,21 @@ Future<ChatItemPresentation> _questionReceipt(
     ChatTerminalOutcome.completed,
   );
   expect(status.body, isA<SingleDisplayBlock>());
-  final payload = atom.payload;
-  final byteLength = payload is InlinePayload
-      ? payload.bytes.length
-      : payload is DeferredPayload
-      ? payload.byteLength
-      : null;
   final reason =
-      'Known small question fixture requires Inline/current business '
-      'presentation within the original frame =${status.id}, '
-      'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
-      'Over-budget payloads may remain Deferred in the product.';
-  expect(payload is InlinePayload, isTrue, reason: reason);
-  expect(
-    ChatItemPresentation.forUnit(status).compatibility,
-    ChatItemCompatibility.current,
-    reason: reason,
-  );
+      'Canonical question receipt must restore through its original renderer: '
+      '${status.id}/${atom.id}';
   // Reveal the independent status through the production Main owner, then
   // inspect the receipt actually supplied to its real UI, not a fabricated atom.
   await observed.reveal(observed.itemRow(status.id), status.id);
-  final receipt = tester.widget<ChatItemView>(observed.itemRow(status.id)).item;
+  late ChatItemPresentation receipt;
+  await _until(tester, () {
+    final row = observed.itemRow(status.id);
+    if (row.evaluate().length != 1) return false;
+    final value = tester.widget<ChatItemView>(row).item;
+    if (value.compatibility != ChatItemCompatibility.current) return false;
+    receipt = value;
+    return true;
+  }, 'canonical question receipt renderer');
   expect(receipt.id, status.id);
   expect(receipt.atom, same(atom));
   expect(observed.unit(receipt.id).atom!.source, source);

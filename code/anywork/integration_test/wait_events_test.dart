@@ -462,27 +462,23 @@ final class _Scene {
           item.atom!.kind == ChatAtomKind.turnReceipt,
     );
     expect((receipt.atom!.lifecycle as TerminalChatAtom).outcome, outcome);
-    final payload = receipt.atom!.payload;
-    final byteLength = payload is InlinePayload
-        ? payload.bytes.length
-        : payload is DeferredPayload
-        ? payload.byteLength
-        : null;
     final reason =
-        'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${receipt.id}, '
-        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
-        'Over-budget payloads may remain Deferred in the product.';
-    expect(payload is InlinePayload, isTrue, reason: reason);
-    expect(
-      ChatItemPresentation.forUnit(receipt).compatibility,
-      ChatItemCompatibility.current,
-      reason: reason,
-    );
+        'Canonical wait Turn receipt must restore in its real Main row: '
+        '${receipt.id}';
     await observed.revealSingle(receipt);
-    final rendered = tester
-        .widget<ChatItemView>(observed.itemRow(receipt.id))
-        .item;
+    late ChatItemPresentation rendered;
+    await until(() {
+      final row = observed.itemRow(receipt.id);
+      if (row.evaluate().length != 1) return false;
+      final value = tester.widget<ChatItemView>(row).item;
+      if (value.compatibility != ChatItemCompatibility.current) return false;
+      rendered = value;
+      return true;
+    }, 'canonical cancelled Turn receipt renderer');
+    expect(rendered.atom?.id, receipt.atom!.id);
+    expect(rendered.atom?.source, source);
+    expect(rendered.atom?.completionItemId, receipt.atom!.completionItemId);
+    expect(rendered.atom?.completionSeq, receipt.atom!.completionSeq);
     expect(
       rendered.compatibility,
       ChatItemCompatibility.current,
@@ -517,22 +513,16 @@ final class _Scene {
     );
     final atom = matches.single;
     expect(atom.kind, ChatAtomKind.toolCall);
-    final payload = atom.payload;
-    final byteLength = payload is InlinePayload
-        ? payload.bytes.length
-        : payload is DeferredPayload
-        ? payload.byteLength
-        : null;
-    // Select by reliable metadata first. A missing/Deferred/malformed envelope
-    // must fail as delivery/presentation, not be filtered into "no member".
+    expect(atom.source, source);
+    expect(atom.lifecycle, isA<TerminalChatAtom>());
+    expect(atom.completionItemId, isNotNull);
+    expect(atom.completionSeq, isNotNull);
+    // Select by reliable metadata; business assertions consume only the actual
+    // renderer after its qualified canonical read, not the Deferred head.
     final reason =
-        'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${atom.id}, '
+        'Canonical wait tool must restore in its original member row =${atom.id}, '
         'completion=${atom.completionItemId}/${atom.completionSeq}, '
-        'call=${atom.tool!.callId}, payloadType=${payload?.runtimeType}, '
-        'byteLength=$byteLength. '
-        'Over-budget payloads may remain Deferred in the product.';
-    expect(payload, isA<InlinePayload>(), reason: reason);
+        'call=${atom.tool!.callId}.';
     final reference = observed.unitForMember(atom.id).memberReference!;
     final display = await observed.revealMember(atom, reference: reference);
     expect(display.expanded, isTrue);
@@ -545,9 +535,15 @@ final class _Scene {
       ),
       hasLength(1),
     );
-    final rendered = tester
-        .widget<ChatItemView>(observed.memberRow(atom.id))
-        .item;
+    late ChatItemPresentation rendered;
+    await until(() {
+      final row = observed.memberRow(atom.id);
+      if (row.evaluate().length != 1) return false;
+      final value = tester.widget<ChatItemView>(row).item;
+      if (value.compatibility != ChatItemCompatibility.current) return false;
+      rendered = value;
+      return true;
+    }, 'canonical wait tool renderer ${atom.id}');
     expect(
       rendered.compatibility,
       ChatItemCompatibility.current,
