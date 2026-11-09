@@ -264,6 +264,8 @@ class BridgeWorkSummary {
   final BigInt failed;
   final BigInt cancelled;
   final BigInt transferred;
+  final PlatformInt64? createdAt;
+  final BigInt? elapsedMs;
   final PlatformInt64? startedAt;
   final PlatformInt64? finishedAt;
   final BigInt? durationMs;
@@ -278,6 +280,8 @@ class BridgeWorkSummary {
     required this.failed,
     required this.cancelled,
     required this.transferred,
+    this.createdAt,
+    this.elapsedMs,
     this.startedAt,
     this.finishedAt,
     this.durationMs,
@@ -294,6 +298,8 @@ class BridgeWorkSummary {
       failed.hashCode ^
       cancelled.hashCode ^
       transferred.hashCode ^
+      createdAt.hashCode ^
+      elapsedMs.hashCode ^
       startedAt.hashCode ^
       finishedAt.hashCode ^
       durationMs.hashCode ^
@@ -312,6 +318,8 @@ class BridgeWorkSummary {
           failed == other.failed &&
           cancelled == other.cancelled &&
           transferred == other.transferred &&
+          createdAt == other.createdAt &&
+          elapsedMs == other.elapsedMs &&
           startedAt == other.startedAt &&
           finishedAt == other.finishedAt &&
           durationMs == other.durationMs &&

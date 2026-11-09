@@ -396,6 +396,9 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
         first.turn = Some(turn);
         first.model_member_starts = vec![started("R")].into();
         let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
+        assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
+            pl_protocol::DisplayBlockBody::Work { summary, .. }
+            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms == Some(0)));
         started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
         let receipt = ModelMemberReceipt {
@@ -433,7 +436,9 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
             assert_eq!(cut.published, 0);
             assert!(
                 matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { summary, .. }
-                if summary.total == 1 && summary.terminal == 1)
+                if summary.total == 1 && summary.terminal == 1
+                    && summary.created_at == Some(first.committed_at)
+                    && summary.elapsed_ms == Some(1000))
             );
         }
         let mut text = started("T");
@@ -447,6 +452,13 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
         let mut third = effect(3);
         third.model_member_starts = vec![text].into();
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
+        let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
+            .find(|block| block.published.is_some()).context("published Work")?;
+        assert!(matches!(&frozen_work.header.body,
+            pl_protocol::DisplayBlockBody::Work { summary, .. }
+            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms == Some(2000)));
+        let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
+        assert_eq!(cold_work[0].body, frozen_work.header.body);
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
         assert_eq!(chat.head_seq(), h);
         assert!(prepared.completions.is_empty());

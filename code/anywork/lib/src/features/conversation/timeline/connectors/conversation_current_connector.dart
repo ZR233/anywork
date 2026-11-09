@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 
@@ -196,9 +197,28 @@ class _CurrentState extends State<ConversationCurrentConnector>
   @override
   Widget build(BuildContext context) {
     final live = isCurrent ? _older ?? widget.live.value : null;
+    final merged = _older == null
+        ? currentWorkNotice(
+            live: live,
+            activeTurnId: widget.session.activeTurn?.turnId,
+            notices: widget.region.notices,
+          )
+        : null;
+    final coldWorkOnly =
+        live != null &&
+        !live.executionPresent &&
+        live.blocks.isNotEmpty &&
+        live.blocks.every((block) => block.body is WorkDisplayBlock);
     return ConversationActivityBar(
       children: [
-        ConversationRealtimeNotices(notices: widget.region.notices),
+        ConversationRealtimeNotices(
+          notices: [
+            for (final notice in widget.region.notices)
+              if (!identical(notice, merged?.notice) &&
+                  !(coldWorkOnly && notice is UnrestoredRealtimeNotice))
+                notice,
+          ],
+        ),
         if (_olderError case final error?) Text(error.toString()),
         if (_loadingOlder) const LinearProgressIndicator(),
         if (live?.older case final before?)
@@ -216,7 +236,13 @@ class _CurrentState extends State<ConversationCurrentConnector>
           ),
         for (final block in live?.blocks ?? const <LiveDisplayBlock>[])
           switch (block.body) {
-            WorkDisplayBlock() => _work(block, live!.executionPresent),
+            WorkDisplayBlock() => _work(
+              block,
+              live!.executionPresent,
+              activity: merged?.blockId == block.id
+                  ? merged?.notice.view
+                  : null,
+            ),
             SingleDisplayBlock(:final atom) => TimelineMemberAtom(
               key: ValueKey((block.id, _retirements[block.id])),
               atom: atom,
@@ -237,11 +263,16 @@ class _CurrentState extends State<ConversationCurrentConnector>
     );
   }
 
-  Widget _work(LiveDisplayBlock block, bool executionPresent) {
+  Widget _work(
+    LiveDisplayBlock block,
+    bool executionPresent, {
+    ConversationActivityView? activity,
+  }) {
     final unit = widget.liveUnit(block, executionPresent);
     return TimelineDisplayUnitView(
       key: ValueKey(block.id),
       unit: unit,
+      activity: activity,
       onExpandedChanged: widget.onExpandedChanged,
       childBuilder: (_) => CompletionRunConnector(
         unit: unit,

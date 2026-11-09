@@ -1754,7 +1754,8 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
   color: var(--cv-muted);
 }
 .cv-group-live[open] > .cv-group-heading > .cv-group-current { display: none; }
-.cv-group-live .cv-group-meta { margin-left: auto; }
+.cv-group-live .cv-group-title { flex: 1; }
+.cv-group-live .cv-group-meta { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
 .cv-group-live[data-phase="thinking"] .cv-group-title { color: var(--cv-secondary); }
 
 .cv-group-digest {

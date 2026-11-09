@@ -15,9 +15,40 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Finds the current title inside one exact header without resolving the header
-/// again for every candidate. A clock may replace a custom label during a pump.
+// Work uses a dedicated single-line header, not TimelineActivityRow. Borrow its
+// actual label Text without the separate elapsed Text or any private widget API.
 Finder timelineGroupTitleFinder(
+  WidgetTester tester,
+  Finder header, {
+  bool skipOffstage = true,
+  VoidCallback? validateOwner,
+}) => find.descendant(
+  of: header,
+  matching: find.byWidgetPredicate((widget) {
+    final matches =
+        widget is Text && widget.key != const ValueKey('work-header-elapsed');
+    if (matches) validateOwner?.call();
+    return matches;
+  }, skipOffstage: skipOffstage),
+  skipOffstage: skipOffstage,
+);
+
+bool timelineWorkHeaderExpanded(WidgetTester tester, Finder header, String id) {
+  expect(header, findsOneWidget);
+  final disclosure = find.ancestor(
+    of: header,
+    matching: find.byKey(
+      ValueKey('completion-run-disclosure:$id'),
+      skipOffstage: false,
+    ),
+  );
+  expect(disclosure, findsOneWidget);
+  return tester.widget<Expansible>(disclosure).controller.isExpanded;
+}
+
+// Members and Single disclosures still use TimelineActivityRow. Their label may
+// be a custom widget; keep the original row-specific observation separate.
+Finder timelineActivityTitleFinder(
   WidgetTester tester,
   Finder header, {
   bool skipOffstage = true,
@@ -251,15 +282,39 @@ final class TimelineObservation {
     skipOffstage: skipOffstage,
   );
 
+  bool groupExpanded(String id) =>
+      timelineWorkHeaderExpanded(tester, groupHeader(id), id);
+
+  Future<void> tapGroupHeader(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final original = lease;
+    final controller = original.controller;
+    final generation = original.generation;
+    await tap(
+      groupHeader(id),
+      timeout: timeout,
+      isActive: () {
+        expect(lease, same(original));
+        expect(original.isRetired, isFalse);
+        expect(original.isReleased, isFalse);
+        expect(original.isMounted, isTrue);
+        expect(original.controller, same(controller));
+        expect(original.generation, generation);
+        return true;
+      },
+    );
+  }
+
   Finder _groupTitle(String id, {bool skipOffstage = true}) {
     final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
     final originalLease = lease;
     final originalController = originalLease.controller;
     final originalGeneration = originalLease.generation;
-    // The header's Align/Row can have its centre in a Spacer, outside its
-    // children's hit path. Target the real title inside this exact unit, not
-    // the disclosure's body or another group's identically labelled header.
+    // Navigation reveals the actual title in this exact Work header, not a
+    // member or another group's label. Toggle gestures use tapGroupHeader.
     final title = timelineGroupTitleFinder(
       tester,
       header,
@@ -983,9 +1038,10 @@ final class TimelineObservation {
         timeout: timeout,
       );
     }
-    if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(_groupTitle(id), timeout: timeout);
+    if (!groupExpanded(id)) {
+      await tapGroupHeader(id, timeout: timeout);
     }
+    expect(groupExpanded(id), isTrue);
     TimelineGroupDisplay? display;
     await until(
       () {
@@ -1281,7 +1337,10 @@ final class TimelineObservation {
     );
     final header = candidates.first;
     if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(timelineGroupTitleFinder(tester, header), timeout: remaining());
+      await tap(
+        timelineActivityTitleFinder(tester, header),
+        timeout: remaining(),
+      );
     }
     expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
   }
@@ -1405,7 +1464,7 @@ final class TimelineObservation {
         requireOwnerAndCollapsedCards();
         final header = groupHeader(id);
         expect(header, findsOneWidget);
-        if (tester.widget<TimelineActivityRow>(header).expanded) {
+        if (groupExpanded(id)) {
           TimelineGroupDisplay? current;
           await until(
             () {
@@ -1422,9 +1481,10 @@ final class TimelineObservation {
           tracked.add(original);
           expect(original.blockReference, unit(id).memberReference!);
           sample('before-click', id: id);
-          // Borrow after navigation. This dynamic exact-card title remains the
+          // Borrow after navigation. This exact-card header remains the
           // target if layout replaces its Element; retirement is not a click.
-          await tap(_groupTitle(id), timeout: remaining());
+          await tapGroupHeader(id, timeout: remaining());
+          expect(groupExpanded(id), isFalse);
           clicked.add(id);
           sample('after-click', id: id);
           requireOwnerAndCollapsedCards();

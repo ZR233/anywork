@@ -377,6 +377,7 @@ impl PresentationState {
     pub fn prepare(
         &mut self,
         effect: u64,
+        committed_at: i64,
         facts: &[ChatAtom],
         sources: &[ChatSourceState],
         completions: &[Arc<ChatItem>],
@@ -477,7 +478,7 @@ impl PresentationState {
                     .saturating_add(bytes(member.as_ref())?);
                 self.members.insert(position, member.clone());
                 changed_members.insert(position, member);
-                self.replace_header(header, &mut touched)?;
+                self.replace_header(header, committed_at, &mut touched)?;
             } else {
                 let order = if work(&atom) {
                     if let Some(order) =
@@ -485,13 +486,13 @@ impl PresentationState {
                     {
                         order
                     } else {
-                        self.create(&atom, &key, true, &mut touched)?
+                        self.create(&atom, &key, true, committed_at, &mut touched)?
                     }
                 } else {
                     // TextStarted is already admitted. Independent inputs/background results have
                     // their own typed lane, and never close a foreground lane.
-                    self.boundary(&atom.source, evidence(&atom), &mut touched)?;
-                    self.create(&atom, &key, false, &mut touched)?
+                    self.boundary(&atom.source, evidence(&atom), committed_at, &mut touched)?;
+                    self.create(&atom, &key, false, committed_at, &mut touched)?
                 };
                 let mut header = self.blocks[&order].as_ref().clone();
                 header.next_member = header
@@ -514,11 +515,11 @@ impl PresentationState {
                 self.member_locations.insert(key, position);
                 self.members.insert(position, member.clone());
                 changed_members.insert(position, member);
-                self.replace_header(header, &mut touched)?;
+                self.replace_header(header, committed_at, &mut touched)?;
             }
             self.drain(
                 &atom.source,
-                effect,
+                (effect, committed_at),
                 &mut touched,
                 &mut published,
                 &mut remove_empty,
@@ -526,10 +527,10 @@ impl PresentationState {
         }
         for source in sources {
             if matches!(source.lifecycle, ChatSourceLifecycle::Ended { .. }) {
-                self.boundary(&source.source, source.ended, &mut touched)?;
+                self.boundary(&source.source, source.ended, committed_at, &mut touched)?;
                 self.drain(
                     &source.source,
-                    effect,
+                    (effect, committed_at),
                     &mut touched,
                     &mut published,
                     &mut remove_empty,
@@ -572,7 +573,13 @@ impl PresentationState {
         Ok(Arc::new(delta))
     }
 
-    fn replace_header(&mut self, header: DisplayHeader, touched: &mut BTreeSet<u64>) -> Result<()> {
+    fn replace_header(
+        &mut self,
+        mut header: DisplayHeader,
+        committed_at: i64,
+        touched: &mut BTreeSet<u64>,
+    ) -> Result<()> {
+        observe_elapsed(&mut header, committed_at);
         if let Some(old) = self
             .blocks
             .insert(header.block_order, Arc::new(header.clone()))
@@ -593,6 +600,7 @@ impl PresentationState {
         atom: &ChatAtom,
         key: &str,
         is_work: bool,
+        committed_at: i64,
         touched: &mut BTreeSet<u64>,
     ) -> Result<u64> {
         self.revision = self
@@ -631,7 +639,10 @@ impl PresentationState {
             duration_known: true,
             body: if is_work {
                 DisplayBlockBody::Work {
-                    summary: Box::default(),
+                    summary: Box::new(pl_protocol::WorkSummary {
+                        created_at: Some(committed_at),
+                        ..Default::default()
+                    }),
                     members: DisplayBlockRef {
                         database_id: self.database.clone(),
                         block_id: id.clone(),
@@ -645,7 +656,7 @@ impl PresentationState {
             },
         };
         self.by_id.insert(id, order);
-        self.replace_header(header, touched)?;
+        self.replace_header(header, committed_at, touched)?;
         Ok(order)
     }
 
@@ -653,6 +664,7 @@ impl PresentationState {
         &mut self,
         source: &ChatSourceId,
         at: Option<ChatFactPosition>,
+        committed_at: i64,
         touched: &mut BTreeSet<u64>,
     ) -> Result<()> {
         let Some(at) = at else {
@@ -665,7 +677,7 @@ impl PresentationState {
         {
             let mut header = self.blocks[&order].as_ref().clone();
             header.boundary = Some(at);
-            self.replace_header(header, touched)?;
+            self.replace_header(header, committed_at, touched)?;
         }
         Ok(())
     }
@@ -673,7 +685,7 @@ impl PresentationState {
     fn drain(
         &mut self,
         source: &ChatSourceId,
-        effect: u64,
+        (effect, committed_at): (u64, i64),
         touched: &mut BTreeSet<u64>,
         published: &mut BTreeMap<u64, (Arc<DisplayHeader>, Arc<DisplayBlock>)>,
         remove_empty: &mut Vec<Arc<DisplayHeader>>,
@@ -721,6 +733,7 @@ impl PresentationState {
                     .filter(|value| *value <= i64::MAX as u64)
                     .context("display history exhausted")?;
                 header.history_pos = Some(self.published);
+                observe_elapsed(&mut header, committed_at);
                 let block = Arc::new(header.frozen().expect("assigned display position"));
                 self.pending.insert(self.published, block.clone());
                 self.retired.insert(self.published, (effect, order));
@@ -742,6 +755,16 @@ impl PresentationState {
             self.lanes.remove(source);
         }
         Ok(())
+    }
+}
+
+fn observe_elapsed(header: &mut DisplayHeader, committed_at: i64) {
+    if let DisplayBlockBody::Work { summary, .. } = &mut header.body {
+        summary.elapsed_ms = summary
+            .created_at
+            .and_then(|created| committed_at.checked_sub(created))
+            .and_then(|seconds| u64::try_from(seconds).ok())
+            .and_then(|seconds| seconds.checked_mul(1000));
     }
 }
 

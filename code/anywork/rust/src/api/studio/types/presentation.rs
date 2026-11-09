@@ -1,6 +1,6 @@
 //! Mechanical FRB projection of the product presentation protocol.
 
-use super::{BridgeChatAtom, BridgeChatPlacement, BridgeContentRef};
+use super::{BridgeChatAtom, BridgeChatPlacement, BridgeChatSourceId, BridgeContentRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeDisplayBlockRef {
@@ -17,6 +17,8 @@ pub struct BridgeWorkSummary {
     pub failed: u64,
     pub cancelled: u64,
     pub transferred: u64,
+    pub created_at: Option<i64>,
+    pub elapsed_ms: Option<u64>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub duration_ms: Option<u64>,
@@ -47,6 +49,7 @@ pub struct BridgeDisplayBlock {
 pub struct BridgeLiveDisplayBlock {
     pub id: String,
     pub block_order: u64,
+    pub source: Option<BridgeChatSourceId>,
     pub body: BridgeDisplayBlockBody,
     pub closing: bool,
 }

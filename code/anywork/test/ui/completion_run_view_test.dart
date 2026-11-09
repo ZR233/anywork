@@ -41,12 +41,16 @@ void main() {
           );
         }
 
-        await adapter.applyTimeline(displayBatch([displayWork('first', 1, total: 1)]));
+        await adapter.applyTimeline(
+          displayBatch([displayWork('first', 1, total: 1)]),
+        );
         await tester.pumpWidget(display());
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
         expect(
           tester
-              .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+              .widget<TimelineActivityIndicator>(
+                find.byType(TimelineActivityIndicator),
+              )
               .active,
           isFalse,
         );
@@ -74,7 +78,9 @@ void main() {
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
         expect(
           tester
-              .widget<TimelineActivityRow>(find.byType(TimelineActivityRow))
+              .widget<TimelineActivityIndicator>(
+                find.byType(TimelineActivityIndicator),
+              )
               .active,
           isFalse,
         );
@@ -119,10 +125,7 @@ void main() {
             ),
           ),
         );
-        expect(
-          find.text(_runTitle(tester, 100000)),
-          findsOneWidget,
-        );
+        expect(find.text(_runTitle(tester, 100000)), findsOneWidget);
         expect(reads, 0);
         expect(find.textContaining('失败'), findsNothing);
         expect(find.textContaining('思考'), findsNothing);
@@ -136,8 +139,7 @@ void main() {
 
 String _runTitle(WidgetTester tester, int count) {
   final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-  final label = l10n.timelineGroupRecord;
-  return '$label · ${l10n.timelineGroupMemberCount(count)}';
+  return l10n.timelineGroupRecord;
 }
 
 class _Body extends StatefulWidget {

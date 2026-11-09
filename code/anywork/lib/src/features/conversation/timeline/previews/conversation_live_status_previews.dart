@@ -11,7 +11,6 @@ import '../widgets/chat_item_view.dart';
 import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
-import '../widgets/timeline_activity_section.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
 
@@ -50,8 +49,9 @@ Widget liveStatusGroupPreview({
   if (history) {
     return CompletionRunView(
       id: 'preview-history',
-      summary: TimelinePreviewFixtures.workSummary(4),
+      summary: TimelinePreviewFixtures.workSummary(2),
       initiallyExpanded: false,
+      location: WorkDisplayLocation.history,
       childBuilder: (_) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -63,6 +63,18 @@ Widget liveStatusGroupPreview({
   }
   if (idle) return const SizedBox.shrink();
   return _ActivityPreview(
+    summary: WorkSummary(
+      total: thinkingOnly ? 1 : 2,
+      terminal: 0,
+      running: thinkingOnly ? 1 : 2,
+      waiting: 0,
+      failed: 0,
+      cancelled: 0,
+      transferred: 0,
+      createdAt: 100,
+      elapsedMs: 125000,
+      thinkingSummary: '梳理会话共享组件与锁定边界',
+    ),
     childBuilder: (_) => Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -174,6 +186,17 @@ Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
       _ActivityPreview(
+        summary: const WorkSummary(
+          total: 1,
+          terminal: 0,
+          running: 0,
+          waiting: 1,
+          failed: 0,
+          cancelled: 0,
+          transferred: 0,
+          createdAt: 100,
+          elapsedMs: 125000,
+        ),
         childBuilder: (_) => TimelineWaitDetails(
           identity: 'preview-wait-member',
           presentation: ThreadWaitPresentationView(
@@ -266,6 +289,19 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
       _ActivityPreview(
+        initiallyExpanded: true,
+        summary: const WorkSummary(
+          total: 3,
+          terminal: 3,
+          running: 0,
+          waiting: 0,
+          failed: 0,
+          cancelled: 0,
+          transferred: 0,
+          createdAt: 100,
+          elapsedMs: 125000,
+          thinkingSummary: '核对运行期选择器锁定规则',
+        ),
         childBuilder: (_) => const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -304,6 +340,7 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
       _ActivityPreview(
+        initiallyExpanded: true,
         childBuilder: (_) => TimelineToolDetails(
           initiallyExpanded: true,
           item: TimelineToolPresentation(
@@ -322,11 +359,33 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
 );
 
 class _ActivityPreview extends StatelessWidget {
-  const _ActivityPreview({required this.childBuilder});
+  const _ActivityPreview({
+    required this.childBuilder,
+    this.initiallyExpanded = false,
+    this.summary = const WorkSummary(
+      total: 1,
+      terminal: 0,
+      running: 1,
+      waiting: 0,
+      failed: 0,
+      cancelled: 0,
+      transferred: 0,
+      createdAt: 100,
+      elapsedMs: 125000,
+    ),
+  });
   final WidgetBuilder childBuilder;
+  final bool initiallyExpanded;
+  final WorkSummary summary;
   @override
-  Widget build(BuildContext context) => TimelineActivitySection(
-    header: const Text('进行中'),
-    body: Builder(builder: childBuilder),
+  Widget build(BuildContext context) => CompletionRunView(
+    id: 'preview-live-work',
+    summary: summary,
+    location: WorkDisplayLocation.live,
+    executionPresent: true,
+    initiallyExpanded: initiallyExpanded,
+    // A fixed synthetic observation cut, not a reconstructed production clock.
+    now: () => DateTime.fromMillisecondsSinceEpoch(225000),
+    childBuilder: childBuilder,
   );
 }

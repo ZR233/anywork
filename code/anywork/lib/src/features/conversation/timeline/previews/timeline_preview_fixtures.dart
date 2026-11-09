@@ -426,14 +426,24 @@ abstract final class TimelinePreviewFixtures {
           historyPos: entry.completionSeq,
           body: WorkDisplayBlock(
             summary: workSummary(entry.run!.ordinal),
-            members: DisplayBlockRef(databaseId: 'preview', blockId: entry.recordId),
+            members: DisplayBlockRef(
+              databaseId: 'preview',
+              blockId: entry.recordId,
+            ),
           ),
         ),
       );
 
   static WorkSummary workSummary(int count) => WorkSummary(
-    total: count, terminal: count, running: 0, waiting: 0,
-    failed: 0, cancelled: 0, transferred: 0,
+    total: count,
+    terminal: count,
+    running: 0,
+    waiting: 0,
+    failed: 0,
+    cancelled: 0,
+    transferred: 0,
+    createdAt: 100,
+    elapsedMs: 125000,
   );
 
   static Map<String, Object?> _imageMetadata(String id) => {

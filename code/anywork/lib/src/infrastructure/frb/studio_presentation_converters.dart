@@ -38,6 +38,13 @@ WorkSummary _workSummaryFromFrb(frb_presentation.BridgeWorkSummary value) =>
           ? null
           : _exactSignedTimelineInt(value.finishedAt!),
       durationMs: _exactNullableTimelineInt(value.durationMs, 'work duration'),
+      createdAt: value.createdAt == null
+          ? null
+          : _exactSignedTimelineInt(value.createdAt!),
+      elapsedMs: _exactNullableTimelineInt(
+        value.elapsedMs,
+        'work elapsed time',
+      ),
       thinkingSummary: value.thinkingSummary,
       thinkingContent: value.thinkingContent == null
           ? null

@@ -303,6 +303,8 @@ fn revision_bytes(id: &str) -> u64 {
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
+    /// Original journal timestamp in Unix seconds, retained across publication/ACK retries.
+    committed_at: i64,
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
     pub(in crate::studio) current:
         Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
@@ -1624,6 +1626,7 @@ impl LiveProjection {
         // reliable retention/publication assigns the original completion seqs.
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
+            committed_at: effect.committed_at,
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
@@ -1679,6 +1682,7 @@ impl LiveProjection {
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
+            committed_at: effect.committed_at,
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
@@ -2207,6 +2211,7 @@ impl LiveProjection {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prepare(
                 prepared.sequence,
+                prepared.committed_at,
                 &display_facts,
                 &prepared.current.source_changes,
                 &records,

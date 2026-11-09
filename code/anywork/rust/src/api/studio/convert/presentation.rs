@@ -37,6 +37,8 @@ fn summary(value: protocol::WorkSummary) -> BridgeWorkSummary {
         failed: value.failed,
         cancelled: value.cancelled,
         transferred: value.transferred,
+        created_at: value.created_at,
+        elapsed_ms: value.elapsed_ms,
         started_at: value.started_at,
         finished_at: value.finished_at,
         duration_ms: value.duration_ms,
@@ -75,6 +77,7 @@ pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDispl
             .map(|block| BridgeLiveDisplayBlock {
                 id: block.id,
                 block_order: block.block_order,
+                source: block.source.map(chat::source_id),
                 body: body(block.body),
                 closing: block.closing,
             })
@@ -144,6 +147,8 @@ mod tests {
                 failed: 1,
                 cancelled: 0,
                 transferred: 1,
+                created_at: Some(1_700_000_000),
+                elapsed_ms: Some(125_000),
                 ..Default::default()
             }),
             members: reference(),
@@ -173,6 +178,11 @@ mod tests {
         assert_eq!(mapped.from_pos, Some(3));
         assert_eq!(mapped.through_pos, 4);
         assert_eq!(mapped.blocks[0].history_pos, 4);
+        let BridgeDisplayBlockBody::Work { summary, .. } = &mapped.blocks[0].body else {
+            panic!("expected Work");
+        };
+        assert_eq!(summary.created_at, Some(1_700_000_000));
+        assert_eq!(summary.elapsed_ms, Some(125_000));
         assert!(mapped.live.is_none(), "split cut must not clear live");
 
         let mut live_only = cut();
@@ -185,6 +195,9 @@ mod tests {
             blocks: vec![protocol::LiveDisplayBlock {
                 id: "unresolved".into(),
                 block_order: 11,
+                source: Some(protocol::ChatSourceId::ForegroundTurn {
+                    turn_id: "original-work-turn".into(),
+                }),
                 body: work(),
                 closing: true,
             }],
@@ -196,6 +209,8 @@ mod tests {
         assert!(!live.execution_present);
         assert_eq!(live.older.as_deref(), Some("original-live-continuation"));
         assert!(live.blocks[0].closing);
+        assert!(matches!(&live.blocks[0].source,
+            Some(BridgeChatSourceId::ForegroundTurn { turn_id }) if turn_id == "original-work-turn"));
         let BridgeDisplayBlockBody::Work { summary, members } = &live.blocks[0].body else {
             panic!("work body must not be inferred from completed content");
         };

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    ChatAtom, ChatPlacement, ContentRef,
+    ChatAtom, ChatPlacement, ChatSourceId, ContentRef,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
@@ -28,6 +28,12 @@ pub struct WorkSummary {
     pub failed: u64,
     pub cancelled: u64,
     pub transferred: u64,
+    /// First member creation's reliable effect time, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    /// Wall elapsed milliseconds observed at the last reliable header update; final in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub duration_ms: Option<u64>,
@@ -66,6 +72,8 @@ pub struct DisplayBlock {
 pub struct LiveDisplayBlock {
     pub id: String,
     pub block_order: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ChatSourceId>,
     pub body: DisplayBlockBody,
     pub closing: bool,
 }
@@ -192,6 +200,25 @@ mod tests {
     }
 
     #[test]
+    fn work_creation_and_elapsed_evidence_round_trip_without_backfilling_old_heads() {
+        let old = serde_json::to_value(WorkSummary::default()).unwrap();
+        assert!(old.get("createdAt").is_none());
+        assert!(old.get("elapsedMs").is_none());
+        let mut summary: WorkSummary = serde_json::from_value(old).unwrap();
+        assert_eq!(summary.created_at, None);
+        assert_eq!(summary.elapsed_ms, None);
+        summary.created_at = Some(1_700_000_000);
+        summary.elapsed_ms = Some(125_000);
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(wire["createdAt"], 1_700_000_000_i64);
+        assert_eq!(wire["elapsedMs"], 125_000_u64);
+        assert_eq!(
+            serde_json::from_value::<WorkSummary>(wire).unwrap(),
+            summary
+        );
+    }
+
+    #[test]
     fn body_indirection_keeps_the_flat_wire_shape() {
         let body = work("work");
         let wire = serde_json::to_value(&body).unwrap();
@@ -264,6 +291,7 @@ mod tests {
                 blocks: vec![LiveDisplayBlock {
                     id: "g1".into(),
                     block_order: 1,
+                    source: None,
                     body: work("g1"),
                     closing: true,
                 }],

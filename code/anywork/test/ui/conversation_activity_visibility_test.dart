@@ -1,6 +1,7 @@
 import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
+
 import '../support/display_fixtures.dart';
 import '../support/completion_fixtures.dart';
 
@@ -66,45 +67,114 @@ ConversationRealtimeRegion _project(PendingInteraction? interaction) =>
     );
 
 void main() {
+  test('realtime projection preserves the actual thinking phase timing', () {
+    final region = projectConversationRealtime(
+      storage: null,
+      interaction: null,
+      live: _live,
+      status: const ThreadActivityView(
+        threadId: 'thread',
+        identity: 'thinking-phase',
+        revision: 2,
+        turnId: 'turn',
+        kind: ThreadActivityKind.thinking,
+        summary: '思考中',
+        thinkingSummary: '核对实时呈现与创建时间',
+        thinkingSeconds: 17,
+      ),
+    ) as ContentRealtimeRegion;
+    final view = region.notices
+        .whereType<ExecutionRealtimeNotice>()
+        .single
+        .view;
+    expect(view.thinkingSummary, '核对实时呈现与创建时间');
+    expect(view.thinkingSeconds, 17);
+  });
+
   test('closing Work and successor text remain ordered and storage/stop notices coexist', () {
     final live = LiveDisplayWindow(
-      revision: 4, historyThrough: 3, executionPresent: true,
+      revision: 4,
+      historyThrough: 3,
+      executionPresent: true,
       blocks: [
-        LiveDisplayBlock(id: 'work', blockOrder: 1, closing: true, body: displayWork('work', 4).body),
-        LiveDisplayBlock(id: 'text', blockOrder: 2, closing: false,
-          body: SingleDisplayBlock(atom: completionEntry('text', 5, text: '正文').atom)),
+        LiveDisplayBlock(
+          id: 'work',
+          blockOrder: 1,
+          closing: true,
+          body: displayWork('work', 4).body,
+        ),
+        LiveDisplayBlock(
+          id: 'text',
+          blockOrder: 2,
+          closing: false,
+          body: SingleDisplayBlock(
+            atom: completionEntry('text', 5, text: '正文').atom,
+          ),
+        ),
       ],
     );
     final projected = projectConversationRealtime(
       live: live,
       interaction: null,
-      storage: const ThreadStorageStateView(fault: ThreadHistoryFault.writeFailed),
+      storage: const ThreadStorageStateView(
+        fault: ThreadHistoryFault.writeFailed,
+      ),
       status: const ThreadActivityView(
-        threadId: 'thread', identity: 'stopping', revision: 2, turnId: 'turn',
-        kind: ThreadActivityKind.stopping, summary: '停止中',
+        threadId: 'thread',
+        identity: 'stopping',
+        revision: 2,
+        turnId: 'turn',
+        kind: ThreadActivityKind.stopping,
+        summary: '停止中',
       ),
     ) as ContentRealtimeRegion;
     expect(projected.live, same(live));
     expect(projected.live!.blocks.map((block) => block.id), ['work', 'text']);
-    expect(projected.notices.whereType<ExecutionRealtimeNotice>().map((notice) => notice.view.kind),
-      [ConversationActivityKind.stopping, ConversationActivityKind.storageBlocked]);
+    expect(
+      projected.notices.whereType<ExecutionRealtimeNotice>().map(
+        (notice) => notice.view.kind,
+      ),
+      [
+        ConversationActivityKind.stopping,
+        ConversationActivityKind.storageBlocked,
+      ],
+    );
   });
 
   test('cold open retains saved blocks but cannot project thinking or a running timer', () {
     final live = LiveDisplayWindow(
-      revision: 4, historyThrough: 3, executionPresent: false,
-      blocks: [LiveDisplayBlock(id: 'work', blockOrder: 1, closing: false, body: displayWork('work', 4).body)],
+      revision: 4,
+      historyThrough: 3,
+      executionPresent: false,
+      blocks: [
+        LiveDisplayBlock(
+          id: 'work',
+          blockOrder: 1,
+          closing: false,
+          body: displayWork('work', 4).body,
+        ),
+      ],
     );
     final projected = projectConversationRealtime(
-      live: live, interaction: null, storage: null, status: _status,
+      live: live,
+      interaction: null,
+      storage: null,
+      status: _status,
     ) as ContentRealtimeRegion;
     expect(projected.live, same(live));
     expect(projected.notices.single, isA<UnrestoredRealtimeNotice>());
   });
 
   test('idle history-only region hides without suppressing the final historical block', () {
-    expect(projectConversationRealtime(live: null, interaction: null, storage: null, status: null),
-      isA<HiddenRealtimeRegion>());
+    expect(
+      projectConversationRealtime(
+        live: null,
+        interaction: null,
+        storage: null,
+        status: null,
+      ),
+      isA<HiddenRealtimeRegion>(),
+    );
   });
   test('Plan confirmation uses its State controls without hiding the actual activity snapshot', () {
     final state = _project(
@@ -132,8 +202,10 @@ void main() {
 
     expect(state, isNotNull);
     expect(state.live, same(_live));
-    expect(state.notices.whereType<ExecutionRealtimeNotice>().single.view.kind,
-      ConversationActivityKind.thinking);
+    expect(
+      state.notices.whereType<ExecutionRealtimeNotice>().single.view.kind,
+      ConversationActivityKind.thinking,
+    );
   });
 
   test('tool approval keeps the existing activity projection', () {
@@ -141,7 +213,14 @@ void main() {
 
     expect(state, isNotNull);
     expect(state.live, same(_live));
-    expect(state.notices.whereType<ExecutionRealtimeNotice>().map((notice) => notice.view.kind),
-      [ConversationActivityKind.thinking, ConversationActivityKind.awaitingApproval]);
+    expect(
+      state.notices.whereType<ExecutionRealtimeNotice>().map(
+        (notice) => notice.view.kind,
+      ),
+      [
+        ConversationActivityKind.thinking,
+        ConversationActivityKind.awaitingApproval,
+      ],
+    );
   });
 }

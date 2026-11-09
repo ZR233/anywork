@@ -115,7 +115,8 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
         ))?
     );
     assert!(
-        matches!(&history[0].body, DisplayBlockBody::Work { summary, .. } if summary.total == 129)
+        matches!(&history[0].body, DisplayBlockBody::Work { summary, .. }
+            if summary.total == 129 && summary.created_at.is_none() && summary.elapsed_ms.is_none())
     );
     let members = conversation::display::member_page(&db, &history[2].id, Some(129), 2).await?;
     assert_eq!(

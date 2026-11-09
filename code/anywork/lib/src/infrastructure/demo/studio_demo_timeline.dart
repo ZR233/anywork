@@ -341,6 +341,8 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
       'startedAt': summary.startedAt,
       'finishedAt': summary.finishedAt,
       'durationMs': summary.durationMs,
+      if (summary.createdAt != null) 'createdAt': summary.createdAt,
+      if (summary.elapsedMs != null) 'elapsedMs': summary.elapsedMs,
       'thinkingSummary': summary.thinkingSummary,
       'thinkingContent': summary.thinkingContent == null
           ? null

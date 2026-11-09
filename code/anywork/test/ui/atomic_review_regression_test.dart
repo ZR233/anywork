@@ -163,8 +163,13 @@ Future<void> _dispose(
 void _expectCount(WidgetTester tester) {
   final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
   expect(
-    find.text(
-      '${l10n.timelineGroupRecord} · ${l10n.timelineGroupMemberCount(82)}',
+    find.byWidgetPredicate(
+      (widget) =>
+          widget is Semantics &&
+          (widget.properties.label?.contains(
+                l10n.timelineGroupMemberCount(82),
+              ) ??
+              false),
     ),
     findsOneWidget,
   );

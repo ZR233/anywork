@@ -20007,6 +20007,8 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeWorkSummary {
         let mut var_failed = <u64>::sse_decode(deserializer);
         let mut var_cancelled = <u64>::sse_decode(deserializer);
         let mut var_transferred = <u64>::sse_decode(deserializer);
+        let mut var_createdAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_elapsedMs = <Option<u64>>::sse_decode(deserializer);
         let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_durationMs = <Option<u64>>::sse_decode(deserializer);
@@ -20021,6 +20023,8 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeWorkSummary {
             failed: var_failed,
             cancelled: var_cancelled,
             transferred: var_transferred,
+            created_at: var_createdAt,
+            elapsed_ms: var_elapsedMs,
             started_at: var_startedAt,
             finished_at: var_finishedAt,
             duration_ms: var_durationMs,
@@ -38290,6 +38294,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::
             self.failed.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
             self.transferred.into_into_dart().into_dart(),
+            self.created_at.into_into_dart().into_dart(),
+            self.elapsed_ms.into_into_dart().into_dart(),
             self.started_at.into_into_dart().into_dart(),
             self.finished_at.into_into_dart().into_dart(),
             self.duration_ms.into_into_dart().into_dart(),
@@ -48947,6 +48953,8 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeWorkSummary {
         <u64>::sse_encode(self.failed, serializer);
         <u64>::sse_encode(self.cancelled, serializer);
         <u64>::sse_encode(self.transferred, serializer);
+        <Option<i64>>::sse_encode(self.created_at, serializer);
+        <Option<u64>>::sse_encode(self.elapsed_ms, serializer);
         <Option<i64>>::sse_encode(self.started_at, serializer);
         <Option<i64>>::sse_encode(self.finished_at, serializer);
         <Option<u64>>::sse_encode(self.duration_ms, serializer);

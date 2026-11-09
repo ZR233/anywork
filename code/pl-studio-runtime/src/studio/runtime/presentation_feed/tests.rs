@@ -45,6 +45,7 @@ fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
                     body: body(&id),
                     id,
                     block_order: *order,
+                    source: None,
                     closing: false,
                 }
             })

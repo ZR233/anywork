@@ -117,7 +117,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
         }),
         outcome: ChatTerminalOutcome::Cancelled,
     };
-    let seed = owner.prepare(1, &[atom], &[], &[])?;
+    let seed = owner.prepare(1, 10, &[atom], &[], &[])?;
     let mut frozen = seed.blocks[0].header.as_ref().clone();
     frozen.id = "history-20".into();
     frozen.block_order = 20;
@@ -225,6 +225,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
             .map(|header| LiveDisplayBlock {
                 id: header.id,
                 block_order: header.block_order,
+                source: Some(header.source),
                 body: header.body,
                 closing: header.boundary.is_some(),
             })

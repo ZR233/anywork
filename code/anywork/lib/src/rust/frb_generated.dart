@@ -19075,8 +19075,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeWorkSummary dco_decode_bridge_work_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return BridgeWorkSummary(
       total: dco_decode_u_64(arr[0]),
       terminal: dco_decode_u_64(arr[1]),
@@ -19085,11 +19085,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       failed: dco_decode_u_64(arr[4]),
       cancelled: dco_decode_u_64(arr[5]),
       transferred: dco_decode_u_64(arr[6]),
-      startedAt: dco_decode_opt_box_autoadd_i_64(arr[7]),
-      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[8]),
-      durationMs: dco_decode_opt_box_autoadd_u_64(arr[9]),
-      thinkingSummary: dco_decode_opt_String(arr[10]),
-      thinkingContent: dco_decode_opt_box_autoadd_bridge_content_ref(arr[11]),
+      createdAt: dco_decode_opt_box_autoadd_i_64(arr[7]),
+      elapsedMs: dco_decode_opt_box_autoadd_u_64(arr[8]),
+      startedAt: dco_decode_opt_box_autoadd_i_64(arr[9]),
+      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[10]),
+      durationMs: dco_decode_opt_box_autoadd_u_64(arr[11]),
+      thinkingSummary: dco_decode_opt_String(arr[12]),
+      thinkingContent: dco_decode_opt_box_autoadd_bridge_content_ref(arr[13]),
     );
   }
 
@@ -33977,6 +33979,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_failed = sse_decode_u_64(deserializer);
     var var_cancelled = sse_decode_u_64(deserializer);
     var var_transferred = sse_decode_u_64(deserializer);
+    var var_createdAt = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_elapsedMs = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_startedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_finishedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_durationMs = sse_decode_opt_box_autoadd_u_64(deserializer);
@@ -33992,6 +33996,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       failed: var_failed,
       cancelled: var_cancelled,
       transferred: var_transferred,
+      createdAt: var_createdAt,
+      elapsedMs: var_elapsedMs,
       startedAt: var_startedAt,
       finishedAt: var_finishedAt,
       durationMs: var_durationMs,
@@ -48015,6 +48021,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.failed, serializer);
     sse_encode_u_64(self.cancelled, serializer);
     sse_encode_u_64(self.transferred, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.createdAt, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.elapsedMs, serializer);
     sse_encode_opt_box_autoadd_i_64(self.startedAt, serializer);
     sse_encode_opt_box_autoadd_i_64(self.finishedAt, serializer);
     sse_encode_opt_box_autoadd_u_64(self.durationMs, serializer);

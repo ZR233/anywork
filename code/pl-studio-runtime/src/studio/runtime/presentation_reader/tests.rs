@@ -26,6 +26,9 @@ fn head(order: u64) -> LiveDisplayBlock {
     LiveDisplayBlock {
         id: format!("block-{order}"),
         block_order: order,
+        source: Some(ChatSourceId::ForegroundTurn {
+            turn_id: "turn".into(),
+        }),
         body: DisplayBlockBody::Work {
             summary: Box::default(),
             members: reference(),

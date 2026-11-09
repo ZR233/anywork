@@ -17,6 +17,10 @@
 
 原 `ChatDraft → ChatItem` 和 `conversation_items` 是唯一完成原件。展示快照只持小头、身份、成员引用及计数，不是第二套执行状态。无新 actor、线程、全局注册表、writer、可靠展示队列或保存定时器。真实 Plan、交互和配置仍由原领域 State 管理。
 
+会话资源沿原 Session → AgentRuntime → NativeResources 持有，执行与检查点继续归 Core owner；展示投影属于原 Native observation，不建立另一份成员登记。关闭先同步撤销发布和新读资格，再由原会话关闭任务汇合订阅、观察及在途读取。冷读只借已保存快照，不物化 Native、不重算分组、不推进计时。
+
+State 与内容是独立资源：Repository 是 Dart State 唯一写入口，State feed 独立确认、恢复和关闭；Timeline、完成内容及成员读取不转发第二份 State，也不因暂停内容信用阻塞状态终态或统计。GUI 的展示流替代旧完成内容流承担卡片交付，不替代 State feed；非 GUI 完成级消费者继续使用原内容接口。本次整组交接规则替代旧版“活动临时组合、不延续历史身份”的约定，而不是撤销状态/内容分域或会话资源所有权。
+
 ### 已接纳输入与已接收外部内容
 
 “完成”表示这条事实已确定，不是整个任务完成。普通输入在原 `InputChange::Accepted` 可靠接纳时沿原 input.id 冻结，排队不等 Turn 开始。Pending→Consumed/Discarded、后来的 Turn/attempt 关联只更新执行/State，不重新封存原件；未知关联保持 None。同 ID 同冻结内容幂等，异内容冲突；同文不同受理 ID 是两条事实。
@@ -54,7 +58,7 @@
 | 页面关闭/观察取消 | 释放读取，不取消执行、不构造边界 |
 | 权限/问答待决 | State/dock 保持可操作；遮蔽实时区不销毁展示状态 |
 
-可交接条件只有：存在真实 boundary、unfinished_count=0、同来源更早段均已交接。工作时长只累积真实工作时间，不累加全员完成后等待后继的空闲；缺失时间保持 None。
+可交接条件只有：存在真实 boundary、unfinished_count=0、同来源更早段均已交接。组可见经过时间从第一条信息的可靠创建时间起算，包含组内等待及全员完成后等待真实边界的时间，进入历史后冻结；旧活动累计时长不作组经过时间，缺失时间保持 None。
 
 逆序例：`R开始 → A开始 → T开始 → T完成 → A完成 → R完成`，原子 seq 仍为 T/A/R。实时区保留 G(R,A) 与 T；R 真实结束后一次追加 G，再追加 T。独立输入及后台来源不受该前台阻塞。
 
@@ -92,7 +96,9 @@
 
 LiveDisplayWindow 携 revision、history_through=P、execution_present、有界 blocks 与可空 older。超过帧预算从最新块头向前选一页，显式提供“更早实时片段”；older 绑定原 read 资格及块结构代次，token 不换代，结构变化后 stale 只刷新 live 窗口，不重建历史。
 
-TimelineBatch 携 presentation_version、Set/Prepend/Append、blocks、before、from_pos、through_pos 及可空 live。GUI Timeline feed 仅交付 State/Timeline/Failure/Closed，不同时交 Chat/Activity 让 Flutter 合并。原 completedHistoryVersion=1、Thread State schema17 及原完成 feed 语义保留给完成级消费者。
+每个 `LiveDisplayBlock` 同切面交付可空、类型化的 `source: ChatSourceId`，直接来自原 `DisplayHeader.source`，不是从块 ID、摘要或成员原件反推。原 reader 对内存头和已保存开放头使用同一字段映射；缺少可靠归属时保持未知。字段仍是有界头元数据，不新增查询、成员读取或第二份归属事实。
+
+TimelineBatch 携 presentation_version、Set/Prepend/Append、blocks、before、from_pos、through_pos 及可空 live。GUI Timeline feed 仅交付 Timeline/Failure/Closed，不转发 State，也不同时交 Chat/Activity 让 Flutter 合并；状态沿独立 State feed。原 completedHistoryVersion=1、Thread State schema17 及原完成 feed 语义保留给完成级消费者。
 
 1. 先登记观察再捕获 `(P0,live0)`；首 Set 建立同切面历史页与 live。
 2. 后续固定目标 `(Pt,live_t)`，按预算追赶冻结头，不追逐无限变化目标。
@@ -127,6 +133,8 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空 completi
 
 完成卡的 Deferred payload 是原件定位，不是把业务卡降级为原始 JSON 的展示类型。实际挂载且仍有资格的 Single 卡或展开成员，沿原 `read_completed` 以 completion 身份、有界预算读取 canonical envelope，核对原件、atom、来源及完成身份后，复用原业务解码和 renderer；保留外层 block/member key、展开意图与 Main controller，不把解码结果回写展示头或另建消息列表。折叠 Work 不枚举或预读成员原件；正文、输出和媒体仍由原引用按各自窗口读取。metadata 单次读取采用现有 64 KiB 预算；若返回仍为 Deferred、身份矛盾或解码失败，明确呈现该限制或错误，不自动扩大预算、累计任意全文或把截断信封当作业务卡。离页、收起及资格换代撤销局部读取，迟到结果不得恢复已退役视图。底层原文范围查看器不承担业务 envelope 解码。
 
+正文是否直接显示不取决于长度或外层信封的 Inline/Deferred：已挂载正文沿原有界窗口复用 Markdown、选择复制、换行与安全链接/媒体规则。已知用户 Input 的公开 Body 声明独立于外层预算，按明确归属于当前输入项的正文引用直接显示，不先要求解码原始信封；未知域及 `accepted.payload` 不推断为正文，缺声明保留诊断边界。工具和思考详情仍按语义折叠。文件卡继续消费显式 `pl.tool.files@1` 与原附件资源身份，保留 ready/failed 区别、跨布局读取资格和敏感内容边界，不复活旧工具实现或从 opaque 外观猜格式。
+
 交互 Deferred 请求是结构化信封：沿原独立资格按窗口累计最多 1 MiB 后解码，超预算明确失败，不截断或显示原始 JSON。跨窗验证 ref/generation/总长/sealed，按字节累计后 UTF-8 解码。展示/复制仅用 canonical 解码及敏感过滤结果，无原始信封复制/下载旁路。旧 Plan 引用读原版本或 stale，不静默换最新文档。
 
 引用换代只退役受影响详情；折叠、换窗或离开撤销本视图资格并汇合读取，不关闭其他观察或执行。搜索区分借入 cursor 与新建未交付资格，失败回收后者，完整结果成功后才退休旧资格，不驱逐其他 scope 或突破原上限。清理失败保留待 join 义务，不掩盖业务错误。
@@ -137,9 +145,30 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空 completi
 
 Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加载块。Set 一次 setMessages，Prepend 批量前插完整旧块，Append 批量追加冻结块；没有历史尾组 merge/update 或“隐藏最后组”。纯 live/token 帧不枚举 Main。布局补载沿块页继续，无总页数上限，ACK 不等布局或用户展开。
 
+发送临时回显继续归原 Composer 提交 owner：同步冻结 inputId、正文和附件，保留“正在发送 / 已收到，等待同步 / 发送结果待确认”及防重发语义。临时回显不是 canonical 输入或工作成员；原输入接纳后按 inputId 结算，不按正文去重、不因封组重复插入、不扫描历史或新增持久消息仓储。回显与正式正文共用现有 Markdown 展示能力。
+
 实时栏采用类型化的纯呈现状态，由原 ViewModel 一次投影，Widget 穷尽匹配。区域隐藏/内容/问答占用与内部有序片段分层：可以并存 closing Work 和后继正文，不能压成只能显示一种内容的单一阶段枚举。状态提示来自真实 State，准备、思考/等待、压缩、停止、保存阻塞及冷读未恢复不替代块生命周期。
 
-问答占用只遮蔽实时区域，不清数据或补终态。保存阻塞、停止、审批提示可与内容共存；无执行 owner 不画运行计时。展开、滚动与跟随输出属于局部 UI 状态；成员读取和媒体资格由原 display lease 持有。复用同一种 Work/Single 外观及成员 renderer，不维护 rawAtoms/groups/messages 三份完整内容，不新增状态机依赖或第二消息 store。
+### 折叠呈现与文案
+
+- 实时 Work 初次呈现默认折叠；每个折叠组只有一行：左侧语义图标或真实活动指示，中间为有界思考概况或当前状态短文案，右侧对齐“执行了 2 分 5 秒”等组时长及展开入口。不再为同一组叠加一行普通“思考中”提示和一行“工作记录 · N 项”，也不默认展示成员列表、计数明细或终端输出。摘要单行省略，完整语义仍可通过无障碍说明或提示访问。
+- 没有 Work 时，准备、思考、正文生成及压缩继续采用对应的轻量状态组件；压缩不伪造工作组或展开入口。普通执行提示只在与当前片段语义相同时合并，不能把不同有序片段合成一条“最新状态”。closing Work 与后继正文仍须同时可见；“一行”约束针对折叠 Work，不是删除其他真实内容。
+- 普通提示合并必须同时证明目标 Work 的 `source` 为前台 Turn，且 **Work 的 Turn、当前 active Turn、提示的 Turn 三者相同**；还须满足当前 live 窗口最后一个可合并 Work、非 closing 等呈现条件。只核提示与 active Turn 相等不够。来源缺失、其他来源或旧 Turn 必须保留独立提示，不能为合并读取折叠成员、解析不透明 block_id 或用显示顺序猜归属。合并后保留已确认同源提示中原本可见的安全、有界思考概况或状态概要，不因移除重复状态行而只剩通用阶段名；缺少概要才回到阶段短文案。
+- 已冻结历史 Work 默认折叠，主标题为“工作了 2 分 5 秒”等同口径完成态文案，不以“工作记录 · N 项”、裸小数秒或原始进度数替代。失败、拒绝、取消、交接等真实结果保留必要的语义图标、短标记或可访问摘要；正常停止保持中性，不伪装错误或成功。
+- 点击才展开原成员窗口；按稳定 block_id 保存的用户展开意图跨 live→history 交接保持，不能因“默认折叠”强制收起用户已打开的组。实时展开区沿原有界阅读区滚动；历史展开内容跟随主时间线，不另设固定 186 像素高的小型纵向滚动容器。
+- 窄窗和大字号下优先压缩或省略摘要，保留图标、时长与可操作的展开入口，不靠缩小字号、重复标题换行或裁掉操作掩盖溢出。复用现有主题、字体、图标和交互组件，不另造预览专用外观。
+
+### 组计时口径与所有权
+
+用户可见组时长从**工作组第一条信息创建的真实时刻**起算，包含此后组内等待空档，不是累计活动区间、最近一次思考耗时或整轮请求耗时。原 owner 在首次创建 Work 时，以创建该信息的已有可靠 effect 时间事实冻结 `createdAt`（与现有 atom 时间一致，Unix 秒）；后加入成员、折叠、展开、离页重开均不能重置起点。
+
+`WorkSummary.createdAt` 与 `elapsedMs` 是有界头中的可空时间证据。`elapsedMs` 表示原 owner 在该头最近一次可靠更新时观察到的组经过毫秒数，即可靠时刻与创建时刻的秒差经受检运算乘以 1000；真实边界已出现且全部成员终态齐备、整组取得历史位置时，以本次可靠 effect 时间冻结最终值。全员完成但没有后继边界时仍为开放组，实时经过时间继续增长，不用 running=0 停止组计时或封组。原 `durationMs` 的累计活动区间统计保持原语义，不能冒充这项用户可见组时长。
+
+创建与冻结事实随原 PreparedEffect、唯一 writer 和展示快照同事务保存；确认丢失重放使用同一时间事实，不在查询、重放或 UI 挂载时重新取创建时间。计时显示复用可见组件的显示时钟，不按秒写展示表、推展示 revision、遍历成员或操作 Main。历史仅格式化冻结 `elapsedMs`；冷读无执行 owner 不启动时钟，可显示最后已保存的经过时间及未恢复提示。旧数据没有可靠创建时间时保持未知，不用迁移时间、当前时间或零补造。
+
+零及不足一秒使用“执行了不到 1 秒／工作了不到 1 秒”；已知时长按分钟、秒本地化格式化，未知或时间证据倒序则省略时长。工具成员自身原有“用时”与推理成员“思考了”文案保留各自含义，不通过全局替换误改。
+
+问答占用只遮蔽实时区域，不清数据或补终态。保存阻塞、停止、审批及真实错误提示仍须可见，不得被普通组概要合并或折叠隐藏；无执行 owner 不画运行计时。展开、滚动与跟随输出属于局部 UI 状态；成员读取和媒体资格由原 display lease 持有。Work/Single 复用原成员 renderer，不维护 rawAtoms/groups/messages 三份完整内容，不新增状态机依赖或第二消息 store。
 
 ## 26.9 热路径成本与验收
 

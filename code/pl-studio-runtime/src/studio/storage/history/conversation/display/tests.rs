@@ -32,7 +32,7 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
         }),
         status: pl_protocol::ChatActiveStatus::Running,
     };
-    let begin = owner.prepare(1, &[started.clone()], &[], &[])?;
+    let begin = owner.prepare(1, 10, &[started.clone()], &[], &[])?;
     let tx = db.begin().await?;
     apply(&tx, &begin).await?;
     tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
@@ -62,7 +62,7 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
     draft.read_hint =
         crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
     let original = Arc::new(ChatItem::complete(draft, 1, None));
-    let finish = owner.prepare(2, &[ended], &[], std::slice::from_ref(&original))?;
+    let finish = owner.prepare(2, 20, &[ended], &[], std::slice::from_ref(&original))?;
     assert_eq!(finish.remove_empty.len(), 1);
     assert_eq!(finish.published_through, 0);
     db.execute_unprepared(
@@ -111,6 +111,11 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     owner.bind(&database)?;
     let mut atom: pl_protocol::ChatAtom =
         serde_json::from_slice(&super::super::tests::metadata("original"))?;
+    atom.kind = pl_protocol::ChatAtomKind::ToolCall;
+    atom.source = pl_protocol::ChatSourceId::ForegroundTurn {
+        turn_id: "turn".into(),
+    };
+    atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
     atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
         started: None,
         ended: Some(pl_protocol::ChatFactPosition {
@@ -134,7 +139,22 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
             ordinal: 1,
         }),
     ));
-    let delta = owner.prepare(1, &[atom], &[], std::slice::from_ref(&item))?;
+    let ended = pl_protocol::ChatSourceState {
+        source: atom.source.clone(),
+        lifecycle: pl_protocol::ChatSourceLifecycle::Ended {
+            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+        },
+        started: None,
+        ended: Some(pl_protocol::ChatFactPosition {
+            effect_seq: 1,
+            suborder: 1,
+        }),
+    };
+    let delta = owner.prepare(1, 10, &[atom], &[ended], std::slice::from_ref(&item))?;
+    assert!(
+        matches!(&delta.blocks[0].header.body, DisplayBlockBody::Work { summary, .. }
+        if summary.created_at == Some(10) && summary.elapsed_ms == Some(0))
+    );
     db.execute_unprepared("CREATE TRIGGER reject_display BEFORE INSERT ON conversation_display_members BEGIN SELECT RAISE(ABORT,'display rejection'); END;").await?;
     let tx = db.begin().await?;
     super::super::append_records(&tx, [item.as_ref()], true).await?;
@@ -152,6 +172,16 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     tx.commit().await?;
     verify(&db, &delta).await?; // Lost local acknowledgement: no rewrite/recalculation.
     apply(&db, &delta).await?;
+    let heads = history_heads(&db, 1, None, 8).await?;
+    assert_eq!(heads[0].body, delta.blocks[0].header.body);
+    let mut wrong_time = delta.as_ref().clone();
+    let header = Arc::make_mut(&mut wrong_time.blocks[0].header);
+    let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
+        unreachable!("created Work above");
+    };
+    summary.created_at = Some(11);
+    summary.elapsed_ms = Some(1000);
+    assert!(verify(&db, &wrong_time).await.is_err());
     let mut contradictory = delta.as_ref().clone();
     contradictory.published_through = 0;
     assert!(verify(&db, &contradictory).await.is_err());

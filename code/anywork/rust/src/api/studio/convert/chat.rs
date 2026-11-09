@@ -100,7 +100,7 @@ fn payload(value: protocol::PayloadData) -> BridgePayloadData {
     }
 }
 
-fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
+pub(super) fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
     match value {
         protocol::ChatSourceId::ForegroundTurn { turn_id } => {
             BridgeChatSourceId::ForegroundTurn { turn_id }

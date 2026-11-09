@@ -38,6 +38,7 @@ import 'package:integration_test/integration_test.dart';
 
 import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
+import 'support/realtime_background_observation.dart';
 import 'support/timeline_observation.dart';
 
 const _firstTokenObserverStage = 'realtime-first-token';
@@ -308,10 +309,14 @@ void main() {
               as Map<String, Object?>)['gateReleased'] =
           true;
       await scene.completed(answer: 'realtime parallel tools complete');
-      await scene.verifyExecReceipts(const {
-        'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
-        'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
-      }, turnId: parallelObserver.turnId);
+      await scene.verifyExecReceipts(
+        const {
+          'realtime-parallel-call-a': 'realtime-parallel-a-line-05',
+          'realtime-parallel-call-b': 'realtime-parallel-b-line-07',
+        },
+        turnId: parallelObserver.turnId,
+        foregroundBlockId: parallelObserver.display.unitId,
+      );
       await scene.closeLatestTurnGroups();
 
       await scene.submit('Realtime host cwd command');
@@ -337,9 +342,11 @@ void main() {
         'Real host-cwd exec member in its original Work window.',
       );
       await scene.completed(answer: 'realtime host cwd complete');
-      await scene.verifyExecReceipts(const {
-        'realtime-host-cwd-call': 'realtime-host-cwd-line-03',
-      }, turnId: hostCwdTurnId);
+      await scene.verifyExecReceipts(
+        const {'realtime-host-cwd-call': 'realtime-host-cwd-line-03'},
+        turnId: hostCwdTurnId,
+        foregroundBlockId: hostObserver.display.unitId,
+      );
       await scene.closeLatestTurnGroups();
 
       await scene.submit('Realtime provider error');
@@ -463,7 +470,7 @@ typedef _PreparedToolObserver = ({
 
 typedef _ExecReceipt = ({
   ChatAtom member,
-  DisplayBlockRef reference,
+  TimelineDisplayUnit block,
   ChatItemPresentation value,
 });
 
@@ -597,49 +604,29 @@ final class _RealtimeScene {
     expect(handoffCard, isA<DecodedToolCard>());
     final taskId = (handoffCard as DecodedToolCard).value.taskId;
     expect(taskId, isNotNull);
+    expect(taskId, isNotEmpty);
 
     evidence['stage'] = 'awaiting A independent Main block';
     TimelineDisplayUnit? resultBlock;
-    ChatAtom? result;
-    final inspected = <String>{};
-    while (result == null) {
-      remaining();
-      // Borrow loaded Main headers only: no history paging. Independent results
-      // have one member; unrelated multi-member Work needs no member query.
-      for (final block in observed.workBlocks.toList()) {
-        if (block.summary!.total != 1 || inspected.contains(block.id)) continue;
-        final page = await observed.readMemberPage(block.memberReference!);
-        inspected.add(block.id);
-        for (final head in page.entries) {
-          final atom = head.atom;
-          if (atom.source is BackgroundResultChatSource &&
-              atom.turnId == prepared.turnId &&
-              atom.tool?.callId == 'realtime-parallel-call-a') {
-            expect(result, isNull, reason: 'A has one independent final block');
-            expect(block.summary!.total, 1);
-            expect(page.sealed, isTrue);
-            expect(page.entries, hasLength(1));
-            expect(atom.delivery, ChatDeliveryKind.independent);
-            expect(
-              (atom.lifecycle as TerminalChatAtom).outcome,
-              ChatTerminalOutcome.completed,
-            );
-            resultBlock = block;
-            result = atom;
-          }
-        }
-      }
-      if (result == null) {
-        await tester.pump(const Duration(milliseconds: 16));
-        expect(tester.takeException(), isNull);
-      }
-    }
+    await until(
+      () {
+        expect(_expectPreparedToolObserver(prepared), isTrue);
+        resultBlock = realtimeBackgroundSingle(
+          observed.main,
+          turnId: prepared.turnId,
+          callId: 'realtime-parallel-call-a',
+        );
+        return resultBlock != null;
+      },
+      'A independent Single admitted to Main',
+      timeout: remaining(),
+    );
     final block = resultBlock!;
-    final atom = result;
+    final atom = block.atom!;
     final backgroundSource = atom.source as BackgroundResultChatSource;
     expect(block.id, isNot(prepared.display.unitId));
     expect(block.historyPos, greaterThan(0));
-    final reference = block.memberReference!;
+    expect(block.memberReference, isNull);
     evidence.addAll({
       'stage': 'revealing real background result and foreground reasoning',
       'backgroundBlockId': block.id,
@@ -649,13 +636,16 @@ final class _RealtimeScene {
       'reasoningMemberId': reasoning.id,
       'taskId': taskId,
     });
-    final display = await observed.revealMember(atom, reference: reference);
+    await observed.revealSingle(block, timeout: remaining());
+    final backgroundRow = observed.itemRow(block.id);
     final rendered = await _awaitCanonicalRow(
-      observed.memberRow(atom.id),
+      backgroundRow,
       atom,
       type: 'tool',
       timeout: remaining(),
     );
+    expect(rendered.id, block.id);
+    expect(rendered.displayUnit, same(block));
     expect(rendered.atom?.source, backgroundSource);
     expect(rendered.atom?.id, atom.id);
     expect(rendered.toolCard, isA<DecodedToolCard>());
@@ -666,6 +656,25 @@ final class _RealtimeScene {
     expect(tool.statusString, 'succeeded');
     expect(tool.exitCode, 0);
     expect(tool.output, contains('realtime-parallel-a-line-05'));
+    await observed.ensureMemberReadable(
+      backgroundRow,
+      atom,
+      timeout: remaining(),
+    );
+    await until(
+      () => find
+          .descendant(
+            of: backgroundRow,
+            matching: find.textContaining(
+              'realtime-parallel-a-line-05',
+              findRichText: true,
+            ),
+          )
+          .evaluate()
+          .isNotEmpty,
+      'A canonical Single output is actually rendered',
+      timeout: remaining(),
+    );
     await observed.revealMember(reasoning, reference: prepared.reference);
     await until(
       () => _laidOut(observed.memberRow(reasoning.id)),
@@ -716,25 +725,48 @@ final class _RealtimeScene {
           ),
         ),
       );
-      final currentResult = observed.unitForBlock(reference);
+      final currentResult = realtimeBackgroundSingle(
+        observed.main,
+        turnId: prepared.turnId,
+        callId: tool.toolCallId,
+      )!;
+      expect(currentResult, same(block));
       expect(currentResult.body, same(frozenBody));
       expect(currentResult.historyPos, block.historyPos);
-      final member = display.atoms.singleWhere((value) => value.id == atom.id);
+      expect(currentResult.memberReference, isNull);
+      final member = currentResult.atom!;
       expect(member.source, backgroundSource);
+      expect(member.id, atom.id);
+      expect(member.completionItemId, atom.completionItemId);
+      expect(member.completionSeq, atom.completionSeq);
       expect(member.delivery, ChatDeliveryKind.independent);
       expect(
         (member.lifecycle as TerminalChatAtom).outcome,
         ChatTerminalOutcome.completed,
       );
-      // Both producer-defined blocks must be visible in this same native cut.
-      for (final id in [block.id, foreground.id]) {
-        final header = observed.groupHeader(id);
-        final label = tester.widget<TimelineActivityRow>(header).label;
-        expect(
-          find.descendant(of: header, matching: find.text(label)).hitTestable(),
-          findsOneWidget,
-        );
-      }
+      expect(observed.main.where((unit) => unit.id == foreground.id), isEmpty);
+      expect(observed.liveBlocks.where((unit) => unit.id == block.id), isEmpty);
+      // The Single business card and original Work must coexist in this frame.
+      final header = observed.groupHeader(foreground.id);
+      expect(observed.groupExpanded(foreground.id), isTrue);
+      final label = timelineGroupTitleFinder(tester, header);
+      expect(label.hitTestable(), findsOneWidget);
+      expect(tester.widget<Text>(label).data?.trim(), isNotEmpty);
+      expect(backgroundRow, findsOneWidget);
+      expect(_laidOut(backgroundRow), isTrue);
+      expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
+      expect(
+        find
+            .descendant(
+              of: backgroundRow,
+              matching: find.textContaining(
+                'realtime-parallel-a-line-05',
+                findRichText: true,
+              ),
+            )
+            .hitTestable(),
+        findsWidgets,
+      );
       expect(_laidOut(observed.memberRow(reasoning.id)), isTrue);
       return {
         'executionId': executionId,
@@ -1189,6 +1221,11 @@ final class _RealtimeScene {
         (entry.atom.lifecycle as TerminalChatAtom).outcome,
         (head.lifecycle as TerminalChatAtom).outcome,
       );
+      expect(entry.atom.payload, isA<InlinePayload>());
+      expect(
+        (entry.atom.payload as InlinePayload).bytes.length,
+        lessThanOrEqualTo(64 * 1024),
+      );
       final value = ChatItemPresentation.decode(entry.atom);
       expect(
         value.compatibility,
@@ -1223,6 +1260,11 @@ final class _RealtimeScene {
         expect(value.type, type);
         expect(value.atom?.id, head.id);
         expect(value.atom?.source, head.source);
+        expect(value.atom?.kind, head.kind);
+        expect(value.atom?.delivery, head.delivery);
+        expect(value.atom?.turnId, head.turnId);
+        expect(value.atom?.tool?.callId, head.tool?.callId);
+        expect(value.atom?.lifecycle, head.lifecycle);
         expect(value.atom?.completionItemId, head.completionItemId);
         expect(value.atom?.completionSeq, head.completionSeq);
         rendered = value;
@@ -1324,7 +1366,7 @@ final class _RealtimeScene {
     List<ChatAtomContent> contents,
     ChatContentRole role,
     String fragment, {
-    required TimelineGroupDisplay group,
+    required TimelineDisplayUnit single,
   }) async {
     final mainLease = lease;
     final initialCurrentOverlay = mainLease.currentDisplay;
@@ -1338,13 +1380,8 @@ final class _RealtimeScene {
     TimelineDisplayUnit? originalMain;
     ScrollableState? originalScrollable;
     Element? originalCanonical;
-    final canonical = find.descendant(
-      of: observed.groupRow(group.unitId, skipOffstage: false),
-      matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is ChatItemView && widget.item.atom?.id == presentationId,
-        skipOffstage: false,
-      ),
+    final canonical = find.byWidgetPredicate(
+      (widget) => widget is ChatItemView && widget.item.id == single.id,
       skipOffstage: false,
     );
     final connector = find.byWidgetPredicate(
@@ -1376,14 +1413,9 @@ final class _RealtimeScene {
       expect(mainLease.appliedSets, mainSets);
     }
 
-    TimelineDisplayUnit groupMetadata(ContentRef reference) {
-      expect(group.isCurrent && group.expanded, isTrue);
-      expect(
-        mainLease.groupDisplays.where((display) => identical(display, group)),
-        hasLength(1),
-      );
+    TimelineDisplayUnit singleMetadata(ContentRef reference) {
       final messages = controller.messages
-          .where((message) => message.id == group.unitId)
+          .where((message) => message.id == single.id)
           .toList();
       expect(messages, hasLength(1), reason: 'one original Main Message');
       final metadata = messages.single.metadata?[timelineDisplayUnitKey];
@@ -1391,25 +1423,18 @@ final class _RealtimeScene {
         fail('The original Main Message must own TimelineDisplayUnit metadata');
       }
       expect(metadata.historyPos!, greaterThan(0));
-      expect(metadata.id, group.unitId);
-      expect(metadata.body, isA<WorkDisplayBlock>());
-      expect(metadata.memberReference, group.blockReference);
-      expect(metadata.historyPos!, isNotNull);
-      final member = group.atoms.singleWhere(
-        (atom) => atom.id == presentationId,
+      expect(metadata, same(single));
+      expect(metadata.id, presentationId);
+      expect(metadata.body, isA<SingleDisplayBlock>());
+      expect(metadata.memberReference, isNull);
+      final member = metadata.atom!;
+      expect(member.source, isA<BackgroundResultChatSource>());
+      expect(member.delivery, ChatDeliveryKind.independent);
+      expect(member.lifecycle, isA<TerminalChatAtom>());
+      expect(
+        (member.lifecycle as TerminalChatAtom).outcome,
+        ChatTerminalOutcome.completed,
       );
-      if (member.source is BackgroundResultChatSource) {
-        expect(metadata.summary!.total, 1);
-        expect(member.source, isA<BackgroundResultChatSource>());
-        expect(member.delivery, ChatDeliveryKind.independent);
-        expect(member.lifecycle, isA<TerminalChatAtom>());
-        expect(
-          (member.lifecycle as TerminalChatAtom).outcome,
-          ChatTerminalOutcome.completed,
-        );
-      } else {
-        expect(member.source, isA<ForegroundTurnChatSource>());
-      }
       expect(member.completionItemId, contentItemId);
       final declared = member.contents
           .where((content) => content.role == role)
@@ -1446,9 +1471,9 @@ final class _RealtimeScene {
       final body = reference.target as BodyContentTarget;
       expect((body.owner as ItemContentOwner).itemId, contentItemId);
       expectLease();
-      // The original Main group and its mounted member own this range,
-      // independently of a nullable current-overlay resource borrow.
-      final main = groupMetadata(reference);
+      // The actual Single card owns this range, not a fabricated member window
+      // or a nullable current-overlay borrow.
+      final main = singleMetadata(reference);
       originalMain = main;
       expect(scrollable, findsOneWidget);
       expect(scroll.positions, hasLength(1));
@@ -1463,7 +1488,7 @@ final class _RealtimeScene {
 
       void expectMain() {
         expectLease();
-        expect(groupMetadata(reference), same(main));
+        expect(singleMetadata(reference), same(main));
         expect(scrollable, findsOneWidget);
         expect(tester.state<ScrollableState>(scrollable), same(mainScrollable));
         expect(mainScrollable.mounted, isTrue);
@@ -1477,10 +1502,7 @@ final class _RealtimeScene {
           fail('The original member canonical row must remain a ChatItemView');
         }
         expect(widget.item.id, presentationId);
-        expect(
-          widget.item.atom,
-          same(group.atoms.singleWhere((atom) => atom.id == presentationId)),
-        );
+        expect(widget.item.atom, same(single.atom));
         expect(Scrollable.maybeOf(row), same(memberScrollable));
         expect(memberScrollable!.mounted, isTrue);
       }
@@ -1503,8 +1525,11 @@ final class _RealtimeScene {
         expect(tester.state(connector), same(state));
         expect(state.mounted, isTrue);
         expect(
-          group.windows.where((window) => identical(window, owner)),
-          hasLength(1),
+          tester
+              .widget<TimelineContentRangeConnector>(connector)
+              .isDisplayActive
+              ?.call(),
+          isTrue,
         );
         final element = tester.element(connector);
         expect(Scrollable.maybeOf(element), same(memberScrollable));
@@ -1851,11 +1876,11 @@ final class _RealtimeScene {
   Future<void> verifyExecReceipts(
     Map<String, String> expected, {
     required String turnId,
+    required String foregroundBlockId,
   }) async {
     final source = ForegroundTurnChatSource(turnId: turnId);
     final associatedTasks = <String, String>{};
     final observations = <Map<String, Object?>>[];
-    final openedBackgroundRuns = <String>{};
     final clock = Stopwatch()..start();
     Map<String, Object?>? lastObservation;
     String? previousObservation;
@@ -1878,22 +1903,15 @@ final class _RealtimeScene {
         ? {'kind': 'backgroundResult', 'messageId': value.messageId}
         : {'kind': value.runtimeType.toString()};
 
-    // Refresh a finite test observation by inspecting actual member heads.
-    var backgroundBlocks = <TimelineDisplayUnit>[];
-    Iterable<TimelineDisplayUnit> backgroundRuns() => backgroundBlocks;
-
-    bool hasReadRun(TimelineDisplayUnit run) {
-      final display = lease.groupDisplays
-          .where((value) => value.unitId == run.id)
-          .singleOrNull;
-      if (display?.error case final error?) throw StateError('$error');
-      return openedBackgroundRuns.contains(run.id) &&
-          display?.isCurrent == true &&
-          display?.expanded == true &&
-          display?.blockReference == run.memberReference! &&
-          display?.loading == false &&
-          display?.before == null &&
-          display?.atoms.length == run.summary!.total;
+    Iterable<TimelineDisplayUnit> backgroundSingles() sync* {
+      for (final call in expected.keys) {
+        final block = realtimeBackgroundSingle(
+          observed.main,
+          turnId: turnId,
+          callId: call,
+        );
+        if (block != null) yield block;
+      }
     }
 
     Future<List<_ExecReceipt>> targets() async {
@@ -1904,7 +1922,7 @@ final class _RealtimeScene {
         'turnId': turnId,
         'candidates': candidates,
         'finalCounts': counts,
-        'backgroundRunAnchors': <Map<String, Object?>>[],
+        'backgroundSingleAnchors': <Map<String, Object?>>[],
         'memberCallTaskMapping': <Map<String, Object?>>[],
         'complete': false,
       };
@@ -1962,17 +1980,10 @@ final class _RealtimeScene {
         return value;
       }
 
-      // Original foreground members establish the task association. Final
-      // background results belong to their own independently sourced groups.
+      // Only the original foreground Work members establish task association.
+      // Background finals are loaded Main Singles, never Work member windows.
       final members = observed.mountedMembers;
-      for (final atom
-          in members
-              .where((atom) => atom.source == source)
-              .followedBy(
-                members.where(
-                  (atom) => atom.source is BackgroundResultChatSource,
-                ),
-              )) {
+      for (final atom in members.where((atom) => atom.source == source)) {
         if (atom.turnId != turnId ||
             !expected.containsKey(atom.tool?.callId) ||
             atom.lifecycle is! TerminalChatAtom) {
@@ -2008,45 +2019,45 @@ final class _RealtimeScene {
           expect(previous, anyOf(isNull, tool.taskId));
           associatedTasks[tool.toolCallId] = tool.taskId!;
         }
-        final backgroundResult =
-            atom.source is BackgroundResultChatSource &&
-            atom.delivery == ChatDeliveryKind.independent;
-        if (atom.source is BackgroundResultChatSource) {
-          expect(atom.delivery, ChatDeliveryKind.independent);
-          expect(terminal.outcome, ChatTerminalOutcome.completed);
-          expect(
-            observed.unitForBlock(reference).body,
-            isA<WorkDisplayBlock>(),
-          );
-        }
-        final taskAssociated =
-            tool.taskId != null &&
-            associatedTasks[tool.toolCallId] == tool.taskId;
-        final finalResult =
-            atom.kind == ChatAtomKind.toolCall &&
-            backgroundResult &&
-            taskAssociated &&
-            terminal.outcome == ChatTerminalOutcome.completed &&
-            tool.name == 'exec' &&
-            tool.statusString == 'succeeded' &&
-            tool.exitCode == 0;
         candidate['handedOff'] = handedOff;
-        candidate['backgroundResult'] = backgroundResult;
-        candidate['taskAssociated'] = taskAssociated;
-        candidate['finalResult'] = finalResult;
-        if (finalResult) {
-          result.add((member: atom, reference: reference, value: value));
-          counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
-        }
+        expect(handedOff, isTrue);
       }
-      snapshot['backgroundRunAnchors'] = [
-        for (final run in backgroundRuns())
+      for (final block in backgroundSingles()) {
+        final atom = block.atom!;
+        final candidate = <String, Object?>{
+          'domain': 'Single',
+          'id': atom.id,
+          'source': sourceFacts(atom.source),
+          'turnId': atom.turnId,
+          'delivery': atom.delivery.name,
+          'completionItemId': atom.completionItemId,
+          'completionSeq': atom.completionSeq,
+          'blockId': block.id,
+          'historyPos': block.historyPos,
+        };
+        final value = await read(atom, candidate);
+        final tool = (value.toolCard as DecodedToolCard).value;
+        expect(tool.toolCallId, atom.tool!.callId);
+        expect(tool.name, atom.tool!.name);
+        expect(tool.name, 'exec');
+        expect(tool.taskId, isNotNull);
+        expect(associatedTasks.containsKey(tool.toolCallId), isTrue);
+        expect(tool.taskId, associatedTasks[tool.toolCallId]);
+        expect(tool.statusString, 'succeeded');
+        expect(tool.exitCode, 0);
+        candidate['taskAssociated'] = true;
+        candidate['finalResult'] = true;
+        result.add((member: atom, block: block, value: value));
+        counts[tool.toolCallId] = counts[tool.toolCallId]! + 1;
+      }
+      snapshot['backgroundSingleAnchors'] = [
+        for (final block in backgroundSingles())
           {
-            'id': run.id,
-            'databaseId': run.memberReference!.databaseId,
-            'blockId': run.memberReference!.blockId,
-            'ordinal': run.summary!.total,
-            'opened': openedBackgroundRuns.contains(run.id),
+            'blockId': block.id,
+            'historyPos': block.historyPos,
+            'atomId': block.atom!.id,
+            'completionId': (block.body as SingleDisplayBlock).completionId,
+            'completionSeq': block.atom!.completionSeq,
           },
       ];
       snapshot['memberCallTaskMapping'] = [
@@ -2113,37 +2124,20 @@ final class _RealtimeScene {
         );
       }
 
-      for (final run in await observed.workForSource(source)) {
-        await readRun(run);
-      }
+      // The caller already owns this exact foreground Work. Never discover a
+      // background result by opening unrelated Work member windows.
+      final foreground = observed.unit(foregroundBlockId);
+      expect(foreground.body, isA<WorkDisplayBlock>());
+      await readRun(foreground);
+      final foregroundDisplay = lease.groupDisplays.singleWhere(
+        (display) => display.unitId == foregroundBlockId,
+      );
+      expect(
+        foregroundDisplay.atoms.every((atom) => atom.source == source),
+        isTrue,
+      );
       while (true) {
         remaining();
-        backgroundBlocks = [];
-        for (final block in observed.workBlocks.toList()) {
-          final head = (await observed.readMemberPage(block.memberReference!))
-              .entries
-              .single
-              .atom;
-          if (head.source is BackgroundResultChatSource &&
-              head.turnId == turnId) {
-            expect(
-              block.summary!.total,
-              1,
-              reason:
-                  'An independent background terminal never grows a tail group',
-            );
-            backgroundBlocks.add(block);
-          }
-        }
-        await targets();
-        // Block heads do not qualify provenance. Inspect actual member pages
-        // before counting independently sourced final receipts.
-        for (final run in backgroundRuns().toList()) {
-          if (!hasReadRun(run)) {
-            await readRun(run);
-            openedBackgroundRuns.add(run.id);
-          }
-        }
         receipts = await targets();
         final terminalCalls = observed.mountedMembers
             .where(
@@ -2170,7 +2164,6 @@ final class _RealtimeScene {
         remaining();
         if (terminalCalls.containsAll(expected.keys) &&
             associatedTasks.keys.toSet().containsAll(expected.keys) &&
-            backgroundRuns().every(hasReadRun) &&
             finalCounts.values.every((count) => count == 1)) {
           break;
         }
@@ -2207,28 +2200,31 @@ final class _RealtimeScene {
       for (final target in receipts) {
         disclosureFacts = null;
         final atom = target.member;
-        final group = await observed.revealMember(
-          atom,
-          reference: target.reference,
-        );
+        final block = target.block;
+        await observed.revealSingle(block);
         final restored = await _awaitCanonicalRow(
-          observed.memberRow(atom.id),
+          observed.itemRow(block.id),
           atom,
           type: 'tool',
         );
+        expect(restored.id, block.id);
+        expect(restored.displayUnit, same(block));
         expect(restored.toolCard, isA<DecodedToolCard>());
-        final item = target.value;
-        final rowId = atom.id;
+        final item = restored;
+        final rowId = block.id;
         final contentItemId = atom.completionItemId!;
         final contents = atom.contents;
         final tool = (item.toolCard as DecodedToolCard).value;
+        final originalTool = (target.value.toolCard as DecodedToolCard).value;
+        expect(tool.toolCallId, originalTool.toolCallId);
+        expect(tool.taskId, originalTool.taskId);
         final lastLine = expected[tool.toolCallId]!;
         expect(tool.name, 'exec');
         expect(tool.statusString, 'succeeded');
         expect(tool.exitCode, 0);
         expect(tool.output, contains(lastLine));
         final details = find.descendant(
-          of: observed.memberRow(rowId),
+          of: observed.itemRow(rowId),
           matching: find.byType(TimelineToolDetails),
         );
         expect(details, findsOneWidget);
@@ -2305,7 +2301,7 @@ final class _RealtimeScene {
           contents,
           ChatContentRole.toolOutput,
           lastLine,
-          group: group,
+          single: block,
         );
         final outputState = tester.state(
           find.byWidgetPredicate(
@@ -2343,7 +2339,7 @@ final class _RealtimeScene {
             contents,
             ChatContentRole.toolArguments,
             'cwd',
-            group: group,
+            single: block,
           );
           final cwd =
               (jsonDecode(utf8.decode(arguments.bytes)) as Map)['cwd']
@@ -2351,36 +2347,34 @@ final class _RealtimeScene {
           expect(cwd, isNotEmpty);
           expect(tool.output, contains('realtime-host-cwd-actual:$cwd'));
         }
-        expect(group.error, isNull);
-        expect(group.expanded && group.isCurrent, isTrue);
-        expect(
-          group.atoms.where((member) => member.id == atom.id),
-          hasLength(1),
-        );
+        expect(observed.unit(block.id), same(block));
+        expect(block.memberReference, isNull);
+        expect(block.atom, same(atom));
         expect(lease.controller, same(controller));
         expect(lease.appliedSets, mainSets);
         expect(witnessed.add(tool.toolCallId), isTrue);
         debugPrintSynchronously(
-          'Exec receipt laid out: ${jsonEncode({'callId': tool.toolCallId, 'rowId': rowId, 'contentItemId': contentItemId, 'state': tool.statusString, 'sourceOrder': atom.sourceOrder, 'lastLine': lastLine, 'groupId': group.unitId, 'outputBytes': output.bytes.length})}',
+          'Exec receipt laid out: ${jsonEncode({'callId': tool.toolCallId, 'rowId': rowId, 'contentItemId': contentItemId, 'state': tool.statusString, 'sourceOrder': atom.sourceOrder, 'lastLine': lastLine, 'blockId': block.id, 'outputBytes': output.bytes.length})}',
         );
         await captureEvidence(
           'realtime-${tool.toolCallId}-succeeded.png',
           'verified exec receipt after foreground completed',
-          'Existing real expanded member and bounded output window; '
+          'Existing real expanded Single and bounded output window; '
               'does not prove a concurrent active foreground.',
           identities: {
-            'blockId': group.unitId,
+            'blockId': block.id,
             'memberId': atom.id,
             'toolCallId': tool.toolCallId,
             'sourceKind': atom.source.runtimeType.toString(),
           },
         );
         expect(expectDisclosure(), isTrue);
-        await observed.closeWork(group);
+        await tap(outerTitle);
+        expect(expectDisclosure(), isFalse);
         final closeClock = Stopwatch()..start();
         await until(
           () => outputBorrow.window == null,
-          'collapsed member revokes its original bounded output borrow',
+          'collapsed Single revokes its original bounded output borrow',
         );
         final closeRemaining = const Duration(seconds: 60) - closeClock.elapsed;
         expect(

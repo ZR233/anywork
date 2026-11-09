@@ -28,6 +28,8 @@ final class WorkSummary {
     this.startedAt,
     this.finishedAt,
     this.durationMs,
+    this.createdAt,
+    this.elapsedMs,
     this.thinkingSummary,
     this.thinkingContent,
   });
@@ -41,6 +43,14 @@ final class WorkSummary {
   final int? startedAt;
   final int? finishedAt;
   final int? durationMs;
+
+  /// The first information's creation time in Unix seconds.
+  final int? createdAt;
+
+  /// The observed group lifetime in milliseconds, frozen on history handoff.
+  ///
+  /// This includes waiting gaps and is not the accumulated [durationMs].
+  final int? elapsedMs;
   final String? thinkingSummary;
   final ContentRef? thinkingContent;
 }

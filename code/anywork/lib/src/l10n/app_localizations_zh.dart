@@ -1795,6 +1795,38 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupExecutingUnderSecond => '执行了不到 1 秒';
+
+  @override
+  String timelineGroupExecutingSeconds(int seconds) {
+    return '执行了 $seconds 秒';
+  }
+
+  @override
+  String timelineGroupExecutingMinutes(int minutes) {
+    return '执行了 $minutes 分';
+  }
+
+  @override
+  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
+    return '执行了 $minutes 分 $seconds 秒';
+  }
+
+  @override
+  String get timelineGroupClosing => '正在收束';
+
+  @override
+  String get timelineGroupWaitingForNext => '等待下一步';
+
+  @override
+  String get timelineGroupUnrestored => '上次执行未收束，尚未恢复';
+
+  @override
+  String timelineGroupTransferredCount(int count) {
+    return '已交接 $count 项';
+  }
+
+  @override
   String get timelineReasoningSummary => '概要';
 
   @override

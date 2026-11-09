@@ -1,3 +1,4 @@
+import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -11,11 +12,13 @@ class TimelineDisplayUnitView extends StatefulWidget {
     required this.unit,
     required this.childBuilder,
     this.onExpandedChanged,
+    this.activity,
     super.key,
   });
   final TimelineDisplayUnit unit;
   final WidgetBuilder childBuilder;
   final ValueChanged<bool>? onExpandedChanged;
+  final ConversationActivityView? activity;
   @override
   State<TimelineDisplayUnitView> createState() =>
       _TimelineDisplayUnitViewState();
@@ -73,6 +76,10 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
       executionPresent: unit.executionPresent,
       closing: unit.closing,
       initiallyExpanded: unit.expansion.expanded!,
+      location: unit.historyPos == null
+          ? WorkDisplayLocation.live
+          : WorkDisplayLocation.history,
+      activity: widget.activity,
       onExpandedChanged: (expanded) {
         // 在关闭动画前同步撤销读取资格；纯视图不持有领域资源。
         unit.expansion.expanded = expanded;

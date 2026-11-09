@@ -60,30 +60,55 @@ fn completed_members_wait_for_a_real_boundary_and_text_start_needs_no_new_comple
 {
     let mut s = state();
     let a = atom("A", ChatAtomKind::ToolCall, false);
-    s.prepare(1, &[a], &[], &[])?;
+    s.prepare(1, 10, &[a], &[], &[])?;
+    assert_eq!(
+        summary(s.blocks.values().next().unwrap()).created_at,
+        Some(10)
+    );
+    assert_eq!(
+        summary(s.blocks.values().next().unwrap()).elapsed_ms,
+        Some(0)
+    );
     let done = atom("A", ChatAtomKind::ToolCall, true);
-    s.prepare(2, std::slice::from_ref(&done), &[], &[])?;
+    s.prepare(2, 20, std::slice::from_ref(&done), &[], &[])?;
     s.confirm(2);
     assert_eq!(s.published, 0);
     assert_eq!(summary(s.blocks.values().next().unwrap()).terminal, 1);
+    assert_eq!(
+        summary(s.blocks.values().next().unwrap()).elapsed_ms,
+        Some(10_000)
+    );
+    // No successor boundary: idle time still belongs to the same live group.
     let id = s.blocks.values().next().unwrap().id.clone();
     let mut next = atom("B", ChatAtomKind::ToolCall, false);
-    next.started_at = Some(1000); // Waiting for a successor is not work time.
-    s.prepare(3, &[next.clone()], &[], &[])?;
+    next.started_at = Some(1000); // The old active-interval metric excludes this gap.
+    s.prepare(3, 1000, &[next.clone()], &[], &[])?;
     assert_eq!(s.blocks.values().next().unwrap().id, id);
+    assert_eq!(
+        summary(s.blocks.values().next().unwrap()).created_at,
+        Some(10)
+    );
+    assert_eq!(
+        summary(s.blocks.values().next().unwrap()).elapsed_ms,
+        Some(990_000)
+    );
     next.lifecycle = ChatAtomLifecycle::Terminal {
         started: Some(at(3)),
         ended: Some(at(4)),
         outcome: ChatTerminalOutcome::Completed,
     };
     next.finished_at = Some(1010);
-    s.prepare(4, &[next], &[], &[])?;
+    s.prepare(4, 1010, &[next], &[], &[])?;
     assert_eq!(
         summary(s.blocks.values().next().unwrap()).duration_ms,
         Some(20)
     );
-    let delta = s.prepare(5, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
+    assert_eq!(s.published, 0);
+    let delta = s.prepare(5, 1200, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
     assert_eq!(delta.published_through, 1);
+    let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
+    assert_eq!(summary(&frozen.header).created_at, Some(10));
+    assert_eq!(summary(&frozen.header).elapsed_ms, Some(1_190_000));
     assert_eq!(
         delta
             .blocks
@@ -103,7 +128,74 @@ fn completed_members_wait_for_a_real_boundary_and_text_start_needs_no_new_comple
     ));
     s.confirm(5);
     assert_eq!(s.durable, 1);
+    s.prepare(6, 1300, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
+    assert_eq!(summary(&frozen.header).elapsed_ms, Some(1_190_000));
     assert!(s.member_heads(&id, None, 8).is_empty());
+    Ok(())
+}
+
+#[test]
+fn restored_old_head_never_acquires_creation_time_from_new_members_or_boundary() -> Result<()> {
+    let mut original = state();
+    original.prepare(
+        1,
+        10,
+        &[atom("old", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    let mut old = serde_json::to_value(original.blocks[&1].as_ref())?;
+    let old_summary = old["body"]["summary"].as_object_mut().unwrap();
+    old_summary.remove("createdAt");
+    old_summary.remove("elapsedMs");
+    let header: DisplayHeader = serde_json::from_value(old)?;
+    let mut restored = PresentationState::default();
+    restored.restore("db", 0, 1, 1, vec![header], vec![])?;
+    restored.prepare(
+        2,
+        100,
+        &[atom("new", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    let head = restored.blocks[&1].as_ref();
+    assert_eq!(summary(head).total, 2);
+    assert_eq!(summary(head).created_at, None);
+    assert_eq!(summary(head).elapsed_ms, None);
+    let delta = restored.prepare(3, 200, &[atom("text", ChatAtomKind::Text, false)], &[], &[])?;
+    let published = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
+    assert_eq!(summary(&published.header).created_at, None);
+    assert_eq!(summary(&published.header).elapsed_ms, None);
+    Ok(())
+}
+
+#[test]
+fn direct_completion_uses_creation_effect_and_checked_elapsed_evidence() -> Result<()> {
+    // A completed member's old/unknown active start is not its group creation time.
+    for (created, observed, elapsed) in [
+        (100, 150, Some(50_000)),
+        (100, 99, None),
+        (i64::MIN, i64::MAX, None),
+        (0, i64::MAX, None),
+    ] {
+        let mut s = state();
+        let mut done = atom("done", ChatAtomKind::ToolCall, true);
+        done.started_at = None;
+        s.prepare(1, created, &[done], &[], &[])?;
+        assert_eq!(summary(&s.blocks[&1]).created_at, Some(created));
+        assert_eq!(summary(&s.blocks[&1]).elapsed_ms, Some(0));
+        let delta = s.prepare(
+            2,
+            observed,
+            &[atom("text", ChatAtomKind::Text, false)],
+            &[],
+            &[],
+        )?;
+        let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
+        assert_eq!(summary(&frozen.header).created_at, Some(created));
+        assert_eq!(summary(&frozen.header).elapsed_ms, elapsed);
+        assert_eq!(summary(&frozen.header).duration_ms, None);
+    }
     Ok(())
 }
 
@@ -112,6 +204,7 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
     let mut s = state();
     s.prepare(
         1,
+        10,
         &[
             atom("R", ChatAtomKind::Reasoning, false),
             atom("A", ChatAtomKind::ToolCall, false),
@@ -119,9 +212,9 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
         &[],
         &[],
     )?;
-    s.prepare(2, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
-    s.prepare(3, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
-    s.prepare(4, &[atom("A", ChatAtomKind::ToolCall, true)], &[], &[])?;
+    s.prepare(2, 20, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
+    s.prepare(3, 30, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
+    s.prepare(4, 40, &[atom("A", ChatAtomKind::ToolCall, true)], &[], &[])?;
     assert_eq!(s.published, 0);
     let mut background = atom("A", ChatAtomKind::ToolCall, true);
     background.source = ChatSourceId::BackgroundResult {
@@ -133,10 +226,12 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
         input_id: "input".into(),
     };
     input.delivery = ChatDeliveryKind::Independent;
-    s.prepare(5, &[background, input], &[], &[])?;
+    s.prepare(5, 50, &[background, input], &[], &[])?;
     assert_eq!(s.published, 2);
     assert_eq!(s.blocks.len(), 2);
-    let delta = s.prepare(6, &[atom("R", ChatAtomKind::Reasoning, true)], &[], &[])?;
+    assert_eq!(summary(&s.blocks[&1]).created_at, Some(10));
+    assert_eq!(summary(&s.blocks[&1]).elapsed_ms, Some(30_000));
+    let delta = s.prepare(6, 60, &[atom("R", ChatAtomKind::Reasoning, true)], &[], &[])?;
     assert_eq!(s.published, 4);
     assert_eq!(
         delta
@@ -147,6 +242,10 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
         vec![3, 4]
     );
     assert!(matches!(s.pending[&3].body, DisplayBlockBody::Work { .. }));
+    assert!(
+        matches!(&s.pending[&3].body, DisplayBlockBody::Work { summary, .. }
+        if summary.created_at == Some(10) && summary.elapsed_ms == Some(50_000))
+    );
     assert!(matches!(
         s.pending[&4].body,
         DisplayBlockBody::Single { .. }
@@ -162,7 +261,7 @@ fn transfer_and_background_result_have_distinct_keys_and_empty_text_is_removed()
     if let ChatAtomLifecycle::Terminal { outcome, .. } = &mut handoff.lifecycle {
         *outcome = ChatTerminalOutcome::Transferred;
     }
-    s.prepare(1, &[handoff.clone()], &[], &[])?;
+    s.prepare(1, 10, &[handoff.clone()], &[], &[])?;
     let mut result = handoff.clone();
     result.source = ChatSourceId::BackgroundResult {
         message_id: "bg".into(),
@@ -172,15 +271,21 @@ fn transfer_and_background_result_have_distinct_keys_and_empty_text_is_removed()
         *outcome = ChatTerminalOutcome::Completed;
     }
     assert_ne!(member_key(&handoff)?, member_key(&result)?);
-    s.prepare(2, &[result], &[], &[])?;
-    s.prepare(3, &[atom("empty", ChatAtomKind::Text, false)], &[], &[])?;
+    s.prepare(2, 20, &[result], &[], &[])?;
+    s.prepare(3, 30, &[atom("empty", ChatAtomKind::Text, false)], &[], &[])?;
     let mut empty = atom("empty", ChatAtomKind::Text, true);
     empty.content_present = Some(false);
-    let delta = s.prepare(4, &[empty], &[], &[])?;
+    let delta = s.prepare(4, 40, &[empty], &[], &[])?;
     assert_eq!(delta.remove_empty.len(), 1);
     assert_eq!(s.published, 2); // background + foreground Work, not the empty Text
     let old = s.pending[&2].id.clone();
-    s.prepare(5, &[atom("next", ChatAtomKind::ToolCall, false)], &[], &[])?;
+    s.prepare(
+        5,
+        50,
+        &[atom("next", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
     assert_ne!(s.blocks.values().next().unwrap().id, old);
     Ok(())
 }
@@ -193,22 +298,22 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
         started: Some(at(1)),
         status: ChatActiveStatus::Waiting,
     };
-    s.prepare(1, &[waiting.clone()], &[], &[])?;
+    s.prepare(1, 10, &[waiting.clone()], &[], &[])?;
     let revision = s.revision;
     let mut watch = s.subscribe_members();
-    s.prepare(2, &[waiting], &[], &[])?;
+    s.prepare(2, 20, &[waiting], &[], &[])?;
     assert_eq!(s.revision, revision);
     assert!(!watch.has_changed()?);
     assert_eq!(summary(s.blocks.values().next().unwrap()).waiting, 1);
     let terminal = atom("q", ChatAtomKind::ToolCall, true);
-    s.prepare(3, std::slice::from_ref(&terminal), &[], &[])?;
+    s.prepare(3, 30, std::slice::from_ref(&terminal), &[], &[])?;
     assert_eq!(
         s.revision, revision,
         "terminal/summary changes do not stale live older"
     );
     assert!(watch.has_changed()?);
     watch.borrow_and_update();
-    s.prepare(4, std::slice::from_ref(&terminal), &[], &[])?;
+    s.prepare(4, 40, std::slice::from_ref(&terminal), &[], &[])?;
     assert!(!watch.has_changed()?);
     let before = s.revision;
     let mut conflict = terminal;
@@ -217,10 +322,10 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
         ended: Some(at(2)),
         outcome: ChatTerminalOutcome::Failed,
     };
-    assert!(s.prepare(5, &[conflict], &[], &[]).is_err());
+    assert!(s.prepare(5, 50, &[conflict], &[], &[]).is_err());
     assert_eq!(s.revision, before);
     assert_eq!(summary(s.blocks.values().next().unwrap()).terminal, 1);
-    s.prepare(6, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
+    s.prepare(6, 60, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
     assert!(
         s.revision > revision,
         "create/handoff must stale the structural cursor"
@@ -231,7 +336,7 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
 #[test]
 fn parallel_member_without_start_invalidates_the_work_duration() -> Result<()> {
     let mut s = state();
-    s.prepare(1, &[atom("A", ChatAtomKind::ToolCall, false)], &[], &[])?;
+    s.prepare(1, 10, &[atom("A", ChatAtomKind::ToolCall, false)], &[], &[])?;
     let mut b = atom("B", ChatAtomKind::ToolCall, true);
     b.started_at = None;
     b.lifecycle = ChatAtomLifecycle::Terminal {
@@ -239,10 +344,10 @@ fn parallel_member_without_start_invalidates_the_work_duration() -> Result<()> {
         ended: Some(at(2)),
         outcome: ChatTerminalOutcome::Completed,
     };
-    s.prepare(2, &[b], &[], &[])?;
+    s.prepare(2, 20, &[b], &[], &[])?;
     let mut a = atom("A", ChatAtomKind::ToolCall, true);
     a.finished_at = Some(30);
-    s.prepare(3, &[a], &[], &[])?;
+    s.prepare(3, 30, &[a], &[], &[])?;
     let head = s.blocks.values().next().unwrap();
     assert_eq!(summary(head).started_at, None);
     assert_eq!(summary(head).finished_at, Some(30));
@@ -255,8 +360,14 @@ fn missing_work_time_stays_unknown_after_later_measured_intervals() -> Result<()
     let mut s = state();
     let mut unknown = atom("unknown", ChatAtomKind::ToolCall, true);
     unknown.started_at = None;
-    s.prepare(1, &[unknown], &[], &[])?;
-    s.prepare(2, &[atom("known", ChatAtomKind::ToolCall, true)], &[], &[])?;
+    s.prepare(1, 10, &[unknown], &[], &[])?;
+    s.prepare(
+        2,
+        20,
+        &[atom("known", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
     let head = s.blocks.values().next().unwrap();
     assert_eq!(summary(head).started_at, None);
     assert_eq!(summary(head).duration_ms, None);
@@ -286,13 +397,19 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
                 started: Some(at(100_000)),
                 status: ChatActiveStatus::Running,
             };
-            s.prepare(100_000, &[started], &[], &[])?;
+            s.prepare(100_000, 100_000, &[started], &[], &[])?;
         }
         let measured = matches!(index, 0 | 99 | 9_999 | 99_999);
         if measured {
             s.begin_cost_observation();
         }
-        let delta = s.prepare(index + 1 + u64::from(index == 99_999), &[member], &[], &[])?;
+        let delta = s.prepare(
+            index + 1 + u64::from(index == 99_999),
+            i64::try_from(index + 1)?,
+            &[member],
+            &[],
+            &[],
+        )?;
         if measured {
             let visits = s.finish_cost_observation();
             assert_eq!(visits.members.keys.len(), 1);
@@ -334,6 +451,7 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
     assert_eq!(summary(&cut.open[0]).total, 100_000);
     s.begin_cost_observation();
     let delta = s.prepare(
+        100_002,
         100_002,
         &[atom("text", ChatAtomKind::Text, false)],
         &[],

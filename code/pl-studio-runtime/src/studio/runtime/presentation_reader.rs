@@ -108,6 +108,7 @@ impl ConversationReader {
             .map(|header| LiveDisplayBlock {
                 id: header.id.clone(),
                 block_order: header.block_order,
+                source: Some(header.source.clone()),
                 body: header.body.clone(),
                 closing: header.boundary.is_some(),
             })
