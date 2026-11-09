@@ -9,7 +9,7 @@ use super::{
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
 use pl_protocol::*;
@@ -27,6 +27,9 @@ pub enum ConversationEvent {
     },
     Activity {
         snapshot: Arc<ActivitySnapshot>,
+    },
+    Timeline {
+        batch: Box<TimelineBatch>,
     },
 }
 pub struct ConversationFeed {
@@ -91,6 +94,16 @@ impl StudioRuntime {
         thread_id: &str,
         scope: ChatScope,
         demand: ReadDemand,
+    ) -> Result<ConversationFeed> {
+        self.open_feed_resources(thread_id, scope, demand, true)
+            .await
+    }
+    pub(super) async fn open_feed_resources(
+        &self,
+        thread_id: &str,
+        scope: ChatScope,
+        demand: ReadDemand,
+        completed: bool,
     ) -> Result<ConversationFeed> {
         core_demand(demand)?;
         let scope_query = query(&scope)?;
@@ -173,36 +186,48 @@ impl StudioRuntime {
             )
             .for_scope(&scope);
             validate_run(&scope, &database_id, &source.session, source.head, &budget).await?;
-            let page = source
-                .session
-                .page(
-                    core::ChatPageRequest {
-                        query: scope_query,
-                        demand: core_demand(demand)?,
-                        before: None,
-                        ceiling: Some(source.head),
-                    },
-                    &budget,
+            let page = if completed {
+                Some(
+                    source
+                        .session
+                        .page(
+                            core::ChatPageRequest {
+                                query: scope_query,
+                                demand: core_demand(demand)?,
+                                before: None,
+                                ceiling: Some(source.head),
+                            },
+                            &budget,
+                        )
+                        .await?,
                 )
-                .await?;
+            } else {
+                None
+            };
             initial_serial = source.serial;
             initial_activity = source.activity.clone();
             initial_turn = source.current.active_turn().cloned();
             initial_interactions = source.current.interactions().to_vec();
             business_refs = source.current.business_refs();
-            source_states = source.current.source_states().to_vec();
+            if completed {
+                source_states = source.current.source_states().to_vec();
+            }
             let effect_cut = source.current.projection().source_effect_seq;
             progress = Some(progress_rx);
             state = Some(state_rx);
             storage = Some(storage_rx);
             last_turn = Some(terminal_rx);
+            let (items, boundary) = page.map_or_else(
+                || (Vec::new(), None),
+                |page| (page.items, page.before.map(|cursor| cursor.append_seq)),
+            );
             (
                 source.session.clone(),
                 Some(database_id),
                 source.head,
                 effect_cut,
-                page.items,
-                page.before.map(|cursor| cursor.append_seq),
+                items,
+                boundary,
             )
         } else {
             history.prepare_conversation_read().await?;
@@ -219,9 +244,13 @@ impl StudioRuntime {
             )
             .for_scope(&scope);
             // The existing cold facade reads actual business state without installing execution.
-            let cold = history
-                .cold_conversation(scope_query, core_demand(demand)?, &budget)
-                .await?;
+            let cold = if completed {
+                history
+                    .cold_conversation(scope_query, core_demand(demand)?, &budget)
+                    .await?
+            } else {
+                history.cold_conversation_state().await?
+            };
             match cold {
                 Some(cold) => {
                     ensure!(
@@ -229,15 +258,17 @@ impl StudioRuntime {
                         resync()
                     );
                     // Initialize the original Session's D/H from its read-only publication seed.
-                    session
-                        .completed_after(
-                            core::ChatCompletionCursor::new(session.epoch(), 0),
-                            None,
-                            Some(0),
-                            core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
-                            &budget,
-                        )
-                        .await?;
+                    if completed {
+                        session
+                            .completed_after(
+                                core::ChatCompletionCursor::new(session.epoch(), 0),
+                                None,
+                                Some(0),
+                                core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
+                                &budget,
+                            )
+                            .await?;
+                    }
                     validate_run(&scope, &cold.database_id, &session, cold.head, &budget).await?;
                     let boundary = if cold.page.exhausted {
                         None
@@ -284,7 +315,10 @@ impl StudioRuntime {
         };
         ensure!(slot.is_current(position.epoch), resync());
         let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
-        if let Some(sources) = cold_sources {
+        if !completed {
+            // The presentation facade shares State and read resources, never reads/annotates an
+            // atomic completion page as an intermediate representation.
+        } else if let Some(sources) = cold_sources {
             annotate_atoms(&mut initial_entries, &sources)?;
         } else {
             annotate_sources(&mut initial_entries, &history, &source_states, effect_cut).await?;
@@ -305,16 +339,20 @@ impl StudioRuntime {
                 recovery: self.recovery.clone(),
             },
         );
-        let initial = reader.finish_batch(
-            ChatBatch {
-                placement: ChatPlacement::Set,
-                entries: initial_entries,
-                before: reader.before(boundary).await?,
-                from_seq: None,
-                through_seq: head,
-            },
-            demand,
-        )?;
+        let initial = if completed {
+            Some(reader.finish_batch(
+                ChatBatch {
+                    placement: ChatPlacement::Set,
+                    entries: initial_entries,
+                    before: reader.before(boundary).await?,
+                    from_seq: None,
+                    through_seq: head,
+                },
+                demand,
+            )?)
+        } else {
+            None
+        };
         let runtime_source = position.source.as_ref().and_then(|source| source.runtime());
         let state_activity_cut = position
             .source
@@ -360,8 +398,8 @@ impl StudioRuntime {
         });
         let mut feed = ConversationFeed {
             reader,
-            initial: Some(initial),
-            initial_activity: Some(initial_activity),
+            initial,
+            initial_activity: completed.then_some(initial_activity),
             business_refs,
             pending,
             progress,
@@ -456,11 +494,49 @@ impl ConversationFeed {
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
+    pub(super) fn current_progress(&mut self) -> Option<Arc<ConversationSource>> {
+        self.progress
+            .as_mut()
+            .and_then(|progress| progress.borrow_and_update().clone())
+    }
+    /// Shared State owner for the completed and presentation facades. This never reads Chat.
+    pub(super) fn take_state(&mut self) -> Result<Option<ThreadSubscriptionUpdate>> {
+        self.reader.ensure()?;
+        ensure!(!self.cancel.is_cancelled(), core::ChatError::Cancelled);
+        ensure!(
+            !self
+                .state
+                .as_ref()
+                .is_some_and(super::thread_observation::StateReceiver::is_closed),
+            resync()
+        );
+        self.reflect_retained_turn()?;
+        if let Some(update) = self.pending.pop_front() {
+            return Ok(Some(update));
+        }
+        let queued = self
+            .state
+            .as_ref()
+            .map_or(0, super::thread_observation::StateReceiver::len);
+        for _ in 0..queued {
+            match self
+                .state
+                .as_mut()
+                .expect("queued State receiver")
+                .try_recv()
+            {
+                Ok(event) => self.state_event(event)?,
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(_) => return Err(resync()),
+            }
+        }
+        Ok(self.pending.pop_front())
+    }
     pub async fn close(&mut self) -> Result<()> {
         self.finish_production();
         Ok(())
     }
-    fn finish_production(&mut self) {
+    pub(super) fn finish_production(&mut self) {
         self.cancel.cancel();
         self.progress = None;
         self.state = None;
@@ -799,38 +875,40 @@ impl ConversationFeed {
                     snapshot: target.activity.clone(),
                 }));
             }
-            enum Wake {
-                State(Result<ThreadLiveEvent, broadcast::error::RecvError>),
-                Progress(bool),
-                Storage(Option<ThreadStorageState>),
-                Terminal(bool),
-                Slot,
-            }
-            let wake = tokio::select! { biased;
-                _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
-                _ = self.slot_changed.changed() => Wake::Slot,
-                state = async { match self.state.as_mut() { Some(state) => state.recv().await, None => std::future::pending().await } } => Wake::State(state),
-                progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Progress(progress),
-                storage = async { match self.storage.as_mut() { Some(storage) => { if storage.changed().await.is_ok() { storage.borrow_and_update().clone() } else { std::future::pending().await } }, None => std::future::pending().await } } => Wake::Storage(storage),
-                terminal = async { match self.last_turn.as_mut() { Some(terminal) => terminal.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Terminal(terminal),
-            };
-            match wake {
-                Wake::Slot => {
-                    self.reader.ensure()?;
-                    return Err(resync());
-                }
-                Wake::State(Ok(event)) => self.state_event(event)?,
-                Wake::State(Err(_)) => return Err(resync()),
-                Wake::Progress(true) => {}
-                Wake::Progress(false) => return Err(resync()),
-                Wake::Storage(storage) => {
-                    self.notification(ThreadNotification::StorageChanged {
-                        storage: storage.map(Box::new),
-                    })?
-                }
-                Wake::Terminal(false) => self.last_turn = None,
-                Wake::Terminal(true) => {}
-            }
+            self.wait_change().await?;
         }
+    }
+    pub(super) async fn wait_change(&mut self) -> Result<()> {
+        enum Wake {
+            State(Result<ThreadLiveEvent, broadcast::error::RecvError>),
+            Progress(bool),
+            Storage(Option<ThreadStorageState>),
+            Terminal(bool),
+            Slot,
+        }
+        let wake = tokio::select! { biased;
+            _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
+            _ = self.slot_changed.changed() => Wake::Slot,
+            state = async { match self.state.as_mut() { Some(state) => state.recv().await, None => std::future::pending().await } } => Wake::State(state),
+            progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Progress(progress),
+            storage = async { match self.storage.as_mut() { Some(storage) => { if storage.changed().await.is_ok() { storage.borrow_and_update().clone() } else { std::future::pending().await } }, None => std::future::pending().await } } => Wake::Storage(storage),
+            terminal = async { match self.last_turn.as_mut() { Some(terminal) => terminal.changed().await.is_ok(), None => std::future::pending().await } } => Wake::Terminal(terminal),
+        };
+        match wake {
+            Wake::Slot => {
+                self.reader.ensure()?;
+                return Err(resync());
+            }
+            Wake::State(Ok(event)) => self.state_event(event)?,
+            Wake::State(Err(_)) => return Err(resync()),
+            Wake::Progress(true) => {}
+            Wake::Progress(false) => return Err(resync()),
+            Wake::Storage(storage) => self.notification(ThreadNotification::StorageChanged {
+                storage: storage.map(Box::new),
+            })?,
+            Wake::Terminal(false) => self.last_turn = None,
+            Wake::Terminal(true) => {}
+        }
+        Ok(())
     }
 }

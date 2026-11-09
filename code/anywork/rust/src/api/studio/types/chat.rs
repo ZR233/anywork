@@ -1,6 +1,8 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::{BridgeActivitySnapshot, BridgeError, BridgeThreadSubscriptionUpdate};
+use super::{
+    BridgeActivitySnapshot, BridgeError, BridgeThreadSubscriptionUpdate, BridgeTimelineBatch,
+};
 
 #[derive(Debug, Clone)]
 pub struct BridgeConversationFrame {
@@ -20,6 +22,9 @@ pub enum BridgeConversationEvent {
     },
     Activity {
         snapshot: Box<BridgeActivitySnapshot>,
+    },
+    Timeline {
+        batch: Box<BridgeTimelineBatch>,
     },
     Failure {
         error: BridgeError,

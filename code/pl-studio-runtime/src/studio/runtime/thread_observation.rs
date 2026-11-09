@@ -184,6 +184,13 @@ pub(in crate::studio) struct ThreadLiveFeed {
 }
 
 impl ThreadLiveFeed {
+    #[cfg(test)]
+    pub(in crate::studio) fn bind_test_presentation(
+        &self,
+        handle: crate::studio::thread_projection::presentation::PresentationHandle,
+    ) {
+        self.conversation.bind_presentation(handle);
+    }
     pub(super) fn is_delivery_closed(&self) -> bool {
         self.delivery_closed.is_cancelled()
     }
@@ -1269,6 +1276,8 @@ impl LiveOwner {
         let mut projection = LiveProjection::new();
         projection.bind_execution_history(channel.order_index(), history)?;
         projection.bind_conversation_identity(database_id)?;
+        feed.conversation
+            .bind_presentation(projection.presentation());
         let retained = handle.effects().await?;
         let (seed_items, hidden) =
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;

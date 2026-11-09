@@ -332,6 +332,11 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == 18,
         "immutable completion history format is not 18"
     );
+    validate_preserved(db).await
+}
+
+/// Shared structural proof; the published v18 migration above keeps its exact version gate.
+pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> {
     completion_boundary::validate_preserved(db).await?;
     super::validate_tables(db).await?;
     super::model_route_head::validate_tables(db).await?;

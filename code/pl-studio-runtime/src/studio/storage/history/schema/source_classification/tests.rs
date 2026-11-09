@@ -29,6 +29,7 @@ impl MigratorTraitSelf for Published16 {
                     | TIMELINE_BACKGROUND_TAIL
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .collect()

@@ -263,6 +263,7 @@ fn demand() -> ReadDemand {
 async fn chat(feed: &mut ConversationFeed, scope: &ChatScope) -> Result<ChatBatch> {
     loop {
         match feed.recv().await?.context("A34 feed ended")? {
+            ConversationEvent::Timeline { .. } => bail!("completion-level feed received Timeline"),
             ConversationEvent::Chat { batch } => {
                 batch.validate_for(scope)?;
                 return Ok(*batch);

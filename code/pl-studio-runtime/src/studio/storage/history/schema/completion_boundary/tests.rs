@@ -27,7 +27,12 @@ impl MigratorTraitSelf for Published16 {
         .migrations()
         .into_iter()
         .take_while(|step| !is_lifecycle_migration(step.name()))
-        .filter(|step| !matches!(step.name(), COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS))
+        .filter(|step| {
+            !matches!(
+                step.name(),
+                COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS | DISPLAY_SNAPSHOTS
+            )
+        })
         .collect()
     }
 }

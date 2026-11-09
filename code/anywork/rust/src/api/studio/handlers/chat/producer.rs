@@ -5,7 +5,7 @@ use pl_protocol::studio::StudioErrorCode;
 use pl_studio_runtime::ConversationEvent;
 
 use super::owner::{ConversationOwner, error};
-use crate::api::studio::convert::{chat, thread_stream::bridge_thread_update};
+use crate::api::studio::convert::{chat, presentation, thread_stream::bridge_thread_update};
 use crate::api::studio::types::{BridgeConversationEvent, BridgeConversationFrame, BridgeError};
 use crate::frb_generated::{SseEncode, StreamSink};
 
@@ -96,6 +96,9 @@ fn convert(event: ConversationEvent) -> Result<BridgeConversationEvent, BridgeEr
         },
         ConversationEvent::Activity { snapshot } => BridgeConversationEvent::Activity {
             snapshot: Box::new(chat::activity((*snapshot).clone())),
+        },
+        ConversationEvent::Timeline { batch } => BridgeConversationEvent::Timeline {
+            batch: Box::new(presentation::batch(*batch)?),
         },
     })
 }

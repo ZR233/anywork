@@ -307,6 +307,10 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) current:
         Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
     pub(in crate::studio) current_state: Option<Arc<super::CurrentState>>,
+    pub(in crate::studio) display: Option<Arc<super::presentation::PreparedDisplayDelta>>,
+    /// Reliable effect-local changes of already admitted members, not new immutable phases.
+    /// Publication consumes these into the original frozen display delta.
+    display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// The frozen completion records this batch published atomically before the handoff.
@@ -405,11 +409,20 @@ impl PreparedEffect {
                 .saturating_add(record.header.metadata.len() as u64)
         });
         retained_bytes(&self.items)
+            .saturating_add(
+                self.display
+                    .as_ref()
+                    .map_or(0, |delta| delta.retained_bytes),
+            )
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
             .saturating_add(self.current.operation_bytes())
             .saturating_add(
                 serde_json::to_vec(self.current.atom_facts.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.display_atom_updates.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
@@ -1226,6 +1239,8 @@ pub(in crate::studio) struct LiveProjection {
     order_index: Option<Arc<RuntimeOrderIndex>>,
     execution_history: Option<crate::studio::storage::history::HistoryStore>,
     current: super::current::CurrentOwner,
+    presentation: super::presentation::PresentationHandle,
+    presentation_restored: bool,
 }
 
 impl Drop for LiveProjection {
@@ -1264,6 +1279,8 @@ impl LiveProjection {
             order_index: None,
             execution_history: None,
             current: Default::default(),
+            presentation: Default::default(),
+            presentation_restored: false,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1314,7 +1331,47 @@ impl LiveProjection {
                 .bind(database_id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
+        if !self.presentation_restored {
+            let database = self.current.database_id().expect("bound identity");
+            if let Some(history) = &self.execution_history {
+                let seed = history
+                    .display_recovery()
+                    .await
+                    .map_err(|error| ProjectionError::History(error.to_string()))?;
+                if let Some(seed) = seed {
+                    self.presentation
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .restore(
+                            database,
+                            seed.published,
+                            seed.last_order,
+                            seed.effect,
+                            seed.open,
+                            seed.unfinished,
+                        )
+                        .map_err(|error| ProjectionError::History(error.to_string()))?;
+                } else {
+                    self.presentation
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .bind(database)
+                        .map_err(|error| ProjectionError::History(error.to_string()))?;
+                }
+            } else {
+                self.presentation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .bind(database)
+                    .map_err(|error| ProjectionError::History(error.to_string()))?;
+            }
+            self.presentation_restored = true;
+        }
         Ok(())
+    }
+
+    pub(in crate::studio) fn presentation(&self) -> super::presentation::PresentationHandle {
+        self.presentation.clone()
     }
 
     pub(in crate::studio) fn current_state(&self) -> Option<Arc<super::CurrentState>> {
@@ -1488,6 +1545,12 @@ impl LiveProjection {
                     + RETAINED_ENTRY_OVERHEAD
             }))
             .saturating_add(self.current.retained_bytes());
+        bytes = bytes.saturating_add(
+            self.presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retained_bytes(),
+        );
         bytes = bytes
             .saturating_add(
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1564,6 +1627,8 @@ impl LiveProjection {
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
+            display: None,
+            display_atom_updates: provenance.2.into(),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -1617,6 +1682,8 @@ impl LiveProjection {
             accounting,
             current: current.clone(),
             current_state: Some(current_state),
+            display: None,
+            display_atom_updates: provenance.2.into(),
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -2125,9 +2192,30 @@ impl LiveProjection {
             self.order_index_of()?
                 .mark_completion(&record.header.item_id, true);
         }
-        // Completion publication is the only history boundary. Current contains actual
-        // activity/interaction state and never needs a display-group retirement suffix.
+        // Existing-member Active updates precede this effect's starts/terminals, so a
+        // terminal of the same identity remains its final display state. This walks only
+        // effect-local changes; progress/token observation never enters this path.
+        let display_facts = prepared
+            .display_atom_updates
+            .iter()
+            .chain(prepared.current.atom_facts.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let display = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prepare(
+                prepared.sequence,
+                &display_facts,
+                &prepared.current.source_changes,
+                &records,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let prepared = Arc::make_mut(prepared);
+        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
+        prepared.display = Some(display);
+        prepared.display_atom_updates = Arc::from([]);
         prepared.completions = records;
         prepared.completion_drafts = None;
         Ok(())

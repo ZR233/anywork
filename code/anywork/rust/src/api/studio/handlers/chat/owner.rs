@@ -7,7 +7,7 @@ use std::{
 };
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
-use pl_studio_runtime::{ConversationFeed, ConversationReader};
+use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineFeed};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -26,7 +26,7 @@ pub(crate) struct ConversationOwner {
     pub(super) watches: ContentWatches,
     pub(super) state: SyncMutex<DeliveryState>,
     pub(super) credit: Notify,
-    native: Mutex<Option<ConversationFeed>>,
+    native: Mutex<Option<NativeFeed>>,
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
     producer: Mutex<OwnedTaskSlot>,
@@ -34,6 +34,57 @@ pub(crate) struct ConversationOwner {
     /// so merely installing it cannot form an uncancelled Arc self-cycle.
     lifecycle: SyncMutex<Option<Arc<Mutex<OwnedTaskSlot>>>>,
     close_errors: SyncMutex<CloseFailures>,
+}
+
+/// Only native receive/close differ; credit, read admission and joins have one owner.
+#[flutter_rust_bridge::frb(ignore)]
+pub(super) enum NativeFeed {
+    Conversation(Box<ConversationFeed>),
+    Timeline(Box<TimelineFeed>),
+}
+
+impl NativeFeed {
+    fn thread_id(&self) -> &str {
+        match self {
+            Self::Conversation(feed) => feed.thread_id(),
+            Self::Timeline(feed) => feed.thread_id(),
+        }
+    }
+
+    fn subscription_id(&self) -> &str {
+        match self {
+            Self::Conversation(feed) => feed.subscription_id(),
+            Self::Timeline(feed) => feed.subscription_id(),
+        }
+    }
+
+    fn reader(&self) -> &ConversationReader {
+        match self {
+            Self::Conversation(feed) => feed.reader(),
+            Self::Timeline(feed) => feed.reader(),
+        }
+    }
+
+    pub(super) async fn recv(&mut self) -> anyhow::Result<Option<ConversationEvent>> {
+        match self {
+            Self::Conversation(feed) => feed.recv().await,
+            Self::Timeline(feed) => feed.receive().await.map(Some),
+        }
+    }
+
+    fn request_close(&self) {
+        match self {
+            Self::Conversation(feed) => feed.request_close(),
+            Self::Timeline(feed) => feed.request_close(),
+        }
+    }
+
+    async fn close_observation(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Conversation(feed) => feed.close().await,
+            Self::Timeline(feed) => feed.close().await,
+        }
+    }
 }
 
 #[flutter_rust_bridge::frb(ignore)]
@@ -58,6 +109,14 @@ struct OwnedTaskSlot {
 
 impl ConversationOwner {
     pub(super) fn new(feed: ConversationFeed, cancel: CancellationToken) -> Self {
+        Self::from_native(NativeFeed::Conversation(Box::new(feed)), cancel)
+    }
+
+    pub(super) fn timeline(feed: TimelineFeed, cancel: CancellationToken) -> Self {
+        Self::from_native(NativeFeed::Timeline(Box::new(feed)), cancel)
+    }
+
+    fn from_native(feed: NativeFeed, cancel: CancellationToken) -> Self {
         Self {
             thread_id: feed.thread_id().to_owned(),
             subscription_id: feed.subscription_id().to_owned(),
@@ -257,16 +316,17 @@ impl ConversationOwner {
         }
     }
 
-    pub(super) async fn native(&self) -> tokio::sync::MutexGuard<'_, Option<ConversationFeed>> {
+    pub(super) async fn native(&self) -> tokio::sync::MutexGuard<'_, Option<NativeFeed>> {
         self.native.lock().await
     }
 
-    /// Cancellation-safe native close: keep the original feed in its slot across every await.
+    /// Retires only production; the original read lease belongs to finish_close independently.
+    /// Keep the original feed in its slot across every await so cancellation loses no join.
     pub(super) async fn close_native(&self) -> Result<(), BridgeError> {
         let mut slot = self.native.lock().await;
         if let Some(feed) = slot.as_mut() {
             feed.request_close();
-            feed.close().await?;
+            feed.close_observation().await?;
             slot.take();
         }
         Ok(())

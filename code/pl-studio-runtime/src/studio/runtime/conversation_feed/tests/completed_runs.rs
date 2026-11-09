@@ -18,7 +18,7 @@ use pl_model::{
     runtime::{ModelMemberReceipt, ModelMemberState},
 };
 
-pub(super) fn start(id: &str, reasoning: bool) -> ModelStartedMember {
+pub(in crate::studio::runtime) fn start(id: &str, reasoning: bool) -> ModelStartedMember {
     ModelStartedMember {
         turn_id: "atomic-turn".into(),
         attempt_id: "atomic-attempt".into(),
@@ -41,7 +41,11 @@ pub(super) fn start(id: &str, reasoning: bool) -> ModelStartedMember {
     }
 }
 
-pub(super) fn finish(id: &str, reasoning: bool, text: &str) -> Result<ModelCompletedMember> {
+pub(in crate::studio::runtime) fn finish(
+    id: &str,
+    reasoning: bool,
+    text: &str,
+) -> Result<ModelCompletedMember> {
     let receipt = ModelMemberReceipt {
         item: CompletionPresentationItem {
             provider_item_id: id.into(),
@@ -77,7 +81,7 @@ pub(super) fn finish(id: &str, reasoning: bool, text: &str) -> Result<ModelCompl
     })
 }
 
-fn publish(
+pub(in crate::studio::runtime) fn publish(
     source: &super::super::super::thread_observation::ThreadLiveFeed,
     session: &core::Session,
     prepared: &Arc<PreparedEffect>,
@@ -88,7 +92,7 @@ fn publish(
     )
 }
 
-pub(super) struct Harness {
+pub(in crate::studio::runtime) struct Harness {
     pub thread: Thread,
     pub history: crate::studio::storage::history::HistoryStore,
     pub session: core::Session,
@@ -140,6 +144,7 @@ impl Harness {
                 Default::default(),
             ),
         );
+        source.bind_test_presentation(projection.presentation());
         env.runtime
             .thread_observations
             .observation_slot(&thread.id)
@@ -385,6 +390,9 @@ pub(super) async fn activity(feed: &mut ConversationFeed) -> Result<Arc<Activity
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match feed.recv().await?.context("activity feed ended")? {
+                ConversationEvent::Timeline { .. } => {
+                    bail!("completion-level feed received Timeline")
+                }
                 ConversationEvent::Activity { snapshot } => return Ok(snapshot),
                 ConversationEvent::State { .. } => {}
                 ConversationEvent::Chat { .. } => {

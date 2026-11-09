@@ -2,14 +2,18 @@ part of 'studio_api.dart';
 
 /// Mechanical typed transport only. The SDK owns continuity, reduction and ACK.
 final class FrbConversationFeed implements ConversationFeed {
-  FrbConversationFeed(this._native)
+  FrbConversationFeed(frb_chat.BridgeConversationFeed native)
+    : this._(_FrbNativeConversation.conversation(native));
+
+  FrbConversationFeed._(this._native)
     : threadId = _native.threadId(),
       subscriptionId = _native.subscriptionId();
 
-  final frb_chat.BridgeConversationFeed _native;
+  final _FrbNativeConversation _native;
   @override
   late final ConversationReader reader = _FrbConversationReader(this);
   final Set<_FrbContentWatch> _contentWatches = {};
+  final Set<_FrbDisplayMembers> _memberWatches = {};
   @override
   final String threadId;
   @override
@@ -74,6 +78,12 @@ final class FrbConversationFeed implements ConversationFeed {
                     ),
                   frb_chat_types.BridgeConversationEvent_Chat(:final batch) =>
                     ConversationChatEvent(batch: _chatBatchFromFrb(batch)),
+                  frb_chat_types.BridgeConversationEvent_Timeline(
+                    :final batch,
+                  ) =>
+                    ConversationTimelineEvent(
+                      batch: _timelineBatchFromFrb(batch),
+                    ),
                   frb_chat_types.BridgeConversationEvent_Activity(
                     :final snapshot,
                   ) =>
@@ -131,6 +141,9 @@ final class FrbConversationFeed implements ConversationFeed {
     if (_closed) return;
     _closed = true;
     for (final watch in List.of(_contentWatches)) {
+      watch.requestClose();
+    }
+    for (final watch in List.of(_memberWatches)) {
       watch.requestClose();
     }
     try {
@@ -196,6 +209,7 @@ final class FrbConversationFeed implements ConversationFeed {
         [
           Future<void>.sync(_native.close),
           for (final watch in List.of(_contentWatches)) watch.close(),
+          for (final watch in List.of(_memberWatches)) watch.close(),
         ].map(
           (task) => task.then<void>(
             (_) {},

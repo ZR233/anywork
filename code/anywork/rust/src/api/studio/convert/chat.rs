@@ -190,7 +190,7 @@ fn atom_content(value: protocol::ChatAtomContent) -> BridgeChatAtomContent {
     }
 }
 
-fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
+pub(super) fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
     BridgeChatAtom {
         id: value.id,
         completion_item_id: value.completion_item_id,
@@ -273,15 +273,19 @@ pub(crate) fn completed(value: protocol::CompletedEntry) -> BridgeCompletedEntry
 
 pub(crate) fn batch(value: protocol::ChatBatch) -> BridgeChatBatch {
     BridgeChatBatch {
-        placement: match value.placement {
-            protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
-            protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
-            protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
-        },
+        placement: placement(value.placement),
         entries: value.entries.into_iter().map(completed).collect(),
         before: value.before,
         from_seq: value.from_seq,
         through_seq: value.through_seq,
+    }
+}
+
+pub(super) fn placement(value: protocol::ChatPlacement) -> BridgeChatPlacement {
+    match value {
+        protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
+        protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
+        protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
     }
 }
 

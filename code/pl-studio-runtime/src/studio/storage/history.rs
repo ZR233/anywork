@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 18;
+const HISTORY_SCHEMA_VERSION: i64 = 19;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
@@ -1561,6 +1561,36 @@ impl HistoryStore {
         let current = conversation::completed::cold(&tx).await?;
         tx.commit().await?;
         Ok(Some(current))
+    }
+
+    /// State-only cold baseline for the display feed; no completion page or model context.
+    pub(in crate::studio) async fn cold_conversation_state(
+        &self,
+    ) -> Result<Option<ColdConversation>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let cold = conversation::completed::cold(&tx).await?;
+        let head = conversation::latest_append_seq(&tx).await?;
+        let current = cold.projection().clone();
+        let interactions = cold.interactions().to_vec();
+        let model_route = checkpoint::read_model_route_head(&tx).await?;
+        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
+        tx.commit().await?;
+        Ok(Some(ColdConversation {
+            database_id: connection.database_id.clone(),
+            head,
+            model_route,
+            current,
+            sources: Vec::new(),
+            interactions,
+            terminal_turn,
+            page: ChatHistoryPage {
+                items: Vec::new(),
+                exhausted: true,
+            },
+        }))
     }
 
     /// Same domain-head projection as State, from one fresh SQLite read transaction.

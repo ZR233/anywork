@@ -7,7 +7,7 @@ use std::{collections::HashMap, time::Duration};
 use crate::runtime_test_support as support;
 mod allocation;
 mod coalescing;
-mod completed_runs;
+pub(in crate::studio::runtime) mod completed_runs;
 mod state_activity;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -531,6 +531,9 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match feed.recv().await?.context("feed ended")? {
+                ConversationEvent::Timeline { .. } => {
+                    bail!("completion-level feed received Timeline")
+                }
                 ConversationEvent::Chat { batch } => {
                     batch.validate_for(&feed.reader.inner.scope)?;
                     assert!(
@@ -639,6 +642,9 @@ async fn finish_question(
                 .await?
                 .context("feed ended before terminal State")?
             {
+                ConversationEvent::Timeline { .. } => {
+                    bail!("completion-level feed received Timeline")
+                }
                 ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
                 ConversationEvent::State { update } => {
                     let ThreadSubscriptionUpdate::Notification { notification } = *update else {
@@ -802,6 +808,9 @@ async fn question_cut_open_feed_delivers_new_pending_and_answer_once_in_order() 
                     .await?
                     .context("feed ended before pending question")?
                 {
+                    ConversationEvent::Timeline { .. } => {
+                        bail!("completion-level feed received Timeline")
+                    }
                     ConversationEvent::Chat { .. } | ConversationEvent::Activity { .. } => {}
                     ConversationEvent::State { update } => {
                         let ThreadSubscriptionUpdate::Notification { notification } = *update

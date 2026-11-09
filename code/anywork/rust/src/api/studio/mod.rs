@@ -14,6 +14,9 @@ pub use self::directory::{
     BridgeThreadDirectoryWindow, BridgeThreadMetadataFrame, BridgeThreadObservation,
     BridgeThreadsObservation, open_thread_observation, open_threads_observation,
 };
+pub use self::handlers::chat::timeline::{
+    BridgeDisplayMembers, BridgeTimelineFeed, open_timeline_feed,
+};
 pub use self::handlers::{
     BridgeConversationFeed, BridgeStudioUpdateOperation, activate_project, admit_attachment_drafts,
     apply_settings_field, archive_project, archive_thread, authenticate_ssh_server,

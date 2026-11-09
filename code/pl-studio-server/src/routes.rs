@@ -39,6 +39,7 @@ use crate::AppState;
 use crate::conversation;
 use crate::error::ApiError;
 use crate::sse;
+use crate::timeline;
 use pl_protocol::studio::{
     CancelChatGptLoginRequest, ChatGptLoginCommandReply, StartChatGptLoginRequest,
 };
@@ -302,6 +303,12 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(conversation::older))
+        .routes(routes!(timeline::open))
+        .routes(routes!(timeline::events))
+        .routes(routes!(timeline::older))
+        .routes(routes!(timeline::live_older))
+        .routes(routes!(timeline::close))
+        .routes(routes!(timeline::members))
         .routes(routes!(conversation::completed))
         .routes(routes!(conversation::manifest))
         .routes(routes!(conversation::read))

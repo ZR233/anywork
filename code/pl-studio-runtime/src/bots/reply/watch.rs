@@ -211,6 +211,9 @@ impl ReplyWatch {
             .map_err(|error| read_failure("bot conversation feed failed; new Set required", error))?
             .ok_or_else(|| gap("bot conversation feed ended before reply completed"))?;
         match event {
+            ConversationEvent::Timeline { .. } => Err(gap(
+                "completion-level bot feed received a presentation event",
+            )),
             ConversationEvent::State { update } => self.state(*update),
             ConversationEvent::Chat { batch } => {
                 if (!self.chat_ready && batch.placement != ChatPlacement::Set)

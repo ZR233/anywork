@@ -53,6 +53,9 @@ async fn conversation(env: &Environment) -> Result<(BridgeConversationFeed, Brid
             pl_studio_runtime::ConversationEvent::Chat { batch } => break batch,
             pl_studio_runtime::ConversationEvent::State { .. } => {}
             pl_studio_runtime::ConversationEvent::Activity { .. } => {}
+            pl_studio_runtime::ConversationEvent::Timeline { .. } => {
+                anyhow::bail!("atomic feed must not emit GUI presentation events");
+            }
         }
     };
     let owner = Arc::new(ConversationOwner::new(native, CancellationToken::new()));

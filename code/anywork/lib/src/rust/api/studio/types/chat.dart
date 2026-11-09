@@ -10,6 +10,7 @@ import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'presentation.dart';
 import 'runtime.dart';
 import 'thread_activity.dart';
 import 'thread_stream.dart';
@@ -550,6 +551,9 @@ sealed class BridgeConversationEvent with _$BridgeConversationEvent {
   const factory BridgeConversationEvent.activity({
     required BridgeActivitySnapshot snapshot,
   }) = BridgeConversationEvent_Activity;
+  const factory BridgeConversationEvent.timeline({
+    required BridgeTimelineBatch batch,
+  }) = BridgeConversationEvent_Timeline;
   const factory BridgeConversationEvent.failure({required BridgeError error}) =
       BridgeConversationEvent_Failure;
   const factory BridgeConversationEvent.closed() =

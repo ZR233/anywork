@@ -9,9 +9,19 @@ use std::{
     },
 };
 
+#[derive(Clone, Copy, Default)]
+enum Scope {
+    #[default]
+    CompletionHeads,
+    DisplayHeads,
+    DisplayMembers,
+}
+
 #[derive(Default)]
 struct State {
+    scope: Scope,
     candidates: AtomicU64,
+    member_rows: AtomicU64,
     reference_rows: AtomicU64,
     statements: AtomicU64,
     vm_steps: AtomicU64,
@@ -28,8 +38,9 @@ struct State {
 }
 
 #[derive(Debug)]
-pub(super) struct Work {
+pub(in crate::studio::storage::history::conversation) struct Work {
     pub candidates: u64,
+    pub member_rows: u64,
     pub reference_rows: u64,
     pub statements: u64,
     pub vm_steps: u64,
@@ -40,14 +51,14 @@ pub(super) struct Work {
     pub denied_reads: u64,
 }
 
-pub(super) struct Lifetime(Weak<State>);
+pub(in crate::studio::storage::history::conversation) struct Lifetime(Weak<State>);
 impl Lifetime {
     pub fn is_alive(&self) -> bool {
         self.0.strong_count() != 0
     }
 }
 
-pub(super) struct Sampler {
+pub(in crate::studio::storage::history::conversation) struct Sampler {
     state: Arc<State>,
 }
 
@@ -97,12 +108,27 @@ impl Drop for Registration {
 
 impl Sampler {
     pub async fn install(db: &sea_orm::DatabaseConnection) -> Result<Self> {
+        Self::install_scope(db, Scope::CompletionHeads).await
+    }
+
+    pub async fn display_heads(db: &sea_orm::DatabaseConnection) -> Result<Self> {
+        Self::install_scope(db, Scope::DisplayHeads).await
+    }
+
+    pub async fn display_members(db: &sea_orm::DatabaseConnection) -> Result<Self> {
+        Self::install_scope(db, Scope::DisplayMembers).await
+    }
+
+    async fn install_scope(db: &sea_orm::DatabaseConnection, scope: Scope) -> Result<Self> {
         let pool = db.get_sqlite_connection_pool();
         ensure!(
             pool.options().get_max_connections() == 1,
             "sampling requires this test fixture's single physical connection"
         );
-        let state = Arc::new(State::default());
+        let state = Arc::new(State {
+            scope,
+            ..State::default()
+        });
         {
             let mut connection = pool.acquire().await?;
             let mut handle = connection.lock_handle().await?;
@@ -139,15 +165,19 @@ impl Sampler {
         let sampler = Self { state };
         // Prove the column guard is active before the measured request. Preparing this forbidden
         // read fails even though the fixture's content table is empty. Exclude the probe from Main.
-        let probe = db
-            .query_all_raw(statement(
-                "SELECT data FROM conversation_content_chunks LIMIT 1",
-                vec![],
-            ))
-            .await;
-        if probe.is_ok() || sampler.state.denied_reads.load(Relaxed) != 1 {
-            sampler.finish(db).await?;
-            anyhow::bail!("body-column authorizer probe was not denied");
+        let mut probes = vec!["SELECT data FROM conversation_content_chunks LIMIT 1"];
+        if !matches!(scope, Scope::CompletionHeads) {
+            probes.push("SELECT payload FROM conversation_items LIMIT 1");
+        }
+        if matches!(scope, Scope::DisplayHeads) {
+            probes.push("SELECT metadata FROM conversation_display_members LIMIT 1");
+        }
+        for (index, sql) in probes.iter().enumerate() {
+            let probe = db.query_all_raw(statement(sql, vec![])).await;
+            if probe.is_ok() || sampler.state.denied_reads.load(Relaxed) != index as u64 + 1 {
+                sampler.finish(db).await?;
+                anyhow::bail!("body/original/member authorizer probe was not denied");
+            }
         }
         sampler.state.denied_reads.store(0, Relaxed);
         Ok(sampler)
@@ -185,10 +215,11 @@ impl Sampler {
         );
         ensure!(
             s.unexpected_statements.load(Relaxed) == 0,
-            "production Main executed SQL other than the original RunHeads/header queries"
+            "production read executed SQL outside the selected sampling scope"
         );
         Ok(Work {
             candidates: s.candidates.load(Relaxed),
+            member_rows: s.member_rows.load(Relaxed),
             reference_rows: s.reference_rows.load(Relaxed),
             statements: s.statements.load(Relaxed),
             vm_steps: s.vm_steps.load(Relaxed),
@@ -207,12 +238,27 @@ fn contains(sql: &[u8], needle: &[u8]) -> bool {
 
 enum Kind {
     Heads,
+    Members,
     Reference,
     Unexpected,
 }
 
-fn kind(sql: &[u8]) -> Kind {
+fn kind(sql: &[u8], scope: Scope) -> Kind {
     let sql = sql.trim_ascii();
+    if !matches!(scope, Scope::CompletionHeads) {
+        if sql.starts_with(b"SELECT block_id,source_key,block_order,history_pos,updated_effect,header FROM conversation_display_blocks WHERE ") {
+            return Kind::Heads;
+        }
+        if matches!(scope, Scope::DisplayMembers) {
+            if sql == b"SELECT 1 FROM conversation_display_blocks WHERE block_id=?" {
+                return Kind::Reference;
+            }
+            if sql == b"SELECT block_id,member_order,member_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?" {
+                return Kind::Members;
+            }
+        }
+        return Kind::Unexpected;
+    }
     if sql == run_read::RUN_HEADS_SQL.as_bytes().trim_ascii() {
         Kind::Heads
     } else if sql.starts_with(b"SELECT ")
@@ -253,7 +299,7 @@ unsafe extern "C" fn trace_callback(
         }
         (state, stmt, CStr::from_ptr(sql).to_bytes())
     };
-    let kind = kind(sql);
+    let kind = kind(sql, state.scope);
     if event == libsqlite3_sys::SQLITE_TRACE_ROW as c_uint {
         match kind {
             Kind::Heads => {
@@ -261,6 +307,9 @@ unsafe extern "C" fn trace_callback(
             }
             Kind::Reference => {
                 state.reference_rows.fetch_add(1, Relaxed);
+            }
+            Kind::Members => {
+                state.member_rows.fetch_add(1, Relaxed);
             }
             Kind::Unexpected => {}
         }
@@ -295,7 +344,7 @@ unsafe extern "C" fn trace_callback(
                     .head_fullscan_steps
                     .fetch_add(fullscan as u64, Relaxed);
             }
-            Kind::Reference => {}
+            Kind::Reference | Kind::Members => {}
             Kind::Unexpected => {
                 state.unexpected_statements.fetch_add(1, Relaxed);
             }
@@ -319,6 +368,15 @@ unsafe extern "C" fn authorize(
     // SAFETY: SQLite supplies live NUL-terminated action arguments for this synchronous callback.
     // The context has the same driver-owned Arc lifetime as the trace callback.
     let (state, table) = unsafe { (&*context.cast::<State>(), CStr::from_ptr(table).to_bytes()) };
+    if !matches!(state.scope, Scope::CompletionHeads) {
+        let allowed = table == b"conversation_display_blocks"
+            || (matches!(state.scope, Scope::DisplayMembers)
+                && table == b"conversation_display_members");
+        if !allowed {
+            state.denied_reads.fetch_add(1, Relaxed);
+            return libsqlite3_sys::SQLITE_DENY;
+        }
+    }
     if table == b"conversation_contents" || table == b"conversation_content_chunks" {
         state.denied_reads.fetch_add(1, Relaxed);
         return libsqlite3_sys::SQLITE_DENY;

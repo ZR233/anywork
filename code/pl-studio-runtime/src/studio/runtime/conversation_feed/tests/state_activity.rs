@@ -91,7 +91,7 @@ async fn expect_update(
                     assert_eq!(seen, notifications);
                     return Ok(());
                 }
-                ConversationEvent::Chat { .. } => {
+                ConversationEvent::Chat { .. } | ConversationEvent::Timeline { .. } => {
                     bail!("a phase-only change invented a completion batch")
                 }
             }

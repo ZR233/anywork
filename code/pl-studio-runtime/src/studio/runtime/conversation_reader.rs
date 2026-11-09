@@ -8,7 +8,7 @@ use pl_core::chat as core;
 use pl_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::{RwLock, watch};
@@ -24,6 +24,7 @@ pub(super) struct ReadLease {
     pub scope: ChatScope,
     pub ceiling: u64,
     pub effect_cut: u64,
+    presentation_ceiling: OnceLock<u64>,
     pub slot: Arc<ObservationSlot>,
     pub epoch: u64,
     cancel: CancellationToken,
@@ -39,7 +40,7 @@ pub(super) struct ReadResources {
     pub thread: Thread,
     pub recovery: crate::studio::StudioRecoveryRegistry,
 }
-struct ReadPermit<'a> {
+pub(super) struct ReadPermit<'a> {
     lease: &'a ReadLease,
     guard: Option<tokio::sync::RwLockReadGuard<'a, Option<ReadResources>>>,
 }
@@ -97,6 +98,53 @@ enum CursorKind {
         reference: CurrentCollectionRef,
         after: String,
     },
+    DisplayBefore {
+        presentation_version: u32,
+        ceiling: u64,
+        boundary: u64,
+    },
+    LiveDisplayBefore {
+        presentation_version: u32,
+        revision: u64,
+        boundary: u64,
+    },
+}
+
+/// A short-query copy of the existing cursor binding, not an independent read qualification.
+/// Its caller must still recheck the original reader before delivering a result.
+pub(super) struct PresentationTokens {
+    binding: Cursor,
+    ceiling: u64,
+}
+
+impl PresentationTokens {
+    fn encode(&self, kind: CursorKind) -> Result<String> {
+        let mut cursor = self.binding.clone();
+        cursor.kind = kind;
+        Ok(serde_json::to_string(&cursor)?)
+    }
+    pub(super) fn before(&self, ceiling: u64, boundary: u64) -> Result<String> {
+        ensure!(
+            boundary > 0 && boundary <= ceiling && ceiling == self.ceiling,
+            core::ChatError::InvalidArgument("invalid display history boundary".into())
+        );
+        self.encode(CursorKind::DisplayBefore {
+            presentation_version: PRESENTATION_VERSION,
+            ceiling,
+            boundary,
+        })
+    }
+    pub(super) fn live_before(&self, revision: u64, boundary: u64) -> Result<String> {
+        ensure!(
+            boundary > 0,
+            core::ChatError::InvalidArgument("invalid live display boundary".into())
+        );
+        self.encode(CursorKind::LiveDisplayBefore {
+            presentation_version: PRESENTATION_VERSION,
+            revision,
+            boundary,
+        })
+    }
 }
 
 pub(super) fn query(scope: &ChatScope) -> Result<core::ChatQuery> {
@@ -144,7 +192,7 @@ pub(super) fn resync() -> anyhow::Error {
     );
     error.into()
 }
-fn cancelled() -> anyhow::Error {
+pub(super) fn cancelled() -> anyhow::Error {
     core::ChatError::Cancelled.into()
 }
 fn stale() -> anyhow::Error {
@@ -187,6 +235,7 @@ impl ConversationReader {
                 scope,
                 ceiling,
                 effect_cut,
+                presentation_ceiling: OnceLock::new(),
                 slot,
                 epoch,
                 cancel: CancellationToken::new(),
@@ -244,7 +293,7 @@ impl ConversationReader {
         self.inner.resources.write().await.take();
         Ok(())
     }
-    async fn resources(&self) -> Result<ReadPermit<'_>> {
+    pub(super) async fn resources(&self) -> Result<ReadPermit<'_>> {
         self.ensure()?;
         let guard = tokio::select! { biased; _=self.inner.cancel.cancelled()=>return Err(self.ensure().err().unwrap_or_else(cancelled)), read=self.inner.resources.read()=>read };
         let read = ReadPermit {
@@ -261,8 +310,8 @@ impl ConversationReader {
         }
         Ok(read)
     }
-    fn token(&self, resources: &ReadResources, kind: CursorKind) -> Result<String> {
-        Ok(serde_json::to_string(&Cursor {
+    fn cursor_binding(&self, resources: &ReadResources, kind: CursorKind) -> Cursor {
+        Cursor {
             version: 2,
             index_version: COMPLETED_READ_INDEX_VERSION,
             thread_id: self.thread_id().into(),
@@ -272,7 +321,12 @@ impl ConversationReader {
             epoch: resources.session.epoch().as_str().into(),
             ceiling: self.inner.ceiling,
             kind,
-        })?)
+        }
+    }
+    fn token(&self, resources: &ReadResources, kind: CursorKind) -> Result<String> {
+        Ok(serde_json::to_string(
+            &self.cursor_binding(resources, kind),
+        )?)
     }
     fn cursor(&self, resources: &ReadResources, token: &str) -> Result<CursorKind> {
         ensure!(
@@ -312,6 +366,79 @@ impl ConversationReader {
             r.database_id.clone().unwrap_or_default(),
             token,
         ))
+    }
+    /// Bind once to the first presentation cut of this original read lease.
+    pub(super) fn bind_presentation_ceiling(&self, ceiling: u64) -> Result<()> {
+        self.ensure()?;
+        let pinned = self.inner.presentation_ceiling.get_or_init(|| ceiling);
+        ensure!(*pinned == ceiling, resync());
+        Ok(())
+    }
+    pub(super) async fn display_boundary(&self, before: &str) -> Result<(u64, u64)> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let CursorKind::DisplayBefore {
+            presentation_version: PRESENTATION_VERSION,
+            ceiling,
+            boundary,
+        } = self.cursor(resources, before)?
+        else {
+            return Err(
+                core::ChatError::InvalidArgument("not a display history cursor".into()).into(),
+            );
+        };
+        ensure!(
+            boundary > 0
+                && boundary <= ceiling
+                && self.inner.presentation_ceiling.get() == Some(&ceiling),
+            core::ChatError::InvalidArgument("invalid display history boundary".into())
+        );
+        Ok((ceiling, boundary))
+    }
+    pub(super) async fn presentation_tokens(&self) -> Result<PresentationTokens> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let ceiling = self
+            .inner
+            .presentation_ceiling
+            .get()
+            .copied()
+            .ok_or_else(resync)?;
+        Ok(PresentationTokens {
+            binding: self.cursor_binding(
+                resources,
+                CursorKind::LiveDisplayBefore {
+                    presentation_version: PRESENTATION_VERSION,
+                    revision: 0,
+                    boundary: 1,
+                },
+            ),
+            ceiling,
+        })
+    }
+    pub(super) async fn live_display_boundary(
+        &self,
+        before: &str,
+        current_revision: u64,
+    ) -> Result<u64> {
+        let guard = self.resources().await?;
+        let resources = guard.as_ref().ok_or_else(cancelled)?;
+        let CursorKind::LiveDisplayBefore {
+            presentation_version: PRESENTATION_VERSION,
+            revision,
+            boundary,
+        } = self.cursor(resources, before)?
+        else {
+            return Err(
+                core::ChatError::InvalidArgument("not a live display cursor".into()).into(),
+            );
+        };
+        ensure!(revision == current_revision, core::ChatError::StaleContent);
+        ensure!(
+            boundary > 0,
+            core::ChatError::InvalidArgument("invalid live display boundary".into())
+        );
+        Ok(boundary)
     }
     pub(super) async fn annotate_source_states(
         &self,
@@ -852,16 +979,11 @@ impl ConversationReader {
             core::ChatError::StaleContent
         );
         let changed = r.source.as_ref().map(|source| source.content_changes());
-        let (_, slot_changed) = self.inner.slot.capture();
         Ok(ContentWatch {
-            reader: self.clone(),
+            observation: ReadObservation::new(self.clone(), changed),
             reference: reference.clone(),
             range,
-            changed,
-            slot_changed,
-            initial: true,
             last: None,
-            cancel: CancellationToken::new(),
         })
     }
 }
@@ -887,50 +1009,37 @@ impl From<&ContentWindow> for WindowStamp {
 }
 
 pub struct ContentWatch {
-    reader: ConversationReader,
+    observation: ReadObservation,
     reference: ContentRef,
     range: ContentRange,
-    changed: Option<watch::Receiver<u64>>,
-    slot_changed: watch::Receiver<u64>,
-    initial: bool,
     last: Option<WindowStamp>,
-    cancel: CancellationToken,
 }
 impl ContentWatch {
     /// Capture before placing the watch behind a receive mutex, so close can wake that receiver.
     pub fn cancellation_token(&self) -> CancellationToken {
-        self.cancel.clone()
+        self.observation.cancellation_token()
     }
     pub fn request_close(&self) {
-        self.cancel.cancel();
+        self.observation.request_close();
     }
     pub async fn recv(&mut self) -> Result<Option<ContentWindow>> {
         loop {
-            if self.cancel.is_cancelled() {
-                return Err(cancelled());
+            if !self.observation.next().await? {
+                return Ok(None);
             }
-            self.reader.ensure()?;
-            if !self.initial {
-                if self.last.as_ref().is_some_and(|window| window.sealed) {
-                    return Ok(None);
-                }
-                let Some(changed) = self.changed.as_mut() else {
-                    return Ok(None);
-                };
-                tokio::select! { biased;
-                    _=self.cancel.cancelled()=>return Err(cancelled()),
-                    _=self.reader.inner.cancel.cancelled()=>return Err(self.reader.ensure().err().unwrap_or_else(cancelled)),
-                    _=self.slot_changed.changed()=>{self.reader.invalidate();return Err(resync());},
-                    result=changed.changed()=>if result.is_err() { return Err(resync()); }
-                }
-            }
-            self.initial = false;
             let window = self
-                .reader
-                .read_content(&self.reference, self.range.clone())
+                .observation
+                .query(
+                    self.observation
+                        .reader
+                        .read_content(&self.reference, self.range.clone()),
+                )
                 .await?;
             let stamp = WindowStamp::from(&window);
             if self.last.as_ref() != Some(&stamp) {
+                if window.sealed {
+                    self.observation.seal();
+                }
                 self.last = Some(stamp);
                 return Ok(Some(window));
             }
@@ -938,9 +1047,82 @@ impl ContentWatch {
     }
     pub async fn close(&mut self) -> Result<()> {
         self.request_close();
-        self.changed = None;
+        self.observation.seal();
         self.last = None;
         Ok(())
+    }
+}
+
+/// Shared pull-observation lifecycle for content and display-member windows.
+/// The query itself still borrows the original reader's resources/qualification.
+pub(super) struct ReadObservation {
+    pub(super) reader: ConversationReader,
+    changed: Option<watch::Receiver<u64>>,
+    slot_changed: watch::Receiver<u64>,
+    initial: bool,
+    cancel: CancellationToken,
+}
+
+impl ReadObservation {
+    /// Register the domain watch before construction/capturing the first query window.
+    pub(super) fn new(reader: ConversationReader, changed: Option<watch::Receiver<u64>>) -> Self {
+        let (_, slot_changed) = reader.inner.slot.capture();
+        let cancel = reader.inner.cancel.child_token();
+        Self {
+            reader,
+            changed,
+            slot_changed,
+            initial: true,
+            cancel,
+        }
+    }
+    pub(super) fn cancellation_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+    pub(super) fn request_close(&self) {
+        self.cancel.cancel();
+    }
+    pub(super) fn seal(&mut self) {
+        self.changed = None;
+    }
+    fn cancelled(&self) -> anyhow::Error {
+        self.reader.ensure().err().unwrap_or_else(cancelled)
+    }
+    /// Local close cancels this view's read without revoking sibling views or execution.
+    pub(super) async fn query<T>(
+        &self,
+        query: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        self.reader.ensure()?;
+        let value = tokio::select! { biased;
+            _ = self.cancel.cancelled() => return Err(self.cancelled()),
+            value = query => value?,
+        };
+        self.reader.ensure()?;
+        ensure!(!self.cancel.is_cancelled(), self.cancelled());
+        Ok(value)
+    }
+    /// `&mut self` enforces one in-flight next. No resource/receive/credit lock is held here.
+    pub(super) async fn next(&mut self) -> Result<bool> {
+        self.reader.ensure()?;
+        ensure!(!self.cancel.is_cancelled(), self.cancelled());
+        if self.initial {
+            self.initial = false;
+            return Ok(true);
+        }
+        let Some(changed) = self.changed.as_mut() else {
+            return Ok(false);
+        };
+        tokio::select! { biased;
+            _ = self.cancel.cancelled() => return Err(self.cancelled()),
+            _ = self.slot_changed.changed() => {
+                self.reader.invalidate();
+                return Err(resync());
+            },
+            result = changed.changed() => ensure!(result.is_ok(), resync()),
+        }
+        self.reader.ensure()?;
+        Ok(true)
     }
 }
 

@@ -29,6 +29,7 @@ impl MigratorTraitSelf for Published12 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .filter(|step| {

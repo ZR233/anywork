@@ -37,6 +37,7 @@ impl MigratorTraitSelf for Published13 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -64,6 +65,7 @@ impl MigratorTraitSelf for Published14 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -85,7 +87,10 @@ impl MigratorTraitSelf for Published16 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS
+                TIMELINE_BACKGROUND_TAIL
+                    | COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
             )
         })
         .collect()

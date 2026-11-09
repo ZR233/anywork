@@ -5,7 +5,9 @@ use pl_protocol::{
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 
-type Changes = (Vec<ChatAtom>, Vec<ChatSourceState>);
+// Original immutable phases, source changes, then effect-local display state updates.
+// Updating an admitted active member must not rewrite its original `start` fact.
+type Changes = (Vec<ChatAtom>, Vec<ChatSourceState>, Vec<ChatAtom>);
 
 fn position(
     effect: &ThreadEffectBatch,
@@ -41,6 +43,7 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
+        self.ensure_database_identity().await?;
         let history = self
             .execution_history
             .as_ref()
@@ -108,6 +111,10 @@ impl LiveProjection {
         Ok(())
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
+        self.presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .confirm(through);
         self.source_states
             .retain(|_, state| state.ended.is_none_or(|at| at.effect_seq > through));
     }
@@ -177,7 +184,7 @@ impl LiveProjection {
         &mut self,
         effect: &ThreadEffectBatch,
     ) -> Result<Changes, ProjectionError> {
-        let mut changes = (Vec::new(), Vec::new());
+        let mut changes = (Vec::new(), Vec::new(), Vec::new());
         if let Some(turn) = &effect.turn {
             let outcome = match turn.state {
                 pl_core::thread::TurnState::Running => None,
@@ -439,12 +446,18 @@ impl LiveProjection {
                 old.started_at
             });
             if old == Some(&atom) {
+                // Recovery reloads immutable start evidence, while the display member can
+                // already have a newer saved status. Its owner de-duplicates this reliable
+                // effect-local value against that actual display state.
+                changes.2.push(atom);
                 continue;
             }
             let first_start = old.is_none();
             self.atom_starts.insert(atom.id.clone(), atom.clone());
             if first_start {
                 changes.0.push(atom);
+            } else {
+                changes.2.push(atom);
             }
         }
         let draft_count = drafts.len();

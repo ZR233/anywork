@@ -448,6 +448,9 @@ async fn receive_production_activity(
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("feed ended before activity"))?;
             match event {
+                ConversationEvent::Timeline { .. } => {
+                    anyhow::bail!("completion-level bot feed received Timeline")
+                }
                 ConversationEvent::State { update } => watch.state(*update)?,
                 ConversationEvent::Chat { batch } => {
                     watch.stage(*batch)?;
