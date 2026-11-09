@@ -3103,7 +3103,11 @@ final class _ConceptScene {
     expect(earlyMember.source, source);
     expect(earlyMember.lifecycle, isA<TerminalChatAtom>());
     expect(earlyHead.completionId, isNotNull);
-    expect(hasText(_overlapEarlyReasoning), isFalse);
+    // The compact header may show the authoritative thinking summary. A
+    // collapsed Work must not mount the member's body or its read windows.
+    expect(observed.unit(work.id).expansion.expanded, isNot(isTrue));
+    expect(observed.memberRow(earlyMember.id), findsNothing);
+    expect(lease.groupDisplays, isEmpty);
     final earlyDisplay = await observed.openWork(work.id);
     await observed.revealMember(earlyMember, reference: ref);
     await _until(
@@ -3126,7 +3130,10 @@ final class _ConceptScene {
     expect(earlyDisplay.atoms, isEmpty);
     expect(earlyDisplay.windows, isEmpty);
     await tester.pump(const Duration(milliseconds: 300));
-    expect(hasText(_overlapEarlyReasoning), isFalse);
+    expect(observed.unit(work.id).expansion.expanded, isNot(isTrue));
+    expect(observed.memberRow(earlyMember.id), findsNothing);
+    expect(earlyDisplay.atoms, isEmpty);
+    expect(earlyDisplay.windows, isEmpty);
     await capture('a07-b-completed-before-text');
     final display = await observed.openWork(work.id);
     await observed.revealMember(reason, reference: ref);

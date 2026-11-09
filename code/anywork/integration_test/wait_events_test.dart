@@ -7,9 +7,11 @@ import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -455,7 +457,8 @@ final class _Scene {
         return true;
       }, '${outcome.name} Turn');
     } catch (_) {
-      if (!captureReport.containsKey('turnWaitFailure')) {
+      final failureKey = 'turnWaitFailure:$name:${outcome.name}';
+      if (!captureReport.containsKey(failureKey)) {
         final selected = graph.client.selection.state.selectedThreadId;
         final sessionId = selected ?? _submittedThreadId;
         try {
@@ -473,14 +476,35 @@ final class _Scene {
                 ? null
                 : graph.client.conversations.existingSession(sessionId)?.state,
           );
-          captureReport['turnWaitFailure'] = cut;
+          cut.addAll({
+            'scene': name,
+            'ownerSourceThreadId': graph.timeline.source.value?.threadId,
+            'connectorOnstage': find
+                .byType(TimelineConnector)
+                .evaluate()
+                .length,
+            'connectorAll': find
+                .byType(TimelineConnector, skipOffstage: false)
+                .evaluate()
+                .length,
+            'timelineViewOnstage': find.byType(TimelineView).evaluate().length,
+            'timelineViewAll': find
+                .byType(TimelineView, skipOffstage: false)
+                .evaluate()
+                .length,
+          });
+          captureReport[failureKey] = cut;
           debugPrintSynchronously('WAIT_TURN_FAILURE ${jsonEncode(cut)}');
+          await capturePresentation(
+            tester,
+            'wait-events-$name-${outcome.name}-failure.png',
+          );
         } catch (diagnosticError) {
-          captureReport['turnWaitFailure'] = {
+          captureReport['$failureKey:diagnostic'] = {
             'diagnosticFailureKind': diagnosticError.runtimeType.toString(),
           };
           debugPrintSynchronously(
-            'WAIT_TURN_FAILURE ${jsonEncode(captureReport['turnWaitFailure'])}',
+            'WAIT_TURN_FAILURE ${jsonEncode(captureReport['$failureKey:diagnostic'])}',
           );
         }
       }
