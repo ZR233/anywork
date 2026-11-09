@@ -1,4 +1,5 @@
 use super::*;
+use pl_protocol::WorkSummary;
 
 fn atom(id: &str, kind: ChatAtomKind, terminal: bool) -> ChatAtom {
     ChatAtom {
@@ -61,7 +62,7 @@ fn completed_members_wait_for_a_real_boundary_and_text_start_needs_no_new_comple
     let a = atom("A", ChatAtomKind::ToolCall, false);
     s.prepare(1, &[a], &[], &[])?;
     let done = atom("A", ChatAtomKind::ToolCall, true);
-    s.prepare(2, &[done.clone()], &[], &[])?;
+    s.prepare(2, std::slice::from_ref(&done), &[], &[])?;
     s.confirm(2);
     assert_eq!(s.published, 0);
     assert_eq!(summary(s.blocks.values().next().unwrap()).terminal, 1);
@@ -200,14 +201,14 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
     assert!(!watch.has_changed()?);
     assert_eq!(summary(s.blocks.values().next().unwrap()).waiting, 1);
     let terminal = atom("q", ChatAtomKind::ToolCall, true);
-    s.prepare(3, &[terminal.clone()], &[], &[])?;
+    s.prepare(3, std::slice::from_ref(&terminal), &[], &[])?;
     assert_eq!(
         s.revision, revision,
         "terminal/summary changes do not stale live older"
     );
     assert!(watch.has_changed()?);
     watch.borrow_and_update();
-    s.prepare(4, &[terminal.clone()], &[], &[])?;
+    s.prepare(4, std::slice::from_ref(&terminal), &[], &[])?;
     assert!(!watch.has_changed()?);
     let before = s.revision;
     let mut conflict = terminal;

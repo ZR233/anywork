@@ -32,6 +32,9 @@ async fn chat(feed: &mut ConversationFeed) -> Result<ChatBatch> {
     tokio::time::timeout(DEADLINE, async {
         loop {
             match feed.recv().await?.context("feed ended before Chat")? {
+                ConversationEvent::Timeline { .. } => {
+                    anyhow::bail!("unexpected timeline on completion feed")
+                }
                 ConversationEvent::Chat { batch } => return Ok(*batch),
                 ConversationEvent::State { .. } | ConversationEvent::Activity { .. } => {}
             }

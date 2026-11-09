@@ -759,7 +759,7 @@ impl CurrentState {
             let entries = self
                 .business_bytes
                 .saturating_add((self.contents.len() as u64).saturating_mul(256));
-            let entries = entries
+            entries
                 .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
                 .saturating_add(self.projection.retained_bytes())
                 .saturating_add(
@@ -769,8 +769,7 @@ impl CurrentState {
                 .saturating_add(
                     serde_json::to_vec(self.activity_entries.as_ref())
                         .map_or(u64::MAX, |bytes| bytes.len() as u64),
-                );
-            entries
+                )
         })
     }
 }

@@ -6,7 +6,7 @@ use crate::studio::thread_projection::presentation::{
 use pl_core::chat::ChatReadHint;
 use pl_protocol::{
     ChatAtom, ChatAtomLifecycle, ChatTerminalOutcome, DisplayBlockBody, DisplayBlockRef,
-    DisplayMemberHead, WorkSummary,
+    DisplayMemberHead,
 };
 
 pub(super) struct DisplaySnapshots;
@@ -154,7 +154,7 @@ pub(in crate::studio::storage::history) async fn upgrade(db: &impl ConnectionTra
                     duration_known: false,
                     body: if is_work {
                         DisplayBlockBody::Work {
-                            summary: WorkSummary::default(),
+                            summary: Box::default(),
                             members: DisplayBlockRef {
                                 database_id: database.clone(),
                                 block_id: id,
@@ -162,7 +162,7 @@ pub(in crate::studio::storage::history) async fn upgrade(db: &impl ConnectionTra
                         }
                     } else {
                         DisplayBlockBody::Single {
-                            atom: atom.clone(),
+                            atom: Box::new(atom.clone()),
                             completion_id: atom.completion_item_id.clone(),
                         }
                     },

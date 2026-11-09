@@ -1,5 +1,5 @@
 use super::*;
-use pl_protocol::{DisplayBlockBody, DisplayBlockRef, LiveDisplayBlock, WorkSummary};
+use pl_protocol::{DisplayBlockBody, DisplayBlockRef, LiveDisplayBlock};
 
 mod lifecycle;
 mod live_cursor;
@@ -15,7 +15,7 @@ fn demand(max_items: u32) -> ReadDemand {
 
 fn body(id: &str) -> DisplayBlockBody {
     DisplayBlockBody::Work {
-        summary: WorkSummary::default(),
+        summary: Box::default(),
         members: DisplayBlockRef {
             database_id: "database".into(),
             block_id: id.into(),

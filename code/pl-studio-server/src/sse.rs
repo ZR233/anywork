@@ -504,10 +504,10 @@ async fn run_conversation(
         state.conversations.forget(id);
     }
     if let Some(sender) = sender {
-        if let Err(error) = &result {
-            if let Ok(event) = encode_event("error", None, &error) {
-                let _ = sender.try_send(Ok(event));
-            }
+        if let Err(error) = &result
+            && let Ok(event) = encode_event("error", None, &error)
+        {
+            let _ = sender.try_send(Ok(event));
         }
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
     }

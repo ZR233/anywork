@@ -27,11 +27,11 @@ pub struct BridgeWorkSummary {
 #[derive(Debug, Clone)]
 pub enum BridgeDisplayBlockBody {
     Work {
-        summary: BridgeWorkSummary,
+        summary: Box<BridgeWorkSummary>,
         members: BridgeDisplayBlockRef,
     },
     Single {
-        atom: BridgeChatAtom,
+        atom: Box<BridgeChatAtom>,
         completion_id: Option<String>,
     },
 }

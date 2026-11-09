@@ -10,7 +10,7 @@ use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
     ContentRef, ContentTarget, DisplayBlock, DisplayBlockBody, DisplayBlockRef, DisplayMemberHead,
-    PayloadData, WorkSummary,
+    PayloadData,
 };
 use serde::{Deserialize, Serialize};
 
@@ -631,7 +631,7 @@ impl PresentationState {
             duration_known: true,
             body: if is_work {
                 DisplayBlockBody::Work {
-                    summary: WorkSummary::default(),
+                    summary: Box::default(),
                     members: DisplayBlockRef {
                         database_id: self.database.clone(),
                         block_id: id.clone(),
@@ -639,7 +639,7 @@ impl PresentationState {
                 }
             } else {
                 DisplayBlockBody::Single {
-                    atom: atom.clone(),
+                    atom: Box::new(atom.clone()),
                     completion_id: atom.completion_item_id.clone(),
                 }
             },
@@ -678,15 +678,12 @@ impl PresentationState {
         published: &mut BTreeMap<u64, (Arc<DisplayHeader>, Arc<DisplayBlock>)>,
         remove_empty: &mut Vec<Arc<DisplayHeader>>,
     ) -> Result<()> {
-        loop {
-            let Some(order) = self
-                .lanes
-                .get(source)
-                .and_then(|lane| lane.pending_order.front())
-                .copied()
-            else {
-                break;
-            };
+        while let Some(order) = self
+            .lanes
+            .get(source)
+            .and_then(|lane| lane.pending_order.front())
+            .copied()
+        {
             let header = &self.blocks[&order];
             if header.boundary.is_none() || header.unfinished != 0 {
                 break;
@@ -773,7 +770,7 @@ fn update_summary(
     }
     let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
         header.body = DisplayBlockBody::Single {
-            atom: atom.clone(),
+            atom: Box::new(atom.clone()),
             completion_id: atom.completion_item_id.clone(),
         };
         if terminal {

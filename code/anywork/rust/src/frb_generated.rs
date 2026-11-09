@@ -8325,6 +8325,15 @@ impl SseDecode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer),
+        );
+    }
+}
+
 impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8500,6 +8509,15 @@ impl SseDecode for Box<crate::api::studio::types::thread_stream::BridgeTurn> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         return Box::new(
             <crate::api::studio::types::thread_stream::BridgeTurn>::sse_decode(deserializer),
+        );
+    }
+}
+
+impl SseDecode for Box<crate::api::studio::types::presentation::BridgeWorkSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_decode(deserializer),
         );
     }
 }
@@ -13200,10 +13218,9 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
         let mut tag_ = <i32>::sse_decode(deserializer);
         match tag_ {
             0 => {
-                let mut var_summary =
-                    <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_decode(
-                        deserializer,
-                    );
+                let mut var_summary = <Box<
+                    crate::api::studio::types::presentation::BridgeWorkSummary,
+                >>::sse_decode(deserializer);
                 let mut var_members =
                     <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_decode(
                         deserializer,
@@ -13215,7 +13232,9 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
             }
             1 => {
                 let mut var_atom =
-                    <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer);
+                    <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_decode(
+                        deserializer,
+                    );
                 let mut var_completionId = <Option<String>>::sse_decode(deserializer);
                 return crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
                     atom: var_atom,
@@ -39803,6 +39822,13 @@ impl SseEncode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
+impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(*self, serializer);
+    }
+}
+
 impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -39949,6 +39975,13 @@ impl SseEncode for Box<crate::api::studio::types::thread_stream::BridgeTurn> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::studio::types::thread_stream::BridgeTurn>::sse_encode(*self, serializer);
+    }
+}
+
+impl SseEncode for Box<crate::api::studio::types::presentation::BridgeWorkSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_encode(*self, serializer);
     }
 }
 
@@ -43756,7 +43789,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                 members,
             } => {
                 <i32>::sse_encode(0, serializer);
-                <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_encode(
+                <Box<crate::api::studio::types::presentation::BridgeWorkSummary>>::sse_encode(
                     summary, serializer,
                 );
                 <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_encode(
@@ -43768,7 +43801,9 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                 completion_id,
             } => {
                 <i32>::sse_encode(1, serializer);
-                <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(atom, serializer);
+                <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_encode(
+                    atom, serializer,
+                );
                 <Option<String>>::sse_encode(completion_id, serializer);
             }
             _ => {

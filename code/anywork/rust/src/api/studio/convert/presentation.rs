@@ -51,14 +51,14 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
             summary: value,
             members,
         } => BridgeDisplayBlockBody::Work {
-            summary: summary(value),
+            summary: Box::new(summary(*value)),
             members: block_ref(members),
         },
         protocol::DisplayBlockBody::Single {
             atom,
             completion_id,
         } => BridgeDisplayBlockBody::Single {
-            atom: chat::atom(atom),
+            atom: Box::new(chat::atom(*atom)),
             completion_id,
         },
     }
@@ -136,7 +136,7 @@ mod tests {
 
     fn work() -> protocol::DisplayBlockBody {
         protocol::DisplayBlockBody::Work {
-            summary: protocol::WorkSummary {
+            summary: Box::new(protocol::WorkSummary {
                 total: 3,
                 terminal: 2,
                 running: 0,
@@ -145,7 +145,7 @@ mod tests {
                 cancelled: 0,
                 transferred: 1,
                 ..Default::default()
-            },
+            }),
             members: reference(),
         }
     }

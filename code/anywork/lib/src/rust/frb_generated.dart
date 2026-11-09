@@ -9921,12 +9921,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeChatAtom dco_decode_box_autoadd_bridge_chat_atom(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_bridge_chat_atom(raw);
-  }
-
-  @protected
   BridgeChatFactPosition dco_decode_box_autoadd_bridge_chat_fact_position(
     dynamic raw,
   ) {
@@ -10996,12 +10990,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeWorkSummary dco_decode_box_autoadd_bridge_work_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_bridge_work_summary(raw);
-  }
-
-  @protected
   BridgeWorkflowDefinition dco_decode_box_autoadd_bridge_workflow_definition(
     dynamic raw,
   ) {
@@ -11176,6 +11164,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChatAtom dco_decode_box_bridge_chat_atom(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_chat_atom(raw);
+  }
+
+  @protected
   BridgeChatBatch dco_decode_box_bridge_chat_batch(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_chat_batch(raw);
@@ -11292,6 +11286,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_turn(raw);
+  }
+
+  @protected
+  BridgeWorkSummary dco_decode_box_bridge_work_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_work_summary(raw);
   }
 
   @protected
@@ -14417,12 +14417,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     switch (raw[0]) {
       case 0:
         return BridgeDisplayBlockBody_Work(
-          summary: dco_decode_box_autoadd_bridge_work_summary(raw[1]),
+          summary: dco_decode_box_bridge_work_summary(raw[1]),
           members: dco_decode_box_autoadd_bridge_display_block_ref(raw[2]),
         );
       case 1:
         return BridgeDisplayBlockBody_Single(
-          atom: dco_decode_box_autoadd_bridge_chat_atom(raw[1]),
+          atom: dco_decode_box_bridge_chat_atom(raw[1]),
           completionId: dco_decode_opt_String(raw[2]),
         );
       default:
@@ -22453,14 +22453,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeChatAtom sse_decode_box_autoadd_bridge_chat_atom(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_bridge_chat_atom(deserializer));
-  }
-
-  @protected
   BridgeChatFactPosition sse_decode_box_autoadd_bridge_chat_fact_position(
     SseDeserializer deserializer,
   ) {
@@ -23716,14 +23708,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeWorkSummary sse_decode_box_autoadd_bridge_work_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_bridge_work_summary(deserializer));
-  }
-
-  @protected
   BridgeWorkflowDefinition sse_decode_box_autoadd_bridge_workflow_definition(
     SseDeserializer deserializer,
   ) {
@@ -23920,6 +23904,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeChatAtom sse_decode_box_bridge_chat_atom(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_chat_atom(deserializer));
+  }
+
+  @protected
   BridgeChatBatch sse_decode_box_bridge_chat_batch(
     SseDeserializer deserializer,
   ) {
@@ -24056,6 +24046,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_turn(deserializer));
+  }
+
+  @protected
+  BridgeWorkSummary sse_decode_box_bridge_work_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_work_summary(deserializer));
   }
 
   @protected
@@ -28048,9 +28046,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var tag_ = sse_decode_i_32(deserializer);
     switch (tag_) {
       case 0:
-        var var_summary = sse_decode_box_autoadd_bridge_work_summary(
-          deserializer,
-        );
+        var var_summary = sse_decode_box_bridge_work_summary(deserializer);
         var var_members = sse_decode_box_autoadd_bridge_display_block_ref(
           deserializer,
         );
@@ -28059,7 +28055,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           members: var_members,
         );
       case 1:
-        var var_atom = sse_decode_box_autoadd_bridge_chat_atom(deserializer);
+        var var_atom = sse_decode_box_bridge_chat_atom(deserializer);
         var var_completionId = sse_decode_opt_String(deserializer);
         return BridgeDisplayBlockBody_Single(
           atom: var_atom,
@@ -38571,15 +38567,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_box_autoadd_bridge_chat_atom(
-    BridgeChatAtom self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bridge_chat_atom(self, serializer);
-  }
-
-  @protected
   void sse_encode_box_autoadd_bridge_chat_fact_position(
     BridgeChatFactPosition self,
     SseSerializer serializer,
@@ -39912,15 +39899,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_box_autoadd_bridge_work_summary(
-    BridgeWorkSummary self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bridge_work_summary(self, serializer);
-  }
-
-  @protected
   void sse_encode_box_autoadd_bridge_workflow_definition(
     BridgeWorkflowDefinition self,
     SseSerializer serializer,
@@ -40137,6 +40115,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_bridge_chat_atom(
+    BridgeChatAtom self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_chat_atom(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_bridge_chat_batch(
     BridgeChatBatch self,
     SseSerializer serializer,
@@ -40284,6 +40271,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_turn(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_bridge_work_summary(
+    BridgeWorkSummary self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_work_summary(self, serializer);
   }
 
   @protected
@@ -43444,14 +43440,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         members: final members,
       ):
         sse_encode_i_32(0, serializer);
-        sse_encode_box_autoadd_bridge_work_summary(summary, serializer);
+        sse_encode_box_bridge_work_summary(summary, serializer);
         sse_encode_box_autoadd_bridge_display_block_ref(members, serializer);
       case BridgeDisplayBlockBody_Single(
         atom: final atom,
         completionId: final completionId,
       ):
         sse_encode_i_32(1, serializer);
-        sse_encode_box_autoadd_bridge_chat_atom(atom, serializer);
+        sse_encode_box_bridge_chat_atom(atom, serializer);
         sse_encode_opt_String(completionId, serializer);
     }
   }

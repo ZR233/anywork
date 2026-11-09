@@ -473,6 +473,9 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
             let mut retired = false;
             while terminal.is_none() || !retired {
                 match next(&mut feed).await? {
+                    ConversationEvent::Timeline { .. } => {
+                        anyhow::bail!("unexpected timeline on completion feed")
+                    }
                     ConversationEvent::Chat { batch } => {
                         batch.validate_for(&ChatScope::Main)?;
                         ensure!(batch.placement == ChatPlacement::Append);
@@ -723,6 +726,9 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
             let mut revision = 0;
             loop {
                 match next(&mut feed).await? {
+                    ConversationEvent::Timeline { .. } => {
+                        anyhow::bail!("unexpected timeline on completion feed")
+                    }
                     ConversationEvent::Chat { batch } => {
                         batch.validate_for(&ChatScope::Main)?;
                         ensure!(
@@ -900,6 +906,9 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let mut through = first.through_seq;
                 loop {
                     match next(&mut feed).await? {
+                        ConversationEvent::Timeline { .. } => {
+                            anyhow::bail!("unexpected timeline on completion feed")
+                        }
                         ConversationEvent::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(batch.from_seq == Some(through));
@@ -928,6 +937,9 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let mut text_owner = None;
                 while reasoning.len() < 2 || text_owner.is_none() {
                     match next(&mut feed).await? {
+                        ConversationEvent::Timeline { .. } => {
+                            anyhow::bail!("unexpected timeline on completion feed")
+                        }
                         ConversationEvent::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(
@@ -1139,6 +1151,9 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             let error = loop {
                 match tokio::time::timeout(Duration::from_secs(10), feed.recv()).await? {
                     Err(error) => break error,
+                    Ok(Some(ConversationEvent::Timeline { .. })) => {
+                        anyhow::bail!("unexpected timeline on completion feed")
+                    }
                     Ok(Some(
                         ConversationEvent::State { .. } | ConversationEvent::Activity { .. },
                     )) => (),
@@ -1357,6 +1372,9 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                 // pagination or body reads, as the production Main consumer does.
                 while terminal.is_none() || !retired {
                     match next(&mut feed).await? {
+                        ConversationEvent::Timeline { .. } => {
+                            anyhow::bail!("unexpected timeline on completion feed")
+                        }
                         ConversationEvent::Chat { batch } => {
                             batch.validate_for(&ChatScope::Main)?;
                             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
@@ -1619,6 +1637,9 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
                     let mut terminal = None;
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
+                            ConversationEvent::Timeline { .. } => {
+                                anyhow::bail!("unexpected timeline on completion feed")
+                            }
                             ConversationEvent::Chat { batch } => {
                                 batch.validate_for(&ChatScope::Main)?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
@@ -1739,6 +1760,9 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                     let mut terminal = None;
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
+                            ConversationEvent::Timeline { .. } => {
+                                anyhow::bail!("unexpected timeline on completion feed")
+                            }
                             ConversationEvent::Chat { batch } => {
                                 batch.validate_for(&ChatScope::Main)?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());

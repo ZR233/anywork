@@ -549,9 +549,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatAtom dco_decode_box_autoadd_bridge_chat_atom(dynamic raw);
-
-  @protected
   BridgeChatFactPosition dco_decode_box_autoadd_bridge_chat_fact_position(
     dynamic raw,
   );
@@ -1169,9 +1166,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeWorkSummary dco_decode_box_autoadd_bridge_work_summary(dynamic raw);
-
-  @protected
   BridgeWorkflowDefinition dco_decode_box_autoadd_bridge_workflow_definition(
     dynamic raw,
   );
@@ -1266,6 +1260,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtom dco_decode_box_bridge_chat_atom(dynamic raw);
+
+  @protected
   BridgeChatBatch dco_decode_box_bridge_chat_batch(dynamic raw);
 
   @protected
@@ -1332,6 +1329,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
+
+  @protected
+  BridgeWorkSummary dco_decode_box_bridge_work_summary(dynamic raw);
 
   @protected
   StartNewThreadResponse dco_decode_box_start_new_thread_response(dynamic raw);
@@ -4577,11 +4577,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatAtom sse_decode_box_autoadd_bridge_chat_atom(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeChatFactPosition sse_decode_box_autoadd_bridge_chat_fact_position(
     SseDeserializer deserializer,
   );
@@ -5389,11 +5384,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeWorkSummary sse_decode_box_autoadd_bridge_work_summary(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeWorkflowDefinition sse_decode_box_autoadd_bridge_workflow_definition(
     SseDeserializer deserializer,
   );
@@ -5512,6 +5502,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatAtom sse_decode_box_bridge_chat_atom(SseDeserializer deserializer);
+
+  @protected
   BridgeChatBatch sse_decode_box_bridge_chat_batch(
     SseDeserializer deserializer,
   );
@@ -5598,6 +5591,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer);
+
+  @protected
+  BridgeWorkSummary sse_decode_box_bridge_work_summary(
+    SseDeserializer deserializer,
+  );
 
   @protected
   StartNewThreadResponse sse_decode_box_start_new_thread_response(
@@ -9632,12 +9630,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_chat_atom(
-    BridgeChatAtom self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_bridge_chat_fact_position(
     BridgeChatFactPosition self,
     SseSerializer serializer,
@@ -10526,12 +10518,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_work_summary(
-    BridgeWorkSummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_bridge_workflow_definition(
     BridgeWorkflowDefinition self,
     SseSerializer serializer,
@@ -10670,6 +10656,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_chat_atom(
+    BridgeChatAtom self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_chat_batch(
     BridgeChatBatch self,
     SseSerializer serializer,
@@ -10767,6 +10759,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_bridge_work_summary(
+    BridgeWorkSummary self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_start_new_thread_response(

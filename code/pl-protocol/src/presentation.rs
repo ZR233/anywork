@@ -35,6 +35,7 @@ pub struct WorkSummary {
     pub thinking_content: Option<ContentRef>,
 }
 
+/// Indirection keeps queued heads compact without changing the serialized body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(
     tag = "kind",
@@ -43,11 +44,11 @@ pub struct WorkSummary {
 )]
 pub enum DisplayBlockBody {
     Work {
-        summary: WorkSummary,
+        summary: Box<WorkSummary>,
         members: DisplayBlockRef,
     },
     Single {
-        atom: ChatAtom,
+        atom: Box<ChatAtom>,
         completion_id: Option<String>,
     },
 }
@@ -182,12 +183,34 @@ mod tests {
 
     fn work(id: &str) -> DisplayBlockBody {
         DisplayBlockBody::Work {
-            summary: WorkSummary::default(),
+            summary: Box::default(),
             members: DisplayBlockRef {
                 database_id: "db".into(),
                 block_id: id.into(),
             },
         }
+    }
+
+    #[test]
+    fn body_indirection_keeps_the_flat_wire_shape() {
+        let body = work("work");
+        let wire = serde_json::to_value(&body).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "kind": "work",
+                "summary": WorkSummary::default(),
+                "members": {"databaseId": "db", "blockId": "work"},
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<DisplayBlockBody>(wire).unwrap(),
+            body
+        );
+        assert!(
+            std::mem::size_of::<DisplayBlockBody>() < std::mem::size_of::<ChatAtom>(),
+            "lightweight Work heads must not reserve an inline Single atom"
+        );
     }
 
     #[test]

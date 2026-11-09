@@ -3,7 +3,7 @@ use crate::studio::runtime::conversation_reader::ReadObservation;
 use futures::poll;
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatScope, ChatSourceId,
-    ChatTerminalOutcome, DisplayBlockBody, WorkSummary,
+    ChatTerminalOutcome, DisplayBlockBody,
 };
 use std::task::Poll;
 use tokio::sync::watch;
@@ -27,7 +27,7 @@ fn head(order: u64) -> LiveDisplayBlock {
         id: format!("block-{order}"),
         block_order: order,
         body: DisplayBlockBody::Work {
-            summary: WorkSummary::default(),
+            summary: Box::default(),
             members: reference(),
         },
         closing: false,
@@ -112,7 +112,7 @@ fn live_pages_are_newest_first_selected_but_delivered_in_original_order() -> Res
 #[test]
 fn byte_budget_includes_utf8_and_continuation_without_rejecting_complete_small_list() -> Result<()>
 {
-    let mut heads = vec![head(1), head(2)];
+    let mut heads = [head(1), head(2)];
     heads[1].id = "显示头".repeat(40);
     let complete = live_window(1, 0, true, heads.iter().rev(), demand(2), |_| {
         Ok("cursor".repeat(1000))

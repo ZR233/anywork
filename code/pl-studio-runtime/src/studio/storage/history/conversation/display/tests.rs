@@ -62,7 +62,7 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
     draft.read_hint =
         crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
     let original = Arc::new(ChatItem::complete(draft, 1, None));
-    let finish = owner.prepare(2, &[ended], &[], &[original.clone()])?;
+    let finish = owner.prepare(2, &[ended], &[], std::slice::from_ref(&original))?;
     assert_eq!(finish.remove_empty.len(), 1);
     assert_eq!(finish.published_through, 0);
     db.execute_unprepared(
@@ -134,7 +134,7 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
             ordinal: 1,
         }),
     ));
-    let delta = owner.prepare(1, &[atom], &[], &[item.clone()])?;
+    let delta = owner.prepare(1, &[atom], &[], std::slice::from_ref(&item))?;
     db.execute_unprepared("CREATE TRIGGER reject_display BEFORE INSERT ON conversation_display_members BEGIN SELECT RAISE(ABORT,'display rejection'); END;").await?;
     let tx = db.begin().await?;
     super::super::append_records(&tx, [item.as_ref()], true).await?;
