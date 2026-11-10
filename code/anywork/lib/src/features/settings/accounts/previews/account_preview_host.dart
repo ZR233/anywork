@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/material3_theme.dart';
 import '../../../../l10n/app_localizations.dart';
@@ -130,7 +130,10 @@ class _PreviewHostState extends State<_PreviewHost> {
     scaffoldMessengerKey: _messengerKey,
     locale: widget.locale,
     theme: pureStudioTheme(locale: widget.locale),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    localizationsDelegates: [
+      AppLocalizations.delegate,
+      ...GlobalMaterialLocalizations.delegates,
+    ],
     supportedLocales: AppLocalizations.supportedLocales,
     builder: (context, child) => MediaQuery(
       data: MediaQuery.of(context)

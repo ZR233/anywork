@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../../../../app/theme/material3_theme.dart';
@@ -57,7 +57,10 @@ Widget _host(
   debugShowCheckedModeBanner: false,
   locale: const Locale('zh'),
   theme: pureStudioTheme(locale: const Locale('zh')),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context)

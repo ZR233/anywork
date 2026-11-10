@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 纸面与笔分层绘制，书写位移只作用于笔。
 class TimelineWritingIndicator extends StatelessWidget {

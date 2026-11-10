@@ -6,14 +6,13 @@
 //! 探测会话中发送固定 `/usage`。这里不安装工具，也不声明文件系统或终端能力。
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AuthMethod as SdkAuthMethod, AuthMethodId, AuthenticateRequest, CloseSessionRequest,
     ContentBlock, ContentChunk, Implementation, InitializeRequest, NewSessionRequest, SessionId,
     SessionNotification, SessionUpdate, StopReason,
 };
-use agent_client_protocol::{
-    Agent, ConnectionTo, Error as RpcError, JsonRpcMessage, JsonRpcRequest, SessionMessage,
-};
+use agent_client_protocol::v1::{ConnectionTo, SessionMessage};
+use agent_client_protocol::{Agent, Error as RpcError, JsonRpcMessage, JsonRpcRequest};
 
 use super::limits::{self, StreamGuard};
 use super::{
@@ -251,14 +250,16 @@ impl Session<'_> {
             .connection
             .build_session(self.probe_cwd)
             .block_task()
-            .run_until(async |mut active| {
-                let _ = started_tx.send(());
-                let session_id = active.session_id().clone();
-                let usage = self.query_turn(&mut active).await;
-                publish(self.progress, AuthProgress::Closing);
-                let close = self.close_session(session_id).await;
-                Ok::<_, RpcError>(QueryCompletion { usage, close })
-            });
+            .run_until(
+                async |agent_client_protocol::v1::SessionSetup { mut session, .. }| {
+                    let _ = started_tx.send(());
+                    let session_id = session.session_id().clone();
+                    let usage = self.query_turn(&mut session).await;
+                    publish(self.progress, AuthProgress::Closing);
+                    let close = self.close_session(session_id).await;
+                    Ok::<_, RpcError>(QueryCompletion { usage, close })
+                },
+            );
         tokio::pin!(query);
 
         tokio::select! {
@@ -297,7 +298,7 @@ impl Session<'_> {
         result: Result<QueryCompletion, RpcError>,
     ) -> Result<Option<AuthOutcome>, AuthError> {
         match result {
-            Err(error) if error.code == agent_client_protocol::ErrorCode::AuthRequired => Ok(None),
+            Err(error) if error.code == agent_client_protocol::ErrorCode::AUTH_REQUIRED => Ok(None),
             Err(error) => Err(AuthError::peer_failure(
                 AuthStage::Probe,
                 AuthFailureKind::Probe,
@@ -311,7 +312,7 @@ impl Session<'_> {
     /// 固定 `/usage` 回合。只收 SDK 已按 session ID 路由的 agent text chunk。
     async fn query_turn(
         &self,
-        active: &mut agent_client_protocol::ActiveSession<'_, Agent>,
+        active: &mut agent_client_protocol::v1::ActiveSession<'_, Agent>,
     ) -> Result<UsageReport, AuthError> {
         if self.wire.cancellation.is_cancelled() {
             return Err(AuthError::cancelled(AuthStage::Probe));
@@ -337,7 +338,7 @@ impl Session<'_> {
 
     async fn collect_usage(
         &self,
-        active: &mut agent_client_protocol::ActiveSession<'_, Agent>,
+        active: &mut agent_client_protocol::v1::ActiveSession<'_, Agent>,
     ) -> UsageReport {
         let mut output = String::new();
         let mut exceeded = false;
@@ -347,17 +348,20 @@ impl Session<'_> {
                 Err(error) => return self.usage_rpc_failure(error),
             };
             match update {
-                SessionMessage::StopReason(StopReason::EndTurn) => {
+                SessionMessage::PromptResponse(Ok(response))
+                    if response.stop_reason == StopReason::EndTurn =>
+                {
                     return if exceeded {
                         UsageReport::Failed(UsageFailure::ResourceLimit)
                     } else {
                         UsageReport::Text(output)
                     };
                 }
-                SessionMessage::StopReason(_) => {
+                SessionMessage::PromptResponse(Ok(_)) => {
                     return UsageReport::Failed(UsageFailure::Query);
                 }
-                SessionMessage::SessionMessage(dispatch) => {
+                SessionMessage::PromptResponse(Err(error)) => return self.usage_rpc_failure(error),
+                SessionMessage::Message(dispatch) => {
                     let untyped = match dispatch.to_untyped_message() {
                         Ok(untyped) => untyped,
                         Err(error) => return self.usage_rpc_failure(error),

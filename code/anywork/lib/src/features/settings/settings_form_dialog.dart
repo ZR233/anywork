@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Common bounded editor: heading and actions remain visible while content scrolls.
 /// The form owner provides its scrollable content and controls save/cancel semantics.

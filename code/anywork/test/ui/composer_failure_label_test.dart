@@ -2,7 +2,7 @@ import 'package:anywork/src/domain/models/composer_primary_action.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _workspaceRecoveryIssue = StudioRecoveryIssue(
@@ -79,7 +79,10 @@ Future<void> _pump(WidgetTester tester, Locale locale) async {
   await tester.pumpWidget(
     MaterialApp(
       locale: locale,
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      localizationsDelegates: [
+        AppLocalizations.delegate,
+        ...GlobalMaterialLocalizations.delegates,
+      ],
       supportedLocales: AppLocalizations.supportedLocales,
       home: const Scaffold(
         body: SizedBox(

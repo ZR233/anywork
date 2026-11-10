@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart'
     show ConversationActivityView, ConversationActivityKind;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';

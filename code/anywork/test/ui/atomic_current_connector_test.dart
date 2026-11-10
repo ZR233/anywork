@@ -20,7 +20,7 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _source = ForegroundTurnChatSource(turnId: 'T');
@@ -142,7 +142,10 @@ Widget _host(
 }) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(disableAnimations: disableAnimations),

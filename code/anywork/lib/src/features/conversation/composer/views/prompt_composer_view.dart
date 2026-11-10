@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../domain/models/composer_primary_action.dart';

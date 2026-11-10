@@ -26,6 +26,7 @@ http = { workspace = true }
 bytes = { workspace = true }
 eventsource-stream = { workspace = true }
 sse-stream = { workspace = true }
+sse-stream-rmcp = { workspace = true }
 pl-skill-core = { workspace = true }
 ignore = { workspace = true }
 thiserror = { workspace = true }

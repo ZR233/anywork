@@ -40,10 +40,10 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 criterion = { version = "=0.8.2", features = ["async_tokio"] }
-agent-client-protocol = { version = "=3.4.0", default-features = false }
+agent-client-protocol = { version = "=5.1.0", default-features = false }
 percent-encoding = "2.3.2"
 procfs = { version = "0.18.0", default-features = false }
-tokio = { version = "1.53.3", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.30", features = ["connect", "rustls-tls-webpki-roots"] }
@@ -52,11 +52,11 @@ futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
 serde_path_to_error = "0.1.20"
-syn = { version = "2.0.119", features = ["full"] }
+syn = { version = "3.0.10", features = ["full"] }
 quote = "1.0.47"
 proc-macro2 = "1.0.107"
 proc-macro-crate = "3.5.0"
-encoding_rs = "0.8.42"
+encoding_rs = "0.8.44"
 prost = "0.14.4"
 flate2 = "1"
 schemars = "=1.2.3"
@@ -81,11 +81,11 @@ gray_matter = "0.3.2"
 base64 = "0.23"
 which = "8"
 dunce = "1"
-dirs = "6"
+dirs = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
-downlowd = "0.1.4"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+downlowd = "0.1.6"
+zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 rawzip = "=0.5.2"
 hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
@@ -96,8 +96,10 @@ h2 = "0.4.20"
 http = "1.5"
 bytes = "1.12"
 getrandom = "0.4"
-sse-stream = "0.2.6"
-sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+sse-stream = "0.3.0"
+# rmcp 3.9 exposes 0.2 event/error types; decoding uses the current parser.
+sse-stream-rmcp = { package = "sse-stream", version = "0.2.6" }
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 eventsource-stream = "0.2.3"
 enum_dispatch = "=0.3.13"
 secrecy = "0.10"
@@ -105,12 +107,12 @@ axum = "0.8"
 fs4 = "=1.1.0"
 utoipa = "=6.0.0"
 utoipa-axum = "=0.3.0"
-utoipa-swagger-ui = { version = "=10.0.1", features = ["axum", "vendored"] }
-rmcp = { version = "=3.5.1", default-features = false }
+utoipa-swagger-ui = { version = "=10.0.2", features = ["axum", "vendored"] }
+rmcp = { version = "=3.9.0", default-features = false }
 process-wrap = { version = "10.0.1", features = ["tokio1"] }
 lsp-server = "0.10"
 lsp-types = "0.97.0"
-toml = "1.1.8"
+toml = "1.2.1"
 version-migrate = "=0.21.0"
 pretty_assertions = "1.4.1"
 # SQLite does not need SQLx TLS; enabling it would add rustls ring beside reqwest's AWS-LC provider.
@@ -125,6 +127,7 @@ sea-orm-migration = { version = "=2.0.4", default-features = false, features = [
 ] }
 # Native history metadata uses SQLx's locked handle and the same SQLite binding identity.
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# SQLx 0.9 requires >=0.30.1,<0.38; 0.37.0 is the newest compatible release.
 libsqlite3-sys = { version = "=0.37.0", default-features = false }
 sha2 = "0.11.1"
 hex = "0.4.3"
@@ -132,8 +135,8 @@ zstd = { version = "0.14.3", default-features = false }
 semver = "1"
 url = "2"
 oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
-openidconnect = { version = "4.0.1", default-features = false }
-uuid = { version = "1.28.0", features = ["v4"] }
+openidconnect = { version = "4.1.0", default-features = false }
+uuid = { version = "1.29.2", features = ["v4"] }
 minisign-verify = "0.3.0"
 grep-regex = "0.1.14"
 grep-matcher = "0.1.9"

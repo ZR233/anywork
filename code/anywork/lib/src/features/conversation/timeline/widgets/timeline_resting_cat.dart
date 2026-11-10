@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 趴卧猫活动图标：身体固定，只有垂落的尾巴摆动；时钟由活动行持有。
 class TimelineRestingCat extends StatelessWidget {

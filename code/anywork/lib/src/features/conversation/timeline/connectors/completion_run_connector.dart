@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_diagnostics.dart';

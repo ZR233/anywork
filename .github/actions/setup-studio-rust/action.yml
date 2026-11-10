@@ -4,7 +4,7 @@ runs:
   using: composite
   steps:
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       with:
         toolchain: 1.99.1
     # rust-cache includes installed toolchains in its key. Keep the pre-existing
@@ -25,7 +25,7 @@ runs:
           fi
         done <<< "$toolchains"
     - name: Cache Rust build
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
         workspaces: |

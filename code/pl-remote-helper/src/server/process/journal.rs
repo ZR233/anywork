@@ -214,8 +214,9 @@ impl Journal {
 fn encode(record: RemoteOutputRecord) -> Result<Bytes, RemoteError> {
     let data = serde_json::to_string(&record)
         .map_err(|e| remote_error(RemoteErrorCode::Io, e.to_string()))?;
-    Ok(sse_stream::Sse::default()
+    sse_stream::Sse::default()
         .id(record.sequence.to_string())
         .data(data)
-        .into())
+        .encode()
+        .map_err(|error| remote_error(RemoteErrorCode::Io, error.to_string()))
 }

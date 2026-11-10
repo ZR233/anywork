@@ -102,6 +102,8 @@ LSP 工具按状态读取和语义能力分开准入：只读 `lsp_status` 在�
 
 ## 9.6 MCP 能力声明、Thread 独占运行时与轮次租约
 
+Streamable HTTP 的 SSE 信封遵循标准字段语义：未知字段忽略，重复的 `event`、`id` 和 `retry` 使用最后一个有效值，无效的重试值忽略；解析或底层读取错误只交付一次后终止该输入流。事件接收容量、错误分类、取消和重连预算仍由原传输所有者约束，不因采用上游解析器而放宽，也不为保留旧解析器的非标准拒绝行为增加兼容模式。
+
 - **Thread 独占运行时与按环境隔离**：MCP 运行时（`McpRuntime`）归属每个已激活的会话线程（`Thread`）独占所有，宿主进程不维护跨会话共享的全局 MCP 连接池。仅被显式激活的会话线程按其冻结的工作区环境作用域（本地会话为 `McpScope::Host`，SSH 远端会话为 `McpScope::Ssh { ssh_alias }`）解析合并后的有效 MCP 目录并启动专属 `McpRuntime`：Host 会话在宿主本机拉起 `stdio` 子进程并直连 `Streamable HTTP` 端点；SSH 远端会话则通过当前会话绑定的 `pl-remote-helper` 在远端服务器执行 `stdio` 子进程（合并远端登录 Shell 环境与配置的 `env`），并经由辅助进程 HTTP/SSE 转发通道访问远端本机或内网 `Streamable HTTP` 端点。未激活的历史会话不建立任何 MCP 连接；会话关闭或空闲卸载时先行收束并等待其专属 `McpRuntime` 彻底退出。设置页中的 MCP 页面仅管理静态期望配置，不发起运行时探测，真实连接生命周期与重连入口仅归属活跃会话的状态栏。
 - **非阻塞代次租约**：线程装配工具目录时直接从自身 `McpRuntime` 获取当前已发布的 MCP 代次（generation）租约，不阻塞等待后台正在连接或握手中的 MCP 服务。刚发起重连或首次握手的已启用服务处于 `connecting` 状态，尚未就绪的服务不进入本次冻结目录，待其初始化完成并发布新代次后，通过该线程的热目录刷新机制更新后续模型请求。慢速或失败的 MCP 服务绝不阻塞新建会话、保存账号配置或其他无关服务。
 - **MCP 资源门面（Resource Façade）按需暴露**：运行时在 MCP 握手阶段（`initialize` / `server/discover`）读取服务端声明的 `resources` 能力标志，仅将明确支持该能力的服务纳入当前租约的资源分配表（resource assignment）。当没有任何已连接服务支持 `resources` 能力时，不向模型注册 `list_mcp_resources`、`list_mcp_resource_templates` 或 `read_mcp_resource` 工具。资源聚合查询仅访问分配表内的服务；若模型显式指定了未声明该能力的服务名，工具在发出网络请求前直接返回稳定的参数错误，不发送探测请求，也不会因此将正常的 MCP 传输连接标记为不可用。
