@@ -1,5 +1,6 @@
 //! The original private owner may stop for deletion without a successful preservation receipt.
 use super::*;
+use crate::studio::ThreadRecord;
 
 #[tokio::test]
 async fn permanent_delete_sealed_missing_public_member_retries_frozen_scope() -> Result<()> {
@@ -53,7 +54,7 @@ async fn permanent_delete_sealed_missing_public_member_retries_frozen_scope() ->
         let tree = runtime.store.read_directory_tree(&root.id).await?;
         let mut extra = tree.clone();
         let mut unadmitted = tree[0].clone();
-        unadmitted.id = "outside-sealed-scope".into();
+        unadmitted.agent.thread_id = "outside-sealed-scope".into();
         extra.push(unadmitted);
         assert!(
             runtime
@@ -72,10 +73,10 @@ async fn permanent_delete_sealed_missing_public_member_retries_frozen_scope() ->
             let mut changed = tree.clone();
             let member = changed
                 .iter_mut()
-                .find(|thread| thread.id == middle.id)
+                .find(|thread| thread.agent.thread_id == middle.id)
                 .unwrap();
             match field {
-                "workspace" => member.workspace_id = "different-workspace".into(),
+                "workspace" => member.session.workspace_id = "different-workspace".into(),
                 "root" => member.root_thread_id = neighbor.id.clone(),
                 "parent" => member.parent_thread_id = Some(neighbor.id.clone()),
                 // Change the frozen original, rather than asking a mutable path to override it.
@@ -584,8 +585,16 @@ async fn permanent_delete_unpublished_bound_root_retries_after_restart() -> Resu
             .commit_directory(delta)
             .await?;
         let root = ThreadRecord::from_directory_thread(crate::studio::records::thread_projection(
-            &session, &agent,
-        ));
+            &session,
+            &agent,
+            |id| {
+                runtime
+                    .store
+                    .catalog()
+                    .get_agent(id)
+                    .map(|agent| agent.thread_id)
+            },
+        )?);
         let neighbor = runtime
             .create_thread_with_id("private-root-neighbor", &project.id, "keep")
             .await?;
@@ -664,8 +673,13 @@ async fn permanent_delete_unpublished_bound_root_retries_after_restart() -> Resu
         assert!(!preparation.published && preparation.storage.is_none());
         assert!(execution.exists());
         assert_eq!(
-            runtime.store.catalog().get_agent(&root.id).unwrap().status,
-            agent.status
+            runtime
+                .store
+                .catalog()
+                .get_agent(&root.id)
+                .unwrap()
+                .native_status(),
+            agent.native_status()
         );
         tokio::fs::remove_dir(&catalog).await?;
         tokio::fs::write(&catalog, catalog_bytes).await?;

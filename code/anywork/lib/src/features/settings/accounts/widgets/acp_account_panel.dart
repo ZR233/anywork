@@ -155,13 +155,6 @@ class AcpAccountPanel extends StatelessWidget {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            value.subtitle ?? l10n.acpAccountNoApiKeyHint,
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
                         ],
                       ),
                     ),
@@ -420,16 +413,6 @@ class _AcpLoginMethodCard extends StatelessWidget {
                       ),
                   ],
                 ),
-                if (method.description != null &&
-                    method.description!.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    method.description!,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
               ],
             ),
           ),

@@ -418,7 +418,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
       return;
     }
     if (oldWidget.row.threadId != widget.row.threadId ||
-        oldWidget.row.status != widget.row.status ||
+        oldWidget.row.backend != widget.row.backend ||
         oldWidget.view.displayRoute != widget.view.displayRoute) {
       _modelNotice = null;
     }
@@ -479,11 +479,15 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
   Widget build(BuildContext context) {
     final row = widget.row;
     final view = widget.view;
+    final backend = row.backend;
+    if (backend is! NativeAgentBackendView) {
+      throw StateError('Native prompt composer cannot consume an ACP session');
+    }
     final route = view.displayRoute;
     final model = route == null
         ? null
         : modelForRoute(view.accounts, route.accountId, route.modelId);
-    final blockedReason = switch (row.status) {
+    final blockedReason = switch (backend.status) {
       // Turn 真正结束后的 canonical idle 即可换路由：workflow run/阶段保持 active
       // 不再阻塞，新路由在下一次输入生效，也不重置 workflow/Plan（design/19 §19.2）。
       ThreadStatusView.idle => null,
@@ -565,20 +569,20 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
           stopCommand: view.stopCommand,
           queuedStopStartedAtMs: view.queuedStopStartedAtMs,
           compact: widget.compact,
-          selectorBar: row.isRootRow
+          selectorBar: row.isRootRow && row.mode != null
               ? Wrap(
                   crossAxisAlignment: WrapCrossAlignment.center,
                   spacing: 2,
                   runSpacing: 4,
                   children: [
                     SessionModeSelector(
-                      mode: row.mode,
+                      mode: row.mode!,
                       usesSnapshot: true,
                       snapshotDisplayName:
                           view.workflow?.currentRun?.modeDisplayName,
                       enabled:
                           !view.hasActiveWorkflow &&
-                          row.status == ThreadStatusView.idle &&
+                          backend.status == ThreadStatusView.idle &&
                           view.activeInteraction == null,
                       onExplain: (message) =>
                           setState(() => _modelNotice = message),

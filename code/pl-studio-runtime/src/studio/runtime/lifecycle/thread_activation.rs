@@ -33,6 +33,34 @@ impl StudioRuntime {
         let mut cursor = id.to_owned();
         loop {
             anyhow::ensure!(seen.insert(cursor.clone()), "cyclic Thread ancestry");
+            let member = self
+                .agent_facility
+                .product_events
+                .directory_member(&cursor)?
+                .or(self.store.directory_member(&cursor)?)
+                .context("activation directory member is missing")?;
+            if !member.is_native() {
+                // Parentage requires its real product identity, not a Native handle,
+                // model route, history or a newly opened ACP connection.
+                let identity = pl_protocol::AgentThreadIdentity {
+                    session_id: pl_protocol::SessionId::new(member.session.session_id)?,
+                    agent_id: pl_protocol::AgentId::new(member.agent.agent_id)?,
+                    parent_agent_id: member
+                        .agent
+                        .parent_agent_id
+                        .map(pl_protocol::AgentId::new)
+                        .transpose()?,
+                    thread_id: pl_protocol::ThreadId::new(member.agent.thread_id)?,
+                };
+                self.sessions
+                    .materialize(&identity.session_id)?
+                    .retain_directory_identity(&identity)?;
+                if let Some(parent) = member.parent_thread_id {
+                    cursor = parent;
+                    continue;
+                }
+                break;
+            }
             if self
                 .session_of(&cursor)
                 .and_then(|session| session.thread(&cursor))

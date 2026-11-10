@@ -16,8 +16,8 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（类型定义见 `pl-protocol` 的 `session`/`agent` 模块，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
 - **成员描述（`AgentDescriptor`）**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、backend 类别与工作区引用。root/child 表达成员关系，Native/ACP 表达执行方式，两者正交；不得用 `AcpRootThread`、`AcpChildSession` 等交叉类型复制业务逻辑。首版一名成员对应一个默认 Thread。
 - **定义快照（`AgentDefinitionSnapshot`）**：可复用定义的不可变快照——定义 ID、显示名、描述、用途、来源与修订/内容身份；不混入模型配置与运行状态，也不拥有线程、连接或任务。修改可复用定义只影响后续新实例。
-- **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`）；当前 Profile 的指令正文位于 Native 分支，目录投影省略正文，执行历史继续按既有格式冻结。`AcpAgentConfig` 只引用既有 ACP 账号 ID 与连接配置身份，不包含 Native model/effort/system-instruction 占位值。类型中存在 `Acp` 分支不代表它可以执行：在 ACP 执行后端接通之前出现即在资源准备前明确失败，不提供空实现或假成功。
-- **当前配置与历史分界**：配置 owner 发布 `AgentProfile { definition, binding, system, enabled, workspace_mode }`；配置文件正式迁移到 schema 2，把原 Native 路由与指令完整移入 binding。当前配置、设置与派发消费者读取这份描述，不把所有后端强制解析成 Native。仅在 Native 实例创建期通过 `freeze_native` 生成原 `AgentProfileSnapshot` 历史载荷；恢复消费保存的冻结值，不跟随当前定义变化。
+- **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`）；当前 Profile 的指令正文位于 Native 分支，执行历史继续按既有格式冻结。`AcpAgentConfig` 只引用既有 ACP 账号 ID，不持久化连接修订，也不包含 Native model/effort/system-instruction 占位值。连接修订只用于运行期准入，活动实例冻结实际定义；目录只保存实际后端值及对端会话引用，存储见 [17](./17-studio-storage.md#171-数据布局)。ACP 独立业务会话不自动开放 ACP Profile：混合父子派发须等结果与关闭链完成后进入生产准入，此前仍在资源准备前明确拒绝，不提供空实现或假成功。
+- **当前配置与历史分界**：配置 owner 发布 `AgentProfile { definition, binding, system, enabled, workspace_mode }`；Profile schema 2 把原 Native 路由与指令完整移入 binding，schema 3 移除 ACP 持久连接修订并保留账号引用。当前配置、设置与派发消费者读取这份描述，不把所有后端强制解析成 Native。仅在 Native 实例创建期通过 `freeze_native` 生成原 `AgentProfileSnapshot` 历史载荷；恢复消费保存的冻结值，不跟随当前定义变化。
 - **Native 装配身份**：目录 owner 解析并校验 `SessionId/AgentId/ThreadId/parent AgentId` 后交给 Native factory；后端准入先于历史、工作区、工具和模型资源准备。恢复同样读取目录 binding，不以缺少模型字段猜 Native。活动资源归会话作用域内的唯一成员登记，协作工具只弱引用该 owner；登记不改写目录成员关系，所有权与关闭见 [14](./14-runtime-host.md#141-统一装配与激活)。
 - **派发准入切面**：新 child 的 factory 先解析并冻结配置准入值，确认后端可执行，再建立 reservation 与私有 preparation 责任；实际 `prepare` 消费同一准入值，不二次读取当前配置。已有 child 的内部恢复先取得目录 activation 身份并拒绝不支持后端，之后才核验 Native 工作区或读取 checkpoint，所有入口具有相同拒绝顺序。
 
@@ -43,15 +43,20 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 用户自定义子智能体预设保存在 Studio 主目录的 `agents/` 子目录下（默认路径为 `~/.anywork/agents/<agent-id>.toml`），仅扫描首层普通 `.toml` 文件，文件名主干（stem）即为稳定的预设 ID（仅允许长度 `1..=64` 的小写 ASCII 字母、数字、`-` 与 `_`，且不得占用系统内置 ID）：
 
 ```toml
+schema_version = 3
 enabled = true
 display_name = "Rust 执行者"
 description = "实现和重构 Rust 模块"
 when_to_use = "需要实施 Rust 模块或修复测试时"
 workspace_mode = "directory"
+
+[binding]
+kind = "native"
 system_instructions = """
 遵循项目规范完成实现，并验证相关测试。
 """
 
+[binding.route]
 account_id = "deepseek"
 model_id = "deepseek-flash"
 effort = "high"

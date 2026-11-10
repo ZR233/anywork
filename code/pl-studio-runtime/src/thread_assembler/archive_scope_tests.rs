@@ -17,7 +17,10 @@ fn contradictory_archive_parentage_fails_before_sealing_or_cancelling_any_owner(
         state.creating.insert(
             "child".into(),
             Preparation {
-                resources: Arc::new(crate::session::NativeResources::default()),
+                resources: crate::session::PreparedResources::Native(Arc::new(
+                    crate::session::NativeResources::default(),
+                )),
+                identity: None,
                 settlement: None,
                 purpose: None,
                 parent_id: Some("root".into()),
@@ -158,7 +161,10 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
         state.creating.insert(
             "creating-child".into(),
             Preparation {
-                resources: Arc::new(crate::session::NativeResources::default()),
+                resources: crate::session::PreparedResources::Native(Arc::new(
+                    crate::session::NativeResources::default(),
+                )),
+                identity: None,
                 settlement: None,
                 purpose: None,
                 parent_id: Some("root".into()),
@@ -255,24 +261,26 @@ async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() 
             crate::session::AgentInstance {
                 identity: activation.agent,
                 binding: activation.binding,
-                native: crate::session::NativeThreadRuntime {
-                    resources: Arc::new(crate::session::NativeResources::default()),
-                    purpose: EntryPurpose::Execution,
-                    workspace_usage: None,
-                    close_storage: None,
-                    published_resources_closed: false,
-                    workspace_disposition: None,
-                    cleanup: Default::default(),
-                    execution: pl_core::thread::input::InputDriverOptions {
-                        max_model_steps: pl_core::thread::ModelStepLimit::Limited(
-                            std::num::NonZeroU32::new(1).unwrap(),
-                        ),
+                runtime: crate::session::AgentRuntime::Native(Box::new(
+                    crate::session::NativeThreadRuntime {
+                        resources: Arc::new(crate::session::NativeResources::default()),
+                        purpose: EntryPurpose::Execution,
+                        workspace_usage: None,
+                        close_storage: None,
+                        published_resources_closed: false,
+                        workspace_disposition: None,
+                        cleanup: Default::default(),
+                        execution: pl_core::thread::input::InputDriverOptions {
+                            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                                std::num::NonZeroU32::new(1).unwrap(),
+                            ),
+                        },
+                        incarnation: Arc::new(()),
+                        parent_id: Some("root".into()),
+                        ready: false,
+                        thread: child,
                     },
-                    incarnation: Arc::new(()),
-                    parent_id: Some("root".into()),
-                    ready: false,
-                    thread: child,
-                },
+                )),
             },
         );
         state.unpublished_children.insert(

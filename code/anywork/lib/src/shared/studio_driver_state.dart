@@ -853,7 +853,7 @@ abstract final class StudioDriverState {
               ],
             },
         ],
-        // 同一“添加账号”入口的 typed 模板 token：Native 用模板 id，ACP 用 provider wire。
+        // 同一“添加账号”入口的 typed 模板 token；通用 ACP 命令不冒充受管模板。
         'nativeTemplates': templates == null
             ? null
             : [for (final template in templates.templates) template.id],
@@ -864,7 +864,11 @@ abstract final class StudioDriverState {
               {
                 'accountId': account.identity.accountId,
                 'name': account.name,
-                'provider': _acpDetails(facts, account.identity)?.provider.wire,
+                'template': _acpDetails(
+                  facts,
+                  account.identity,
+                )?.template?.wire,
+                'command': _acpDetails(facts, account.identity)?.command,
                 'connectionRevision': account.acpConnectionRevision,
               },
         ],
@@ -957,8 +961,9 @@ abstract final class StudioDriverState {
               'title': workspace.rootRow.title,
               'workspaceId': workspace.row.workspaceId,
               'sessionId': workspace.rootRow.sessionId,
-              'threadMode': workspace.row.mode.name,
-              'threadStatus': workspace.row.status.name,
+              'threadMode': workspace.row.mode?.name,
+              'threadStatus':
+                  (workspace.row.backend as NativeAgentBackendView).status.name,
               'isBusy': workspace.isBusy,
               'model': workspace.runtime.modelId,
               'modelRoute': workspace.modelRoute == null

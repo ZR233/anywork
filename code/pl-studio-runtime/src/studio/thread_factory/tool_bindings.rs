@@ -315,6 +315,7 @@ impl StudioThreadFactory {
             .services
             .product_events
             .thread_snapshot(id)
+            .map_err(|error| super::errors::resource_error("read Native directory", error))?
             .map(crate::studio::ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
         let mut project = self

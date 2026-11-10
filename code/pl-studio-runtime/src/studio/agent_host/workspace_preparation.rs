@@ -599,24 +599,24 @@ pub(in crate::studio) async fn root_session_workspace_root(
     store: &crate::studio::StudioStore,
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
-    root: &crate::studio::ThreadRecord,
+    root: &crate::studio::records::DirectoryMember,
     project: &WorkspaceRecord,
     local_root: PathBuf,
 ) -> Result<(PathBuf, Option<WorktreeLease>)> {
     anyhow::ensure!(
         root.parent_thread_id.is_none()
-            && root.id == root.root_thread_id
-            && root.workspace_id == project.id,
+            && root.agent.thread_id == root.root_thread_id
+            && root.session.workspace_id == project.id,
         WorktreeError::IdentityMismatch("root/project: session association changed".into())
     );
-    let frozen = store.workspace_identity(&root.id).await?;
+    let frozen = store.workspace_identity(&root.agent.thread_id).await?;
     anyhow::ensure!(
         project.kind != pl_protocol::studio::WorkspaceKind::Standalone
-            || (root.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local
+            || (root.session.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local
                 && project.ssh_alias.is_none()),
         "standalone sessions only support local workspaces"
     );
-    if root.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local {
+    if root.session.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local {
         let actual =
             super::worktree_lease::resolve_physical_workspace(ssh_manager, project, &local_root)
                 .await?;
@@ -626,18 +626,18 @@ pub(in crate::studio) async fn root_session_workspace_root(
         );
         return Ok((PathBuf::from(actual.root), None));
     }
-    let lease = worktrees.get(&root.id).ok_or_else(|| {
+    let lease = worktrees.get(&root.agent.thread_id).ok_or_else(|| {
         WorktreeError::IdentityMismatch("owner: root session lease is missing".into())
     })?;
     lease.validate_identity()?;
     anyhow::ensure!(
         lease.owner_kind == WorktreeLeaseOwnerKind::Session
-            && lease.owner_thread_id == root.id
-            && lease.root_thread_id == root.id
+            && lease.owner_thread_id == root.agent.thread_id
+            && lease.root_thread_id == root.agent.thread_id
             && lease.workspace_id == project.id
             && lease.ssh_alias == project.ssh_alias
             && workspace_paths_equal(
-                Path::new(&root.workspace_path),
+                Path::new(&root.session.workspace_path),
                 Path::new(&lease.path),
                 project.ssh_alias.is_some(),
             )?

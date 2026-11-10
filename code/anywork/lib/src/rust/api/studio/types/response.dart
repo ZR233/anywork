@@ -57,7 +57,7 @@ class AccountUsageDto {
 class ArchiveThreadResult {
   final String archivedRootId;
   final List<String> removedThreadIds;
-  final BridgeThread? nextRoot;
+  final BridgeSessionDirectoryRow? nextRoot;
 
   const ArchiveThreadResult({
     required this.archivedRootId,
@@ -1309,7 +1309,7 @@ class DeepSeekBalanceInfoDto {
 class DeleteThreadResult {
   final String deletedRootId;
   final List<String> deletedThreadIds;
-  final BridgeThread? nextRoot;
+  final BridgeSessionDirectoryRow? nextRoot;
 
   const DeleteThreadResult({
     required this.deletedRootId,

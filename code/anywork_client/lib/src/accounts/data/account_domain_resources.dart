@@ -269,7 +269,7 @@ final class AccountDomainResources {
         _models.apply(frame);
       case AccountUsageFrame():
         _usage.apply(frame);
-      case AcpAuthFrame() || AcpInstallFrame():
+      case AcpAuthFrame() || AcpInstallFrame() || AcpLocalDetectionFrame():
         _acp.apply(frame);
     }
   }
@@ -282,7 +282,7 @@ final class AccountDomainResources {
         _models.fail(target, failure);
       case AccountUsageTarget():
         _usage.fail(failure);
-      case AcpAuthTarget() || AcpInstallTarget():
+      case AcpAuthTarget() || AcpInstallTarget() || AcpLocalDetectionTarget():
       case ChatGptLoginTarget():
         if (target is ChatGptLoginTarget) {
           _accounts.fail(target, failure);

@@ -9809,7 +9809,7 @@ $AccountBillingPresentationCopyWith<$Res> get billing {
 /// @nodoc
 mixin _$AcpAccountEditorPresentation {
 
- String get editorId; AccountDisplayKey? get accountKey; String get templateName; String? get iconKey; AccountTextPresentation get name; AcpAccountPresentation get preparation; bool get prepared; bool get dirty; bool get saving; bool get canSave; bool get saveAndConnect; String? get error;
+ String get editorId; AccountDisplayKey? get accountKey; String get templateName; String? get iconKey; AccountTextPresentation get name; AcpAccountPresentation get preparation; AcpAccountSource get source; String get command; List<String> get args; List<AcpEnvironmentEntry> get environment; bool get enabled; AcpDetectionPhase get detectionPhase; String? get detectedProgram; String? get detectedVersion; String? get detectionError; bool get prepared; bool get dirty; bool get saving; bool get canSave; bool get saveAndConnect; String? get error;
 /// Create a copy of AcpAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -9821,20 +9821,20 @@ $AcpAccountEditorPresentationCopyWith<AcpAccountEditorPresentation> get copyWith
 @override
 bool operator ==(Object other) {
   final _this = this as AcpAccountEditorPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateName, _this.templateName) || other.templateName == _this.templateName)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.preparation, _this.preparation) || other.preparation == _this.preparation)&&(identical(other.prepared, _this.prepared) || other.prepared == _this.prepared)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.saveAndConnect, _this.saveAndConnect) || other.saveAndConnect == _this.saveAndConnect)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateName, _this.templateName) || other.templateName == _this.templateName)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.preparation, _this.preparation) || other.preparation == _this.preparation)&&(identical(other.source, _this.source) || other.source == _this.source)&&(identical(other.command, _this.command) || other.command == _this.command)&&const DeepCollectionEquality().equals(other.args, _this.args)&&const DeepCollectionEquality().equals(other.environment, _this.environment)&&(identical(other.enabled, _this.enabled) || other.enabled == _this.enabled)&&(identical(other.detectionPhase, _this.detectionPhase) || other.detectionPhase == _this.detectionPhase)&&(identical(other.detectedProgram, _this.detectedProgram) || other.detectedProgram == _this.detectedProgram)&&(identical(other.detectedVersion, _this.detectedVersion) || other.detectedVersion == _this.detectedVersion)&&(identical(other.detectionError, _this.detectionError) || other.detectionError == _this.detectionError)&&(identical(other.prepared, _this.prepared) || other.prepared == _this.prepared)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.saveAndConnect, _this.saveAndConnect) || other.saveAndConnect == _this.saveAndConnect)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpAccountEditorPresentation;
-  return Object.hash(runtimeType,_this.editorId,_this.accountKey,_this.templateName,_this.iconKey,_this.name,_this.preparation,_this.prepared,_this.dirty,_this.saving,_this.canSave,_this.saveAndConnect,_this.error);
+  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateName,_this.iconKey,_this.name,_this.preparation,_this.source,_this.command,const DeepCollectionEquality().hash(_this.args),const DeepCollectionEquality().hash(_this.environment),_this.enabled,_this.detectionPhase,_this.detectedProgram,_this.detectedVersion,_this.detectionError,_this.prepared,_this.dirty,_this.saving,_this.canSave,_this.saveAndConnect,_this.error]);
 }
 
 @override
 String toString() {
   final _this = this as AcpAccountEditorPresentation;
-  return 'AcpAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateName: ${_this.templateName}, iconKey: ${_this.iconKey}, name: ${_this.name}, preparation: ${_this.preparation}, prepared: ${_this.prepared}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, saveAndConnect: ${_this.saveAndConnect}, error: ${_this.error})';
+  return 'AcpAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateName: ${_this.templateName}, iconKey: ${_this.iconKey}, name: ${_this.name}, preparation: ${_this.preparation}, source: ${_this.source}, command: ${_this.command}, args: ${_this.args}, environment: ${_this.environment}, enabled: ${_this.enabled}, detectionPhase: ${_this.detectionPhase}, detectedProgram: ${_this.detectedProgram}, detectedVersion: ${_this.detectedVersion}, detectionError: ${_this.detectionError}, prepared: ${_this.prepared}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, saveAndConnect: ${_this.saveAndConnect}, error: ${_this.error})';
 }
 
 
@@ -9845,7 +9845,7 @@ abstract mixin class $AcpAccountEditorPresentationCopyWith<$Res>  {
   factory $AcpAccountEditorPresentationCopyWith(AcpAccountEditorPresentation value, $Res Function(AcpAccountEditorPresentation) _then) = _$AcpAccountEditorPresentationCopyWithImpl;
 @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, String templateName, String? iconKey, AccountTextPresentation name, AcpAccountPresentation preparation, bool prepared, bool dirty, bool saving, bool canSave, bool saveAndConnect, String? error
+ String editorId, AccountDisplayKey? accountKey, String templateName, String? iconKey, AccountTextPresentation name, AcpAccountPresentation preparation, AcpAccountSource source, String command, List<String> args, List<AcpEnvironmentEntry> environment, bool enabled, AcpDetectionPhase detectionPhase, String? detectedProgram, String? detectedVersion, String? detectionError, bool prepared, bool dirty, bool saving, bool canSave, bool saveAndConnect, String? error
 });
 
 
@@ -9862,7 +9862,7 @@ class _$AcpAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateName = null,Object? iconKey = freezed,Object? name = null,Object? preparation = null,Object? prepared = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? saveAndConnect = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateName = null,Object? iconKey = freezed,Object? name = null,Object? preparation = null,Object? source = null,Object? command = null,Object? args = null,Object? environment = null,Object? enabled = null,Object? detectionPhase = null,Object? detectedProgram = freezed,Object? detectedVersion = freezed,Object? detectionError = freezed,Object? prepared = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? saveAndConnect = null,Object? error = freezed,}) {
   return _then(AcpAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -9870,7 +9870,16 @@ as AccountDisplayKey?,templateName: null == templateName ? _self.templateName : 
 as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,preparation: null == preparation ? _self.preparation : preparation // ignore: cast_nullable_to_non_nullable
-as AcpAccountPresentation,prepared: null == prepared ? _self.prepared : prepared // ignore: cast_nullable_to_non_nullable
+as AcpAccountPresentation,source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as AcpAccountSource,command: null == command ? _self.command : command // ignore: cast_nullable_to_non_nullable
+as String,args: null == args ? _self.args : args // ignore: cast_nullable_to_non_nullable
+as List<String>,environment: null == environment ? _self.environment : environment // ignore: cast_nullable_to_non_nullable
+as List<AcpEnvironmentEntry>,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
+as bool,detectionPhase: null == detectionPhase ? _self.detectionPhase : detectionPhase // ignore: cast_nullable_to_non_nullable
+as AcpDetectionPhase,detectedProgram: freezed == detectedProgram ? _self.detectedProgram : detectedProgram // ignore: cast_nullable_to_non_nullable
+as String?,detectedVersion: freezed == detectedVersion ? _self.detectedVersion : detectedVersion // ignore: cast_nullable_to_non_nullable
+as String?,detectionError: freezed == detectionError ? _self.detectionError : detectionError // ignore: cast_nullable_to_non_nullable
+as String?,prepared: null == prepared ? _self.prepared : prepared // ignore: cast_nullable_to_non_nullable
 as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
@@ -9991,10 +10000,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  AcpAccountSource source,  String command,  List<String> args,  List<AcpEnvironmentEntry> environment,  bool enabled,  AcpDetectionPhase detectionPhase,  String? detectedProgram,  String? detectedVersion,  String? detectionError,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.source,_that.command,_that.args,_that.environment,_that.enabled,_that.detectionPhase,_that.detectedProgram,_that.detectedVersion,_that.detectionError,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
   return orElse();
 
 }
@@ -10012,10 +10021,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  AcpAccountSource source,  String command,  List<String> args,  List<AcpEnvironmentEntry> environment,  bool enabled,  AcpDetectionPhase detectionPhase,  String? detectedProgram,  String? detectedVersion,  String? detectionError,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorPresentation():
-return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.source,_that.command,_that.args,_that.environment,_that.enabled,_that.detectionPhase,_that.detectedProgram,_that.detectedVersion,_that.detectionError,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -10032,10 +10041,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  String templateName,  String? iconKey,  AccountTextPresentation name,  AcpAccountPresentation preparation,  AcpAccountSource source,  String command,  List<String> args,  List<AcpEnvironmentEntry> environment,  bool enabled,  AcpDetectionPhase detectionPhase,  String? detectedProgram,  String? detectedVersion,  String? detectionError,  bool prepared,  bool dirty,  bool saving,  bool canSave,  bool saveAndConnect,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey,_that.name,_that.preparation,_that.source,_that.command,_that.args,_that.environment,_that.enabled,_that.detectionPhase,_that.detectedProgram,_that.detectedVersion,_that.detectionError,_that.prepared,_that.dirty,_that.saving,_that.canSave,_that.saveAndConnect,_that.error);case _:
   return null;
 
 }
@@ -10047,7 +10056,7 @@ return $default(_that.editorId,_that.accountKey,_that.templateName,_that.iconKey
 
 
 class _AcpAccountEditorPresentation implements AcpAccountEditorPresentation {
-  const _AcpAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateName, this.iconKey, required this.name, required this.preparation, this.prepared = false, this.dirty = false, this.saving = false, this.canSave = false, this.saveAndConnect = false, this.error});
+  const _AcpAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateName, this.iconKey, required this.name, required this.preparation, this.source = AcpAccountSource.local, this.command = 'agy',  List<String> args = const ['acp'],  List<AcpEnvironmentEntry> environment = const [], this.enabled = true, this.detectionPhase = AcpDetectionPhase.idle, this.detectedProgram, this.detectedVersion, this.detectionError, this.prepared = false, this.dirty = false, this.saving = false, this.canSave = false, this.saveAndConnect = false, this.error}): _args = args,_environment = environment;
 
 
 @override final  String editorId;
@@ -10056,6 +10065,27 @@ class _AcpAccountEditorPresentation implements AcpAccountEditorPresentation {
 @override final  String? iconKey;
 @override final  AccountTextPresentation name;
 @override final  AcpAccountPresentation preparation;
+@override@JsonKey() final  AcpAccountSource source;
+@override@JsonKey() final  String command;
+ final  List<String> _args;
+@override@JsonKey() List<String> get args {
+  if (_args is EqualUnmodifiableListView) return _args;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_args);
+}
+
+ final  List<AcpEnvironmentEntry> _environment;
+@override@JsonKey() List<AcpEnvironmentEntry> get environment {
+  if (_environment is EqualUnmodifiableListView) return _environment;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_environment);
+}
+
+@override@JsonKey() final  bool enabled;
+@override@JsonKey() final  AcpDetectionPhase detectionPhase;
+@override final  String? detectedProgram;
+@override final  String? detectedVersion;
+@override final  String? detectionError;
 @override@JsonKey() final  bool prepared;
 @override@JsonKey() final  bool dirty;
 @override@JsonKey() final  bool saving;
@@ -10073,18 +10103,18 @@ _$AcpAccountEditorPresentationCopyWith<_AcpAccountEditorPresentation> get copyWi
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateName, templateName) || other.templateName == templateName)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.name, name) || other.name == name)&&(identical(other.preparation, preparation) || other.preparation == preparation)&&(identical(other.prepared, prepared) || other.prepared == prepared)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.saveAndConnect, saveAndConnect) || other.saveAndConnect == saveAndConnect)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateName, templateName) || other.templateName == templateName)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.name, name) || other.name == name)&&(identical(other.preparation, preparation) || other.preparation == preparation)&&(identical(other.source, source) || other.source == source)&&(identical(other.command, command) || other.command == command)&&const DeepCollectionEquality().equals(other.args, _args)&&const DeepCollectionEquality().equals(other.environment, _environment)&&(identical(other.enabled, enabled) || other.enabled == enabled)&&(identical(other.detectionPhase, detectionPhase) || other.detectionPhase == detectionPhase)&&(identical(other.detectedProgram, detectedProgram) || other.detectedProgram == detectedProgram)&&(identical(other.detectedVersion, detectedVersion) || other.detectedVersion == detectedVersion)&&(identical(other.detectionError, detectionError) || other.detectionError == detectionError)&&(identical(other.prepared, prepared) || other.prepared == prepared)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.saveAndConnect, saveAndConnect) || other.saveAndConnect == saveAndConnect)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,editorId,accountKey,templateName,iconKey,name,preparation,prepared,dirty,saving,canSave,saveAndConnect,error);
+    return Object.hashAll([runtimeType,editorId,accountKey,templateName,iconKey,name,preparation,source,command,const DeepCollectionEquality().hash(_args),const DeepCollectionEquality().hash(_environment),enabled,detectionPhase,detectedProgram,detectedVersion,detectionError,prepared,dirty,saving,canSave,saveAndConnect,error]);
 }
 
 @override
 String toString() {
-    return 'AcpAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateName: $templateName, iconKey: $iconKey, name: $name, preparation: $preparation, prepared: $prepared, dirty: $dirty, saving: $saving, canSave: $canSave, saveAndConnect: $saveAndConnect, error: $error)';
+    return 'AcpAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateName: $templateName, iconKey: $iconKey, name: $name, preparation: $preparation, source: $source, command: $command, args: $args, environment: $environment, enabled: $enabled, detectionPhase: $detectionPhase, detectedProgram: $detectedProgram, detectedVersion: $detectedVersion, detectionError: $detectionError, prepared: $prepared, dirty: $dirty, saving: $saving, canSave: $canSave, saveAndConnect: $saveAndConnect, error: $error)';
 }
 
 
@@ -10095,7 +10125,7 @@ abstract mixin class _$AcpAccountEditorPresentationCopyWith<$Res> implements $Ac
   factory _$AcpAccountEditorPresentationCopyWith(_AcpAccountEditorPresentation value, $Res Function(_AcpAccountEditorPresentation) _then) = __$AcpAccountEditorPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, String templateName, String? iconKey, AccountTextPresentation name, AcpAccountPresentation preparation, bool prepared, bool dirty, bool saving, bool canSave, bool saveAndConnect, String? error
+ String editorId, AccountDisplayKey? accountKey, String templateName, String? iconKey, AccountTextPresentation name, AcpAccountPresentation preparation, AcpAccountSource source, String command, List<String> args, List<AcpEnvironmentEntry> environment, bool enabled, AcpDetectionPhase detectionPhase, String? detectedProgram, String? detectedVersion, String? detectionError, bool prepared, bool dirty, bool saving, bool canSave, bool saveAndConnect, String? error
 });
 
 
@@ -10112,7 +10142,7 @@ class __$AcpAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateName = null,Object? iconKey = freezed,Object? name = null,Object? preparation = null,Object? prepared = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? saveAndConnect = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateName = null,Object? iconKey = freezed,Object? name = null,Object? preparation = null,Object? source = null,Object? command = null,Object? args = null,Object? environment = null,Object? enabled = null,Object? detectionPhase = null,Object? detectedProgram = freezed,Object? detectedVersion = freezed,Object? detectionError = freezed,Object? prepared = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? saveAndConnect = null,Object? error = freezed,}) {
   return _then(_AcpAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -10120,7 +10150,16 @@ as AccountDisplayKey?,templateName: null == templateName ? _self.templateName : 
 as String,iconKey: freezed == iconKey ? _self.iconKey : iconKey // ignore: cast_nullable_to_non_nullable
 as String?,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as AccountTextPresentation,preparation: null == preparation ? _self.preparation : preparation // ignore: cast_nullable_to_non_nullable
-as AcpAccountPresentation,prepared: null == prepared ? _self.prepared : prepared // ignore: cast_nullable_to_non_nullable
+as AcpAccountPresentation,source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as AcpAccountSource,command: null == command ? _self.command : command // ignore: cast_nullable_to_non_nullable
+as String,args: null == args ? _self._args : args // ignore: cast_nullable_to_non_nullable
+as List<String>,environment: null == environment ? _self._environment : environment // ignore: cast_nullable_to_non_nullable
+as List<AcpEnvironmentEntry>,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
+as bool,detectionPhase: null == detectionPhase ? _self.detectionPhase : detectionPhase // ignore: cast_nullable_to_non_nullable
+as AcpDetectionPhase,detectedProgram: freezed == detectedProgram ? _self.detectedProgram : detectedProgram // ignore: cast_nullable_to_non_nullable
+as String?,detectedVersion: freezed == detectedVersion ? _self.detectedVersion : detectedVersion // ignore: cast_nullable_to_non_nullable
+as String?,detectionError: freezed == detectionError ? _self.detectionError : detectionError // ignore: cast_nullable_to_non_nullable
+as String?,prepared: null == prepared ? _self.prepared : prepared // ignore: cast_nullable_to_non_nullable
 as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
 as bool,saving: null == saving ? _self.saving : saving // ignore: cast_nullable_to_non_nullable
 as bool,canSave: null == canSave ? _self.canSave : canSave // ignore: cast_nullable_to_non_nullable
@@ -10161,6 +10200,273 @@ $AcpAccountPresentationCopyWith<$Res> get preparation {
     return _then(_self.copyWith(preparation: value));
   });
 }
+}
+
+/// @nodoc
+mixin _$AcpEnvironmentEntry {
+
+ String get key; String get value;
+/// Create a copy of AcpEnvironmentEntry
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpEnvironmentEntryCopyWith<AcpEnvironmentEntry> get copyWith => _$AcpEnvironmentEntryCopyWithImpl<AcpEnvironmentEntry>(this as AcpEnvironmentEntry, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpEnvironmentEntry;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpEnvironmentEntry&&(identical(other.key, _this.key) || other.key == _this.key)&&(identical(other.value, _this.value) || other.value == _this.value));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpEnvironmentEntry;
+  return Object.hash(runtimeType,_this.key,_this.value);
+}
+
+@override
+String toString() {
+  final _this = this as AcpEnvironmentEntry;
+  return 'AcpEnvironmentEntry(key: ${_this.key}, value: ${_this.value})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpEnvironmentEntryCopyWith<$Res>  {
+  factory $AcpEnvironmentEntryCopyWith(AcpEnvironmentEntry value, $Res Function(AcpEnvironmentEntry) _then) = _$AcpEnvironmentEntryCopyWithImpl;
+@useResult
+$Res call({
+ String key, String value
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpEnvironmentEntryCopyWithImpl<$Res>
+    implements $AcpEnvironmentEntryCopyWith<$Res> {
+  _$AcpEnvironmentEntryCopyWithImpl(this._self, this._then);
+
+  final AcpEnvironmentEntry _self;
+  final $Res Function(AcpEnvironmentEntry) _then;
+
+/// Create a copy of AcpEnvironmentEntry
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? key = null,Object? value = null,}) {
+  return _then(AcpEnvironmentEntry(
+key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
+as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpEnvironmentEntry].
+extension AcpEnvironmentEntryPatterns on AcpEnvironmentEntry {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpEnvironmentEntry value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpEnvironmentEntry value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpEnvironmentEntry value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String key,  String value)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry() when $default != null:
+return $default(_that.key,_that.value);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String key,  String value)  $default,) {final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry():
+return $default(_that.key,_that.value);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String key,  String value)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpEnvironmentEntry() when $default != null:
+return $default(_that.key,_that.value);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpEnvironmentEntry implements AcpEnvironmentEntry {
+  const _AcpEnvironmentEntry({required this.key, required this.value});
+
+
+@override final  String key;
+@override final  String value;
+
+/// Create a copy of AcpEnvironmentEntry
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpEnvironmentEntryCopyWith<_AcpEnvironmentEntry> get copyWith => __$AcpEnvironmentEntryCopyWithImpl<_AcpEnvironmentEntry>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpEnvironmentEntry&&(identical(other.key, key) || other.key == key)&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,key,value);
+}
+
+@override
+String toString() {
+    return 'AcpEnvironmentEntry(key: $key, value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpEnvironmentEntryCopyWith<$Res> implements $AcpEnvironmentEntryCopyWith<$Res> {
+  factory _$AcpEnvironmentEntryCopyWith(_AcpEnvironmentEntry value, $Res Function(_AcpEnvironmentEntry) _then) = __$AcpEnvironmentEntryCopyWithImpl;
+@override @useResult
+$Res call({
+ String key, String value
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpEnvironmentEntryCopyWithImpl<$Res>
+    implements _$AcpEnvironmentEntryCopyWith<$Res> {
+  __$AcpEnvironmentEntryCopyWithImpl(this._self, this._then);
+
+  final _AcpEnvironmentEntry _self;
+  final $Res Function(_AcpEnvironmentEntry) _then;
+
+/// Create a copy of AcpEnvironmentEntry
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? key = null,Object? value = null,}) {
+  return _then(_AcpEnvironmentEntry(
+key: null == key ? _self.key : key // ignore: cast_nullable_to_non_nullable
+as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
 }
 
 // dart format on

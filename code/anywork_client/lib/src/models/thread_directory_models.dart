@@ -54,10 +54,7 @@ class StudioProject {
 /// 不再重复写一遍角色比较，避免空白或措辞漂移出第二份事实。
 bool isRetiredAgentRole(String role) => role.trim() == 'planner';
 
-/// 成员执行绑定：目录行描述「这一成员由哪类后端执行」。
-///
-/// `native` 携带冻结模型 route；`acp` 携带账号与连接修订。判定只读 variant
-/// 与字段，不从身份字符串推断。
+/// Profile 的执行绑定；ACP 仅引用账户定义，不冻结运行连接修订。
 sealed class AgentBindingView {
   const AgentBindingView();
 }
@@ -80,23 +77,78 @@ final class NativeAgentBindingView extends AgentBindingView {
 }
 
 final class AcpAgentBindingView extends AgentBindingView {
-  const AcpAgentBindingView({
-    required this.accountId,
-    required this.connectionRevision,
-  });
+  const AcpAgentBindingView({required this.accountId});
 
   final String accountId;
-  final int connectionRevision;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is AcpAgentBindingView &&
-          accountId == other.accountId &&
-          connectionRevision == other.connectionRevision;
+      other is AcpAgentBindingView && accountId == other.accountId;
 
   @override
-  int get hashCode => Object.hash(runtimeType, accountId, connectionRevision);
+  int get hashCode => Object.hash(runtimeType, accountId);
+}
+
+final class NativeAgentConfigView {
+  const NativeAgentConfigView({this.route, this.systemInstructions});
+  final NewThreadModelRoute? route;
+  final String? systemInstructions;
+  @override
+  bool operator ==(Object other) =>
+      other is NativeAgentConfigView &&
+      route == other.route &&
+      systemInstructions == other.systemInstructions;
+  @override
+  int get hashCode => Object.hash(route, systemInstructions);
+}
+
+final class AcpSessionReferenceView {
+  const AcpSessionReferenceView({
+    required this.accountId,
+    required this.acpSessionId,
+    required this.cwd,
+  });
+  final String accountId;
+  final String acpSessionId;
+  final String cwd;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpSessionReferenceView &&
+      accountId == other.accountId &&
+      acpSessionId == other.acpSessionId &&
+      cwd == other.cwd;
+  @override
+  int get hashCode => Object.hash(accountId, acpSessionId, cwd);
+}
+
+sealed class AgentBackendView {
+  const AgentBackendView();
+}
+
+final class NativeAgentBackendView extends AgentBackendView {
+  const NativeAgentBackendView({required this.config, required this.status});
+  final NativeAgentConfigView config;
+  final ThreadStatusView status;
+  NativeAgentBackendView copyWith({ThreadStatusView? status}) =>
+      NativeAgentBackendView(config: config, status: status ?? this.status);
+  @override
+  bool operator ==(Object other) =>
+      other is NativeAgentBackendView &&
+      config == other.config &&
+      status == other.status;
+  @override
+  int get hashCode => Object.hash(runtimeType, config, status);
+}
+
+final class AcpAgentBackendView extends AgentBackendView {
+  const AcpAgentBackendView({required this.reference});
+  final AcpSessionReferenceView reference;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpAgentBackendView && reference == other.reference;
+  @override
+  int get hashCode => Object.hash(runtimeType, reference);
 }
 
 /// 会话目录行：typed 身份四元组加目录事实，是 root/child 与成员归属的唯一判据。
@@ -117,8 +169,7 @@ class SessionDirectoryRow {
     this.workspaceMode = ThreadWorkspaceMode.local,
     required this.workspacePath,
     this.role = 'planner',
-    this.binding = const NativeAgentBindingView(),
-    this.status = ThreadStatusView.idle,
+    required this.backend,
     this.createdAt,
     required this.updatedAt,
     this.lastUserMessageAt,
@@ -131,7 +182,7 @@ class SessionDirectoryRow {
   final String threadId;
   final String workspaceId;
   final String title;
-  final ThreadModeId mode;
+  final ThreadModeId? mode;
   final DelegationMode delegationMode;
   final DelegationPreference delegationPreference;
 
@@ -144,8 +195,7 @@ class SessionDirectoryRow {
   /// 成员定义 ID：root 为内置根定义，child 为冻结 Profile ID。
   final String role;
 
-  final AgentBindingView binding;
-  final ThreadStatusView status;
+  final AgentBackendView backend;
   final DateTime? createdAt;
   final DateTime updatedAt;
 
@@ -157,10 +207,10 @@ class SessionDirectoryRow {
 
   bool get isChildRow => parentAgentId != null;
 
-  /// 目录行的冻结模型只来自 Native 绑定的 route；ACP 绑定没有 Native route。
-  NewThreadModelRoute? get frozenModel => switch (binding) {
-    NativeAgentBindingView(:final route) => route,
-    AcpAgentBindingView() => null,
+  /// ACP 对端引用没有 Native 模型路由。
+  NewThreadModelRoute? get frozenModel => switch (backend) {
+    NativeAgentBackendView(:final config) => config.route,
+    AcpAgentBackendView() => null,
   };
 
   DateTime get effectiveCreatedAt => createdAt ?? updatedAt;
@@ -184,12 +234,12 @@ class SessionDirectoryRow {
     String? threadId,
     String? workspaceId,
     String? title,
-    ThreadModeId? mode,
+    Object? mode = _rowUnchanged,
     DateTime? createdAt,
     DateTime? lastUserMessageAt,
     DateTime? updatedAt,
     String? role,
-    ThreadStatusView? status,
+    AgentBackendView? backend,
     bool? archived,
     String? workspacePath,
   }) {
@@ -202,14 +252,13 @@ class SessionDirectoryRow {
       threadId: threadId ?? this.threadId,
       workspaceId: workspaceId ?? this.workspaceId,
       title: title ?? this.title,
-      mode: mode ?? this.mode,
+      mode: identical(mode, _rowUnchanged) ? this.mode : mode as ThreadModeId?,
       delegationMode: delegationMode,
       delegationPreference: delegationPreference,
       workspaceMode: workspaceMode,
       workspacePath: workspacePath ?? this.workspacePath,
       role: role ?? this.role,
-      binding: binding,
-      status: status ?? this.status,
+      backend: backend ?? this.backend,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       lastUserMessageAt: lastUserMessageAt ?? this.lastUserMessageAt,
@@ -247,7 +296,7 @@ class StudioThread {
   final String id;
   final String workspaceId;
   final String title;
-  final ThreadModeId mode;
+  final ThreadModeId? mode;
   final DelegationMode delegationMode;
   final DelegationPreference delegationPreference;
   final NewThreadModelRoute? frozenModel;
@@ -286,7 +335,7 @@ class StudioThread {
 
   StudioThread copyWith({
     String? title,
-    ThreadModeId? mode,
+    Object? mode = _rowUnchanged,
     DateTime? createdAt,
     DateTime? lastUserMessageAt,
     DateTime? updatedAt,
@@ -303,7 +352,7 @@ class StudioThread {
       id: id,
       workspaceId: workspaceId,
       title: title ?? this.title,
-      mode: mode ?? this.mode,
+      mode: identical(mode, _rowUnchanged) ? this.mode : mode as ThreadModeId?,
       delegationMode: delegationMode,
       delegationPreference: delegationPreference,
       frozenModel: frozenModel,

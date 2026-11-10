@@ -230,15 +230,24 @@ impl ThreadDirectoryIndex {
                     .ok()?,
                 thread_id: pl_protocol::ThreadId::new(agent.thread_id.clone()).ok()?,
             },
-            agent.binding.clone(),
+            agent.backend.binding(),
             parent_thread_id,
         ))
     }
 
     /// 从目录事实投影 Native 执行域 Thread（既有 Native 消费方使用）。
-    pub(super) fn thread_snapshot(&self, thread_id: &str) -> Option<pl_protocol::Thread> {
+    pub(super) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<pl_protocol::Thread>> {
         self.directory_facts(thread_id)
-            .map(|(session, agent)| thread_projection(session, agent))
+            .map(|(session, agent)| {
+                thread_projection(session, agent, |id| {
+                    self.sessions
+                        .get(&session.session_id)?
+                        .agents
+                        .get(id)
+                        .map(|agent| agent.thread_id.clone())
+                })
+            })
+            .transpose()
     }
 
     pub(super) fn update_projects(
@@ -385,7 +394,7 @@ fn rebase_command_session(
     command_field!(root_agent_id);
     command_field!(workspace_id);
     command_field!(title);
-    command_field!(mode);
+    command_field!(native_mode);
     command_field!(workspace_mode);
     command_field!(delegation_mode);
     command_field!(delegation_preference);
@@ -417,8 +426,7 @@ fn rebase_command_agent(
     command_field!(thread_id);
     command_field!(role);
     command_field!(title);
-    command_field!(binding);
-    command_field!(status);
+    command_field!(backend);
     command_field!(created_at);
     current.explicitly_closed |= requested.explicitly_closed;
     current.updated_at = current.updated_at.max(requested.updated_at);
@@ -689,7 +697,14 @@ impl ProductEventBus {
                     .map(|session| session.title.clone())
                     .unwrap_or_default()
             },
-            mode: row.mode.clone(),
+            native_mode: if row.is_root_row() {
+                row.mode.clone()
+            } else {
+                index
+                    .sessions
+                    .get(&row.session_id)
+                    .and_then(|entry| entry.session.native_mode.clone())
+            },
             workspace_mode: row.workspace_mode,
             delegation_mode: row.delegation_mode,
             delegation_preference: row.delegation_preference,
@@ -719,8 +734,7 @@ impl ProductEventBus {
             thread_id: row.thread_id.clone(),
             role: row.role.clone(),
             title: (!row.is_root_row()).then(|| row.title.clone()),
-            binding: row.binding.clone(),
-            status: row.status,
+            backend: row.backend.clone(),
             explicitly_closed: false,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -730,14 +744,16 @@ impl ProductEventBus {
     }
 
     fn apply_explicit_close_row(index: &ThreadDirectoryIndex, row: &mut SessionDirectoryRow) {
-        if index.explicitly_closed.contains(&row.agent_id) {
-            row.status = if index
+        if index.explicitly_closed.contains(&row.agent_id)
+            && let pl_protocol::session::AgentBackend::Native { status, .. } = &mut row.backend
+        {
+            *status = if index
                 .get_agent(&row.agent_id)
-                .is_some_and(|agent| agent.status == ThreadStatus::Closed)
+                .is_some_and(|agent| agent.native_status() == Some(ThreadStatus::Closed))
             {
                 ThreadStatus::Closed
             } else {
-                crate::studio::agent_close::directory_status(row.status, true)
+                crate::studio::agent_close::directory_status(*status, true)
             };
         }
     }
@@ -747,14 +763,17 @@ impl ProductEventBus {
             // 把关闭意图写回成员事实：`projected_status` 以该标志区分 Closed 与 Idle，
             // 缺失时已确认关闭的成员会被目录投影降级回 Idle。
             agent.explicitly_closed = true;
-            agent.status = if index
-                .get_agent(&agent.agent_id)
-                .is_some_and(|existing| existing.status == ThreadStatus::Closed)
-            {
-                ThreadStatus::Closed
-            } else {
-                crate::studio::agent_close::directory_status(agent.status, true)
-            };
+            if let Some(status) = agent.native_status() {
+                let next = if index
+                    .get_agent(&agent.agent_id)
+                    .is_some_and(|existing| existing.native_status() == Some(ThreadStatus::Closed))
+                {
+                    ThreadStatus::Closed
+                } else {
+                    crate::studio::agent_close::directory_status(status, true)
+                };
+                agent.set_native_status(next);
+            }
         }
     }
 
@@ -799,9 +818,9 @@ impl ProductEventBus {
             return Err(StudioError::not_found("session").into());
         };
         let newly_closed = index.explicitly_closed.insert(agent.agent_id.clone());
-        let previous_status = agent.status;
+        let previous_status = agent.native_status();
         Self::apply_explicit_close_agent(&index, &mut agent);
-        if !newly_closed && previous_status == agent.status {
+        if !newly_closed && previous_status == agent.native_status() {
             return Ok(());
         }
         index.insert_agent(agent.clone());
@@ -870,14 +889,14 @@ impl ProductEventBus {
             session_next.delegation_preference = delegation.preference;
         }
         if let Some((profile, _)) = frozen_profile
-            && let pl_protocol::AgentBinding::Native(config) = &mut agent.binding
+            && let pl_protocol::session::AgentBackend::Native { config, .. } = &mut agent.backend
         {
             config.route = Some(crate::studio::delegation::profile_model(&profile));
         }
         if explicitly_closed {
             index.explicitly_closed.insert(agent.agent_id.clone());
         }
-        agent.status = status;
+        agent.set_native_status(status);
         Self::apply_explicit_close_agent(&index, &mut agent);
         agent.updated_at = agent.updated_at.max(committed_at);
         session_next.updated_at = session_next.updated_at.max(committed_at);
@@ -950,7 +969,15 @@ impl ProductEventBus {
                 .directory_facts(thread_id)
                 .map(|(session, agent)| (session.clone(), agent.clone()))
                 .ok_or_else(|| StudioError::not_found("session"))?;
-            session.mode = mode;
+            anyhow::ensure!(
+                agent.is_root_agent()
+                    && matches!(
+                        agent.backend,
+                        pl_protocol::session::AgentBackend::Native { .. }
+                    ),
+                "only a Native root owns workflow mode"
+            );
+            session.native_mode = Some(mode);
             session.updated_at = session.updated_at.max(committed_at);
             agent.updated_at = agent.updated_at.max(committed_at);
             self.writer.record_directory(DirectoryDelta {
@@ -1204,7 +1231,7 @@ impl ProductEventBus {
     }
 
     /// Reads the current metadata summary without activating a cold Thread.
-    pub(crate) fn thread_snapshot(&self, thread_id: &str) -> Option<pl_protocol::Thread> {
+    pub(crate) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<pl_protocol::Thread>> {
         self.thread_index
             .lock()
             .expect("thread index lock poisoned")
@@ -1271,7 +1298,7 @@ impl ProductEventBus {
             kind: pl_protocol::ThreadStatus::Faulted,
             error: Some(message.into()),
         };
-        agent.status = pl_protocol::ThreadStatus::Faulted;
+        agent.set_native_status(pl_protocol::ThreadStatus::Faulted);
         agent.updated_at = crate::studio::unix_seconds();
         let delta = DirectoryDelta {
             unregistered_faults: vec![crate::studio::store::directory::UnregisteredChildFault {
@@ -1299,22 +1326,58 @@ impl ProductEventBus {
             .map(|(session, agent)| (session.clone(), agent.clone()))
     }
 
-    /// 当前摘要中属于指定会话树的全部 Thread 投影（含主成员）。
-    pub(in crate::studio) fn threads_for_root(
+    pub(in crate::studio) fn directory_member(
         &self,
-        root_thread_id: &str,
-    ) -> Vec<pl_protocol::Thread> {
+        thread_id: &str,
+    ) -> Result<Option<crate::studio::records::DirectoryMember>> {
         let index = self
             .thread_index
             .lock()
             .expect("thread index lock poisoned");
-        let Some(entry) = index.sessions.get(root_thread_id) else {
-            return Vec::new();
+        index
+            .directory_facts(thread_id)
+            .map(|(session, agent)| {
+                crate::studio::records::DirectoryMember::resolve(
+                    session.clone(),
+                    agent.clone(),
+                    |id| {
+                        index
+                            .sessions
+                            .get(&session.session_id)?
+                            .agents
+                            .get(id)
+                            .cloned()
+                    },
+                )
+            })
+            .transpose()
+    }
+
+    pub(in crate::studio) fn members_for_root(
+        &self,
+        root_thread_id: &str,
+    ) -> Result<Vec<crate::studio::records::DirectoryMember>> {
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let Some(entry) = index.sessions.values().find(|entry| {
+            entry
+                .root_agent()
+                .is_some_and(|root| root.thread_id == root_thread_id)
+        }) else {
+            return Ok(Vec::new());
         };
         entry
             .agents
             .values()
-            .map(|agent| thread_projection(&entry.session, agent))
+            .map(|agent| {
+                crate::studio::records::DirectoryMember::resolve(
+                    entry.session.clone(),
+                    agent.clone(),
+                    |id| entry.agents.get(id).cloned(),
+                )
+            })
             .collect()
     }
 }

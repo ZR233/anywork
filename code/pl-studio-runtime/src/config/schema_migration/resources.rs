@@ -28,6 +28,7 @@ enum DocumentFamily {
     Profile,
     Mcp,
     Lsp,
+    Acp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,9 +166,37 @@ fn validate_profile(
     path: &Path,
     content: &[u8],
     config: &StudioConfig,
+    acp: &crate::config::AcpDefinitionsSnapshot,
     require_current: bool,
 ) -> Result<(u32, bool)> {
-    let loaded = load_profile(path, text(path, content, "agent-profile", 2)?)?;
+    validate_profile_with_references(
+        path,
+        content,
+        config,
+        ProfileReferences::Current(acp),
+        require_current,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ProfileReferences<'a> {
+    Current(&'a crate::config::AcpDefinitionsSnapshot),
+    Historical(
+        &'a std::collections::BTreeMap<
+            String,
+            crate::config::document_migration::wire::AcpAccountConfig,
+        >,
+    ),
+}
+
+fn validate_profile_with_references(
+    path: &Path,
+    content: &[u8],
+    config: &StudioConfig,
+    references: ProfileReferences<'_>,
+    require_current: bool,
+) -> Result<(u32, bool)> {
+    let loaded = load_profile(path, text(path, content, "agent-profile", 3)?)?;
     if require_current {
         ensure!(
             !loaded.migrated,
@@ -176,21 +205,30 @@ fn validate_profile(
     }
     let source = loaded.source_version;
     let profile = loaded.document.into_profile().map_err(|error| {
-        migration_error(path, "agent-profile", Some(source), 2, "validate", error)
+        migration_error(path, "agent-profile", Some(source), 3, "validate", error)
     })?;
     let profile_id = path
         .file_stem()
         .and_then(|name| name.to_str())
         .context("invalid Profile filename")?;
     crate::config::agent_profile::validate_user_agent_profile_id(profile_id)?;
-    crate::config::agent_profile::validate_user_profile_fields(profile_id, &profile).map_err(
-        |error| migration_error(path, "agent-profile", Some(source), 2, "validate", error),
-    )?;
+    let fields = if matches!(&references, ProfileReferences::Historical(_))
+        && matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_))
+    {
+        // Historical ACP ids were account keys, not filenames. The frozen account
+        // lookup below enforces their old validity without weakening current Profiles.
+        crate::config::agent_profile::validate_user_profile_metadata(profile_id, &profile)
+    } else {
+        crate::config::agent_profile::validate_user_profile_fields(profile_id, &profile)
+    };
+    fields.map_err(|error| {
+        migration_error(path, "agent-profile", Some(source), 3, "validate", error)
+    })?;
     // Unchanged current Profiles retain editable declarations and catalog diagnostics even
     // when a normal settings command removed their route. Only migration candidates require
     // joint reference admission before commit; this also applies to disabled candidates.
     if loaded.migrated || require_current {
-        let references = match &profile.binding {
+        let valid_references = match &profile.binding {
             pl_protocol::AgentBinding::Native(native) => {
                 let route = native
                     .route
@@ -208,12 +246,24 @@ fn validate_profile(
                     })
                     .map(|_| ())
             }
-            pl_protocol::AgentBinding::Acp(_) => {
-                crate::config::agent_profile::validate_user_profile(profile_id, &profile, config)
-            }
+            pl_protocol::AgentBinding::Acp(acp) => match references {
+                ProfileReferences::Current(definitions) => {
+                    crate::config::agent_profile::validate_user_profile(
+                        profile_id,
+                        &profile,
+                        config,
+                        definitions,
+                    )
+                }
+                ProfileReferences::Historical(accounts) => {
+                    accounts.get(&acp.account_id).map(|_| ()).ok_or_else(|| {
+                        crate::PureError::ConfigError("unknown historical ACP account".into())
+                    })
+                }
+            },
         };
-        references.map_err(|error| {
-            migration_error(path, "agent-profile", Some(source), 2, "references", error)
+        valid_references.map_err(|error| {
+            migration_error(path, "agent-profile", Some(source), 3, "references", error)
         })?;
     }
     Ok((source, loaded.migrated))
@@ -244,17 +294,19 @@ fn read_resource_disk_bytes(
     let path = config_resource_path(paths, relative_path);
     match document {
         DocumentFamily::Main | DocumentFamily::Profile => Ok(fs::read(path)?),
-        DocumentFamily::Mcp | DocumentFamily::Lsp => match fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                ensure!(
-                    !meta.file_type().is_symlink() && meta.is_file(),
-                    "MCP migration resource {relative_path} is not a regular file"
-                );
-                Ok(fs::read(&path)?)
+        DocumentFamily::Mcp | DocumentFamily::Lsp | DocumentFamily::Acp => {
+            match fs::symlink_metadata(&path) {
+                Ok(meta) => {
+                    ensure!(
+                        !meta.file_type().is_symlink() && meta.is_file(),
+                        "MCP migration resource {relative_path} is not a regular file"
+                    );
+                    Ok(fs::read(&path)?)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(error) => Err(error.into()),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(error.into()),
-        },
+        }
     }
 }
 
@@ -638,6 +690,109 @@ fn prepare_legacy_lsp_plans(
     Ok(())
 }
 
+fn validate_acp_path(relative: &str) -> Result<&str> {
+    let id = relative
+        .strip_prefix("acp/")
+        .and_then(|s| s.strip_suffix(".toml"))
+        .context("invalid ACP migration path")?;
+    crate::config::acp::validate_acp_account_id(id)?;
+    Ok(id)
+}
+
+fn ensure_acp_parent(paths: &ConfigPaths) -> Result<()> {
+    match fs::symlink_metadata(paths.acp_dir()) {
+        Ok(metadata) => ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "ACP migration directory is not a regular directory"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn decode_acp(relative: &str, bytes: &[u8]) -> Result<crate::config::AcpServiceDefinition> {
+    let id = validate_acp_path(relative)?;
+    let content =
+        std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("ACP document is not UTF-8"))?;
+    crate::config::AcpServiceDefinition::decode(content, id).map_err(Into::into)
+}
+
+fn prepare_legacy_acp_plans(
+    paths: &ConfigPaths,
+    original_main: &[u8],
+    plans: &mut Vec<ResourcePlan>,
+    resources: &mut Vec<Resource>,
+) -> Result<()> {
+    let definitions = crate::config::document_migration::extract_legacy_acp_from_main(
+        paths.config_file(),
+        text(
+            paths.config_file(),
+            original_main,
+            "studio-config",
+            STUDIO_CONFIG_SCHEMA_VERSION,
+        )?,
+    )?;
+    ensure_acp_parent(paths)?;
+    for (id, definition) in definitions {
+        let relative_path = format!("acp/{id}.toml");
+        let original = read_resource_disk_bytes(paths, DocumentFamily::Acp, &relative_path)?;
+        // Preserve an equivalent document's exact bytes, including comments, order and defaults.
+        let target_exists =
+            fs::symlink_metadata(config_resource_path(paths, &relative_path)).is_ok();
+        let candidate = if !target_exists {
+            definition.encode()?.into_bytes()
+        } else {
+            ensure!(
+                decode_acp(&relative_path, &original)? == definition,
+                "existing ACP document `{relative_path}` conflicts with migration candidate"
+            );
+            original.clone()
+        };
+        let plan = ResourcePlan {
+            relative_path,
+            original,
+            candidate,
+        };
+        resources.push(resource(&plan, DocumentFamily::Acp, None, 1));
+        plans.push(plan);
+    }
+    Ok(())
+}
+
+/// Current file candidates, not a second runtime catalog. Historical account keys
+/// are validated separately when completing a protected pre-split journal.
+fn candidate_acp(
+    paths: &ConfigPaths,
+    plans: &[ResourcePlan],
+    resources: &[Resource],
+) -> Result<crate::config::AcpDefinitionsSnapshot> {
+    let mut snapshot = crate::config::acp_resource::scan(paths);
+    for (plan, resource) in plans.iter().zip(resources) {
+        if resource.document != DocumentFamily::Acp {
+            continue;
+        }
+        ensure_acp_parent(paths)?;
+        let definition = decode_acp(&plan.relative_path, &plan.candidate)?;
+        ensure!(
+            !snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.id.as_deref() == Some(&definition.id)),
+            "ACP migration candidate has conflicting directory diagnostics"
+        );
+        snapshot.definitions.insert(
+            definition.id.clone(),
+            crate::config::AcpDefinitionEntry {
+                definition,
+                document_revision: 0,
+                connection_revision: 0,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
 pub(super) fn prepare(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
@@ -650,7 +805,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV32::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV33::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -665,6 +820,7 @@ pub(super) fn prepare(
             plans.push(plan);
             prepare_legacy_mcp_plans(paths, original, &mut plans, &mut resources)?;
             prepare_legacy_lsp_plans(paths, original, &mut plans, &mut resources)?;
+            prepare_legacy_acp_plans(paths, original, &mut plans, &mut resources)?;
             (config, None)
         } else {
             (config, Some(digest(original)))
@@ -672,6 +828,7 @@ pub(super) fn prepare(
     } else {
         (StudioConfig::default_config()?, None)
     };
+    let acp = candidate_acp(paths, &plans, &resources)?;
     let mut names = Vec::new();
     match fs::read_dir(paths.agents_dir()) {
         Ok(entries) => {
@@ -688,11 +845,11 @@ pub(super) fn prepare(
     names.sort();
     for path in names {
         let original = fs::read(&path)?;
-        let (source, migrated) = validate_profile(&path, &original, &config, false)?;
+        let (source, migrated) = validate_profile(&path, &original, &config, &acp, false)?;
         if !migrated {
             continue;
         }
-        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 2)?)?;
+        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 3)?)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -706,7 +863,7 @@ pub(super) fn prepare(
             &plan,
             DocumentFamily::Profile,
             (source != 0).then_some(source),
-            2,
+            3,
         ));
         plans.push(plan);
     }
@@ -728,13 +885,16 @@ pub(super) fn prepare(
                 );
             }
             DocumentFamily::Profile => {
-                validate_profile(&path, &plan.candidate, &config, true)?;
+                validate_profile(&path, &plan.candidate, &config, &acp, true)?;
             }
             DocumentFamily::Mcp => {
                 validate_mcp_candidate(&path, &plan.candidate)?;
             }
             DocumentFamily::Lsp => {
                 validate_lsp_candidate(&path, &plan.relative_path, &plan.candidate)?;
+            }
+            DocumentFamily::Acp => {
+                decode_acp(&plan.relative_path, &plan.candidate)?;
             }
         }
     }
@@ -744,8 +904,10 @@ pub(super) fn prepare(
         "pending configuration migration must be resumed first"
     );
     for (plan, entry) in plans.iter().zip(&resources) {
-        if !(matches!(entry.document, DocumentFamily::Mcp | DocumentFamily::Lsp)
-            && plan.original.is_empty())
+        if !(matches!(
+            entry.document,
+            DocumentFamily::Mcp | DocumentFamily::Lsp | DocumentFamily::Acp
+        ) && plan.original.is_empty())
         {
             crate::config::store::write_config_backup(
                 &config_resource_path(paths, &plan.relative_path),
@@ -810,7 +972,11 @@ fn validate_resources(journal: &Journal) -> Result<()> {
                 ensure!(
                     (resource.target_version == 1 && resource.source_version.is_none())
                         || (resource.target_version == 2
-                            && resource.source_version.is_none_or(|source| source == 1)),
+                            && resource.source_version.is_none_or(|source| source == 1))
+                        || (resource.target_version == 3
+                            && resource
+                                .source_version
+                                .is_none_or(|source| matches!(source, 1 | 2))),
                     "invalid Profile resource versions"
                 );
             }
@@ -826,6 +992,13 @@ fn validate_resources(journal: &Journal) -> Result<()> {
                 ensure!(
                     resource.source_version.is_none() && resource.target_version == 1,
                     "invalid LSP resource versions"
+                );
+            }
+            DocumentFamily::Acp => {
+                validate_acp_path(&resource.relative_path)?;
+                ensure!(
+                    resource.source_version.is_none() && resource.target_version == 1,
+                    "invalid ACP resource versions"
                 );
             }
         }
@@ -854,6 +1027,9 @@ fn commit(
     let mut verified = Vec::with_capacity(journal.resources.len());
     for resource in &journal.resources {
         validate_lsp_disk_state(paths, resource)?;
+        if resource.document == DocumentFamily::Acp {
+            ensure_acp_parent(paths)?;
+        }
         let original = fs::read(
             directory
                 .join(ORIGINAL_DIR_NAME)
@@ -910,26 +1086,78 @@ fn commit(
             hash.map(str::to_owned),
         )
     };
+    let historical_main = main.map(|index| verified[index].candidate.as_slice());
+    let guarded_main = if main.is_none() && paths.config_file().exists() {
+        Some(fs::read(paths.config_file())?)
+    } else {
+        None
+    };
+    let historical_accounts = historical_main
+        .or(guarded_main.as_deref())
+        .map(|bytes| {
+            crate::config::document_migration::extract_historical_acp_accounts(
+                paths.config_file(),
+                text(
+                    paths.config_file(),
+                    bytes,
+                    "studio-config",
+                    STUDIO_CONFIG_SCHEMA_VERSION,
+                )?,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    // An old journal must finish without scanning or applying new standalone-file rules.
+    let acp = if journal.resources.iter().any(|entry| {
+        entry.document == DocumentFamily::Acp
+            || (entry.document == DocumentFamily::Profile && entry.target_version >= 3)
+    }) {
+        candidate_acp(paths, &verified, &journal.resources)?
+    } else {
+        crate::config::AcpDefinitionsSnapshot::default()
+    };
     for (entry, plan) in journal.resources.iter().zip(&verified) {
         let path = config_resource_path(paths, &entry.relative_path);
         match entry.document {
             DocumentFamily::Main => {}
             DocumentFamily::Profile => {
-                let (source, migrated) = validate_profile(&path, &plan.original, &config, false)?;
+                let references = if entry.target_version < 3 {
+                    ProfileReferences::Historical(&historical_accounts)
+                } else {
+                    ProfileReferences::Current(&acp)
+                };
+                let (source, migrated) = validate_profile_with_references(
+                    &path,
+                    &plan.original,
+                    &config,
+                    references,
+                    false,
+                )?;
                 ensure!(
                     source == entry.source_version.unwrap_or(0) && migrated,
                     "Profile original contradicts import journal"
                 );
-                if entry.target_version == 1 {
-                    // Finish an already protected V1 import, then the next scan upgrades it to V2.
-                    let (candidate_source, _) =
-                        validate_profile(&path, &plan.candidate, &config, false)?;
+                if entry.target_version < 3 {
+                    // Finish the recorded historical candidate before preparing the next upgrade.
+                    let (candidate_source, _) = validate_profile_with_references(
+                        &path,
+                        &plan.candidate,
+                        &config,
+                        references,
+                        false,
+                    )?;
                     ensure!(
-                        candidate_source == 1,
+                        candidate_source == entry.target_version,
                         "invalid protected V1 Profile candidate"
                     );
                 } else {
-                    validate_profile(&path, &plan.candidate, &config, true)?;
+                    validate_profile_with_references(
+                        &path,
+                        &plan.candidate,
+                        &config,
+                        references,
+                        true,
+                    )?;
                 }
             }
             DocumentFamily::Mcp => {
@@ -947,6 +1175,13 @@ fn commit(
                     "LSP migration resource must not replace an existing file"
                 );
                 validate_lsp_candidate(&path, &entry.relative_path, &plan.candidate)?;
+            }
+            DocumentFamily::Acp => {
+                ensure!(
+                    plan.original.is_empty() || plan.original == plan.candidate,
+                    "ACP original contradicts migration journal"
+                );
+                decode_acp(&entry.relative_path, &plan.candidate)?;
             }
         }
     }
@@ -967,6 +1202,9 @@ fn commit(
         for (index, plan) in verified.iter().enumerate() {
             let entry = &mut journal.resources[index];
             validate_lsp_disk_state(paths, entry)?;
+            if entry.document == DocumentFamily::Acp {
+                ensure_acp_parent(paths)?;
+            }
             let path = config_resource_path(paths, &entry.relative_path);
             let hash = digest(&read_resource_disk_bytes(
                 paths,
@@ -981,8 +1219,10 @@ fn commit(
                 if main.is_none() {
                     verify_profile_main_guard(paths, main_guard.as_deref())?;
                 }
-                if matches!(entry.document, DocumentFamily::Mcp | DocumentFamily::Lsp)
-                    && let Some(parent) = path.parent()
+                if matches!(
+                    entry.document,
+                    DocumentFamily::Mcp | DocumentFamily::Lsp | DocumentFamily::Acp
+                ) && let Some(parent) = path.parent()
                 {
                     fs::create_dir_all(parent)?;
                 }
@@ -1000,6 +1240,9 @@ fn commit(
     }
     for entry in &journal.resources {
         validate_lsp_disk_state(paths, entry)?;
+        if entry.document == DocumentFamily::Acp {
+            ensure_acp_parent(paths)?;
+        }
         ensure!(
             digest(&read_resource_disk_bytes(
                 paths,
@@ -1051,6 +1294,174 @@ workspace_mode = "directory"
             .unwrap();
         fs::create_dir_all(store.paths().agents_dir()).unwrap();
         (directory, store)
+    }
+
+    fn legacy_acp(store: &ConfigStore, id: &str) -> Vec<u8> {
+        let current = fs::read_to_string(store.paths().config_file()).unwrap();
+        format!(
+            "{}\n[acp.accounts.\"{id}\"]\nname='Saved'\nprovider='antigravity'\n",
+            current.replacen("schema_version = 33", "schema_version = 32", 1)
+        )
+        .into_bytes()
+    }
+
+    fn acp_profile(id: &str) -> String {
+        format!(
+            "schema_version=2\nenabled=false\ndisplay_name='Child'\ndescription='d'\nwhen_to_use='w'\nworkspace_mode='directory'\n[binding]\nkind='acp'\naccount_id='{id}'\nconnection_revision=999\n"
+        )
+    }
+
+    #[test]
+    fn acp_joint_migration_preserves_equivalent_bytes_and_resumes_original_operation() {
+        let (_temp, store) = fixture();
+        let main = legacy_acp(&store, "saved");
+        fs::write(store.paths().config_file(), &main).unwrap();
+        let profile_path = store.paths().agents_dir().join("child.toml");
+        let profile = acp_profile("saved");
+        fs::write(&profile_path, &profile).unwrap();
+        fs::create_dir_all(store.paths().acp_dir()).unwrap();
+        let equivalent = b"# user order and comments remain\nid='saved'\ndisplay_name='Saved'\ntemplate='antigravity'\nschema_version=1\nenv={}\nenabled=true\n";
+        let acp_path = store.paths().acp_dir().join("saved.toml");
+        fs::write(&acp_path, equivalent).unwrap();
+        let fail_profile = |path: &Path, bytes: &[u8]| {
+            if path == profile_path {
+                return Err(PureError::ConfigError(
+                    "synthetic profile replace interruption".into(),
+                ));
+            }
+            atomic_write(path, bytes)
+        };
+        assert!(
+            prepare(
+                store.paths(),
+                store.credentials.as_ref(),
+                Some(&main),
+                &fail_profile
+            )
+            .is_err()
+        );
+        let directory = operation_dir(store.paths());
+        let journal: Journal =
+            serde_json::from_slice(&fs::read(directory.join(JOURNAL_FILE_NAME)).unwrap()).unwrap();
+        let entry = journal
+            .resources
+            .iter()
+            .find(|entry| entry.document == DocumentFamily::Acp)
+            .unwrap();
+        assert_eq!(entry.original_hash, digest(equivalent));
+        assert_eq!(entry.candidate_hash, digest(equivalent));
+        assert_eq!(
+            fs::read(
+                directory
+                    .join(ORIGINAL_DIR_NAME)
+                    .join(STUDIO_CONFIG_FILE_NAME)
+            )
+            .unwrap(),
+            main
+        );
+        assert_eq!(fs::read(&acp_path).unwrap(), equivalent);
+        assert_eq!(fs::read_to_string(&profile_path).unwrap(), profile);
+        // Real startup resumes the protected operation before preparing any later candidates.
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
+        assert!(
+            !fs::read_to_string(store.paths().config_file())
+                .unwrap()
+                .contains("[acp")
+        );
+        assert_eq!(fs::read(&acp_path).unwrap(), equivalent);
+        let migrated_profile = fs::read_to_string(&profile_path).unwrap();
+        assert!(migrated_profile.contains("schema_version = 3"));
+        assert!(migrated_profile.contains("account_id = \"saved\""));
+        assert!(!migrated_profile.contains("connection_revision"));
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn acp_conflicts_invalid_ids_and_joint_references_preserve_originals() {
+        for scenario in ["conflict", "empty-file", "invalid-id", "missing-reference"] {
+            let (_temp, store) = fixture();
+            let id = if scenario == "invalid-id" {
+                ".."
+            } else {
+                "saved"
+            };
+            let main = legacy_acp(&store, id);
+            fs::write(store.paths().config_file(), &main).unwrap();
+            let profile = acp_profile(if scenario == "missing-reference" {
+                "absent"
+            } else {
+                id
+            });
+            let profile_path = store.paths().agents_dir().join("child.toml");
+            fs::write(&profile_path, &profile).unwrap();
+            let conflicting = if scenario == "empty-file" {
+                ""
+            } else {
+                "schema_version=1\nid='saved'\ncommand='different-agent'\n"
+            };
+            if matches!(scenario, "conflict" | "empty-file") {
+                fs::create_dir_all(store.paths().acp_dir()).unwrap();
+                fs::write(store.paths().acp_dir().join("saved.toml"), conflicting).unwrap();
+            }
+            assert!(store.load_for_startup().is_err(), "{scenario}");
+            assert_eq!(
+                fs::read(store.paths().config_file()).unwrap(),
+                main,
+                "{scenario}"
+            );
+            assert_eq!(
+                fs::read_to_string(&profile_path).unwrap(),
+                profile,
+                "{scenario}"
+            );
+            assert!(
+                !operation_dir(store.paths())
+                    .join(JOURNAL_FILE_NAME)
+                    .exists()
+            );
+            if matches!(scenario, "conflict" | "empty-file") {
+                assert_eq!(
+                    fs::read_to_string(store.paths().acp_dir().join("saved.toml")).unwrap(),
+                    conflicting
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn acp_new_file_recovery_keeps_id_and_does_not_serialize_runtime_revisions() {
+        let (_temp, store) = fixture();
+        let main = legacy_acp(&store, "saved");
+        fs::write(store.paths().config_file(), &main).unwrap();
+        let fail_acp = |path: &Path, bytes: &[u8]| {
+            if path == store.paths().acp_dir().join("saved.toml") {
+                return Err(PureError::ConfigError(
+                    "synthetic ACP replace interruption".into(),
+                ));
+            }
+            atomic_write(path, bytes)
+        };
+        assert!(
+            prepare(
+                store.paths(),
+                store.credentials.as_ref(),
+                Some(&main),
+                &fail_acp
+            )
+            .is_err()
+        );
+        assert!(!store.paths().acp_dir().join("saved.toml").exists());
+        store.load_for_startup().unwrap();
+        let content = fs::read_to_string(store.paths().acp_dir().join("saved.toml")).unwrap();
+        let definition = crate::config::AcpServiceDefinition::decode(&content, "saved").unwrap();
+        assert_eq!(definition.display_name, "Saved");
+        assert_eq!(
+            definition.template_kind(),
+            Some(crate::config::AcpProvider::Antigravity)
+        );
+        assert!(!content.contains("connection_revision"));
+        assert!(!operation_dir(store.paths()).exists());
     }
 
     fn schema_31_with_lsp(store: &ConfigStore) -> Vec<u8> {
@@ -1145,9 +1556,9 @@ workspace_mode = "directory"
 
         let main: toml::Value =
             toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
-        assert_eq!(main["schema_version"].as_integer(), Some(32));
+        assert_eq!(main["schema_version"].as_integer(), Some(33));
         assert!(main.get("lsp").is_none());
-        assert_eq!(migrated.schema_version, 32);
+        assert_eq!(migrated.schema_version, 33);
         assert!(migrated.validate_declarations().is_ok());
         assert!(!operation_dir(store.paths()).exists());
         let backups: Vec<_> = fs::read_dir(store.paths().config_dir())
@@ -1257,7 +1668,7 @@ workspace_mode = "directory"
             )
             .unwrap()["schema_version"]
                 .as_integer(),
-            Some(32)
+            Some(33)
         );
         assert!(
             operation_dir(store.paths())
@@ -1301,7 +1712,14 @@ workspace_mode = "directory"
             std::str::from_utf8(&profile_original).unwrap(),
         )
         .unwrap();
-        let profile_candidate = profile_document.document.encode().unwrap().into_bytes();
+        // Native binding wire is unchanged between V2 and V3; this journal deliberately
+        // freezes the old V2 target, not whatever the current encoder emits.
+        let profile_candidate = profile_document
+            .document
+            .encode()
+            .unwrap()
+            .replacen("schema_version = 3", "schema_version = 2", 1)
+            .into_bytes();
         fs::write(&profile_path, &profile_original).unwrap();
 
         let plan = ResourcePlan {
@@ -1340,6 +1758,20 @@ workspace_mode = "directory"
                 unreachable!("schema-27 fixture must include a main document");
             };
 
+            super::super::resume_for_startup(paths, store.credentials.as_ref()).unwrap();
+            assert_eq!(
+                fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+                profile_candidate
+            );
+            let current_candidate = load_profile(
+                &paths.agents_dir().join("saved.toml"),
+                std::str::from_utf8(&profile_candidate).unwrap(),
+            )
+            .unwrap()
+            .document
+            .encode()
+            .unwrap()
+            .into_bytes();
             let loaded = store.load_for_startup().unwrap();
 
             assert_eq!(
@@ -1354,11 +1786,106 @@ workspace_mode = "directory"
             assert_ne!(fs::read(paths.config_file()).unwrap(), main_before);
             assert_eq!(
                 fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
-                profile_candidate
+                current_candidate
             );
             assert!(!operation_dir(paths).exists());
             assert_eq!(store.load_for_startup().unwrap(), loaded);
             assert!(!operation_dir(paths).exists());
+        }
+    }
+
+    #[test]
+    fn pending_v2_journal_finishes_before_rejecting_new_acp_filename_rules() {
+        for (legacy_id, legacy_name) in [
+            ("legacy account", "Legacy account".to_string()),
+            ("legacy/account", "Legacy account".to_string()),
+            ("saved", format!(" {}", "x".repeat(200))),
+            ("saved", "\tLegacy account".to_string()),
+            ("saved", "Legacy account\n".to_string()),
+        ] {
+            for acp_binding in [false, true] {
+                let (_directory, store) = fixture();
+                let paths = store.paths();
+                let (Some(main), original_profile, native_candidate, _) =
+                    write_profile_only_journal(&store, Some(32))
+                else {
+                    unreachable!()
+                };
+                let mut value: toml::Value =
+                    toml::from_str(std::str::from_utf8(&main).unwrap()).unwrap();
+                let legacy_accounts = toml::Value::try_from(
+                    crate::config::document_migration::wire::AcpConfig {
+                        accounts: std::collections::BTreeMap::from([(
+                            legacy_id.into(),
+                            crate::config::document_migration::wire::AcpAccountConfig {
+                                name: legacy_name.clone(),
+                                provider: crate::config::document_migration::wire::AcpProvider::Antigravity,
+                            },
+                        )]),
+                    }
+                ).unwrap();
+                value
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("acp".into(), legacy_accounts);
+                let main = toml::to_string(&value).unwrap().into_bytes();
+                fs::write(paths.config_file(), &main).unwrap();
+                let candidate = if acp_binding {
+                    acp_profile(legacy_id).into_bytes()
+                } else {
+                    native_candidate
+                };
+                let plan = ResourcePlan {
+                    relative_path: "agents/saved.toml".into(),
+                    original: original_profile.clone(),
+                    candidate: candidate.clone(),
+                };
+                let directory = operation_dir(paths);
+                write_protected(&directory, CANDIDATE_DIR_NAME, &plan, &candidate).unwrap();
+                let journal = Journal {
+                    version: VERSION,
+                    operation_id: "frozen-v2-with-pre-split-account-id".into(),
+                    phase: MigrationPhase::Prepared,
+                    unchanged_main_hash: Some(digest(&main)),
+                    resources: vec![resource(&plan, DocumentFamily::Profile, None, 2)],
+                };
+                write_journal(&directory, &journal).unwrap();
+                let backup = crate::config::store::write_config_backup(
+                    &paths.agents_dir().join("saved.toml"),
+                    &original_profile,
+                    "migrated",
+                )
+                .unwrap();
+
+                // The real startup continuation first completes the exact frozen target.
+                super::super::resume_for_startup(paths, store.credentials.as_ref()).unwrap();
+                assert_eq!(fs::read(paths.config_file()).unwrap(), main);
+                assert_eq!(
+                    fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+                    candidate
+                );
+                assert_eq!(fs::read(&backup).unwrap(), original_profile);
+                assert!(!directory.exists());
+                assert!(!paths.acp_dir().exists());
+
+                // Only subsequent current extraction applies current filename/name rules.
+                assert!(
+                    store.load_for_startup().is_err(),
+                    "{legacy_id}, ACP={acp_binding}"
+                );
+                assert_eq!(fs::read(paths.config_file()).unwrap(), main);
+                assert_eq!(
+                    fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+                    candidate
+                );
+                assert_eq!(fs::read(&backup).unwrap(), original_profile);
+                assert!(!directory.join(JOURNAL_FILE_NAME).exists());
+                assert!(!paths.acp_dir().exists());
+                assert!(
+                    crate::config::acp::validate_acp_account_id(legacy_id).is_err()
+                        || crate::config::acp::validate_acp_name(&legacy_name).is_err()
+                );
+            }
         }
     }
 
@@ -1406,6 +1933,20 @@ workspace_mode = "directory"
         assert!(main_before.is_none());
         assert!(!paths.config_file().exists());
 
+        super::super::resume_for_startup(paths, store.credentials.as_ref()).unwrap();
+        assert_eq!(
+            fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
+            profile_candidate
+        );
+        let current_candidate = load_profile(
+            &paths.agents_dir().join("saved.toml"),
+            std::str::from_utf8(&profile_candidate).unwrap(),
+        )
+        .unwrap()
+        .document
+        .encode()
+        .unwrap()
+        .into_bytes();
         let loaded = store.load_for_startup().unwrap();
 
         assert_eq!(
@@ -1414,7 +1955,7 @@ workspace_mode = "directory"
         );
         assert_eq!(
             fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
-            profile_candidate
+            current_candidate
         );
         assert_ne!(
             fs::read(paths.agents_dir().join("saved.toml")).unwrap(),
@@ -1618,7 +2159,7 @@ workspace_mode = "directory"
         assert_eq!(journal.resources.len(), 1);
         assert_eq!(journal.resources[0].document, DocumentFamily::Profile);
         assert_eq!(journal.resources[0].source_version, None);
-        assert_eq!(journal.resources[0].target_version, 2);
+        assert_eq!(journal.resources[0].target_version, 3);
         assert_eq!(journal.unchanged_main_hash, Some(digest(&main_before)));
         assert_eq!(fs::read(paths.config_file()).unwrap(), main_before);
         let recovered = resume(paths, &credentials, &journal_bytes).unwrap();
@@ -2129,7 +2670,7 @@ url = "https://example.com/mcp"
 
         let profile_bytes = fs::read_to_string(&profile_path).unwrap();
         let loaded_profile = load_profile(&profile_path, &profile_bytes).unwrap();
-        assert_eq!(loaded_profile.source_version, 2);
+        assert_eq!(loaded_profile.source_version, 3);
         assert!(!loaded_profile.migrated);
         let profile = loaded_profile.document.into_profile().unwrap();
         assert!(!profile.enabled);

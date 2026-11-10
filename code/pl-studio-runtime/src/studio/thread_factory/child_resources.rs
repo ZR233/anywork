@@ -2,7 +2,6 @@
 use super::StudioThreadFactory;
 use super::errors::resource_error;
 use crate::resource_store::FileResourceStore;
-use crate::studio::ThreadRecord;
 use crate::thread_assembler::{
     ChildThreadRequest, StudioChildResources, StudioThreadSpec, ThreadAssemblyError,
 };
@@ -45,19 +44,14 @@ impl StudioChildResources for StudioThreadFactory {
                 ThreadAssemblyError::Identity(format!("invalid child Thread identity: {error}"))
             })?,
         };
-        let parent = self
-            .services
-            .product_events
-            .thread_snapshot(caller_identity.thread_id.as_str())
-            .map(ThreadRecord::from_directory_thread)
-            .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
+        let parent = self.directory_member(caller_identity.thread_id.as_str())?;
         self.services
             .store
             .begin_thread_preparation(
                 crate::studio::store::thread_preparation::PreparationIdentity {
                     thread_id: request.id.clone(),
-                    workspace_id: parent.workspace_id.clone(),
-                    parent_id: Some(parent.id.clone()),
+                    workspace_id: parent.session.workspace_id.clone(),
+                    parent_id: Some(parent.agent.thread_id.clone()),
                     root_id: parent.root_thread_id.clone(),
                 },
             )
@@ -69,9 +63,9 @@ impl StudioChildResources for StudioThreadFactory {
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.id == parent.workspace_id)
-            .ok_or_else(|| ThreadAssemblyError::Identity(parent.workspace_id.clone()))?;
-        let root_thread = self.thread_record(&parent.root_thread_id).await?;
+            .find(|project| project.id == parent.session.workspace_id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(parent.session.workspace_id.clone()))?;
+        let root_thread = self.directory_member(&parent.root_thread_id)?;
         let reviewed =
             if profile.profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review {
                 let target = request
@@ -112,7 +106,7 @@ impl StudioChildResources for StudioThreadFactory {
             .await?;
         let local_root = bot_root
             .clone()
-            .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
+            .unwrap_or_else(|| PathBuf::from(&root_thread.session.workspace_path));
         let project_root = if let Some(assignment) = &reviewed {
             PathBuf::from(&assignment.project_root)
         } else {
@@ -204,16 +198,18 @@ impl StudioChildResources for StudioThreadFactory {
             })?
         };
         check_cancelled(request)?;
-        let workspace =
-            ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
-                .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        let workspace = ToolWorkspace::new(assigned_workspace(
+            &assignment,
+            root_thread.session.workspace_mode,
+        ))
+        .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
         self.assign_workspace_use(&workspace_usage, &project, workspace.root())
             .await
             .map_err(Self::workspace_usage_error)?;
         let store = FileResourceStore::new(
             self.services
                 .store
-                .session_resources_dir_for(&parent.workspace_id, &request.id)
+                .session_resources_dir_for(&parent.session.workspace_id, &request.id)
                 .map_err(|error| resource_error("resolve child session resources", error))?,
         );
         let mut prepared_tools = self
@@ -327,6 +323,7 @@ impl StudioChildResources for StudioThreadFactory {
             .services
             .product_events
             .thread_snapshot(&request.id)
+            .map_err(|error| resource_error("read Native child directory", error))?
             .ok_or_else(|| ThreadAssemblyError::Identity(request.id.clone()))?;
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
@@ -425,7 +422,13 @@ impl StudioChildResources for StudioThreadFactory {
                 .await
                 .map_err(|error| resource_error("discard unpublished assigned resources", error))?;
         }
-        if self.services.product_events.thread_snapshot(id).is_some() {
+        if self
+            .services
+            .product_events
+            .thread_snapshot(id)
+            .map_err(|error| resource_error("read Native child directory", error))?
+            .is_some()
+        {
             self.services
                 .product_events
                 .fault_unregistered_child(id, "child preparation was not published")

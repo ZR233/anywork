@@ -36,19 +36,13 @@ void main() {
       expect(agentBindingFromFrb(wire), binding);
     });
 
-    test(
-      'ACP binding round-trips account identity and connection revision',
-      () {
-        const binding = AcpAgentBindingView(
-          accountId: 'acp-account',
-          connectionRevision: 42,
-        );
+    test('ACP profile binding round-trips only its account identity', () {
+      const binding = AcpAgentBindingView(accountId: 'acp-account');
 
-        final wire = agentBindingToFrb(binding);
-        expect(wire, isA<frb.BridgeAgentBinding_Acp>());
-        expect(agentBindingFromFrb(wire), binding);
-      },
-    );
+      final wire = agentBindingToFrb(binding);
+      expect(wire, isA<frb.BridgeAgentBinding_Acp>());
+      expect(agentBindingFromFrb(wire), binding);
+    });
 
     test('Native directory binding leaves profile instructions absent', () {
       const binding = NativeAgentBindingView(

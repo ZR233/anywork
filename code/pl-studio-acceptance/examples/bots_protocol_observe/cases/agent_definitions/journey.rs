@@ -841,7 +841,11 @@ impl Observation<'_> {
             .assert_mode_update_preserves_agent_and_non_model_sources(&previous.instructions)?;
         let snapshot = self.session.http()?.read_thread(id).await?;
         ensure!(
-            snapshot.thread.mode.as_str() == mode,
+            snapshot
+                .thread
+                .mode
+                .as_ref()
+                .is_some_and(|current| current.as_str() == mode),
             "canonical Thread did not adopt selected Mode"
         );
         self.write(

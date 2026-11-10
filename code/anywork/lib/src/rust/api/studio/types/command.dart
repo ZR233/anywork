@@ -13,6 +13,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'response.dart';
 import 'runtime.dart';
+import 'session_directory.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
 part 'command.freezed.dart';
@@ -185,7 +186,7 @@ class BridgeInteractionCommandReply {
 }
 
 class BridgeRenameThreadCommandReply {
-  final BridgeThread thread;
+  final BridgeSessionDirectoryRow thread;
   final BridgeStudioCommandReceipt receipt;
 
   const BridgeRenameThreadCommandReply({

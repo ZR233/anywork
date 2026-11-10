@@ -76,7 +76,7 @@ class ArchiveThreadResult {
 
   final String archivedRootId;
   final List<String> removedThreadIds;
-  final StudioThread? nextRoot;
+  final SessionDirectoryRow? nextRoot;
 }
 
 class DeleteThreadResult {
@@ -88,7 +88,7 @@ class DeleteThreadResult {
 
   final String deletedRootId;
   final List<String> deletedThreadIds;
-  final StudioThread? nextRoot;
+  final SessionDirectoryRow? nextRoot;
 }
 
 // An identity belongs to one immutable submission; unchanged failed drafts reuse it.

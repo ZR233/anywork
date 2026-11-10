@@ -95,12 +95,18 @@ void main() {
         final idle = fixture.threadSnapshot(fixture.thread.id);
         final running = fixture.threadSnapshot(fixture.runningThread.id);
         final attention = fixture.threadSnapshot(fixture.attentionThread.id);
+        final idleBackend = idle?.backend;
+        final runningBackend = running?.backend;
+        final attentionBackend = attention?.backend;
         return projectRow.evaluate().length == 1 &&
-            idle?.status == ThreadStatusView.idle &&
+            idleBackend is NativeAgentBackendView &&
+            idleBackend.status == ThreadStatusView.idle &&
             idle?.workspaceMode.isWorktree == true &&
-            running?.status.isActive == true &&
-            running?.status != ThreadStatusView.waitingInteraction &&
-            attention?.status == ThreadStatusView.waitingInteraction;
+            runningBackend is NativeAgentBackendView &&
+            runningBackend.status.isActive &&
+            runningBackend.status != ThreadStatusView.waitingInteraction &&
+            attentionBackend is NativeAgentBackendView &&
+            attentionBackend.status == ThreadStatusView.waitingInteraction;
       },
       'canonical idle/worktree, running and attention threads are visible',
       timeout: const Duration(seconds: 60),

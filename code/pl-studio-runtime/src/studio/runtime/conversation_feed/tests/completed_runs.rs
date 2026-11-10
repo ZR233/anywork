@@ -109,7 +109,9 @@ impl Harness {
                 env.project.path.clone(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
             );
-        let thread = crate::studio::records::thread_projection(&directory_session, &agent);
+        let thread = crate::studio::records::thread_projection(&directory_session, &agent, |id| {
+            (id == agent.agent_id).then(|| agent.thread_id.clone())
+        })?;
         env.runtime
             .agent_facility
             .product_events

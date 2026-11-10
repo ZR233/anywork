@@ -45,17 +45,19 @@ pub(super) fn row(id: &str, workspace_id: &str, sort_time: i64) -> SessionDirect
         thread_id: id.into(),
         workspace_id: workspace_id.into(),
         title: format!("Thread {id}"),
-        mode: pl_protocol::ThreadModeId::simple(),
+        mode: Some(pl_protocol::ThreadModeId::simple()),
         workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
         delegation_mode: Default::default(),
         delegation_preference: Default::default(),
         workspace_path: format!("/tmp/{id}"),
         role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
-        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-            route: None,
-            system_instructions: None,
-        }),
-        status: pl_protocol::ThreadStatus::Idle,
+        backend: pl_protocol::session::AgentBackend::Native {
+            config: pl_protocol::NativeAgentConfig {
+                route: None,
+                system_instructions: None,
+            },
+            status: pl_protocol::ThreadStatus::Idle,
+        },
         created_at: sort_time,
         updated_at: sort_time,
         last_user_message_at: Some(sort_time),
@@ -71,7 +73,7 @@ pub(super) fn session_from_row(row: &SessionDirectoryRow) -> SessionDirectoryRec
         root_agent_id: row.agent_id.clone(),
         workspace_id: row.workspace_id.clone(),
         title: row.title.clone(),
-        mode: row.mode.clone(),
+        native_mode: row.mode.clone(),
         workspace_mode: row.workspace_mode,
         delegation_mode: row.delegation_mode,
         delegation_preference: row.delegation_preference,
@@ -91,12 +93,18 @@ pub(super) fn agent_from_row(row: &SessionDirectoryRow) -> AgentDirectoryRecord 
         thread_id: row.thread_id.clone(),
         role: row.role.clone(),
         title: (!row.is_root_row()).then(|| row.title.clone()),
-        binding: row.binding.clone(),
-        status: row.status,
+        backend: row.backend.clone(),
         explicitly_closed: false,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
+}
+
+pub(super) fn set_status(row: &mut SessionDirectoryRow, next: pl_protocol::ThreadStatus) {
+    let pl_protocol::session::AgentBackend::Native { status, .. } = &mut row.backend else {
+        panic!("Native fixture required");
+    };
+    *status = next;
 }
 
 pub(super) async fn fixture(

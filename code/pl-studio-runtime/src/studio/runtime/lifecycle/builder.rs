@@ -77,6 +77,11 @@ impl StudioRuntime {
             store.clone(),
             product_events.clone(),
         );
+        let acp_detection = super::super::acp_detection::AcpLocalDetectionRuntime::new(
+            store.clone(),
+            product_events.clone(),
+            helper_source.clone(),
+        );
         let updater = StudioUpdateRuntime::new(product_events.clone())?;
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
@@ -191,6 +196,10 @@ impl StudioRuntime {
             acp_auth,
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
+            acp_detection,
+            acp_workers: std::sync::Arc::new(super::super::acp_worker::WorkerSource::new(
+                helper_source.clone(),
+            )),
             model_performance,
             updater,
             activation: Default::default(),

@@ -16,7 +16,12 @@ pub type ThreadPreparationObserver =
 mod account_usage;
 pub mod accounts;
 mod acp_auth;
+pub(crate) mod acp_business;
+mod acp_detection;
 mod acp_install;
+mod acp_launch;
+pub use acp_business::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
+mod acp_worker;
 mod attachment_drafts;
 mod background_task;
 #[cfg(test)]
@@ -136,13 +141,13 @@ pub struct StudioStartNewThreadResponse {
 pub struct StudioArchiveThreadResult {
     pub archived_root_id: String,
     pub removed_thread_ids: Vec<String>,
-    pub next_root: Option<ThreadRecord>,
+    pub next_root: Option<pl_protocol::SessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenameThreadCommandReply {
-    pub thread: ThreadRecord,
+    pub thread: pl_protocol::SessionDirectoryRow,
     pub receipt: pl_protocol::studio::StudioCommandReceipt,
 }
 
@@ -159,7 +164,7 @@ pub struct ArchiveThreadCommandReply {
 pub struct StudioDeleteThreadResult {
     pub deleted_root_id: String,
     pub deleted_thread_ids: Vec<String>,
-    pub next_root: Option<ThreadRecord>,
+    pub next_root: Option<pl_protocol::SessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -199,6 +204,7 @@ pub struct StudioRuntime {
     rejected_tools: rejected_tools::RejectedToolOwners,
     tool_catalog_updates: std::sync::Arc<tokio::sync::Notify>,
     sessions: crate::session::SessionTable,
+    acp_workers: std::sync::Arc<acp_worker::WorkerSource>,
     #[cfg(test)]
     s2_delete_publication_failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,
@@ -221,6 +227,8 @@ pub struct StudioRuntime {
     chatgpt_auth: chatgpt_auth::ChatGptAuthRuntime,
     /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
     acp_install: acp_install::AcpInstallRuntime,
+    /// Short local CLI probe; owns its operation and supervised cleanup.
+    acp_detection: acp_detection::AcpLocalDetectionRuntime,
     model_performance: ModelPerformanceOwner,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,
@@ -462,10 +470,34 @@ impl StudioRuntime {
     async fn close_project_agent_trees(&self, thread_ids: &[String]) -> Result<()> {
         let mut roots = std::collections::BTreeSet::new();
         for id in thread_ids {
-            roots.insert(self.read_owned_thread(id).await?.root_thread_id);
+            let member = self
+                .agent_facility
+                .product_events
+                .directory_member(id)?
+                .or(self.store.directory_member(id)?)
+                .ok_or_else(|| anyhow::anyhow!("close directory member is missing"))?;
+            roots.insert(member.root_thread_id);
         }
         for root in roots {
-            self.require_session(&root)?.close_tree(&root).await?;
+            let mut members = self.store.read_directory_tree(&root).await?;
+            for hot in self.agent_facility.product_events.members_for_root(&root)? {
+                members.retain(|member| member.agent.thread_id != hot.agent.thread_id);
+                members.push(hot);
+            }
+            let identities = members
+                .into_iter()
+                .map(
+                    |member| crate::studio::store::thread_preparation::PreparationIdentity {
+                        thread_id: member.agent.thread_id,
+                        workspace_id: member.session.workspace_id,
+                        parent_id: member.parent_thread_id,
+                        root_id: member.root_thread_id,
+                    },
+                )
+                .collect::<Vec<_>>();
+            self.require_session(&root)?
+                .close_tree(&root, &identities)
+                .await?;
         }
         Ok(())
     }

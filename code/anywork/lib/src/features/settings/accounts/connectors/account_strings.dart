@@ -3,6 +3,8 @@ import '../view_models/account_projection.dart';
 
 /// Localization only. Validation, calculations and projection stay in VMs.
 AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
+  'acpInvalidCommand': l10n.acpInvalidCommand,
+  'acpInvalidEnvironment': l10n.acpInvalidEnvironment,
   'failed': l10n.acpAuthCommandUnavailable,
   'saveFailed': l10n.settingsModelAutoCompactSaveFailed,
   'usageFailed': l10n.accountsQueryFailed,

@@ -42,21 +42,27 @@ impl SessionManifest {
     /// 从会话与成员目录事实构造物理会话清单。
     ///
     /// 物理目录身份仍是 Thread 语义：`thread_id` 取成员默认 Thread，`root_thread_id`
-    /// 携带会话 ID 字节，与迁移前的值一致；目录会话/成员事实的唯一可写源不受影响。
+    /// 解析主成员的真实默认 Thread；不假定 Session/Agent/Thread 的 ID 字节相同。
     pub(crate) fn from_directory_facts(
         session: &crate::studio::records::SessionDirectoryRecord,
         agent: &crate::studio::records::AgentDirectoryRecord,
-    ) -> Self {
-        Self {
+        resolve: impl Fn(&str) -> Option<crate::studio::records::AgentDirectoryRecord>,
+    ) -> Result<Self> {
+        let member = crate::studio::records::DirectoryMember::resolve(
+            session.clone(),
+            agent.clone(),
+            resolve,
+        )?;
+        Ok(Self {
             schema_version: SESSION_MANIFEST_SCHEMA_VERSION,
             thread_id: agent.thread_id.clone(),
             workspace_id: session.workspace_id.clone(),
-            parent_thread_id: agent.parent_agent_id.clone(),
-            root_thread_id: session.session_id.clone(),
+            parent_thread_id: member.parent_thread_id,
+            root_thread_id: member.root_thread_id,
             workspace_mode: session.workspace_mode,
             workspace_path: session.workspace_path.clone(),
             created_at: agent.created_at,
-        }
+        })
     }
 }
 
@@ -103,10 +109,11 @@ impl StudioStore {
         &self,
         session: &crate::studio::records::SessionDirectoryRecord,
         agent: &crate::studio::records::AgentDirectoryRecord,
+        resolve: impl Fn(&str) -> Option<crate::studio::records::AgentDirectoryRecord>,
     ) -> Result<SessionPaths> {
         let manifest = persist_session_manifest(
             &self.paths,
-            &SessionManifest::from_directory_facts(session, agent),
+            &SessionManifest::from_directory_facts(session, agent, resolve)?,
         )
         .await?;
         safe_path(&self.paths, &manifest.temp_dir()).await?;

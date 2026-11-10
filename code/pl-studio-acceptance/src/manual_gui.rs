@@ -2769,6 +2769,19 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     {
         let runtime =
             ConfigRuntime::initialize(ConfigStore::new(ConfigPaths::from_config_dir(home)))?;
+        // Disable copied executable definitions through their owner. Never launch
+        // a source account, and keep its isolated document rather than deleting it.
+        let mut snapshot = runtime.read()?;
+        let definitions = snapshot.acp.definitions.clone();
+        for entry in definitions.values() {
+            let mut definition = entry.definition.clone();
+            definition.enabled = false;
+            snapshot = runtime.save_acp_definition(
+                snapshot.revision,
+                &definition,
+                Some(entry.document_revision),
+            )?;
+        }
         drop(runtime);
     }
     // Read the migrated desired document strictly; never substitute effective runtime config.
@@ -2798,7 +2811,6 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
     if lsp_dir.is_dir() {
         fs::remove_dir_all(&lsp_dir)?;
     }
-    config.acp = Default::default();
     // Bots have their own canonical documents. Disable them before runtime startup, including
     // each original identity, without deleting their ledger or touching its selected credential.
     let bots = home.join("data/bots");

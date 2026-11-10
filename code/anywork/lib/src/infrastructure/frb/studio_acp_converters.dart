@@ -1,5 +1,86 @@
 part of 'studio_api.dart';
 
+AcpLocalDetectionSnapshotView _acpLocalDetectionSnapshotFromFrb(
+  frb.BridgeAcpLocalDetectionSnapshot value,
+) {
+  final (phase, program, version, failure) = switch (value.state) {
+    frb.BridgeAcpLocalDetectionState_Idle() => (
+      AcpLocalDetectionPhaseView.idle,
+      null,
+      null,
+      null,
+    ),
+    frb.BridgeAcpLocalDetectionState_Checking() => (
+      AcpLocalDetectionPhaseView.checking,
+      null,
+      null,
+      null,
+    ),
+    frb.BridgeAcpLocalDetectionState_Available(
+      :final program,
+      :final version,
+    ) =>
+      (AcpLocalDetectionPhaseView.available, program, version, null),
+    frb.BridgeAcpLocalDetectionState_Missing() => (
+      AcpLocalDetectionPhaseView.missing,
+      null,
+      null,
+      null,
+    ),
+    frb.BridgeAcpLocalDetectionState_Unsupported() => (
+      AcpLocalDetectionPhaseView.unsupported,
+      null,
+      null,
+      null,
+    ),
+    frb.BridgeAcpLocalDetectionState_Failed(:final failure) => (
+      AcpLocalDetectionPhaseView.failed,
+      null,
+      null,
+      AcpLocalDetectionFailureView(
+        kind: switch (failure.kind) {
+          frb.BridgeAcpLocalDetectionFailureKind.timeout =>
+            AcpLocalDetectionFailureKindView.timeout,
+          frb.BridgeAcpLocalDetectionFailureKind.outputLimit =>
+            AcpLocalDetectionFailureKindView.outputLimit,
+          frb.BridgeAcpLocalDetectionFailureKind.execution =>
+            AcpLocalDetectionFailureKindView.execution,
+          frb.BridgeAcpLocalDetectionFailureKind.cleanup =>
+            AcpLocalDetectionFailureKindView.cleanup,
+        },
+        message: failure.message,
+      ),
+    ),
+    frb.BridgeAcpLocalDetectionState_Cancelling() => (
+      AcpLocalDetectionPhaseView.cancelling,
+      null,
+      null,
+      null,
+    ),
+    frb.BridgeAcpLocalDetectionState_Cancelled() => (
+      AcpLocalDetectionPhaseView.cancelled,
+      null,
+      null,
+      null,
+    ),
+  };
+  return AcpLocalDetectionSnapshotView(
+    revision: _frbInt(value.revision),
+    operationId: value.operationId,
+    state: phase,
+    program: program,
+    version: version,
+    failure: failure,
+  );
+}
+
+AcpLocalDetectionCommandReply _acpLocalDetectionReplyFromFrb(
+  frb.BridgeAcpLocalDetectionCommandReply value,
+) => AcpLocalDetectionCommandReply(
+  receipt: _commandReceiptFromFrb(value.receipt),
+  snapshot: _acpLocalDetectionSnapshotFromFrb(value.snapshot),
+);
+
 // ACP 桥接映射：只做 typed DTO ↔ 领域模型，不解析 raw ACP JSON、不读凭据、不猜测
 // 未知协议或未知失败类别。生成模块由 `studio_bridge_api.dart` 统一导出，本文件只消费
 // 当前生成的 canonical 声明。
@@ -164,7 +245,14 @@ AcpAccountSettingsView _acpAccountFromFrb(frb.BridgeAcpAccountSettings value) =>
     AcpAccountSettingsView(
       accountId: value.accountId,
       name: value.name,
-      provider: _acpProviderFromFrb(value.provider),
+      template: value.template == null
+          ? null
+          : _acpProviderFromFrb(value.template!),
+      enabled: value.enabled,
+      command: value.command,
+      args: List.unmodifiable(value.args),
+      env: Map.unmodifiable(value.env),
+      documentRevision: value.documentRevision,
       connectionRevision: _frbInt(value.connectionRevision),
     );
 
@@ -172,7 +260,13 @@ frb.BridgeAcpAccountUpdate _acpAccountUpdateToFrb(AcpAccountUpdateView value) =>
     frb.BridgeAcpAccountUpdate(
       accountId: value.accountId,
       name: value.name,
-      provider: _acpProviderToFrb(value.provider),
+      template: value.template == null
+          ? null
+          : _acpProviderToFrb(value.template!),
+      command: value.command,
+      args: value.args,
+      env: value.env,
+      enabled: value.enabled,
     );
 
 AcpAuthAccountView _acpAuthAccountFromFrb(frb.BridgeAcpAuthAccount value) =>

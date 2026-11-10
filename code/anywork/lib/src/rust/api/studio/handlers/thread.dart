@@ -12,6 +12,7 @@ import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
+import '../types/session_directory.dart';
 import '../types/settings.dart';
 import '../types/thread_preparation.dart';
 import '../types/thread_stream.dart';
@@ -31,7 +32,7 @@ Stream<BridgeNewThreadStartEvent> startNewThread({
   request: request,
 );
 
-/// Renames a root Thread and returns its canonical directory record.
+/// Renames a root member and returns its canonical directory row.
 Future<BridgeRenameThreadCommandReply> renameThread({
   required String operationId,
   required String threadId,
@@ -106,7 +107,7 @@ Future<BridgeThreadModelRouteCommandReply> setThreadModelRoute({
 );
 
 /// Restores an archived session tree with its original identity and history.
-Future<BridgeThread> restoreThread({required String threadId}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersThreadRestoreThread(threadId: threadId);
+Future<BridgeSessionDirectoryRow> restoreThread({required String threadId}) =>
+    RustLib.instance.api.crateApiStudioHandlersThreadRestoreThread(
+      threadId: threadId,
+    );

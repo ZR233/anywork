@@ -4230,7 +4230,9 @@ pub(crate) mod storage_fault_tests {
                 .get_session(&registered_agent.session_id)
                 .expect("registered projection session");
             store
-                .prepare_session_manifest(&registered_session, &registered_agent)
+                .prepare_session_manifest(&registered_session, &registered_agent, |id| {
+                    catalog.get_agent(id)
+                })
                 .await?;
             let execution = std::path::Path::new(&assignment.root)
                 .join(pl_tool::workspace::SessionFiles::new(&thread.id).root());
@@ -6227,7 +6229,10 @@ pub(crate) mod storage_fault_tests {
         let session = catalog
             .get_session(&agent.session_id)
             .expect("registered projection session");
-        let thread = crate::studio::records::thread_projection(&session, &agent);
+        let thread = crate::studio::records::thread_projection(&session, &agent, |id| {
+            catalog.get_agent(id).map(|agent| agent.thread_id)
+        })
+        .expect("Native projection");
         spawn_projection(store, thread)
     }
 

@@ -241,6 +241,12 @@ AgentWorkspaceView? conversationWorkspace(
       ? null
       : ref.watch(threadMetadataStoreProvider(rootAgent.threadId)).frame?.row;
   if (root == null) return null;
+  if (row.backend is! NativeAgentBackendView ||
+      root.backend is! NativeAgentBackendView) {
+    throw StateError(
+      'Native workspace projection cannot consume an ACP session',
+    );
+  }
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;
   return AgentWorkspaceView(

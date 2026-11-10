@@ -368,6 +368,10 @@ StudioThread _thread([String id = 'thread', String? parentThreadId]) =>
 /// child rows name their parent agent.
 SessionDirectoryRow _row([String id = 'thread', String? parentAgentId]) =>
     SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
       sessionId: parentAgentId ?? id,
       agentId: id,
       parentAgentId: parentAgentId,
@@ -3153,9 +3157,23 @@ void main() {
         final transport = _DraftTransport();
         final client = await _client(transport);
         transport
-          ..emitThread(_row().copyWith(status: status), 'thread', revision: 2)
           ..emitThread(
-            _row('closed-child', 'thread').copyWith(status: status),
+            _row().copyWith(
+              backend: NativeAgentBackendView(
+                config: const NativeAgentConfigView(),
+                status: status,
+              ),
+            ),
+            'thread',
+            revision: 2,
+          )
+          ..emitThread(
+            _row('closed-child', 'thread').copyWith(
+              backend: NativeAgentBackendView(
+                config: const NativeAgentConfigView(),
+                status: status,
+              ),
+            ),
             'closed-child',
             revision: 2,
           );

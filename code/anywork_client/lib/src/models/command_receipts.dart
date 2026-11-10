@@ -81,7 +81,7 @@ final class ThreadModelRouteCommandReply {
 
 final class RenameThreadCommandReply {
   const RenameThreadCommandReply({required this.thread, required this.receipt});
-  final StudioThread thread;
+  final SessionDirectoryRow thread;
   final StudioCommandReceipt receipt;
 }
 

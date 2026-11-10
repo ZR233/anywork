@@ -65,15 +65,15 @@ pub struct SessionDirectoryRow {
     pub workspace_id: String,
     /// 主成员行为会话标题；child 行为创建期冻结的任务摘要。
     pub title: String,
-    pub mode: crate::ThreadModeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::ThreadModeId>,
     pub workspace_mode: crate::ThreadWorkspaceMode,
     pub delegation_mode: crate::DelegationMode,
     pub delegation_preference: crate::DelegationPreference,
     pub workspace_path: String,
     /// 成员定义 ID：root 为内置根定义，child 为冻结 Profile ID。
     pub role: String,
-    pub binding: crate::AgentBinding,
-    pub status: crate::ThreadStatus,
+    pub backend: AgentBackend,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,7 +82,31 @@ pub struct SessionDirectoryRow {
     pub archived: bool,
 }
 
+/// 冻结的产品关联；ACP 的实时配置及执行状态不属于目录。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum AgentBackend {
+    Native {
+        config: crate::NativeAgentConfig,
+        status: crate::ThreadStatus,
+    },
+    Acp {
+        reference: AcpSessionReference,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpSessionReference {
+    pub account_id: String,
+    pub acp_session_id: String,
+    pub cwd: String,
+}
+
 impl SessionDirectoryRow {
+    pub fn native_status(&self) -> Option<crate::ThreadStatus> {
+        self.backend.native_status()
+    }
     /// 是否为主成员行（会话的 root Agent）。
     pub fn is_root_row(&self) -> bool {
         self.parent_agent_id.is_none()
@@ -91,5 +115,77 @@ impl SessionDirectoryRow {
     /// 与 `SessionDescriptor::directory_sort_time` 相同的目录排序键。
     pub fn directory_sort_time(&self) -> i64 {
         self.last_user_message_at.unwrap_or(self.created_at)
+    }
+}
+
+impl AgentBackend {
+    pub fn native_status(&self) -> Option<crate::ThreadStatus> {
+        match self {
+            Self::Native { status, .. } => Some(*status),
+            Self::Acp { .. } => None,
+        }
+    }
+
+    pub fn binding(&self) -> crate::AgentBinding {
+        match self {
+            Self::Native { config, .. } => crate::AgentBinding::Native(config.clone()),
+            Self::Acp { reference } => crate::AgentBinding::Acp(crate::AcpAgentConfig {
+                account_id: reference.account_id.clone(),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acp_directory_backend_has_only_real_reference() {
+        let backend = AgentBackend::Acp {
+            reference: AcpSessionReference {
+                account_id: "service".into(),
+                acp_session_id: "peer-session".into(),
+                cwd: "/project".into(),
+            },
+        };
+        let value = serde_json::to_value(&backend).expect("encode");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "acp",
+                "reference": { "accountId": "service", "acpSessionId": "peer-session", "cwd": "/project" }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentBackend>(value).expect("decode"),
+            backend
+        );
+        assert_eq!(backend.native_status(), None);
+        assert!(serde_json::from_value::<AgentBackend>(serde_json::json!({
+            "kind": "acp",
+            "reference": { "accountId": "service", "acpSessionId": "peer-session", "cwd": "/project" },
+            "status": "idle"
+        })).is_err());
+    }
+
+    #[test]
+    fn native_directory_backend_retains_config_and_native_status() {
+        let backend = AgentBackend::Native {
+            config: crate::NativeAgentConfig {
+                route: None,
+                system_instructions: None,
+            },
+            status: crate::ThreadStatus::WaitingInteraction,
+        };
+        let bytes = serde_json::to_string(&backend).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<AgentBackend>(&bytes).expect("decode"),
+            backend
+        );
+        assert_eq!(
+            backend.native_status(),
+            Some(crate::ThreadStatus::WaitingInteraction)
+        );
     }
 }

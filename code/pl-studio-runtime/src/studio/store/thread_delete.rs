@@ -12,6 +12,8 @@ use super::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct DeleteMember {
+    #[serde(default)]
+    pub association_only: bool,
     pub identity: PreparationIdentity,
     pub host_session: std::path::PathBuf,
     pub execution: PreparationBinding,
@@ -233,17 +235,27 @@ impl StudioStore {
                 }
             }
         }
+        // ACP skips Native physical storage, not its local product records. Keep the
+        // Thread and Agent namespaces separate even when their raw IDs happen to match.
         for id in &operation.thread_ids {
             tx.execute_raw(Statement::from_sql_and_values(
                 DatabaseBackend::Sqlite,
-                "DELETE FROM studio_objects WHERE owner_id=? AND owner_kind IN ('thread','agent')",
+                // WorktreeLease's persisted category is `agent`, but its validated owner
+                // is explicitly owner_thread_id. Do not extend that to other Agent objects.
+                "DELETE FROM studio_objects WHERE owner_id=? AND
+                 (owner_kind='thread' OR (owner_kind='agent' AND object_kind='worktreeLease'))",
                 [id.clone().into()],
             ))
             .await?;
+            // Product retirement precedes directory deletion. Missing directory members on
+            // recovery cannot authorize deletion of an Agent guessed from a Thread ID.
+            let Some(agent) = self.catalog().agent_by_thread(id) else {
+                continue;
+            };
             tx.execute_raw(Statement::from_sql_and_values(
                 DatabaseBackend::Sqlite,
                 "DELETE FROM agent_evaluations WHERE agent_id=? OR parent_agent_id=?",
-                [id.clone().into(), id.clone().into()],
+                [agent.agent_id.clone().into(), agent.agent_id.into()],
             ))
             .await?;
         }
@@ -293,6 +305,9 @@ impl StudioStore {
         thread_id: Option<&str>,
     ) -> Result<()> {
         if let Some(id) = thread_id {
+            let root = self
+                .directory_member(id)?
+                .map(|member| member.root_thread_id);
             ensure!(
                 !self
                     .thread_deletes()
@@ -300,10 +315,7 @@ impl StudioStore {
                     .iter()
                     .any(
                         |operation| operation.thread_ids.iter().any(|member| member == id)
-                            || self
-                                .catalog()
-                                .agent_by_thread(id)
-                                .is_some_and(|agent| agent.session_id == operation.root_id)
+                            || root.as_deref() == Some(operation.root_id.as_str())
                     ),
                 "Thread permanent deletion has sealed execution"
             );

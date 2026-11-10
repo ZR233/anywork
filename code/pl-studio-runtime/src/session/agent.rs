@@ -8,5 +8,48 @@ use super::agent_runtime::NativeThreadRuntime;
 pub(crate) struct AgentInstance {
     pub(crate) identity: AgentThreadIdentity,
     pub(crate) binding: AgentBinding,
-    pub(crate) native: NativeThreadRuntime,
+    pub(crate) runtime: AgentRuntime,
+}
+
+#[derive(Debug)]
+pub(crate) enum AgentRuntime {
+    Native(Box<NativeThreadRuntime>),
+    Acp(std::sync::Arc<crate::studio::runtime::acp_business::AcpResources>),
+}
+
+impl AgentInstance {
+    pub(crate) fn native(
+        &self,
+    ) -> Result<&NativeThreadRuntime, crate::thread_assembler::ThreadAssemblyError> {
+        match &self.runtime {
+            AgentRuntime::Native(native) => Ok(native),
+            AgentRuntime::Acp(_) => Err(
+                crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                    backend: pl_protocol::AgentBackendKind::Acp,
+                },
+            ),
+        }
+    }
+
+    pub(crate) fn native_mut(
+        &mut self,
+    ) -> Result<&mut NativeThreadRuntime, crate::thread_assembler::ThreadAssemblyError> {
+        match &mut self.runtime {
+            AgentRuntime::Native(native) => Ok(native),
+            AgentRuntime::Acp(_) => Err(
+                crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                    backend: pl_protocol::AgentBackendKind::Acp,
+                },
+            ),
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        match &self.runtime {
+            AgentRuntime::Native(native) => {
+                native.thread.request_shutdown();
+            }
+            AgentRuntime::Acp(acp) => acp.cancel(),
+        }
+    }
 }

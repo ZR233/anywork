@@ -42,6 +42,8 @@ frb_accounts.BridgeAccountObservationTarget _accountTargetToFrb(
     const frb_accounts.BridgeAccountObservationTarget.acpAuth(),
   AcpInstallTarget() =>
     const frb_accounts.BridgeAccountObservationTarget.acpInstall(),
+  AcpLocalDetectionTarget() =>
+    const frb_accounts.BridgeAccountObservationTarget.acpLocalDetection(),
   ChatGptLoginTarget(:final loginId) =>
     frb_accounts.BridgeAccountObservationTarget.chatGptLogin(loginId: loginId),
 };
@@ -187,6 +189,14 @@ AccountDomainFrame _accountFrameFromFrb(
     AcpInstallFrame(
       _accountStampFromFrb(stamp),
       _acpInstallSnapshotFromFrb(snapshot),
+    ),
+  frb_accounts.BridgeAccountDomainFrame_AcpLocalDetection(
+    :final stamp,
+    :final snapshot,
+  ) =>
+    AcpLocalDetectionFrame(
+      _accountStampFromFrb(stamp),
+      _acpLocalDetectionSnapshotFromFrb(snapshot),
     ),
   frb_accounts.BridgeAccountDomainFrame_ChatGptLogin(
     :final stamp,

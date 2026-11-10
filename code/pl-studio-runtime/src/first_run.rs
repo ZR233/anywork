@@ -293,7 +293,6 @@ impl FirstRunConfigDraft {
             instructions: Default::default(),
             skills: Default::default(),
             ui: Default::default(),
-            acp: Default::default(),
         };
         config.validate()?;
         Ok(config)

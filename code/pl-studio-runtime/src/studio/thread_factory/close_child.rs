@@ -210,7 +210,7 @@ impl StudioThreadFactory {
             let baseline = self
                 .services
                 .product_events
-                .thread_snapshot(&thread.id)
+                .thread_snapshot(&thread.id)?
                 .context("closing child is missing from the directory owner")?;
             let mut projected = baseline.clone();
             projected.status = if snapshot.lifecycle == pl_core::thread::ThreadLifecycle::Closed {
@@ -224,7 +224,7 @@ impl StudioThreadFactory {
                 .directory_facts(&thread.id)
                 .context("closing child is missing from the directory owner")?;
             let mut projected_agent = agent.clone();
-            projected_agent.status = projected.status;
+            projected_agent.set_native_status(projected.status);
             self.services
                 .product_events
                 .commit_agent_update(agent, projected_agent)

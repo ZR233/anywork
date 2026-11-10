@@ -280,7 +280,8 @@ impl ConfigRuntime {
         // Model withdrawal/recovery changes whether an otherwise enabled child Profile can run.
         // Publish that availability through the existing Profile owner and generation channel.
         if let Some(config) = profiles_config {
-            self.profiles.adopt_scan(self.store.paths(), &config);
+            self.profiles
+                .adopt_scan(self.store.paths(), &config, &self.acp.read());
         }
         Ok(())
     }

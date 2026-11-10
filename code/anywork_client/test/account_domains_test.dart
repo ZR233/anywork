@@ -515,8 +515,9 @@ void main() {
               AcpAccountDetails(
                 AcpAccountSettingsView(
                   accountId: 'same',
+                  documentRevision: BigInt.one,
                   name: 'ACP',
-                  provider: AcpProviderView.antigravity,
+                  template: AcpProviderView.antigravity,
                   connectionRevision: connection,
                 ),
               ),
@@ -741,8 +742,9 @@ void main() {
             AcpAccountDetails(
               AcpAccountSettingsView(
                 accountId: 'same',
+                documentRevision: BigInt.one,
                 name: 'ACP',
-                provider: AcpProviderView.antigravity,
+                template: AcpProviderView.antigravity,
                 connectionRevision: connection,
               ),
             ),
@@ -1614,10 +1616,11 @@ void main() {
         _stamp('settings', 2),
         _acp,
         AcpAccountDetails(
-          const AcpAccountSettingsView(
+          AcpAccountSettingsView(
             accountId: 'same',
+            documentRevision: BigInt.one,
             name: 'ACP',
-            provider: AcpProviderView.antigravity,
+            template: AcpProviderView.antigravity,
             connectionRevision: 7,
           ),
         ),
@@ -1762,10 +1765,11 @@ void main() {
         _stamp('settings', 2),
         _acp,
         AcpAccountDetails(
-          const AcpAccountSettingsView(
+          AcpAccountSettingsView(
             accountId: 'same',
+            documentRevision: BigInt.one,
             name: 'ACP',
-            provider: AcpProviderView.antigravity,
+            template: AcpProviderView.antigravity,
             connectionRevision: 7,
           ),
         ),
@@ -2230,10 +2234,11 @@ void main() {
           _stamp('settings', 2),
           _acp,
           AcpAccountDetails(
-            const AcpAccountSettingsView(
+            AcpAccountSettingsView(
               accountId: 'same',
+              documentRevision: BigInt.one,
               name: 'ACP',
-              provider: AcpProviderView.antigravity,
+              template: AcpProviderView.antigravity,
               connectionRevision: 7,
             ),
           ),

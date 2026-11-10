@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{
-    AgentCapabilities, AuthMethod as SdkAuthMethod, AuthMethodAgent, AuthenticateRequest,
-    AuthenticateResponse, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
-    Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-    PromptRequest, PromptResponse, SessionCapabilities, SessionCloseCapabilities,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    AgentCapabilities, AuthMethod as SdkAuthMethod, AuthMethodAgent, AuthMethodTerminal,
+    AuthenticateRequest, AuthenticateResponse, CloseSessionRequest, CloseSessionResponse,
+    ContentBlock, ContentChunk, Implementation, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
+    SessionCloseCapabilities, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, Client};
@@ -39,6 +39,10 @@ struct Scenario {
     prompt_failure: bool,
     cancel_at: Option<AuthStage>,
     choice: Choice,
+    unrestricted_version: bool,
+    omit_agent_info: bool,
+    wrong_server_version: bool,
+    terminal_method: bool,
 }
 
 #[derive(Default, Debug)]
@@ -49,6 +53,7 @@ struct Observed {
     closes: usize,
     prompts: Vec<Vec<ContentBlock>>,
     default_capabilities: bool,
+    public_methods: Vec<AuthMethod>,
 }
 
 async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, AuthError>, Observed) {
@@ -75,8 +80,14 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
                     tokio::time::sleep(scenario.initialize_delay).await;
                     if scenario.cancel_at == Some(AuthStage::Initialize) { cancel.cancel(); }
                     responder.respond(InitializeResponse::new(ProtocolVersion::V1)
-                        .agent_info(Implementation::new("fixture", VERSION))
-                        .auth_methods(vec![SdkAuthMethod::Agent(AuthMethodAgent::new(METHOD, "Fixture login"))])
+                        .agent_info((!scenario.omit_agent_info).then(|| Implementation::new(
+                            "fixture", if scenario.wrong_server_version { "different" } else { VERSION },
+                        )))
+                        .auth_methods(if scenario.terminal_method {
+                            vec![SdkAuthMethod::Terminal(AuthMethodTerminal::new(METHOD, "Terminal login"))]
+                        } else {
+                            vec![SdkAuthMethod::Agent(AuthMethodAgent::new(METHOD, "Fixture login"))]
+                        })
                         .agent_capabilities(AgentCapabilities::new().session_capabilities(
                             SessionCapabilities::new().close(SessionCloseCapabilities::new()))))
                 }
@@ -137,7 +148,13 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
     let drive = async {
         let mut required_count = 0;
         while observer.changed().await.is_ok() {
-            let required = matches!(*observer.borrow_and_update(), AuthProgress::Required { .. });
+            let required =
+                if let AuthProgress::Required { methods, .. } = &*observer.borrow_and_update() {
+                    observed.lock().unwrap().public_methods = methods.clone();
+                    true
+                } else {
+                    false
+                };
             if !required {
                 continue;
             }
@@ -169,7 +186,7 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
         client_writer,
         client_reader,
         AuthRequest {
-            expected_server_version: VERSION.into(),
+            expected_server_version: (!scenario.unrestricted_version).then(|| VERSION.into()),
             probe_cwd: "/tmp".into(),
             action,
             commands,
@@ -192,6 +209,113 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     (outcome, observed)
+}
+
+#[tokio::test]
+async fn generic_auth_accepts_missing_identity_but_templates_require_exact_version() {
+    for (unrestricted_version, omit_agent_info, wrong_server_version, success) in [
+        (true, true, false, true),
+        (true, false, true, true),
+        (false, true, false, false),
+        (false, false, true, false),
+    ] {
+        let (outcome, observed) = run(
+            AuthAction::Check,
+            Scenario {
+                unrestricted_version,
+                omit_agent_info,
+                wrong_server_version,
+                ..Scenario::default()
+            },
+        )
+        .await;
+        if success {
+            assert!(matches!(outcome, Ok(AuthOutcome::Verified { .. })));
+            assert_eq!(observed.probes, 1);
+        } else {
+            let error = outcome.unwrap_err();
+            assert_eq!(error.kind(), AuthFailureKind::ServerVersionMismatch);
+            assert_eq!(observed.probes, 0);
+            assert_eq!(observed.authenticates, 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn generic_auth_still_requires_v1_and_never_advertises_or_authenticates_terminal() {
+    // Agent.v1() normalizes its outgoing initialize response to v1. Use the SDK's raw
+    // role for a deliberately invalid peer, retaining SDK dispatch, responder and framing.
+    use agent_client_protocol::UntypedRole;
+    let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
+    let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
+    let peer = tokio::spawn(
+        UntypedRole
+            .builder()
+            .on_receive_request(
+                async |_: InitializeRequest,
+                       responder: agent_client_protocol::Responder<InitializeResponse>,
+                       _: agent_client_protocol::ConnectionTo<UntypedRole>| {
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V0))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async |_: NewSessionRequest,
+                       _: agent_client_protocol::Responder<NewSessionResponse>,
+                       _: agent_client_protocol::ConnectionTo<UntypedRole>|
+                       -> Result<(), RpcError> {
+                    panic!("an unsupported protocol must fail before session/new")
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(
+                ByteStreams::new(agent_writer.compat_write(), agent_reader.compat()),
+                async |connection| {
+                    connection.incoming_closed().await;
+                    Ok(())
+                },
+            ),
+    );
+    let (progress, _observer) = watch::channel(AuthProgress::Initializing);
+    let (_commands, commands) = mpsc::channel(1);
+    let outcome = run_connection(
+        client_writer,
+        client_reader,
+        AuthRequest {
+            expected_server_version: None,
+            probe_cwd: "/unused-probe".into(),
+            action: AuthAction::Check,
+            commands,
+            cleanup: CleanupBudget::new(Duration::from_secs(2)),
+            cancellation: CancellationToken::new(),
+            progress,
+        },
+    )
+    .await;
+    // The official v1 client rejects the response before returning a typed InitializeResponse.
+    let error = outcome.unwrap_err();
+    assert_eq!(error.kind(), AuthFailureKind::Protocol);
+    assert_eq!(error.stage(), AuthStage::Initialize);
+    assert_eq!(
+        error.rpc_code(),
+        Some(i32::from(agent_client_protocol::ErrorCode::INVALID_REQUEST))
+    );
+    peer.await.unwrap().unwrap();
+    let (outcome, observed) = run(
+        AuthAction::Check,
+        Scenario {
+            requires_login: true,
+            terminal_method: true,
+            ..Scenario::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        outcome.unwrap_err().kind(),
+        AuthFailureKind::UnsupportedMethod
+    );
+    assert!(observed.public_methods.is_empty());
+    assert_eq!(observed.authenticates, 0);
 }
 
 #[tokio::test(start_paused = true)]

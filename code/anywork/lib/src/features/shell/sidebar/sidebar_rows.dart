@@ -203,7 +203,11 @@ class SidebarThreadRow extends StatelessWidget {
                 child: Center(
                   child: archived
                       ? const SizedBox.shrink()
-                      : _ThreadStatusBadge(status: row.status),
+                      : switch (row.backend) {
+                          NativeAgentBackendView(:final status) =>
+                            _ThreadStatusBadge(status: status),
+                          AcpAgentBackendView() => const SizedBox.shrink(),
+                        },
                 ),
               ),
               const SizedBox(width: 6),
@@ -304,7 +308,12 @@ class SidebarThreadRow extends StatelessWidget {
     final environment = alias == null
         ? context.l10n.sidebarLocal
         : 'SSH · $alias';
-    final statusLabel = context.threadStatusLabel(row.status);
+    final statusLabel = switch (row.backend) {
+      NativeAgentBackendView(:final status) => context.threadStatusLabel(
+        status,
+      ),
+      AcpAgentBackendView() => 'ACP',
+    };
     final updated = _relativeUpdatedLabel(context, row.updatedAt);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -358,16 +367,19 @@ class SidebarThreadRow extends StatelessWidget {
     );
   }
 
-  Color _statusDotColor(BuildContext context) => switch (row.status) {
-    ThreadStatusView.faulted => context.colors.error,
-    ThreadStatusView.waitingInteraction => context.statusColors.warning,
-    ThreadStatusView.queued ||
-    ThreadStatusView.running ||
-    ThreadStatusView.waitingTool ||
-    ThreadStatusView.cancelling ||
-    ThreadStatusView.closing => context.statusColors.activeIndicator,
-    ThreadStatusView.idle || ThreadStatusView.closed =>
-      context.colors.onSurfaceVariant.withValues(alpha: 0.6),
+  Color _statusDotColor(BuildContext context) => switch (row.backend) {
+    AcpAgentBackendView() => context.colors.onSurfaceVariant,
+    NativeAgentBackendView(:final status) => switch (status) {
+      ThreadStatusView.faulted => context.colors.error,
+      ThreadStatusView.waitingInteraction => context.statusColors.warning,
+      ThreadStatusView.queued ||
+      ThreadStatusView.running ||
+      ThreadStatusView.waitingTool ||
+      ThreadStatusView.cancelling ||
+      ThreadStatusView.closing => context.statusColors.activeIndicator,
+      ThreadStatusView.idle || ThreadStatusView.closed =>
+        context.colors.onSurfaceVariant.withValues(alpha: 0.6),
+    },
   };
 }
 

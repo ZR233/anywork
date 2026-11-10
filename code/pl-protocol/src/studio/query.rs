@@ -141,15 +141,17 @@ impl ThreadDirectoryQuery {
             && match self.filter {
                 ThreadDirectoryFilter::All => true,
                 ThreadDirectoryFilter::Running => matches!(
-                    row.status,
-                    ThreadStatus::Queued
-                        | ThreadStatus::Running
-                        | ThreadStatus::WaitingTool
-                        | ThreadStatus::Cancelling
+                    row.native_status(),
+                    Some(
+                        ThreadStatus::Queued
+                            | ThreadStatus::Running
+                            | ThreadStatus::WaitingTool
+                            | ThreadStatus::Cancelling
+                    )
                 ),
                 ThreadDirectoryFilter::Attention => matches!(
-                    row.status,
-                    ThreadStatus::WaitingInteraction | ThreadStatus::Faulted
+                    row.native_status(),
+                    Some(ThreadStatus::WaitingInteraction | ThreadStatus::Faulted)
                 ),
             }
     }

@@ -159,7 +159,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       }
       if (row == null ||
           !row.isRootRow ||
-          row.status != ThreadStatusView.idle ||
+          row.mode == null ||
+          row.backend is! NativeAgentBackendView ||
+          (row.backend as NativeAgentBackendView).status !=
+              ThreadStatusView.idle ||
           (runtime?.hasActiveWorkflow ?? false)) {
         operation.reject(StateError('Thread mode change is unavailable'));
         if (_isLatest(operation)) _clear(key);
@@ -813,7 +816,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         if (observedRow != null && observedRow.isChildRow) {
           throw _childRequiresParentScheduling(intent.threadId);
         }
-        if (observedRow?.status.blocksNewExecution == true) {
+        if (observedRow?.backend is AcpAgentBackendView) {
+          throw StateError('Native continuation cannot target an ACP session');
+        }
+        if (observedRow?.backend case NativeAgentBackendView(:final status)
+            when status.blocksNewExecution) {
           throw _closedReadOnlyFailure;
         }
         if (resend) {
@@ -1081,7 +1088,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     });
   }
 
-  Future<StudioThread?> renameThread(String threadId, String title) {
+  Future<SessionDirectoryRow?> renameThread(String threadId, String title) {
     _ensureOpen();
     final key = 'rename:$threadId';
     final operation = _client.mutations.begin(target: key);
@@ -1147,7 +1154,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         operation.accept(response.receipt.toCommitReceipt());
         _replaceRemovedThreadIfCurrent(
           response.result.removedThreadIds,
-          nextRootId: response.result.nextRoot?.id,
+          nextRootId: response.result.nextRoot?.threadId,
           navigationGeneration: navigationGeneration,
         );
       } catch (error) {
@@ -1184,7 +1191,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         operation.accept(response.receipt.toCommitReceipt());
         _replaceRemovedThreadIfCurrent(
           response.result.deletedThreadIds,
-          nextRootId: response.result.nextRoot?.id,
+          nextRootId: response.result.nextRoot?.threadId,
           navigationGeneration: navigationGeneration,
         );
       } catch (error) {
@@ -1575,7 +1582,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   // A read-only gate must not admit a cold child owner. Missing local facts
   // remain unknown; the backend still authoritatively rejects retired targets.
   bool _isExecutionClosed(String threadId) =>
-      _directoryRow(threadId)?.status.blocksNewExecution == true ||
+      switch (_directoryRow(threadId)?.backend) {
+        NativeAgentBackendView(:final status) => status.blocksNewExecution,
+        AcpAgentBackendView() || null => false,
+      } ||
       _client.conversations
               .sessionState(threadId)
               ?.workspace

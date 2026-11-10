@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::WorkspaceKind;
 
-use crate::studio::records::{ThreadRecord, ThreadVisibility, WorkspaceRecord};
+use crate::studio::records::{DirectoryMember, WorkspaceRecord};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
 use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
@@ -321,17 +321,14 @@ impl StudioRuntime {
                 // workspaces.toml is written before catalog.toml. If the latter failed (including
                 // across restart), the canonical closed Project must still allow finishing its
                 // active catalog rows; absence from the open-project projection is not completion.
-                (has_pending_archive
-                    || threads
-                        .iter()
-                        .any(|thread| thread.visibility == ThreadVisibility::Active))
-                .then(|| {
-                    self.store
-                        .workspaces()
-                        .get(workspace_id)
-                        .map(|entry| entry.project())
-                })
-                .flatten()
+                (has_pending_archive || threads.iter().any(|thread| !thread.session.archived))
+                    .then(|| {
+                        self.store
+                            .workspaces()
+                            .get(workspace_id)
+                            .map(|entry| entry.project())
+                    })
+                    .flatten()
             })
         else {
             return Ok(None);
@@ -339,20 +336,31 @@ impl StudioRuntime {
         let mut roots = threads
             .iter()
             .filter(|thread| thread.parent_thread_id.is_none())
-            .map(|thread| thread.id.clone())
+            .map(|thread| thread.agent.thread_id.clone())
             .collect::<Vec<_>>();
+        // New ACP roots cannot publish an Agent reference until the peer returns its ID.
+        // Capture their real original owner under the same lifecycle admission boundary.
+        let mut acp_owners = std::collections::BTreeMap::new();
+        for session in self.sessions.resident_sessions() {
+            for root in session.acp_roots_for_workspace(workspace_id) {
+                roots.push(root.clone());
+                acp_owners.insert(root, session.clone());
+            }
+        }
         roots.sort();
+        roots.dedup();
         // Project archives still reject active work; they do not interrupt an active Turn.
         for thread in &threads {
-            if thread.visibility == ThreadVisibility::Active
-                && self.thread_is_busy(&thread.id).await?
-            {
+            if !thread.session.archived && self.thread_is_busy(&thread.agent.thread_id).await? {
                 bail!("project has an active turn");
             }
         }
         let mut scopes = Vec::new();
         for root in &roots {
-            let session = self.session_for_roots(std::slice::from_ref(root))?;
+            let session = match acp_owners.get(root) {
+                Some(session) => session.clone(),
+                None => self.session_for_roots(std::slice::from_ref(root))?,
+            };
             let scope = session.seal_archive_scope(std::slice::from_ref(root))?;
             scopes.push((session, scope));
         }
@@ -364,7 +372,7 @@ impl StudioRuntime {
             .iter()
             .flat_map(|(_, scope)| scope.thread_ids())
             .collect::<Vec<_>>();
-        admitted_ids.extend(threads.iter().map(|thread| thread.id.clone()));
+        admitted_ids.extend(threads.iter().map(|thread| thread.agent.thread_id.clone()));
         admitted_ids.sort();
         admitted_ids.dedup();
         let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
@@ -399,19 +407,19 @@ impl StudioRuntime {
         ensure!(
             threads
                 .iter()
-                .all(|thread| admitted_ids.contains(&thread.id)),
+                .all(|thread| admitted_ids.contains(&thread.agent.thread_id)),
             "project archive member has no frozen preparation responsibility"
         );
         let thread_ids = threads
             .iter()
-            .map(|thread| thread.id.clone())
+            .map(|thread| thread.agent.thread_id.clone())
             .collect::<Vec<_>>();
         let active_threads = threads
             .iter()
-            .filter(|thread| thread.visibility == ThreadVisibility::Active)
+            .filter(|thread| !thread.session.archived)
             .collect::<Vec<_>>();
         for thread in &active_threads {
-            match self.thread_is_busy(&thread.id).await {
+            match self.thread_is_busy(&thread.agent.thread_id).await {
                 Ok(false) => {}
                 Ok(true) => {
                     bail!("project has an active turn");
@@ -445,7 +453,12 @@ impl StudioRuntime {
             .commit_directory(DirectoryDelta {
                 project_removals: vec![ProjectRemoval {
                     workspace_id: project.id.clone(),
-                    session_ids: thread_ids.clone(),
+                    session_ids: threads
+                        .iter()
+                        .map(|member| member.session.session_id.clone())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
                     closed_at: crate::studio::unix_seconds(),
                 }],
                 ..Default::default()
@@ -458,7 +471,10 @@ impl StudioRuntime {
         Ok(Some(project))
     }
 
-    pub(super) fn ensure_project_thread_admission_open(&self, workspace_id: &str) -> Result<()> {
+    pub(in crate::studio::runtime) fn ensure_project_thread_admission_open(
+        &self,
+        workspace_id: &str,
+    ) -> Result<()> {
         self.recovery
             .ensure_project_execution_access(workspace_id)?;
         anyhow::ensure!(
@@ -471,8 +487,8 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
-        let threads = self.store.list_threads_for_project(workspace_id).await?;
+    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
+        let threads = self.store.directory_members_for_project(workspace_id)?;
         Ok(threads)
     }
 }

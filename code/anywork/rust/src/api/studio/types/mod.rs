@@ -1,4 +1,6 @@
 pub mod acp;
+pub mod acp_business;
+pub mod acp_detection;
 pub mod acp_install;
 pub mod agent_profile;
 pub mod attachment;
@@ -24,6 +26,8 @@ pub mod thread_stream;
 pub mod updater;
 
 pub use acp::*;
+pub use acp_business::*;
+pub use acp_detection::*;
 pub use acp_install::*;
 pub use agent_profile::*;
 pub use attachment::*;

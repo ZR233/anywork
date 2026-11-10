@@ -232,6 +232,10 @@ void main() {
           );
 
       final row = SessionDirectoryRow(
+        backend: NativeAgentBackendView(
+          config: const NativeAgentConfigView(),
+          status: ThreadStatusView.idle,
+        ),
         sessionId: 'session-main',
         agentId: 'agent-main',
         threadId: 'thread-main',

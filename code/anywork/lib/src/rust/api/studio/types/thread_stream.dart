@@ -368,8 +368,8 @@ class BridgeThread {
   final String workspaceId;
   final String title;
 
-  /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
-  final String mode;
+  /// Native root 的完整 Thread Mode ID；child 的 `None` 原样保留。
+  final String? mode;
   final BridgeDelegationMode delegationMode;
   final BridgeDelegationPreference delegationPreference;
   final BridgeNewThreadModelRoute? frozenModel;
@@ -395,7 +395,7 @@ class BridgeThread {
     required this.id,
     required this.workspaceId,
     required this.title,
-    required this.mode,
+    this.mode,
     required this.delegationMode,
     required this.delegationPreference,
     this.frozenModel,

@@ -17,6 +17,7 @@ pub(crate) mod runtime_test_support;
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
+pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 // Execution/storage diagnostics may name the Core's opaque completion records.
 pub use pl_core::chat::{ChatError, ChatItem};
 pub use pl_core::model::ContentBlock;

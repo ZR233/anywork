@@ -711,8 +711,9 @@ void main() {
     expect(connects, 1);
     final saved = AcpAccountSettingsView(
       accountId: command.accountId,
+      documentRevision: BigInt.one,
       name: command.name,
-      provider: command.provider,
+      template: command.template,
       connectionRevision: 7,
     );
     publishVmAcp(h, const AcpUncheckedState(), account: saved);
@@ -739,7 +740,7 @@ void main() {
       h.editorState(key).acpKey,
       AccountAcpKey(
         target: key.target,
-        providerId: 'antigravity',
+        templateId: 'antigravity',
         connectionRevision: 7,
         editorId: key.editorId,
         creating: false,
@@ -755,8 +756,9 @@ void main() {
     );
     final renamed = AcpAccountSettingsView(
       accountId: saved.accountId,
+      documentRevision: saved.documentRevision + BigInt.one,
       name: 'Renamed after save',
-      provider: saved.provider,
+      template: saved.template,
       connectionRevision: saved.connectionRevision,
     );
     publishVmAcp(h, const AcpUncheckedState(), account: renamed);

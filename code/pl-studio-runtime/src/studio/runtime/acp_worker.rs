@@ -1,6 +1,6 @@
-//! 官方 ACP server 的物理进程 owner。
+//! 通用 ACP 程序的物理进程 owner。
 //!
-//! 这里只做三件事：按平台用**现有**后台进程工厂启动官方程序、交出三路 stdio、在关闭时确认
+//! 这里只做三件事：按平台用**现有**后台进程工厂启动已准备的程序、交出三路 stdio、在关闭时确认
 //! 整棵进程与管道真实退出。它不是协议客户端，也不解释 stdout（stdout 只交给 ACP codec）；
 //! stderr 独立有界排空，绝不转发原始内容、绝不从中解析 URL 或状态（见 design/28 §28.1）。
 //!
@@ -8,10 +8,9 @@
 //! 且失败（`ManagedWorker::wait` 只在监督者真实退出后才交付错误，之后绝不再 wait）、
 //! [`Reclaim::Pending`] 等待系统调用报错但未确认停止（owner 保留，不是终态）。
 
-#[cfg(target_os = "linux")]
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -28,6 +27,8 @@ const STDERR_CHUNK_BYTES: usize = 1024;
 pub(super) type ChildWriter = Pin<Box<dyn AsyncWrite + Send>>;
 /// 交给 ACP codec 的读取半边。
 pub(super) type ChildReader = Pin<Box<dyn AsyncRead + Send>>;
+/// Short, non-blocking in-process observation for bounded probe output accounting.
+pub(super) type StderrObserver = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 /// 官方程序需要的宿主环境变量白名单。
 ///
@@ -107,13 +108,13 @@ pub(super) struct AcpSpawnRequest {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// Final environment frozen at launch preparation (host whitelist followed by overrides).
+    pub env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 }
 
 /// 物理启动失败的步骤分类；只作为安全诊断标签，不含路径、命令或原始错误文本。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AcpSpawnStep {
-    /// 准备本账号私有的探测目录。
-    ProbeDirectory,
     /// 解析并缓存受监督 worker 的可执行镜像；只有 Linux 的 bundled supervisor 需要该步骤。
     #[cfg(target_os = "linux")]
     WorkerAsset,
@@ -125,7 +126,6 @@ impl AcpSpawnStep {
     /// 稳定的诊断标签；与 `Debug` 输出不同，它不随内部重构或平台变化。
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::ProbeDirectory => "probeDirectory",
             #[cfg(target_os = "linux")]
             Self::WorkerAsset => "workerAsset",
             Self::Process => "process",
@@ -149,7 +149,7 @@ impl std::fmt::Debug for AcpSpawnError {
     ///
     /// 派生实现会把 `source` 的原始文本带进任何 `{:?}` 输出（包括失败上下文的调试打印），
     /// 与本类型"原始原因绝不进入日志正文或 UI"的约定冲突；`source` 因此只在
-    /// [`super::operation`] 的启动失败边界被读取。本类型不实现 `Error`，不参与错误链公开。
+    /// 认证或业务启动失败边界读取该字段。本类型不实现 `Error`，不参与错误链公开。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingExecutable => formatter.write_str("MissingExecutable"),
@@ -183,6 +183,8 @@ pub(super) struct AcpWorker {
     /// 只有"退出已确认"或"监督者在真实退出后交付了错误"才会写入；非 Linux 的普通 `wait`
     /// 系统调用错误不是退出证明，因此不会进入这里。
     settled: Option<Result<(), String>>,
+    /// Actual main-program status, independent of supervisor or cleanup success.
+    exit_success: Option<bool>,
     /// stderr 排空任务的终态失败；跨 `Pending` 轮次粘滞保留，不能因进程仍待收束而丢失。
     stderr_failure: Option<String>,
     /// 取消是否已经发出（避免重复发送同一控制指令）。
@@ -199,7 +201,7 @@ impl AcpWorker {
     /// Linux 复用与本地工具执行、MCP stdio 相同的 bundled supervised worker：GUI 被强杀时整个
     /// 进程树仍由内核/监督者回收。其他平台复用统一后台进程工厂（process-wrap）。
     ///
-    /// 取消检查发生在**准备探测目录前**、异步解析受监督 worker 之后、以及真正 spawn 之前。
+    /// 取消检查发生在启动准备前、异步解析受监督 worker 之后、以及真正 spawn 之前。
     /// 一旦开始 `spawn`，调用方直接 await 并接管返回的 worker，绝不用 `select!` 丢弃可能已持有
     /// 进程的 future。
     pub(super) async fn spawn(
@@ -207,20 +209,35 @@ impl AcpWorker {
         source: &WorkerSource,
         cancellation: &CancellationToken,
     ) -> Result<Self, AcpSpawnError> {
+        Self::spawn_observed(request, source, cancellation, None).await
+    }
+
+    /// Uses the same supervision and drain; the observer must neither block nor publish raw bytes.
+    pub(super) async fn spawn_with_stderr_observer(
+        request: AcpSpawnRequest,
+        source: &WorkerSource,
+        cancellation: &CancellationToken,
+        observer: StderrObserver,
+    ) -> Result<Self, AcpSpawnError> {
+        Self::spawn_observed(request, source, cancellation, Some(observer)).await
+    }
+
+    async fn spawn_observed(
+        request: AcpSpawnRequest,
+        source: &WorkerSource,
+        cancellation: &CancellationToken,
+        stderr_observer: Option<StderrObserver>,
+    ) -> Result<Self, AcpSpawnError> {
         if cancellation.is_cancelled() {
             return Err(AcpSpawnError::Cancelled);
         }
         validate_executable(&request.program)?;
-        std::fs::create_dir_all(&request.cwd).map_err(|error| AcpSpawnError::Startup {
-            step: AcpSpawnStep::ProbeDirectory,
-            source: error.to_string(),
-        })?;
         if cancellation.is_cancelled() {
             return Err(AcpSpawnError::Cancelled);
         }
         #[cfg(target_os = "linux")]
         {
-            Self::spawn_supervised(request, source, cancellation).await
+            Self::spawn_supervised(request, source, cancellation, stderr_observer).await
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -228,13 +245,18 @@ impl AcpWorker {
             if cancellation.is_cancelled() {
                 return Err(AcpSpawnError::Cancelled);
             }
-            Self::spawn_wrapped(request, cancellation).await
+            Self::spawn_wrapped(request, cancellation, stderr_observer).await
         }
     }
 
     /// 交出业务 stdout/stdin；两路各自只能取一次。
     pub(super) fn take_streams(&mut self) -> Option<(ChildWriter, ChildReader)> {
         Some((self.stdin.take()?, self.stdout.take()?))
+    }
+
+    /// Available only after the actual main process has been observed exiting.
+    pub(super) fn exit_success(&self) -> Option<bool> {
+        self.exit_success
     }
 
     /// 观察真实退出；future 可取消，句柄和已交付结果始终留在 owner 内。
@@ -248,6 +270,10 @@ impl AcpWorker {
                 .wait()
                 .await
                 .map(|termination| {
+                    self.exit_success = Some(matches!(
+                        termination,
+                        pl_remote_helper::client::ProcessTermination::ExitCode(0)
+                    ));
                     tracing::debug!(?termination, "ACP supervised process exited");
                 })
                 .map_err(|_| "ACP supervisor wait failed".to_string()),
@@ -263,6 +289,7 @@ impl AcpWorker {
                 .wait()
                 .await
                 .map(|status| {
+                    self.exit_success = Some(status.success());
                     tracing::debug!(
                         exit_code = status.code(),
                         success = status.success(),
@@ -314,7 +341,9 @@ impl AcpWorker {
                 Some(child) => child
                     .wait()
                     .await
-                    .map(|_| ())
+                    .map(|status| {
+                        self.exit_success = Some(status.success());
+                    })
                     .map_err(|_| "ACP process tree wait failed".to_string()),
                 None => Ok(()),
             };
@@ -355,6 +384,7 @@ impl AcpWorker {
         request: AcpSpawnRequest,
         source: &WorkerSource,
         cancellation: &CancellationToken,
+        stderr_observer: Option<StderrObserver>,
     ) -> Result<Self, AcpSpawnError> {
         use pl_remote_helper::client::{ManagedWorker, ProcessCommand};
 
@@ -366,7 +396,7 @@ impl AcpWorker {
         let specification = ProcessCommand::new(request.program.into_os_string())
             .args(request.args.iter().cloned())
             .current_dir(request.cwd);
-        let specification = with_business_environment(specification);
+        let specification = with_business_environment(specification, &request.env);
         let mut supervisor = ManagedWorker::spawn(worker.as_ref(), specification)
             .await
             .map_err(|error| AcpSpawnError::Startup {
@@ -380,8 +410,9 @@ impl AcpWorker {
         Ok(Self {
             stdin: stdin.map(|stdin| Box::pin(stdin) as ChildWriter),
             stdout: stdout.map(|stdout| Box::pin(stdout) as ChildReader),
-            stderr_task: stderr.map(drain_stderr),
+            stderr_task: stderr.map(|stderr| drain_stderr(stderr, stderr_observer)),
             settled: None,
+            exit_success: None,
             stderr_failure: None,
             cancel_requested: false,
             supervisor: Some(supervisor),
@@ -392,6 +423,7 @@ impl AcpWorker {
     async fn spawn_wrapped(
         request: AcpSpawnRequest,
         cancellation: &CancellationToken,
+        stderr_observer: Option<StderrObserver>,
     ) -> Result<Self, AcpSpawnError> {
         use std::process::Stdio;
 
@@ -407,11 +439,7 @@ impl AcpWorker {
             .stderr(Stdio::piped());
         // 只有白名单变量会进入官方程序；其余（含凭据类）不复制。
         command.env_clear();
-        for key in ENV_ALLOWLIST {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
+        command.envs(&request.env);
         let mut command = pl_remote_helper::process::wrap_background_command(command);
         let child =
             pl_remote_helper::process::spawn_background_command(&mut command).map_err(|error| {
@@ -427,8 +455,9 @@ impl AcpWorker {
         Ok(Self {
             stdin: stdin.map(|stdin| Box::pin(stdin) as ChildWriter),
             stdout: stdout.map(|stdout| Box::pin(stdout) as ChildReader),
-            stderr_task: stderr.map(drain_stderr),
+            stderr_task: stderr.map(|stderr| drain_stderr(stderr, stderr_observer)),
             settled: None,
+            exit_success: None,
             stderr_failure: None,
             cancel_requested: false,
             child: Some(child.process),
@@ -462,24 +491,36 @@ fn combine(process: Reclaim, stderr: Reclaim) -> Reclaim {
 #[cfg(target_os = "linux")]
 fn with_business_environment(
     mut specification: pl_remote_helper::client::ProcessCommand,
+    environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 ) -> pl_remote_helper::client::ProcessCommand {
     let snapshot: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
     for (key, _value) in &snapshot {
-        if !is_allowed_key(key) {
-            specification = specification.env_remove(key.clone());
-        }
+        specification = specification.env_remove(key.clone());
     }
-    for (key, value) in &snapshot {
-        if is_allowed_key(key) {
-            specification = specification.env(key.clone(), value.clone());
-        }
+    for (key, value) in environment {
+        specification = specification.env(key.clone(), value.clone());
     }
     specification
 }
 
-#[cfg(target_os = "linux")]
-fn is_allowed_key(key: &OsStr) -> bool {
-    key.to_str().is_some_and(|key| ENV_ALLOWLIST.contains(&key))
+pub(super) fn launch_environment(
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> {
+    let mut environment = std::collections::BTreeMap::new();
+    for key in ENV_ALLOWLIST {
+        if let Some(value) = std::env::var_os(key) {
+            environment.insert((*key).into(), value);
+        }
+    }
+    for (key, value) in overrides {
+        // Environment names are case-insensitive on Windows.
+        #[cfg(windows)]
+        environment.retain(|existing: &std::ffi::OsString, _| {
+            !existing.to_string_lossy().eq_ignore_ascii_case(key)
+        });
+        environment.insert(key.into(), value.into());
+    }
+    environment
 }
 
 /// 校验程序是显式绝对路径且为普通文件；保存阶段不做这种检查。
@@ -496,6 +537,7 @@ fn validate_executable(program: &Path) -> Result<(), AcpSpawnError> {
 /// 有界排空 stderr：只消费，不转发、不解析，也不让它阻塞业务管道。
 fn drain_stderr(
     mut stderr: impl AsyncRead + Unpin + Send + 'static,
+    observer: Option<StderrObserver>,
 ) -> JoinHandle<std::io::Result<()>> {
     tokio::spawn(async move {
         let mut buffer = [0u8; STDERR_CHUNK_BYTES];
@@ -503,7 +545,12 @@ fn drain_stderr(
         loop {
             match stderr.read(&mut buffer).await {
                 Ok(0) => break,
-                Ok(read) => total = total.saturating_add(read),
+                Ok(read) => {
+                    total = total.saturating_add(read);
+                    if let Some(observer) = &observer {
+                        observer(&buffer[..read]);
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }

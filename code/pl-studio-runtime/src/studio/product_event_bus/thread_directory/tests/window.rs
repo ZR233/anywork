@@ -58,7 +58,7 @@ async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Resu
         row_projection(&session, &agent)
     };
     updated.title = "Changed outside the ordinary window".into();
-    updated.status = pl_protocol::ThreadStatus::Running;
+    set_status(&mut updated, pl_protocol::ThreadStatus::Running);
     events.apply_thread_delta(vec![updated], vec![]).await?;
     let changed = query(&events, &running_pins, None, 64)?;
     assert_eq!(changed.rows.len(), 1);
@@ -78,6 +78,7 @@ async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
     let mut child = row("child", "p1", 1);
     child.session_id = root.session_id.clone();
     child.parent_agent_id = Some(root.agent_id.clone());
+    child.mode = None;
     // 会话级事实（工作区路径、最近用户消息时间）只随主成员行携带。
     child.workspace_path = root.workspace_path.clone();
     child.last_user_message_at = None;
@@ -173,7 +174,7 @@ async fn off_window_metadata_and_project_changes_recompute_membership_order_and_
 
     let mut changed = c;
     changed.title = "Needle renamed".into();
-    changed.status = pl_protocol::ThreadStatus::Running;
+    set_status(&mut changed, pl_protocol::ThreadStatus::Running);
     changed.workspace_id = "p2".into();
     changed.last_user_message_at = Some(40);
     changed.updated_at = 40;

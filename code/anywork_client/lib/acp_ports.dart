@@ -2,16 +2,25 @@ import 'acp.dart';
 import 'models.dart' show OperationId, SettingsCommandReply;
 
 abstract interface class AcpPort {
+  Future<AcpLocalDetectionCommandReply> startAcpLocalDetection({
+    required OperationId operationId,
+  });
+  Future<AcpLocalDetectionCommandReply> cancelAcpLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  });
   Future<AcpAccountCatalogView> loadAcpAccountCatalog();
   Future<SettingsCommandReply> saveAcpAccount(
     int revision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
+    required BigInt? expectedDocumentRevision,
   });
   Future<SettingsCommandReply> removeAcpAccount(
     int revision,
     String accountId, {
     required OperationId operationId,
+    required BigInt expectedDocumentRevision,
   });
   Future<AcpAuthCommandReply> startAcpAuth({
     required OperationId operationId,

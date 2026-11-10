@@ -176,14 +176,21 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
 
   @override
   FutureOr<ComposerDockViewState> build(String threadId) {
+    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
+    final row = metadata.frame?.row;
+    final backend = switch (row?.backend) {
+      NativeAgentBackendView native => native,
+      AcpAgentBackendView() => throw StateError(
+        'Native prompt composer cannot consume an ACP session',
+      ),
+      null => null,
+    };
     final session = ref.watch(threadSessionStoreProvider(threadId));
     final draft = ref.watch(composerDraftControllerProvider(threadId));
     final settings = ref.watch(settingsStoreProvider);
     final accounts = ref.watch(modelSelectionAccountsProvider);
-    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
     final attachments = ref.watch(attachmentDraftsProvider);
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final row = metadata.frame?.row;
     final workspaceId = row?.workspaceId;
     // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
@@ -246,7 +253,7 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       // 目录行与已加载 canonical workspace.thread 任一 closing/closed
       // 都不显示执行入口；这是纯投影，事实源仍是两个 canonical 观察。
       executionClosed:
-          (row?.status.blocksNewExecution ?? false) ||
+          (backend?.status.blocksNewExecution ?? false) ||
           (session.workspace?.thread.status.blocksNewExecution ?? false),
       // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
       // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；

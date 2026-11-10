@@ -1,5 +1,70 @@
 use serde::{Deserialize, Serialize};
 
+/// A frozen directory read, without any Native execution or history projection.
+#[derive(Debug, Clone)]
+pub(in crate::studio) struct DirectoryMember {
+    pub session: SessionDirectoryRecord,
+    pub agent: AgentDirectoryRecord,
+    pub root_thread_id: String,
+    pub parent_thread_id: Option<String>,
+}
+
+impl DirectoryMember {
+    pub(in crate::studio) fn resolve(
+        session: SessionDirectoryRecord,
+        agent: AgentDirectoryRecord,
+        resolve: impl Fn(&str) -> Option<AgentDirectoryRecord>,
+    ) -> anyhow::Result<Self> {
+        let root = resolve(&session.root_agent_id)
+            .ok_or_else(|| anyhow::anyhow!("directory root Agent is missing"))?;
+        anyhow::ensure!(
+            root.agent_id == session.root_agent_id
+                && root.session_id == session.session_id
+                && root.is_root_agent(),
+            "directory root identity mismatch"
+        );
+        anyhow::ensure!(
+            !agent.is_root_agent() || agent.agent_id == root.agent_id,
+            "directory root membership mismatch"
+        );
+        let root_thread_id = root.thread_id;
+        let parent_thread_id = agent
+            .parent_agent_id
+            .as_deref()
+            .map(|id| {
+                let parent = resolve(id)
+                    .ok_or_else(|| anyhow::anyhow!("directory parent Agent is missing"))?;
+                anyhow::ensure!(
+                    parent.session_id == session.session_id && parent.agent_id == id,
+                    "directory parent identity mismatch"
+                );
+                Ok(parent.thread_id)
+            })
+            .transpose()?;
+        anyhow::ensure!(
+            session.session_id == agent.session_id,
+            "directory session mismatch"
+        );
+        Ok(Self {
+            session,
+            agent,
+            root_thread_id,
+            parent_thread_id,
+        })
+    }
+
+    pub(in crate::studio) fn row(&self) -> pl_protocol::SessionDirectoryRow {
+        row_projection(&self.session, &self.agent)
+    }
+
+    pub(in crate::studio) fn is_native(&self) -> bool {
+        matches!(
+            self.agent.backend,
+            pl_protocol::session::AgentBackend::Native { .. }
+        )
+    }
+}
+
 /// 会话目录事实：`catalog.toml` `sessions` 记录的运行期形态。
 ///
 /// 会话级字段（标题、排序时间、归档、工作区与分发设置）在此唯一归属；成员事实见
@@ -14,7 +79,8 @@ pub(in crate::studio) struct SessionDirectoryRecord {
     pub(in crate::studio) workspace_id: String,
     /// 会话标题；不被子成员的任务摘要覆盖。
     pub(in crate::studio) title: String,
-    pub(in crate::studio) mode: pl_protocol::ThreadModeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::studio) native_mode: Option<pl_protocol::ThreadModeId>,
     pub(in crate::studio) workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub(in crate::studio) delegation_mode: pl_protocol::DelegationMode,
     pub(in crate::studio) delegation_preference: pl_protocol::DelegationPreference,
@@ -38,7 +104,7 @@ impl SessionDirectoryRecord {
 /// 成员目录事实：`catalog.toml` `agents` 记录的运行期形态。
 ///
 /// 成员关系（`parent_agent_id`）在此唯一归属；主成员 `parent_agent_id = None`。
-/// backend 绑定见 `binding`，完整指令、Profile 正文与执行状态不进入目录。
+/// 后端关联见 `backend`；完整指令、Profile 正文与 ACP 执行状态不进入目录。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct AgentDirectoryRecord {
@@ -55,31 +121,50 @@ pub(in crate::studio) struct AgentDirectoryRecord {
     /// child 创建期冻结的任务摘要标题；主成员省略（显示标题为会话标题）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::studio) title: Option<String>,
-    pub(in crate::studio) binding: pl_protocol::AgentBinding,
-    pub(in crate::studio) status: pl_protocol::ThreadStatus,
+    pub(in crate::studio) backend: pl_protocol::session::AgentBackend,
     pub(in crate::studio) explicitly_closed: bool,
     pub(in crate::studio) created_at: i64,
     pub(in crate::studio) updated_at: i64,
 }
 
 impl AgentDirectoryRecord {
+    pub(in crate::studio) fn native_status(&self) -> Option<pl_protocol::ThreadStatus> {
+        self.backend.native_status()
+    }
+
+    pub(in crate::studio) fn set_native_status(&mut self, next: pl_protocol::ThreadStatus) {
+        if let pl_protocol::session::AgentBackend::Native { status, .. } = &mut self.backend {
+            *status = next;
+        }
+    }
     /// 是否为主成员（会话的 root Agent）。
     pub(in crate::studio) fn is_root_agent(&self) -> bool {
         self.parent_agent_id.is_none()
     }
 
     /// 与 `CatalogEntry::projected_status` 相同的目录状态投影。
-    pub(in crate::studio) fn projected_status(&self) -> pl_protocol::ThreadStatus {
-        crate::studio::agent_close::directory_status(self.status, self.explicitly_closed)
+    pub(in crate::studio) fn projected_backend(&self) -> pl_protocol::session::AgentBackend {
+        match &self.backend {
+            pl_protocol::session::AgentBackend::Native { config, status } => {
+                pl_protocol::session::AgentBackend::Native {
+                    config: config.clone(),
+                    status: crate::studio::agent_close::directory_status(
+                        *status,
+                        self.explicitly_closed,
+                    ),
+                }
+            }
+            backend @ pl_protocol::session::AgentBackend::Acp { .. } => backend.clone(),
+        }
     }
 
     /// Native 冻结模型身份摘要（binding 的只读投影）；ACP 成员没有该事实。
     pub(in crate::studio) fn frozen_model(
         &self,
     ) -> Option<pl_protocol::studio::NewThreadModelRoute> {
-        match &self.binding {
-            pl_protocol::AgentBinding::Native(config) => config.route.clone(),
-            pl_protocol::AgentBinding::Acp(_) => None,
+        match &self.backend {
+            pl_protocol::session::AgentBackend::Native { config, .. } => config.route.clone(),
+            pl_protocol::session::AgentBackend::Acp { .. } => None,
         }
     }
 }
@@ -99,14 +184,16 @@ pub(in crate::studio) fn row_projection(
         thread_id: agent.thread_id.clone(),
         workspace_id: session.workspace_id.clone(),
         title: agent.title.clone().unwrap_or_else(|| session.title.clone()),
-        mode: session.mode.clone(),
+        mode: agent
+            .is_root_agent()
+            .then(|| session.native_mode.clone())
+            .flatten(),
         workspace_mode: session.workspace_mode,
         delegation_mode: session.delegation_mode,
         delegation_preference: session.delegation_preference,
         workspace_path: session.workspace_path.clone(),
         role: agent.role.clone(),
-        binding: agent.binding.clone(),
-        status: agent.projected_status(),
+        backend: agent.projected_backend(),
         created_at: agent.created_at,
         updated_at: agent.updated_at,
         last_user_message_at: agent
@@ -117,71 +204,62 @@ pub(in crate::studio) fn row_projection(
     }
 }
 
-/// 从 wire 目录行反向投影 Native 执行域的 [`pl_protocol::Thread`]。
-///
-/// 仅用于既有 Native 消费方（归档候选、命令回执）消费目录提交切面：行身份与
-/// 目录事实同源，反投影是机械字段映射，不做成员归属推断。
-pub(in crate::studio) fn thread_from_row(
-    row: &pl_protocol::SessionDirectoryRow,
-) -> pl_protocol::Thread {
-    pl_protocol::Thread {
-        id: row.thread_id.clone(),
-        workspace_id: row.workspace_id.clone(),
-        title: row.title.clone(),
-        mode: row.mode.clone(),
-        workspace_mode: row.workspace_mode,
-        delegation_mode: row.delegation_mode,
-        delegation_preference: row.delegation_preference,
-        frozen_model: match &row.binding {
-            pl_protocol::AgentBinding::Native(config) => config.route.clone(),
-            pl_protocol::AgentBinding::Acp(_) => None,
-        },
-        workspace_path: row.workspace_path.clone(),
-        root_thread_id: row.session_id.clone(),
-        parent_thread_id: row.parent_agent_id.clone(),
-        role: row.role.clone(),
-        agent_path: row.thread_id.clone(),
-        status: row.status,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        last_user_message_at: row
-            .is_root_row()
-            .then_some(row.last_user_message_at)
-            .flatten(),
-        archived: row.archived,
-    }
-}
-
 /// 从会话与成员目录事实投影 Native 执行域的 [`pl_protocol::Thread`]。
 ///
-/// 投影只服务既有 Native 消费方（费用归集、归档树、装配校验）：`root_thread_id`
-/// 携带会话 ID 字节、`parent_thread_id` 携带父成员 ID 字节，与迁移前的值一致；
-/// 会话/成员事实的唯一可写源仍是目录 owner。
+/// 投影只服务 Native 消费方；默认 Thread 地址由同一目录切面的成员解析，
+/// 不假定 Session、Agent 和 Thread 的 ID 字节相同。
 pub(in crate::studio) fn thread_projection(
     session: &SessionDirectoryRecord,
     agent: &AgentDirectoryRecord,
-) -> pl_protocol::Thread {
+    resolve_thread: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<pl_protocol::Thread> {
+    let pl_protocol::session::AgentBackend::Native { status, .. } = agent.projected_backend()
+    else {
+        return Err(
+            crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                backend: pl_protocol::AgentBackendKind::Acp,
+            }
+            .into(),
+        );
+    };
     let root_agent = agent.is_root_agent();
-    pl_protocol::Thread {
+    anyhow::ensure!(
+        !root_agent || session.native_mode.is_some(),
+        "Native root has no workflow mode"
+    );
+    let root_thread_id = resolve_thread(&session.root_agent_id)
+        .ok_or_else(|| anyhow::anyhow!("directory root member is missing"))?;
+    let parent_thread_id = agent
+        .parent_agent_id
+        .as_deref()
+        .map(|parent| {
+            resolve_thread(parent)
+                .ok_or_else(|| anyhow::anyhow!("directory parent member is missing"))
+        })
+        .transpose()?;
+    Ok(pl_protocol::Thread {
         id: agent.thread_id.clone(),
         workspace_id: session.workspace_id.clone(),
         title: agent.title.clone().unwrap_or_else(|| session.title.clone()),
-        mode: session.mode.clone(),
+        mode: agent
+            .is_root_agent()
+            .then(|| session.native_mode.clone())
+            .flatten(),
         workspace_mode: session.workspace_mode,
         delegation_mode: session.delegation_mode,
         delegation_preference: session.delegation_preference,
         frozen_model: agent.frozen_model(),
         workspace_path: session.workspace_path.clone(),
-        root_thread_id: session.session_id.clone(),
-        parent_thread_id: agent.parent_agent_id.clone(),
+        root_thread_id,
+        parent_thread_id,
         role: agent.role.clone(),
         agent_path: agent.thread_id.clone(),
-        status: agent.projected_status(),
+        status,
         created_at: agent.created_at,
         updated_at: agent.updated_at,
         last_user_message_at: root_agent.then_some(session.last_user_message_at).flatten(),
         archived: session.archived,
-    }
+    })
 }
 
 /// 测试助手：把 Native `Thread` 拆回会话/成员目录事实（`thread_projection` 的逆）。
@@ -200,7 +278,7 @@ pub(in crate::studio) fn directory_facts_from_thread(
             root_agent_id: thread.id.clone(),
             workspace_id: thread.workspace_id.clone(),
             title: thread.title.clone(),
-            mode: thread.mode.clone(),
+            native_mode: thread.mode.clone(),
             workspace_mode: thread.workspace_mode,
             delegation_mode: thread.delegation_mode,
             delegation_preference: thread.delegation_preference,
@@ -220,11 +298,13 @@ pub(in crate::studio) fn directory_facts_from_thread(
             .parent_thread_id
             .is_some()
             .then(|| thread.title.clone()),
-        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-            route: thread.frozen_model.clone(),
-            system_instructions: None,
-        }),
-        status: thread.status,
+        backend: pl_protocol::session::AgentBackend::Native {
+            config: pl_protocol::NativeAgentConfig {
+                route: thread.frozen_model.clone(),
+                system_instructions: None,
+            },
+            status: thread.status,
+        },
         explicitly_closed: false,
         created_at: thread.created_at,
         updated_at: thread.updated_at,
@@ -262,7 +342,7 @@ pub struct ThreadRecord {
     pub id: String,
     pub workspace_id: String,
     pub title: String,
-    pub mode: pl_protocol::ThreadModeId,
+    pub mode: Option<pl_protocol::ThreadModeId>,
     /// 会话工作区模式：Thread 的 canonical 产品事实，不由 GUI 或目录查询推导。
     pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub delegation_mode: pl_protocol::DelegationMode,

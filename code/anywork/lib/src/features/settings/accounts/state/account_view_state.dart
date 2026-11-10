@@ -79,7 +79,7 @@ enum AccountReadoutPhase { unknown, loading, ready, failed }
 abstract class AccountAcpKey with _$AccountAcpKey {
   const factory AccountAcpKey({
     required AccountDisplayKey target,
-    required String providerId,
+    String? templateId,
     required int connectionRevision,
     String? editorId,
     @Default(false) bool creating,

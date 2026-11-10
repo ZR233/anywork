@@ -77,7 +77,7 @@ impl MigratesTo<ProfileV1> for ProfileImport {
     }
 }
 
-/// Profile schema 2：当前配置按定义元数据 + 后端 binding 表达。
+/// Profile schema 2 的冻结格式：定义元数据 + 后端 binding，ACP 仍含旧连接修订。
 ///
 /// binding 使用本文件冻结的 wire 形状，不直接借用会随产品演进的 domain 结构；
 /// V1 的原 Native 字段在迁移中无损进入 Native binding。
@@ -149,7 +149,52 @@ impl MigratesTo<ProfileV2> for ProfileV1 {
     }
 }
 
-impl From<&AgentBinding> for ProfileBindingWire {
+/// Current Profile wire; ACP references only the stable user definition id.
+#[derive(Debug, Clone, Serialize, Deserialize, Versioned)]
+#[versioned(version = "3.0.0")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfileV3 {
+    #[serde(default = "enabled")]
+    enabled: bool,
+    display_name: String,
+    description: String,
+    when_to_use: String,
+    #[serde(default)]
+    workspace_mode: AgentWorkspaceMode,
+    binding: ProfileBindingV3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ProfileBindingV3 {
+    Native(ProfileNativeWire),
+    Acp(ProfileAcpV3),
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileAcpV3 {
+    account_id: String,
+}
+
+impl MigratesTo<ProfileV3> for ProfileV2 {
+    fn migrate(self) -> ProfileV3 {
+        ProfileV3 {
+            enabled: self.enabled,
+            display_name: self.display_name,
+            description: self.description,
+            when_to_use: self.when_to_use,
+            workspace_mode: self.workspace_mode,
+            binding: match self.binding {
+                ProfileBindingWire::Native(native) => ProfileBindingV3::Native(native),
+                ProfileBindingWire::Acp(acp) => ProfileBindingV3::Acp(ProfileAcpV3 {
+                    account_id: acp.account_id,
+                }),
+            },
+        }
+    }
+}
+
+impl From<&AgentBinding> for ProfileBindingV3 {
     fn from(binding: &AgentBinding) -> Self {
         match binding {
             AgentBinding::Native(native) => Self::Native(ProfileNativeWire {
@@ -160,18 +205,17 @@ impl From<&AgentBinding> for ProfileBindingWire {
                 }),
                 system_instructions: native.system_instructions.clone(),
             }),
-            AgentBinding::Acp(acp) => Self::Acp(ProfileAcpWire {
+            AgentBinding::Acp(acp) => Self::Acp(ProfileAcpV3 {
                 account_id: acp.account_id.clone(),
-                connection_revision: acp.connection_revision,
             }),
         }
     }
 }
 
-impl From<ProfileBindingWire> for AgentBinding {
-    fn from(wire: ProfileBindingWire) -> Self {
+impl From<ProfileBindingV3> for AgentBinding {
+    fn from(wire: ProfileBindingV3) -> Self {
         match wire {
-            ProfileBindingWire::Native(native) => Self::Native(NativeAgentConfig {
+            ProfileBindingV3::Native(native) => Self::Native(NativeAgentConfig {
                 route: native.route.map(|route| NewThreadModelRoute {
                     account_id: route.account_id,
                     model_id: route.model_id,
@@ -179,21 +223,20 @@ impl From<ProfileBindingWire> for AgentBinding {
                 }),
                 system_instructions: native.system_instructions,
             }),
-            ProfileBindingWire::Acp(acp) => Self::Acp(AcpAgentConfig {
+            ProfileBindingV3::Acp(acp) => Self::Acp(AcpAgentConfig {
                 account_id: acp.account_id,
-                connection_revision: acp.connection_revision,
             }),
         }
     }
 }
 
-impl IntoDomain<ProfileV2> for ProfileV2 {
+impl IntoDomain<ProfileV3> for ProfileV3 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl ProfileV2 {
+impl ProfileV3 {
     pub(crate) fn from_current(profile: &super::super::UserAgentProfile) -> Result<Self> {
         Ok(Self {
             enabled: profile.enabled,
@@ -230,17 +273,18 @@ fn migrator() -> Result<Migrator> {
                 .from::<ProfileImport>()
                 .step::<ProfileV1>()
                 .step::<ProfileV2>()
-                .into::<ProfileV2>(),
+                .step::<ProfileV3>()
+                .into::<ProfileV3>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<ProfileV2>> {
+pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<ProfileV3>> {
     let migrator = migrator()?;
-    let mut value = toml_schema::parse(path, content, ENTITY, 2)?;
+    let mut value = toml_schema::parse(path, content, ENTITY, 3)?;
     if value.contains_key(VERSION_KEY) {
-        return toml_schema::load::<ProfileV1, ProfileV2>(
+        return toml_schema::load::<ProfileV1, ProfileV3>(
             path,
             content,
             &migrator,
@@ -251,7 +295,7 @@ pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<
     value.insert(VERSION_KEY.into(), "0.0.0".into());
     let document = migrator
         .load_flat_from(ENTITY, value)
-        .map_err(|error| toml_schema::migration_error(path, ENTITY, None, 2, "import", error))?;
+        .map_err(|error| toml_schema::migration_error(path, ENTITY, None, 3, "import", error))?;
     Ok(LoadedDocument {
         document,
         source_version: 0,
@@ -259,8 +303,8 @@ pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<
     })
 }
 
-pub(in crate::config) fn load_current(path: &Path, content: &str) -> Result<ProfileV2> {
-    toml_schema::load::<ProfileV2, ProfileV2>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(in crate::config) fn load_current(path: &Path, content: &str) -> Result<ProfileV3> {
+    toml_schema::load::<ProfileV3, ProfileV3>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -331,7 +375,7 @@ mod tests {
         let encoded = imported.document.encode().unwrap();
         assert_eq!(
             toml::from_str::<toml::Table>(&encoded).unwrap()[VERSION_KEY].as_integer(),
-            Some(2)
+            Some(3)
         );
         let current = load_profile(Path::new("profile.toml"), &encoded).unwrap();
         assert!(!current.migrated);

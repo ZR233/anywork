@@ -8,7 +8,7 @@ fn host(owner: &SessionRuntime, id: &str) -> AgentHost {
     AgentHost {
         registry: Arc::downgrade(&owner.0),
         identity: entry.identity.clone(),
-        resources: Arc::downgrade(&entry.native.resources),
+        resources: Arc::downgrade(&entry.native().unwrap().resources),
     }
 }
 
@@ -190,7 +190,7 @@ pub(crate) async fn spawn_failed_archive_fixture(
         metadata: serde_json::Value::Null,
     };
     let permit = owner.agent_operation(&root).await;
-    host(&owner, "root")
+    host(&owner, &root)
         .spawn_owned(owner, context, request, permit)
         .await
 }
@@ -455,7 +455,8 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
             .entries
             .get_mut(&protocol.id)
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .close_storage = Some(if execution {
             CloseStorage::Execution {
                 completion: completion.clone(),
@@ -517,7 +518,10 @@ async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_close
         if !execution {
             assert!(
                 matches!(
-                    owner.0.state().entries[&protocol.id].native.close_storage,
+                    owner.0.state().entries[&protocol.id]
+                        .native()
+                        .unwrap()
+                        .close_storage,
                     Some(CloseStorage::Attaching { .. })
                 ),
                 "a rejected attachment must not become Attached"
@@ -650,7 +654,7 @@ async fn archive_setup_failure_before_observer_retains_original_storage_until_re
     {
         let state = owner.0.state();
         assert!(matches!(
-            state.entries[&protocol.id].native.close_storage,
+            state.entries[&protocol.id].native().unwrap().close_storage,
             Some(crate::thread_assembler::CloseStorage::Execution {
                 observation_installed: false,
                 joined: false,

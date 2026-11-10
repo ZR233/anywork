@@ -123,6 +123,7 @@ impl CatalogSources {
             | StudioProductEventKind::AgentProfilesStateChanged(_)
             | StudioProductEventKind::AcpAuthStateChanged(_)
             | StudioProductEventKind::AcpInstallStateChanged(_)
+            | StudioProductEventKind::AcpLocalDetectionStateChanged(_)
             | StudioProductEventKind::BotsStateChanged(_)
             | StudioProductEventKind::ChildInteractionsChanged(_) => None,
         };

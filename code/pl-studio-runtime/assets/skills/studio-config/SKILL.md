@@ -11,7 +11,7 @@ Use this skill when the user asks where anywork keeps its settings or wants to c
 
 ## Where Configuration Lives
 
-anywork reads a single user config file:
+anywork reads its main user configuration from:
 
 ```text
 ~/.anywork/config.toml          Windows: %USERPROFILE%\.anywork\config.toml
@@ -40,7 +40,7 @@ Feishu bots live in `<home>/data/bots/<bot-id>/` with versioned `config.toml` an
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 32`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 33`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Schema 21 to 22 migrates model declarations from `slug` to `model_id`. Schema 22 to 23 migrates `models.providers` to `models.accounts`, `preset`/`adapter` to `template`/`protocol`, and route/Profile `provider`/`model` to `account_id`/`model_id`. Account and template ID values, endpoint, headers, model overrides and user choices are preserved. Older supported versions continue through these steps; changing only the version number is invalid.
@@ -50,10 +50,11 @@ Feishu bots live in `<home>/data/bots/<bot-id>/` with versioned `config.toml` an
 - Schema 29 to 30 permits verified Codex workspace and plan metadata. Existing API/SIWC accounts, credential associations and model choices remain unchanged; upgrading does not sign in or convert accounts.
 - Schema 30 to 31 extracts `[mcp.servers.<id>]` and `[mcp.builtin_servers.<id>]` from `config.toml` into standalone per-server files under `<home>/mcp/host/<server-key>.toml` (`schema_version = 1`, `kind = "server" | "builtin"`), and removes `[mcp]` and `runtime.active_mcp_servers` from `config.toml`. Normal execution reads only the Host and SSH MCP document directories and never dual-reads `[mcp]` from `config.toml`.
 - Schema 31 to 32 extracts `[lsp.servers.<id>]` into `<home>/lsp/host/<server-id>.toml`, one document per server with `schema_version = 1` and its explicit `id`. The protected migration preserves originals and resumes interrupted writes; conflicting existing documents are not overwritten. Normal execution no longer reads `[lsp]` in `config.toml`. Host defaults apply only to local workspaces; SSH uses its remote workspace documents.
-- Main configuration, user Profiles and credential associations use a recoverable migration operation. Protected original bytes are backed up before replacement; interrupted commits finish their recorded operation, candidate bytes and target version before preparing a later upgrade. Profiles have their own `schema_version = 2`: version 1 and unversioned historical Profiles migrate independently even when the main configuration is already current. The Native route, effort and instructions move into the Native binding without changing values; ACP bindings reference only the existing account and connection revision, with no Native placeholders. Current consumers read definition/binding; frozen Native history keeps its own format. Old/current identity keys with equal values can be normalized only at the import boundary; conflicts or incomplete identities are rejected. No unchanged main configuration is rewritten just because a Profile needs upgrading. Existing v2 model-route/Profile extensions, typed bills and call records migrate at their versioned storage boundary without activating all sessions or rewriting opaque vendor payloads.
+- Schema 32 to 33 extracts `[acp.accounts.<id>]` into `<home>/acp/<id>.toml`, with independent `schema_version = 1`, preserving each ID as a managed Antigravity template reference. It removes the old section and normal execution reads only the ACP document directory. An existing semantically equal document keeps its original bytes; a conflicting document, invalid old ID or invalid joint Profile reference stops the migration and preserves originals.
+- Main configuration, user Profiles and credential associations use a recoverable migration operation. Protected original bytes are backed up before replacement; interrupted commits finish their recorded operation, candidate bytes and target version before preparing a later upgrade. Profiles have their own `schema_version = 3`: version 1 and unversioned historical Profiles first move the Native route, effort and instructions into the Native binding without changing values; version 2 then removes persisted ACP connection revisions, preserving the account ID. ACP bindings contain only that account reference, with no Native placeholders. Profiles migrate independently even when the main configuration is already current. Current consumers read definition/binding; frozen Native history keeps its own format. Old/current identity keys with equal values can be normalized only at the import boundary; conflicts or incomplete identities are rejected. No unchanged main configuration is rewritten just because a Profile needs upgrading. Existing v2 model-route/Profile extensions, typed bills and call records migrate at their versioned storage boundary without activating all sessions or rewriting opaque vendor payloads.
 - Each active TOML document has an independent positive-integer root schema, separate from content revisions. Typed migration paths use `version-migrate`; its semantic versions are an in-memory boundary detail, never a new disk format. A current file is not rewritten on read. Missing/invalid headers (except the explicit unversioned Profile import), unsupported/future versions, malformed files and migration validation failures stop the affected load as `Migration`, preserve the file and operation, and never trigger backup-and-defaults recovery. Do not change a version number by hand or delete a migration journal to bypass a failure.
 - Unrelated unrecoverable global database corruption retains its existing one-time startup backup and recovery policy: `config.toml`, `agents/`, `modes/` and current `data/` are preserved under `<home>/startup-backups/<unique-id>/original/` before initializing defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery and the UI reports its location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures and isolated invalid Bots do not reset global data.
-- Explicit reload while Studio is running remains strict: it reports the invalid file instead of replacing it.
+- Explicit reload reports invalid documents without replacing them. An invalid current ACP file is isolated with a safe diagnostic while healthy ACP definitions remain available; a failed protected legacy migration stops the affected startup operation.
 - Saving from Settings writes atomically. External file edits are not picked up automatically; use explicit reload after editing a valid current-schema file.
 - Account save replies confirm the credential/configuration transaction, not MCP readiness or usage API completion. All templates use the same save path; MCP follows canonical configuration in the background and reports its own status.
 
@@ -95,12 +96,52 @@ Builtin child IDs come from the embedded declaration catalog, not a fixed list i
 child may omit `[models.routes.<agent-id>]`; when absent, its effective account, model, and effort inherit
 `mode.simple` without being written back to TOML. An explicit child route takes precedence, and an
 unavailable explicit route does not fall back. User child Profiles keep their explicit route in their
-own TOML file, with the independent root `schema_version = 2` and a closed backend binding. Only child Profiles can be enabled/disabled or dispatched; root identity, metadata, and
+own TOML file, with the independent root `schema_version = 3` and a closed backend binding. ACP Profiles remain unavailable for production dispatch until mixed-backend result and close paths are delivered. Only child Profiles can be enabled/disabled or dispatched; root identity, metadata, and
 instruction text cannot grant child or root privileges.
 
 A few sections are omitted when left at defaults (`runtime`, `instructions`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` , `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true` and `fetch_enabled = true`, so do not delete them assuming they are unused.
 
 Web search is not a single selection. Both services are resolved independently of the session, route, or current model: OpenAI standalone search uses the account's `gpt-6-sol` when its catalog has it (otherwise the account's first valid model), DeepSeek search calls the official `POST {root}/v1/tools/search` and `POST {root}/v1/tools/fetch` endpoints without resolving any model, and accounts are ordered by stable ID. Account availability depends only on capability plus a usable key; whether the current model supports function calling only decides whether that thread registers the additive tools. At runtime the OpenAI `web_search`, DeepSeek `deepseek_web_search` (`queries`, 1–4 merged queries) and `deepseek_web_fetch` (`url`), and any generic MCP tools (including Zhipu, discovered and registered through generic MCP when a valid key is available) coexist as additive tools; there is no `selected` backend and no exclusive route that hides the other tools. Only the two DeepSeek tool descriptions mention per-request billing and the fallback condition, and searches are neither ordered nor automatically fallen back across accounts. `enabled` and `fetch_enabled` gate the tools independently, and each switch only affects its own tool. A DeepSeek account instance that overrides the template's canonical base URL stops inheriting the DeepSeek standalone capability unless it explicitly declares the `deep_seek_tools_api` dialect; the pre-21 token `deep_seek_anthropic_messages` is rewritten by the configuration migration and is rejected if written by hand. This revocation is DeepSeek-only and does not change the existing OpenAI `/alpha/search` standalone inheritance for non-canonical OpenAI endpoints.
+
+## ACP accounts
+
+ACP definitions live only in the first level of `<home>/acp/<id>.toml`. Project, worktree,
+session and parent directories do not override them. Each file requires `schema_version = 1`
+and an `id` matching its filename. IDs use ASCII letters, digits, `-`, `_` or `.`, excluding
+the empty string, `.` and `..`. `display_name` defaults to the ID, `enabled` to `true`, and
+`args` and `env` to empty collections.
+
+Choose one launch source: `command` plus independent `args`, or `template = "antigravity"`.
+A template cannot also specify `command` or `args`; either source can declare explicit `env`.
+Commands are a PATH program name or an absolute executable path. There is no shell parsing,
+variable or `~` expansion, configured working directory, static model list or UI schema.
+
+For a local CLI account, save a separate `<home>/acp/local-agy.toml`:
+
+```toml
+schema_version = 1
+id = "local-agy"
+display_name = "Local agy"
+command = "agy"
+args = ["acp"]
+```
+
+The account editor can check `agy --version` and `agy acp --help` once when opening an ACP
+draft, or on explicit refresh. Detection does not log in, install a server, create a business
+session or prove authentication. The CLI uses its own cached credentials. Managed installation,
+its fixed server-version check and template-specific usage actions apply only to the managed
+template; local commands use the same generic ACP launch path.
+
+Startup and explicit reload publish a cached definition snapshot. Ordinary queries and
+subscriptions do not scan files or start programs. Settings saves and deletes use document
+revision CAS. Connection revisions are runtime admission values and change only with launch
+identity, including command, arguments, environment or template. Renaming an account does not
+change that identity. Reloading, disabling or deleting a definition does not replace or stop
+an active business instance, which keeps its frozen definition.
+
+ACP history and session content remain with the server. Anywork stores the account and actual
+remote session association, without a transcript database or Native history mirror. Removing
+the local association does not delete remote history, credentials or installed programs.
 
 ## Work modes
 
@@ -235,12 +276,12 @@ The Accounts tab reads canonical account and model-domain snapshots through thei
 
 ## Minimal Working Example
 
-Every account needs `name`, `base_url`, and a `catalog` section. The two root Mode routes are required;
+Every API account needs `name`, `base_url`, and a `catalog` section. The two root Mode routes are required;
 a system child route is optional and, when present, is an explicit override. `effort` is optional and
 must match the model's supported effort candidates.
 
 ```toml
-schema_version = 32
+schema_version = 33
 
 [deepseek_web_search]
 enabled = true

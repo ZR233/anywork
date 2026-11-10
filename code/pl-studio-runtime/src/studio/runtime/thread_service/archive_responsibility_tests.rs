@@ -366,11 +366,13 @@ async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
                 thread_id: protocol.id.clone(),
                 role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
                 title: Some(protocol.id.clone()),
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                    route: None,
-                    system_instructions: None,
-                }),
-                status: protocol.status,
+                backend: pl_protocol::session::AgentBackend::Native {
+                    config: pl_protocol::NativeAgentConfig {
+                        route: None,
+                        system_instructions: None,
+                    },
+                    status: protocol.status,
+                },
                 explicitly_closed: false,
                 created_at: protocol.created_at,
                 updated_at: protocol.updated_at,
@@ -419,7 +421,10 @@ async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()>
     let private_session = catalog
         .get_session(&private_agent.session_id)
         .context("seeded required-private session row")?;
-    let protocol = crate::studio::records::thread_projection(&private_session, &private_agent);
+    let protocol =
+        crate::studio::records::thread_projection(&private_session, &private_agent, |id| {
+            catalog.get_agent(id).map(|agent| agent.thread_id)
+        })?;
     let checkpoint = runtime
         .store
         .history(&protocol.id)
@@ -692,13 +697,13 @@ async fn reject_changed_saved_projection(
     let tree = runtime.store.read_directory_tree("required-root").await?;
     let private_index = tree
         .iter()
-        .position(|thread| thread.id == "required-private")
+        .position(|thread| thread.agent.thread_id == "required-private")
         .unwrap();
     let frozen = runtime.store.thread_archive(scope).await?.unwrap();
     assert_eq!(frozen.phase, ArchivePhase::Saved);
     let mut changed = tree.clone();
     let mut extra = tree[private_index].clone();
-    extra.id = "unfrozen-member".into();
+    extra.agent.thread_id = "unfrozen-member".into();
     changed.push(extra);
     let error = runtime
         .freeze_thread_archive(scope.clone(), &changed, &[])
@@ -722,7 +727,7 @@ async fn reject_changed_saved_projection(
     );
     let without_public = tree
         .iter()
-        .filter(|thread| thread.id != "required-root")
+        .filter(|thread| thread.agent.thread_id != "required-root")
         .cloned()
         .collect::<Vec<_>>();
     assert!(
@@ -734,7 +739,9 @@ async fn reject_changed_saved_projection(
     for field in ["workspace", "root", "parent"] {
         let mut changed = tree.clone();
         match field {
-            "workspace" => changed[private_index].workspace_id = "different-workspace".into(),
+            "workspace" => {
+                changed[private_index].session.workspace_id = "different-workspace".into()
+            }
             "root" => changed[private_index].root_thread_id = "different-root".into(),
             "parent" => changed[private_index].parent_thread_id = Some("different-parent".into()),
             _ => unreachable!(),
@@ -757,7 +764,7 @@ async fn reject_changed_saved_projection(
     let canonical_agents = catalog.agents();
     let without_private = tree
         .iter()
-        .filter(|thread| thread.id != "required-private")
+        .filter(|thread| thread.agent.thread_id != "required-private")
         .cloned()
         .collect::<Vec<_>>();
     for field in ["workspace", "root", "parent"] {
@@ -790,10 +797,12 @@ async fn reject_changed_saved_projection(
             .test_restore_records(canonical_sessions.clone(), canonical_agents.clone())
             .await?;
         let error = outcome.unwrap_err();
-        assert!(
-            error.to_string().contains("changed identity"),
-            "{field}: {error:#}"
-        );
+        let expected = match field {
+            "root" => "directory root identity mismatch",
+            "parent" => "directory parent Agent is missing",
+            _ => "changed identity",
+        };
+        assert!(error.to_string().contains(expected), "{field}: {error:#}");
     }
     // A validly encoded but conflicting frozen binding must not be repaired from a newer view.
     let mut conflicting = frozen.clone();
@@ -819,7 +828,7 @@ async fn reject_changed_saved_projection(
     // A private identity does not owe catalog publication; its original responsibility remains.
     let without_private = tree
         .into_iter()
-        .filter(|thread| thread.id != "required-private")
+        .filter(|thread| thread.agent.thread_id != "required-private")
         .collect::<Vec<_>>();
     let projected = runtime
         .freeze_thread_archive(scope.clone(), &without_private, &[])

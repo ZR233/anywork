@@ -29,11 +29,16 @@ class BridgeAcpAccountCatalog {
           templates == other.templates;
 }
 
-/// canonical 设置中的一条 ACP 接入（不含 secret）。
+/// canonical 设置中的一条 ACP 接入编辑投影。
 class BridgeAcpAccountSettings {
   final String accountId;
   final String name;
-  final BridgeAcpProvider provider;
+  final BridgeAcpProvider? template;
+  final bool enabled;
+  final String? command;
+  final List<String> args;
+  final Map<String, String> env;
+  final BigInt documentRevision;
 
   /// runtime 拥有的非密钥连接身份；名称编辑不改变它。
   final BigInt connectionRevision;
@@ -41,7 +46,12 @@ class BridgeAcpAccountSettings {
   const BridgeAcpAccountSettings({
     required this.accountId,
     required this.name,
-    required this.provider,
+    this.template,
+    required this.enabled,
+    this.command,
+    required this.args,
+    required this.env,
+    required this.documentRevision,
     required this.connectionRevision,
   });
 
@@ -49,7 +59,12 @@ class BridgeAcpAccountSettings {
   int get hashCode =>
       accountId.hashCode ^
       name.hashCode ^
-      provider.hashCode ^
+      template.hashCode ^
+      enabled.hashCode ^
+      command.hashCode ^
+      args.hashCode ^
+      env.hashCode ^
+      documentRevision.hashCode ^
       connectionRevision.hashCode;
 
   @override
@@ -59,7 +74,12 @@ class BridgeAcpAccountSettings {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider &&
+          template == other.template &&
+          enabled == other.enabled &&
+          command == other.command &&
+          args == other.args &&
+          env == other.env &&
+          documentRevision == other.documentRevision &&
           connectionRevision == other.connectionRevision;
 }
 
@@ -121,16 +141,31 @@ class BridgeAcpAccountTemplate {
 class BridgeAcpAccountUpdate {
   final String accountId;
   final String name;
-  final BridgeAcpProvider provider;
+  final BridgeAcpProvider? template;
+  final String? command;
+  final List<String>? args;
+  final Map<String, String> env;
+  final bool enabled;
 
   const BridgeAcpAccountUpdate({
     required this.accountId,
     required this.name,
-    required this.provider,
+    this.template,
+    this.command,
+    this.args,
+    required this.env,
+    required this.enabled,
   });
 
   @override
-  int get hashCode => accountId.hashCode ^ name.hashCode ^ provider.hashCode;
+  int get hashCode =>
+      accountId.hashCode ^
+      name.hashCode ^
+      template.hashCode ^
+      command.hashCode ^
+      args.hashCode ^
+      env.hashCode ^
+      enabled.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -139,7 +174,11 @@ class BridgeAcpAccountUpdate {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider;
+          template == other.template &&
+          command == other.command &&
+          args == other.args &&
+          env == other.env &&
+          enabled == other.enabled;
 }
 
 class BridgeAcpAuthAccount {

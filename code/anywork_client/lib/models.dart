@@ -21,6 +21,7 @@ export 'src/models/persistence_models.dart';
 export 'src/models/product_topic_models.dart';
 export 'src/models/account_models.dart';
 export 'src/models/acp_models.dart';
+export 'src/models/acp_local_detection_models.dart';
 export 'src/models/acp_install_models.dart';
 export 'src/models/recovery_models.dart';
 export 'src/models/remote_models.dart';

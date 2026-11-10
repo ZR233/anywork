@@ -192,12 +192,15 @@ impl SessionRuntime {
         resolution.interaction_id = local_id.to_owned();
         let _operation = self.agent_operation(&thread_id).await;
         let (thread, execution, is_root) = {
-            self.0.state().entries.get(&thread_id).map(|entry| {
-                (
-                    entry.native.thread.clone(),
-                    entry.native.execution,
-                    entry.identity.parent_agent_id.is_none(),
-                )
+            self.0.state().entries.get(&thread_id).and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some({
+                    (
+                        native.thread.clone(),
+                        native.execution,
+                        entry.identity.parent_agent_id.is_none(),
+                    )
+                })
             })
         }
         .ok_or(UserInteractionError::Identity)?;

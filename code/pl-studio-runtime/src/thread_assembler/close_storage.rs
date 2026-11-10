@@ -67,8 +67,11 @@ impl SessionRuntime {
         if self.observed_thread(id).is_some() {
             self.close(id).await?;
         }
-        self.close_prepared_resources(id, &workspace.native_resources())
-            .await?;
+        self.close_prepared_resources(
+            id,
+            &crate::session::PreparedResources::Native(workspace.native_resources()),
+        )
+        .await?;
         let services = { self.0.state().agent_services.clone() };
         let Some(services) = services else {
             return Ok(());
@@ -186,7 +189,7 @@ impl SessionRuntime {
                 .get(id)
                 .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
             (
-                entry.native.thread.clone(),
+                entry.native()?.thread.clone(),
                 state
                     .agent_services
                     .as_ref()
@@ -207,7 +210,7 @@ impl SessionRuntime {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?
-            .native
+            .native_mut()?
             .close_storage = Some(CloseStorage::Execution {
             completion: completion.clone(),
             binding,
@@ -282,12 +285,15 @@ impl SessionRuntime {
         purpose: ClosePurpose,
     ) -> Result<(), ThreadAssemblyError> {
         loop {
-            let owned = self.0.state().entries.get(id).map(|entry| {
-                (
-                    entry.native.incarnation.clone(),
-                    entry.native.thread.clone(),
-                    entry.native.close_storage.clone(),
-                )
+            let owned = self.0.state().entries.get(id).and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some({
+                    (
+                        native.incarnation.clone(),
+                        native.thread.clone(),
+                        native.close_storage.clone(),
+                    )
+                })
             });
             let (incarnation, thread, storage) =
                 owned.ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
@@ -316,13 +322,11 @@ impl SessionRuntime {
                     return Ok(());
                 }
                 None => {
-                    if self
-                        .0
-                        .state()
-                        .entries
-                        .get(id)
-                        .is_some_and(|entry| entry.native.purpose == EntryPurpose::Execution)
-                    {
+                    if self.0.state().entries.get(id).is_some_and(|entry| {
+                        entry
+                            .native()
+                            .is_ok_and(|native| native.purpose == EntryPurpose::Execution)
+                    }) {
                         return Ok(());
                     }
                     return Err(ThreadAssemblyError::Identity(id.to_owned()));
@@ -345,9 +349,14 @@ impl SessionRuntime {
                         let entry = state
                             .entries
                             .get_mut(id)
-                            .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
+                            .filter(|entry| {
+                                entry.native().is_ok_and(|native| {
+                                    Arc::ptr_eq(&native.incarnation, &incarnation)
+                                })
+                            })
                             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                        entry.native.close_storage = Some(CloseStorage::Initialized(binding));
+                        entry.native_mut()?.close_storage =
+                            Some(CloseStorage::Initialized(binding));
                     }
                     // The initialized sink supplies this exact channel; never resolve by ID later.
                     self.publish_observation(id, &thread);
@@ -357,9 +366,13 @@ impl SessionRuntime {
                     let entry = state
                         .entries
                         .get(id)
-                        .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
+                        .filter(|entry| {
+                            entry
+                                .native()
+                                .is_ok_and(|native| Arc::ptr_eq(&native.incarnation, &incarnation))
+                        })
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    if !matches!(entry.native.close_storage.as_ref(), Some(CloseStorage::Initialized(current))
+                    if !matches!(entry.native()?.close_storage.as_ref(), Some(CloseStorage::Initialized(current))
                         if Arc::ptr_eq(current, &binding))
                     {
                         continue;
@@ -386,7 +399,7 @@ impl SessionRuntime {
                         .entries
                         .get_mut(id)
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    entry.native.close_storage = Some(CloseStorage::Attaching {
+                    entry.native_mut()?.close_storage = Some(CloseStorage::Attaching {
                         binding,
                         completion,
                     });
@@ -412,9 +425,13 @@ impl SessionRuntime {
                     let entry = state
                         .entries
                         .get_mut(id)
-                        .filter(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
+                        .filter(|entry| {
+                            entry
+                                .native()
+                                .is_ok_and(|native| Arc::ptr_eq(&native.incarnation, &incarnation))
+                        })
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-                    entry.native.close_storage = Some(CloseStorage::Attached(binding));
+                    entry.native_mut()?.close_storage = Some(CloseStorage::Attached(binding));
                     return Ok(());
                 }
                 Some(CloseStorage::Attached(_)) => return Ok(()),
@@ -433,10 +450,10 @@ impl SessionRuntime {
             .entries
             .get(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        match entry.native.close_storage.as_ref() {
+        match entry.native()?.close_storage.as_ref() {
             Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
             Some(CloseStorage::Attached(binding)) => Ok(Some(binding.clone())),
-            None if entry.native.purpose == EntryPurpose::Execution => Ok(None),
+            None if entry.native()?.purpose == EntryPurpose::Execution => Ok(None),
             _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
         }
     }
@@ -482,7 +499,7 @@ impl SessionRuntime {
                 match state
                     .entries
                     .get(id)
-                    .and_then(|entry| entry.native.close_storage.as_ref())
+                    .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
                 {
                     Some(CloseStorage::Execution { binding, .. }) => binding.clone(),
                     Some(
@@ -505,7 +522,7 @@ impl SessionRuntime {
                 .state()
                 .entries
                 .get_mut(id)
-                .and_then(|entry| entry.native.close_storage.as_mut())
+                .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
             {
                 *joined = true;
             }
@@ -516,7 +533,7 @@ impl SessionRuntime {
             match state
                 .entries
                 .get(id)
-                .and_then(|entry| entry.native.close_storage.as_ref())
+                .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
             {
                 Some(CloseStorage::Execution {
                     preparation_storage: Some(token),
@@ -585,7 +602,7 @@ impl SessionRuntime {
             .state()
             .entries
             .get_mut(id)
-            .and_then(|entry| entry.native.close_storage.as_mut())
+            .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
         {
             *joined = true;
         }

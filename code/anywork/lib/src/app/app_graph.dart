@@ -9,6 +9,7 @@ import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_ports.dart';
+import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 
@@ -31,6 +32,7 @@ class AppGraph {
     AccountModelsPort? accountModels,
     AccountUsagePort? accountUsage,
     AcpPort? acpPort,
+    AcpBusinessPort? acpBusinessPort,
     StudioStartupHost? startupHost,
     ClipboardImageStager? clipboardImageStager,
   }) : startupHost = startupHost ?? ImmediateStudioStartupHost() {
@@ -56,6 +58,7 @@ class AppGraph {
       mutationBoard: mutations,
       settingsWrites: settingsWrites,
       accountDomains: accountDomains,
+      acpBusinessPort: acpBusinessPort,
       updateApi: updateApi,
       updatesEnabled: updatesEnabled,
       clipboardImageStager: (Uint8List bytes) async {

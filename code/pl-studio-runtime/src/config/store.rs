@@ -70,6 +70,10 @@ impl ConfigPaths {
         self.config_dir.join("agents")
     }
 
+    pub fn acp_dir(&self) -> PathBuf {
+        self.config_dir.join("acp")
+    }
+
     /// 用户工作模式的独立 JSON 目录；每个文件保存一份完整编辑文档。
     pub fn modes_dir(&self) -> PathBuf {
         self.config_dir.join("modes")
@@ -486,7 +490,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV32::from_config(&persisted)
+    super::document_migration::MainV33::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -1449,7 +1453,9 @@ mod tests {
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
         assert!(
-            loaded.acp.accounts.is_empty(),
+            super::super::acp_resource::scan(store.paths())
+                .definitions
+                .is_empty(),
             "schema 23 carries no ACP accounts"
         );
         assert_eq!(loaded.models.accounts, config.models.accounts);
@@ -1463,7 +1469,7 @@ mod tests {
         let current_profile =
             super::super::document_migration::load_profile(&profile_path, &current_profile)
                 .expect("load migrated Profile");
-        assert_eq!(current_profile.source_version, 2);
+        assert_eq!(current_profile.source_version, 3);
         assert!(!current_profile.migrated);
         let current_profile = current_profile.document.into_profile().unwrap();
         assert_eq!(current_profile.display_name, "Verify");

@@ -83,7 +83,10 @@ pub(super) fn read(
                             },
                         });
                     }
-                    for account in runtime.acp_auth.settings_view(config.revision, desired)? {
+                    for account in runtime
+                        .acp_auth
+                        .settings_view(config.revision, &config.acp)?
+                    {
                         accounts.push(AccountSummary {
                             identity: AccountIdentity::Acp {
                                 account_id: account.account_id,
@@ -91,7 +94,9 @@ pub(super) fn read(
                             name: account.name,
                             display_endpoint: None,
                             chatgpt_account: None,
-                            brand_key: Some(account.provider.as_str().to_owned()),
+                            brand_key: account
+                                .template
+                                .map(|template| template.as_str().to_owned()),
                             is_default: false,
                             billing_kind: None,
                             billing_kind_override: None,
@@ -135,7 +140,7 @@ pub(super) fn read(
                     }
                     AccountIdentity::Acp { account_id } => runtime
                         .acp_auth
-                        .settings_view(config.revision, config.canonical_config())?
+                        .settings_view(config.revision, &config.acp)?
                         .into_iter()
                         .find(|account| &account.account_id == account_id)
                         .map(AccountDetail::Acp),
@@ -196,6 +201,13 @@ pub(super) fn read(
             let snapshot = runtime.acp_install.read_state();
             Ok(AccountDomainFrame::AcpInstall {
                 stamp: runtime.resource_stamp("acp-install", snapshot.revision),
+                snapshot,
+            })
+        }
+        AccountObservationTarget::AcpLocalDetection => {
+            let snapshot = runtime.read_acp_local_detection_state();
+            Ok(AccountDomainFrame::AcpLocalDetection {
+                stamp: runtime.resource_stamp("acp-local-detection", snapshot.revision),
                 snapshot,
             })
         }

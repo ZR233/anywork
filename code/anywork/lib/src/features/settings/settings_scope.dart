@@ -76,6 +76,7 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ModelCatalogTopic() ||
         AccountUsageTopic() ||
         AcpAuthTopic() ||
+        AcpLocalDetectionTopic() ||
         AcpInstallTopic() => throw ArgumentError.value(
           topic,
           'topic',

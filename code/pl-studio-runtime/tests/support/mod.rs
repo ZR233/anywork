@@ -230,6 +230,7 @@ impl Environment {
                 workspace_mode: AgentWorkspaceMode::Worktree,
             },
             &config,
+            &Default::default(),
         )?;
         let runtime = Box::pin(StudioRuntime::initialize(Self::options(&home))).await?;
         let project = runtime.open_project(&repo).await?;

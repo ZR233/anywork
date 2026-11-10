@@ -140,9 +140,9 @@ impl StudioRuntime {
             .into_iter()
             .filter(|record| {
                 record.parent_thread_id.as_deref() == Some(host_thread_id)
-                    && record.visibility == crate::studio::ThreadVisibility::Active
+                    && !record.session.archived
             })
-            .map(|record| record.id)
+            .map(|record| record.agent.thread_id)
             .collect())
     }
 

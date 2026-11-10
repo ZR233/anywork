@@ -38,10 +38,11 @@ void main() {
       expect(
         visibleAcpCommandNotice(
           failure,
-          const AcpAccountSettingsView(
+          AcpAccountSettingsView(
             accountId: 'other',
+            documentRevision: BigInt.one,
             name: 'Other',
-            provider: AcpProviderView.antigravity,
+            template: AcpProviderView.antigravity,
             connectionRevision: 1,
           ),
           verified,

@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
+import '../types/acp_detection.dart';
 import '../types/acp_install.dart';
 import '../types/chatgpt_auth.dart';
 import '../types/command.dart';
@@ -102,6 +103,10 @@ sealed class BridgeAccountDomainFrame with _$BridgeAccountDomainFrame {
     required BridgeResourceStamp stamp,
     required BridgeAcpInstallSnapshot snapshot,
   }) = BridgeAccountDomainFrame_AcpInstall;
+  const factory BridgeAccountDomainFrame.acpLocalDetection({
+    required BridgeResourceStamp stamp,
+    required BridgeAcpLocalDetectionSnapshot snapshot,
+  }) = BridgeAccountDomainFrame_AcpLocalDetection;
   const factory BridgeAccountDomainFrame.chatGptLogin({
     required BridgeResourceStamp stamp,
     required BridgeChatGptLoginSnapshot snapshot,
@@ -177,6 +182,8 @@ sealed class BridgeAccountObservationTarget
       BridgeAccountObservationTarget_AcpAuth;
   const factory BridgeAccountObservationTarget.acpInstall() =
       BridgeAccountObservationTarget_AcpInstall;
+  const factory BridgeAccountObservationTarget.acpLocalDetection() =
+      BridgeAccountObservationTarget_AcpLocalDetection;
   const factory BridgeAccountObservationTarget.chatGptLogin({
     required String loginId,
   }) = BridgeAccountObservationTarget_ChatGptLogin;

@@ -35,6 +35,7 @@ pub enum BridgeProductTopic {
     AccountUsage,
     AcpAuth,
     AcpInstall,
+    AcpLocalDetection,
     SessionCosts { root_thread_id: String },
     ChildInteractions { host_thread_id: String },
     Updater,
@@ -89,6 +90,7 @@ impl BridgeProductTopic {
             Self::AccountUsage => StudioProductTopic::AccountUsage,
             Self::AcpAuth => StudioProductTopic::AcpAuth,
             Self::AcpInstall => StudioProductTopic::AcpInstall,
+            Self::AcpLocalDetection => StudioProductTopic::AcpLocalDetection,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
             }
@@ -122,6 +124,7 @@ pub enum BridgeProductBaseline {
     AccountUsage(BridgeAccountUsageStateSnapshot),
     AcpAuth(Box<BridgeAcpAuthSnapshot>),
     AcpInstall(Box<BridgeAcpInstallSnapshot>),
+    AcpLocalDetection(Box<super::BridgeAcpLocalDetectionSnapshot>),
     SessionCosts(Box<BridgeSessionCostsState>),
     ChildInteractions(Box<BridgeChildInteractionsState>),
     Updater(BridgeUpdaterStateSnapshot),

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
@@ -9,8 +12,9 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::studio::{
     AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
-    AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
-    AdmitAttachmentDraftsResponse, CancelAcpAuthRequest, CancelAcpInstallRequest,
+    AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AcpLocalDetectionCommandReply,
+    AcpLocalDetectionSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
+    CancelAcpAuthRequest, CancelAcpInstallRequest, CancelAcpLocalDetectionRequest,
     ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
     ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest, CreateThreadRequest,
     DeleteMcpDocumentRequest, ExpectedRevisionRequest, HealthResponse, LspResetRequest,
@@ -20,11 +24,12 @@ use pl_protocol::studio::{
     SearchSkillsRequest, SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
     SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
     SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
-    StartAcpAuthRequest, StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
-    StudioError, SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest,
-    ThreadMcpStateSnapshot, ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
-    UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+    StartAcpAuthRequest, StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest,
+    StopThreadResponse, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
+    StudioCommandRequest, StudioError, SubmitPromptRequest, SyncAccountModelsReply,
+    SyncAccountModelsRequest, ThreadMcpStateSnapshot, ThreadModelRouteCommandReply,
+    ThreadPageQuery, UpdateAcpAccountRequest, UpdateMcpDocumentRequest,
+    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -211,6 +216,7 @@ pub(crate) fn parse_product_topic(
         "accountUsage" => StudioProductTopic::AccountUsage,
         "acpAuth" => StudioProductTopic::AcpAuth,
         "acpInstall" => StudioProductTopic::AcpInstall,
+        "acpLocalDetection" => StudioProductTopic::AcpLocalDetection,
         "modelPerformance" => StudioProductTopic::ModelPerformance,
         "sessionCosts" => StudioProductTopic::SessionCosts {
             root_thread_id: query.root_thread_id.clone().unwrap_or_default(),
@@ -348,6 +354,9 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
         .routes(routes!(cancel_acp_install))
+        .routes(routes!(read_acp_local_detection))
+        .routes(routes!(start_acp_local_detection))
+        .routes(routes!(cancel_acp_local_detection))
         .routes(routes!(read_recovery, retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
@@ -373,6 +382,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(sse::thread_events))
         .routes(routes!(sse::thread_state_events))
         .merge(crate::bots::bot_routes())
+        .merge(crate::acp_business::routes())
         .merge(attachment_upload)
 }
 
@@ -1336,6 +1346,39 @@ async fn cancel_acp_install(
         state
             .runtime
             .cancel_acp_install(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/acp/local-detection", operation_id = "acpLocalDetection.read", responses(StudioApiErrors, (status = 200, body = AcpLocalDetectionSnapshot)))]
+async fn read_acp_local_detection(
+    State(state): State<AppState>,
+) -> Result<Json<AcpLocalDetectionSnapshot>, ApiError> {
+    Ok(Json(state.runtime.read_acp_local_detection_state()))
+}
+
+#[utoipa::path(post, path = "/api/v1/acp/local-detection/start", operation_id = "acpLocalDetection.start", request_body = StartAcpLocalDetectionRequest, responses(StudioApiErrors, (status = 200, body = AcpLocalDetectionCommandReply)))]
+async fn start_acp_local_detection(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<StartAcpLocalDetectionRequest>,
+) -> Result<Json<AcpLocalDetectionCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .start_acp_local_detection(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/acp/local-detection/cancel", operation_id = "acpLocalDetection.cancel", request_body = CancelAcpLocalDetectionRequest, responses(StudioApiErrors, (status = 200, body = AcpLocalDetectionCommandReply)))]
+async fn cancel_acp_local_detection(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelAcpLocalDetectionRequest>,
+) -> Result<Json<AcpLocalDetectionCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .cancel_acp_local_detection(request)
             .map_err(ApiError::from)?,
     ))
 }

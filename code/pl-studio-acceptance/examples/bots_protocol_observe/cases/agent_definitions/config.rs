@@ -14,7 +14,7 @@ use pl_provider_fixture::agent_definitions::{
     UNAVAILABLE_PROFILE, USER_MODEL_NEW, USER_MODEL_OLD, USER_PROFILE,
 };
 use pl_studio_runtime::config::{
-    ConfigPaths, StudioConfig, UserAgentProfile, save_user_agent_profile,
+    AcpDefinitionsSnapshot, ConfigPaths, StudioConfig, UserAgentProfile, save_user_agent_profile,
 };
 use std::{fs, path::Path};
 
@@ -96,23 +96,28 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     config.validate()?;
     write(home, &config)?;
     let paths = ConfigPaths::from_config_dir(home);
+    // This scenario owns a Native-only synthetic account/Profile inventory.
+    let acp = AcpDefinitionsSnapshot::default();
     save_user_agent_profile(
         &paths,
         USER_PROFILE,
         &user(true, OLD_ROLE, USER_MODEL_OLD)?,
         &config,
+        &acp,
     )?;
     save_user_agent_profile(
         &paths,
         DISABLED_PROFILE,
         &user(false, "Disabled synthetic role.", USER_MODEL_OLD)?,
         &config,
+        &acp,
     )?;
     save_user_agent_profile(
         &paths,
         UNAVAILABLE_PROFILE,
         &user(true, "Withdrawn-model synthetic role.", UNAVAILABLE_MODEL)?,
         &config,
+        &acp,
     )?;
     read(home)?
         .validate()
@@ -143,6 +148,7 @@ pub(crate) fn change_future_profiles(home: &Path) -> Result<()> {
         USER_PROFILE,
         &user(true, NEW_ROLE, USER_MODEL_NEW)?,
         &config,
+        &AcpDefinitionsSnapshot::default(),
     )?;
     ensure!(changed, "future user Profile did not change");
     Ok(())

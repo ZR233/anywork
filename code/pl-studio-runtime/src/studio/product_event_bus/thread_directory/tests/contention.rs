@@ -40,7 +40,7 @@ async fn hot_patch_and_query_do_not_wait_for_the_catalog_write_lock() -> Result<
     worker.join().unwrap();
     let frame = result.expect("metadata must not wait for the Catalog I/O lock")?;
     assert_eq!(
-        frame.row.unwrap().status,
+        frame.row.unwrap().native_status().unwrap(),
         pl_protocol::ThreadStatus::Running
     );
     events.writer.shutdown().await?;
@@ -79,14 +79,17 @@ async fn update_uses_the_request_baseline_not_a_later_runtime_row() -> Result<()
         .row
         .unwrap();
     assert_eq!(row.title, "Manual title");
-    assert_eq!(row.status, pl_protocol::ThreadStatus::Running);
-    assert_eq!(row.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        row.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Running
+    );
+    assert_eq!(row.mode, Some(pl_protocol::ThreadModeId::task()));
     events.writer.flush().await?;
     let session = events.store.catalog().get_session("root").unwrap();
     let agent = events.store.catalog().get_agent("root").unwrap();
     assert_eq!(session.title, row.title);
-    assert_eq!(agent.status, row.status);
-    assert_eq!(session.mode, row.mode);
+    assert_eq!(agent.native_status(), row.native_status());
+    assert_eq!(session.native_mode, row.mode);
     events.writer.shutdown().await?;
     Ok(())
 }
@@ -111,17 +114,26 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         &pl_core::thread::ThreadSnapshot::default(),
     )?;
     let (_, baseline_agent) = events.directory_facts("child").expect("facts");
-    assert_eq!(baseline_agent.status, pl_protocol::ThreadStatus::Closing);
+    assert_eq!(
+        baseline_agent.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Closing
+    );
     let mut closed_agent = baseline_agent.clone();
-    closed_agent.status = pl_protocol::ThreadStatus::Closed;
+    closed_agent.set_native_status(pl_protocol::ThreadStatus::Closed);
     let (saving, release_save) = install_pause(&events.directory_test_pauses.commit_before_persist);
     let commit = events.commit_agent_update(baseline_agent, closed_agent);
     tokio::pin!(commit);
     assert!(poll!(commit.as_mut()).is_pending());
     saving.await?;
     events.record_user_message("child", 4);
+    assert!(
+        events
+            .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+            .await
+            .is_err()
+    );
     events
-        .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+        .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 5)
         .await?;
     release_save.send(()).unwrap();
     commit.await?;
@@ -129,9 +141,12 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         .read_thread_metadata("child", "close-projection")?
         .row
         .unwrap();
-    assert_eq!(projected.status, pl_protocol::ThreadStatus::Closed);
-    assert_eq!(projected.updated_at, 5);
-    assert_eq!(projected.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        projected.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Closed
+    );
+    assert_eq!(projected.updated_at, 3);
+    assert_eq!(projected.mode, None);
     // 已受理用户消息的水位是会话级事实：成员行不携带，主成员行保留并发提交期间的值。
     let root_row = events
         .read_thread_metadata("root", "close-projection")?
@@ -149,16 +164,23 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
             .read_thread_metadata("child", "close-test")?
             .row
             .unwrap()
-            .status,
+            .native_status()
+            .unwrap(),
         pl_protocol::ThreadStatus::Closed
     );
     events.writer.shutdown().await?;
     let saved_agent = events.store.catalog().get_agent("child").unwrap();
     assert!(saved_agent.explicitly_closed);
-    assert_eq!(saved_agent.status, pl_protocol::ThreadStatus::Closed);
+    assert_eq!(
+        saved_agent.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Closed
+    );
     assert_eq!(saved_agent.updated_at, 6);
     let saved_session = events.store.catalog().get_session("root").unwrap();
     assert_eq!(saved_session.last_user_message_at, Some(4));
-    assert_eq!(saved_session.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        saved_session.native_mode,
+        Some(pl_protocol::ThreadModeId::task())
+    );
     Ok(())
 }

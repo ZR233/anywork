@@ -410,6 +410,10 @@ const _project = StudioProject(
 
 SessionDirectoryRow _thread(String id, String title, int year) =>
     SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
       sessionId: id,
       agentId: id,
       threadId: id,
@@ -419,7 +423,7 @@ SessionDirectoryRow _thread(String id, String title, int year) =>
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(year),
-      status: ThreadStatusView.idle,
+
       workspaceMode: ThreadWorkspaceMode.local,
       workspacePath: _project.path,
     );

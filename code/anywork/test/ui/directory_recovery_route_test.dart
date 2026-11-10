@@ -543,7 +543,9 @@ void main() {
       await tester.pump();
       transport.directoryRevision++;
       transport.directoryThreads[root.threadId] = root.copyWith(
-        status: ThreadStatusView.running,
+        backend: (root.backend as NativeAgentBackendView).copyWith(
+          status: ThreadStatusView.running,
+        ),
       );
       await pumpClientFuture(
         tester,
@@ -556,7 +558,8 @@ void main() {
             directoryDemand.state.value.frame?.rows.any(
               (row) =>
                   row.threadId == root.threadId &&
-                  row.status == ThreadStatusView.running,
+                  (row.backend as NativeAgentBackendView).status ==
+                      ThreadStatusView.running,
             ) ==
             true,
         'running root frame is accepted',

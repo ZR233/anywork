@@ -187,6 +187,7 @@ class StudioChannels {
       ),
       AcpAuthTopic() => throw StateError('Use ACP domain'),
       AcpInstallTopic() => throw StateError('Use ACP domain'),
+      AcpLocalDetectionTopic() => throw StateError('Use ACP domain'),
       BotsTopic() => _clock(_client.bots.state),
     };
   }
@@ -251,6 +252,7 @@ class StudioChannels {
       case AcpAuthBaseline():
         throw StateError('Use account domain observation');
       case AcpInstallBaseline():
+      case AcpLocalDetectionBaseline():
         throw StateError('Use account domain observation');
       case BotsBaseline(:final state):
         _client.bots.apply(state);
@@ -309,6 +311,7 @@ class StudioChannels {
       case AcpAuthStateChangedPayload():
         throw StateError('Use account domain observation');
       case AcpInstallStateChangedPayload():
+      case AcpLocalDetectionStateChangedPayload():
         throw StateError('Use account domain observation');
       case BotsStateChangedPayload(:final state):
         _client.bots.apply(state);
@@ -356,6 +359,7 @@ class StudioChannels {
       case AcpAuthTopic():
         throw StateError('Use account domain observation');
       case AcpInstallTopic():
+      case AcpLocalDetectionTopic():
         throw StateError('Use account domain observation');
       case BotsTopic():
         _client.bots.applyTransport(sync);
@@ -418,6 +422,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         AgentProfilesBaseline(:final state) => state.revision,
         AcpAuthBaseline(:final state) => state.revision,
         AcpInstallBaseline(:final state) => state.revision,
+        AcpLocalDetectionBaseline(:final state) => state.revision,
         BotsBaseline(:final state) => state.revision,
       },
     ProductTopicDataFrame(:final event) => switch (event.payload) {
@@ -442,6 +447,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       AgentProfilesStateChangedPayload(:final state) => state.revision,
       AcpAuthStateChangedPayload(:final state) => state.revision,
       AcpInstallStateChangedPayload(:final state) => state.revision,
+      AcpLocalDetectionStateChangedPayload(:final state) => state.revision,
       BotsStateChangedPayload(:final state) => state.revision,
     },
     ProductTopicLaggedFrame() || ProductTopicFailureFrame() => null,

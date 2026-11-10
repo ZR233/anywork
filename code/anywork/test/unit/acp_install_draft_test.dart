@@ -43,7 +43,7 @@ void publishInstall(AccountsVmHarness h, AcpInstallStateView state) => h
     .publish(AccountResource(stamp: vmStamp, value: installSnapshot(state)));
 const creatingKey = AccountAcpKey(
   target: AccountDisplayKey(kind: AccountKind.acp, id: 'new'),
-  providerId: 'antigravity',
+  templateId: 'antigravity',
   connectionRevision: 0,
   editorId: 'form-1',
   creating: true,

@@ -60,7 +60,7 @@ impl AgentProfileCatalog {
                         &path,
                         "agent-profile",
                         None,
-                        1,
+                        3,
                         "UTF-8",
                         error,
                     ))
@@ -71,8 +71,8 @@ impl AgentProfileCatalog {
                     super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
                         &path,
                         "agent-profile",
-                        Some(2),
-                        2,
+                        Some(3),
+                        3,
                         "validate",
                         error,
                     ))
@@ -91,8 +91,8 @@ impl AgentProfileCatalog {
                     super::ConfigRuntimeError::Migration(crate::toml_schema::migration_error(
                         &path,
                         "agent-profile",
-                        Some(2),
-                        2,
+                        Some(3),
+                        3,
                         "validate",
                         error,
                     ))
@@ -135,16 +135,26 @@ impl AgentProfileCatalog {
         Ok(catalog)
     }
 
-    fn push_profile(&mut self, profile: AgentProfile, config: &StudioConfig) {
+    fn push_profile(
+        &mut self,
+        profile: AgentProfile,
+        config: &StudioConfig,
+        acp_definitions: &super::AcpDefinitionsSnapshot,
+    ) {
         let availability = match &profile.binding {
-            AgentBinding::Acp(acp) => config
-                .acp
-                .accounts
+            AgentBinding::Acp(acp) => acp_definitions
+                .definitions
                 .get(&acp.account_id)
                 .ok_or_else(|| {
                     PureError::ConfigError(format!("unknown ACP account `{}`", acp.account_id))
                 })
-                .and_then(super::acp::validate_acp_account)
+                .and_then(|entry| {
+                    if entry.definition.enabled {
+                        Ok(())
+                    } else {
+                        Err(PureError::ConfigError("ACP definition is disabled".into()))
+                    }
+                })
                 .and_then(|_| {
                     crate::studio::delegation::resolve_current_child_route(config, &profile)
                         .map(|_| ())
@@ -167,18 +177,27 @@ impl AgentProfileCatalog {
         self.profiles.push(profile);
     }
 
-    pub fn discover(paths: &ConfigPaths, config: &StudioConfig) -> Self {
-        Self::discover_with_disabled(paths, config, false)
+    pub fn discover(
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+    ) -> Self {
+        Self::discover_with_disabled(paths, config, acp, false)
     }
 
     /// 设置页保留被禁用的系统与用户 Profile；执行目录仍只返回启用项。
-    pub fn discover_for_settings(paths: &ConfigPaths, config: &StudioConfig) -> Self {
-        Self::discover_with_disabled(paths, config, true)
+    pub fn discover_for_settings(
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+    ) -> Self {
+        Self::discover_with_disabled(paths, config, acp, true)
     }
 
     fn discover_with_disabled(
         paths: &ConfigPaths,
         config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
         include_disabled: bool,
     ) -> Self {
         let mut catalog = system_profiles(config, include_disabled);
@@ -218,7 +237,7 @@ impl AgentProfileCatalog {
         paths.sort();
         for path in paths {
             match load_user_profile(&path, include_disabled) {
-                Ok(Some(profile)) => catalog.push_profile(profile, config),
+                Ok(Some(profile)) => catalog.push_profile(profile, config, acp),
                 Ok(None) => {}
                 Err(error) => catalog.diagnostics.push(AgentProfileDiagnostic {
                     path,
@@ -269,10 +288,11 @@ pub fn save_user_agent_profile(
     profile_id: &str,
     profile: &UserAgentProfile,
     config: &StudioConfig,
+    acp: &super::AcpDefinitionsSnapshot,
 ) -> Result<bool> {
     validate_user_agent_profile_id(profile_id)?;
-    validate_user_profile(profile_id, profile, config)?;
-    let content = super::document_migration::ProfileV2::from_current(profile)
+    validate_user_profile(profile_id, profile, config, acp)?;
+    let content = super::document_migration::ProfileV3::from_current(profile)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!(
@@ -325,7 +345,9 @@ fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfil
         })
     {
         match system_profile(definition, config) {
-            Ok(profile) => catalog.push_profile(profile, config),
+            Ok(profile) => {
+                catalog.push_profile(profile, config, &super::AcpDefinitionsSnapshot::default())
+            }
             Err(error) => {
                 tracing::warn!(profile_id = %definition.identity.id, %error, "system Agent Profile is unavailable");
                 catalog.diagnostics.push(AgentProfileDiagnostic {
@@ -476,6 +498,7 @@ pub(super) fn validate_user_profile(
     profile_id: &str,
     profile: &UserAgentProfile,
     config: &StudioConfig,
+    definitions: &super::AcpDefinitionsSnapshot,
 ) -> Result<()> {
     validate_user_profile_fields(profile_id, profile)?;
     match &profile.binding {
@@ -496,10 +519,13 @@ pub(super) fn validate_user_profile(
                 .map(|_| ())
         }
         AgentBinding::Acp(acp) => {
-            let account = config.acp.accounts.get(&acp.account_id).ok_or_else(|| {
-                PureError::ConfigError(format!("unknown ACP account `{}`", acp.account_id))
-            })?;
-            super::acp::validate_acp_account(account)
+            let entry = definitions
+                .definitions
+                .get(&acp.account_id)
+                .ok_or_else(|| {
+                    PureError::ConfigError(format!("unknown ACP account `{}`", acp.account_id))
+                })?;
+            entry.definition.validate()
         }
     }
 }
@@ -508,17 +534,7 @@ pub(super) fn validate_user_profile_fields(
     profile_id: &str,
     profile: &UserAgentProfile,
 ) -> Result<()> {
-    for (field, value) in [
-        ("display_name", profile.display_name.as_str()),
-        ("description", profile.description.as_str()),
-        ("when_to_use", profile.when_to_use.as_str()),
-    ] {
-        if value.trim().is_empty() {
-            return Err(PureError::ConfigError(format!(
-                "Agent Profile `{profile_id}` has empty {field}"
-            )));
-        }
-    }
+    validate_user_profile_metadata(profile_id, profile)?;
     match &profile.binding {
         AgentBinding::Native(native) => {
             let route = native.route.as_ref().ok_or_else(|| {
@@ -537,6 +553,24 @@ pub(super) fn validate_user_profile_fields(
             }
         }
         AgentBinding::Acp(acp) => super::acp::validate_acp_account_id(&acp.account_id)?,
+    }
+    Ok(())
+}
+
+pub(super) fn validate_user_profile_metadata(
+    profile_id: &str,
+    profile: &UserAgentProfile,
+) -> Result<()> {
+    for (field, value) in [
+        ("display_name", profile.display_name.as_str()),
+        ("description", profile.description.as_str()),
+        ("when_to_use", profile.when_to_use.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(PureError::ConfigError(format!(
+                "Agent Profile `{profile_id}` has empty {field}"
+            )));
+        }
     }
     Ok(())
 }

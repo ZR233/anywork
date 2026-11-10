@@ -9,9 +9,10 @@ mod agent_runtime;
 mod session_close_tests;
 mod table;
 
-pub(crate) use agent::AgentInstance;
+pub(crate) use agent::{AgentInstance, AgentRuntime};
 pub(crate) use agent_runtime::NativeResources;
 pub(crate) use agent_runtime::NativeThreadRuntime;
+pub(crate) use agent_runtime::PreparedResources;
 pub(crate) use table::SessionTable;
 pub(crate) use table::WeakSessionTable;
 

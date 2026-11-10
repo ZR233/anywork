@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/material3_theme.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../accounts_views.dart';
+import 'account_preview_fixtures.dart';
 
 Widget accountPreviewHost(
   Widget Function(ValueChanged<String> record) builder, {
@@ -297,9 +298,30 @@ class _AcpEditorScenarioState extends State<_AcpEditorScenario> {
   @override
   Widget build(BuildContext context) => AcpAccountEditorView(
     value: _value,
+    templateSelector: _value.accountKey != null
+        ? null
+        : AccountTemplateSelector(
+            templates: AccountPreviewFixtures.templates,
+            selected: const AccountTemplateKey(
+              kind: AccountKind.acp,
+              id: 'command',
+            ),
+            onSelected: (key) =>
+                widget.record('select ${key.kind.name}: ${key.id}'),
+          ),
     onNameChanged: (raw) => setState(
       () => _value = _value.copyWith(name: _value.name.copyWith(raw: raw)),
     ),
+    onSourceChanged: (source) =>
+        setState(() => _value = _value.copyWith(source: source)),
+    onCommandChanged: (command) =>
+        setState(() => _value = _value.copyWith(command: command)),
+    onArgsChanged: (args) =>
+        setState(() => _value = _value.copyWith(args: args)),
+    onEnvironmentChanged: (entries) =>
+        setState(() => _value = _value.copyWith(environment: entries)),
+    onEnabledChanged: (enabled) =>
+        setState(() => _value = _value.copyWith(enabled: enabled)),
     onAction: (action) => widget.record('ACP: ${action.name}'),
     onLoginMethodChanged: (method) => widget.record('method: $method'),
     onSave: () => widget.record('save ACP (not persisted)'),

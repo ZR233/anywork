@@ -14,7 +14,7 @@ use pl_protocol::studio::{
 use super::admission::AcpAuthRuntime;
 use super::mapping::acp_error;
 use super::registry::ConnectionIdentity;
-use crate::config::{AcpProvider, StudioConfig};
+use crate::config::{AcpDefinitionsSnapshot, AcpLaunch, AcpProvider};
 
 /// 本阶段的接入模板；只读默认值，不启动程序。
 ///
@@ -45,14 +45,14 @@ impl AcpAuthRuntime {
     pub(crate) fn settings_view(
         &self,
         settings_revision: u64,
-        config: &StudioConfig,
+        config: &AcpDefinitionsSnapshot,
     ) -> Result<Vec<AcpAccountSettings>> {
         let registry = self.inner.lock();
         if registry.settings_revision != settings_revision {
             return Err(stale_settings_error());
         }
-        let mut accounts = Vec::with_capacity(config.acp.accounts.len());
-        for (account_id, account) in &config.acp.accounts {
+        let mut accounts = Vec::with_capacity(config.definitions.len());
+        for (account_id, account) in &config.definitions {
             let Some(slot) = registry.slots.get(account_id) else {
                 return Err(stale_settings_error());
             };
@@ -61,8 +61,19 @@ impl AcpAuthRuntime {
             }
             accounts.push(AcpAccountSettings {
                 account_id: account_id.clone(),
-                name: account.name.clone(),
-                provider: provider_dto(account.provider),
+                name: account.definition.display_name.clone(),
+                template: account.definition.template_kind().map(provider_dto),
+                enabled: account.definition.enabled,
+                command: match &account.definition.launch {
+                    AcpLaunch::Command { command, .. } => Some(command.clone()),
+                    _ => None,
+                },
+                args: match &account.definition.launch {
+                    AcpLaunch::Command { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                },
+                env: account.definition.env.clone(),
+                document_revision: account.document_revision,
                 connection_revision: slot.revision,
             });
         }

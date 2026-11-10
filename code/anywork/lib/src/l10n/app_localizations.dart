@@ -8871,7 +8871,7 @@ abstract class AppLocalizations {
   /// No description provided for @acpAccountSaveAndConnect.
   ///
   /// In en, this message translates to:
-  /// **'Save and connect'**
+  /// **'Add and connect'**
   String get acpAccountSaveAndConnect;
 
   /// No description provided for @acpAccountSavedConnectIncomplete.
@@ -11177,6 +11177,162 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The current model does not support reasoning effort'**
   String get composerEffortUnsupported;
+
+  /// No description provided for @acpAccountSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection'**
+  String get acpAccountSource;
+
+  /// No description provided for @acpSourceLocal.
+  ///
+  /// In en, this message translates to:
+  /// **'Local agy'**
+  String get acpSourceLocal;
+
+  /// No description provided for @acpSourceCommand.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom command'**
+  String get acpSourceCommand;
+
+  /// No description provided for @acpSourceManaged.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed installation'**
+  String get acpSourceManaged;
+
+  /// No description provided for @acpCommandLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Program'**
+  String get acpCommandLabel;
+
+  /// No description provided for @acpArgsLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Arguments'**
+  String get acpArgsLabel;
+
+  /// No description provided for @acpArgumentLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Argument'**
+  String get acpArgumentLabel;
+
+  /// No description provided for @acpAddArgument.
+  ///
+  /// In en, this message translates to:
+  /// **'Add argument'**
+  String get acpAddArgument;
+
+  /// No description provided for @acpEnvironmentLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Environment'**
+  String get acpEnvironmentLabel;
+
+  /// No description provided for @acpEnvironmentKey.
+  ///
+  /// In en, this message translates to:
+  /// **'Key'**
+  String get acpEnvironmentKey;
+
+  /// No description provided for @acpEnvironmentValue.
+  ///
+  /// In en, this message translates to:
+  /// **'Value'**
+  String get acpEnvironmentValue;
+
+  /// No description provided for @acpAddEnvironment.
+  ///
+  /// In en, this message translates to:
+  /// **'Add environment variable'**
+  String get acpAddEnvironment;
+
+  /// No description provided for @acpAccountEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable account'**
+  String get acpAccountEnabled;
+
+  /// No description provided for @acpDetectionIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked'**
+  String get acpDetectionIdle;
+
+  /// No description provided for @acpDetectionChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking local agy'**
+  String get acpDetectionChecking;
+
+  /// No description provided for @acpDetectionMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'agy not found. Enter its path or choose another connection.'**
+  String get acpDetectionMissing;
+
+  /// No description provided for @acpDetectionUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This agy does not support ACP. Update it or choose another connection.'**
+  String get acpDetectionUnsupported;
+
+  /// No description provided for @acpDetectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Detection failed. Check again.'**
+  String get acpDetectionFailed;
+
+  /// No description provided for @acpDetectionCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling detection'**
+  String get acpDetectionCancelling;
+
+  /// No description provided for @acpDetectionCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Detection cancelled'**
+  String get acpDetectionCancelled;
+
+  /// No description provided for @acpDetectionRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Check again'**
+  String get acpDetectionRefresh;
+
+  /// No description provided for @acpInvalidCommand.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a PATH program name or absolute path; enter arguments separately.'**
+  String get acpInvalidCommand;
+
+  /// No description provided for @acpInvalidEnvironment.
+  ///
+  /// In en, this message translates to:
+  /// **'Environment keys must be unique, nonempty, and contain no equals sign.'**
+  String get acpInvalidEnvironment;
+
+  /// No description provided for @acpRemoveEntry.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove'**
+  String get acpRemoveEntry;
+
+  /// No description provided for @accountsApi.
+  ///
+  /// In en, this message translates to:
+  /// **'API'**
+  String get accountsApi;
+
+  /// No description provided for @accountsAcp.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP'**
+  String get accountsAcp;
 }
 
 class _AppLocalizationsDelegate

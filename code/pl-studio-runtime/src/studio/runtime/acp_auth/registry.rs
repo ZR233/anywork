@@ -13,11 +13,10 @@ use pl_protocol::studio::{
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{AcpAccountConfig, AcpProvider, ConfigRuntime, StudioConfig};
+use crate::config::{AcpDefinitionEntry, AcpDefinitionsSnapshot, ConfigRuntime};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
 
-use super::super::acp_install::ReleaseIdentity;
-use super::worker::WorkerSource;
+use super::super::acp_worker::WorkerSource;
 
 /// 每条接入在认证 owner 中的代次记录。
 pub(super) struct Slot {
@@ -77,22 +76,22 @@ impl Slot {
     }
 }
 
-/// 真正决定连接语义的身份：provider 与产品固定发行身份（版本 + 宿主 target）。
-///
-/// 账号配置里没有程序或参数，因此这里**不可能**被配置或客户端改写；产品更换固定发行后旧代次
-/// 自然失效，名称编辑不改变它（design/28 §28.2）。
+/// ConfigRuntime owns connection revisions; auth only tracks its admitted identity and enabled state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectionIdentity {
-    pub(super) provider: AcpProvider,
-    /// 平台不受支持时为 `None`：仍然按 provider 建立条目，检查时明确失败为不支持。
-    pub(super) release: Option<ReleaseIdentity>,
+    revision: u64,
+    enabled: bool,
+    release: Option<super::super::acp_install::ReleaseIdentity>,
 }
-
 impl ConnectionIdentity {
-    pub(super) fn of(account: &AcpAccountConfig) -> Self {
+    pub(super) fn of(entry: &AcpDefinitionEntry) -> Self {
         Self {
-            provider: account.provider,
-            release: super::super::acp_install::release_identity(account.provider),
+            revision: entry.connection_revision,
+            enabled: entry.definition.enabled,
+            release: entry
+                .definition
+                .template_kind()
+                .and_then(super::super::acp_install::release_identity),
         }
     }
 }
@@ -145,7 +144,6 @@ pub(super) struct Registry {
     pub(super) revision: u64,
     pub(super) updated_at: i64,
     pub(super) next_generation: u64,
-    pub(super) next_connection_revision: u64,
     /// 已观察过的 Settings revision；只接受不旧于它的快照，绝不回退。
     pub(super) settings_revision: u64,
     /// 关闭闸门：与 start 登记同锁，一旦封闭不再接受新操作。
@@ -159,11 +157,6 @@ impl Registry {
     pub(super) fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
         self.updated_at = unix_seconds();
-    }
-
-    pub(super) fn mint_connection_revision(&mut self) -> u64 {
-        self.next_connection_revision = self.next_connection_revision.saturating_add(1);
-        self.next_connection_revision
     }
 
     pub(super) fn mint_generation(&mut self) -> u64 {
@@ -233,7 +226,11 @@ impl AcpAuthInner {
     /// 快照直接忽略，绝不回退 registry 或误取消当前有效操作。
     ///
     /// 只发取消信号，不 join 也不清理进程——真正的收束由操作 supervisor 完成。
-    pub(super) fn observe_committed(&self, settings_revision: u64, config: &StudioConfig) {
+    pub(super) fn observe_committed(
+        &self,
+        settings_revision: u64,
+        config: &AcpDefinitionsSnapshot,
+    ) {
         let snapshot = {
             let mut registry = self.lock();
             if settings_revision < registry.settings_revision {
@@ -247,10 +244,10 @@ impl AcpAuthInner {
             registry.settings_revision = settings_revision;
             let mut changed = false;
             let mut cancelled = 0usize;
-            for (account_id, account) in &config.acp.accounts {
+            for (account_id, account) in &config.definitions {
                 let identity = ConnectionIdentity::of(account);
                 if !registry.slots.contains_key(account_id) {
-                    let revision = registry.mint_connection_revision();
+                    let revision = account.connection_revision;
                     registry.slots.insert(
                         account_id.clone(),
                         Slot {
@@ -272,8 +269,8 @@ impl AcpAuthInner {
                 if !stale {
                     continue;
                 }
-                // provider 或产品固定发行身份变化：旧代次立即失效，已有操作被撤消。
-                let revision = registry.mint_connection_revision();
+                // 定义连接身份或启用资格变化：旧认证操作立即撤销，但保留真实收束责任。
+                let revision = account.connection_revision;
                 let Some(slot) = registry.slots.get_mut(account_id) else {
                     continue;
                 };
@@ -301,7 +298,7 @@ impl AcpAuthInner {
                 }
                 changed = true;
             }
-            let known: std::collections::BTreeSet<&String> = config.acp.accounts.keys().collect();
+            let known: std::collections::BTreeSet<&String> = config.definitions.keys().collect();
             let removed: Vec<String> = registry
                 .slots
                 .keys()
@@ -492,7 +489,8 @@ mod tests {
     fn slot(state: AcpAuthState, usage: Option<AcpUsageObservation>) -> Slot {
         Slot {
             identity: ConnectionIdentity {
-                provider: AcpProvider::Antigravity,
+                revision: 7,
+                enabled: true,
                 release: None,
             },
             revision: 7,

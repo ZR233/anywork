@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 
+use crate::studio::records::DirectoryMember;
 use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
@@ -83,7 +84,9 @@ impl StudioRuntime {
             .commit_directory(delta)
             .await?;
         let thread = ThreadRecord::from_directory_thread(
-            crate::studio::records::thread_projection(&session, &agent),
+            crate::studio::records::thread_projection(&session, &agent, |id| {
+                (id == agent.agent_id).then(|| agent.thread_id.clone())
+            })?,
         );
         self.register_new_thread(thread.clone()).await?;
         Ok(thread)
@@ -222,7 +225,9 @@ impl StudioRuntime {
         session.delegation_preference = request
             .delegation_preference
             .unwrap_or(config.config.delegation.preference);
-        let thread = crate::studio::records::thread_projection(&session, &agent);
+        let thread = crate::studio::records::thread_projection(&session, &agent, |id| {
+            (id == agent.agent_id).then(|| agent.thread_id.clone())
+        })?;
         delta.session_upserts = vec![session];
         // Stage before publication: a directory observer may concurrently
         // activate this identity, and must use this exact request route.
@@ -374,9 +379,7 @@ impl StudioRuntime {
             .find(|row| row.thread_id == thread_id)
             .ok_or_else(|| anyhow::anyhow!("thread rename result is missing its identity"))?;
         Ok(RenameThreadCommandReply {
-            thread: ThreadRecord::from_directory_thread(crate::studio::records::thread_from_row(
-                row,
-            )),
+            thread: row.clone(),
             receipt: self.command_receipt(
                 operation_id,
                 changed,
@@ -449,13 +452,19 @@ impl StudioRuntime {
         };
         let session = self.session_for_roots(std::slice::from_ref(&thread_id))?;
         let scope = session.seal_archive_scope(std::slice::from_ref(&thread_id))?;
-        let admitted = scope.preparation_identities(&thread.workspace_id);
+        let admitted = scope.preparation_identities(&thread.session.workspace_id);
         let mut admitted_ids = scope.thread_ids();
-        admitted_ids.extend(thread_tree.iter().map(|thread| thread.id.clone()));
+        admitted_ids.extend(
+            thread_tree
+                .iter()
+                .map(|thread| thread.agent.thread_id.clone()),
+        );
         admitted_ids.sort();
         admitted_ids.dedup();
         let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
-        let root_index = roots.iter().position(|candidate| candidate.id == thread_id);
+        let root_index = roots
+            .iter()
+            .position(|candidate| candidate.thread_id == thread_id);
         let next_root = root_index
             .and_then(|index| {
                 roots
@@ -497,7 +506,7 @@ impl StudioRuntime {
         anyhow::ensure!(
             settled_tree
                 .iter()
-                .all(|thread| admitted_ids.contains(&thread.id)),
+                .all(|thread| admitted_ids.contains(&thread.agent.thread_id)),
             "archive member has no frozen preparation responsibility"
         );
         // A preparation may have durably published just before the registry seal. Preserve its
@@ -511,7 +520,7 @@ impl StudioRuntime {
             .await?;
         let removed_thread_ids = settled_tree
             .iter()
-            .map(|thread| thread.id.clone())
+            .map(|thread| thread.agent.thread_id.clone())
             .collect::<Vec<_>>();
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
         if archive.phase == ArchivePhase::Sealed {
@@ -526,13 +535,17 @@ impl StudioRuntime {
         let committed = self
             .agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::archive_sessions(vec![thread.id.clone()]))
+            .commit_directory(DirectoryDelta::archive_sessions(vec![
+                thread.session.session_id.clone(),
+            ]))
             .await?;
         self.archive_published(&mut archive).await?;
-        self.model_performance.remove_session(&thread.id).await?;
+        self.model_performance
+            .remove_session(&thread.session.session_id)
+            .await?;
         Ok(Some(ArchiveThreadCommandReply {
             result: StudioArchiveThreadResult {
-                archived_root_id: thread.id,
+                archived_root_id: thread.agent.thread_id,
                 removed_thread_ids,
                 next_root,
             },
@@ -547,14 +560,22 @@ impl StudioRuntime {
     }
 
     /// Restores an archived root and its descendants without executing historical work.
-    pub async fn restore_thread(&self, thread_id: String) -> Result<ThreadRecord> {
+    pub async fn restore_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<pl_protocol::SessionDirectoryRow> {
         let _guard = self.lifecycle_lock.lock().await;
-        if let Some(root) = self.store.read_thread(&thread_id).await? {
+        if let Some(root) = self.store.directory_member(&thread_id)? {
             self.store
-                .ensure_archive_execution_allowed(&root.workspace_id, Some(&thread_id))
+                .ensure_archive_execution_allowed(&root.session.workspace_id, Some(&thread_id))
                 .await?;
         }
-        let root = self.read_protocol_thread(&thread_id).await?;
+        let root = self
+            .agent_facility
+            .product_events
+            .directory_member(&thread_id)?
+            .or(self.store.directory_member(&thread_id)?)
+            .context("restore root is missing")?;
         anyhow::ensure!(
             root.parent_thread_id.is_none(),
             "only root Threads can be restored"
@@ -563,37 +584,29 @@ impl StudioRuntime {
         anyhow::ensure!(
             projects
                 .iter()
-                .any(|project| project.id == root.workspace_id),
+                .any(|project| project.id == root.session.workspace_id),
             "open the original Project before restoring its Threads"
         );
-        if !root.archived {
-            return Ok(ThreadRecord::from_directory_thread(root));
+        if !root.session.archived {
+            return Ok(root.row());
         }
         // 取消归档只改变目录可见性，不检查、重建或授权重建原工作区。
         // 归档是会话级事实：恢复只更新会话记录，成员可见性随会话派生。
-        let mut restored_session = self
-            .agent_facility
-            .product_events
-            .directory_facts(&thread_id)
-            .map(|(session, _)| session)
-            .or_else(|| self.store.catalog().get_session(&thread_id))
-            .context("root missing from restore tree")?;
+        let mut restored_session = root.session.clone();
+        let baseline = restored_session.clone();
         restored_session.archived = false;
         restored_session.updated_at = crate::studio::unix_seconds();
         self.agent_facility
             .product_events
-            .commit_directory(DirectoryDelta {
-                session_upserts: vec![restored_session],
-                ..Default::default()
-            })
+            .commit_session_update(baseline, restored_session)
             .await?;
         self.model_performance.refresh_directory_visibility().await;
         let restored = self
             .agent_facility
             .product_events
-            .thread_snapshot(&thread_id)
+            .directory_member(&thread_id)?
             .context("committed restored root is missing")?;
-        Ok(ThreadRecord::from_directory_thread(restored))
+        Ok(restored.row())
     }
 
     async fn compensate_unstarted_thread(&self, thread_id: &str) -> Result<()> {
@@ -670,6 +683,13 @@ impl StudioRuntime {
 
     pub(super) async fn retire_archived_thread_tree(&self, thread_ids: &[String]) -> Result<()> {
         for id in thread_ids {
+            let member = self
+                .store
+                .directory_member(id)?
+                .context("archive directory member is missing")?;
+            if !member.is_native() {
+                continue;
+            }
             if self
                 .session_of(id)
                 .and_then(|session| session.observed_thread(id))
@@ -703,38 +723,36 @@ impl StudioRuntime {
     pub(super) async fn load_thread_archive_scope(
         &self,
         root_thread_id: &str,
-    ) -> Result<Option<(ThreadRecord, Vec<ThreadRecord>, Vec<ThreadRecord>)>> {
-        let (mut roots, mut tree) = tokio::try_join!(
-            self.store.list_root_threads_for_archive(root_thread_id),
-            self.store.list_threads_for_archive(root_thread_id),
-        )?;
-        if tree.is_empty()
-            && self
-                .store
-                .thread_archive(&ArchiveScope::Thread(root_thread_id.to_owned()))
-                .await?
-                .is_some_and(|operation| operation.phase != ArchivePhase::Published)
-        {
-            // Directory publication may have committed before its operation ACK. Retry the
-            // frozen responsibility from cold catalog facts without activating execution.
-            tree = self.store.read_directory_tree(root_thread_id).await?;
-        }
+    ) -> Result<
+        Option<(
+            DirectoryMember,
+            Vec<pl_protocol::SessionDirectoryRow>,
+            Vec<DirectoryMember>,
+        )>,
+    > {
+        let mut tree = self.store.read_directory_tree(root_thread_id).await?;
         for hot in self
             .agent_facility
             .product_events
-            .threads_for_root(root_thread_id)
+            .members_for_root(root_thread_id)?
         {
-            if !tree.iter().any(|candidate| candidate.id == hot.id) {
-                tree.push(ThreadRecord::from_directory_thread(hot));
-            }
+            tree.retain(|candidate| candidate.agent.thread_id != hot.agent.thread_id);
+            tree.push(hot);
         }
         let Some(root) = tree
             .iter()
-            .find(|thread| thread.id == root_thread_id && thread.parent_thread_id.is_none())
+            .find(|thread| thread.agent.thread_id == root_thread_id && thread.agent.is_root_agent())
             .cloned()
         else {
             return Ok(None);
         };
+        let mut roots = self
+            .store
+            .directory_members_for_project(&root.session.workspace_id)?
+            .into_iter()
+            .filter(|member| member.agent.is_root_agent() && !member.session.archived)
+            .map(|member| member.row())
+            .collect::<Vec<_>>();
         // A newly created root may not yet be in SQLite. Archive selection must
         // use the same canonical hot facts as the tree itself.
         let hot = self
@@ -744,11 +762,12 @@ impl StudioRuntime {
             .await?;
         if let Some(directory) = hot.state.value() {
             for row in &directory.rows {
-                if row.workspace_id == root.workspace_id && row.is_root_row() && !row.archived {
-                    roots.retain(|entry| entry.id != row.thread_id);
-                    roots.push(ThreadRecord::from_directory_thread(
-                        crate::studio::records::thread_from_row(row),
-                    ));
+                if row.workspace_id == root.session.workspace_id
+                    && row.is_root_row()
+                    && !row.archived
+                {
+                    roots.retain(|entry| entry.thread_id != row.thread_id);
+                    roots.push(row.clone());
                 }
             }
         }
@@ -757,7 +776,9 @@ impl StudioRuntime {
         roots.sort_by(|a, b| {
             let left = a.last_user_message_at.unwrap_or(a.created_at);
             let right = b.last_user_message_at.unwrap_or(b.created_at);
-            right.cmp(&left).then_with(|| b.id.cmp(&a.id))
+            right
+                .cmp(&left)
+                .then_with(|| b.session_id.cmp(&a.session_id))
         });
         Ok(Some((root, roots, tree)))
     }
@@ -773,6 +794,22 @@ impl StudioRuntime {
     /// 未驻留即不 busy：钉住集合恢复保证有 pending 工作的 Thread 会被恢复，
     /// LRU 只淘汰空闲且已耐久化的 actor（design/17 §17.5）。
     pub(in crate::studio::runtime) async fn thread_is_busy(&self, thread_id: &str) -> Result<bool> {
+        if let Some(owner) = self.session_of(thread_id)
+            && self
+                .agent_facility
+                .product_events
+                .directory_member(thread_id)?
+                .is_some_and(|member| !member.is_native())
+            && let Some(acp) = owner.resident_acp(thread_id)?
+        {
+            return match acp.session() {
+                Ok(session) => {
+                    let snapshot = session.snapshot().await?;
+                    Ok(snapshot.active_run.is_some() || snapshot.config_pending)
+                }
+                Err(_) => Ok(false),
+            };
+        }
         let Some(thread) = self
             .session_of(thread_id)
             .and_then(|session| session.observed_thread(thread_id))

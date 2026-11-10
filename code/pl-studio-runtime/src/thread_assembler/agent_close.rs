@@ -212,17 +212,25 @@ impl AgentServices {
             .agent_close(&record.id)
             .await?
             .context("child has no close intent")?;
-        let closing = owner.0.state().entries.get_mut(&record.id).map(|entry| {
-            entry.native.ready = false;
-            entry.native.thread.clone()
-        });
+        let closing = owner
+            .0
+            .state()
+            .entries
+            .get_mut(&record.id)
+            .and_then(|entry| {
+                let native = entry.native_mut().ok()?;
+                Some({
+                    native.ready = false;
+                    native.thread.clone()
+                })
+            });
         if let Some(thread) = closing {
             drop(owner.prepare_close(&record.id, &thread));
         }
         let operation = owner.agent_operation(&record.id).await;
         let receiver = owner.0.state().entries.get(&record.id).and_then(|entry| {
-            (entry.native.purpose == EntryPurpose::ReportReceiver)
-                .then(|| entry.native.incarnation.clone())
+            (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
+                .then_some(entry.native().ok()?.incarnation.clone())
         });
         if let Some(incarnation) = receiver {
             // A parent selected for final close may itself retain a failed report receiver.
@@ -329,9 +337,9 @@ impl AgentServices {
         }
         if let Some(entry) = state.entries.get(&record.id)
             && (purpose == EntryPurpose::ReportReceiver
-                || entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Closed
+                || entry.native()?.thread.snapshot().lifecycle != ThreadLifecycle::Closed
                 || !matches!(
-                    entry.native.close_storage.as_ref(),
+                    entry.native()?.close_storage.as_ref(),
                     None | Some(CloseStorage::Attached(_))
                         | Some(CloseStorage::Execution { joined: true, .. })
                 ))
@@ -339,40 +347,52 @@ impl AgentServices {
             return Err(ThreadAssemblyError::Unpublished(record.id.clone()));
         }
         let previous = state.remove_entry(&record.id);
+        let cleanup = previous
+            .as_ref()
+            .map(|entry| entry.native().map(|native| native.cleanup.clone()))
+            .transpose()?
+            .unwrap_or_default();
         state.insert_entry(
             record.id.clone(),
             crate::session::AgentInstance {
                 identity,
                 binding,
-                native: crate::session::NativeThreadRuntime {
-                    resources: previous
-                        .as_ref()
-                        .map(|entry| entry.native.resources.clone())
-                        .unwrap_or_default(),
-                    purpose,
-                    workspace_usage: previous
-                        .as_ref()
-                        .and_then(|entry| entry.native.workspace_usage.clone()),
-                    close_storage: Some(CloseStorage::Pending {
-                        record: Box::new(record.clone()),
-                        checkpoint: Box::new(checkpoint),
-                    }),
-                    published_resources_closed: previous
-                        .as_ref()
-                        .is_some_and(|entry| entry.native.published_resources_closed),
-                    workspace_disposition: previous
-                        .as_ref()
-                        .and_then(|entry| entry.native.workspace_disposition),
-                    cleanup: previous
-                        .map_or_else(Default::default, |entry| entry.native.cleanup.clone()),
-                    execution: pl_core::thread::input::InputDriverOptions {
-                        max_model_steps: crate::studio::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT,
+                runtime: crate::session::AgentRuntime::Native(Box::new(
+                    crate::session::NativeThreadRuntime {
+                        resources: previous
+                            .as_ref()
+                            .and_then(|entry| {
+                                let native = entry.native().ok()?;
+                                Some(native.resources.clone())
+                            })
+                            .unwrap_or_default(),
+                        purpose,
+                        workspace_usage: previous
+                            .as_ref()
+                            .and_then(|entry| entry.native().ok()?.workspace_usage.clone()),
+                        close_storage: Some(CloseStorage::Pending {
+                            record: Box::new(record.clone()),
+                            checkpoint: Box::new(checkpoint),
+                        }),
+                        published_resources_closed: previous.as_ref().is_some_and(|entry| {
+                            entry
+                                .native()
+                                .is_ok_and(|native| native.published_resources_closed)
+                        }),
+                        workspace_disposition: previous
+                            .as_ref()
+                            .and_then(|entry| entry.native().ok()?.workspace_disposition),
+                        cleanup,
+                        execution: pl_core::thread::input::InputDriverOptions {
+                            max_model_steps:
+                                crate::studio::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT,
+                        },
+                        incarnation: Arc::new(()),
+                        parent_id: record.parent_thread_id.clone(),
+                        ready: false,
+                        thread: thread.clone(),
                     },
-                    incarnation: Arc::new(()),
-                    parent_id: record.parent_thread_id.clone(),
-                    ready: false,
-                    thread: thread.clone(),
-                },
+                )),
             },
         );
         drop(state);

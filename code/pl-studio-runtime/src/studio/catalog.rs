@@ -33,7 +33,7 @@ struct CatalogDocument {
 }
 
 impl Versioned for CatalogDocument {
-    const VERSION: &'static str = schema::CatalogV6::VERSION;
+    const VERSION: &'static str = schema::CatalogV7::VERSION;
 }
 
 impl RevisionedDocument for CatalogDocument {
@@ -216,8 +216,10 @@ impl CatalogStore {
                     // DTO observations do not carry closure intent. A late owner/metadata
                     // projection cannot erase the checkpoint-derived, monotonic seal.
                     agent.explicitly_closed |= existing.explicitly_closed;
-                    if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
-                        agent.status = ThreadStatus::Closed;
+                    if existing.explicitly_closed
+                        && existing.native_status() == Some(ThreadStatus::Closed)
+                    {
+                        agent.set_native_status(ThreadStatus::Closed);
                     }
                     if *existing == agent {
                         return false;
@@ -255,7 +257,7 @@ impl CatalogStore {
             agent.explicitly_closed = true;
             // An old normal-shutdown Closed status says nothing about this close's progress.
             // The current owner publishes Closed only after its real shutdown is confirmed.
-            agent.status = ThreadStatus::Closing;
+            agent.set_native_status(ThreadStatus::Closing);
             true
         })
         .await
@@ -293,8 +295,10 @@ impl CatalogStore {
                         .find(|entry| entry.agent_id == agent.agent_id)
                     {
                         agent.explicitly_closed |= existing.explicitly_closed;
-                        if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
-                            agent.status = ThreadStatus::Closed;
+                        if existing.explicitly_closed
+                            && existing.native_status() == Some(ThreadStatus::Closed)
+                        {
+                            agent.set_native_status(ThreadStatus::Closed);
                         }
                         *existing = agent;
                     } else {
@@ -337,8 +341,8 @@ impl CatalogStore {
                                 fault.agent_id
                             )
                         })?;
-                    if agent.status != fault.state.kind {
-                        agent.status = fault.state.kind;
+                    if agent.native_status() != Some(fault.state.kind) {
+                        agent.set_native_status(fault.state.kind);
                         agent.updated_at = agent.updated_at.max(now);
                     }
                 }
@@ -460,7 +464,16 @@ mod tests {
                     .iter()
                     .find(|session| session.session_id == agent.session_id)
                     .expect("session");
-                let thread = super::super::records::thread_projection(session, agent);
+                let mut thread = super::super::records::thread_projection(session, agent, |id| {
+                    document
+                        .agents
+                        .iter()
+                        .find(|agent| agent.agent_id == id)
+                        .map(|agent| agent.thread_id.clone())
+                })
+                .expect("Native projection");
+                // V5 copied the root mode into every member; this fixture models the old wire.
+                thread.mode = session.native_mode.clone();
                 let mut entry = toml::Value::try_from(thread)
                     .expect("entry")
                     .as_table()
@@ -485,7 +498,7 @@ mod tests {
                 root_agent_id: "thread-a".into(),
                 workspace_id: "project-a".into(),
                 title: "Root".into(),
-                mode: pl_protocol::ThreadModeId::simple(),
+                native_mode: Some(pl_protocol::ThreadModeId::simple()),
                 workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
                 delegation_mode: pl_protocol::DelegationMode::Profile,
                 delegation_preference: pl_protocol::DelegationPreference::Balanced,
@@ -502,11 +515,13 @@ mod tests {
                 thread_id: "thread-a".into(),
                 role: "root".into(),
                 title: None,
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                    route: None,
-                    system_instructions: None,
-                }),
-                status: ThreadStatus::Idle,
+                backend: pl_protocol::session::AgentBackend::Native {
+                    config: pl_protocol::NativeAgentConfig {
+                        route: None,
+                        system_instructions: None,
+                    },
+                    status: ThreadStatus::Idle,
+                },
                 explicitly_closed: false,
                 created_at: 10,
                 updated_at: 20,
@@ -553,22 +568,24 @@ mod tests {
         let path = dir.path().join("catalog.toml");
         let mut document = current_document();
         document.sessions[0].archived = true;
-        document.sessions[0].mode = pl_protocol::ThreadModeId::task();
+        document.sessions[0].native_mode = Some(pl_protocol::ThreadModeId::task());
         let mut child = document.agents[0].clone();
         child.agent_id = "child".into();
         child.thread_id = "child".into();
         child.parent_agent_id = Some("thread-a".into());
         child.title = Some("Saved task".into());
         child.explicitly_closed = true;
-        child.status = ThreadStatus::Closing;
-        child.binding = pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-            route: Some(pl_protocol::studio::NewThreadModelRoute {
-                account_id: "account".into(),
-                model_id: "model".into(),
-                effort: Some("high".into()),
-            }),
-            system_instructions: None,
-        });
+        child.backend = pl_protocol::session::AgentBackend::Native {
+            status: ThreadStatus::Closing,
+            config: pl_protocol::NativeAgentConfig {
+                route: Some(pl_protocol::studio::NewThreadModelRoute {
+                    account_id: "account".into(),
+                    model_id: "model".into(),
+                    effort: Some("high".into()),
+                }),
+                system_instructions: None,
+            },
+        };
         document.agents.push(child);
         let mut legacy: toml::Table = toml::from_str(&v5_content(&document)).unwrap();
         // The old root-only mode command did not rewrite existing child copies.
@@ -583,10 +600,10 @@ mod tests {
         assert_ne!(upgraded, legacy);
         assert_eq!(
             toml::from_str::<toml::Table>(&upgraded).unwrap()["schemaVersion"].as_integer(),
-            Some(6)
+            Some(7)
         );
         drop(store);
-        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V6");
+        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V7");
         assert_eq!(*reopened.lock(), document);
         assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), upgraded);
     }

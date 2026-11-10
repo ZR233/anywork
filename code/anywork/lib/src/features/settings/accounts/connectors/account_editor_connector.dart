@@ -549,6 +549,12 @@ class _AccountEditorConnectorState
             value: account,
             templateSelector: selector,
             onNameChanged: owner.changeName,
+            onSourceChanged: owner.changeAcpSource,
+            onCommandChanged: owner.changeAcpCommand,
+            onArgsChanged: owner.changeAcpArgs,
+            onEnvironmentChanged: owner.changeAcpEnvironment,
+            onEnabledChanged: owner.changeAcpEnabled,
+            onRefreshDetection: owner.refreshLocalDetection,
             onAction: (action) {
               if (!mounted) return;
               final sourceRoute = ModalRoute.of(context);

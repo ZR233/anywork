@@ -559,6 +559,30 @@ struct Document32 {
     acp: wire::AcpConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document33 {
+    models: Models<Account30<wire::ModelInfo>>,
+    #[serde(default)]
+    delegation: wire::DelegationSettings,
+    #[serde(default)]
+    mode_model_routes: BTreeMap<String, Route>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    disabled_system_agents: BTreeSet<String>,
+    #[serde(default)]
+    web_search: wire::WebSearchConfig,
+    #[serde(default)]
+    deepseek_web_search: wire::DeepSeekWebSearchConfig,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    runtime: wire::RuntimeConfigCurrent,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    instructions: wire::InstructionsConfig,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    skills: wire::SkillsConfigCurrent,
+    #[serde(default, skip_serializing_if = "wire::is_default")]
+    ui: wire::StudioUiConfig,
+}
+
 account!(Account28,
     authentication: wire::AuthenticationMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -605,6 +629,7 @@ version!(MainV29, "29.0.0", BeforeCodex);
 version!(MainV30, "30.0.0", BeforeMcpSplit);
 version!(MainV31, "31.0.0", Document31);
 version!(MainV32, "32.0.0", Document32);
+version!(MainV33, "33.0.0", Document33);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -1034,19 +1059,44 @@ impl MigratesTo<MainV32> for MainV31 {
     }
 }
 
+impl MigratesTo<MainV33> for MainV32 {
+    fn migrate(self) -> MainV33 {
+        let doc = self.0;
+        MainV33(Document33 {
+            models: doc.models,
+            delegation: doc.delegation,
+            mode_model_routes: doc.mode_model_routes,
+            disabled_system_agents: doc.disabled_system_agents,
+            web_search: doc.web_search,
+            deepseek_web_search: doc.deepseek_web_search,
+            runtime: doc.runtime,
+            instructions: doc.instructions,
+            skills: doc.skills,
+            ui: doc.ui,
+        })
+    }
+}
+
+// The frozen V32 endpoint remains available only for extracting legacy ACP definitions.
 impl IntoDomain<MainV32> for MainV32 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl MainV32 {
+impl IntoDomain<MainV33> for MainV33 {
+    fn into_domain(self) -> Self {
+        self
+    }
+}
+
+impl MainV33 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 32.into());
+            .insert(VERSION_KEY.into(), 33.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -1120,19 +1170,97 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV30>()
                 .step::<MainV31>()
                 .step::<MainV32>()
-                .into::<MainV32>(),
+                .step::<MainV33>()
+                .into::<MainV33>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV32>> {
-    toml_schema::load::<MainV18, MainV32>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV33>> {
+    toml_schema::load::<MainV18, MainV33>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV32> {
-    toml_schema::load::<MainV32, MainV32>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV33> {
+    toml_schema::load::<MainV33, MainV33>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
+}
+
+pub(crate) fn extract_legacy_acp_from_main(
+    path: &Path,
+    content: &str,
+) -> Result<BTreeMap<String, crate::config::AcpServiceDefinition>> {
+    extract_historical_acp_accounts(path, content)?
+        .into_iter()
+        .map(|(id, account)| {
+            let definition = crate::config::AcpServiceDefinition::template(
+                id.clone(),
+                account.name,
+                match account.provider {
+                    wire::AcpProvider::Antigravity => crate::config::AcpProvider::Antigravity,
+                },
+            );
+            definition.validate()?;
+            Ok((id, definition))
+        })
+        .collect()
+}
+
+/// Frozen account/reference semantics for completing a protected pre-split journal.
+/// These ids are not filenames; only the later extraction into current documents applies
+/// the current filename validator.
+pub(crate) fn extract_historical_acp_accounts(
+    path: &Path,
+    content: &str,
+) -> Result<BTreeMap<String, wire::AcpAccountConfig>> {
+    let loaded = load_main(path, content)?;
+    if loaded.source_version >= 33 {
+        return Ok(BTreeMap::new());
+    }
+    let mut migrator = Migrator::new();
+    migrator
+        .register(
+            Migrator::define(ENTITY)
+                .with_keys(VERSION_KEY, "data")
+                .from::<MainV18>()
+                .step::<MainV19>()
+                .step::<MainV20>()
+                .step::<MainV21>()
+                .step::<MainV22>()
+                .step::<MainV23>()
+                .step::<MainV24>()
+                .step::<MainV25>()
+                .step::<MainV26>()
+                .step::<MainV27>()
+                .step::<MainV28>()
+                .step::<MainV29>()
+                .step::<MainV30>()
+                .step::<MainV31>()
+                .step::<MainV32>()
+                .into::<MainV32>(),
+        )
+        .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
+    let old = toml_schema::load::<MainV18, MainV32>(path, content, &migrator, ENTITY, VERSION_KEY)?;
+    old.document
+        .0
+        .acp
+        .accounts
+        .into_iter()
+        .map(|(id, account)| {
+            ensure!(
+                !id.trim().is_empty() && !id.chars().any(char::is_control),
+                "invalid historical ACP account id"
+            );
+            // Schema <=32 checked the trimmed view at a frozen 200-byte limit.
+            // Keep the original name bytes, and do not inherit current-file policy.
+            let name = account.name.trim();
+            ensure!(
+                !name.is_empty() && name.len() <= 200 && !name.chars().any(char::is_control),
+                "invalid historical ACP account name"
+            );
+            Ok((id, account))
+        })
+        .collect()
 }
 
 /// Extracts the legacy `[mcp]` section when migrating a schema 18..=30 `config.toml` to 31.
@@ -1275,8 +1403,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 32);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 32);
+        assert_eq!(loaded.migrated, version != 33);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 33);
     }
 
     #[test]
@@ -1311,6 +1439,8 @@ enabled = false
         round_trip(&v31);
         let v32: MainV32 = v31.migrate();
         round_trip(&v32);
+        let v33: MainV33 = v32.migrate();
+        round_trip(&v33);
     }
 
     #[test]
@@ -1344,7 +1474,7 @@ enabled = false
         });
         let id = pl_model::config::AccountId::new("saved-oauth").unwrap();
         config.models.accounts.insert(id.clone(), account);
-        let encoded = MainV32::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
         let current = load_current_main(Path::new("codex.toml"), &encoded)
             .unwrap()
             .into_config()
@@ -1356,7 +1486,7 @@ enabled = false
         assert!(
             load_main(
                 Path::new("invalid29.toml"),
-                &encoded.replacen("schema_version = 32", "schema_version = 29", 1)
+                &encoded.replacen("schema_version = 33", "schema_version = 29", 1)
             )
             .is_err()
         );
@@ -1367,11 +1497,11 @@ enabled = false
         info.client_id = "old-issued-client".into();
         info.plan_usage_enabled = true;
         info.codex = None;
-        let historical = MainV32::from_config(&config)
+        let historical = MainV33::from_config(&config)
             .unwrap()
             .encode()
             .unwrap()
-            .replacen("schema_version = 32", "schema_version = 29", 1);
+            .replacen("schema_version = 33", "schema_version = 29", 1);
         let loaded = load_main(Path::new("siwc29.toml"), &historical).unwrap();
         assert!(loaded.migrated);
         let migrated = loaded.document.into_config().unwrap();
@@ -1400,7 +1530,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV32::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1576,7 +1706,7 @@ enabled = false
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 32);
+        assert_eq!(migrated.schema_version, 33);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);
@@ -1587,5 +1717,50 @@ enabled = false
         assert_eq!(migrated.skills.external_dirs, ["/readonly/skills"]);
         assert_eq!(migrated.skills.disabled, ["paused-skill"]);
         assert_eq!(migrated.skills.auto_learn_min_tool_calls, 9);
+    }
+
+    #[test]
+    fn historical_acp_name_validation_keeps_trimmed_length_and_control_boundaries() {
+        let config = crate::config::StudioConfig::default_config().unwrap();
+        let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
+        let mut main: toml::Value = toml::from_str(&encoded).unwrap();
+        main[VERSION_KEY] = 32.into();
+        for (name, historical_ok, current_ok) in [
+            ("x".repeat(200), true, true),
+            (format!(" {}", "x".repeat(200)), true, false),
+            ("\tSaved".into(), true, false),
+            ("Saved\n".into(), true, false),
+            (format!(" {}", "x".repeat(201)), false, false),
+            ("Saved\tname".into(), false, false),
+            ("\u{7}Saved".into(), false, false),
+            ("\t \n".into(), false, false),
+        ] {
+            let accounts = wire::AcpConfig {
+                accounts: BTreeMap::from([(
+                    "saved".into(),
+                    wire::AcpAccountConfig {
+                        name: name.clone(),
+                        provider: wire::AcpProvider::Antigravity,
+                    },
+                )]),
+            };
+            main.as_table_mut()
+                .unwrap()
+                .insert("acp".into(), toml::Value::try_from(accounts).unwrap());
+            let content = toml::to_string(&main).unwrap();
+            let historical = extract_historical_acp_accounts(Path::new("v32.toml"), &content);
+            assert_eq!(historical.is_ok(), historical_ok, "{name:?}");
+            if let Ok(accounts) = historical {
+                assert_eq!(
+                    accounts["saved"].name, name,
+                    "must not normalize historical bytes"
+                );
+            }
+            assert_eq!(
+                extract_legacy_acp_from_main(Path::new("v32.toml"), &content).is_ok(),
+                current_ok,
+                "{name:?}"
+            );
+        }
     }
 }

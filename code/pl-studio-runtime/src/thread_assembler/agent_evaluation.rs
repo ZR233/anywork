@@ -29,23 +29,21 @@ impl AgentServices {
                 .get(caller)
                 .context("evaluation caller is not active")?;
             ensure!(
-                parent.native.ready
+                parent.native()?.ready
                     && !state.sealed_agents.contains_key(caller)
                     && parent.identity.parent_agent_id.is_none()
-                    && parent.native.thread.snapshot().lifecycle == ThreadLifecycle::Open,
+                    && parent.native()?.thread.snapshot().lifecycle == ThreadLifecycle::Open,
                 "only an active parent root may evaluate its direct child"
             );
             let sealed = state.sealed_agents.contains_key(&request.target)
                 || state
                     .entries
                     .get(&request.target)
-                    .is_some_and(|entry| !entry.native.ready);
+                    .is_some_and(|entry| entry.native().is_ok_and(|native| !native.ready));
             (
-                state.entries.get(&request.target).map(|entry| {
-                    (
-                        entry.native.thread.clone(),
-                        entry.native.incarnation.clone(),
-                    )
+                state.entries.get(&request.target).and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some((native.thread.clone(), native.incarnation.clone()))
                 }),
                 sealed,
             )
@@ -115,10 +113,9 @@ impl AgentServices {
                         .state()
                         .entries
                         .get(&request.target)
-                        .is_some_and(|entry| std::sync::Arc::ptr_eq(
-                            &entry.native.incarnation,
-                            incarnation
-                        )),
+                        .is_some_and(|entry| entry.native().is_ok_and(|native| {
+                            std::sync::Arc::ptr_eq(&native.incarnation, incarnation)
+                        })),
                 "child changed during final evaluation history read; retry with latest state"
             );
             validate_idle(&current)?;

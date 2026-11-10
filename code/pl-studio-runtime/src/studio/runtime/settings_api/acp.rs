@@ -13,7 +13,7 @@ use pl_protocol::studio::{
 
 use crate::config::AcpProvider as ConfigAcpProvider;
 use crate::config::acp::{
-    AcpAccountConfig, normalize_acp_account, validate_acp_account_id, validate_acp_name,
+    AcpLaunch, AcpServiceDefinition, validate_acp_account_id, validate_acp_name,
 };
 
 use super::StudioRuntime;
@@ -29,7 +29,7 @@ impl StudioRuntime {
     ///
     /// 只写这份接入资源；默认账号、模式/角色路由与 Native 账号都不被重放。这里既不验证也不等待
     /// 受管安装：保存成功不是安装就绪或认证通过的证明，检查时会在 `prepare` 阶段给出类型化失败。
-    /// 接入不携带 program/argv，因此保存路径没有恢复自定义执行入口的可能。
+    /// 启动来源和 env 只保存到该接入文件；保存不探测命令、安装模板或恢复退役字段。
     pub fn save_acp_account(
         &self,
         request: UpdateAcpAccountRequest,
@@ -40,22 +40,36 @@ impl StudioRuntime {
             .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
         validate_acp_name(&request.account.name)
             .map_err(|_| invalid_settings_argument("ACP account name is invalid"))?;
-        let account = normalize_acp_account(AcpAccountConfig {
-            name: request.account.name,
-            provider: config_provider(request.account.provider),
-        });
-        let mut changed = false;
-        let state = self
-            .config_runtime
-            .update(request.expected_revision, |config| {
-                let mut next = config.clone();
-                changed = next.acp.accounts.get(&account_id) != Some(&account);
-                next.acp
-                    .accounts
-                    .insert(account_id.clone(), account.clone());
-                next.validate_declarations()?;
-                Ok(next)
-            })?;
+        let launch = match (
+            request.account.command,
+            request.account.args,
+            request.account.template,
+        ) {
+            (Some(command), args, None) => AcpLaunch::Command {
+                command,
+                args: args.unwrap_or_default(),
+            },
+            (None, None, Some(template)) => AcpLaunch::Template(config_provider(template)),
+            _ => {
+                return Err(invalid_settings_argument(
+                    "ACP requires command or template exclusively; template cannot specify args",
+                ));
+            }
+        };
+        let account = AcpServiceDefinition {
+            id: account_id,
+            display_name: request.account.name,
+            enabled: request.account.enabled,
+            launch,
+            env: request.account.env,
+        };
+        let previous = self.config_runtime.read_acp_definitions();
+        let state = self.config_runtime.save_acp_definition(
+            request.expected_revision,
+            &account,
+            request.expected_document_revision,
+        )?;
+        let changed = previous != state.acp;
         // 连接身份若变化，旧代次在发布前被撤消；设置快照返回新的 connection revision。
         self.publish_settings_state()?;
         self.settings_command_reply(
@@ -76,14 +90,12 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         validate_acp_account_id(&request.account_id)
             .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
-        let mut changed = false;
-        let state = self
-            .config_runtime
-            .update(request.expected_revision, |config| {
-                let mut next = config.clone();
-                changed = next.acp.accounts.remove(&request.account_id).is_some();
-                Ok(next)
-            })?;
+        let state = self.config_runtime.delete_acp_definition(
+            request.expected_revision,
+            &request.account_id,
+            request.expected_document_revision,
+        )?;
+        let changed = true;
         self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,

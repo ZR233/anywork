@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../../accounts_ports.dart';
+import '../../acp_sessions.dart';
 import '../../model_directory.dart';
 
 import '../../anywork_client.dart';
@@ -47,12 +48,16 @@ class AnyworkClient {
     SettingsWriteCoordinator? settingsWrites,
     MutationBoard? mutationBoard,
     AccountDomainResources? accountDomains,
+    AcpBusinessPort? acpBusinessPort,
     Future<String?> Function(Uint8List)? clipboardImageStager,
     Future<void> Function(String)? clipboardImageCleanup,
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
     int Function()? threadCommandsClock,
   }) : settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
+       _acpSessions = acpBusinessPort == null
+           ? null
+           : AcpSessionClient(port: acpBusinessPort),
        _accountDomains = accountDomains {
     mutations = mutationBoard ?? MutationBoard(clientId: clientId);
     threadDirectory = ThreadDirectoryStore(
@@ -123,6 +128,15 @@ class AnyworkClient {
   final String clientId;
   final SettingsWriteCoordinator settingsWrites;
   final AccountDomainResources? _accountDomains;
+  final AcpSessionClient? _acpSessions;
+
+  /// The application-owned ACP business Client, when explicitly assembled.
+  ///
+  /// Native-only applications need no ACP port. Access without one is explicitly
+  /// unsupported, never a successful no-op or a Native command fallback.
+  AcpSessionClient get acpSessions =>
+      _acpSessions ??
+      (throw UnsupportedError('ACP business port is not installed'));
   bool modelCatalogLoaded = false;
   int modelCatalogRevision = 0;
 
@@ -706,6 +720,8 @@ class AnyworkClient {
     final draftWork = drafts.close();
     final conversationWork = conversations.close(deadline: deadline);
     final work = <Future<void>>[
+      if (_acpSessions case final acp?)
+        _joinOwner('acp-observations', acp.dispose(), deadline),
       _joinOwner('drafts', draftWork, deadline),
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
@@ -811,6 +827,8 @@ class AnyworkClient {
   Future<CloseReport> retryCleanup({DateTime? deadline}) async {
     final pending = Map.of(_pendingJoins);
     final work = <Future<void>>[
+      if (_closed && _acpSessions != null)
+        _joinOwner('acp-observations', _acpSessions.dispose(), deadline),
       _joinReport(
         'conversations',
         conversations.retryCleanup(deadline: deadline),

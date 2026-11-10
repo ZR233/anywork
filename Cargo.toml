@@ -41,6 +41,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 criterion = { version = "=0.8.2", features = ["async_tokio"] }
 agent-client-protocol = { version = "=5.1.0", default-features = false }
+agent-client-protocol-schema = { version = "=1.16.0", default-features = false }
 percent-encoding = "2.3.2"
 procfs = { version = "0.18.0", default-features = false }
 tokio = { version = "1.54.1", features = ["full"] }

@@ -47,6 +47,9 @@ impl ArchiveScope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct ArchiveMember {
+    /// Older journals contain only Native members. ACP owns no local transcript files.
+    #[serde(default)]
+    pub association_only: bool,
     pub thread_id: String,
     pub workspace_id: String,
     pub parent_id: Option<String>,
@@ -208,9 +211,8 @@ impl PersistedStudioObject for ThreadArchiveOperation {
                 "archive worktree cleanup is unfinished"
             );
             ensure!(
-                self.members
-                    .iter()
-                    .all(|member| member.host_cleaned && member.execution_cleaned),
+                self.members.iter().all(|member| member.association_only
+                    || (member.host_cleaned && member.execution_cleaned)),
                 "archive phase precedes cleanup"
             );
             ensure!(
@@ -264,6 +266,11 @@ impl StudioStore {
         thread_id: Option<&str>,
     ) -> Result<()> {
         self.ensure_delete_execution_allowed(thread_id).await?;
+        let root_thread = thread_id
+            .map(|id| self.directory_member(id))
+            .transpose()?
+            .flatten()
+            .map(|member| member.root_thread_id);
         for operation in self.thread_archives().await? {
             if operation.phase == ArchivePhase::Published {
                 continue;
@@ -275,9 +282,12 @@ impl StudioStore {
                     .members
                     .iter()
                     .any(|member| member.thread_id == id)
-                    || operation.private_members.iter().any(|member| member.identity.thread_id == id)
+                    || operation
+                        .private_members
+                        .iter()
+                        .any(|member| member.identity.thread_id == id)
                     || matches!(&operation.scope, ArchiveScope::Thread(root)
-                        if self.catalog().agent_by_thread(id).is_some_and(|agent| &agent.session_id == root))
+                        if root_thread.as_ref() == Some(root))
             });
             ensure!(
                 !workspace && !member,
@@ -294,10 +304,7 @@ impl StudioStore {
                 && thread_id.is_some_and(|id| {
                     id == preparation.identity.thread_id
                         || id == preparation.identity.root_id
-                        || self
-                            .catalog()
-                            .agent_by_thread(id)
-                            .is_some_and(|agent| agent.session_id == preparation.identity.root_id)
+                        || root_thread.as_deref() == Some(preparation.identity.root_id.as_str())
                 })
             {
                 anyhow::bail!("Thread archive cleanup must be retried before execution");

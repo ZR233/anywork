@@ -2,8 +2,8 @@
 //!
 //! [`AgentBinding`] 是封闭枚举：成员的执行方式在创建期由 Profile 解析固定，
 //! 根 Native 成员的模型路由仍按既有路由 owner 的提交事实在下一 Turn 冻结，
-//! binding 不增设第二份可写路由。`Acp` 分支在 S4 之前没有可执行实现，
-//! 出现即明确失败，不携带 Native 占位值。
+//! binding 不增设第二份可写路由。`Acp` 分支只引用用户级接入定义，
+//! 不携带 Native 占位值或进程内连接修订。
 
 use serde::{Deserialize, Serialize};
 
@@ -43,15 +43,9 @@ pub struct NativeAgentConfig {
     pub system_instructions: Option<String>,
 }
 
-/// ACP 后端绑定：引用既有 ACP 账号与协议配置身份。
-///
-/// 只承载稳定账号 ID 与连接配置身份（`AcpAccountSettings.account_id` /
-/// `connection_revision` 对应的事实），不包含 Native model、effort 或
-/// system-instruction 占位值，也不复制供应商凭据或受管安装清单。
+/// ACP 后端绑定：只引用用户级定义的稳定 ID，不持久化进程内连接修订。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpAgentConfig {
     pub account_id: String,
-    /// 账号连接配置身份；随供应商/发行身份变化，不承载秘密材料。
-    pub connection_revision: u64,
 }

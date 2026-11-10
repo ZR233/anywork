@@ -8,6 +8,7 @@ license.workspace = true
 default = []
 
 [dependencies]
+agent-client-protocol-schema = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

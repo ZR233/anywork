@@ -59,7 +59,7 @@ impl StudioRuntime {
         if let Some(thread) = self
             .agent_facility
             .product_events
-            .thread_snapshot(thread_id)
+            .thread_snapshot(thread_id)?
         {
             return Ok(thread);
         }

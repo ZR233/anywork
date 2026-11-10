@@ -32,6 +32,10 @@ SessionDirectoryRow sidebarPreviewThread({
   bool archived = false,
   ThreadWorkspaceMode workspaceMode = ThreadWorkspaceMode.local,
 }) => SessionDirectoryRow(
+  backend: NativeAgentBackendView(
+    config: const NativeAgentConfigView(),
+    status: status,
+  ),
   sessionId: id,
   agentId: id,
   threadId: id,
@@ -41,7 +45,7 @@ SessionDirectoryRow sidebarPreviewThread({
   delegationMode: DelegationMode.automatic,
   delegationPreference: DelegationPreference.balanced,
   updatedAt: _previewTime,
-  status: status,
+
   archived: archived,
   workspaceMode: workspaceMode,
   workspacePath: '/work/pure-lang-pure',

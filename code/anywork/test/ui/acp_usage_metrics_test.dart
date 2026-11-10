@@ -388,8 +388,9 @@ void main() {
             const AcpAccountUpdateView(
               accountId: 'antigravity-test',
               name: 'Antigravity',
-              provider: AcpProviderView.antigravity,
+              template: AcpProviderView.antigravity,
             ),
+            expectedDocumentRevision: null,
           ),
           'save ACP account',
         );

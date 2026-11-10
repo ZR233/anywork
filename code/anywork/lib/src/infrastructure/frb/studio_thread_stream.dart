@@ -271,7 +271,7 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
     id: value.id,
     workspaceId: value.workspaceId,
     title: value.title,
-    mode: ThreadModeId.fromId(value.mode),
+    mode: value.mode == null ? null : ThreadModeId.fromId(value.mode!),
     delegationMode: _delegationModeFromFrb(value.delegationMode),
     delegationPreference: _delegationPreferenceFromFrb(
       value.delegationPreference,

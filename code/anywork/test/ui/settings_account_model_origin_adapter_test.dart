@@ -162,6 +162,10 @@ void main() {
       typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
     );
     final thread = SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
       sessionId: 'thread',
       agentId: 'thread',
       threadId: 'thread',

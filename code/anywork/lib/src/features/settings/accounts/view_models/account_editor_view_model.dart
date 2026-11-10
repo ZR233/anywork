@@ -19,7 +19,13 @@ import 'package:anywork_client/accounts.dart'
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart'
-    show DraftStamp, OperationPhase, OperationState;
+    show
+        DraftStamp,
+        OperationPhase,
+        OperationState,
+        OperationId,
+        StudioFailure,
+        StudioFailureCode;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/account_domains.dart';
@@ -50,6 +56,26 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   AccountAcpKey? _acpKey;
   String? _acpName;
   String? _baselineAcpName;
+  AcpAccountSource _acpSource = AcpAccountSource.local;
+  String _acpCommand = 'agy';
+  List<String> _acpArgs = ['acp'];
+  List<AcpEnvironmentEntry> _acpEnvironment = [];
+  bool _acpEnabled = true;
+  AcpAccountUpdateView? _baselineAcpDefinition;
+  AcpAccountSource? _baselineAcpSource;
+  AccountDemand? _detectionDemand;
+  Observation? _detectionWatch;
+  String? _detectionOperation;
+  int _detectionSequence = 0;
+  int _launchIntent = 0;
+  int? _detectionIntent;
+  AcpLocalDetectionSnapshotView? _detection;
+  String? _detectionError;
+  bool _detectionIssued = false;
+  bool _detectionUnknown = false;
+  bool _detectionPending = false;
+  final Map<String, Future<AcpLocalDetectionCommandReply>> _detectionCleanup =
+      {};
   bool _created = false;
   bool _saving = false;
   bool _finished = false;
@@ -104,6 +130,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
       }
     }
     ref.onDispose(() {
+      _releaseDetection();
       final login = _raw?.loginId;
       final cancelLogin = login != null;
       _chatGptLoginWatch?.cancel();
@@ -159,8 +186,8 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
 
   Future<void> prepareSelectedTemplate() async {
     final key = _acpKey;
-    if (!_key.creating || key == null || _finished) return;
-    await ref.read(acpAccountViewModelProvider(key).notifier).prepare();
+    if (!_key.creating || key?.templateId == null || _finished) return;
+    await ref.read(acpAccountViewModelProvider(key!).notifier).prepare();
   }
 
   void _initialize() {
@@ -180,16 +207,22 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         final template = _acp.templates.value.templates
             .where((value) => value.provider.wire == templateKey?.id)
             .firstOrNull;
-        if (template != null) {
-          _acpName = template.displayName;
+        if (template != null || templateKey?.id == 'command') {
+          _acpSource = template == null
+              ? AcpAccountSource.local
+              : AcpAccountSource.managed;
+          _acpName = template?.displayName ?? 'agy';
           _baselineAcpName = _acpName;
           _acpKey = AccountAcpKey(
             target: _key.target,
-            providerId: template.provider.wire,
+            templateId: template?.provider.wire,
             connectionRevision: 0,
             editorId: _key.editorId,
             creating: true,
           );
+          _baselineAcpDefinition = _acpDefinition;
+          _baselineAcpSource = _acpSource;
+          _enterLocalDetection();
         }
       }
     } else if (detail?.loaded == true) {
@@ -211,14 +244,30 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           _baseline = _raw;
         case AcpAccountDetails(:final account):
           _initialAcp = account;
+          _acpSource = account.template != null
+              ? AcpAccountSource.managed
+              : account.command == 'agy' &&
+                    account.args.length == 1 &&
+                    account.args.single == 'acp'
+              ? AcpAccountSource.local
+              : AcpAccountSource.command;
+          _acpCommand = account.command ?? 'agy';
+          _acpArgs = List.of(account.args);
+          _acpEnvironment = [
+            for (final entry in account.env.entries)
+              AcpEnvironmentEntry(key: entry.key, value: entry.value),
+          ];
+          _acpEnabled = account.enabled;
           _acpName = account.name;
           _baselineAcpName = account.name;
           _acpKey = AccountAcpKey(
             target: _key.target,
-            providerId: account.provider.wire,
+            templateId: account.template?.wire,
             connectionRevision: account.connectionRevision,
             editorId: _key.editorId,
           );
+          _baselineAcpDefinition = _acpDefinition;
+          _baselineAcpSource = _acpSource;
         default:
           break;
       }
@@ -262,7 +311,10 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           (_raw != null &&
               _baseline != null &&
               !_raw!.sameFields(_baseline!)) ||
-          (_acpName != null && _acpName != _baselineAcpName));
+          (_acpName != null &&
+              (_acpName != _baselineAcpName ||
+                  _acpDefinition != _baselineAcpDefinition ||
+                  _acpSource != _baselineAcpSource)));
   bool get _stale =>
       _baselineInvalidated ||
       _accounts.state.value.stale ||
@@ -271,8 +323,8 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           _details?.value.value is AcpAccountDetails &&
           (_details!.value.value as AcpAccountDetails)
                   .account
-                  .connectionRevision !=
-              _initialAcp!.connectionRevision) ||
+                  .documentRevision !=
+              _initialAcp!.documentRevision) ||
       (_key.target.kind == AccountKind.native &&
           !_key.creating &&
           _models
@@ -510,6 +562,196 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _publish();
   }
 
+  AcpAccountUpdateView get _acpDefinition => AcpAccountUpdateView(
+    accountId: _key.target.id,
+    name: _acpName?.trim() ?? '',
+    template: _acpSource == AcpAccountSource.managed
+        ? AcpProviderView.fromWire(_acpKey?.templateId ?? '')
+        : null,
+    command: _acpSource == AcpAccountSource.managed ? null : _acpCommand.trim(),
+    args: _acpSource == AcpAccountSource.managed
+        ? null
+        : List.unmodifiable(_acpArgs),
+    env: Map.unmodifiable({
+      for (final entry in _acpEnvironment) entry.key: entry.value,
+    }),
+    enabled: _acpEnabled,
+  );
+
+  String? get _acpValidation {
+    if (_acpName == null) return null;
+    if (_acpSource == AcpAccountSource.managed) {
+      if (_acpKey?.templateId == null) return _strings['unknownTemplate'];
+    } else {
+      final command = _acpCommand.trim();
+      final absolute =
+          command.startsWith('/') ||
+          RegExp(r'^[A-Za-z]:[\\/]').hasMatch(command);
+      if (command.isEmpty ||
+          command.contains('\u0000') ||
+          command.contains('~') ||
+          command.contains(r'$') ||
+          (!absolute &&
+              (command.contains('/') ||
+                  command.contains(r'\') ||
+                  RegExp(r'\s').hasMatch(command) ||
+                  command == '.' ||
+                  command == '..')) ||
+          _acpArgs.any((arg) => arg.contains('\u0000'))) {
+        return _strings['acpInvalidCommand'];
+      }
+    }
+    final keys = <String>{};
+    for (final entry in _acpEnvironment) {
+      if (entry.key.isEmpty ||
+          entry.key.contains('=') ||
+          entry.key.contains('\u0000') ||
+          entry.value.contains('\u0000') ||
+          !keys.add(entry.key)) {
+        return _strings['acpInvalidEnvironment'];
+      }
+    }
+    return null;
+  }
+
+  void changeAcpSource(AcpAccountSource source) {
+    if (_finished || _saving || _unknownResult || source == _acpSource) return;
+    _acpSource = source;
+    _launchIntent++;
+    _revision++;
+    _acpKey = _acpKey?.copyWith(
+      templateId: source == AcpAccountSource.managed
+          ? _acp.templates.value.templates.firstOrNull?.provider.wire
+          : null,
+    );
+    _observeAcp();
+    _publish();
+  }
+
+  void changeAcpCommand(String command) {
+    if (_finished || _saving) return;
+    _acpCommand = command;
+    _launchIntent++;
+    _revision++;
+    _publish();
+  }
+
+  void changeAcpArgs(List<String> args) {
+    if (_finished || _saving) return;
+    _acpArgs = List.of(args);
+    _launchIntent++;
+    _revision++;
+    _publish();
+  }
+
+  void changeAcpEnvironment(List<AcpEnvironmentEntry> entries) {
+    if (_finished || _saving) return;
+    _acpEnvironment = List.of(entries);
+    _revision++;
+    _publish();
+  }
+
+  void changeAcpEnabled(bool enabled) {
+    if (_finished || _saving) return;
+    _acpEnabled = enabled;
+    _revision++;
+    _publish();
+  }
+
+  void _enterLocalDetection() {
+    if (_detectionIssued || !_key.creating) return;
+    _detectionIssued = true;
+    _detectionDemand = _acp.observeLocalDetection();
+    _detectionWatch = _acp.localDetection.watch((_) => _receiveDetection());
+    // Admission is an editor-entry effect, never a directory/read/build effect.
+    unawaited(Future<void>(() => refreshLocalDetection()));
+  }
+
+  Future<void> refreshLocalDetection() async {
+    if (_finished || _detectionPending || _detection?.isBusy == true) return;
+    _detectionDemand ??= _acp.observeLocalDetection();
+    _detectionWatch ??= _acp.localDetection.watch((_) => _receiveDetection());
+    final operation = '${_key.editorId}:detect:${++_detectionSequence}';
+    _detectionOperation = operation;
+    _detectionIntent = _launchIntent;
+    _detection = null;
+    _detectionError = null;
+    _detectionPending = true;
+    _publish();
+    try {
+      final request = _acp.startLocalDetection(OperationId(operation));
+      _detectionCleanup[operation] = request;
+      await request;
+      _receiveDetection();
+    } catch (error) {
+      if (!ref.mounted || _finished || _detectionOperation != operation) return;
+      // A lost reply retains its original cancellation responsibility. An
+      // explicit refresh uses a new identity without releasing the unknown one.
+      _detectionUnknown =
+          !(error is StudioFailure &&
+              {
+                StudioFailureCode.busy,
+                StudioFailureCode.invalidArgument,
+                StudioFailureCode.notInitialized,
+                StudioFailureCode.permissionDenied,
+                StudioFailureCode.overloaded,
+              }.contains(error.code));
+      if (!_detectionUnknown) _detectionCleanup.remove(operation);
+      _detectionError = safeAccountError(error, _strings);
+      _publish();
+    } finally {
+      if (ref.mounted && !_finished && _detectionOperation == operation) {
+        _detectionPending = false;
+        _publish();
+      }
+    }
+  }
+
+  void _receiveDetection() {
+    if (!ref.mounted || _finished) return;
+    final resource = _acp.localDetection.value;
+    final snapshot = resource.value;
+    if (!resource.stale && snapshot != null && !snapshot.isBusy) {
+      _detectionCleanup.remove(snapshot.operationId);
+    }
+    if (resource.stale || snapshot?.operationId != _detectionOperation) return;
+    _detection = snapshot;
+    _detectionUnknown = false;
+    _publish();
+  }
+
+  void _releaseDetection() {
+    _detectionWatch?.cancel();
+    _detectionWatch = null;
+    releaseAccountDemand(_detectionDemand);
+    _detectionDemand = null;
+    _detectionOperation = null;
+    final cleanup = _detectionCleanup.entries.toList();
+    _detectionCleanup.clear();
+    for (final entry in cleanup) {
+      final cancellation = OperationId(
+        '${_key.editorId}:detect-cancel:${++_detectionSequence}',
+      );
+      // If entry teardown races acceptance, cancel after that exact request
+      // settles; a failed/unknown start is still addressed by its original ID.
+      unawaited(() async {
+        try {
+          await entry.value;
+        } catch (_) {
+          // Cancellation still targets this request even if its reply was lost.
+        }
+        try {
+          await _acp.cancelLocalDetection(
+            operationId: cancellation,
+            targetOperationId: OperationId(entry.key),
+          );
+        } catch (_) {
+          // Host retains cleanup responsibility until the probe really joins.
+        }
+      }());
+    }
+  }
+
   void changeBilling(AccountBilling? value) {
     if (_raw == null || _finished) return;
     _raw = _raw!.withBilling(value == null ? null : domainBilling(value));
@@ -670,6 +912,9 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final baseline = _baseline;
     final acpName = _acpName;
     final acpKey = _acpKey;
+    final acpDefinition = _acpName == null ? null : _acpDefinition;
+    final acpSource = _acpSource;
+    final expectedDocumentRevision = _initialAcp?.documentRevision;
     final target = _key.target;
     final creating = _key.creating;
     final wasCreating = creating && !_created;
@@ -807,25 +1052,26 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           _baselineSetDefaultOnCreate = defaultIntent;
         }
       } else if (acpKey != null && acpName != null) {
-        final provider = AcpProviderView.fromWire(acpKey.providerId)!;
-        final command = AcpAccountUpdateView(
-          accountId: target.id,
-          name: acpName.trim(),
-          provider: provider,
-        );
+        final command = acpDefinition!;
         if (_key.creating && !_created) {
-          final result = await _acp.saveAndConnect(command, draft: stamp);
+          final result = await _acp.saveAndConnect(
+            command,
+            expectedDocumentRevision: expectedDocumentRevision,
+            draft: stamp,
+          );
           if (!ref.mounted || _finished || _baselineInvalidated) return false;
           if (!await _accept(result.operation)) return false;
           // The Client supplies typed saved details only for this confirmed save.
           final saved = result.saved!;
           _created = true;
           _baselineAcpName = acpName;
+          _baselineAcpDefinition = command;
+          _baselineAcpSource = acpSource;
           _initialAcp = saved;
           _observeCreatedDetails();
           _acpKey = AccountAcpKey(
             target: _key.target,
-            providerId: saved.provider.wire,
+            templateId: saved.template?.wire,
             connectionRevision: saved.connectionRevision,
             editorId: _key.editorId,
           );
@@ -836,10 +1082,26 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
             return false;
           }
         } else {
-          if (!await _accept(await _acp.save(command, draft: stamp))) {
+          if (!await _accept(
+            await _acp.save(
+              command,
+              expectedDocumentRevision: expectedDocumentRevision,
+              draft: stamp,
+            ),
+          )) {
             return false;
           }
           _baselineAcpName = acpName;
+          _baselineAcpDefinition = command;
+          _baselineAcpSource = acpSource;
+          final saved = _details?.value.value;
+          if (saved is AcpAccountDetails) {
+            _initialAcp = saved.account;
+            _acpKey = _acpKey?.copyWith(
+              connectionRevision: saved.account.connectionRevision,
+            );
+            _observeAcp();
+          }
         }
       }
       return ref.mounted && !_finished && _revision == revision && !_dirty;
@@ -920,6 +1182,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   /// releases local retention, never domain preparation/authentication/writes.
   void finish() {
     if (_finished) return;
+    _releaseDetection();
     final login = _raw?.loginId;
     if (login != null) {
       unawaited(_cancelChatGptLogin(login));
@@ -969,7 +1232,9 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         template == null;
     final validation =
         draft?.validate(_strings) ??
-        (_acpName?.trim().isEmpty == true ? _strings['required'] : null);
+        (_acpName?.trim().isEmpty == true
+            ? _strings['required']
+            : _acpValidation);
     final login = _currentChatGptLogin;
     final keepsSavedChatGpt =
         (!_key.creating || _created) &&
@@ -1015,7 +1280,11 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         !unknownTemplate &&
         validation == null &&
         authenticationReady &&
-        (acpKey == null || !_key.creating || _created || prepared);
+        (acpKey == null ||
+            _acpSource != AcpAccountSource.managed ||
+            !_key.creating ||
+            _created ||
+            prepared);
     final current = _details?.value.value;
     final currentNative = current is NativeAccountDetails ? current : null;
     final configurationError = current is AcpAccountDetails
@@ -1187,18 +1456,46 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           : AcpAccountEditorPresentation(
               editorId: _key.editorId,
               accountKey: _key.creating && !_created ? null : _key.target,
-              templateName: acpKey?.providerId == null
+              templateName: acpKey?.templateId == null
                   ? ''
                   : _acp.templates.value.templates
                             .where(
                               (value) =>
-                                  value.provider.wire == acpKey!.providerId,
+                                  value.provider.wire == acpKey!.templateId,
                             )
                             .firstOrNull
                             ?.displayName ??
-                        _initialAcp?.provider.wire ??
+                        _initialAcp?.template?.wire ??
                         '',
-              name: AccountTextPresentation(raw: _acpName!, error: validation),
+              name: AccountTextPresentation(raw: _acpName!),
+              source: _acpSource,
+              command: _acpCommand,
+              args: List.unmodifiable(_acpArgs),
+              environment: List.unmodifiable(_acpEnvironment),
+              enabled: _acpEnabled,
+              detectionPhase: _detectionPending
+                  ? AcpDetectionPhase.checking
+                  : _detection?.isBusy == true
+                  ? AcpDetectionPhase.values.byName(_detection!.state.name)
+                  : _detectionUnknown
+                  ? AcpDetectionPhase.failed
+                  : _detectionIntent != _launchIntent
+                  ? AcpDetectionPhase.idle
+                  : AcpDetectionPhase.values.byName(
+                      (_detection?.state ?? AcpLocalDetectionPhaseView.idle)
+                          .name,
+                    ),
+              detectedProgram: _detectionIntent == _launchIntent
+                  ? _detection?.program
+                  : null,
+              detectedVersion: _detectionIntent == _launchIntent
+                  ? _detection?.version
+                  : null,
+              detectionError:
+                  _detectionError ??
+                  (_detectionIntent == _launchIntent
+                      ? _detection?.failure?.message
+                      : null),
               preparation: AcpAccountPresentation(
                 phase: AcpPresentationPhase.idle,
                 status: _strings['acp.idle'],
@@ -1208,7 +1505,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
               saving: _saving,
               canSave: canSave,
               saveAndConnect: _key.creating && !_created,
-              error: error,
+              error: error ?? validation,
             ),
     );
   }

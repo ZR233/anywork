@@ -10,7 +10,8 @@ import 'package:anywork_client/conversation_encoding.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_ports.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show visibleForTesting, listEquals, mapEquals;
 
 import '../../domain/models/studio_models.dart';
 import '../../platform/error_log.dart';
@@ -538,7 +539,7 @@ class DemoStudioTransport extends StudioTransport
               AccountSummary(
                 identity: AcpAccountIdentity(account.accountId),
                 name: account.name,
-                brandKey: account.provider.wire,
+                brandKey: account.template?.wire ?? '',
                 displayEndpoint: null,
                 isDefault: false,
                 acpConnectionRevision: account.connectionRevision,
@@ -634,6 +635,11 @@ class DemoStudioTransport extends StudioTransport
         return AcpAuthFrame(
           _demoStamp('acp-auth', _demoAcpAuth.snapshot.revision),
           _demoAcpAuth.snapshot,
+        );
+      case AcpLocalDetectionTarget():
+        return AcpLocalDetectionFrame(
+          _demoStamp('acp-local-detection', 0),
+          const AcpLocalDetectionSnapshotView.idle(),
         );
       case AcpInstallTarget():
         return AcpInstallFrame(
@@ -1832,30 +1838,36 @@ class DemoStudioTransport extends StudioTransport
     'threadId': row.threadId,
     'workspaceId': row.workspaceId,
     'title': row.title,
-    'mode': row.mode.id,
+    'mode': row.mode?.id,
     'delegationMode': row.delegationMode.name,
     'delegationPreference': row.delegationPreference.name,
     'workspaceMode': row.workspaceMode.id,
     'workspacePath': row.workspacePath,
     'role': row.role,
-    'binding': switch (row.binding) {
-      NativeAgentBindingView(:final route) => {
+    'backend': switch (row.backend) {
+      NativeAgentBackendView(:final config, :final status) => {
         'kind': 'native',
-        'route': route == null
-            ? null
-            : {
-                'accountId': route.accountId,
-                'modelId': route.modelId,
-                'effort': route.effort,
-              },
+        'config': {
+          'route': config.route == null
+              ? null
+              : {
+                  'accountId': config.route!.accountId,
+                  'modelId': config.route!.modelId,
+                  'effort': config.route!.effort,
+                },
+          'systemInstructions': config.systemInstructions,
+        },
+        'status': status.name,
       },
-      AcpAgentBindingView(:final accountId, :final connectionRevision) => {
+      AcpAgentBackendView(:final reference) => {
         'kind': 'acp',
-        'accountId': accountId,
-        'connectionRevision': connectionRevision,
+        'reference': {
+          'accountId': reference.accountId,
+          'acpSessionId': reference.acpSessionId,
+          'cwd': reference.cwd,
+        },
       },
     },
-    'status': row.status.name,
     'createdAt': row.effectiveCreatedAt.millisecondsSinceEpoch,
     'updatedAt': row.updatedAt.millisecondsSinceEpoch,
     'lastUserMessageAt': row.lastUserMessageAt?.millisecondsSinceEpoch,
@@ -1889,13 +1901,20 @@ class DemoStudioTransport extends StudioTransport
       return false;
     }
     if (query.filter == DirectoryFilter.running &&
-        (!row.status.isActive ||
-            row.status == ThreadStatusView.waitingInteraction)) {
+        (!(row.backend is NativeAgentBackendView &&
+                (row.backend as NativeAgentBackendView).status.isActive) ||
+            (row.backend is NativeAgentBackendView &&
+                (row.backend as NativeAgentBackendView).status ==
+                    ThreadStatusView.waitingInteraction))) {
       return false;
     }
     if (query.filter == DirectoryFilter.attention &&
-        row.status != ThreadStatusView.waitingInteraction &&
-        row.status != ThreadStatusView.faulted) {
+        (row.backend is! NativeAgentBackendView ||
+            (row.backend as NativeAgentBackendView).status !=
+                ThreadStatusView.waitingInteraction) &&
+        (row.backend is! NativeAgentBackendView ||
+            (row.backend as NativeAgentBackendView).status !=
+                ThreadStatusView.faulted)) {
       return false;
     }
     final term = query.search?.trim().toLowerCase() ?? '';
@@ -1925,14 +1944,14 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<StudioThread> restoreThread(String threadId) async {
+  Future<SessionDirectoryRow> restoreThread(String threadId) async {
     _archivedThreadIds.remove(threadId);
     final restored = _demoDirectoryThreads()[threadId];
     if (restored == null) {
       throw StateError('unknown demo Thread $threadId');
     }
     _emitThreadDirectoryUpdate(restored);
-    return restored;
+    return _directoryRowOf(restored);
   }
 
   String _demoDirectoryCursor(int lastIndex) => 'demo:$lastIndex';
@@ -1954,14 +1973,16 @@ class DemoStudioTransport extends StudioTransport
     threadId: thread.id,
     workspaceId: thread.workspaceId,
     title: thread.title,
-    mode: thread.mode,
+    mode: thread.isRoot ? thread.mode : null,
     delegationMode: thread.delegationMode,
     delegationPreference: thread.delegationPreference,
     workspaceMode: thread.workspaceMode,
     workspacePath: thread.workspacePath,
     role: thread.role,
-    binding: NativeAgentBindingView(route: thread.frozenModel),
-    status: thread.status,
+    backend: NativeAgentBackendView(
+      config: NativeAgentConfigView(route: thread.frozenModel),
+      status: thread.status,
+    ),
     createdAt: thread.effectiveCreatedAt,
     updatedAt: thread.updatedAt,
     lastUserMessageAt: thread.lastUserMessageAt,
@@ -1986,8 +2007,26 @@ class DemoStudioTransport extends StudioTransport
       ),
   ];
 
+  NewThreadModelRoute _demoNativeRoute(StudioThread thread) {
+    if (thread.frozenModel case final route?) return route;
+    final mode = thread.isRoot
+        ? thread.mode
+        : _workspaces[thread.rootThreadId]?.thread.mode;
+    if (mode == null) {
+      throw StateError(
+        'Native demo route requires a root mode or frozen model',
+      );
+    }
+    final route = _demoModeRoute(mode);
+    return NewThreadModelRoute(
+      accountId: route.accountId,
+      modelId: route.modelId,
+      effort: route.effort,
+    );
+  }
+
   ThreadWorkspace _rootWorkspace(StudioThread thread, DateTime now) {
-    final route = _demoModeRoute(thread.mode);
+    final route = _demoNativeRoute(thread);
     final userCreatedAt = now.subtract(const Duration(minutes: 9));
     final agentCreatedAt = now.subtract(const Duration(minutes: 8));
     _installDemoHistory(thread.id, [
@@ -2107,7 +2146,7 @@ class DemoStudioTransport extends StudioTransport
       revision: 1,
       interactions: const [],
       modelRoute: ThreadModelRouteView(
-        accountId: _demoModeRoute(thread.mode).accountId,
+        accountId: _demoNativeRoute(thread).accountId,
         modelId: modelId,
         effort: null,
         revision: 1,
@@ -2188,10 +2227,25 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
+  Future<AcpLocalDetectionCommandReply> startAcpLocalDetection({
+    required OperationId operationId,
+  }) => Future.error(
+    UnsupportedError('Local executable detection requires the production Host'),
+  );
+  @override
+  Future<AcpLocalDetectionCommandReply> cancelAcpLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  }) => Future.error(
+    UnsupportedError('Local executable detection requires the production Host'),
+  );
+
+  @override
   Future<SettingsCommandReply> saveAcpAccount(
     int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
+    required BigInt? expectedDocumentRevision,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
@@ -2206,12 +2260,31 @@ class DemoStudioTransport extends StudioTransport
     final previous = _acpAccounts
         .where((candidate) => candidate.accountId == account.accountId)
         .firstOrNull;
+    if (previous?.documentRevision != expectedDocumentRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'ACP definition changed; reload before saving',
+        retryable: false,
+        correlationId: 'demo-acp-document',
+      );
+    }
     final identityChanged =
-        previous == null || previous.provider != account.provider;
+        previous == null ||
+        previous.template != account.template ||
+        previous.command != account.command ||
+        !listEquals(previous.args, account.args ?? const []) ||
+        !mapEquals(previous.env, account.env) ||
+        previous.enabled != account.enabled;
     final saved = AcpAccountSettingsView(
       accountId: account.accountId,
       name: account.name,
-      provider: account.provider,
+      template: account.template,
+      command: account.command,
+      args: account.args ?? const [],
+      env: account.env,
+      enabled: account.enabled,
+      documentRevision:
+          (previous?.documentRevision ?? BigInt.zero) + BigInt.one,
       connectionRevision: identityChanged
           ? (previous?.connectionRevision ?? 0) + 1
           : previous.connectionRevision,
@@ -2231,9 +2304,19 @@ class DemoStudioTransport extends StudioTransport
     int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
+    required BigInt expectedDocumentRevision,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
+    if (_demoAcpAccount(accountId).documentRevision !=
+        expectedDocumentRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'ACP definition changed; reload before removing',
+        retryable: false,
+        correlationId: 'demo-acp-document',
+      );
+    }
     _acpAccounts = [
       for (final account in _acpAccounts)
         if (account.accountId != accountId) account,
@@ -2899,7 +2982,7 @@ class DemoStudioTransport extends StudioTransport
     }
     _emitThreadDirectoryUpdate(renamed);
     return RenameThreadCommandReply(
-      thread: renamed,
+      thread: _directoryRowOf(renamed),
       receipt: _demoReceipt(
         operationId,
         changed: changed,
@@ -3101,7 +3184,7 @@ class DemoStudioTransport extends StudioTransport
       for (final account in s.acpAccounts)
         account.accountId: [
           account.name,
-          account.provider.wire,
+          account.template?.wire ?? '',
           account.connectionRevision,
         ],
     },
@@ -3355,21 +3438,18 @@ class DemoStudioTransport extends StudioTransport
       (candidate) => candidate.threadId == threadId,
     );
     if (index < 0) throw StateError('unknown demo root Thread $threadId');
-    final nextRootId = index + 1 < roots.length
-        ? roots[index + 1].threadId
+    final nextRoot = index + 1 < roots.length
+        ? roots[index + 1]
         : index > 0
-        ? roots[index - 1].threadId
+        ? roots[index - 1]
         : null;
-    final nextRoot = nextRootId == null
-        ? null
-        : _demoDirectoryThreads()[nextRootId];
     final removedThreadIds = <String>{
       threadId,
       for (final candidate in _ensureWorkspaceFixture().threads)
         if (_demoSessionIdOf(candidate) == threadId) candidate.id,
     }.toList();
     _archivedThreadIds.add(threadId);
-    if (_selectedThreadId == threadId) _selectedThreadId = nextRoot?.id;
+    if (_selectedThreadId == threadId) _selectedThreadId = nextRoot?.threadId;
     _threadDirectoryRevision += 1;
     _publishProductPayload(
       ThreadDirectoryChangedPayload(
@@ -3425,9 +3505,7 @@ class DemoStudioTransport extends StudioTransport
         : index > 0
         ? roots[index - 1]
         : null;
-    final nextRoot = nextRow == null
-        ? null
-        : _demoDirectoryThreads()[nextRow.threadId];
+    final nextRoot = nextRow;
     final deletedThreadIds = <String>{
       for (final thread in allThreads)
         if (_demoSessionIdOf(thread) == _demoSessionIdOf(root)) thread.id,
@@ -3467,7 +3545,7 @@ class DemoStudioTransport extends StudioTransport
 
     if (_selectedThreadId != null &&
         deletedThreadIds.contains(_selectedThreadId)) {
-      _selectedThreadId = nextRoot?.id;
+      _selectedThreadId = nextRoot?.threadId;
     }
     _threadDirectoryRevision += 1;
     _publishProductPayload(
@@ -3829,11 +3907,18 @@ class DemoStudioTransport extends StudioTransport
     final selectedEffort = selected.reasoningEfforts.contains(effort)
         ? effort
         : selected.reasoningEfforts.firstOrNull ?? '';
+    if (!row.isRootRow ||
+        row.backend is! NativeAgentBackendView ||
+        row.mode == null) {
+      throw StateError(
+        'Saving a Native mode route requires a Native root with mode',
+      );
+    }
     _modeRoutes = [
       for (final route in current.modeModelRoutes)
         if (route.modeId != row.mode) route,
       ModeModelRouteView(
-        modeId: row.mode,
+        modeId: row.mode!,
         accountId: accountId,
         modelId: modelId,
         effort: selectedEffort ?? '',
@@ -3902,7 +3987,10 @@ class DemoStudioTransport extends StudioTransport
     if (!row.isRootRow) {
       throw StateError('only a root Thread can change mode');
     }
-    if (row.status != ThreadStatusView.idle) {
+    if (row.backend is! NativeAgentBackendView ||
+        row.mode == null ||
+        (row.backend as NativeAgentBackendView).status !=
+            ThreadStatusView.idle) {
       throw StateError(
         'thread mode cannot change while the Thread is running or has pending input',
       );
@@ -4362,6 +4450,7 @@ class DemoStudioTransport extends StudioTransport
         AccountUsageTarget() => const AccountUsageTopic(),
         AcpAuthTarget() => const AcpAuthTopic(),
         AcpInstallTarget() => const AcpInstallTopic(),
+        AcpLocalDetectionTarget() => const AcpLocalDetectionTopic(),
         ChatGptLoginTarget() => const SettingsConfigTopic(),
       };
       if (source == payload.topic) entry.key.notify();
@@ -4433,6 +4522,9 @@ class DemoStudioTransport extends StudioTransport
       ),
       AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
       AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
+      AcpLocalDetectionTopic() => const AcpLocalDetectionBaseline(
+        AcpLocalDetectionSnapshotView.idle(),
+      ),
       BotsTopic() => BotsBaseline(_demoBotsState()),
       ChildInteractionsTopic(:final hostThreadId) => ChildInteractionsBaseline(
         _demoChildInteractionsState(hostThreadId),
@@ -4458,6 +4550,7 @@ class DemoStudioTransport extends StudioTransport
       AgentProfilesBaseline(:final state) => state.revision,
       AcpAuthBaseline(:final state) => state.revision,
       AcpInstallBaseline(:final state) => state.revision,
+      AcpLocalDetectionBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
       ChildInteractionsBaseline(:final state) => state.state.revision,
     };

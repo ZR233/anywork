@@ -145,8 +145,12 @@ impl SessionRuntime {
             let private_ids = ids
                 .iter()
                 .filter(|id| {
-                    state.creating.contains_key(*id)
-                        || state.preparing_children.contains_key(*id)
+                    state.creating.get(*id).is_some_and(|preparation| {
+                        matches!(
+                            preparation.resources,
+                            crate::session::PreparedResources::Native(_)
+                        )
+                    }) || state.preparing_children.contains_key(*id)
                         || state.unpublished_children.contains_key(*id)
                 })
                 .cloned()
@@ -249,6 +253,17 @@ impl SessionRuntime {
         }
         for (_, id) in &scope.members {
             self.discard_unpublished_child(id).await?;
+            let acp = self
+                .0
+                .state()
+                .failed_preparations
+                .get(id)
+                .is_some_and(|failed| {
+                    matches!(failed.resources, crate::session::PreparedResources::Acp(_))
+                });
+            if acp {
+                self.close_failed_preparation(id).await?;
+            }
         }
         Ok(())
     }
@@ -299,7 +314,7 @@ impl SessionRuntime {
         for (_, id) in targets {
             if let Some(entry) = state.entries.get(id)
                 && entry
-                    .native
+                    .native()?
                     .workspace_disposition
                     .is_some_and(|current| current != disposition)
             {
@@ -313,11 +328,11 @@ impl SessionRuntime {
                 // admission here: publishing Cleanup before a successful flush would let ordinary
                 // shutdown consume an uncommitted request after the owned close fails.
                 if standalone {
-                    if entry.native.workspace_disposition != Some(disposition) {
-                        entry.native.published_resources_closed = false;
+                    if entry.native()?.workspace_disposition != Some(disposition) {
+                        entry.native_mut()?.published_resources_closed = false;
                     }
-                    entry.native.workspace_disposition = Some(disposition);
-                    entry.native.ready = false;
+                    entry.native_mut()?.workspace_disposition = Some(disposition);
+                    entry.native_mut()?.ready = false;
                 }
             }
         }
@@ -336,15 +351,15 @@ impl SessionRuntime {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        if let Some(current) = entry.native.workspace_disposition {
+        if let Some(current) = entry.native()?.workspace_disposition {
             if current != disposition {
                 return Err(ThreadAssemblyError::CloseDisposition(id.to_owned()));
             }
         } else {
             // A previous default Preserve is not an explicit policy; first durable Cleanup must
             // still run even if that ordinary resource retirement had already completed.
-            entry.native.published_resources_closed = false;
-            entry.native.workspace_disposition = Some(disposition);
+            entry.native_mut()?.published_resources_closed = false;
+            entry.native_mut()?.workspace_disposition = Some(disposition);
         }
         Ok(())
     }
@@ -363,10 +378,15 @@ impl SessionRuntime {
                 .entries
                 .get(id)
                 .filter(|entry| {
-                    entry.identity.parent_agent_id.is_some()
-                        && Arc::ptr_eq(&entry.native.incarnation, incarnation)
+                    entry.native().is_ok_and(|native| {
+                        entry.identity.parent_agent_id.is_some()
+                            && Arc::ptr_eq(&native.incarnation, incarnation)
+                    })
                 })
-                .map(|entry| entry.native.cleanup.clone())
+                .and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.cleanup.clone())
+                })
         };
         let Some(cleanup) = cleanup else {
             return Ok(());
@@ -378,22 +398,29 @@ impl SessionRuntime {
                 .entries
                 .get(id)
                 .filter(|entry| {
-                    !entry.native.published_resources_closed
-                        && Arc::ptr_eq(&entry.native.incarnation, incarnation)
+                    entry.native().is_ok_and(|native| {
+                        !native.published_resources_closed
+                            && Arc::ptr_eq(&native.incarnation, incarnation)
+                    })
                 })
                 .and_then(|entry| {
-                    state.child_factory.clone().map(|factory| {
-                        let disposition = entry.native.workspace_disposition.unwrap_or_default();
-                        (factory, disposition)
-                    })
+                    let disposition = entry
+                        .native()
+                        .ok()?
+                        .workspace_disposition
+                        .unwrap_or_default();
+                    state
+                        .child_factory
+                        .clone()
+                        .map(|factory| (factory, disposition))
                 })
         };
         if let Some((factory, disposition)) = resource {
             factory.close_published(id, disposition).await?;
             if let Some(entry) = self.0.state().entries.get_mut(id)
-                && Arc::ptr_eq(&entry.native.incarnation, incarnation)
+                && Arc::ptr_eq(&entry.native()?.incarnation, incarnation)
             {
-                entry.native.published_resources_closed = true;
+                entry.native_mut()?.published_resources_closed = true;
             }
         }
         Ok(())

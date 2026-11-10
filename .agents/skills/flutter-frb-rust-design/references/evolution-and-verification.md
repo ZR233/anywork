@@ -126,6 +126,11 @@ widget 不证明 native 句柄和持久化，单平台／模拟对端不证明�
 
 ### 真实链路的测试所有权
 
+- 核对跨桥数值的完整取值域。内容摘要或外部身份使用完整 Rust `u64` 时，
+  保留生成 DTO 的 Dart `BigInt`；`BigInt.toInt()` 对超范围值会夹到整数边界，
+  再转回 `BigInt` 不能恢复原值。不要用掩码、负数编码或放宽 CAS 比较弥补精度损失。
+  对必须原样带回的资格，至少覆盖大于有符号整数上限的值及 `u64` 最大值，
+  经生产读取转换后再提交到真实命令编码边界，核精确相等及缺省语义。
 - 严格模拟对端的匹配形状应来自真实生产编码或已核实的保存输入，不能只用手写“最简合法请求”
   自证兼容。附件名文本、图片与其他内容 part 的顺序也是输入事实；修正 fixture 时保留数量、
   身份、格式和字节校验，不通过删去生产信息或兼容两种虚构结构制造成功。
@@ -148,3 +153,4 @@ widget 不证明 native 句柄和持久化，单平台／模拟对端不证明�
 - [SQLite 隔离](https://sqlite.org/isolation.html) 与 [WAL](https://sqlite.org/wal.html)：读快照和提交边界。
 - [SeaORM migration](https://www.sea-ql.org/SeaORM/docs/migration/writing-migration/)：按实际版本和后端核对事务能力。
 - [Riverpod 测试隔离](https://riverpod.dev/docs/how_to/testing)：每个测试独立的 provider 容器与作用域。
+- [Dart BigInt.toInt](https://api.dart.dev/dart-core/BigInt/toInt.html)：超范围整数转换的夹值行为。

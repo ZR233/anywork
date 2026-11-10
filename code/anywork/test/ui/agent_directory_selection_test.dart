@@ -712,18 +712,25 @@ Future<void> _expectLatestQueuedColdSelection({
 }
 
 /// 创建回执仍携带 Native Thread 投影；测试用目录行事实重建等价的执行行。
-StudioThread _nativeThreadOf(SessionDirectoryRow row) => StudioThread(
-  id: row.threadId,
-  workspaceId: row.workspaceId,
-  title: row.title,
-  mode: row.mode,
-  delegationMode: row.delegationMode,
-  delegationPreference: row.delegationPreference,
-  frozenModel: row.frozenModel,
-  workspaceMode: row.workspaceMode,
-  workspacePath: row.workspacePath,
-  updatedAt: row.updatedAt,
-);
+StudioThread _nativeThreadOf(SessionDirectoryRow row) {
+  final backend = row.backend;
+  if (backend is! NativeAgentBackendView) {
+    throw StateError('Native fixture requires a Native backend');
+  }
+  return StudioThread(
+    id: row.threadId,
+    workspaceId: row.workspaceId,
+    title: row.title,
+    mode: row.mode,
+    delegationMode: row.delegationMode,
+    delegationPreference: row.delegationPreference,
+    frozenModel: row.frozenModel,
+    workspaceMode: row.workspaceMode,
+    workspacePath: row.workspacePath,
+    status: backend.status,
+    updatedAt: row.updatedAt,
+  );
+}
 
 // Reuse a second real Demo history as the external saved sibling fixture.
 // Client remains responsible for canonical membership, reads and navigation.
@@ -769,7 +776,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(client.selection.state.selectedThreadId, fixture.child.threadId);
   expect(client.selection.state.needsOpen, isFalse);
   expect(
-    session.state.directoryRow?.status,
+    (session.state.directoryRow!.backend as NativeAgentBackendView).status,
     ThreadStatusView.closed,
     reason: '目录行的 typed 状态是关闭事实的来源',
   );
@@ -800,12 +807,18 @@ Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
       : saved[0];
   final child = distinctRootIdentity
       ? saved[1].copyWith(
-          status: ThreadStatusView.closed,
+          backend: (saved[1].backend as NativeAgentBackendView).copyWith(
+            status: ThreadStatusView.closed,
+          ),
           threadId: 'C',
           sessionId: root.sessionId,
           parentAgentId: root.agentId,
         )
-      : saved[1].copyWith(status: ThreadStatusView.closed);
+      : saved[1].copyWith(
+          backend: (saved[1].backend as NativeAgentBackendView).copyWith(
+            status: ThreadStatusView.closed,
+          ),
+        );
   final other = saved[2];
   transport.rowOverrides.addAll({
     saved[0].threadId: root,
@@ -831,7 +844,9 @@ Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
         delegationMode: row.delegationMode,
         delegationPreference: row.delegationPreference,
         frozenModel: row.frozenModel,
-        state: row.status == ThreadStatusView.closed
+        state:
+            (row.backend as NativeAgentBackendView).status ==
+                ThreadStatusView.closed
             ? const ClosedStudioAgent()
             : const IdleStudioAgent(),
         updatedAt: row.updatedAt,
@@ -1002,7 +1017,7 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<StudioThread> restoreThread(String threadId) async {
+  Future<SessionDirectoryRow> restoreThread(String threadId) async {
     restoreCalls++;
     throw StateError('Selecting saved history must not restore execution');
   }

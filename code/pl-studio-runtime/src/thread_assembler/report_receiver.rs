@@ -32,8 +32,8 @@ impl SessionRuntime {
     /// and normal activation retry this responsibility; neither may return the receiver as ready.
     pub(super) async fn finish_report_receiver(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let incarnation = self.0.state().entries.get(id).and_then(|entry| {
-            (entry.native.purpose == EntryPurpose::ReportReceiver)
-                .then(|| entry.native.incarnation.clone())
+            (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
+                .then_some(entry.native().ok()?.incarnation.clone())
         });
         if let Some(incarnation) = incarnation {
             let _operation = self.agent_operation(id).await;
@@ -50,8 +50,10 @@ impl SessionRuntime {
         incarnation: &Arc<()>,
     ) -> Result<(), ThreadAssemblyError> {
         let retained = self.0.state().entries.get(id).is_some_and(|entry| {
-            entry.native.purpose == EntryPurpose::ReportReceiver
-                && Arc::ptr_eq(&entry.native.incarnation, incarnation)
+            entry.native().is_ok_and(|native| {
+                native.purpose == EntryPurpose::ReportReceiver
+                    && Arc::ptr_eq(&native.incarnation, incarnation)
+            })
         });
         if !retained {
             return Ok(());
@@ -71,8 +73,10 @@ impl SessionRuntime {
         let removed = {
             let mut state = self.0.state();
             if state.entries.get(id).is_some_and(|entry| {
-                entry.native.purpose == EntryPurpose::ReportReceiver
-                    && Arc::ptr_eq(&entry.native.incarnation, incarnation)
+                entry.native().is_ok_and(|native| {
+                    native.purpose == EntryPurpose::ReportReceiver
+                        && Arc::ptr_eq(&native.incarnation, incarnation)
+                })
             }) {
                 state.remove_entry(id)
             } else {
@@ -149,39 +153,40 @@ impl AgentServices {
                 } else {
                     match state.entries.get(parent) {
                         None => Recipient::Cold(EntryPurpose::ReportReceiver),
-                        Some(entry) => match entry.native.purpose {
+                        Some(entry) => match entry.native()?.purpose {
                             EntryPurpose::ReportReceiver => {
-                                if entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                                if entry.native()?.thread.snapshot().lifecycle
+                                    == ThreadLifecycle::Open
                                 {
                                     Recipient::Temporary(
-                                        entry.native.thread.clone(),
-                                        entry.native.incarnation.clone(),
+                                        entry.native()?.thread.clone(),
+                                        entry.native()?.incarnation.clone(),
                                     )
                                 } else {
-                                    Recipient::Release(entry.native.incarnation.clone())
+                                    Recipient::Release(entry.native()?.incarnation.clone())
                                 }
                             }
                             EntryPurpose::CloseStorage => {
-                                if entry.native.thread.snapshot().lifecycle
+                                if entry.native()?.thread.snapshot().lifecycle
                                     == ThreadLifecycle::Closed
                                 {
                                     Recipient::Cold(EntryPurpose::CloseStorage)
                                 } else {
-                                    Recipient::Borrowed(entry.native.thread.clone())
+                                    Recipient::Borrowed(entry.native()?.thread.clone())
                                 }
                             }
                             EntryPurpose::Execution
-                                if (entry.native.ready
+                                if (entry.native()?.ready
                                     || closing_inbox
                                     || matches!(write, StorageWrite::ReviewDelivery(_)))
-                                    && entry.native.thread.snapshot().lifecycle
+                                    && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>
                             {
-                                Recipient::Borrowed(entry.native.thread.clone())
+                                Recipient::Borrowed(entry.native()?.thread.clone())
                             }
                             EntryPurpose::Execution
                                 if matches!(write, StorageWrite::ReviewDelivery(_))
-                                    && entry.native.thread.snapshot().lifecycle
+                                    && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Closed =>
                             {
                                 Recipient::Cold(EntryPurpose::CloseStorage)
@@ -235,8 +240,12 @@ impl AgentServices {
                             }
                             Err(error) => return Err(error.into()),
                         };
-                    let incarnation = (purpose == EntryPurpose::ReportReceiver)
-                        .then(|| owner.0.state().entries[parent].native.incarnation.clone());
+                    let incarnation = (purpose == EntryPurpose::ReportReceiver).then_some(
+                        owner.0.state().entries[parent]
+                            .native()?
+                            .incarnation
+                            .clone(),
+                    );
                     (thread, incarnation)
                 }
             };

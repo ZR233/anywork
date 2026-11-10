@@ -83,6 +83,10 @@ final class _Handle implements ThreadsObservationHandle {
 
 SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
     SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
       sessionId: id,
       agentId: id,
       threadId: id,
@@ -114,6 +118,52 @@ ThreadDirectoryFrame _frame(
 );
 
 void main() {
+  test('directory observation retains ACP references and nullable mode without Native status', () async {
+    final feed = _Feed();
+    final store = ThreadDirectoryStore(feed: feed);
+    const query = DirectoryQuery(archived: true);
+    final window = DirectoryWindow();
+    final lease = store.observeThreads(query, window);
+    final handle = _Handle();
+    feed.threads.single.result.complete(handle);
+    final native = _thread('native')
+        .copyWith(mode: ThreadModeId.task, archived: true);
+    const reference = AcpSessionReferenceView(
+      accountId: 'definition',
+      acpSessionId: 'remote-session',
+      cwd: '/synthetic/work',
+    );
+    final acp = _thread('external').copyWith(
+      mode: null,
+      backend: const AcpAgentBackendView(reference: reference),
+      archived: true,
+    );
+    handle.add(_frame(query, window, [native, acp]));
+    await lease.state.waitFor((state) => state.frame != null);
+    final observed = lease.state.value.frame!.rows;
+    expect(observed.first.mode, ThreadModeId.task);
+    expect(observed.last.mode, isNull);
+    expect(
+      observed.last.backend,
+      const AcpAgentBackendView(reference: reference),
+    );
+    expect(observed.last.frozenModel, isNull);
+    expect(observed.last.isRootRow, isTrue);
+    expect(observed.last.archived, isTrue);
+    final child = native.copyWith(
+      threadId: 'child',
+      agentId: 'child',
+      parentAgentId: native.agentId,
+      mode: null,
+    );
+    expect(child.mode, isNull);
+    expect(child.isChildRow, isTrue);
+    expect(native.mode, ThreadModeId.task);
+    final releasing = lease.release();
+    handle.allowClose.complete();
+    await releasing;
+  });
+
   test(
     'same demand shares one owner and A to B to A retires exact slots',
     () async {

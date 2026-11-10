@@ -4032,6 +4032,7 @@ dependencies = [
 name = "pl-protocol"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol-schema",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -4198,6 +4199,7 @@ dependencies = [
  "url",
  "uuid",
  "version-migrate",
+ "which",
  "windows-sys 0.61.2",
  "zeroize",
  "zstd",

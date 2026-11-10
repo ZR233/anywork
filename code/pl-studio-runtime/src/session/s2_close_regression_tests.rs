@@ -281,7 +281,8 @@ async fn s2_stale_failed_retry_cannot_close_replacement_owner() {
         assert_eq!(probe.attempts.load(Ordering::SeqCst), attempts);
         assert!(
             owner.0.state().entries[id]
-                .native
+                .native()
+                .unwrap()
                 .thread
                 .same_instance(&thread)
         );
@@ -355,7 +356,7 @@ fn register_member(owner: &SessionRuntime, id: &str, parent: Option<&str>, threa
                 route: None,
                 system_instructions: None,
             }),
-            native: NativeThreadRuntime {
+            runtime: crate::session::AgentRuntime::Native(Box::new(NativeThreadRuntime {
                 resources: Arc::new(NativeResources::default()),
                 purpose: EntryPurpose::Execution,
                 workspace_usage: None,
@@ -370,7 +371,7 @@ fn register_member(owner: &SessionRuntime, id: &str, parent: Option<&str>, threa
                 parent_id: parent.map(str::to_owned),
                 ready: true,
                 thread,
-            },
+            })),
         },
     );
 }

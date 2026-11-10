@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
+import 'acp_detection.dart';
 import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
@@ -108,6 +109,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.acpInstallStateChanged(
     BridgeAcpInstallSnapshot field0,
   ) = BridgeProductEventPayload_AcpInstallStateChanged;
+  const factory BridgeProductEventPayload.acpLocalDetectionStateChanged(
+    BridgeAcpLocalDetectionSnapshot field0,
+  ) = BridgeProductEventPayload_AcpLocalDetectionStateChanged;
   const factory BridgeProductEventPayload.sessionCostsChanged(
     BridgeSessionCostsState field0,
   ) = BridgeProductEventPayload_SessionCostsChanged;

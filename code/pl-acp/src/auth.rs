@@ -18,6 +18,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod flow;
 mod limits;
+pub(crate) use flow::declared_methods;
 
 /// 宿主提供的字节流读端。
 pub use tokio::io::AsyncRead;
@@ -74,7 +75,7 @@ pub struct AuthMethod {
 
 /// `initialize` 协商出的服务端身份。
 ///
-/// ACP v1 允许对端省略 `agentInfo`，但本认证入口会因无法核对宿主要求的版本而拒绝该响应。
+/// ACP v1 允许对端省略 `agentInfo`；仅指定模板版本要求时拒绝缺失身份。
 /// 字段始终是真实观察值，本模块不用空串哨兵，也不用账号名冒充服务端身份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
@@ -106,8 +107,8 @@ pub enum AuthProgress {
 
 /// 一次认证命令的终态。
 ///
-/// `server` 是 `initialize` 实际观察到且通过宿主要求的精确版本核对的身份，不使用空字符串
-/// 哨兵，也不以接入配置中的账号名代替。缺失 `agentInfo` 或版本不符时不会返回认证终态。
+/// `server` 是 `initialize` 实际观察到的身份；指定模板版本要求时须通过精确核对。
+/// 不使用空字符串哨兵，也不以接入配置中的账号名代替。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthOutcome {
     /// 探测会话建立成功，证明当时凭据可用。
@@ -162,10 +163,9 @@ impl CleanupBudget {
 /// 一次认证命令的输入。
 #[derive(Debug)]
 pub struct AuthRequest {
-    /// 宿主要求的服务端版本；在 `initialize` 后、任何认证或探测请求前按原字符串精确核对。
-    /// 缺失服务端身份或版本不相等都返回 [`AuthFailureKind::ServerVersionMismatch`]，不做
-    /// trim、语义化版本解析或显示名回退。
-    pub expected_server_version: String,
+    /// 可选的模板版本要求；`Some` 在任何认证或探测前按原字符串精确核对。
+    /// `None` 不要求身份信息，但仍要求 ACP v1；不使用空字符串、trim 或版本回退。
+    pub expected_server_version: Option<String>,
     /// 探测会话使用的绝对工作目录，由宿主提供接入专属空目录。
     pub probe_cwd: String,
     /// 要执行的命令。

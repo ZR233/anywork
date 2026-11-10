@@ -29,8 +29,6 @@ class AccountTemplatePickerView extends StatelessWidget {
                 l10n.settingsAddAccount,
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
-              const SizedBox(height: 8),
-              Text(l10n.accountsTemplatePickerHint),
               const SizedBox(height: 24),
               AccountTemplateSelector(
                 templates: templates,

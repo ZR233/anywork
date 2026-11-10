@@ -525,18 +525,24 @@ StudioThread _thread({
 
 /// The root directory row of the main session.
 SessionDirectoryRow _row({
+  String id = 'thread',
+  String title = 'Thread',
   ThreadModeId mode = ThreadModeId.simple,
   ThreadStatusView status = ThreadStatusView.idle,
 }) => SessionDirectoryRow(
-  sessionId: 'thread',
-  agentId: 'thread',
-  threadId: 'thread',
+  backend: NativeAgentBackendView(
+    config: const NativeAgentConfigView(),
+    status: status,
+  ),
+  sessionId: id,
+  agentId: id,
+  threadId: id,
   workspaceId: 'project',
-  title: 'Thread',
+  title: title,
   mode: mode,
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
-  status: status,
+
   updatedAt: DateTime.utc(2026),
   workspacePath: '/project',
 );
@@ -544,6 +550,10 @@ SessionDirectoryRow _row({
 /// A direct child of the main session: the same directory identity the agent
 /// list publishes, with no separate page or content view.
 SessionDirectoryRow _childThread() => SessionDirectoryRow(
+  backend: NativeAgentBackendView(
+    config: const NativeAgentConfigView(),
+    status: ThreadStatusView.idle,
+  ),
   sessionId: 'thread',
   agentId: 'child',
   parentAgentId: 'thread',
@@ -2138,7 +2148,7 @@ void main() {
           result: DeleteThreadResult(
             deletedRootId: 'archived-root',
             deletedThreadIds: const ['archived-root', 'archived-child'],
-            nextRoot: _thread(id: 'next-root'),
+            nextRoot: _row(id: 'next-root'),
           ),
           receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
         ),
@@ -2203,7 +2213,7 @@ void main() {
           result: DeleteThreadResult(
             deletedRootId: 'thread',
             deletedThreadIds: const ['thread', 'child'],
-            nextRoot: _thread(id: 'next-root', title: 'Next root'),
+            nextRoot: _row(id: 'next-root', title: 'Next root'),
           ),
           receipt: _receipt(call.operationId, [
             _stamp('thread-directory', 2),
@@ -2236,7 +2246,7 @@ void main() {
         result: DeleteThreadResult(
           deletedRootId: 'thread',
           deletedThreadIds: const ['thread', 'child'],
-          nextRoot: _thread(id: 'next-root'),
+          nextRoot: _row(id: 'next-root'),
         ),
         receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
       ),
@@ -4364,7 +4374,12 @@ void main() {
           );
         } else if (blocked == 'closed') {
           transport.emitThread(
-            _row().copyWith(status: ThreadStatusView.closing),
+            _row().copyWith(
+              backend: const NativeAgentBackendView(
+                config: NativeAgentConfigView(),
+                status: ThreadStatusView.closing,
+              ),
+            ),
             'thread',
             revision: 2,
           );

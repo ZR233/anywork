@@ -838,6 +838,7 @@ mod stage_order {
     pub(super) const BOTS: usize = 18;
     pub(super) const ACP_INSTALL: usize = 19;
     pub(super) const ACCOUNT_USAGE: usize = 20;
+    pub(super) const ACP_LOCAL_DETECTION: usize = 21;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1222,6 +1223,7 @@ impl StudioRuntime {
         // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
         // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
         self.acp_install.signal_cancel();
+        self.acp_detection.signal_cancel();
         // 全局关停还必须取消独立后台工具，不能只中断当前 Turn，或等保存/观察者 join 后才发信号。
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
@@ -1344,6 +1346,13 @@ impl StudioRuntime {
             "acpInstall",
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.acp_install.cancel_and_join().await },
+        ));
+        remote_dependents.push(self.stage_branch(
+            budget,
+            stage_order::ACP_LOCAL_DETECTION,
+            "acpLocalDetection",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.acp_detection.close().await },
         ));
 
         // Shared LSP and SSH remain available until the actual Session close ACK.

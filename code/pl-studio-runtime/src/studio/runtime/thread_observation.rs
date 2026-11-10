@@ -2636,7 +2636,7 @@ async fn product_association(
     services: &ObservationServices,
     id: &str,
 ) -> Result<pl_protocol::Thread> {
-    if let Some(thread) = services.events.thread_snapshot(id) {
+    if let Some(thread) = services.events.thread_snapshot(id)? {
         return Ok(thread);
     }
     let target = services.writer.admitted_ticket();

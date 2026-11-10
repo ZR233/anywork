@@ -444,9 +444,10 @@ final class AccountEditorSessionOwner {
     final source = _accounts.state.value;
     final exists = template.kind == AccountKind.native
         ? source.templates.template(template.id) != null
-        : _acp.templates.value.templates.any(
-            (value) => value.provider.wire == template.id,
-          );
+        : template.id == 'command' ||
+              _acp.templates.value.templates.any(
+                (value) => value.provider.wire == template.id,
+              );
     if (!exists || !source.loaded || source.stale) {
       _error = _strings[exists ? 'stale' : 'unknownTemplate'];
       _publish();
@@ -488,16 +489,9 @@ final class AccountEditorSessionOwner {
       return;
     }
     final native = _accounts.state.value.templates.templates.firstOrNull;
-    final acp = _acp.templates.value.templates.firstOrNull;
     final template = native != null
         ? AccountTemplateKey(kind: AccountKind.native, id: native.id)
-        : acp != null
-        ? AccountTemplateKey(kind: AccountKind.acp, id: acp.provider.wire)
-        : null;
-    if (template == null) {
-      _error = _strings['unknownTemplate'];
-      return;
-    }
+        : const AccountTemplateKey(kind: AccountKind.acp, id: 'command');
     final next = _newDraft(template);
     if (next != null) {
       _defaultIntent = null;
@@ -566,17 +560,11 @@ final class AccountEditorSessionOwner {
         _error ??
         (_editor == null ? _accounts.state.value.failure?.message : null),
     templates: [
-      for (final template in _acp.templates.value.templates)
-        AccountTemplatePresentation(
-          key: AccountTemplateKey(
-            kind: AccountKind.acp,
-            id: template.provider.wire,
-          ),
-          name: template.displayName,
-          content: const AccountTemplateContent.acp(),
-          iconKey: template.iconKey,
-          description: template.description,
-        ),
+      AccountTemplatePresentation(
+        key: const AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
+        name: 'ACP',
+        content: const AccountTemplateContent.acp(),
+      ),
       if (_accounts.state.value.templates.revision.isNotEmpty)
         for (final template in _accounts.state.value.templates.templates)
           AccountTemplatePresentation(

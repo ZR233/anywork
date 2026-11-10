@@ -32,8 +32,10 @@ pub(in crate::studio) fn project_snapshot(
         }
     }
     thread.status = status(state);
-    if let Ok(Some(mode)) = saved_mode(state) {
-        thread.mode = mode;
+    if thread.parent_thread_id.is_none()
+        && let Ok(Some(mode)) = saved_mode(state)
+    {
+        thread.mode = Some(mode);
     }
     let runtime = super::runtime::project_runtime(&thread.id, state, thread.updated_at, usage).ok();
     let model_route = crate::studio::model_route::projected(state)

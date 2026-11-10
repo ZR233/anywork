@@ -100,6 +100,10 @@ class ThreadStatusBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final backend = row.backend;
+    if (backend is! NativeAgentBackendView) {
+      throw StateError('Native status bar cannot consume an ACP session');
+    }
     final threadMcp = threadId.trim().isEmpty
         ? null
         : ref.watch(threadMcpProvider(threadId)).value;
@@ -170,7 +174,7 @@ class ThreadStatusBar extends ConsumerWidget {
                           : context.roleLabel(row.role),
                       tooltip: row.isChildRow && isRetiredAgentRole(row.role)
                           ? context.l10n.agentRoleRetired
-                          : '${row.title} · ${context.threadStatusLabel(row.status)}',
+                          : '${row.title} · ${context.threadStatusLabel(backend.status)}',
                       maxWidth: 96,
                     ),
                     if (showModel && row.isChildRow)

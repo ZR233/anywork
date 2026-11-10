@@ -7,7 +7,7 @@
 //! 归属，父子关系只保存在成员记录的 `parent_agent_id` 中。
 
 use anyhow::Result;
-use pl_protocol::{AgentBinding, NativeAgentConfig, ThreadModeId, ThreadWorkspaceMode};
+use pl_protocol::{NativeAgentConfig, ThreadModeId, ThreadWorkspaceMode};
 
 use crate::studio::ids::unix_seconds;
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
@@ -63,7 +63,7 @@ impl DirectoryDelta {
             root_agent_id: session_id.clone(),
             workspace_id: workspace_id.to_string(),
             title: non_empty_title(title),
-            mode: mode.clone(),
+            native_mode: Some(mode),
             workspace_mode,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
@@ -80,11 +80,13 @@ impl DirectoryDelta {
             thread_id: session_id,
             role: role.to_string(),
             title: None,
-            binding: AgentBinding::Native(NativeAgentConfig {
-                route: None,
-                system_instructions: None,
-            }),
-            status: pl_protocol::ThreadStatus::Idle,
+            backend: pl_protocol::session::AgentBackend::Native {
+                config: NativeAgentConfig {
+                    route: None,
+                    system_instructions: None,
+                },
+                status: pl_protocol::ThreadStatus::Idle,
+            },
             explicitly_closed: false,
             created_at: now,
             updated_at: now,
@@ -111,11 +113,13 @@ impl DirectoryDelta {
                 thread_id: spec.agent_id,
                 role: spec.role,
                 title: Some(non_empty_title(&spec.title)),
-                binding: AgentBinding::Native(NativeAgentConfig {
-                    route: spec.frozen_model,
-                    system_instructions: None,
-                }),
-                status: pl_protocol::ThreadStatus::Idle,
+                backend: pl_protocol::session::AgentBackend::Native {
+                    config: NativeAgentConfig {
+                        route: spec.frozen_model,
+                        system_instructions: None,
+                    },
+                    status: pl_protocol::ThreadStatus::Idle,
+                },
                 explicitly_closed: false,
                 created_at: now,
                 updated_at: now,

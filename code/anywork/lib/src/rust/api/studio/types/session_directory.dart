@@ -12,7 +12,45 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream.dart';
 part 'session_directory.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`
+
+/// ACP 对端会话的冻结引用，不携带本机执行状态或连接修订。
+class BridgeAcpSessionReference {
+  final String accountId;
+  final String acpSessionId;
+  final String cwd;
+
+  const BridgeAcpSessionReference({
+    required this.accountId,
+    required this.acpSessionId,
+    required this.cwd,
+  });
+
+  @override
+  int get hashCode => accountId.hashCode ^ acpSessionId.hashCode ^ cwd.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpSessionReference &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          acpSessionId == other.acpSessionId &&
+          cwd == other.cwd;
+}
+
+@freezed
+sealed class BridgeAgentBackend with _$BridgeAgentBackend {
+  const BridgeAgentBackend._();
+
+  const factory BridgeAgentBackend.native({
+    required BridgeNativeAgentConfig config,
+    required BridgeThreadStatus status,
+  }) = BridgeAgentBackend_Native;
+  const factory BridgeAgentBackend.acp({
+    required BridgeAcpSessionReference reference,
+  }) = BridgeAgentBackend_Acp;
+}
 
 @freezed
 sealed class BridgeAgentBinding with _$BridgeAgentBinding {
@@ -22,10 +60,27 @@ sealed class BridgeAgentBinding with _$BridgeAgentBinding {
     BridgeNewThreadModelRoute? route,
     String? systemInstructions,
   }) = BridgeAgentBinding_Native;
-  const factory BridgeAgentBinding.acp({
-    required String accountId,
-    required BigInt connectionRevision,
-  }) = BridgeAgentBinding_Acp;
+  const factory BridgeAgentBinding.acp({required String accountId}) =
+      BridgeAgentBinding_Acp;
+}
+
+/// Native 后端的配置镜像；目录 owner 决定其投影内容，桥只保留字段。
+class BridgeNativeAgentConfig {
+  final BridgeNewThreadModelRoute? route;
+  final String? systemInstructions;
+
+  const BridgeNativeAgentConfig({this.route, this.systemInstructions});
+
+  @override
+  int get hashCode => route.hashCode ^ systemInstructions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeNativeAgentConfig &&
+          runtimeType == other.runtimeType &&
+          route == other.route &&
+          systemInstructions == other.systemInstructions;
 }
 
 /// 会话目录行的 FRB 镜像（目录 owner 提交切面的轻量行投影）。
@@ -37,8 +92,8 @@ class BridgeSessionDirectoryRow {
   final String workspaceId;
   final String title;
 
-  /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
-  final String mode;
+  /// 仅 Native root 拥有完整 Thread Mode ID；child 与 ACP root 为 `None`。
+  final String? mode;
   final BridgeDelegationMode delegationMode;
   final BridgeDelegationPreference delegationPreference;
 
@@ -50,8 +105,7 @@ class BridgeSessionDirectoryRow {
 
   /// 成员定义 ID：root 为内置根定义，child 为冻结 Profile ID。
   final String role;
-  final BridgeAgentBinding binding;
-  final BridgeThreadStatus status;
+  final BridgeAgentBackend backend;
   final PlatformInt64 createdAt;
   final PlatformInt64 updatedAt;
   final PlatformInt64? lastUserMessageAt;
@@ -64,14 +118,13 @@ class BridgeSessionDirectoryRow {
     required this.threadId,
     required this.workspaceId,
     required this.title,
-    required this.mode,
+    this.mode,
     required this.delegationMode,
     required this.delegationPreference,
     required this.workspaceMode,
     required this.workspacePath,
     required this.role,
-    required this.binding,
-    required this.status,
+    required this.backend,
     required this.createdAt,
     required this.updatedAt,
     this.lastUserMessageAt,
@@ -97,8 +150,7 @@ class BridgeSessionDirectoryRow {
       workspaceMode.hashCode ^
       workspacePath.hashCode ^
       role.hashCode ^
-      binding.hashCode ^
-      status.hashCode ^
+      backend.hashCode ^
       createdAt.hashCode ^
       updatedAt.hashCode ^
       lastUserMessageAt.hashCode ^
@@ -121,8 +173,7 @@ class BridgeSessionDirectoryRow {
           workspaceMode == other.workspaceMode &&
           workspacePath == other.workspacePath &&
           role == other.role &&
-          binding == other.binding &&
-          status == other.status &&
+          backend == other.backend &&
           createdAt == other.createdAt &&
           updatedAt == other.updatedAt &&
           lastUserMessageAt == other.lastUserMessageAt &&

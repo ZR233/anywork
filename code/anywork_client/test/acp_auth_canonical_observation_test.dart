@@ -149,8 +149,9 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
       for (final accountId in transport.accountIds)
         AcpAccountSettingsView(
           accountId: accountId,
+          documentRevision: BigInt.one,
           name: accountId,
-          provider: AcpProviderView.antigravity,
+          template: AcpProviderView.antigravity,
           connectionRevision: transport.connectionRevision,
         ),
     ],

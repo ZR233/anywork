@@ -13,7 +13,7 @@ import 'collection_extensions.dart';
 import 'failure_models.dart';
 import 'acp_install_models.dart';
 
-/// 当前阶段支持的 ACP 接入协议。
+/// 受管安装模板；普通程序定义不需要供应商身份。
 ///
 /// wire 值是稳定身份：未知值必须由适配层显式失败，不能退回某个默认协议。
 enum AcpProviderView {
@@ -121,31 +121,45 @@ class AcpAccountCatalogView {
 
 /// 已保存的 ACP 接入配置。
 ///
-/// 只保存接入身份与显示名：受管服务器的 program/argv 由产品固定发行决定，不是
-/// 用户或客户端可编辑的配置。[connectionRevision] 是运行期拥有的连接身份，不是
-/// 设置总修订；name 变化不改它。
+/// [documentRevision] 用于定义文件的 CAS；[connectionRevision] 属于运行准入，
+/// 改名不会改变它。只有受管安装使用 [template]，普通定义保存程序、独立参数和环境。
 class AcpAccountSettingsView {
   const AcpAccountSettingsView({
     required this.accountId,
     required this.name,
-    required this.provider,
+    this.template,
+    this.enabled = true,
+    this.command,
+    this.args = const [],
+    this.env = const {},
+    required this.documentRevision,
     this.connectionRevision = 0,
   });
 
   final String accountId;
   final String name;
-  final AcpProviderView provider;
+  final AcpProviderView? template;
+  final bool enabled;
+  final String? command;
+  final List<String> args;
+  final Map<String, String> env;
+  final BigInt documentRevision;
   final int connectionRevision;
 
   AcpAccountSettingsView copyWith({
     String? name,
-    AcpProviderView? provider,
+    BigInt? documentRevision,
     int? connectionRevision,
   }) {
     return AcpAccountSettingsView(
       accountId: accountId,
       name: name ?? this.name,
-      provider: provider ?? this.provider,
+      template: template,
+      enabled: enabled,
+      command: command,
+      args: args,
+      env: env,
+      documentRevision: documentRevision ?? this.documentRevision,
       connectionRevision: connectionRevision ?? this.connectionRevision,
     );
   }
@@ -156,12 +170,26 @@ class AcpAccountSettingsView {
       other is AcpAccountSettingsView &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider &&
+          template == other.template &&
+          enabled == other.enabled &&
+          command == other.command &&
+          listEquals(args, other.args) &&
+          _envEquals(env, other.env) &&
+          documentRevision == other.documentRevision &&
           connectionRevision == other.connectionRevision;
 
   @override
-  int get hashCode =>
-      Object.hash(accountId, name, provider, connectionRevision);
+  int get hashCode => Object.hash(
+    accountId,
+    name,
+    template,
+    enabled,
+    command,
+    Object.hashAll(args),
+    _envHash(env),
+    documentRevision,
+    connectionRevision,
+  );
 }
 
 /// 一次接入配置写入的意图（保存后由后端解析 connectionRevision）。
@@ -169,12 +197,20 @@ class AcpAccountUpdateView {
   const AcpAccountUpdateView({
     required this.accountId,
     required this.name,
-    required this.provider,
+    this.template,
+    this.command,
+    this.args,
+    this.env = const {},
+    this.enabled = true,
   });
 
   final String accountId;
   final String name;
-  final AcpProviderView provider;
+  final AcpProviderView? template;
+  final String? command;
+  final List<String>? args;
+  final Map<String, String> env;
+  final bool enabled;
 
   @override
   bool operator ==(Object other) =>
@@ -182,10 +218,31 @@ class AcpAccountUpdateView {
       other is AcpAccountUpdateView &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider;
+          template == other.template &&
+          command == other.command &&
+          listEquals(args, other.args) &&
+          _envEquals(env, other.env) &&
+          enabled == other.enabled;
 
   @override
-  int get hashCode => Object.hash(accountId, name, provider);
+  int get hashCode => Object.hash(
+    accountId,
+    name,
+    template,
+    command,
+    args == null ? null : Object.hashAll(args!),
+    _envHash(env),
+    enabled,
+  );
+}
+
+bool _envEquals(Map<String, String> left, Map<String, String> right) =>
+    left.length == right.length &&
+    left.entries.every((entry) => right[entry.key] == entry.value);
+
+int _envHash(Map<String, String> value) {
+  final keys = value.keys.toList()..sort();
+  return Object.hashAll(keys.map((key) => Object.hash(key, value[key])));
 }
 
 /// 服务端实际宣告的认证方法类别。

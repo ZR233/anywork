@@ -217,11 +217,10 @@ impl SessionRuntime {
         }
         resolution.interaction_id = local_id.to_owned();
         let thread = {
-            self.0
-                .state()
-                .entries
-                .get(thread_id)
-                .map(|entry| entry.native.thread.clone())
+            self.0.state().entries.get(thread_id).and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some(native.thread.clone())
+            })
         }
         .ok_or_else(|| PermissionProjectionError::MissingThread(thread_id.into()))?;
         let snapshot = thread.snapshot();
