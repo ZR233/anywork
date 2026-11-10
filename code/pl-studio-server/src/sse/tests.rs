@@ -359,9 +359,11 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
         ),
         (
             "LiveDisplayBlock",
-            &["id", "blockOrder", "body", "closing"][..],
+            &["id", "blockOrder", "body", "state"][..],
         ),
         ("DisplayBlockRef", &["databaseId", "blockId"][..]),
+        ("DisplayRecord", &["atom", "contentSource"][..]),
+        ("WorkSummary", &["unavailable"][..]),
     ] {
         let required = schemas[schema]["required"]
             .as_array()
@@ -381,11 +383,45 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
         ("MembersRequest", "window", "DisplayMemberWindow"),
         ("DisplayBlock", "body", "DisplayBlockBody"),
         ("LiveDisplayBlock", "body", "DisplayBlockBody"),
+        ("LiveDisplayBlock", "state", "DisplayBlockState"),
+        ("DisplayRecord", "atom", "ChatAtom"),
+        ("DisplayRecord", "contentSource", "DisplayContentSource"),
     ] {
         assert_eq!(
             schemas[schema]["properties"][property]["$ref"],
             format!("#/components/schemas/{target}"),
             "{schema}.{property}"
+        );
+    }
+    assert!(
+        schemas["LiveDisplayBlock"]["properties"]
+            .get("closing")
+            .is_none()
+    );
+    assert_eq!(
+        schemas["DisplayBlockState"]["enum"],
+        serde_json::json!(["open", "sealed"])
+    );
+    let single = schemas["DisplayBlockBody"]["oneOf"]
+        .as_array()
+        .context("missing display block variants")?
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["enum"] == serde_json::json!(["single"]))
+        .context("missing single display block")?;
+    assert_eq!(
+        single["properties"]["record"]["$ref"],
+        "#/components/schemas/DisplayRecord"
+    );
+    assert!(single["properties"].get("atom").is_none());
+    for field in ["startFact", "endFact"] {
+        assert!(schemas["DisplayRecord"]["properties"][field].is_object());
+        assert!(
+            !schemas["DisplayRecord"]["required"]
+                .as_array()
+                .context("missing display record required fields")?
+                .iter()
+                .any(|name| name == field),
+            "DisplayRecord.{field} must remain optional"
         );
     }
     assert_eq!(

@@ -22,6 +22,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
@@ -291,13 +292,6 @@ void main() {
         doneText: 'realtime parallel tools complete',
       );
       report['parallelObserver'] = parallelObserver.evidence;
-      await fixtureGate(
-        tester,
-        provider,
-        _parallelObserverStage,
-        release: true,
-      );
-      parallelObserver.evidence['gateReleased'] = true;
       await scene.untilLaidOutCurrentTools(
         minimum: 2,
         runningExecCallIds: const {
@@ -306,6 +300,12 @@ void main() {
         },
         settleDisclosure: false,
         preparedObserver: parallelObserver,
+        beginRelease: (onProgress) => beginFixtureGateRelease(
+          tester,
+          provider,
+          _parallelObserverStage,
+          onProgress: onProgress,
+        ),
       );
       expect(
         find.text('realtime parallel tools complete'),
@@ -584,7 +584,7 @@ typedef _PreparedToolObserver = ({
   TimelineGroupDisplay display,
   DisplayBlockRef reference,
   Object expansion,
-  Object memberController,
+  DisplayMemberController memberController,
   Object bodyGeneration,
   String prefixId,
   List<String> prefixReferences,
@@ -3465,6 +3465,10 @@ final class _RealtimeScene {
     Set<String> runningExecCallIds = const {},
     bool settleDisclosure = true,
     _PreparedToolObserver? preparedObserver,
+    Future<({Future<void> completed})> Function(
+      void Function(String phase) onProgress,
+    )?
+    beginRelease,
   }) async {
     final clock = Stopwatch()..start();
     var settled = !settleDisclosure;
@@ -3473,8 +3477,98 @@ final class _RealtimeScene {
       preparedObserver.evidence['observations'] = observations;
     }
     String? previousObservation;
+    final phases = <String, int>{};
+    final admissions = <Map<String, Object?>>[];
+    final frames = <Map<String, Object?>>[];
+    var admissionsTruncated = 0;
+    var framesTruncated = 0;
+    var iteration = 0;
+    Future<void>? releaseCompletion;
+    ({Object error, StackTrace stack})? releaseFailure;
+    String? observationFailure;
+    final memberController = preparedObserver?.memberController;
+    void recordAdmission() {
+      if (admissions.length >= 128) {
+        admissionsTruncated++;
+        return;
+      }
+      final page = memberController!.page;
+      admissions.add({
+        'sampleMillis': clock.elapsedMilliseconds,
+        'revision': page?.revision,
+        'controllerIdentity': identityHashCode(memberController),
+        'samePreparedController': identical(
+          memberController,
+          preparedObserver!.memberController,
+        ),
+        'loading': memberController.loading,
+        'error': memberController.error?.toString(),
+        'members': [
+          for (final head in page?.entries ?? const <DisplayMemberHead>[])
+            if (runningExecCallIds.contains(head.record.atom.tool?.callId))
+              {
+                'callId': head.record.atom.tool?.callId,
+                'memberKey': head.memberKey,
+                'lifecycle': head.record.atom.lifecycle.runtimeType.toString(),
+                'completionItemId': head.record.atom.completionItemId,
+              },
+        ],
+      });
+    }
+
+    void throwReleaseFailure() {
+      final failure = releaseFailure;
+      if (failure != null) {
+        Error.throwWithStackTrace(failure.error, failure.stack);
+      }
+    }
+
     try {
+      if (beginRelease != null) {
+        expect(preparedObserver, isNotNull);
+        memberController!.addListener(recordAdmission);
+        recordAdmission();
+        final release = await beginRelease((phase) {
+          phases[phase] = clock.elapsedMilliseconds;
+        });
+        releaseCompletion = release.completed.then<void>(
+          (_) {
+            preparedObserver!.evidence['gateReleased'] = true;
+          },
+          onError: (Object error, StackTrace stack) {
+            releaseFailure = (error: error, stack: stack);
+          },
+        );
+        phases['observationStarted'] = clock.elapsedMilliseconds;
+      }
       while (true) {
+        throwReleaseFailure();
+        final frame = beginRelease == null
+            ? null
+            : <String, Object?>{
+                'iteration': iteration++,
+                'sampleMillis': clock.elapsedMilliseconds,
+                'revision': memberController!.page?.revision,
+                'pumpStart': null,
+                'pumpEnd': null,
+              };
+        if (frame != null) {
+          if (frames.length < 512) {
+            frames.add(frame);
+          } else {
+            framesTruncated++;
+          }
+        }
+        Future<void> pumpObservedFrame(Duration duration) async {
+          frame?['pumpStart'] = clock.elapsedMilliseconds;
+          try {
+            await tester.pump(duration);
+          } finally {
+            frame?['pumpEnd'] = clock.elapsedMilliseconds;
+          }
+          throwReleaseFailure();
+        }
+
         final turn = _latestTurn();
         if (turn != null && turn.turnId != _priorTurn) {
           _submittedTurnId ??= turn.turnId;
@@ -3550,6 +3644,25 @@ final class _RealtimeScene {
         final laidOut = required
             ?.where((atom) => _laidOut(currentToolCard(atom)))
             .length;
+        frame?.addAll({
+          'sampleMillis': clock.elapsedMilliseconds,
+          'revision': memberController?.page?.revision,
+          'membersAvailable': observerReady,
+          'members': [
+            for (final callId in runningExecCallIds)
+              {
+                'callId': callId,
+                'active': running?.contains(callId) ?? false,
+                'laidOut':
+                    required?.any(
+                      (atom) =>
+                          atom.tool?.callId == callId &&
+                          _laidOut(currentToolCard(atom)),
+                    ) ??
+                    false,
+              },
+          ],
+        });
         final observation = {
           'groupIds': groupIds.toList(),
           'liveIds': observed.liveAtoms.map((atom) => atom.id).toList(),
@@ -3590,7 +3703,7 @@ final class _RealtimeScene {
             laidOut == required.length &&
             running.containsAll(runningExecCallIds)) {
           if (!settled) {
-            await tester.pump(const Duration(milliseconds: 300));
+            await pumpObservedFrame(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
             settled = true;
             continue;
@@ -3688,10 +3801,11 @@ final class _RealtimeScene {
         if (clock.elapsed >= const Duration(minutes: 3)) {
           fail('Timed out waiting for $minimum real current tool cards');
         }
-        await tester.pump(const Duration(milliseconds: 16));
+        await pumpObservedFrame(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-    } catch (_) {
+    } catch (error) {
+      observationFailure = error.toString();
       final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
       await File.fromUri(
         Directory(output).uri.resolve('realtime-tool-observation-failure.json'),
@@ -3723,6 +3837,24 @@ final class _RealtimeScene {
         'realtime-current-tools-$minimum-failure.png',
       );
       rethrow;
+    } finally {
+      if (beginRelease != null) {
+        memberController?.removeListener(recordAdmission);
+        try {
+          // Pumping has ended. Join the I/O started outside the tester guard,
+          // including its 204 check and client cleanup, before returning.
+          await releaseCompletion;
+          throwReleaseFailure();
+        } finally {
+          final output = Platform.environment['ANYWORK_REALTIME_OUTPUT']!;
+          await File.fromUri(
+            Directory(output).uri
+                .resolve('realtime-parallel-release-frames.json'),
+          ).writeAsString(
+            '${const JsonEncoder.withIndent('  ').convert({'turnId': _submittedTurnId, 'expectedCallIds': runningExecCallIds.toList(), 'phasesMillis': phases, 'admissions': admissions, 'admissionsTruncated': admissionsTruncated, 'frames': frames, 'framesTruncated': framesTruncated, 'observationFailure': observationFailure, 'releaseFailure': releaseFailure?.error.toString(), 'releaseFailureStack': releaseFailure?.stack.toString()})}\n',
+          );
+        }
+      }
     }
   }
 
