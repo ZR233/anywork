@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../state/chat_item_presentation.dart';
 import '../state/content_reference_identity.dart';
@@ -110,9 +110,18 @@ class _TimelineCanonicalPayloadConnectorState
     value.item.atom?.source,
     value.item.atom?.completionItemId,
     value.item.atom?.completionSeq,
-    switch (value.item.displayUnit?.body) {
-      SingleDisplayBlock(:final completionId) => completionId,
-      _ => null,
+    switch (value.item.displayRecord?.contentSource) {
+      CurrentAtom() => (CurrentAtom,),
+      FrozenObservation(:final capturedAt, :final available) => (
+        FrozenObservation,
+        capturedAt,
+        available,
+      ),
+      CompletedOriginal(:final completionId) => (
+        CompletedOriginal,
+        completionId,
+      ),
+      null => null,
     },
     value.item.reference == null
         ? null
@@ -121,6 +130,8 @@ class _TimelineCanonicalPayloadConnectorState
 
   void _schedule() {
     if (widget.item.compatibility != ChatItemCompatibility.deferred ||
+        widget.item.observationUnavailable ||
+        widget.item.displayRecord?.contentSource is CurrentAtom ||
         _scheduled ||
         _scope != null ||
         _resolved != null ||
@@ -139,19 +150,11 @@ class _TimelineCanonicalPayloadConnectorState
   Future<void> _load() async {
     final item = widget.item;
     final atom = item.atom;
-    final ids = <String>{
-      ?atom?.completionItemId,
-      if (item.displayUnit?.body case SingleDisplayBlock(
-        completionId: final id?,
-      ))
-        id,
-      if (item.reference?.target case ItemPayloadTarget(:final itemId)) itemId,
-    };
-    if (atom == null || ids.length != 1) {
+    final source = item.displayRecord?.contentSource;
+    if (atom == null || source == null) {
       setState(() => _error = '完成内容身份不一致或缺失');
       return;
     }
-    final recordId = ids.single;
     final request = ++_request;
     final identity = _identity;
     ConversationQueryScope? scope;
@@ -159,6 +162,52 @@ class _TimelineCanonicalPayloadConnectorState
     try {
       scope = widget.content.openScope(generation: request);
       _scope = scope;
+      if (source is! CompletedOriginal) {
+        final reference = item.reference;
+        if (source is FrozenObservation &&
+            (!source.available ||
+                reference == null ||
+                !isDisplayObservationReference(reference))) {
+          if (eligible()) setState(() => _error = '旧边界观察不可用');
+          return;
+        }
+        if (reference == null) {
+          if (eligible()) setState(() => _error = '显示内容引用缺失');
+          return;
+        }
+        final window = await scope.readContent(
+          reference: reference,
+          range: const ContentRange(offset: 0, maxBytes: 64 * 1024),
+        );
+        if (!eligible()) return;
+        if (!window.sealed ||
+            window.offset != 0 ||
+            window.bytes.length != window.availableThrough ||
+            window.bytes.length > 64 * 1024) {
+          setState(() => _error = '显示内容超出单次读取预算或尚未封存（64 KiB）');
+          return;
+        }
+        final resolved = item.resolvePayload(
+          InlinePayload(bytes: window.bytes),
+        );
+        if (resolved.compatibility != ChatItemCompatibility.current) {
+          setState(() => _error = '显示内容格式无法解析');
+          return;
+        }
+        setState(() => _resolved = resolved);
+        return;
+      }
+      final recordId = source.completionId;
+      final payloadMismatch = switch (item.reference?.target) {
+        ItemPayloadTarget(:final itemId) => itemId != recordId,
+        _ => false,
+      };
+      if ((atom.completionItemId != null &&
+              atom.completionItemId != recordId) ||
+          payloadMismatch) {
+        if (eligible()) setState(() => _error = '完成内容身份不一致');
+        return;
+      }
       final entry = await scope.readCompleted(
         recordId: recordId,
         demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
@@ -209,6 +258,12 @@ class _TimelineCanonicalPayloadConnectorState
 
   @override
   Widget build(BuildContext context) {
+    if (widget.item.observationUnavailable) {
+      return widget.render(widget.item);
+    }
+    if (widget.item.displayRecord?.contentSource is CurrentAtom) {
+      return widget.render(widget.item);
+    }
     if (widget.item.compatibility != ChatItemCompatibility.deferred) {
       return widget.render(widget.item);
     }

@@ -88,7 +88,10 @@ void main() {
             DisplayMemberHead(
               memberKey: 'member-$i',
               memberOrder: i,
-              atom: chatAtomMessage('member-$i'),
+              record: DisplayRecord(
+                atom: chatAtomMessage('member-$i'),
+                contentSource: const CurrentAtom(),
+              ),
             ),
         ],
       },
@@ -155,8 +158,13 @@ void main() {
             LiveDisplayBlock(
               id: 'live-$i',
               blockOrder: i,
-              body: SingleDisplayBlock(atom: chatAtomMessage('live-$i')),
-              closing: false,
+              body: SingleDisplayBlock(
+                record: DisplayRecord(
+                  atom: chatAtomMessage('live-$i'),
+                  contentSource: const CurrentAtom(),
+                ),
+              ),
+              state: DisplayBlockState.open,
             ),
         ],
       ),
@@ -305,7 +313,10 @@ void main() {
       '$turnId:reasoning',
       '$turnId:tool',
     ]);
-    expect(page.entries.every((m) => m.completionId != null), isTrue);
+    expect(
+      page.entries.every((m) => m.record.contentSource is CompletedOriginal),
+      isTrue,
+    );
     expect(await members.next(), isNull);
     final finalBatch = batches.firstWhere(
       (b) => b.blocks.any((b) => b.id == '$turnId:final'),
@@ -365,7 +376,7 @@ void main() {
     );
     final active = (await members.next())!;
     expect(active.sealed, isFalse);
-    expect(active.entries.single.atom.lifecycle, isA<ActiveChatAtom>());
+    expect(active.entries.single.record.atom.lifecycle, isA<ActiveChatAtom>());
     final next = members.next();
     await api.stopThread(
       _thread,
@@ -375,10 +386,14 @@ void main() {
     final cancelled = (await next)!;
     expect(cancelled.sealed, isTrue);
     expect(
-      (cancelled.entries.single.atom.lifecycle as TerminalChatAtom).outcome,
+      (cancelled.entries.single.record.atom.lifecycle as TerminalChatAtom)
+          .outcome,
       ChatTerminalOutcome.cancelled,
     );
-    expect(cancelled.entries.single.completionId, isNull);
+    expect(
+      cancelled.entries.single.record.contentSource,
+      isNot(isA<CompletedOriginal>()),
+    );
     expect(await members.next(), isNull);
     await expectLater(
       feed.reader.readCompleted(
@@ -417,8 +432,13 @@ void main() {
             LiveDisplayBlock(
               id: 'handoff-$i',
               blockOrder: i,
-              body: SingleDisplayBlock(atom: chatAtomMessage('handoff-$i')),
-              closing: true,
+              body: SingleDisplayBlock(
+                record: DisplayRecord(
+                  atom: chatAtomMessage('handoff-$i'),
+                  contentSource: const CurrentAtom(),
+                ),
+              ),
+              state: DisplayBlockState.sealed,
             ),
         ],
       ),
@@ -473,8 +493,13 @@ void main() {
           LiveDisplayBlock(
             id: id,
             blockOrder: through,
-            body: SingleDisplayBlock(atom: chatAtomMessage(id)),
-            closing: false,
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: chatAtomMessage(id),
+                contentSource: const CurrentAtom(),
+              ),
+            ),
+            state: DisplayBlockState.open,
           ),
         ],
       );
@@ -534,7 +559,10 @@ void main() {
       final member = DisplayMemberHead(
         memberKey: 'already-terminal',
         memberOrder: 1,
-        atom: chatAtomMessage('already-terminal'),
+        record: DisplayRecord(
+          atom: chatAtomMessage('already-terminal'),
+          contentSource: const CurrentAtom(),
+        ),
       );
       api.seedDisplayBlocks(
         threadId: _thread,
@@ -548,7 +576,7 @@ void main() {
               id: ref.blockId,
               blockOrder: 1,
               body: body,
-              closing: true,
+              state: DisplayBlockState.sealed,
             ),
           ],
         ),
@@ -579,7 +607,10 @@ void main() {
       expect(sealed.revision, greaterThan(initial.revision));
       expect(sealed.sealed, isTrue);
       expect(sealed.entries.single.memberKey, member.memberKey);
-      expect(sealed.entries.single.atom.lifecycle, isA<TerminalChatAtom>());
+      expect(
+        sealed.entries.single.record.atom.lifecycle,
+        isA<TerminalChatAtom>(),
+      );
       expect(await members.next(), isNull);
       final fresh = await feed.openDisplayMembers(
         reference: ref,
@@ -611,7 +642,12 @@ void main() {
         blockId: 'stable-$conflict',
       );
       final work = WorkDisplayBlock(summary: displaySummary(1), members: ref);
-      final single = SingleDisplayBlock(atom: chatAtomMessage('stable-member'));
+      final single = SingleDisplayBlock(
+        record: DisplayRecord(
+          atom: chatAtomMessage('stable-member'),
+          contentSource: const CurrentAtom(),
+        ),
+      );
       final DisplayBlockBody original =
           conflict == 'work-to-single' || conflict == 'different-work-member'
           ? work
@@ -620,12 +656,20 @@ void main() {
         'work-to-single' => single,
         'single-to-work' => work,
         'different-work-member' => work,
-        _ => SingleDisplayBlock(atom: chatAtomMessage('other-member')),
+        _ => SingleDisplayBlock(
+          record: DisplayRecord(
+            atom: chatAtomMessage('other-member'),
+            contentSource: const CurrentAtom(),
+          ),
+        ),
       };
       final head = DisplayMemberHead(
         memberKey: 'stable-member',
         memberOrder: 1,
-        atom: chatAtomMessage('stable-member'),
+        record: DisplayRecord(
+          atom: chatAtomMessage('stable-member'),
+          contentSource: const CurrentAtom(),
+        ),
       );
       api.seedDisplayBlocks(
         threadId: _thread,
@@ -639,7 +683,7 @@ void main() {
               id: ref.blockId,
               blockOrder: 1,
               body: original,
-              closing: true,
+              state: DisplayBlockState.sealed,
             ),
           ],
         ),
@@ -686,7 +730,10 @@ void main() {
                     DisplayMemberHead(
                       memberKey: 'replacement',
                       memberOrder: 1,
-                      atom: chatAtomMessage('replacement'),
+                      record: DisplayRecord(
+                        atom: chatAtomMessage('replacement'),
+                        contentSource: const CurrentAtom(),
+                      ),
                     ),
                   ],
                 }
@@ -707,7 +754,7 @@ void main() {
       expect(after.live!.blocks.single.body.runtimeType, original.runtimeType);
       if (original is SingleDisplayBlock) {
         final preserved = after.live!.blocks.single.body as SingleDisplayBlock;
-        expect(preserved.atom.id, original.atom.id);
+        expect(preserved.record.atom.id, original.record.atom.id);
       }
       if (memberRead != null) {
         final fresh = await afterFeed.openDisplayMembers(
@@ -719,7 +766,7 @@ void main() {
         expect(preserved.revision, initialPage!.revision);
         expect(preserved.sealed, isFalse);
         expect(preserved.entries.single.memberKey, head.memberKey);
-        expect(preserved.entries.single.atom.id, head.atom.id);
+        expect(preserved.entries.single.record.atom.id, head.record.atom.id);
       }
       // A valid retry still owns the next position after the rejected prefix.
       api.seedDisplayBlocks(
@@ -787,7 +834,7 @@ void main() {
               summary: displaySummary(1, terminal: 0, running: 1),
               members: ref,
             ),
-            closing: false,
+            state: DisplayBlockState.open,
           ),
         ],
       ),
@@ -796,7 +843,10 @@ void main() {
           DisplayMemberHead(
             memberKey: 'waiting-member',
             memberOrder: 1,
-            atom: chatAtomMessage('waiting-member'),
+            record: DisplayRecord(
+              atom: chatAtomMessage('waiting-member'),
+              contentSource: const CurrentAtom(),
+            ),
           ),
         ],
       },

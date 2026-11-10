@@ -248,7 +248,7 @@ impl SessionRuntime {
                     if owner.0.state().sealed_agents.contains_key(identity.id()) {
                         return Err(ThreadAssemblyError::Closed);
                     }
-                    let delegation = if identity.parent_thread_id.is_none() {
+                    let delegation = if identity.agent.parent_agent_id.is_none() {
                         Some(factory.root_delegation(&identity).await?)
                     } else {
                         None
@@ -256,7 +256,20 @@ impl SessionRuntime {
                     let agent_controls = match delegation {
                         Some(selection) => {
                             let profiles = owner.agent_profiles_snapshot()?;
-                            owner.agent_control_tools(&profiles, selection)?
+                            let resources = owner
+                                .0
+                                .state()
+                                .creating
+                                .get(identity.id())
+                                .ok_or(ThreadAssemblyError::Closed)?
+                                .resources
+                                .clone();
+                            owner.agent_control_tools(
+                                &identity.agent,
+                                &resources,
+                                &profiles,
+                                selection,
+                            )?
                         }
                         None => Vec::new(),
                     };

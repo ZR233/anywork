@@ -2,6 +2,7 @@ import 'package:anywork_client/models.dart';
 
 WorkSummary displaySummary(int total, {int? terminal, int running = 0}) =>
     WorkSummary(
+      unavailable: 0,
       total: total,
       terminal: terminal ?? total,
       running: running,
@@ -25,7 +26,12 @@ DisplayBlock displaySingle(CompletedEntry entry, {int? historyPos}) =>
     DisplayBlock(
       id: entry.recordId,
       historyPos: historyPos ?? entry.completionSeq,
-      body: SingleDisplayBlock(atom: entry.atom, completionId: entry.recordId),
+      body: SingleDisplayBlock(
+        record: DisplayRecord(
+          atom: entry.atom,
+          contentSource: CompletedOriginal(completionId: entry.recordId),
+        ),
+      ),
     );
 
 TimelineBatch displayBatch(

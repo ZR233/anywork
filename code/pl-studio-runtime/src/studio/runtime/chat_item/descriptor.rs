@@ -120,11 +120,25 @@ pub(super) fn plan_completion(item: &ThreadItem) -> Result<Option<PlanCompletion
 }
 
 pub(super) fn item_descriptor(item: &ThreadItem) -> Result<ItemDescriptor> {
+    if !item.is_terminal() {
+        return Err(nonterminal());
+    }
     validate_counts(item.state())?;
     match plan_completion(item)? {
         Some(plan) => Ok(ItemDescriptor::Plan(plan.descriptor)),
         None => descriptor(item.state(), &item.thread_id),
     }
+}
+
+pub(super) fn observation_descriptor(
+    state: &ThreadItemState,
+    thread_id: &str,
+) -> Result<ItemDescriptor> {
+    if state.is_terminal() {
+        return Err(ChatError::Conflict("observation state is terminal".into()).into());
+    }
+    validate_counts(state)?;
+    descriptor(state, thread_id)
 }
 
 pub(super) fn count(value: usize) -> Result<u32> {
@@ -216,31 +230,33 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
         ThreadItemState::Agent(value) => ItemDescriptor::Agent(AgentDescriptor {
             identity: value.identity().clone(),
             outcome: match value.state() {
+                ThreadAgentState::Queued(v) => AgentOutcome::Queued(*v),
+                ThreadAgentState::Running(v) => AgentOutcome::Running(*v),
                 ThreadAgentState::Succeeded(v) => AgentOutcome::Succeeded(v.clone()),
                 ThreadAgentState::Denied(v) => AgentOutcome::Denied(v.clone()),
                 ThreadAgentState::Cancelled(v) => AgentOutcome::Cancelled(v.clone()),
                 ThreadAgentState::Failed(v) => AgentOutcome::Failed(v.clone()),
-                _ => return Err(nonterminal()),
             },
         }),
         ThreadItemState::Turn(value) => ItemDescriptor::Turn(TurnDescriptor {
             input_id: value.input_id().map(str::to_owned),
             outcome: match value.state() {
+                TurnState::Queued(v) => TurnOutcome::Queued(v.clone()),
+                TurnState::Running(v) => TurnOutcome::Running(v.clone()),
                 TurnState::Completed(v) => TurnOutcome::Completed(v.clone()),
                 TurnState::Failed(v) => TurnOutcome::Failed(v.clone()),
                 TurnState::Cancelled(v) => TurnOutcome::Cancelled(v.clone()),
                 TurnState::BudgetLimited(v) => TurnOutcome::BudgetLimited(v.clone()),
-                _ => return Err(nonterminal()),
             },
         }),
         ThreadItemState::Inference(value) => ItemDescriptor::Inference(InferenceDescriptor {
             inference_id: value.inference_id().to_owned(),
             model: value.model().to_owned(),
             outcome: match value.state() {
+                ThreadInferenceState::Running(v) => InferenceOutcome::Running(*v),
                 ThreadInferenceState::Completed(v) => InferenceOutcome::Completed(v.clone()),
                 ThreadInferenceState::Failed(v) => InferenceOutcome::Failed(v.clone()),
                 ThreadInferenceState::Cancelled(v) => InferenceOutcome::Cancelled(v.clone()),
-                _ => return Err(nonterminal()),
             },
         }),
         ThreadItemState::Skill(value) => ItemDescriptor::Skill(value.clone()),
@@ -253,6 +269,13 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
 
 fn tool_state(state: &ThreadToolState) -> Result<ToolState> {
     Ok(match state {
+        ThreadToolState::Queued(_) => ToolState::Queued,
+        ThreadToolState::Cancelling(v) => ToolState::Cancelling(v.clone()),
+        ThreadToolState::Started(_) => ToolState::Started,
+        ThreadToolState::Streaming(_) => ToolState::Streaming,
+        ThreadToolState::AwaitingApproval(_) => ToolState::AwaitingApproval,
+        ThreadToolState::Approved(_) => ToolState::Approved,
+        ThreadToolState::Running(v) => ToolState::Running(v.clone()),
         ThreadToolState::Interrupted(value) => ToolState::Interrupted {
             interrupted_at: value.interrupted_at(),
             reason: value.reason().to_owned(),
@@ -274,7 +297,6 @@ fn tool_state(state: &ThreadToolState) -> Result<ToolState> {
             cancelled_at: value.cancelled_at(),
             reason: value.reason().to_owned(),
         },
-        _ => return Err(nonterminal()),
     })
 }
 
@@ -287,7 +309,7 @@ fn content_outcome(state: &ThreadContentLifecycle) -> Result<ContentOutcome> {
         ThreadContentLifecycle::Completed(v) => ContentOutcome::Completed(v.clone()),
         ThreadContentLifecycle::Failed(v) => ContentOutcome::Failed(v.clone()),
         ThreadContentLifecycle::Cancelled(v) => ContentOutcome::Cancelled(v.clone()),
-        ThreadContentLifecycle::Streaming(_) => return Err(nonterminal()),
+        ThreadContentLifecycle::Streaming(v) => ContentOutcome::Streaming(*v),
     })
 }
 

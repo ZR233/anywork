@@ -1,4 +1,4 @@
-//! 执行事实在可靠完成边界冻结为 opaque JSON 与显式内容所有权。
+//! 执行事实在可靠完成或观察封存边界编码为规范 JSON 与显式内容所有权。
 
 use anyhow::{Result, ensure};
 use pl_core::{
@@ -96,6 +96,10 @@ pub(crate) fn completion_draft_reusing(
     database_id: &str,
     previous: &ChatContents,
 ) -> Result<ChatDraft> {
+    ensure!(
+        item.is_terminal(),
+        "cannot publish a nonterminal timeline item"
+    );
     let descriptor = descriptor::item_descriptor(item)?;
     let mut bodies = if let Some(plan) = plan_completion(item)? {
         let mut bodies = BTreeMap::new();
@@ -184,6 +188,133 @@ struct CompletionStamp<'a> {
     sealed_at: i64,
 }
 
+pub(in crate::studio) struct ObservationStamp<'a> {
+    pub thread_id: &'a str,
+    pub database_id: &'a str,
+    pub owner: &'a ContentOwner,
+    pub boundary: pl_protocol::ChatFactPosition,
+    pub captured_at: i64,
+}
+
+pub(in crate::studio) fn validate_observation(
+    state: &ThreadItemState,
+    atom: &pl_protocol::ChatAtom,
+    thread_id: &str,
+) -> Result<()> {
+    ensure!(
+        matches!(
+            atom.lifecycle,
+            pl_protocol::ChatAtomLifecycle::Active { .. }
+        ) && atom.completion_item_id.is_none()
+            && atom.finished_at.is_none(),
+        "observation is not an active execution cut"
+    );
+    serde_json::to_value(descriptor::observation_descriptor(state, thread_id)?)?;
+    Ok(())
+}
+
+pub(in crate::studio) fn observation_payload(
+    state: &ThreadItemState,
+    atom: &pl_protocol::ChatAtom,
+    contents: &[Arc<ChatContent>],
+    stamp: ObservationStamp<'_>,
+) -> Result<Vec<u8>> {
+    validate_observation(state, atom, stamp.thread_id)?;
+    ensure!(
+        !stamp.database_id.is_empty(),
+        "observation requires its database identity"
+    );
+    ensure!(
+        matches!(stamp.owner, ContentOwner::DisplayObservation { block_id, member_key }
+            if !block_id.is_empty() && !member_key.is_empty()),
+        "observation requires its assigned display namespace"
+    );
+    let owner_key = crate::studio::conversation_identity::content_owner_key(stamp.owner)?;
+    let mut bodies = Vec::with_capacity(atom.contents.len());
+    for body in &atom.contents {
+        let ContentTarget::Body { owner, key } = &body.reference.target else {
+            anyhow::bail!("observation body has no display owner");
+        };
+        ensure!(
+            owner == stamp.owner && body.reference.database_id == stamp.database_id,
+            "observation body escaped its display namespace"
+        );
+        let content = contents
+            .iter()
+            .find(|content| {
+                content.descriptor.key.owner == owner_key && content.descriptor.key.key == *key
+            })
+            .ok_or_else(|| anyhow::anyhow!("observation lost its owned content"))?;
+        // Observations always expose their sealed namespace, even for short bodies.
+        bodies.push(body_envelope(
+            content,
+            stamp.database_id,
+            stamp.owner,
+            false,
+        )?);
+    }
+    let descriptor =
+        serde_json::to_value(descriptor::observation_descriptor(state, stamp.thread_id)?)?;
+    let mut envelope = payload_envelope(state, descriptor, bodies, stamp.boundary.effect_seq)?;
+    envelope["capturedAt"] = stamp.captured_at.into();
+    if let Some(turn_id) = &atom.turn_id {
+        envelope["turnId"] = turn_id.clone().into();
+    }
+    Ok(serde_json::to_vec(&envelope)?)
+}
+
+fn body_envelope(
+    content: &ChatContent,
+    database_id: &str,
+    owner: &ContentOwner,
+    allow_inline: bool,
+) -> Result<serde_json::Value> {
+    let mut body = serde_json::json!({
+        "key":content.descriptor.key.key, "byteLength":content.descriptor.byte_length
+    });
+    if allow_inline && content.data.len() <= INLINE_BODY_BYTES {
+        body["inline"] =
+            serde_json::to_value(content.data.range(0, content.data.len())?.as_bytes())?;
+    } else {
+        body["reference"] = serde_json::to_value(ContentRef {
+            database_id: database_id.into(),
+            target: ContentTarget::Body {
+                owner: owner.clone(),
+                key: content.descriptor.key.key.clone(),
+            },
+        })?;
+    }
+    Ok(body)
+}
+
+fn payload_envelope(
+    state: &ThreadItemState,
+    descriptor: serde_json::Value,
+    bodies: Vec<serde_json::Value>,
+    source_effect_seq: u64,
+) -> Result<serde_json::Value> {
+    let kind = descriptor
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("descriptor has no kind"))?;
+    let mut data = descriptor
+        .get("data")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("descriptor has no data"))?;
+    if let ThreadItemState::Tool(tool) = state
+        && let Some(invocation) = data
+            .get_mut("invocation")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        invocation.insert(
+            "presentationContract".into(),
+            serde_json::to_value(tool.invocation().presentation_contract())?,
+        );
+    }
+    Ok(serde_json::json!({"contract":"anywork.chat/1", "type":kind,
+        "data":data, "sourceEffectSeq":source_effect_seq, "bodies":bodies}))
+}
+
 fn freeze(
     item: &ThreadItem,
     stamp: CompletionStamp<'_>,
@@ -202,24 +333,6 @@ fn freeze(
         !database_id.is_empty(),
         "completion requires its database identity"
     );
-    let kind = descriptor
-        .get("kind")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("descriptor has no kind"))?;
-    let mut data = descriptor
-        .get("data")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("descriptor has no data"))?;
-    if let ThreadItemState::Tool(tool) = item.state()
-        && let Some(invocation) = data
-            .get_mut("invocation")
-            .and_then(serde_json::Value::as_object_mut)
-    {
-        invocation.insert(
-            "presentationContract".into(),
-            serde_json::to_value(tool.invocation().presentation_contract())?,
-        );
-    }
     let parent_id = (!item.turn_id.is_empty())
         .then(|| ChatKey::new("turn", &item.turn_id))
         .transpose()?;
@@ -281,26 +394,19 @@ fn freeze(
                 data: ContentData::text(body_block),
             })
         });
-        let mut body = serde_json::json!({"key":key, "byteLength":byte_length});
-        if block.len() <= INLINE_BODY_BYTES {
-            body["inline"] = serde_json::to_value(content.data.range(0, block.len())?.as_bytes())?;
-        } else {
-            body["reference"] = serde_json::to_value(ContentRef {
-                database_id: database_id.into(),
-                target: ContentTarget::Body {
-                    owner: owner.clone(),
-                    key,
-                },
-            })?;
-        }
+        let body = body_envelope(&content, database_id, &owner, true)?;
         contents.insert(content.descriptor.key.clone(), content);
         body_envelopes.push(body);
     }
-    let mut envelope = serde_json::json!({"contract":"anywork.chat/1", "type":kind,
-        "data":data, "sourceEffectSeq":source_effect_seq, "sealedAt":sealed_at, "bodies":body_envelopes});
+    let mut envelope =
+        payload_envelope(item.state(), descriptor, body_envelopes, source_effect_seq)?;
+    envelope["sealedAt"] = sealed_at.into();
     if !item.turn_id.is_empty() {
         envelope["turnId"] = item.turn_id.clone().into();
     }
+    let kind = envelope["type"]
+        .as_str()
+        .expect("payload kind was validated");
     let mut atom = metadata.unwrap_or_else(|| atom(item));
     if let ThreadItemState::Text(text) = item.state() {
         atom.content_present = Some(

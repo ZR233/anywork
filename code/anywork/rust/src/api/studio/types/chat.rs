@@ -262,6 +262,10 @@ pub enum BridgeContentTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeContentOwner {
+    DisplayObservation {
+        block_id: String,
+        member_key: String,
+    },
     Item {
         item_id: String,
     },

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
@@ -12,7 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/state/conversation_re
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -22,7 +23,7 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _source = ForegroundTurnChatSource(turnId: 'T');
@@ -77,6 +78,16 @@ final class _Content extends Fake implements ConversationContent {
 }
 
 final class _Scope extends Fake implements ConversationQueryScope {
+  int completedReads = 0;
+  @override
+  Future<CompletedEntry> readCompleted({
+    required String recordId,
+    required ReadDemand demand,
+  }) {
+    completedReads++;
+    throw StateError('A frozen observation must not read a future completion');
+  }
+
   final watches = <StreamController<ContentWindow>>[];
   final requests = <(ContentRef, ContentRange)>[];
   bool active = true;
@@ -137,6 +148,42 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 }
 
+final class _FreezeMembers implements DisplayMembers {
+  final _pages = <DisplayMemberPage>[];
+  Completer<DisplayMemberPage?>? _pending;
+  bool _closing = false;
+  bool closed = false;
+  void send(DisplayMemberPage page) {
+    final pending = _pending;
+    _pending = null;
+    if (pending == null) {
+      _pages.add(page);
+    } else {
+      pending.complete(page);
+    }
+  }
+
+  @override
+  Future<DisplayMemberPage?> next() {
+    if (_closing) return Future.value();
+    if (_pages.isNotEmpty) return Future.value(_pages.removeAt(0));
+    return (_pending = Completer<DisplayMemberPage?>()).future;
+  }
+
+  @override
+  void requestClose() {
+    _closing = true;
+    _pending?.complete(null);
+    _pending = null;
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
+    closed = true;
+  }
+}
+
 Widget _host(
   Widget child, {
   bool disableAnimations = false,
@@ -144,7 +191,10 @@ Widget _host(
 }) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(disableAnimations: disableAnimations),
@@ -190,14 +240,20 @@ final class _Harness {
         LiveDisplayBlock(
           id: entry.atom.id,
           blockOrder: index + 1,
-          closing: false,
-          body: SingleDisplayBlock(atom: entry.atom),
+          state: DisplayBlockState.open,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: entry.atom,
+              contentSource: const CurrentAtom(),
+            ),
+          ),
         ),
     ],
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
         ConversationCurrentConnector(
+          section: ConversationLiveSection.output,
           key: ObjectKey(content),
           session: const ThreadSessionState(threadId: 'thread'),
           content: content,
@@ -234,6 +290,436 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  for (final pageFirst in [true, false]) {
+    for (final available in [true, false]) {
+      testWidgets(
+        'freeze handoff ${pageFirst ? "member-first" : "head-first"} available=$available keeps row demand and rejects late current IO',
+        (tester) async {
+          final content = _Content();
+          final images = TimelineImageResources(threadId: 'thread');
+          final handle = _FreezeMembers();
+          final cancellation = Completer<void>();
+          final expansion = TimelineExpansionIntent()..expanded = true;
+          const reference = DisplayBlockRef(
+            databaseId: 'database',
+            blockId: 'work',
+          );
+          expansion.openDisplayMembers = (_, _, _) async => handle;
+          addTearDown(() {
+            if (!cancellation.isCompleted) cancellation.complete();
+            expansion.retire();
+            images.release();
+          });
+          ContentRef bodyRef(String key, bool frozen) => ContentRef(
+            databaseId: 'database',
+            target: BodyContentTarget(
+              owner: frozen
+                  ? const DisplayObservationContentOwner(
+                      blockId: 'work',
+                      memberKey: 'row',
+                    )
+                  : const CurrentContentOwner(
+                      domain: 'execution',
+                      id: 'reasoning',
+                      revision: 1,
+                    ),
+              key: key,
+            ),
+          );
+          DisplayMemberPage page(bool frozen) => DisplayMemberPage(
+            block: reference,
+            revision: frozen ? 2 : 1,
+            sealed: frozen,
+            entries: [
+              DisplayMemberHead(
+                memberKey: 'row',
+                memberOrder: 1,
+                record: DisplayRecord(
+                  startFact: const ChatFactPosition(effectSeq: 1, suborder: 0),
+                  contentSource: frozen
+                      ? FrozenObservation(capturedAt: 50, available: available)
+                      : const CurrentAtom(),
+                  atom: ChatAtom(
+                    id: 'same-reasoning',
+                    source: _source,
+                    sourceOrder: 1,
+                    kind: ChatAtomKind.reasoning,
+                    delivery: ChatDeliveryKind.foreground,
+                    lifecycle: const ActiveChatAtom(
+                      started: null,
+                      status: ChatActiveStatus.running,
+                    ),
+                    startedAt: 1,
+                    contents: [
+                      ChatAtomContent(
+                        role: ChatContentRole.reasoningSummary,
+                        reference: bodyRef('summary', frozen),
+                      ),
+                      ChatAtomContent(
+                        role: ChatContentRole.body,
+                        reference: bodyRef('body', frozen),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+          content.onRead = (ref, range) async {
+            final target = ref.target as BodyContentTarget;
+            expect(
+              target.owner,
+              const DisplayObservationContentOwner(
+                blockId: 'work',
+                memberKey: 'row',
+              ),
+            );
+            final bytes = utf8.encode('frozen-${target.key}');
+            return ContentWindow(
+              bytes: bytes,
+              offset: 0,
+              generation: 'frozen',
+              availableThrough: bytes.length,
+              sealed: true,
+            );
+          };
+          Widget scene(DisplayBlockState state) => _host(
+            CompletionRunConnector(
+              key: const ValueKey('stable-block'),
+              unit: TimelineDisplayUnit.live(
+                block: LiveDisplayBlock(
+                  id: 'work',
+                  blockOrder: 1,
+                  state: state,
+                  body: const WorkDisplayBlock(
+                    members: reference,
+                    summary: WorkSummary(
+                      total: 1,
+                      terminal: 0,
+                      running: 1,
+                      waiting: 0,
+                      failed: 0,
+                      cancelled: 0,
+                      transferred: 0,
+                      unavailable: 0,
+                    ),
+                  ),
+                ),
+                executionPresent: true,
+                expansion: expansion,
+              ),
+              threadId: 'thread',
+              content: content,
+              images: images,
+            ),
+          );
+          await tester.pumpWidget(scene(DisplayBlockState.open));
+          expansion.members!.disclosure('row').expanded = true;
+          handle.send(page(false));
+          await _flush(tester);
+          final original = content.scopes.single..cancelGate = cancellation;
+          expect(original.requests, hasLength(2));
+          for (var i = 0; i < original.requests.length; i++) {
+            final key =
+                (original.requests[i].$1.target as BodyContentTarget).key;
+            original.watches[i].add(_window('live-$key'));
+          }
+          await _flush(tester);
+          expect(find.text('live-summary'), findsOneWidget);
+          expect(find.text('live-body'), findsOneWidget);
+          final originalState = tester.state(find.byType(TimelineMemberAtom));
+          final originalDisclosure = expansion.members!.disclosure('row');
+          if (pageFirst) {
+            handle.send(page(true));
+            await _flush(tester);
+            expect(
+              tester.state(find.byType(TimelineMemberAtom)),
+              same(originalState),
+            );
+            expect(
+              expansion.members!.disclosure('row'),
+              same(originalDisclosure),
+            );
+          } else {
+            await tester.pumpWidget(scene(DisplayBlockState.sealed));
+            await _flush(tester);
+            expect(originalDisclosure.retired, isTrue);
+            expect(original.active, isFalse);
+            expect(find.text('正在读取封存观察…'), findsOneWidget);
+            handle.send(page(true));
+            await _flush(tester);
+          }
+          expect(original.active, isFalse);
+          expect(
+            original.closed,
+            isFalse,
+            reason: 'Original cancellation/join is still outstanding',
+          );
+          expect(expansion.members!.disclosure('row').expanded, isTrue);
+          expect(
+            content.scopes.expand((s) => s.reads),
+            hasLength(available ? 2 : 0),
+          );
+          if (available) {
+            expect(find.text('frozen-summary'), findsOneWidget);
+            expect(find.text('frozen-body'), findsOneWidget);
+          } else {
+            expect(find.text('旧边界观察不可用 · 封存时尚未结束'), findsOneWidget);
+          }
+          final admittedScopes = content.scopes.length;
+          for (final watch in original.watches) {
+            watch.add(_window('late-current-success'));
+            watch.addError(StateError('late-current-error'));
+          }
+          cancellation.complete();
+          await _flush(tester);
+          await tester.pumpWidget(scene(DisplayBlockState.sealed));
+          await _flush(tester);
+          expect(original.closed, isTrue);
+          expect(content.scopes, hasLength(admittedScopes));
+          expect(content.scopes.skip(1).expand((s) => s.requests), isEmpty);
+          expect(content.scopes.fold(0, (n, s) => n + s.completedReads), 0);
+          expect(find.text('late-current-success'), findsNothing);
+          expect(find.textContaining('late-current-error'), findsNothing);
+          if (available) {
+            expect(find.text('frozen-summary'), findsOneWidget);
+            expect(find.text('frozen-body'), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+          expansion.retire();
+          await _flush(tester);
+          await handle.close();
+          expect(content.scopes.every((scope) => scope.closed), isTrue);
+          expect(handle.closed, isTrue);
+        },
+        timeout: const Timeout(Duration(seconds: 20)),
+      );
+    }
+  }
+
+  testWidgets(
+    'frozen deferred metadata uses only its sealed observation, never a future completion',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      const reference = ContentRef(
+        databaseId: 'database',
+        target: BodyContentTarget(
+          owner: DisplayObservationContentOwner(
+            blockId: 'old-block',
+            memberKey: 'old-row',
+          ),
+          key: 'payload',
+        ),
+      );
+      final bytes = utf8.encode(
+        jsonEncode({
+          'contract': 'anywork.chat/1',
+          'type': 'text',
+          'data': {'channel': 'final', 'attachments': []},
+          'bodies': [
+            {
+              'key': 'body',
+              'byteLength': 13,
+              'inline': utf8.encode('frozen-prefix'),
+            },
+          ],
+        }),
+      );
+      content.onRead = (ref, range) async {
+        expect(ref, reference);
+        expect(range.offset, 0);
+        expect(range.maxBytes, 64 * 1024);
+        return ContentWindow(
+          bytes: bytes,
+          offset: 0,
+          generation: 'snapshot',
+          availableThrough: bytes.length,
+          sealed: true,
+        );
+      };
+      await tester.pumpWidget(
+        _host(
+          TimelineMemberAtom(
+            displayId: 'old-row',
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'same-atom',
+                completionItemId: 'future-completion',
+                source: _source,
+                sourceOrder: 1,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                contents: const [],
+                payload: DeferredPayload(
+                  reference: reference,
+                  byteLength: bytes.length,
+                ),
+              ),
+              startFact: const ChatFactPosition(effectSeq: 1, suborder: 0),
+              contentSource: const FrozenObservation(
+                capturedAt: 50,
+                available: true,
+              ),
+            ),
+            content: content,
+            isActive: () => true,
+            images: images,
+            readAttachment: null,
+          ),
+        ),
+      );
+      await _flush(tester);
+      expect(find.text('frozen-prefix'), findsOneWidget);
+      expect(find.byType(TimelineWritingIndicator), findsNothing);
+      expect(content.scopes, hasLength(1));
+      expect(content.scopes.single.reads, hasLength(1));
+      expect(content.scopes.single.completedReads, 0);
+      expect(content.scopes.single.requests, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(content.scopes.single.closed, isTrue);
+    },
+  );
+
+  testWidgets(
+    'same atom in two frozen rows reads independent sealed snapshots without watch or completion',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      content.onRead = (reference, range) async {
+        final owner =
+            (reference.target as BodyContentTarget).owner
+                as DisplayObservationContentOwner;
+        final bytes = utf8.encode('snapshot-${owner.memberKey}');
+        return ContentWindow(
+          bytes: bytes,
+          offset: 0,
+          generation: owner.memberKey,
+          availableThrough: bytes.length,
+          sealed: true,
+        );
+      };
+      Widget row(String block, String member) => TimelineMemberAtom(
+        key: ValueKey((block, member)),
+        displayId: member,
+        record: DisplayRecord(
+          startFact: const ChatFactPosition(effectSeq: 1, suborder: 0),
+          contentSource: const FrozenObservation(
+            capturedAt: 50,
+            available: true,
+          ),
+          atom: ChatAtom(
+            id: 'same-execution-object',
+            source: _source,
+            sourceOrder: 1,
+            kind: ChatAtomKind.reasoning,
+            delivery: ChatDeliveryKind.foreground,
+            lifecycle: const ActiveChatAtom(
+              started: null,
+              status: ChatActiveStatus.running,
+            ),
+            startedAt: 1,
+            contents: [
+              ChatAtomContent(
+                role: ChatContentRole.reasoningSummary,
+                reference: ContentRef(
+                  databaseId: 'database',
+                  target: BodyContentTarget(
+                    owner: DisplayObservationContentOwner(
+                      blockId: block,
+                      memberKey: member,
+                    ),
+                    key: 'summary',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        content: content,
+        isActive: () => true,
+        images: images,
+        readAttachment: null,
+      );
+      await tester.pumpWidget(
+        _host(
+          Column(
+            children: [
+              row('first-block', 'first-row'),
+              row('second-block', 'second-row'),
+            ],
+          ),
+        ),
+      );
+      await _flush(tester);
+      expect(find.text('snapshot-first-row'), findsOneWidget);
+      expect(find.text('snapshot-second-row'), findsOneWidget);
+      expect(find.text('封存时尚未结束'), findsNWidgets(2));
+      expect(content.scopes.expand((s) => s.requests), isEmpty);
+      expect(content.scopes.fold(0, (n, s) => n + s.completedReads), 0);
+      expect(
+        tester
+            .widgetList<TimelineReasoningView>(
+              find.byType(TimelineReasoningView),
+            )
+            .every((v) => !v.running),
+        isTrue,
+      );
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(content.scopes.every((s) => s.closed), isTrue);
+    },
+  );
+
+  testWidgets(
+    'unavailable boundary never displays latest summary or opens details',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      await tester.pumpWidget(
+        _host(
+          TimelineMemberAtom(
+            displayId: 'old-row',
+            record: DisplayRecord(
+              startFact: const ChatFactPosition(effectSeq: 1, suborder: 0),
+              contentSource: const FrozenObservation(available: false),
+              atom: ChatAtom(
+                id: 'same-execution-object',
+                source: _source,
+                sourceOrder: 1,
+                kind: ChatAtomKind.reasoning,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.waiting,
+                ),
+                contents: const [],
+              ),
+            ),
+            content: content,
+            isActive: () => true,
+            images: images,
+            readAttachment: null,
+          ),
+        ),
+      );
+      await _flush(tester);
+      expect(find.text('旧边界观察不可用 · 封存时尚未结束'), findsOneWidget);
+      expect(find.text('上次思考尚未恢复'), findsNothing);
+      expect(find.byType(TimelineReasoningView), findsNothing);
+      expect(content.scopes, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   for (final handoffWithoutRevisionChange in [false, true]) {
     testWidgets(
       'same-revision older page retains Single IO until ${handoffWithoutRevisionChange ? 'history handoff' : 'structural revision'} invalidates it',
@@ -243,8 +729,13 @@ void main() {
         final latestBlock = LiveDisplayBlock(
           id: 'latest',
           blockOrder: 2,
-          closing: false,
-          body: SingleDisplayBlock(atom: _textItem(revision: 2)),
+          state: DisplayBlockState.open,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: _textItem(revision: 2),
+              contentSource: const CurrentAtom(),
+            ),
+          ),
         );
         LiveDisplayWindow latest({int revision = 7, int through = 0}) =>
             LiveDisplayWindow(
@@ -262,8 +753,13 @@ void main() {
             LiveDisplayBlock(
               id: 'older',
               blockOrder: 1,
-              closing: false,
-              body: SingleDisplayBlock(atom: _textItem()),
+              state: DisplayBlockState.open,
+              body: SingleDisplayBlock(
+                record: DisplayRecord(
+                  atom: _textItem(),
+                  contentSource: const CurrentAtom(),
+                ),
+              ),
             ),
           ],
         );
@@ -346,7 +842,7 @@ void main() {
         reason: '文本活动沿用普通正文样式，工具和思考窗口仍由原样式呈现',
       );
       final tail = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final pen = tester
           .widget<TimelineWritingIndicator>(
@@ -388,10 +884,10 @@ void main() {
       expect(find.byType(TimelineWritingIndicator), findsNothing);
       expect(find.text('实际活动正文'), findsNothing);
       expect(scope.closed, isTrue);
-      expect(find.byType(TimelineCatTail), findsOneWidget);
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
       h.accept([]);
       await tester.pump();
-      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byType(TimelineRestingCat), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(tester.binding.transientCallbackCount, 0);
@@ -572,25 +1068,6 @@ void main() {
       Widget scene({bool withBody = true}) => _host(
         TimelineMemberAtom(
           key: const ValueKey('reasoning-member'),
-          atom: ChatAtom(
-            id: 'reasoning-member',
-            source: _source,
-            sourceOrder: 1,
-            kind: ChatAtomKind.reasoning,
-            delivery: ChatDeliveryKind.foreground,
-            lifecycle: const ActiveChatAtom(
-              started: null,
-              status: ChatActiveStatus.running,
-            ),
-            contents: [
-              const ChatAtomContent(
-                role: ChatContentRole.reasoningSummary,
-                reference: summaryRef,
-              ),
-              if (withBody)
-                ChatAtomContent(role: ChatContentRole.body, reference: _ref()),
-            ],
-          ),
           content: content,
           isActive: () => true,
           images: images,
@@ -599,6 +1076,32 @@ void main() {
             display = value;
             return () => display = null;
           },
+          record: DisplayRecord(
+            atom: ChatAtom(
+              id: 'reasoning-member',
+              source: _source,
+              sourceOrder: 1,
+              kind: ChatAtomKind.reasoning,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const ActiveChatAtom(
+                started: null,
+                status: ChatActiveStatus.running,
+              ),
+              contents: [
+                const ChatAtomContent(
+                  role: ChatContentRole.reasoningSummary,
+                  reference: summaryRef,
+                ),
+                if (withBody)
+                  ChatAtomContent(
+                    role: ChatContentRole.body,
+                    reference: _ref(),
+                  ),
+              ],
+            ),
+            contentSource: const CurrentAtom(),
+          ),
+          displayId: "fixture-current",
         ),
       );
       await tester.pumpWidget(scene());
@@ -682,32 +1185,6 @@ void main() {
       await tester.pumpWidget(
         _host(
           TimelineMemberAtom(
-            atom: ChatAtom(
-              id: 'sealed-reasoning',
-              source: _source,
-              sourceOrder: 1,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              contents: const [],
-              payload: InlinePayload(
-                bytes: utf8.encode(
-                  jsonEncode({
-                    'contract': 'anywork.chat/1',
-                    'type': 'thinking',
-                    'data': <String, Object?>{},
-                    'bodies': [
-                      manifest('part.summaryText.0'),
-                      manifest('part.reasoningText.0'),
-                    ],
-                  }),
-                ),
-              ),
-            ),
             content: content,
             isActive: () => true,
             images: images,
@@ -716,6 +1193,36 @@ void main() {
               display = value;
               return () => display = null;
             },
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'sealed-reasoning',
+                source: _source,
+                sourceOrder: 1,
+                kind: ChatAtomKind.reasoning,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const TerminalChatAtom(
+                  started: null,
+                  ended: null,
+                  outcome: ChatTerminalOutcome.completed,
+                ),
+                contents: const [],
+                payload: InlinePayload(
+                  bytes: utf8.encode(
+                    jsonEncode({
+                      'contract': 'anywork.chat/1',
+                      'type': 'thinking',
+                      'data': <String, Object?>{},
+                      'bodies': [
+                        manifest('part.summaryText.0'),
+                        manifest('part.reasoningText.0'),
+                      ],
+                    }),
+                  ),
+                ),
+              ),
+              contentSource: const CurrentAtom(),
+            ),
+            displayId: "fixture-current",
           ),
         ),
       );
@@ -779,23 +1286,27 @@ void main() {
       await tester.pumpWidget(
         _host(
           TimelineMemberAtom(
-            atom: ChatAtom(
-              id: 'restored-interrupted-reasoning',
-              source: _source,
-              sourceOrder: 1,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: ChatFactPosition(effectSeq: 2, suborder: 0),
-                ended: ChatFactPosition(effectSeq: 8, suborder: 0),
-                outcome: ChatTerminalOutcome.cancelled,
-              ),
-              contents: const [],
-            ),
             content: content,
             isActive: () => true,
             images: images,
             readAttachment: null,
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'restored-interrupted-reasoning',
+                source: _source,
+                sourceOrder: 1,
+                kind: ChatAtomKind.reasoning,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const TerminalChatAtom(
+                  started: ChatFactPosition(effectSeq: 2, suborder: 0),
+                  ended: ChatFactPosition(effectSeq: 8, suborder: 0),
+                  outcome: ChatTerminalOutcome.cancelled,
+                ),
+                contents: const [],
+              ),
+              contentSource: const CurrentAtom(),
+            ),
+            displayId: "fixture-current",
           ),
         ),
       );
@@ -859,11 +1370,15 @@ void main() {
       Widget scene(ThreadWaitPresentationView? wait) => _host(
         TimelineMemberAtom(
           key: const ValueKey('wait-atom'),
-          atom: member(wait),
           content: content,
           isActive: () => true,
           images: images,
           readAttachment: null,
+          record: DisplayRecord(
+            atom: member(wait),
+            contentSource: const CurrentAtom(),
+          ),
+          displayId: "fixture-current",
         ),
       );
       await tester.pumpWidget(scene(null));

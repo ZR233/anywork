@@ -9,6 +9,18 @@ import 'timeline_display_unit.dart';
 
 const chatItemPresentationKey = 'chatItemPresentation';
 
+/// Frozen observation time ends at its captured cut, not a fabricated terminal.
+extension DisplayRecordTime on DisplayRecord {
+  int? get displayStartedAt => switch (contentSource) {
+    FrozenObservation(capturedAt: null) => null,
+    _ => atom.startedAt,
+  };
+  int? get displayObservedThrough => switch (contentSource) {
+    FrozenObservation(:final capturedAt) => capturedAt,
+    _ => atom.finishedAt,
+  };
+}
+
 ChatItemPresentation? chatItemPresentationOf(Message message) =>
     message.metadata?[chatItemPresentationKey] as ChatItemPresentation?;
 
@@ -32,6 +44,7 @@ final class ChatItemPresentation {
     this.diagnostic,
     this.displayUnit,
     this.atom,
+    this.displayRecord,
   });
 
   final String id;
@@ -48,6 +61,10 @@ final class ChatItemPresentation {
   final String? diagnostic;
   final TimelineDisplayUnit? displayUnit;
   final ChatAtom? atom;
+  final DisplayRecord? displayRecord;
+  bool get observationUnavailable =>
+      displayRecord?.contentSource is FrozenObservation &&
+      !(displayRecord!.contentSource as FrozenObservation).available;
   late final ToolCardReading toolCard = readToolCard(this);
 
   // The original producer's declaration, not envelope metadata, grants Body
@@ -89,6 +106,7 @@ final class ChatItemPresentation {
       diagnostic: value.diagnostic,
       displayUnit: displayUnit,
       atom: atom,
+      displayRecord: displayRecord,
     );
   }
 
@@ -129,12 +147,19 @@ final class ChatItemPresentation {
         : null,
   );
 
-  static ChatItemPresentation decode(ChatAtom message) {
+  static ChatItemPresentation decode(
+    ChatAtom message, {
+    DisplayRecord? record,
+    String? displayId,
+  }) {
+    if (record?.contentSource case FrozenObservation(available: false)) {
+      return _unavailableObservation(displayId ?? message.id, record!);
+    }
     final payload = message.payload;
     if (payload == null) {
       throw const FormatException('Atom has no completion payload');
     }
-    final value = decodePayload(message.id, payload);
+    final value = decodePayload(displayId ?? message.id, payload);
     return ChatItemPresentation(
       id: value.id,
       compatibility: value.compatibility,
@@ -151,6 +176,7 @@ final class ChatItemPresentation {
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
       atom: message,
+      displayRecord: record,
     );
   }
 
@@ -166,6 +192,10 @@ final class ChatItemPresentation {
         displayUnit: unit,
         authorId: 'assistant',
       );
+    }
+    final record = (unit.body as SingleDisplayBlock).record;
+    if (record.contentSource case FrozenObservation(available: false)) {
+      return _unavailableObservation(unit.id, record);
     }
     final author = item.source is InboxMessageChatSource
         ? 'inbox:${(item.source as InboxMessageChatSource).sourceId}'
@@ -191,6 +221,7 @@ final class ChatItemPresentation {
         data: const {},
         bodies: const [],
         displayUnit: unit,
+        displayRecord: record,
         authorId: author ?? 'unknown',
         createdAt: time,
       );
@@ -211,8 +242,21 @@ final class ChatItemPresentation {
       diagnostic: value.diagnostic,
       displayUnit: unit,
       atom: item,
+      displayRecord: (unit.body as SingleDisplayBlock).record,
     );
   }
+
+  static ChatItemPresentation _unavailableObservation(
+    String id,
+    DisplayRecord record,
+  ) => ChatItemPresentation(
+    id: id,
+    compatibility: ChatItemCompatibility.current,
+    type: 'observation',
+    data: const {},
+    bodies: const [],
+    displayRecord: record,
+  );
 
   static ChatItemPresentation decodePayload(String id, PayloadData payload) {
     if (payload is DeferredPayload) {
@@ -355,6 +399,10 @@ final class ChatItemPresentation {
         decoded = BodyContentTarget(
           owner: switch (owner['kind']) {
             'item' => ItemContentOwner(itemId: owner['itemId'] as String),
+            'displayObservation' => DisplayObservationContentOwner(
+              blockId: owner['blockId'] as String,
+              memberKey: owner['memberKey'] as String,
+            ),
             'current' => CurrentContentOwner(
               domain: owner['domain'] as String,
               id: owner['id'] as String,

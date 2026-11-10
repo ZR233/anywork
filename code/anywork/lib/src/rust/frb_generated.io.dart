@@ -1283,15 +1283,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatAtom dco_decode_box_bridge_chat_atom(dynamic raw);
-
-  @protected
   BridgeChatBatch dco_decode_box_bridge_chat_batch(dynamic raw);
 
   @protected
   BridgeChildInteractionsState dco_decode_box_bridge_child_interactions_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeDisplayRecord dco_decode_box_bridge_display_record(dynamic raw);
 
   @protected
   BridgeInteractionRequest dco_decode_box_bridge_interaction_request(
@@ -2082,6 +2082,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeDisplayBlockRef dco_decode_bridge_display_block_ref(dynamic raw);
 
   @protected
+  BridgeDisplayBlockState dco_decode_bridge_display_block_state(dynamic raw);
+
+  @protected
+  BridgeDisplayContentSource dco_decode_bridge_display_content_source(
+    dynamic raw,
+  );
+
+  @protected
   BridgeDisplayMemberHead dco_decode_bridge_display_member_head(dynamic raw);
 
   @protected
@@ -2091,6 +2099,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeDisplayMemberWindow dco_decode_bridge_display_member_window(
     dynamic raw,
   );
+
+  @protected
+  BridgeDisplayRecord dco_decode_bridge_display_record(dynamic raw);
 
   @protected
   BridgeDownloadingUpdaterState dco_decode_bridge_downloading_updater_state(
@@ -5553,15 +5564,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeChatAtom sse_decode_box_bridge_chat_atom(SseDeserializer deserializer);
-
-  @protected
   BridgeChatBatch sse_decode_box_bridge_chat_batch(
     SseDeserializer deserializer,
   );
 
   @protected
   BridgeChildInteractionsState sse_decode_box_bridge_child_interactions_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayRecord sse_decode_box_bridge_display_record(
     SseDeserializer deserializer,
   );
 
@@ -6606,6 +6619,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayBlockState sse_decode_bridge_display_block_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayContentSource sse_decode_bridge_display_content_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDisplayMemberHead sse_decode_bridge_display_member_head(
     SseDeserializer deserializer,
   );
@@ -6617,6 +6640,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDisplayMemberWindow sse_decode_bridge_display_member_window(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayRecord sse_decode_bridge_display_record(
     SseDeserializer deserializer,
   );
 
@@ -10739,12 +10767,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_bridge_chat_atom(
-    BridgeChatAtom self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_bridge_chat_batch(
     BridgeChatBatch self,
     SseSerializer serializer,
@@ -10753,6 +10775,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_bridge_child_interactions_state(
     BridgeChildInteractionsState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_display_record(
+    BridgeDisplayRecord self,
     SseSerializer serializer,
   );
 
@@ -12020,6 +12048,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_display_block_state(
+    BridgeDisplayBlockState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_content_source(
+    BridgeDisplayContentSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_display_member_head(
     BridgeDisplayMemberHead self,
     SseSerializer serializer,
@@ -12034,6 +12074,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_display_member_window(
     BridgeDisplayMemberWindow self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_record(
+    BridgeDisplayRecord self,
     SseSerializer serializer,
   );
 

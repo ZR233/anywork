@@ -22,7 +22,14 @@ final class TimelineMemberController implements ConversationBatchConsumer {
             bodies: const [],
             atom: atom,
           )
-        : ChatItemPresentation.decode(atom);
+        : ChatItemPresentation.decode(
+            atom,
+            displayId: entry.recordId,
+            record: DisplayRecord(
+              atom: atom,
+              contentSource: CompletedOriginal(completionId: entry.recordId),
+            ),
+          );
     return Message.custom(
       id: entry.recordId,
       authorId: presentation.authorId,

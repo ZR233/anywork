@@ -1,8 +1,34 @@
 //! Independent concept journey; never consumes the realtime Driver script.
 
+mod image_lease;
 mod media_fault;
 
 use super::*;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TimelineConceptMode {
+    Journey,
+    Boundary,
+    MediaHandoff,
+}
+
+impl TimelineConceptMode {
+    fn scenario(self) -> &'static str {
+        match self {
+            Self::Journey => "timeline-concept",
+            Self::Boundary => "timeline-boundary",
+            Self::MediaHandoff => "media-handoff",
+        }
+    }
+
+    fn required_steps(self) -> usize {
+        match self {
+            Self::Journey => pl_provider_fixture::timeline_concept::REQUIRED_STEPS,
+            Self::Boundary => 1,
+            Self::MediaHandoff => 2,
+        }
+    }
+}
 
 pub(super) struct TimelineConceptScenario<'a> {
     pub workspace: &'a Path,
@@ -15,12 +41,14 @@ pub(super) struct TimelineConceptScenario<'a> {
     pub interrupt: &'a mpsc::Receiver<()>,
     pub capture_presentation: bool,
     pub provider_url: &'a str,
+    pub mode: TimelineConceptMode,
 }
 
 pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
     let project = context.working.join("timeline-concept-project");
     let log_path = context.working.join("timeline-concept-integration.log");
     let mut runner_exit = None;
+    let mut process_observations = Vec::new();
     let suite = (|| -> Result<()> {
         fs::create_dir(&project)?;
         ensure!(
@@ -63,8 +91,20 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
         }
         let empty_thread = seed_empty_thread(context.home, &project)?;
         File::create(&log_path)?;
-        for phase in ["journey", "reopen", "media-missing"] {
-            let reopen = phase != "journey";
+        let phases: &[&str] = match context.mode {
+            TimelineConceptMode::Journey => &["journey", "reopen", "media-missing"],
+            TimelineConceptMode::Boundary => &["boundary", "boundary-reopen"],
+            TimelineConceptMode::MediaHandoff => {
+                ensure!(cfg!(target_os = "linux"), "media-handoff requires Linux");
+                &["media-handoff", "media-handoff-reopen"]
+            }
+        };
+        for &phase in phases {
+            runner_exit = None;
+            let reopen = matches!(
+                phase,
+                "reopen" | "media-missing" | "media-handoff-reopen" | "boundary-reopen"
+            );
             if phase == "media-missing" {
                 media_fault::inject(context.working, context.home, &project, context.output)?;
             }
@@ -78,6 +118,11 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
                 .env("ANYWORK_TIMELINE_CONCEPT_OUTPUT", context.output)
                 .env("ANYWORK_TIMELINE_CONCEPT_PROVIDER", context.provider_url)
                 .env("ANYWORK_TIMELINE_CONCEPT_EMPTY_THREAD", &empty_thread)
+                .env("ANYWORK_TIMELINE_CONCEPT_PHASE", phase)
+                .env(
+                    "ANYWORK_MEDIA_HANDOFF_LEASE",
+                    context.output.join("image-lease"),
+                )
                 .env(
                     "ANYWORK_TIMELINE_CONCEPT_REOPEN",
                     if reopen { "1" } else { "0" },
@@ -93,35 +138,82 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
                 context.output,
                 context.capture_presentation,
             );
-            let mut runner = OwnedProcess::start(&mut command, false)?;
-            let deadline = Instant::now() + Duration::from_secs(1_200);
-            loop {
-                if let Some(status) = runner.child.try_wait()? {
-                    runner.stopped = true;
-                    runner_exit = Some(status);
+            // Declare the runner first: lease cleanup precedes runner Drop even
+            // during unwinding. Normal/error paths explicitly join the holder.
+            let mut runner = None;
+            let mut lease = if phase == "media-handoff" {
+                Some(image_lease::ImageLease::start(
+                    &project.join("concept-image-a.png"),
+                    &context.output.join("image-lease"),
+                )?)
+            } else {
+                None
+            };
+            let run_result = (|| -> Result<()> {
+                runner = Some(OwnedProcess::start(&mut command, false)?);
+                let runner = runner.as_mut().expect("runner was just started");
+                let deadline = Instant::now() + Duration::from_secs(1_200);
+                loop {
+                    if let Some(lease) = lease.as_mut() {
+                        lease.check()?;
+                    }
+                    if let Some(status) = runner.child.try_wait()? {
+                        runner.stopped = true;
+                        runner_exit = Some(status);
+                        ensure!(
+                            status.success(),
+                            "timeline-concept integration test failed: {status}"
+                        );
+                        break;
+                    }
                     ensure!(
-                        status.success(),
-                        "timeline-concept integration test failed: {status}"
+                        !fixture.exited()?,
+                        "fixture exited during timeline-concept integration test"
                     );
-                    break;
+                    ensure!(
+                        context.interrupt.try_recv().is_err(),
+                        "timeline-concept integration test cancelled"
+                    );
+                    ensure!(
+                        Instant::now() < deadline,
+                        "timeline-concept integration test timed out"
+                    );
+                    thread::sleep(Duration::from_millis(200));
                 }
-                ensure!(
-                    !fixture.exited()?,
-                    "fixture exited during timeline-concept integration test"
-                );
-                ensure!(
-                    context.interrupt.try_recv().is_err(),
-                    "timeline-concept integration test cancelled"
-                );
-                ensure!(
-                    Instant::now() < deadline,
-                    "timeline-concept integration test timed out"
-                );
-                thread::sleep(Duration::from_millis(200));
+                Ok(())
+            })();
+            let lease_result = lease.as_mut().map(|lease| lease.close(run_result.is_ok()));
+            drop(lease);
+            if context.mode == TimelineConceptMode::MediaHandoff {
+                process_observations.push(serde_json::json!({
+                    "phase": phase,
+                    "runnerPid": runner.as_ref().map(|runner| runner.child.id()),
+                    "runnerExitCode": runner_exit.and_then(|status| status.code()),
+                    "runnerExitObserved": runner.as_ref().is_some_and(|runner| runner.stopped),
+                    "runnerTerminationRequired": runner.as_ref().is_some_and(|runner| !runner.stopped),
+                    "leaseJoinedBeforeRunnerCleanup": !matches!(
+                        lease_result.as_ref(), Some(Err(_))
+                    ),
+                    "sameIsolatedHome": true,
+                    "guiNativeExitEvidence": "official test-project runner owns GUI process-tree verdict; Dart shutdown alone is not OS evidence",
+                }));
+                fs::write(
+                    context.output.join("media-handoff-processes.json"),
+                    serde_json::to_vec_pretty(&process_observations)?,
+                )?;
+            }
+            drop(runner);
+            run_result?;
+            if let Some(result) = lease_result {
+                result?;
             }
             let name = match phase {
                 "journey" => "timeline-concept.json",
                 "reopen" => "timeline-concept-reopen.json",
+                "media-handoff" => "timeline-media-handoff.json",
+                "media-handoff-reopen" => "timeline-media-handoff-reopen.json",
+                "boundary" => "timeline-boundary.json",
+                "boundary-reopen" => "timeline-boundary-reopen.json",
                 _ => "timeline-concept-media-missing.json",
             };
             let report: serde_json::Value = serde_json::from_slice(
@@ -140,6 +232,31 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
                     report["mediaResourceFailureObserved"] == true,
                     "missing-media phase must observe the real production image load failure"
                 );
+            }
+        }
+        if context.mode == TimelineConceptMode::MediaHandoff {
+            let log = File::create(context.output.join("media-evidence.log"))?;
+            let mut command = Command::new("python3");
+            command
+                .args(["-c", include_str!("timeline_concept/media_evidence.py")])
+                .arg(context.output)
+                .arg(&project)
+                .stdout(Stdio::from(log.try_clone()?))
+                .stderr(Stdio::from(log));
+            let mut evidence = OwnedProcess::start(&mut command, false)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(status) = evidence.child.try_wait()? {
+                    evidence.stopped = true;
+                    ensure!(status.success(), "media evidence failed: {status}");
+                    break;
+                }
+                ensure!(
+                    context.interrupt.try_recv().is_err(),
+                    "media evidence cancelled"
+                );
+                ensure!(Instant::now() < deadline, "media evidence timed out");
+                thread::sleep(Duration::from_millis(20));
             }
         }
         Ok(())
@@ -202,14 +319,13 @@ pub(super) fn run(context: &TimelineConceptScenario<'_>, mut fixture: OwnedProce
     // all required script steps. Accepted requests also include completion waits
     // that do not advance the script, so their count alone is not completion.
     let completed = fixture_result.as_ref().is_ok_and(|status| status.success());
-    let required_steps_consumed = completed
-        && accepted >= pl_provider_fixture::timeline_concept::REQUIRED_STEPS
-        && rejected == 0;
+    let required_steps_consumed =
+        completed && accepted >= context.mode.required_steps() && rejected == 0;
     fs::write(
         context.output.join("fixture-status.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "scenario": "timeline-concept",
-            "fixtureScenario": "timeline-concept",
+            "scenario": context.mode.scenario(),
+            "fixtureScenario": context.mode.scenario(),
             "runner": "flutter.integration_test",
             "runnerExitCode": runner_exit.and_then(|status| status.code()),
             "acceptedRequests": accepted,

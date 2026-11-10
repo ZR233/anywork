@@ -8,6 +8,68 @@ const _ref = DisplayBlockRef(databaseId: 'db', blockId: 'group');
 const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
 
 void main() {
+  test('sealed head revokes mutable page immediately and waits for native sealed records', () async {
+    final handle = _Handle();
+    final controller = DisplayMemberController(
+      reference: _ref,
+      demand: _demand,
+      open: (_, _, _) async => handle,
+    );
+    await handle.pulling.future;
+    final page = DisplayMemberPage(
+      block: _ref,
+      revision: 1,
+      sealed: false,
+      entries: [
+        DisplayMemberHead(
+          memberKey: 'row',
+          memberOrder: 1,
+          record: DisplayRecord(
+            contentSource: const CurrentAtom(),
+            atom: ChatAtom(
+              id: 'atom',
+              source: const ForegroundTurnChatSource(turnId: 'turn'),
+              sourceOrder: 1,
+              kind: ChatAtomKind.reasoning,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const ActiveChatAtom(
+                started: null,
+                status: ChatActiveStatus.running,
+              ),
+              contents: const [],
+            ),
+          ),
+        ),
+      ],
+    );
+    handle.reply.complete(page);
+    await Future<void>.delayed(Duration.zero);
+    final old = controller.disclosure('row')..expanded = true;
+    controller.requireSealed();
+    expect(controller.page, same(page));
+    expect(controller.awaitingSealed, isTrue);
+    expect(old.retired, isTrue);
+    expect(controller.disclosure('row').expanded, isTrue);
+    handle.reply.complete(
+      DisplayMemberPage(block: _ref, revision: 2, sealed: false, entries: []),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.page, same(page));
+    final sealed = DisplayMemberPage(
+      block: _ref,
+      revision: 3,
+      sealed: true,
+      entries: [],
+    );
+    handle.reply.complete(sealed);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.page, same(sealed));
+    expect(controller.awaitingSealed, isFalse);
+    expect(controller.error, isNull);
+    await controller.close();
+    controller.dispose();
+  });
+
   test('sealed current page stays readable after explicit EOF and releases its handle', () async {
     final handle = _Handle();
     final controller = DisplayMemberController(
@@ -130,7 +192,11 @@ void main() {
       revision: 2,
       sealed: false,
       entries: [
-        DisplayMemberHead(memberKey: 'fresh-key', memberOrder: 1, atom: atom),
+        DisplayMemberHead(
+          memberKey: 'fresh-key',
+          memberOrder: 1,
+          record: DisplayRecord(atom: atom, contentSource: const CurrentAtom()),
+        ),
       ],
     );
     fresh.reply.complete(page);
@@ -139,7 +205,7 @@ void main() {
     expect(old.closeCalls, 2);
     expect(opens, 2);
     expect(controller.page, same(page));
-    expect(controller.page!.entries.single.atom, same(atom));
+    expect(controller.page!.entries.single.record.atom, same(atom));
     expect(controller.error, isNull);
     expect(controller.cleanupError, isNull);
     await controller.close();

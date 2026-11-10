@@ -1,3 +1,5 @@
+import 'display_record_observation.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -157,9 +159,16 @@ final class TimelineOutputConsumption {
           }
           laterOrder = member.memberOrder;
           members += 1;
-          final atom = member.atom;
+          final atom = member.record.atom;
           if (atom.source != source) continue;
           expectSync(atom.turnId, turnId);
+          if (member.record.contentSource is FrozenObservation) {
+            expectSync(member.record.endFact, isNull);
+            // A sealed start observation is not an original output. Its later
+            // end is counted only when that CompletedOriginal is encountered.
+            continue;
+          }
+          expectSync(member.record.contentSource, isA<CompletedOriginal>());
           expectSync(atom.lifecycle, isA<TerminalChatAtom>());
           expectSync(
             (atom.lifecycle as TerminalChatAtom).outcome,
@@ -168,9 +177,13 @@ final class TimelineOutputConsumption {
           expectSync(atom.completionSeq, isNotNull);
           if ((atom.kind == ChatAtomKind.text ||
                   atom.kind == ChatAtomKind.reasoning) &&
-              !_outputs.contains(member.completionId)) {
-            expectSync(member.completionId, isNotNull);
-            await _readFrozen(_scope, member.completionId!, atom.contents);
+              !_outputs.contains(completedOriginalId(member.record))) {
+            expectSync(completedOriginalId(member.record), isNotNull);
+            await _readFrozen(
+              _scope,
+              completedOriginalId(member.record)!,
+              atom.contents,
+            );
           }
         }
         expectSync(await _within(handle.next()), isNull);
@@ -213,7 +226,9 @@ final class TimelineOutputConsumption {
       switch (unit.body) {
         case WorkDisplayBlock():
           await _readWork(unit);
-        case SingleDisplayBlock(:final atom, :final completionId):
+        case SingleDisplayBlock(:final record):
+          final atom = record.atom;
+          final completionId = completedOriginalId(record);
           if (atom.source == source && atom.kind == ChatAtomKind.text) {
             expectSync(atom.turnId, turnId);
             expectSync(

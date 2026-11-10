@@ -13,7 +13,7 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
@@ -21,6 +21,7 @@ import '../support/chat_fixtures.dart';
 WorkSummary _summary({
   int? createdAt = 1000,
   int? elapsedMs = 125000,
+  int total = 4,
   int running = 0,
   int waiting = 0,
   int failed = 0,
@@ -28,8 +29,9 @@ WorkSummary _summary({
   int transferred = 0,
   String? thought,
 }) => WorkSummary(
-  total: 4,
-  terminal: 4 - running - waiting,
+  unavailable: 0,
+  total: total,
+  terminal: total - running - waiting,
   running: running,
   waiting: waiting,
   failed: failed,
@@ -46,7 +48,10 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     MaterialApp(
       theme: pureStudioTheme(),
       locale: const Locale('zh'),
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      localizationsDelegates: [
+        AppLocalizations.delegate,
+        ...GlobalMaterialLocalizations.delegates,
+      ],
       supportedLocales: AppLocalizations.supportedLocales,
       home: Scaffold(
         body: MediaQuery(
@@ -60,6 +65,49 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     );
 
 void main() {
+  testWidgets(
+    'sealed pending Work freezes elapsed and is neither running nor unrestored',
+    (tester) async {
+      var now = DateTime.fromMillisecondsSinceEpoch(1125000);
+      await tester.pumpWidget(
+        _host(
+          CompletionRunView(
+            id: 'sealed-pending',
+            state: DisplayBlockState.sealed,
+            location: WorkDisplayLocation.live,
+            executionPresent: false,
+            summary: _summary(running: 2, waiting: 1),
+            initiallyExpanded: false,
+            now: () => now,
+            childBuilder: (_) => const Text('sealed rows'),
+          ),
+          width: 360,
+          scale: 1.6,
+        ),
+      );
+      expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
+      expect(find.textContaining('尚未恢复'), findsNothing);
+      expect(
+        tester
+            .widget<TimelineActivityClock>(find.byType(TimelineActivityClock))
+            .running,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<TimelineActivityIndicator>(
+              find.byType(TimelineActivityIndicator),
+            )
+            .active,
+        isFalse,
+      );
+      now = now.add(const Duration(minutes: 5));
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   for (final (width, scale) in [(720.0, 1.0), (390.0, 1.6), (360.0, 1.6)]) {
     testWidgets(
       'collapsed live Work is one row with reserved duration at $width/$scale',
@@ -357,112 +405,244 @@ void main() {
     },
   );
 
-  testWidgets(
-    'current Work absorbs only its normal notice, not critical notices or older Work',
-    (tester) async {
-      final h = _LiveHarness();
-      addTearDown(h.dispose);
-      h.blocks = [
-        _work('older', closing: true, thought: '前段概要'),
-        _work('current', thought: '当前组概要'),
-      ];
-      h.notices = [
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'thinking',
-            turnId: 'turn',
-            kind: ConversationActivityKind.thinking,
-            summary: '普通提示不另起一行',
+  for (final (phase, running, waiting) in [
+    ('running', 1, 0),
+    ('waiting', 0, 1),
+  ]) {
+    testWidgets(
+      'current Work absorbs only its normal notice, not critical notices or older Work: $phase',
+      (tester) async {
+        final h = _LiveHarness();
+        addTearDown(h.dispose);
+        h.blocks = [
+          _work('older', state: DisplayBlockState.sealed, thought: '前段概要'),
+          _work(
+            'current',
+            summary: _summary(
+              createdAt: null,
+              running: running,
+              waiting: waiting,
+              thought: '当前组概要',
+            ),
           ),
-        ),
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'stopping',
-            kind: ConversationActivityKind.stopping,
+        ];
+        h.notices = [
+          const ExecutionRealtimeNotice(
+            ConversationActivityView(
+              identity: 'thinking',
+              turnId: 'turn',
+              kind: ConversationActivityKind.thinking,
+              summary: '普通提示不另起一行',
+            ),
           ),
-        ),
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'approval',
-            kind: ConversationActivityKind.awaitingApproval,
+          const ExecutionRealtimeNotice(
+            ConversationActivityView(
+              identity: 'stopping',
+              turnId: 'turn',
+              kind: ConversationActivityKind.stopping,
+            ),
           ),
-        ),
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'storage',
-            kind: ConversationActivityKind.storageBlocked,
+          const ExecutionRealtimeNotice(
+            ConversationActivityView(
+              identity: 'approval',
+              turnId: 'turn',
+              kind: ConversationActivityKind.awaitingApproval,
+            ),
           ),
-        ),
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'error',
-            kind: ConversationActivityKind.thinking,
-            errorMessage: '真实错误',
+          const ExecutionRealtimeNotice(
+            ConversationActivityView(
+              identity: 'storage',
+              turnId: 'turn',
+              kind: ConversationActivityKind.storageBlocked,
+            ),
           ),
-        ),
-      ];
-      await tester.pumpWidget(h.host());
-      expect(find.text('前段概要'), findsOneWidget);
-      expect(find.text('当前组概要'), findsOneWidget);
-      expect(find.text('普通提示不另起一行'), findsNothing);
-      expect(find.byType(ConversationActivityStatus), findsNWidgets(4));
-      expect(find.text('真实错误'), findsOneWidget);
-      expect(h.content.reads, 0);
-      h.blocks = [
-        _work('older', closing: true, thought: '前段概要'),
-        LiveDisplayBlock(
-          id: 'text',
-          blockOrder: 3,
-          closing: false,
-          body: SingleDisplayBlock(atom: chatAtomMessage('text', body: '后继正文')),
-        ),
-      ];
-      await tester.pumpWidget(h.host());
-      expect(find.text('前段概要'), findsOneWidget);
-      expect(find.text('后继正文'), findsOneWidget);
-      expect(find.text('普通提示不另起一行'), findsOneWidget);
-      expect(find.byType(ConversationActivityStatus), findsNWidgets(5));
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+          const ExecutionRealtimeNotice(
+            ConversationActivityView(
+              identity: 'error',
+              turnId: 'turn',
+              kind: ConversationActivityKind.thinking,
+              errorMessage: '真实错误',
+            ),
+          ),
+        ];
+        await tester.pumpWidget(h.host());
+        // Sealed headers use the frozen worked-duration title, never a live summary.
+        expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
+        expect(find.text('当前组概要'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('timeline-current-work')),
+            matching: find.byType(CompletionRunView),
+          ),
+          findsNWidgets(2),
+        );
+        expect(
+          find.ancestor(
+            of: find.byType(CompletionRunView),
+            matching: find.byType(ConversationActivityBar),
+          ),
+          findsNothing,
+        );
+        expect(find.text('普通提示不另起一行'), findsNothing);
+        expect(find.byType(ConversationActivityStatus), findsNWidgets(4));
+        expect(find.text('真实错误'), findsOneWidget);
+        final header = find.byKey(
+          const ValueKey('completion-run-header:current'),
+        );
+        expect(
+          tester
+              .widget<TimelineActivityIndicator>(
+                find.descendant(
+                  of: header,
+                  matching: find.byType(TimelineActivityIndicator),
+                ),
+              )
+              .active,
+          isTrue,
+        );
+        expect(h.content.reads, 0);
+        h.blocks = [
+          _work('older', state: DisplayBlockState.sealed, thought: '前段概要'),
+          LiveDisplayBlock(
+            id: 'text',
+            blockOrder: 3,
+            state: DisplayBlockState.open,
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: chatAtomMessage('text', body: '后继正文'),
+                contentSource: const CurrentAtom(),
+              ),
+            ),
+          ),
+        ];
+        await tester.pumpWidget(h.host());
+        expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
+        expect(find.text('后继正文'), findsOneWidget);
+        expect(find.text('普通提示不另起一行'), findsOneWidget);
+        expect(find.byType(ConversationActivityStatus), findsNWidgets(5));
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
-  testWidgets(
-    'merged current notice retains its bounded overview without reading members',
-    (tester) async {
-      final h = _LiveHarness();
-      addTearDown(h.dispose);
-      h.blocks = [_work('work')];
-      h.notices = [
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'thinking',
-            turnId: 'turn',
-            kind: ConversationActivityKind.thinking,
-            thinkingSummary: '有界思考概要',
-            summary: '状态概要',
-          ),
-        ),
-      ];
-      await tester.pumpWidget(h.host());
-      expect(find.byType(ConversationActivityStatus), findsNothing);
-      expect(find.text('有界思考概要'), findsOneWidget);
-      h.notices = [
-        const ExecutionRealtimeNotice(
-          ConversationActivityView(
-            identity: 'thinking',
-            turnId: 'turn',
-            kind: ConversationActivityKind.thinking,
-            summary: '状态概要',
-          ),
-        ),
-      ];
-      await tester.pumpWidget(h.host());
-      expect(find.byType(ConversationActivityStatus), findsNothing);
-      expect(find.text('状态概要'), findsOneWidget);
-      expect(h.content.reads, 0);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+  for (final (outcome, icon, result) in [
+    (ChatTerminalOutcome.completed, Icons.work_outline, null),
+    (ChatTerminalOutcome.failed, Icons.error_outline, '1 项执行失败'),
+    (ChatTerminalOutcome.cancelled, Icons.stop_circle_outlined, '1 项已停止'),
+    (ChatTerminalOutcome.transferred, Icons.call_made, '已交接 1 项'),
+  ]) {
+    testWidgets(
+      'terminal ${outcome.name} Work keeps its result and independent Turn notice',
+      (tester) async {
+        final h = _LiveHarness();
+        addTearDown(h.dispose);
+        final semantics = tester.ensureSemantics();
+        try {
+          final summary = _summary(
+            total: 1,
+            failed: outcome == ChatTerminalOutcome.failed ? 1 : 0,
+            cancelled: outcome == ChatTerminalOutcome.cancelled ? 1 : 0,
+            transferred: outcome == ChatTerminalOutcome.transferred ? 1 : 0,
+          );
+          h.blocks = [_work('work', summary: summary)];
+          h.notices = [
+            const ExecutionRealtimeNotice(
+              ConversationActivityView(
+                identity: 'thinking',
+                turnId: 'turn',
+                kind: ConversationActivityKind.thinking,
+                thinkingSummary: '有界思考概要',
+                summary: '状态概要',
+              ),
+            ),
+          ];
+          await tester.pumpWidget(h.host());
+          expect(find.byType(ConversationActivityStatus), findsOneWidget);
+          expect(
+            tester
+                .widget<ConversationActivityStatus>(
+                  find.byType(ConversationActivityStatus),
+                )
+                .view,
+            same((h.notices.single as ExecutionRealtimeNotice).view),
+          );
+          expect(find.text('有界思考概要'), findsNothing);
+          expect(find.text('状态概要'), findsOneWidget);
+          expect(
+            find.descendant(
+              of: find.byType(ConversationActivityStatus),
+              matching: find.text('思考中'),
+            ),
+            findsOneWidget,
+          );
+          final header = find.byKey(
+            const ValueKey('completion-run-header:work'),
+          );
+          void expectStaticResult() {
+            final work = tester.widget<CompletionRunView>(
+              find.byType(CompletionRunView),
+            );
+            expect(work.summary, same(summary));
+            expect(work.state, DisplayBlockState.open);
+            expect(work.activity, isNull);
+            expect(
+              find.descendant(of: header, matching: find.text('等待下一步')),
+              findsOneWidget,
+            );
+            expect(
+              tester
+                  .widget<TimelineActivityIndicator>(
+                    find.descendant(
+                      of: header,
+                      matching: find.byType(TimelineActivityIndicator),
+                    ),
+                  )
+                  .active,
+              isFalse,
+            );
+            expect(
+              find.descendant(of: header, matching: find.byIcon(icon)),
+              findsOneWidget,
+            );
+            final description = tester.getSemantics(header).label;
+            if (result != null) expect(description, contains(result));
+            expect(description, isNot(contains('思考中')));
+            expect(
+              tester
+                  .widget<TimelineActivityClock>(
+                    find.descendant(
+                      of: find.byType(CompletionRunView),
+                      matching: find.byType(TimelineActivityClock),
+                    ),
+                  )
+                  .running,
+              isTrue,
+            );
+          }
+
+          expectStaticResult();
+          h.notices = [
+            const ExecutionRealtimeNotice(
+              ConversationActivityView(
+                identity: 'thinking',
+                turnId: 'turn',
+                kind: ConversationActivityKind.thinking,
+                summary: '状态概要',
+              ),
+            ),
+          ];
+          await tester.pumpWidget(h.host());
+          expect(find.byType(ConversationActivityStatus), findsOneWidget);
+          expect(find.text('状态概要'), findsOneWidget);
+          expectStaticResult();
+          expect(h.content.reads, 0);
+          await tester.pumpWidget(const SizedBox());
+        } finally {
+          semantics.dispose();
+        }
+      },
+    );
+  }
 
   testWidgets(
     'unproven Turn keeps its independent notice; cold Work keeps its unrestored message',
@@ -498,17 +678,21 @@ void main() {
   );
 }
 
-LiveDisplayBlock _work(String id, {bool closing = false, String? thought}) =>
-    LiveDisplayBlock(
-      id: id,
-      blockOrder: id == 'older' ? 1 : 2,
-      closing: closing,
-      source: const ForegroundTurnChatSource(turnId: 'turn'),
-      body: WorkDisplayBlock(
-        summary: _summary(createdAt: null, thought: thought),
-        members: DisplayBlockRef(databaseId: 'db', blockId: id),
-      ),
-    );
+LiveDisplayBlock _work(
+  String id, {
+  DisplayBlockState state = DisplayBlockState.open,
+  String? thought,
+  WorkSummary? summary,
+}) => LiveDisplayBlock(
+  id: id,
+  blockOrder: id == 'older' ? 1 : 2,
+  state: state,
+  source: const ForegroundTurnChatSource(turnId: 'turn'),
+  body: WorkDisplayBlock(
+    summary: summary ?? _summary(createdAt: null, thought: thought),
+    members: DisplayBlockRef(databaseId: 'db', blockId: id),
+  ),
+);
 
 class _Session extends Fake implements ThreadSessionState {
   @override
@@ -555,23 +739,32 @@ class _LiveHarness {
       executionPresent: executionPresent,
       blocks: blocks,
     );
-    return _host(
-      ConversationCurrentConnector(
-        session: _Session(),
-        content: content,
-        live: live,
-        region: ContentRealtimeRegion(live: live.value, notices: notices),
-        images: images,
-        readAttachment: (_) async => Uint8List(0),
-        isDisplayActive: () => true,
-        liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
-          block: block,
-          executionPresent: executionPresent,
-          expansion: expansions.putIfAbsent(
-            block.id,
-            TimelineExpansionIntent.new,
+    Widget section(ConversationLiveSection section) =>
+        ConversationCurrentConnector(
+          section: section,
+          session: _Session(),
+          content: content,
+          live: live,
+          region: ContentRealtimeRegion(live: live.value, notices: notices),
+          images: images,
+          readAttachment: (_) async => Uint8List(0),
+          isDisplayActive: () => true,
+          liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+            block: block,
+            executionPresent: executionPresent,
+            expansion: expansions.putIfAbsent(
+              block.id,
+              TimelineExpansionIntent.new,
+            ),
           ),
-        ),
+        );
+    return _host(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          section(ConversationLiveSection.work),
+          section(ConversationLiveSection.output),
+        ],
       ),
     );
   }

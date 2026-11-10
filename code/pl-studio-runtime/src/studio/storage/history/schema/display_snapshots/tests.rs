@@ -78,7 +78,7 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
     let (_dir, db) = fixture().await?;
     let original = seed(&db).await?;
     migrate(&db).await?;
-    assert_eq!(version(&db).await?, 19);
+    assert_eq!(version(&db).await?, 20);
     let rows = db
         .query_all_raw(statement(
             "SELECT seq,item_id,metadata,payload FROM conversation_items ORDER BY seq",
@@ -115,7 +115,7 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
         ))?
     );
     assert!(
-        matches!(&history[0].body, DisplayBlockBody::Work { summary, .. }
+        matches!(&history[0].body, pl_protocol::DisplayBlockBody::Work { summary, .. }
             if summary.total == 129 && summary.created_at.is_none() && summary.elapsed_ms.is_none())
     );
     let members = conversation::display::member_page(&db, &history[2].id, Some(129), 2).await?;
@@ -127,12 +127,11 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
         vec![127, 128]
     );
     assert!(matches!(
-        members[0].head.atom.payload,
+        members[0].head.record.atom.payload,
         Some(pl_protocol::PayloadData::Deferred { .. })
     ));
     db.execute_unprepared("CREATE TRIGGER no_rewrite BEFORE UPDATE ON conversation_items BEGIN SELECT RAISE(ABORT,'must not rebuild'); END;").await?;
-    migrate(&db).await?;
-    validate(&db).await?;
+    super::super::display_observations::validate(&db).await?;
     assert_eq!(
         conversation::display::history_heads(&db, 3, None, 8).await?,
         history

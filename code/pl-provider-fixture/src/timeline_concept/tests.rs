@@ -5,6 +5,259 @@ use super::*;
 use futures::{Stream, StreamExt};
 
 #[tokio::test]
+async fn realtime_scope_strict_wire_preserves_full_and_focus_steps() {
+    for scope in [RealtimeScope::Full, RealtimeScope::StopBackground] {
+        for title_before in [false, true] {
+            let mut expected = Vec::new();
+            if scope == RealtimeScope::Full {
+                expected.extend([
+                    GUI_REALTIME_DELAYED_PROMPT.to_owned(),
+                    GUI_REALTIME_REASONING_PROMPT.to_owned(),
+                    GUI_REALTIME_LONG_COMMAND_PROMPT.to_owned(),
+                    GUI_REALTIME_LONG_COMMAND_PROMPT.to_owned(),
+                    realtime_delivery_marker("realtime-long-call"),
+                ]);
+            }
+            expected.extend([
+                GUI_REALTIME_PARALLEL_PROMPT.to_owned(),
+                GUI_REALTIME_PARALLEL_PROMPT.to_owned(),
+                realtime_delivery_marker("realtime-parallel-call-a"),
+                realtime_delivery_marker("realtime-parallel-call-b"),
+            ]);
+            if scope == RealtimeScope::Full {
+                expected.extend([
+                    GUI_REALTIME_HOST_CWD_PROMPT.to_owned(),
+                    GUI_REALTIME_HOST_CWD_PROMPT.to_owned(),
+                    realtime_delivery_marker("realtime-host-cwd-call"),
+                    GUI_REALTIME_ERROR_PROMPT.to_owned(),
+                ]);
+            }
+            expected.extend([
+                GUI_REALTIME_CANCEL_PROMPT.to_owned(),
+                GUI_REALTIME_RESUME_PROMPT.to_owned(),
+            ]);
+            let steps = gui_realtime_script("fixture-host-cwd", None, scope);
+            assert_eq!(
+                steps.iter().filter(|step| !step.optional).count(),
+                expected.len()
+            );
+            assert_eq!(
+                expected.len(),
+                match scope {
+                    RealtimeScope::Full => 15,
+                    RealtimeScope::StopBackground => REALTIME_STOP_BACKGROUND_REQUIRED_STEPS,
+                }
+            );
+            for (index, step) in steps.iter().enumerate() {
+                let (RequestMatch::Prompt { step: actual, .. }
+                | RequestMatch::Delivery { step: actual, .. }) = &step.request
+                else {
+                    panic!("unexpected realtime request");
+                };
+                assert_eq!(
+                    *actual, index,
+                    "optional titles retain physical step indices"
+                );
+            }
+            let first = expected.first().unwrap();
+            let title = session_title_prompt(first);
+            let fixture = FixtureServer::start(steps).await.unwrap();
+            let client = reqwest::Client::new();
+            let url = format!("{}/responses", fixture.base_url());
+            let send =
+                |text: String| {
+                    client.post(&url).json(&json!({
+                    "model": "fixture-model", "stream": true,
+                    "input": [{"role":"user","content":[{"type":"input_text","text":text}]}],
+                })).send()
+                };
+            let mut rejected = 0;
+            if scope == RealtimeScope::StopBackground {
+                let response = send(GUI_REALTIME_DELAYED_PROMPT.to_owned()).await.unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                rejected += 1;
+            }
+            if title_before {
+                assert_eq!(send(title.clone()).await.unwrap().status(), StatusCode::OK);
+            }
+            for (index, text) in expected.iter().enumerate() {
+                if text == &realtime_delivery_marker("realtime-parallel-call-a") {
+                    let response = send(text.replace("Succeeded", "Failed")).await.unwrap();
+                    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                    rejected += 1;
+                }
+                let response = send(text.clone()).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    if text == GUI_REALTIME_ERROR_PROMPT {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        StatusCode::OK
+                    },
+                    "{scope:?} request {index}"
+                );
+                // This test exercises strict request admission, not the manual
+                // text pacing. Drain the final continuation; drop other bodies,
+                // including the real hanging cancel stream, as a consumer can.
+                if text == GUI_REALTIME_RESUME_PROMPT {
+                    assert!(
+                        response
+                            .text()
+                            .await
+                            .unwrap()
+                            .contains("realtime continued after cancel")
+                    );
+                } else {
+                    drop(response);
+                }
+                if index == 0 && !title_before {
+                    assert_eq!(send(title.clone()).await.unwrap().status(), StatusCode::OK);
+                }
+            }
+            let report = fixture.shutdown().await.unwrap();
+            assert_eq!(report.consumed_steps, report.expected_steps);
+            assert!(
+                report.verify().is_err(),
+                "intentional strict rejects must fail acceptance"
+            );
+            let requests = report.requests;
+            assert_eq!(
+                requests.iter().filter(|request| request.accepted).count(),
+                expected.len() + 1
+            );
+            assert_eq!(
+                requests.iter().filter(|request| !request.accepted).count(),
+                rejected
+            );
+        }
+    }
+}
+
+fn input_content(text: Option<&str>) -> Vec<Value> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../anywork");
+    let mut content = text
+        .into_iter()
+        .map(|text| json!({"type":"input_text","text":text}))
+        .collect::<Vec<_>>();
+    for (index, path) in [
+        "assets/branding/anywork-startup-cat.png",
+        "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png",
+        "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_128.png",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        content.push(json!({
+            "type":"input_text",
+            "text":format!("Attachment: {}", INPUT_IMAGES[index].0),
+        }));
+        content.push(json!({
+            "type":"input_image",
+            "image_url":format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(std::fs::read(root.join(path)).unwrap())),
+        }));
+    }
+    content
+}
+
+#[test]
+fn media_handoff_pure_attachment_matcher_rejects_prefix_history_order_and_hash_drift() {
+    let steps = Control::default().media_handoff_script();
+    let RequestMatch::PromptImages { text, images, .. } = &steps[0].request else {
+        panic!("first media step must match the pure attachment input");
+    };
+    assert!(text.is_none());
+    let content = input_content(None);
+    assert_eq!(content.len(), 6);
+    let valid =
+        json!({"model":"fixture-model","stream":true,"input":[{"role":"user","content":content}]});
+    assert!(prompt_images_match(&valid, None, images));
+    assert!(!prompt_images_match(&valid, Some(IMAGE_PROMPT), images));
+    let mut malformed = Vec::new();
+    for prefix in ["", IMAGE_PROMPT] {
+        let mut body = valid.clone();
+        body["input"][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type":"input_text","text":prefix}));
+        malformed.push(body);
+    }
+    let mut missing = valid.clone();
+    missing["input"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(4);
+    malformed.push(missing);
+    let mut extra = valid.clone();
+    extra["input"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .extend_from_slice(&content[..2]);
+    malformed.push(extra);
+    let mut order = valid.clone();
+    order["input"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .swap(1, 3);
+    malformed.push(order);
+    let mut duplicate = valid.clone();
+    duplicate["input"][0]["content"][3] = content[1].clone();
+    malformed.push(duplicate);
+    let mut filename = valid.clone();
+    filename["input"][0]["content"][0]["text"] = "Attachment: concept-input-a.png.bak".into();
+    malformed.push(filename);
+    let mut corrupt = valid.clone();
+    corrupt["input"][0]["content"][1]["image_url"] = "data:image/png;base64,broken!".into();
+    malformed.push(corrupt);
+    malformed
+        .push(json!({"stream":true,"input":[valid["input"][0], {"role":"user","content":[]}]}));
+    malformed.push(json!({"stream":true,"input":[
+        {"role":"user","content":content[..2]},
+        {"role":"user","content":content[2..]},
+    ]}));
+    for body in malformed {
+        assert!(!prompt_images_match(&body, None, images), "{body}");
+    }
+    let text_body = json!({"stream":true,"input":[{"role":"user","content":input_content(Some(IMAGE_PROMPT))}]});
+    assert!(prompt_images_match(&text_body, Some(IMAGE_PROMPT), images));
+    let stale_text = json!({"stream":true,"input":[text_body["input"][0],{"role":"user","content":input_content(Some("new prompt"))}]});
+    assert!(!prompt_images_match(
+        &stale_text,
+        Some(IMAGE_PROMPT),
+        images
+    ));
+}
+
+#[test]
+fn image_prompt_matcher_requires_boolean_stream_true_for_both_prefixes() {
+    let steps = Control::default().media_handoff_script();
+    let RequestMatch::PromptImages { images, .. } = &steps[0].request else {
+        panic!("first media step must match the attachment input");
+    };
+    for prefix in [None, Some(IMAGE_PROMPT)] {
+        let valid = json!({
+            "model":"fixture-model","stream":true,
+            "input":[{"role":"user","content":input_content(prefix)}],
+        });
+        assert!(prompt_images_match(&valid, prefix, images));
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("stream");
+        assert!(
+            !prompt_images_match(&missing, prefix, images),
+            "missing stream must fail for {prefix:?}"
+        );
+        for stream in [json!(false), Value::Null, json!("true"), json!(1)] {
+            let mut invalid = valid.clone();
+            invalid["stream"] = stream;
+            assert!(
+                !prompt_images_match(&invalid, prefix, images),
+                "stream {:?} must fail for {prefix:?}",
+                invalid["stream"]
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn image_prompt_requires_three_real_pngs_in_one_input() {
     let mut step = Control::default()
         .script()
@@ -472,10 +725,19 @@ async fn read_through(
 }
 
 async fn observe(control: Control, step: Step, prompt: &str, counts: &[usize]) -> Vec<Value> {
+    observe_script(control, vec![step], prompt, counts).await
+}
+
+async fn observe_script(
+    control: Control,
+    steps: Vec<Step>,
+    prompt: &str,
+    counts: &[usize],
+) -> Vec<Value> {
     let names = control.names.clone();
     assert_eq!(names.len(), counts.len());
     let fixture = FixtureServer::start_with_options(
-        vec![step],
+        steps,
         FixtureOptions {
             timeline_concept: Some(control),
             ..FixtureOptions::default()
@@ -541,7 +803,7 @@ async fn observe(control: Control, step: Step, prompt: &str, counts: &[usize]) -
 async fn realtime_text_gates_preserve_the_first_token_and_terminal_body() {
     let control = Control::realtime();
     let delayed = control
-        .realtime_script("fixture-host-cwd")
+        .realtime_script("fixture-host-cwd", RealtimeScope::Full)
         .into_iter()
         .find(|step| {
             matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_DELAYED_PROMPT)
@@ -572,53 +834,56 @@ async fn realtime_text_gates_preserve_the_first_token_and_terminal_body() {
 
 #[tokio::test]
 async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
-    let control = Control::realtime();
-    let parallel = control
-        .realtime_script("fixture-host-cwd")
-        .into_iter()
-        .find(|step| {
-            matches!(
-                &step.request,
-                RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_PARALLEL_PROMPT
-            )
-        })
-        .expect("realtime observation must have its explicit gate");
-    let step = Step::prompt(
-        Protocol::ResponsesHttp,
-        GUI_REALTIME_PARALLEL_PROMPT,
-        0,
-        parallel.reply,
-    );
-    let observer = Control {
-        names: vec![control.names[2]],
-        stages: vec![control.stages[2].clone()],
-    };
-    // The real HTTP observer sees only created/added/delta/done reasoning before
-    // release. observe also rejects premature or repeated release requests.
-    let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[4]).await;
-    assert_eq!(observed[3]["item"]["type"], "reasoning");
-    assert_eq!(
-        observed[3]["item"]["summary"][0]["text"],
-        "realtime parallel observers ready"
-    );
-    let calls = observed
-        .iter()
-        .filter(|event| {
-            event["type"] == "response.output_item.done" && event["item"]["type"] == "function_call"
-        })
-        .map(|event| &event["item"])
-        .collect::<Vec<_>>();
-    assert_eq!(calls.len(), 2);
-    for (call, tag, lines) in [
-        (&calls[0], "a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
-        (&calls[1], "b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
-    ] {
-        assert_eq!(call["call_id"], format!("realtime-parallel-call-{tag}"));
-        assert_eq!(call["name"], TOOL_EXEC_NAME);
-        assert_eq!(
-            call["arguments"],
-            realtime_exec_arguments(&realtime_parallel_command(tag, lines), None)
+    for scope in [RealtimeScope::Full, RealtimeScope::StopBackground] {
+        let control = Control::realtime();
+        let parallel = control
+            .realtime_script("fixture-host-cwd", scope)
+            .into_iter()
+            .find(|step| {
+                matches!(
+                    &step.request,
+                    RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_PARALLEL_PROMPT
+                )
+            })
+            .expect("realtime observation must have its explicit gate");
+        let step = Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_REALTIME_PARALLEL_PROMPT,
+            0,
+            parallel.reply,
         );
+        let observer = Control {
+            names: vec![control.names[2]],
+            stages: vec![control.stages[2].clone()],
+        };
+        // The real HTTP observer sees only created/added/delta/done reasoning before
+        // release. observe also rejects premature or repeated release requests.
+        let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[4]).await;
+        assert_eq!(observed[3]["item"]["type"], "reasoning");
+        assert_eq!(
+            observed[3]["item"]["summary"][0]["text"],
+            "realtime parallel observers ready"
+        );
+        let calls = observed
+            .iter()
+            .filter(|event| {
+                event["type"] == "response.output_item.done"
+                    && event["item"]["type"] == "function_call"
+            })
+            .map(|event| &event["item"])
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        for (call, tag, lines) in [
+            (&calls[0], "a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
+            (&calls[1], "b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
+        ] {
+            assert_eq!(call["call_id"], format!("realtime-parallel-call-{tag}"));
+            assert_eq!(call["name"], TOOL_EXEC_NAME);
+            assert_eq!(
+                call["arguments"],
+                realtime_exec_arguments(&realtime_parallel_command(tag, lines), None)
+            );
+        }
     }
 }
 
@@ -626,7 +891,7 @@ async fn realtime_observer_gate_precedes_both_original_parallel_calls() {
 async fn realtime_first_reply_holds_waiting_and_live_text_phases() {
     let control = Control::realtime();
     let first = control
-        .realtime_script("fixture-host-cwd")
+        .realtime_script("fixture-host-cwd", RealtimeScope::Full)
         .into_iter()
         .find(|step| {
             matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_DELAYED_PROMPT)
@@ -675,46 +940,48 @@ async fn realtime_first_reply_holds_waiting_and_live_text_phases() {
 
 #[tokio::test]
 async fn realtime_background_gate_keeps_reasoning_open_before_original_wait_b() {
-    let control = Control::realtime();
-    let delivery = control
-        .realtime_script("fixture-host-cwd")
-        .into_iter()
-        .find(|step| {
-            matches!(&step.request, RequestMatch::Delivery { marker, .. }
+    for scope in [RealtimeScope::Full, RealtimeScope::StopBackground] {
+        let control = Control::realtime();
+        let delivery = control
+            .realtime_script("fixture-host-cwd", scope)
+            .into_iter()
+            .find(|step| {
+                matches!(&step.request, RequestMatch::Delivery { marker, .. }
                 if marker == &realtime_delivery_marker("realtime-parallel-call-a"))
-        })
-        .expect("the observer must follow A's real independent delivery");
-    let observer = Control {
-        names: vec![control.names[3]],
-        stages: vec![control.stages[3].clone()],
-    };
-    // Exercise the original reply through the real HTTP gate/stream helper.
-    // The prompt wrapper only isolates this reply from preceding script steps.
-    let step = Step::prompt(
-        Protocol::ResponsesHttp,
-        GUI_REALTIME_PARALLEL_PROMPT,
-        0,
-        delivery.reply,
-    );
-    let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[3]).await;
-    assert_eq!(observed.len(), 8);
-    assert_eq!(observed[1]["item"]["type"], "reasoning");
-    assert_eq!(observed[2]["type"], "response.reasoning_summary_text.delta");
-    assert!(observed[..3].iter().all(|event| {
-        event["type"] != "response.output_item.done" && event["type"] != "response.completed"
-    }));
-    assert_eq!(observed[3]["item"]["type"], "reasoning");
-    assert_eq!(observed[3]["type"], "response.output_item.done");
-    assert_eq!(
-        observed[6]["item"]["call_id"],
-        "realtime-parallel-wait-b-call"
-    );
-    assert_eq!(observed[6]["item"]["name"], TOOL_WAIT_NAME);
-    assert_eq!(
-        observed[6]["item"]["arguments"],
-        realtime_wait_arguments(&["realtime-parallel-call-b"])
-    );
-    assert_eq!(observed[7]["type"], "response.completed");
+            })
+            .expect("the observer must follow A's real independent delivery");
+        let observer = Control {
+            names: vec![control.names[3]],
+            stages: vec![control.stages[3].clone()],
+        };
+        // Exercise the original reply through the real HTTP gate/stream helper.
+        // The prompt wrapper only isolates this reply from preceding script steps.
+        let step = Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_REALTIME_PARALLEL_PROMPT,
+            0,
+            delivery.reply,
+        );
+        let observed = observe(observer, step, GUI_REALTIME_PARALLEL_PROMPT, &[3]).await;
+        assert_eq!(observed.len(), 8);
+        assert_eq!(observed[1]["item"]["type"], "reasoning");
+        assert_eq!(observed[2]["type"], "response.reasoning_summary_text.delta");
+        assert!(observed[..3].iter().all(|event| {
+            event["type"] != "response.output_item.done" && event["type"] != "response.completed"
+        }));
+        assert_eq!(observed[3]["item"]["type"], "reasoning");
+        assert_eq!(observed[3]["type"], "response.output_item.done");
+        assert_eq!(
+            observed[6]["item"]["call_id"],
+            "realtime-parallel-wait-b-call"
+        );
+        assert_eq!(observed[6]["item"]["name"], TOOL_WAIT_NAME);
+        assert_eq!(
+            observed[6]["item"]["arguments"],
+            realtime_wait_arguments(&["realtime-parallel-call-b"])
+        );
+        assert_eq!(observed[7]["type"], "response.completed");
+    }
 }
 
 #[tokio::test]
@@ -722,7 +989,7 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
     let host_cwd = "fixture-host-cwd";
     let control = Control::realtime();
     let host = control
-        .realtime_script(host_cwd)
+        .realtime_script(host_cwd, RealtimeScope::Full)
         .into_iter()
         .find(|step| {
             matches!(&step.request, RequestMatch::Prompt { text, .. } if text == GUI_REALTIME_HOST_CWD_PROMPT)
@@ -768,9 +1035,14 @@ async fn realtime_observer_gate_precedes_original_host_cwd_call() {
 
 #[tokio::test]
 async fn a07_completes_b_then_readable_text_then_the_earlier_a() {
-    let control = control(OVERLAP_STAGES);
-    let step = control.overlap_step(0);
-    let observed = observe(control, step, OVERLAP_PROMPT, &[3, 6, 8, 9, 10, 11]).await;
+    let control = Control::boundary();
+    let steps = control.boundary_script();
+    assert_eq!(
+        steps.iter().filter(|step| !step.optional).count(),
+        1,
+        "one real A07 request and no unrelated journey requests"
+    );
+    let observed = observe_script(control, steps, OVERLAP_PROMPT, &[3, 6, 8, 9, 10, 11]).await;
     assert_eq!(observed.len(), 12);
     assert_eq!(observed[1]["item"]["type"], "reasoning");
     assert_eq!(observed[3]["type"], "response.output_item.added");

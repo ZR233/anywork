@@ -36,8 +36,10 @@ DisplayBlock _single(ChatSourceId source) => DisplayBlock(
   id: 'single',
   historyPos: 2,
   body: SingleDisplayBlock(
-    atom: _tool(source),
-    completionId: 'handoff-completion',
+    record: DisplayRecord(
+      atom: _tool(source),
+      contentSource: CompletedOriginal(completionId: 'handoff-completion'),
+    ),
   ),
 );
 
@@ -49,8 +51,10 @@ DisplayMemberPage _page(ChatSourceId source) => DisplayMemberPage(
     DisplayMemberHead(
       memberKey: 'stable-member-key',
       memberOrder: 1,
-      atom: _tool(source),
-      completionId: 'handoff-completion',
+      record: DisplayRecord(
+        atom: _tool(source),
+        contentSource: CompletedOriginal(completionId: 'handoff-completion'),
+      ),
     ),
   ],
 );
@@ -138,7 +142,7 @@ void main() {
           blockOrder: 1,
           body: displayWork('work', 1, total: 1).body,
           source: _source,
-          closing: true,
+          state: DisplayBlockState.sealed,
         ),
       ],
     );
@@ -206,10 +210,15 @@ void main() {
           id: 'background-live',
           blockOrder: 3,
           body: SingleDisplayBlock(
-            atom: _tool(const BackgroundResultChatSource(messageId: 'result')),
+            record: DisplayRecord(
+              atom: _tool(
+                const BackgroundResultChatSource(messageId: 'result'),
+              ),
+              contentSource: const CurrentAtom(),
+            ),
           ),
           source: const BackgroundResultChatSource(messageId: 'result'),
-          closing: false,
+          state: DisplayBlockState.open,
         ),
       ],
     );

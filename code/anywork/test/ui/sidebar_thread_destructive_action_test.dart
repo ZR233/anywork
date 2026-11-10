@@ -7,7 +7,7 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _openDialog = ValueKey<String>('open-thread-action-dialog');
@@ -40,7 +40,10 @@ Widget _host({
   return MaterialApp(
     theme: pureStudioTheme(),
     locale: const Locale('zh'),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    localizationsDelegates: [
+      AppLocalizations.delegate,
+      ...GlobalMaterialLocalizations.delegates,
+    ],
     supportedLocales: AppLocalizations.supportedLocales,
     home: Builder(
       builder: (context) => Scaffold(
@@ -79,7 +82,10 @@ Widget _host({
 Widget _sidebarRowHost(Widget row) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(
     body: Center(

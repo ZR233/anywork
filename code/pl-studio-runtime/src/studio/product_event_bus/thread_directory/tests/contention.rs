@@ -1,6 +1,7 @@
 use super::*;
-use crate::studio::{agent_close::AgentWorktreeCleanup, store::agent_close::AgentCloseRecord};
+use crate::studio::store::agent_close::AgentCloseRecord;
 use futures::poll;
+use pl_tool::collaboration::control::AgentWorktreeCleanup;
 
 #[tokio::test]
 async fn hot_patch_and_query_do_not_wait_for_the_catalog_write_lock() -> Result<()> {

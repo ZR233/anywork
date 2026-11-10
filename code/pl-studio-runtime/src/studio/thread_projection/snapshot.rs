@@ -31,7 +31,8 @@ pub(in crate::studio) fn project_snapshot(
             interactions.push(interaction);
         }
     }
-    thread.status = status(state);
+    // The directory owns product status; a saved Closed Core resource can still
+    // belong to an executable conversation after normal application shutdown.
     if let Ok(Some(mode)) = saved_mode(state) {
         thread.mode = mode;
     }

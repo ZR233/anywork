@@ -5,8 +5,9 @@ import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_vie
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +17,117 @@ import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
 
 void main() {
+  testWidgets(
+    'Main reveal waits for the renderer of a mounted canonical row without scrolling',
+    (tester) async {
+      final content = _NoQueries();
+      final lease = (await tester.runAsync(
+        () async => TimelineDisplayLease(
+          threadId: 'pending-main-renderer',
+          generation: 11,
+          demand: chatDemand,
+          content: content,
+        ),
+      ))!..bind();
+      final projection = TimelineMessageController(
+        lease.controller as InMemoryChatController,
+        generation: lease.generation,
+      );
+      const id = 'canonical:pending-renderer';
+      await projection.applyTimeline(
+        displayBatch([
+          displaySingle(chatMessage(id, body: 'Ready canonical body')),
+        ]),
+      );
+      final unit = chatItemPresentationOf(lease.controller.messages.single)!
+          .displayUnit!;
+      var loadingFrames = 0;
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pureStudioTheme(),
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: SizedBox(
+                width: 500,
+                height: 240,
+                child: Chat(
+                  chatController: lease.controller,
+                  currentUserId: 'user',
+                  resolveUser: (id) async => User(id: id),
+                  builders: Builders(
+                    composerBuilder: (_) => const SizedBox.shrink(),
+                    scrollToBottomBuilder: (_, _, _) => const SizedBox.shrink(),
+                    chatAnimatedListBuilder: (_, _) => ChatAnimatedListReversed(
+                      scrollController: lease.scrollController,
+                      insertAnimationDuration: Duration.zero,
+                      removeAnimationDuration: Duration.zero,
+                      scrollToEndAnimationDuration: Duration.zero,
+                      itemBuilder:
+                          (
+                            context,
+                            message,
+                            index,
+                            animation, {
+                            messagesGroupingMode,
+                            messageGroupingTimeoutInSeconds,
+                            isRemoved,
+                          }) => ChatMessage(
+                            key: StudioDriverKeys.timelineRow(message.id),
+                            message: message,
+                            index: index,
+                            animation: animation,
+                            padding: EdgeInsets.zero,
+                            child: _FrameDelayedRenderer(
+                              onLoading: () => loadingFrames++,
+                              child: ChatItemView(
+                                item: chatItemPresentationOf(message)!,
+                              ),
+                            ),
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(find.byKey(StudioDriverKeys.timelineRow(id)), findsOneWidget);
+        expect(find.byType(ChatItemView), findsNothing);
+        expect(lease.scrollController.position.maxScrollExtent, 0);
+        final observed = TimelineObservation(tester, () => lease);
+        final body = find.descendant(
+          of: find.byKey(StudioDriverKeys.timelineRow(id)),
+          matching: find.text('Ready canonical body'),
+        );
+        await observed.reveal(body, id);
+        expect(loadingFrames, greaterThan(0));
+        expect(body.hitTestable(), findsOneWidget);
+        expect(
+          tester
+              .widget<ChatItemView>(find.byType(ChatItemView))
+              .item
+              .displayUnit,
+          same(unit),
+        );
+        expect(lease.scrollController.position.pixels, 0);
+        expect(content.calls, 0);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          projection.dispose();
+          final unbound = lease.unbind();
+          await lease.retire();
+          await unbound;
+        });
+      }
+      expect(lease.isReleased, isTrue);
+    },
+  );
+
   testWidgets(
     'Main reveal ignores offscreen keepalives in both directions and never scrolls Atoms',
     (tester) async {
@@ -74,7 +186,10 @@ void main() {
           MaterialApp(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: Center(
@@ -125,12 +240,21 @@ void main() {
                                         keepAlive:
                                             message.id == ids.first ||
                                             message.id == ids.last,
-                                        child: SizedBox(
-                                          height: 120,
-                                          child: ChatItemView(
-                                            item: chatItemPresentationOf(
-                                              message,
-                                            )!,
+                                        child: ChatMessage(
+                                          key: StudioDriverKeys.timelineRow(
+                                            message.id,
+                                          ),
+                                          message: message,
+                                          index: index,
+                                          animation: animation,
+                                          padding: EdgeInsets.zero,
+                                          child: SizedBox(
+                                            height: 120,
+                                            child: ChatItemView(
+                                              item: chatItemPresentationOf(
+                                                message,
+                                              )!,
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -412,6 +536,32 @@ void main() {
     },
     timeout: const Timeout(Duration(seconds: 90)),
   );
+}
+
+/// A metadata renderer may become ready in a later frame while its canonical
+/// ChatMessage already exists. This fixture supplies that timing input only.
+final class _FrameDelayedRenderer extends StatefulWidget {
+  const _FrameDelayedRenderer({required this.onLoading, required this.child});
+
+  final VoidCallback onLoading;
+  final Widget child;
+
+  @override
+  State<_FrameDelayedRenderer> createState() => _FrameDelayedRendererState();
+}
+
+final class _FrameDelayedRendererState extends State<_FrameDelayedRenderer> {
+  int _frames = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_frames >= 3) return widget.child;
+    widget.onLoading();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _frames++);
+    });
+    return const Text('正在读取完成内容…');
+  }
 }
 
 final class _NoQueries extends Fake implements ConversationContent {

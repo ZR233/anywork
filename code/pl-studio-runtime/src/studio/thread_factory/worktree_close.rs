@@ -6,13 +6,14 @@ use crate::{
         WorktreeManager, WorktreeRetirementRequest,
     },
     studio::{
-        agent_close::{AgentCloseResult, AgentWorktreeCleanup, state_error},
+        agent_close::state_error,
         agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         store::agent_close::{AgentCloseGitGrant, AgentCloseRecord, OwnedWorktreeBinding},
     },
 };
 use anyhow::{Context, Result, ensure};
 use pl_protocol::Thread;
+use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

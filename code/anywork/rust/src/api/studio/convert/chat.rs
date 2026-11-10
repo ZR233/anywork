@@ -33,6 +33,13 @@ pub(crate) fn content_ref(value: protocol::ContentRef) -> BridgeContentRef {
             }
             protocol::ContentTarget::Body { owner, key } => BridgeContentTarget::Body {
                 owner: match owner {
+                    protocol::ContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    } => BridgeContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    },
                     protocol::ContentOwner::Item { item_id } => {
                         BridgeContentOwner::Item { item_id }
                     }
@@ -61,6 +68,13 @@ pub(crate) fn protocol_content_ref(value: BridgeContentRef) -> protocol::Content
             }
             BridgeContentTarget::Body { owner, key } => protocol::ContentTarget::Body {
                 owner: match owner {
+                    BridgeContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    } => protocol::ContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    },
                     BridgeContentOwner::Item { item_id } => {
                         protocol::ContentOwner::Item { item_id }
                     }
@@ -125,7 +139,7 @@ pub(super) fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
     }
 }
 
-fn fact_position(value: protocol::ChatFactPosition) -> BridgeChatFactPosition {
+pub(super) fn fact_position(value: protocol::ChatFactPosition) -> BridgeChatFactPosition {
     BridgeChatFactPosition {
         effect_seq: value.effect_seq,
         suborder: value.suborder,
@@ -571,6 +585,13 @@ mod tests {
     #[test]
     fn content_references_round_trip_without_reinterpreting_owner_identity() {
         for target in [
+            protocol::ContentTarget::Body {
+                owner: protocol::ContentOwner::DisplayObservation {
+                    block_id: "original-block".into(),
+                    member_key: "original-observation-row".into(),
+                },
+                key: "boundary-prefix".into(),
+            },
             protocol::ContentTarget::ItemPayload {
                 item_id: "unknown:payload".into(),
             },

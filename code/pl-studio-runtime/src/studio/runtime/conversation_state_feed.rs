@@ -183,8 +183,8 @@ impl StudioRuntime {
                     let business_refs = facet.current.business_refs();
                     model_route = facet.model_route.map(|route| route.snapshot(false));
                     if let Some(saved) = facet.saved_state.as_ref() {
-                        // The product directory already distinguishes explicit
-                        // closure from the previous process owner's lifecycle.
+                        // Core resource shutdown is not permanent product Thread closure.
+                        // Keep the directory status captured above, alongside this cold slice.
                         runtime = Some(
                             crate::studio::thread_projection::project_runtime(
                                 thread_id,

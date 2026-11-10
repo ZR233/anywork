@@ -3713,6 +3713,29 @@ pub(crate) mod storage_fault_tests {
         store.persist_directory_summaries(&delta).await
     }
 
+    impl crate::studio::ProductEventBus {
+        pub(crate) async fn commit_test_thread(&self, thread: &pl_protocol::Thread) -> Result<()> {
+            let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+                crate::studio::store::directory::ProjectDirectoryRecord {
+                    id: thread.workspace_id.clone(),
+                    kind: pl_protocol::studio::WorkspaceKind::Project,
+                    name: "Test".into(),
+                    path: thread.workspace_path.clone(),
+                    ssh_alias: None,
+                    created_at: 1,
+                    updated_at: 1,
+                    last_opened_at: None,
+                    closed: false,
+                },
+            );
+            let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+            delta.session_upserts.extend(session);
+            delta.agent_upserts.push(agent);
+            self.commit_directory(delta).await?;
+            Ok(())
+        }
+    }
+
     async fn sink(thread_id: &str) -> Result<(tempfile::TempDir, StudioStore, ThreadStorageSink)> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
@@ -4327,13 +4350,13 @@ pub(crate) mod storage_fault_tests {
         use crate::agent::worktree::{
             LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
         };
-        use crate::studio::agent_close::AgentWorktreeCleanup;
         use crate::studio::agent_host::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
             WorktreeLeaseState,
         };
         use pl_core::context::ResourceReader;
         use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle, extensions::ExtensionMutation};
+        use pl_tool::collaboration::control::AgentWorktreeCleanup;
 
         async fn git(root: &std::path::Path, args: &[&str]) -> Result<String> {
             let output = tokio::process::Command::new("git")

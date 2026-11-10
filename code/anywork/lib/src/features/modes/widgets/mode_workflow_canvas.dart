@@ -8,7 +8,7 @@ import 'package:anywork_client/studio_client.dart'
         documentSignature,
         resolvedNodePositions,
         setNodePosition;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:vyuh_node_flow/vyuh_node_flow.dart';
 
 import '../../../app/theme/studio_tokens.dart';
@@ -472,8 +472,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                 Icon(
                   Icons.circle,
                   size: 8,
-                  // NodeFlowEditor replaces ThemeExtensions in its subtree.
-                  color: this.context.statusColors.activeIndicator,
+                  color: context.statusColors.activeIndicator,
                 ),
               ],
             ],
@@ -722,86 +721,94 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                     children: [
                       Positioned.fill(
                         child: ClipRect(
-                          child: RepaintBoundary(
-                            child: NodeFlowEditor<_WorkflowNodeData, Object?>(
-                              key: ModeEditorKeys.canvas,
-                              controller: controller,
-                              theme: _theme(context),
-                              behavior: widget.readOnly
-                                  ? NodeFlowBehavior.inspect
-                                  : NodeFlowBehavior.design,
-                              nodeBuilder: _buildNodeContent,
-                              portBuilder: (context, node, port) =>
-                                  PortWidget<_WorkflowNodeData>(
-                                    key: ValueKey(
-                                      'mode-editor-port-${node.id}-${port.id}',
+                          // vyuh_node_flow still reads the SDK Material theme.
+                          // Use Flutter's bridge until that dependency migrates.
+                          // ignore: deprecated_member_use
+                          child: MaterialUiCompatibilityBridge(
+                            child: RepaintBoundary(
+                              child: NodeFlowEditor<_WorkflowNodeData, Object?>(
+                                key: ModeEditorKeys.canvas,
+                                controller: controller,
+                                theme: _theme(context),
+                                behavior: widget.readOnly
+                                    ? NodeFlowBehavior.inspect
+                                    : NodeFlowBehavior.design,
+                                nodeBuilder: _buildNodeContent,
+                                portBuilder: (context, node, port) =>
+                                    PortWidget<_WorkflowNodeData>(
+                                      key: ValueKey(
+                                        'mode-editor-port-${node.id}-${port.id}',
+                                      ),
+                                      port: port,
+                                      theme: _theme(context).portTheme,
+                                      controller: controller,
+                                      nodeId: node.id,
+                                      isOutput: port.type == PortType.output,
+                                      nodeBounds: node.getBounds(),
+                                      isConnected: controller.connections.any(
+                                        (connection) =>
+                                            connection.sourceNodeId ==
+                                                    node.id &&
+                                                connection.sourcePortId ==
+                                                    port.id ||
+                                            connection.targetNodeId ==
+                                                    node.id &&
+                                                connection.targetPortId ==
+                                                    port.id,
+                                      ),
                                     ),
-                                    port: port,
-                                    theme: _theme(context).portTheme,
-                                    controller: controller,
-                                    nodeId: node.id,
-                                    isOutput: port.type == PortType.output,
-                                    nodeBounds: node.getBounds(),
-                                    isConnected: controller.connections.any(
-                                      (connection) =>
-                                          connection.sourceNodeId == node.id &&
-                                              connection.sourcePortId ==
-                                                  port.id ||
-                                          connection.targetNodeId == node.id &&
-                                              connection.targetPortId ==
-                                                  port.id,
-                                    ),
-                                  ),
-                              labelBuilder: _buildLabel,
-                              events:
-                                  NodeFlowEvents<_WorkflowNodeData, Object?>(
-                                    node: NodeEvents<_WorkflowNodeData>(
-                                      onCreated: (node) {
-                                        final workflow = _workflow;
-                                        final known =
-                                            workflow != null &&
-                                            workflow.states.any(
-                                              (state) => state.id == node.id,
-                                            );
-                                        if (!known) {
-                                          _controller.removeNode(node.id);
+                                labelBuilder: _buildLabel,
+                                events:
+                                    NodeFlowEvents<_WorkflowNodeData, Object?>(
+                                      node: NodeEvents<_WorkflowNodeData>(
+                                        onCreated: (node) {
+                                          final workflow = _workflow;
+                                          final known =
+                                              workflow != null &&
+                                              workflow.states.any(
+                                                (state) => state.id == node.id,
+                                              );
+                                          if (!known) {
+                                            _controller.removeNode(node.id);
+                                          }
+                                        },
+                                        onDragStop: _onNodeMoved,
+                                        onBeforeDelete: (node) => widget
+                                            .onConfirmRemoveStage(node.id),
+                                        onDeleted: (node) =>
+                                            widget.onRemoveStage(node.id),
+                                      ),
+                                      connection:
+                                          ConnectionEvents<
+                                            _WorkflowNodeData,
+                                            Object?
+                                          >(
+                                            onCreated: _onConnectionCreated,
+                                            onDeleted: _onConnectionDeleted,
+                                            onBeforeComplete:
+                                                _validateConnection,
+                                            onBeforeDelete: (_) async => true,
+                                          ),
+                                      onSelectionChange: (selection) {
+                                        if (_syncingSelection) return;
+                                        if (selection.nodes.isNotEmpty) {
+                                          widget.onSelectTransition(null);
+                                          widget.onSelectStage(
+                                            selection.nodes.first.id,
+                                          );
+                                        } else if (selection
+                                            .connections
+                                            .isNotEmpty) {
+                                          widget.onSelectStage(null);
+                                          widget.onSelectTransition(
+                                            selection.connections.first.id,
+                                          );
+                                        } else {
+                                          widget.onSelectStage(null);
                                         }
                                       },
-                                      onDragStop: _onNodeMoved,
-                                      onBeforeDelete: (node) =>
-                                          widget.onConfirmRemoveStage(node.id),
-                                      onDeleted: (node) =>
-                                          widget.onRemoveStage(node.id),
                                     ),
-                                    connection:
-                                        ConnectionEvents<
-                                          _WorkflowNodeData,
-                                          Object?
-                                        >(
-                                          onCreated: _onConnectionCreated,
-                                          onDeleted: _onConnectionDeleted,
-                                          onBeforeComplete: _validateConnection,
-                                          onBeforeDelete: (_) async => true,
-                                        ),
-                                    onSelectionChange: (selection) {
-                                      if (_syncingSelection) return;
-                                      if (selection.nodes.isNotEmpty) {
-                                        widget.onSelectTransition(null);
-                                        widget.onSelectStage(
-                                          selection.nodes.first.id,
-                                        );
-                                      } else if (selection
-                                          .connections
-                                          .isNotEmpty) {
-                                        widget.onSelectStage(null);
-                                        widget.onSelectTransition(
-                                          selection.connections.first.id,
-                                        );
-                                      } else {
-                                        widget.onSelectStage(null);
-                                      }
-                                    },
-                                  ),
+                              ),
                             ),
                           ),
                         ),

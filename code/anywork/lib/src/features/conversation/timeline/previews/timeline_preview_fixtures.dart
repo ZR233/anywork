@@ -32,31 +32,35 @@ abstract final class TimelinePreviewFixtures {
         id: 'preview-user-deferred',
         historyPos: 1,
         body: SingleDisplayBlock(
-          completionId: 'preview-user-deferred',
-          atom: ChatAtom(
-            id: 'preview-user-deferred',
-            completionItemId: 'preview-user-deferred',
-            source: const InputChatSource(inputId: 'preview-input'),
-            sourceOrder: 1,
-            kind: ChatAtomKind.input,
-            delivery: ChatDeliveryKind.foreground,
-            lifecycle: const TerminalChatAtom(
-              started: null,
-              ended: null,
-              outcome: ChatTerminalOutcome.completed,
+          record: DisplayRecord(
+            atom: ChatAtom(
+              id: 'preview-user-deferred',
+              completionItemId: 'preview-user-deferred',
+              source: const InputChatSource(inputId: 'preview-input'),
+              sourceOrder: 1,
+              kind: ChatAtomKind.input,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const TerminalChatAtom(
+                started: null,
+                ended: null,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              contents: const [
+                ChatAtomContent(
+                  role: ChatContentRole.body,
+                  reference: userBodyReference,
+                ),
+              ],
+              payload: const DeferredPayload(
+                reference: ContentRef(
+                  databaseId: 'preview',
+                  target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
+                ),
+                byteLength: 90000,
+              ),
             ),
-            contents: const [
-              ChatAtomContent(
-                role: ChatContentRole.body,
-                reference: userBodyReference,
-              ),
-            ],
-            payload: const DeferredPayload(
-              reference: ContentRef(
-                databaseId: 'preview',
-                target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
-              ),
-              byteLength: 90000,
+            contentSource: CompletedOriginal(
+              completionId: 'preview-user-deferred',
             ),
           ),
         ),
@@ -505,6 +509,7 @@ abstract final class TimelinePreviewFixtures {
       );
 
   static WorkSummary workSummary(int count) => WorkSummary(
+    unavailable: 0,
     total: count,
     terminal: count,
     running: 0,

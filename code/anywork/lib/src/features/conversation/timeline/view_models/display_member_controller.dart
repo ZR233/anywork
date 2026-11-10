@@ -29,6 +29,7 @@ final class DisplayMemberController extends ChangeNotifier {
   Object? get error => cleanupError ?? _error;
   bool loading = true;
   bool _retired = false;
+  bool _requiresSealed = false;
   Object _qualification = Object();
   DisplayMembers? _handle;
   final Set<DisplayMembers> _closing = {};
@@ -36,8 +37,27 @@ final class DisplayMemberController extends ChangeNotifier {
   Future<void> _joins = Future.value();
 
   bool get isActive => !_retired;
+  bool get awaitingSealed => _requiresSealed && page?.sealed != true;
   TimelineMemberDisclosure disclosure(String memberKey) =>
       _disclosures.putIfAbsent(memberKey, TimelineMemberDisclosure.new);
+
+  /// The accepted block head revoked mutable rows before this independent
+  /// member observation delivered its sealed cut. Keep only disclosure intent.
+  void requireSealed() {
+    if (_retired || _requiresSealed) return;
+    _requiresSealed = true;
+    if (page?.sealed == true) return;
+    loading = true;
+    for (final entry in page?.entries ?? const <DisplayMemberHead>[]) {
+      if (entry.record.contentSource is! CurrentAtom) continue;
+      final key = entry.memberKey;
+      final previous = _disclosures[key];
+      if (previous == null) continue;
+      previous.retire();
+      _disclosures[key] = TimelineMemberDisclosure()
+        ..expanded = previous.expanded;
+    }
+  }
 
   void _retireDisclosures({Set<String> keep = const {}}) {
     for (final key in _disclosures.keys.toList()) {
@@ -91,11 +111,17 @@ final class DisplayMemberController extends ChangeNotifier {
         final value = await handle.next();
         if (!_eligible(qualification)) return;
         if (value == null) {
+          if (awaitingSealed) {
+            throw const ConversationContinuityError(
+              'Sealed display member snapshot is unavailable',
+            );
+          }
           loading = false;
           _closeHandle();
           notifyListeners();
           return;
         }
+        if (_requiresSealed && !value.sealed) continue;
         page = value;
         _retireDisclosures(
           keep: value.entries.map((entry) => entry.memberKey).toSet(),

@@ -10,7 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../integration_test/support/timeline_observation.dart';
@@ -32,7 +32,10 @@ final _attachment = ThreadAttachmentView(
 Widget _host(Widget child) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );

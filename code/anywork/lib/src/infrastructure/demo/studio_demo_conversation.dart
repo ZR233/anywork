@@ -421,6 +421,7 @@ ChatAtom _demoCopy(
   int? completionSeq,
   ChatSourceState? sourceState,
   ChatAtomLifecycle? lifecycle,
+  List<ChatAtomContent>? contents,
   bool frozen = false,
 }) => ChatAtom(
   id: atom.id,
@@ -440,7 +441,7 @@ ChatAtom _demoCopy(
   contentPresent: atom.contentPresent,
   startedAt: atom.startedAt,
   finishedAt: atom.finishedAt,
-  contents: atom.contents,
+  contents: contents ?? atom.contents,
   payload: payload ?? atom.payload,
 );
 int _demoEncoded(Object? value) => utf8.encode(jsonEncode(value)).length;
@@ -453,6 +454,12 @@ final class _DemoBody {
   int length = 0;
   int generation = 1;
   bool sealed = false;
+  _DemoBody frozen() => _DemoBody()
+    .._chunks.addAll(_chunks)
+    .._ends.addAll(_ends)
+    ..length = length
+    ..generation = generation
+    ..sealed = true;
   void append(List<int> bytes) {
     if (sealed) throw StateError('Cannot append sealed Demo content');
     for (var start = 0; start < bytes.length; start += 4096) {
@@ -1145,6 +1152,13 @@ final class _DemoReader implements ConversationReader {
         return _history.payloads[itemId] ?? (throw _demoMissing());
       case BodyContentTarget(:final owner, :final key):
         switch (owner) {
+          case DisplayObservationContentOwner(:final blockId, :final memberKey):
+            return _history.bodies[jsonEncode([
+                  'display-observation',
+                  blockId,
+                  memberKey,
+                ])]?[key] ??
+                (throw _demoMissing());
           case ItemContentOwner(:final itemId):
             return _itemBodies(itemId)[key] ?? (throw _demoMissing());
           case CurrentContentOwner(:final domain, :final id, :final revision):

@@ -1,6 +1,6 @@
 import 'chat_models.dart';
 
-const presentationVersion = 1;
+const presentationVersion = 2;
 
 final class DisplayBlockRef {
   const DisplayBlockRef({required this.databaseId, required this.blockId});
@@ -25,6 +25,7 @@ final class WorkSummary {
     required this.failed,
     required this.cancelled,
     required this.transferred,
+    required this.unavailable,
     this.startedAt,
     this.finishedAt,
     this.durationMs,
@@ -40,6 +41,7 @@ final class WorkSummary {
   final int failed;
   final int cancelled;
   final int transferred;
+  final int unavailable;
   final int? startedAt;
   final int? finishedAt;
   final int? durationMs;
@@ -47,7 +49,7 @@ final class WorkSummary {
   /// The first information's creation time in Unix seconds.
   final int? createdAt;
 
-  /// The observed group lifetime in milliseconds, frozen on history handoff.
+  /// The observed group lifetime in milliseconds, frozen at the real boundary.
   ///
   /// This includes waiting gaps and is not the accumulated [durationMs].
   final int? elapsedMs;
@@ -66,10 +68,43 @@ final class WorkDisplayBlock extends DisplayBlockBody {
 }
 
 final class SingleDisplayBlock extends DisplayBlockBody {
-  const SingleDisplayBlock({required this.atom, this.completionId});
-  final ChatAtom atom;
-  final String? completionId;
+  const SingleDisplayBlock({required this.record});
+  final DisplayRecord record;
 }
+
+final class DisplayRecord {
+  const DisplayRecord({
+    required this.atom,
+    required this.contentSource,
+    this.startFact,
+    this.endFact,
+  });
+  final ChatAtom atom;
+  final ChatFactPosition? startFact;
+  final ChatFactPosition? endFact;
+  final DisplayContentSource contentSource;
+}
+
+sealed class DisplayContentSource {
+  const DisplayContentSource();
+}
+
+final class CurrentAtom extends DisplayContentSource {
+  const CurrentAtom();
+}
+
+final class FrozenObservation extends DisplayContentSource {
+  const FrozenObservation({this.capturedAt, required this.available});
+  final int? capturedAt;
+  final bool available;
+}
+
+final class CompletedOriginal extends DisplayContentSource {
+  const CompletedOriginal({required this.completionId});
+  final String completionId;
+}
+
+enum DisplayBlockState { open, sealed }
 
 final class DisplayBlock {
   const DisplayBlock({
@@ -87,13 +122,13 @@ final class LiveDisplayBlock {
     required this.id,
     required this.blockOrder,
     required this.body,
-    required this.closing,
+    required this.state,
     this.source,
   });
   final String id;
   final int blockOrder;
   final DisplayBlockBody body;
-  final bool closing;
+  final DisplayBlockState state;
   final ChatSourceId? source;
 }
 
@@ -148,13 +183,11 @@ final class DisplayMemberHead {
   const DisplayMemberHead({
     required this.memberKey,
     required this.memberOrder,
-    required this.atom,
-    this.completionId,
+    required this.record,
   });
   final String memberKey;
   final int memberOrder;
-  final ChatAtom atom;
-  final String? completionId;
+  final DisplayRecord record;
 }
 
 final class DisplayMemberPage {

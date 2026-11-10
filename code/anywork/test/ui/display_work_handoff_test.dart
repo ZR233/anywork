@@ -7,7 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/completion_fixtures.dart';
@@ -37,7 +37,7 @@ void main() {
           id: 'work',
           blockOrder: 1,
           body: body,
-          closing: false,
+          state: DisplayBlockState.open,
         ),
         executionPresent: true,
         expansion: intent,
@@ -74,13 +74,15 @@ void main() {
             DisplayMemberHead(
               memberKey: 'member-key',
               memberOrder: 500,
-              atom: completionEntry(
-                'member',
-                1,
-                presentation: MainPresentation.single,
-                text: '已完成成员仍在组内',
-              ).atom,
-              completionId: 'member',
+              record: DisplayRecord(
+                atom: completionEntry(
+                  'member',
+                  1,
+                  presentation: MainPresentation.single,
+                  text: '已完成成员仍在组内',
+                ).atom,
+                contentSource: CompletedOriginal(completionId: 'member'),
+              ),
             ),
           ],
           before: 500,

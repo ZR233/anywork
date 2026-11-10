@@ -1,6 +1,35 @@
 //! Mechanical FRB projection of the product presentation protocol.
 
-use super::{BridgeChatAtom, BridgeChatPlacement, BridgeChatSourceId, BridgeContentRef};
+use super::{
+    BridgeChatAtom, BridgeChatFactPosition, BridgeChatPlacement, BridgeChatSourceId,
+    BridgeContentRef,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeDisplayBlockState {
+    Open,
+    Sealed,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeDisplayContentSource {
+    CurrentAtom,
+    FrozenObservation {
+        captured_at: Option<i64>,
+        available: bool,
+    },
+    CompletedOriginal {
+        completion_id: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeDisplayRecord {
+    pub atom: BridgeChatAtom,
+    pub start_fact: Option<BridgeChatFactPosition>,
+    pub end_fact: Option<BridgeChatFactPosition>,
+    pub content_source: BridgeDisplayContentSource,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeDisplayBlockRef {
@@ -14,6 +43,7 @@ pub struct BridgeWorkSummary {
     pub terminal: u64,
     pub running: u64,
     pub waiting: u64,
+    pub unavailable: u64,
     pub failed: u64,
     pub cancelled: u64,
     pub transferred: u64,
@@ -33,8 +63,7 @@ pub enum BridgeDisplayBlockBody {
         members: BridgeDisplayBlockRef,
     },
     Single {
-        atom: Box<BridgeChatAtom>,
-        completion_id: Option<String>,
+        record: Box<BridgeDisplayRecord>,
     },
 }
 
@@ -51,7 +80,7 @@ pub struct BridgeLiveDisplayBlock {
     pub block_order: u64,
     pub source: Option<BridgeChatSourceId>,
     pub body: BridgeDisplayBlockBody,
-    pub closing: bool,
+    pub state: BridgeDisplayBlockState,
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +113,7 @@ pub enum BridgeDisplayMemberWindow {
 pub struct BridgeDisplayMemberHead {
     pub member_key: String,
     pub member_order: u64,
-    pub atom: BridgeChatAtom,
-    pub completion_id: Option<String>,
+    pub record: BridgeDisplayRecord,
 }
 
 #[derive(Debug, Clone)]

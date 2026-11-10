@@ -17,6 +17,7 @@ pub const TEXT_A: &str = "已确认共享组件与交接边界，接下来检查
 pub const TEXT_B: &str = "收尾检查完成，工作组与正文分别保留。";
 pub const IMAGE_PROMPT: &str = "读取三张设计截图，并说明无法读取的图片。";
 pub const IMAGE_DONE: &str = "三张设计截图已读取；目录不是图片，读取失败已保留。";
+pub const MEDIA_HANDOFF_DONE: &str = "纯附件已收到，后台图片已读取。";
 pub const FAILED_PROMPT: &str = "保留这段部分结果，再展示供应商失败。";
 pub const PARTIAL_TEXT: &str = "已经完成的部分结果必须保留，不能因后续失败而消失。";
 pub const OVERLAP_PROMPT: &str = "A07：推理尚未结束时开始正文，并保留可读流。";
@@ -126,6 +127,71 @@ impl Default for Control {
 }
 
 impl Control {
+    pub fn boundary() -> Self {
+        Self {
+            names: OVERLAP_STAGES.to_vec(),
+            stages: OVERLAP_STAGES.iter().map(|_| ReplyStage::new()).collect(),
+        }
+    }
+
+    /// The A07 request uses the same lifecycle events and gates as the journey.
+    pub fn boundary_script(&self) -> Vec<Step> {
+        let mut script = RealtimeScript::new();
+        script.optional_title(&session_title_prompt(OVERLAP_PROMPT));
+        script.add(|index| self.overlap_step(index));
+        script.finish()
+    }
+
+    /// Independent two-step media story; no reasoning/hot-update journey gates.
+    pub fn media_handoff_script(&self) -> Vec<Step> {
+        vec![
+            Step {
+                protocol: Protocol::ResponsesHttp,
+                request: RequestMatch::PromptImages {
+                    text: None,
+                    images: INPUT_IMAGES
+                        .iter()
+                        .map(|(filename, hash)| PromptImage {
+                            filename: (*filename).into(),
+                            png_sha256: (*hash).into(),
+                        })
+                        .collect(),
+                    step: 0,
+                },
+                reply: Reply::Sse(responses_tool_calls(
+                    "media-handoff-image",
+                    "fixture-model",
+                    &[RealtimeToolCall {
+                        item_id: "concept-image-a-item",
+                        call_id: "concept-image-a",
+                        name: "view_image",
+                        arguments: json!({"path":"concept-image-a.png"}).to_string(),
+                    }],
+                )),
+                optional: false,
+            },
+            Step {
+                protocol: Protocol::ResponsesHttp,
+                request: RequestMatch::ToolImages {
+                    images: vec![ToolImage {
+                        call_id: "concept-image-a".into(),
+                        png_sha256:
+                            "0a23b4c2e99e7de221fedb9e4e96d910c786d32385a17dc44dbc1138c13a2b4b"
+                                .into(),
+                    }],
+                    outputs: vec![],
+                    step: 1,
+                },
+                reply: Reply::Sse(responses_text(
+                    MEDIA_HANDOFF_DONE,
+                    "media-handoff-answer",
+                    "fixture-model",
+                )),
+                optional: false,
+            },
+        ]
+    }
+
     /// Holds the first real model response while the UI submits a second input.
     pub fn message_submission() -> Self {
         Self {
@@ -180,7 +246,7 @@ impl Control {
         }
     }
 
-    pub fn realtime_script(&self, host_cwd: &str) -> Vec<Step> {
+    pub fn realtime_script(&self, host_cwd: &str, scope: RealtimeScope) -> Vec<Step> {
         super::gui_realtime_script(
             host_cwd,
             Some(RealtimeObservers {
@@ -190,6 +256,7 @@ impl Control {
                 background_result: &self.stages[3],
                 host_cwd: &self.stages[4],
             }),
+            scope,
         )
     }
 
@@ -348,7 +415,7 @@ impl Control {
             Step {
                 protocol: Protocol::ResponsesHttp,
                 request: RequestMatch::PromptImages {
-                    text: IMAGE_PROMPT.into(),
+                    text: Some(IMAGE_PROMPT.into()),
                     images: INPUT_IMAGES.iter().map(|(filename, hash)| PromptImage {
                         filename: (*filename).into(),
                         png_sha256: (*hash).into(),

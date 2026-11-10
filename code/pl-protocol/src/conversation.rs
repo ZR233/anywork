@@ -110,6 +110,10 @@ pub enum ContentOwner {
         id: String,
         revision: u64,
     },
+    DisplayObservation {
+        block_id: String,
+        member_key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

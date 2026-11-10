@@ -3,7 +3,7 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -37,7 +37,10 @@ void main() {
       MaterialApp(
         theme: pureStudioTheme(),
         locale: locale,
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: PlanDetailView(
@@ -83,5 +86,33 @@ void main() {
       tester.widget<Text>(find.byKey(StudioDriverKeys.planDetailsStatus)).data,
       '已请求修改',
     );
+  });
+
+  testWidgets('没有计划正文时仅显示头部的真实状态', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: PlanDetailView(
+            identity: 'plan',
+            title: 'Delivery',
+            body: null,
+            status: PlanDetailStatus.drafting,
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('起草中'), findsOneWidget);
+    expect(find.text('计划准备好后会请你确认。'), findsNothing);
+    expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsNothing);
   });
 }

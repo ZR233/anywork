@@ -1,6 +1,6 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart' show ConversationActivityView;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
@@ -19,15 +19,19 @@ class CompletionRunView extends StatefulWidget {
     required this.location,
     this.onExpandedChanged,
     this.executionPresent = false,
-    this.closing = false,
+    DisplayBlockState? state,
     this.activity,
     this.now,
     super.key,
-  });
+  }) : state =
+           state ??
+           (location == WorkDisplayLocation.history
+               ? DisplayBlockState.sealed
+               : DisplayBlockState.open);
   final String id;
   final WorkSummary summary;
   final bool executionPresent;
-  final bool closing;
+  final DisplayBlockState state;
   final WorkDisplayLocation location;
   final ConversationActivityView? activity;
   final DateTime Function()? now;
@@ -63,7 +67,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
   @override
   Widget build(BuildContext context) {
     final summary = widget.summary;
-    final live = widget.location == WorkDisplayLocation.live;
+    final live = widget.state == DisplayBlockState.open;
     final runningClock =
         live && widget.executionPresent && summary.createdAt != null;
     final savedElapsed = summary.elapsedMs;
@@ -92,7 +96,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               summary: summary,
               location: widget.location,
               executionPresent: widget.executionPresent,
-              closing: widget.closing,
+              state: widget.state,
               activity: widget.activity,
               seconds: runningClock ? seconds : savedSeconds,
               expanded: _disclosure.isExpanded,
@@ -142,7 +146,7 @@ class _WorkHeader extends StatelessWidget {
     required this.summary,
     required this.location,
     required this.executionPresent,
-    required this.closing,
+    required this.state,
     required this.seconds,
     required this.expanded,
     this.activity,
@@ -151,20 +155,18 @@ class _WorkHeader extends StatelessWidget {
   final WorkSummary summary;
   final WorkDisplayLocation location;
   final bool executionPresent;
-  final bool closing;
+  final DisplayBlockState state;
   final int? seconds;
   final bool expanded;
   final ConversationActivityView? activity;
 
   @override
   Widget build(BuildContext context) {
-    final live = location == WorkDisplayLocation.live;
+    final live = state == DisplayBlockState.open;
     final cold = live && !executionPresent;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
-        : closing
-        ? l10n.timelineGroupClosing
         : activity != null
         ? context.conversationActivityLabel(activity!)
         : summary.waiting > 0
@@ -197,6 +199,8 @@ class _WorkHeader extends StatelessWidget {
         l10n.timelineGroupStoppedCount(summary.cancelled),
       if (summary.transferred > 0)
         l10n.timelineGroupTransferredCount(summary.transferred),
+      if (!live && (summary.running > 0 || summary.waiting > 0)) '封存时尚未结束',
+      if (summary.unavailable > 0) '旧边界观察不可用',
     ];
     final description = [
       label,

@@ -1,3 +1,5 @@
+import 'display_record_observation.dart';
+
 import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -7,7 +9,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_vie
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const timelineConceptImagePrompt = '读取三张设计截图，并说明无法读取的图片。';
@@ -79,11 +81,13 @@ final class TimelineConceptImageInput {
     required this.threadId,
     required this.inputId,
     required List<AttachmentDraftView> drafts,
+    this.prompt = timelineConceptImagePrompt,
   }) : drafts = List.unmodifiable(drafts);
 
   final String threadId;
   final String inputId;
   final List<AttachmentDraftView> drafts;
+  final String prompt;
 
   /// Call with the completed entry and attachment refs from ONE Main message.
   /// Returns identities to archive alongside the later layout assertions.
@@ -95,7 +99,10 @@ final class TimelineConceptImageInput {
     expect(item.atom!.kind, ChatAtomKind.input);
     expect(item.atom!.source, InputChatSource(inputId: inputId));
     expect(item.id, isNotEmpty);
-    expect((item.body as SingleDisplayBlock).completionId, isNotEmpty);
+    expect(
+      completedOriginalId((item.body as SingleDisplayBlock).record),
+      isNotEmpty,
+    );
     expect(item.historyPos, greaterThan(0));
     expect(item.atom!.completionSeq, greaterThan(0));
     expect(attachments, hasLength(3));
@@ -113,7 +120,9 @@ final class TimelineConceptImageInput {
     return {
       ...toJson(),
       'itemId': item.id,
-      'contentItemId': (item.body as SingleDisplayBlock).completionId,
+      'contentItemId': completedOriginalId(
+        (item.body as SingleDisplayBlock).record,
+      ),
       'historyPos': item.historyPos,
       'completionSeq': item.atom!.completionSeq,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
@@ -164,7 +173,7 @@ final class TimelineConceptImageInput {
   Map<String, Object?> toJson() => {
     'threadId': threadId,
     'inputId': inputId,
-    'prompt': timelineConceptImagePrompt,
+    'prompt': prompt,
     'attachments': [
       for (final draft in drafts)
         {
@@ -188,6 +197,8 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
   AppGraph graph, {
   required String threadId,
   required String projectPath,
+  String prompt = timelineConceptImagePrompt,
+  Future<void> Function()? beforeSubmit,
 }) async {
   expect(graph.client.selection.state.selectedThreadId, threadId);
   final composer = graph.client.drafts.composer(threadId);
@@ -223,10 +234,11 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
   }
   final input = find.byKey(const ValueKey('composer-input'));
   expect(input, findsOneWidget);
-  await tester.enterText(input, timelineConceptImagePrompt);
+  await tester.enterText(input, prompt);
   await tester.pump();
-  expect(composer.state.draft, timelineConceptImagePrompt);
+  expect(composer.state.draft, prompt);
   expect(graph.client.selection.state.selectedThreadId, threadId);
+  if (beforeSubmit != null) await beforeSubmit();
 
   // Register before the tap: a fast submit can return to Idle before a pump.
   // Observe the existing source synchronously, without a test product API.
@@ -248,7 +260,7 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
     expect(frozen.map((state) => state.inputId).toSet(), hasLength(1));
     final submitted = frozen.first;
     expect(submitted.inputId, isNotEmpty);
-    expect(submitted.draft, timelineConceptImagePrompt);
+    expect(submitted.draft, prompt);
     expect(
       submitted.attachments.map((draft) => draft.id),
       orderedEquals(drafts.map((draft) => draft.id)),
@@ -259,6 +271,7 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
       threadId: threadId,
       inputId: submitted.inputId,
       drafts: drafts,
+      prompt: prompt,
     );
   } finally {
     watch.observation.cancel();

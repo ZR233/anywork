@@ -11,6 +11,7 @@ use super::{
 use crate::studio::thread_projection::presentation::DisplayHeader;
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
+use pl_protocol::DisplayBlockState;
 use pl_protocol::{
     ChatPlacement, DisplayBlock, DisplayBlockRef, DisplayMemberHead, DisplayMemberPage,
     DisplayMemberWindow, LiveDisplayBlock, LiveDisplayWindow, ReadDemand, TimelineBatch,
@@ -110,7 +111,11 @@ impl ConversationReader {
                 block_order: header.block_order,
                 source: Some(header.source.clone()),
                 body: header.body.clone(),
-                closing: header.boundary.is_some(),
+                state: if header.sealed {
+                    DisplayBlockState::Sealed
+                } else {
+                    DisplayBlockState::Open
+                },
             })
             .collect::<Vec<_>>();
         live_window(
@@ -417,9 +422,10 @@ impl ConversationReader {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let header = owner.member_cut(&reference.block_id, before, 0);
-            if header.as_ref().is_some_and(|cut| {
-                delivered == Some((cut.header.revision, cut.header.history_pos.is_some()))
-            }) {
+            if header
+                .as_ref()
+                .is_some_and(|cut| delivered == Some((cut.header.revision, cut.header.sealed)))
+            {
                 return Ok(None);
             }
             owner.member_cut(&reference.block_id, before, demand.max_items as usize + 1)
@@ -470,7 +476,7 @@ impl ConversationReader {
                 }
             }
         };
-        let stamp = (header.revision, header.history_pos.is_some());
+        let stamp = (header.revision, header.sealed);
         if delivered == Some(stamp) {
             return Ok(None);
         }

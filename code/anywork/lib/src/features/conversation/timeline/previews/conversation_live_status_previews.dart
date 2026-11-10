@@ -1,5 +1,5 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../../../../app/theme/material3_theme.dart';
@@ -11,6 +11,7 @@ import '../widgets/chat_item_view.dart';
 import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
+import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
 
@@ -19,7 +20,10 @@ Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
   debugShowCheckedModeBanner: false,
   locale: const Locale('zh'),
   theme: pureStudioTheme(locale: const Locale('zh')),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, appChild) => MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
@@ -64,6 +68,7 @@ Widget liveStatusGroupPreview({
   if (idle) return const SizedBox.shrink();
   return _ActivityPreview(
     summary: WorkSummary(
+      unavailable: 0,
       total: thinkingOnly ? 1 : 2,
       terminal: 0,
       running: thinkingOnly ? 1 : 2,
@@ -113,6 +118,31 @@ Widget _status(ConversationActivityKind kind, {String? error}) =>
         errorMessage: error,
       ),
     );
+
+@Preview(name: '趴卧猫 · 尾巴摆动', group: '实时状态栏', size: Size(760, 300))
+Widget conversationRestingCatPreview() => liveStatusPreviewHost(
+  Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SizedBox.square(
+        dimension: 180,
+        child: Center(
+          child: Transform.scale(
+            scale: 7,
+            child: const TimelineActivityIndicator(
+              icon: null,
+              color: Colors.black,
+              active: true,
+            ),
+          ),
+        ),
+      ),
+      ConversationActivityBar(
+        children: [_status(ConversationActivityKind.thinking)],
+      ),
+    ],
+  ),
+);
 
 @Preview(name: '思考中 · 无内容', group: '实时状态栏', size: Size(760, 110))
 Widget conversationLiveStatusWaitingPreview() => liveStatusPreviewHost(
@@ -187,6 +217,7 @@ Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
     children: [
       _ActivityPreview(
         summary: const WorkSummary(
+          unavailable: 0,
           total: 1,
           terminal: 0,
           running: 0,
@@ -291,6 +322,7 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
       _ActivityPreview(
         initiallyExpanded: true,
         summary: const WorkSummary(
+          unavailable: 0,
           total: 3,
           terminal: 3,
           running: 0,
@@ -363,6 +395,7 @@ class _ActivityPreview extends StatelessWidget {
     required this.childBuilder,
     this.initiallyExpanded = false,
     this.summary = const WorkSummary(
+      unavailable: 0,
       total: 1,
       terminal: 0,
       running: 1,

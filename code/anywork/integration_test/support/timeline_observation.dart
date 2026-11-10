@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:anywork/src/domain/models/composer_primary_action.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -10,11 +11,14 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Map<String, Object?> _sourceCut(ChatSourceId source) => switch (source) {
@@ -77,9 +81,9 @@ Map<String, Object?> timelineWaitFailureSnapshot({
         };
   Map<String, Object?> body(DisplayBlockBody value, String id) =>
       switch (value) {
-        SingleDisplayBlock(:final atom) => {
+        SingleDisplayBlock(:final record) => {
           'bodyKind': 'single',
-          ..._atomCut(atom),
+          ..._atomCut(record.atom),
         },
         WorkDisplayBlock(:final members, :final summary) => {
           'bodyKind': 'work',
@@ -159,7 +163,7 @@ Map<String, Object?> timelineWaitFailureSnapshot({
                   'source': block.source == null
                       ? null
                       : _sourceCut(block.source!),
-                  'closing': block.closing,
+                  'state': block.state.name,
                 },
             ],
           },
@@ -294,7 +298,7 @@ final class TimelineObservation {
   Iterable<ChatAtom> get liveAtoms sync* {
     final workIds = liveWork.map((block) => block.id).toSet();
     for (final block in liveBlocks) {
-      if (block.body case SingleDisplayBlock(:final atom)) yield atom;
+      if (block.body case SingleDisplayBlock(:final record)) yield record.atom;
     }
     for (final display in lease.groupDisplays) {
       if (workIds.contains(display.unitId)) yield* display.atoms;
@@ -337,7 +341,7 @@ final class TimelineObservation {
     for (final block in allWork.toList()) {
       final page = await readMemberPage(block.memberReference!);
       expect(page.entries, isNotEmpty);
-      if (page.entries.single.atom.source == source) matched.add(block);
+      if (page.entries.single.record.atom.source == source) matched.add(block);
     }
     return matched;
   }
@@ -354,7 +358,7 @@ final class TimelineObservation {
       expect(admitted.historyPos, block.historyPos);
       expect(admitted.memberReference, block.memberReference);
       expect(page.entries, hasLength(1));
-      if (page.entries.single.atom.source == source) return true;
+      if (page.entries.single.record.atom.source == source) return true;
     }
     return false;
   }
@@ -411,18 +415,20 @@ final class TimelineObservation {
     try {
       final atoms = <ChatAtom>[];
       for (final head in heads) {
-        if (head.completionId == null) {
-          atoms.add(head.atom);
-        } else {
-          final original = await scope.readCompleted(
-            recordId: head.completionId!,
-            demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
-          );
-          expect(original.atom.id, head.atom.id);
-          expect(original.atom.source, head.atom.source);
-          expect(original.recordId, head.completionId);
-          expect(original.completionSeq, head.atom.completionSeq);
-          atoms.add(original.atom);
+        final record = head.record;
+        switch (record.contentSource) {
+          case CurrentAtom() || FrozenObservation():
+            atoms.add(record.atom);
+          case CompletedOriginal(:final completionId):
+            final original = await scope.readCompleted(
+              recordId: completionId,
+              demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+            );
+            expect(original.atom.id, record.atom.id);
+            expect(original.atom.source, record.atom.source);
+            expect(original.recordId, completionId);
+            expect(original.completionSeq, record.atom.completionSeq);
+            atoms.add(original.atom);
         }
       }
       return List.unmodifiable(atoms);
@@ -616,13 +622,17 @@ final class TimelineObservation {
     final demands = <Map<String, Object?>>[];
 
     bool matchesCanonical(Element element) {
-      final widget = element.widget;
       final unit = originalUnit;
       return unit != null &&
-          widget is ChatItemView &&
-          widget.item.id == unitId &&
-          identical(widget.item.displayUnit, unit) &&
-          identical(Scrollable.maybeOf(element), originalScrollable);
+          originalScrollable != null &&
+          identical(
+            _mainRevealRowUnit(
+              originalController,
+              originalScrollable!,
+              element,
+            ),
+            unit,
+          );
     }
 
     final canonical = find.byElementPredicate(
@@ -728,6 +738,7 @@ final class TimelineObservation {
             .map((element) => _mainRevealElementInfo(element, state))
             .toList(),
         'canonicalRenderBranches': _mainRevealBranches(canonical),
+        'canonicalAnchor': 'ChatMessage canonical key/id and controller unit',
         'targetFinder': target.describeMatch(Plurality.many),
         'targetSkipOffstage': target.skipOffstage,
         'targetFinderCount': targetElements.length,
@@ -820,6 +831,84 @@ final class TimelineObservation {
         return true;
       });
       return belongs;
+    }
+
+    bool rendererReady() {
+      final rows = canonical.evaluate().toList();
+      if (rows.length != 1) return false;
+      final renderers = find
+          .descendant(
+            of: canonical,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is ChatItemView &&
+                  identical(widget.item.displayUnit, originalUnit),
+            ),
+          )
+          .evaluate()
+          .toList();
+      if (renderers.length > 1) {
+        stop('Main canonical row has multiple payload renderers');
+      }
+      if (renderers.isEmpty) {
+        // Observe the connector's actual UI branch, never open/refresh its
+        // reader or infer a tool/business outcome from an error message.
+        final connectors = find.descendant(
+          of: canonical,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineCanonicalPayloadConnector &&
+                identical(widget.item.displayUnit, originalUnit),
+          ),
+        );
+        for (final element in connectors.evaluate()) {
+          element.visitChildren((child) {
+            final widget = child.widget;
+            if (widget is Text && widget.data != '正在读取完成内容…') {
+              stop('Main canonical metadata connector displays an error');
+            }
+          });
+        }
+        return false;
+      }
+      final element = renderers.single;
+      final item = (element.widget as ChatItemView).item;
+      if (item.id != unitId ||
+          !identical(Scrollable.maybeOf(element), originalScrollable) ||
+          !belongsTo(element, rows.single)) {
+        stop('Main payload renderer lost its canonical row/domain');
+      }
+      if (item.compatibility == ChatItemCompatibility.deferred) return false;
+      if (item.compatibility != ChatItemCompatibility.current) {
+        stop('Main payload renderer has unavailable canonical metadata');
+      }
+      final body = originalUnit!.body;
+      if (body is SingleDisplayBlock) {
+        final atom = item.atom;
+        final record = body.record;
+        final head = record.atom;
+        final completionId = switch (record.contentSource) {
+          CompletedOriginal(:final completionId) => completionId,
+          CurrentAtom() || FrozenObservation() => null,
+        };
+        if (atom == null ||
+            atom.id != head.id ||
+            atom.source != head.source ||
+            atom.kind != head.kind ||
+            atom.turnId != head.turnId ||
+            atom.delivery != head.delivery ||
+            atom.lifecycle != head.lifecycle ||
+            atom.tool?.callId != head.tool?.callId ||
+            atom.tool?.name != head.tool?.name ||
+            atom.completionItemId != head.completionItemId ||
+            atom.completionSeq != head.completionSeq ||
+            (completionId != null && atom.completionItemId != completionId)) {
+          stop(
+            'Main payload renderer completion identity differs from its unit',
+          );
+        }
+      }
+      return true;
     }
 
     Element requireTarget() {
@@ -946,11 +1035,6 @@ final class TimelineObservation {
         stop('Main did not reveal the requested canonical row');
       }
       if (canonical.evaluate().isNotEmpty) {
-        await demand(
-          'ensure canonical visible',
-          () => tester.ensureVisible(canonical),
-        );
-        requireOriginal();
         final wanted = originalController.messages.indexWhere(
           (message) => message.id == unitId,
         );
@@ -959,7 +1043,22 @@ final class TimelineObservation {
           originalScrollable!,
           visibleOnly: true,
         ).contains(wanted)) {
-          // A cached row can move again while the reversed list measures it.
+          await demand(
+            'ensure canonical visible',
+            () => tester.ensureVisible(canonical),
+          );
+          requireOriginal();
+          if (!_mainRevealIndices(
+            originalController,
+            originalScrollable!,
+            visibleOnly: true,
+          ).contains(wanted)) {
+            // A cached shell can move while the reversed list measures it.
+            continue;
+          }
+        }
+        if (!rendererReady()) {
+          await demand('wait for original Main payload renderer', () async {});
           continue;
         }
         if (!borrowInteraction()) {
@@ -991,6 +1090,7 @@ final class TimelineObservation {
                 (message) => message.id == unitId,
               ),
             ) ||
+            !rendererReady() ||
             !borrowInteraction()) {
           continue;
         }
@@ -1058,17 +1158,14 @@ final class TimelineObservation {
     ScrollableState? main,
   ) {
     final widget = element.widget;
+    ChatMessage? outer = widget is ChatMessage ? widget : null;
     ChatItemView? row = widget is ChatItemView ? widget : null;
-    if (row == null) {
-      element.visitAncestorElements((ancestor) {
-        final widget = ancestor.widget;
-        if (widget is ChatItemView) {
-          row = widget;
-          return false;
-        }
-        return true;
-      });
-    }
+    element.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is ChatItemView) row ??= widget;
+      if (widget is ChatMessage) outer ??= widget;
+      return outer == null;
+    });
     final render = element.findRenderObject();
     final viewport = RenderAbstractViewport.maybeOf(render);
     final box = render is RenderBox ? render : null;
@@ -1088,9 +1185,19 @@ final class TimelineObservation {
     return {
       'widget': widget.runtimeType.toString(),
       'key': widget.key?.toString(),
+      'outerMessageId': outer?.message.id,
+      'outerUnitIdentity':
+          outer?.message.metadata?[timelineDisplayUnitKey] == null
+          ? null
+          : identityHashCode(outer!.message.metadata![timelineDisplayUnitKey]),
       'presentationType': row?.item.type,
       'compatibility': row?.item.compatibility.name,
-      'metadata': _mainRevealUnitInfo(row?.item.displayUnit),
+      'metadata': _mainRevealUnitInfo(
+        outer?.message.metadata?[timelineDisplayUnitKey] is TimelineDisplayUnit
+            ? outer!.message.metadata![timelineDisplayUnitKey]
+                  as TimelineDisplayUnit
+            : row?.item.displayUnit,
+      ),
       'scrollable': nearest == null ? null : identityHashCode(nearest),
       'sameMainScrollable': identical(nearest, main),
       'renderType': render.runtimeType.toString(),
@@ -1123,6 +1230,8 @@ final class TimelineObservation {
         (widget) =>
             widget is TimelineDisplayUnitView ||
             widget is TimelineActivityRow ||
+            widget is TimelineCanonicalPayloadConnector ||
+            widget is ChatItemView ||
             widget is Text,
         skipOffstage: false,
       ),
@@ -1133,8 +1242,56 @@ final class TimelineObservation {
         {
           'widget': element.widget.runtimeType.toString(),
           'key': element.widget.key?.toString(),
+          if (element.widget case Text(:final data, :final textSpan))
+            'text': data ?? textSpan?.toPlainText(),
+          if (element.widget case TimelineCanonicalPayloadConnector(
+            :final item,
+          ))
+            'connectorItem': _mainRevealPresentationInfo(item),
+          if (element.widget case ChatItemView(:final item))
+            'rendererItem': _mainRevealPresentationInfo(item),
         },
     ];
+  }
+
+  Map<String, Object?> _mainRevealPresentationInfo(ChatItemPresentation item) =>
+      {
+        'id': item.id,
+        'type': item.type,
+        'compatibility': item.compatibility.name,
+        'unitIdentity': item.displayUnit == null
+            ? null
+            : identityHashCode(item.displayUnit),
+        'atomId': item.atom?.id,
+        if (item.atom case final atom?) 'source': _sourceCut(atom.source),
+        'completionItemId': item.atom?.completionItemId,
+        'completionSeq': item.atom?.completionSeq,
+        'diagnostic': item.diagnostic,
+      };
+
+  TimelineDisplayUnit? _mainRevealRowUnit(
+    ChatController controller,
+    ScrollableState main,
+    Element element,
+  ) {
+    final widget = element.widget;
+    if (widget is! ChatMessage ||
+        widget.key != StudioDriverKeys.timelineRow(widget.message.id) ||
+        !identical(Scrollable.maybeOf(element), main)) {
+      return null;
+    }
+    final unit = widget.message.metadata?[timelineDisplayUnitKey];
+    if (unit is! TimelineDisplayUnit || unit.id != widget.message.id) {
+      return null;
+    }
+    final messages = controller.messages.where(
+      (message) => message.id == unit.id,
+    );
+    if (messages.length != 1 ||
+        !identical(messages.single.metadata?[timelineDisplayUnitKey], unit)) {
+      return null;
+    }
+    return unit;
   }
 
   Map<String, Object?> _mainRevealPointer(
@@ -1172,15 +1329,12 @@ final class TimelineObservation {
     required bool visibleOnly,
   }) {
     final indices = <int>{};
-    // ChatItemView is the canonical Main container, including typed payloads
-    // and groups. Its inner TimelineDisplayUnitView must not be counted twice.
-    final rows = find.byType(ChatItemView, skipOffstage: visibleOnly);
+    // Use the same production shell as the canonical finder. Deferred metadata
+    // can legitimately leave this shell without a ChatItemView child.
+    final rows = find.byType(ChatMessage, skipOffstage: visibleOnly);
     for (final element in rows.evaluate()) {
-      if (!identical(Scrollable.maybeOf(element), main)) continue;
-      final unit = (element.widget as ChatItemView).item.displayUnit;
-      if (unit == null) {
-        continue; // Not a Main item (e.g. an Atom).
-      }
+      final unit = _mainRevealRowUnit(controller, main, element);
+      if (unit == null) continue;
       final index = controller.messages.indexWhere(
         (message) =>
             message.id == unit.id &&
@@ -1367,31 +1521,40 @@ final class TimelineObservation {
   Future<TimelineGroupDisplay> revealMember(
     ChatAtom atom, {
     required DisplayBlockRef reference,
+    Duration timeout = const Duration(seconds: 60),
   }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) fail('Timed out revealing member ${atom.id}');
+      return value;
+    }
+
     final value = unitForBlock(reference);
-    final display = await openWork(value.id);
+    final display = await openWork(value.id, timeout: remaining());
     if (!display.atoms.any((member) => member.id == atom.id)) {
       await selectLatestMembers(display);
     }
-    final clock = Stopwatch()..start();
     while (!display.atoms.any((member) => member.id == atom.id)) {
-      if (clock.elapsed >= const Duration(seconds: 60)) {
-        fail('Member ${atom.id} not found in $reference');
-      }
+      remaining();
       expect(
         display.before,
         isNotNull,
         reason: 'The producer-defined member must be in this block',
       );
-      await loadOlderMemberPage(
-        display,
-        timeout: const Duration(seconds: 60) - clock.elapsed,
-      );
+      await loadOlderMemberPage(display, timeout: remaining());
     }
-    final row = find.byWidgetPredicate(
-      (widget) => widget is TimelineMemberAtom && widget.atom.id == atom.id,
+    final row = find.descendant(
+      of: groupRow(value.id),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is TimelineMemberAtom && widget.atom.id == atom.id,
+      ),
     );
-    await until(() => row.evaluate().length == 1, 'mounted member ${atom.id}');
+    await until(
+      () => row.evaluate().length == 1,
+      'mounted member ${atom.id}',
+      timeout: remaining(),
+    );
     await tester.ensureVisible(row);
     await tester.pump();
     final rendered = tester.widget<TimelineMemberAtom>(row).atom;
@@ -1400,7 +1563,7 @@ final class TimelineObservation {
     expect(rendered.tool?.callId, atom.tool?.callId);
     if (atom.kind == ChatAtomKind.reasoning ||
         atom.kind == ChatAtomKind.toolCall) {
-      await ensureMemberReadable(row, atom);
+      await ensureMemberReadable(row, rendered, timeout: remaining());
     }
     return display;
   }
@@ -1536,7 +1699,17 @@ final class TimelineObservation {
     expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
   }
 
-  Future<void> closeWork(TimelineGroupDisplay display) async {
+  Future<void> closeWork(
+    TimelineGroupDisplay display, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) fail('Timed out closing ${display.unitId}');
+      return value;
+    }
+
     if (display.isCurrent && display.expanded) {
       // This original owner is mounted in current or the Main cache. Reveal
       // its exact title directly, without navigating to a replacement row.
@@ -1550,6 +1723,7 @@ final class TimelineObservation {
             skipOffstage: false,
           ),
           isActive: () => display.isCurrent && display.expanded,
+          timeout: remaining(),
         );
       }
     }
@@ -1561,6 +1735,7 @@ final class TimelineObservation {
           display.before == null &&
           !display.loading,
       'collapsed member window revoked',
+      timeout: remaining(),
     );
     expect(display.error, isNull);
   }

@@ -396,7 +396,15 @@ async fn wait_completed(
                                 && matches!(turn.state, pl_protocol::TurnState::Completed(_))
                                 && snapshot.active_turn.is_none()
                                 && snapshot.thread.status == pl_protocol::ThreadStatus::Idle,
-                            "completed Turn notification and schema-17 Thread State disagree"
+                            "completed Turn notification and schema-17 Thread State disagree: \
+                             input_id={input_id:?}, schema={}, thread_id={}, turn_state={:?}, \
+                             active_turn_present={}, thread_status={:?}, state_revision={}",
+                            snapshot.schema_version,
+                            snapshot.thread.id,
+                            turn.state,
+                            snapshot.active_turn.is_some(),
+                            snapshot.thread.status,
+                            snapshot.revision,
                         );
                         return snapshot
                             .model_route

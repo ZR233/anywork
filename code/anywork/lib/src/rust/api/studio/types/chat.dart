@@ -447,6 +447,10 @@ class BridgeContentManifestPage {
 sealed class BridgeContentOwner with _$BridgeContentOwner {
   const BridgeContentOwner._();
 
+  const factory BridgeContentOwner.displayObservation({
+    required String blockId,
+    required String memberKey,
+  }) = BridgeContentOwner_DisplayObservation;
   const factory BridgeContentOwner.item({required String itemId}) =
       BridgeContentOwner_Item;
   const factory BridgeContentOwner.current({

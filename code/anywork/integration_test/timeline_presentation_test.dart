@@ -21,7 +21,7 @@ import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show debugPrintSynchronously;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -158,7 +158,10 @@ void main() {
           child: MaterialApp.router(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             routerConfig: router,
           ),
@@ -753,7 +756,7 @@ final class _TimelineScene {
     TimelineDisplayLease display,
     LiveDisplayBlock block,
   ) => switch (block.body) {
-    SingleDisplayBlock(:final atom) => [atom],
+    SingleDisplayBlock(record: DisplayRecord(:final atom)) => [atom],
     WorkDisplayBlock(:final members) =>
       display.groupDisplays
           .where(

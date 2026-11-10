@@ -95,7 +95,7 @@ final class TimelineDisplayUnit {
   }) : id = block.id,
        historyPos = block.historyPos,
        body = block.body,
-       closing = false,
+       state = DisplayBlockState.sealed,
        executionPresent = false,
        expansion = expansion ?? TimelineExpansionIntent();
 
@@ -106,12 +106,12 @@ final class TimelineDisplayUnit {
   }) : id = block.id,
        historyPos = null,
        body = block.body,
-       closing = block.closing;
+       state = block.state;
 
   final String id;
   final int? historyPos;
   final DisplayBlockBody body;
-  final bool closing;
+  final DisplayBlockState state;
   final bool executionPresent;
   final TimelineExpansionIntent expansion;
   DisplayBlockRef? get memberReference => switch (body) {
@@ -123,7 +123,7 @@ final class TimelineDisplayUnit {
     SingleDisplayBlock() => null,
   };
   ChatAtom? get atom => switch (body) {
-    SingleDisplayBlock(:final atom) => atom,
+    SingleDisplayBlock(:final record) => record.atom,
     WorkDisplayBlock() => null,
   };
 }

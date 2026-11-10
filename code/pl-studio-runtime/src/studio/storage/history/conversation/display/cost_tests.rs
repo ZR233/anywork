@@ -31,18 +31,18 @@ async fn seed_history(
 ) -> Result<()> {
     db.execute_raw(statement(
         "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
-         INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,updated_effect,header)
-         SELECT 'history-'||i,?,i+CASE WHEN i>20 THEN 1 ELSE 0 END,i,2,
+         INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header)
+         SELECT 'history-'||i,?,i+CASE WHEN i>20 THEN 1 ELSE 0 END,i,1,2,
              CAST(json_set(?,'$.id','history-'||i,'$.block_order',i+CASE WHEN i>20 THEN 1 ELSE 0 END,
                  '$.history_pos',i,'$.body.members.blockId','history-'||i) AS BLOB) FROM n",
         vec![integer(after+1)?.into(), integer(through)?.into(),
             serde_json::to_string(&base.source)?.into(), serde_json::to_string(base)?.into()]
     )).await?;
     db.execute_raw(statement(
-        "INSERT INTO conversation_display_members(block_id,member_order,member_key,terminal,completion_id,updated_effect,metadata)
-         SELECT block_id,1,block_id||':member:1',1,NULL,2,
+        "INSERT INTO conversation_display_members(block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata)
+         SELECT block_id,1,block_id||':member:1',block_id||':association:1',1,NULL,2,
              CAST(json_set(?,'$.block_id',block_id,'$.head.memberOrder',1,
-                 '$.head.memberKey',block_id||':member:1','$.head.atom.id','tool-'||block_id) AS BLOB)
+                 '$.head.memberKey',block_id||':member:1','$.association_key',block_id||':association:1','$.head.record.atom.id','tool-'||block_id) AS BLOB)
          FROM conversation_display_blocks WHERE history_pos>? AND history_pos<=? AND block_id<>'history-20'",
         vec![serde_json::to_string(member)?.into(), integer(after)?.into(), integer(through)?.into()]
     )).await?;
@@ -60,11 +60,11 @@ async fn seed_members(
 ) -> Result<()> {
     db.execute_raw(statement(
         "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
-         INSERT INTO conversation_display_members(block_id,member_order,member_key,terminal,completion_id,updated_effect,metadata)
-         SELECT b.block_id,i,b.block_id||':member:'||i,1,NULL,2,
+         INSERT INTO conversation_display_members(block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata)
+         SELECT b.block_id,i,b.block_id||':member:'||i,b.block_id||':association:'||i,1,NULL,2,
              CAST(json_set(?,'$.block_id',b.block_id,'$.head.memberOrder',i,
-                 '$.head.memberKey',b.block_id||':member:'||i,'$.head.atom.id','tool-'||i,
-                 '$.head.atom.source',json_extract(b.header,'$.source')) AS BLOB)
+                 '$.head.memberKey',b.block_id||':member:'||i,'$.association_key',b.block_id||':association:'||i,'$.head.record.atom.id','tool-'||i,
+                 '$.head.record.atom.source',json_extract(b.header,'$.source')) AS BLOB)
          FROM n CROSS JOIN conversation_display_blocks b WHERE b.block_id IN ('history-20','open-work')",
         vec![integer(after+1)?.into(), integer(through)?.into(), serde_json::to_string(base)?.into()]
     )).await?;
@@ -91,6 +91,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
     let (_dir, db) =
         crate::studio::storage::history::schema::display_snapshots::tests::fixture().await?;
     crate::studio::storage::history::schema::display_snapshots::upgrade(&db).await?;
+    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -122,6 +123,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
     frozen.id = "history-20".into();
     frozen.block_order = 20;
     frozen.history_pos = Some(20);
+    frozen.sealed = true;
     frozen.boundary = Some(ChatFactPosition {
         effect_seq: 2,
         suborder: 0,
@@ -138,6 +140,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
     open.block_order = 21;
     open.history_pos = None;
     open.boundary = None;
+    open.sealed = false;
     if let DisplayBlockBody::Work { members, .. } = &mut open.body {
         members.block_id = open.id.clone();
     }
@@ -227,7 +230,11 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
                 block_order: header.block_order,
                 source: Some(header.source),
                 body: header.body,
-                closing: header.boundary.is_some(),
+                state: if header.sealed {
+                    pl_protocol::DisplayBlockState::Sealed
+                } else {
+                    pl_protocol::DisplayBlockState::Open
+                },
             })
             .collect::<Vec<_>>();
         assert_eq!(live.len(), 1);
@@ -267,8 +274,10 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
             .collect::<Vec<DisplayMemberHead>>();
         assert_eq!(page.len(), 20);
         assert!(
-            page.iter()
-                .all(|member| !matches!(member.atom.payload, Some(PayloadData::Inline { .. })))
+            page.iter().all(|member| !matches!(
+                member.record.atom.payload,
+                Some(PayloadData::Inline { .. })
+            ))
         );
         report(
             "member_page",

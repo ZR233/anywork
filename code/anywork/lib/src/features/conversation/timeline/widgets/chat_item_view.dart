@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
@@ -153,6 +153,14 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    if (item.observationUnavailable) {
+      final record = item.displayRecord!;
+      return Text(
+        record.startFact != null && record.endFact == null
+            ? '旧边界观察不可用 · 封存时尚未结束'
+            : '旧边界观察不可用',
+      );
+    }
     if (item.hasPublicInputBody) {
       // This branch and its Body positions remain the same while metadata is
       // pending, restricted, or resolved. Metadata never replaces the read owner.
@@ -325,8 +333,12 @@ class _ChatItemViewState extends State<ChatItemView> {
                   ),
               ],
             ),
-      startedAt: atom?.startedAt,
-      finishedAt: atom?.finishedAt,
+      startedAt: item.displayRecord == null
+          ? atom?.startedAt
+          : item.displayRecord!.displayStartedAt,
+      finishedAt: item.displayRecord == null
+          ? atom?.finishedAt
+          : item.displayRecord!.displayObservedThrough,
       outcome:
           (state is String ? state : null) ??
           switch (atom?.lifecycle) {
@@ -409,6 +421,8 @@ class _ChatItemViewState extends State<ChatItemView> {
       card = TimelineActivityTileTheme(
         child: wait != null
             ? TimelineWaitPanel(
+                staticObservation:
+                    item.displayRecord?.contentSource is FrozenObservation,
                 identity: item.id,
                 presentation: wait,
                 initiallyExpanded: widget.initiallyExpanded,

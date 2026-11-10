@@ -8,8 +8,10 @@
 ## 设计重点
 
 - 阅读和决定分开：详情只有阅读/关闭动作；待确认时才出现独立反馈栏。
+- 待确认入口使用整卡可点击的文档卡，包含完整标题、图文状态和查看／收起动作；不附阅读说明，不在卡片重复放批准按钮。
+- 完整会话工况不显示工具等待条和通用「交互详情」，卡片与底部反馈栏各司其职；关闭正文不会丢失修改草稿。
 - 通用的「实施计划」头部与 Markdown 文档标题分层，避免同一标题重复出现。
-- 状态徽标附带图形与文字，不只靠颜色区分。辅助说明短而明确，不暴露内部工具或阶段名。
+- 状态附带图形与文字，不只靠颜色区分。卡片、阅读头部和反馈栏不放二级描述；保留正文、必要输入提示、实际进度和错误，不暴露内部工具或阶段名。
 - 输入与按钮共用边界，主次操作同高同基线；不足以同排时自然换行。
 - 暖米色阅读面、棕色文字、细边框、既有系统字体，不增加装饰性阴影或新的品牌色。
 - HTML 的导航、工况标题、设计注解和模拟数据说明位于组件外，生产界面不复制。
@@ -21,6 +23,7 @@
 
 | id | 工况 | 组件画布 |
 | --- | --- | --- |
+| `workspace` | 完整会话、计划卡与并排阅读，可收起重开 | 1200 × 820 |
 | `drafting` | 起草、尚无正文 | 760 × 720 |
 | `awaiting` | 等待确认、空修改意见 | 760 × 720 |
 | `feedback` | 非空修改意见 | 760 × 720 |
@@ -41,3 +44,5 @@
 生产组件使用 Flutter 官方 [LayoutBuilder](https://api.flutter.dev/flutter/widgets/LayoutBuilder-class.html)、
 [Wrap](https://api.flutter.dev/flutter/widgets/Wrap-class.html) 与
 [Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)，不引入新的布局库。
+文档卡复用官方 [Card](https://api.flutter.dev/flutter/material/Card-class.html) 与
+[InkWell](https://api.flutter.dev/flutter/material/InkWell-class.html) 的整卡交互语义。

@@ -36,6 +36,111 @@ use pl_protocol::{
     ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
 };
 
+/// A frame-local view of the original current owner's admitted activity and part locations.
+/// It borrows the same immutable observation as current content; it owns no retained history.
+struct AdmittedActivity<'a> {
+    atoms: &'a [pl_protocol::ChatAtom],
+    parts: Vec<&'a ObservedPart>,
+}
+
+impl<'a> AdmittedActivity<'a> {
+    fn new(
+        state: &'a ThreadSnapshot,
+        atoms: &'a [pl_protocol::ChatAtom],
+        active: &[super::current::ActiveText],
+    ) -> Self {
+        let mut parts = Vec::new();
+        if let Some(progress) = &state.model_progress {
+            for (id, _, _, _, _, location) in active {
+                let Some(location) = location.filter(|location| {
+                    location.generation == progress.progress.observation().generation
+                }) else {
+                    continue;
+                };
+                let Some(atom) = atoms.iter().find(|atom| {
+                    atom.id == *id
+                        && atom.attempt_id.as_deref() == Some(&progress.attempt_id)
+                        && matches!(
+                            atom.lifecycle,
+                            pl_protocol::ChatAtomLifecycle::Active { .. }
+                        )
+                }) else {
+                    continue;
+                };
+                let Some(part) = progress.progress.parts().get(location.index) else {
+                    continue;
+                };
+                #[cfg(test)]
+                part_cost::activity();
+                // A whole-snapshot replacement can reuse a position, length and content version.
+                // A location is only a hint until the typed identity agrees in this generation.
+                let Some((current_id, _, _)) = super::live::observation_preview(
+                    &progress.attempt_id,
+                    location.generation,
+                    part,
+                    &pl_protocol::ThreadContentLifecycle::streaming(),
+                ) else {
+                    continue;
+                };
+                if current_id == atom.id {
+                    parts.push((location.index, part));
+                }
+            }
+        }
+        parts.sort_unstable_by_key(|(index, _)| *index);
+        parts.dedup_by_key(|(index, _)| *index);
+        Self {
+            atoms,
+            parts: parts.into_iter().map(|(_, part)| part).collect(),
+        }
+    }
+}
+
+fn activity_parts<'a>(
+    progress: &'a ModelProgress,
+    admitted: Option<&'a AdmittedActivity<'a>>,
+) -> impl DoubleEndedIterator<Item = &'a ObservedPart> {
+    admitted
+        .into_iter()
+        .flat_map(|view| view.parts.iter().copied())
+        .chain(
+            admitted
+                .is_none()
+                .then(|| progress.parts().iter())
+                .into_iter()
+                .flatten(),
+        )
+        .inspect(|_| {
+            #[cfg(test)]
+            part_cost::activity();
+        })
+}
+
+#[cfg(test)]
+pub(super) mod part_cost {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VISITS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    }
+
+    pub fn begin() {
+        VISITS.set(Some((0, 0)));
+    }
+
+    pub fn model() {
+        VISITS.update(|value| value.map(|(model, activity)| (model + 1, activity)));
+    }
+
+    pub fn activity() {
+        VISITS.update(|value| value.map(|(model, activity)| (model, activity + 1)));
+    }
+
+    pub fn finish() -> (usize, usize) {
+        VISITS.take().expect("part observation was started")
+    }
+}
+
 /// 当前执行活动的权威小摘要；`None` 表示该 Thread 当前没有活动。
 ///
 /// 这是**纯内存投影**：给定同一 `state` 与同一 `previous` 必定得到同一结果。`previous` 是同一
@@ -45,6 +150,15 @@ pub(in crate::studio) fn project_activity(
     thread_id: &str,
     state: &ThreadSnapshot,
     previous: Option<&ThreadActivity>,
+) -> Option<ThreadActivity> {
+    project_activity_using(thread_id, state, previous, None)
+}
+
+fn project_activity_using(
+    thread_id: &str,
+    state: &ThreadSnapshot,
+    previous: Option<&ThreadActivity>,
+    admitted: Option<&AdmittedActivity<'_>>,
 ) -> Option<ThreadActivity> {
     let origin = active_origin(state)?;
     let attempt = origin.turn_id.and_then(|id| turn_attempt(state, id));
@@ -60,20 +174,25 @@ pub(in crate::studio) fn project_activity(
         origin
             .turn_id
             .map_or(ThreadActivityKind::Preparing, |turn_id| {
-                kind(state, turn_id, attempt, &tasks)
+                kind(state, turn_id, attempt, &tasks, admitted)
             })
     };
     let tools = project_tools(state, &tasks, origin.turn_id, kind, previous);
     let associated = associated_attempt(attempt);
-    let (summary, summary_truncated) = summary(state, associated, origin.turn_id, kind, &tools);
+    let (summary, summary_truncated) =
+        summary(state, associated, origin.turn_id, kind, &tools, admitted);
     let previous_turn = previous.filter(|prev| {
         prev.turn_id.as_deref() == origin.turn_id
             && prev.execution_id.as_deref() == origin.execution_id
     });
     let thinking_summary = match kind {
         ThreadActivityKind::Responding => None,
-        _ => latest_thinking_summary(state, associated)
-            .or_else(|| previous_turn.and_then(|prev| prev.thinking_summary.clone())),
+        _ => latest_thinking_summary(state, associated, admitted).or_else(|| {
+            admitted
+                .is_none()
+                .then(|| previous_turn.and_then(|prev| prev.thinking_summary.clone()))
+                .flatten()
+        }),
     };
     let thinking_seconds = match kind {
         ThreadActivityKind::Responding => None,
@@ -244,6 +363,7 @@ fn kind(
     turn_id: &str,
     attempt: Option<&RequestAttempt>,
     active_tasks: &[&TaskRecord],
+    admitted: Option<&AdmittedActivity<'_>>,
 ) -> ThreadActivityKind {
     if matches!(
         &state.input_execution,
@@ -268,7 +388,7 @@ fn kind(
     if let Some(attempt) = attempt
         && matches!(attempt.status, AttemptStatus::Running)
     {
-        let (response, reasoning) = has_stream_facts(state, attempt);
+        let (response, reasoning) = has_stream_facts(state, attempt, admitted);
         return if response {
             ThreadActivityKind::Responding
         } else if reasoning {
@@ -563,6 +683,7 @@ fn summary(
     foreground_turn: Option<&str>,
     kind: ThreadActivityKind,
     tools: &ThreadActivityTools,
+    admitted: Option<&AdmittedActivity<'_>>,
 ) -> (String, bool) {
     let line = match kind {
         ThreadActivityKind::Thinking | ThreadActivityKind::Responding => {
@@ -574,7 +695,7 @@ fn summary(
             } else {
                 ObservedStream::Reasoning
             };
-            let Some(line) = latest_stream_line(state, attempt, stream) else {
+            let Some(line) = latest_stream_line(state, attempt, stream, admitted) else {
                 return (String::new(), false);
             };
             // 有界尾部读取可能连行首一起截掉，此时摘要本身也如实标记为截断。
@@ -607,13 +728,14 @@ fn summary(
 fn latest_thinking_summary(
     state: &ThreadSnapshot,
     attempt: Option<&RequestAttempt>,
+    admitted: Option<&AdmittedActivity<'_>>,
 ) -> Option<String> {
     let attempt = attempt?;
     let progress = state
         .model_progress
         .as_ref()
         .filter(|progress| progress.attempt_id == attempt.attempt_id)?;
-    for part in progress.progress.parts().iter().rev() {
+    for part in activity_parts(&progress.progress, admitted).rev() {
         if part.is_empty() || observed_stream(part) != Some(ObservedStream::Summary) {
             continue;
         }
@@ -665,15 +787,19 @@ fn latest_stream_line(
     state: &ThreadSnapshot,
     attempt: &RequestAttempt,
     stream: ObservedStream,
+    admitted: Option<&AdmittedActivity<'_>>,
 ) -> Option<TailLine> {
     let Some(progress) = state
         .model_progress
         .as_ref()
         .filter(|progress| progress.attempt_id == attempt.attempt_id)
     else {
-        return committed_stream_line(state, attempt, stream);
+        return admitted
+            .is_none()
+            .then(|| committed_stream_line(state, attempt, stream))
+            .flatten();
     };
-    for part in progress.progress.parts().iter().rev() {
+    for part in activity_parts(&progress.progress, admitted).rev() {
         if part.is_empty() || observed_stream(part) != Some(stream) {
             continue;
         }
@@ -684,7 +810,7 @@ fn latest_stream_line(
     if stream != ObservedStream::Reasoning {
         return None;
     }
-    for part in progress.progress.parts().iter().rev() {
+    for part in activity_parts(&progress.progress, admitted).rev() {
         if part.is_empty() || observed_stream(part) != Some(ObservedStream::Summary) {
             continue;
         }
@@ -844,7 +970,28 @@ fn observed_stream(part: &ObservedPart) -> Option<ObservedStream> {
 /// 当前 attempt 是否已有输出正文 / reasoning 的流式事实。
 ///
 /// 只检查每条观察的长度，因此活动分类不会为判断“是否在思考/回复”而物化任何正文。
-fn has_stream_facts(state: &ThreadSnapshot, attempt: &RequestAttempt) -> (bool, bool) {
+fn has_stream_facts(
+    state: &ThreadSnapshot,
+    attempt: &RequestAttempt,
+    admitted: Option<&AdmittedActivity<'_>>,
+) -> (bool, bool) {
+    if let Some(view) = admitted {
+        // Reliable admission owns activity, even before a bounded progress window has bytes.
+        let mut response = false;
+        let mut reasoning = false;
+        for atom in view.atoms.iter().filter(|atom| {
+            atom.attempt_id.as_deref() == Some(&attempt.attempt_id)
+                && atom.turn_id.as_deref() == Some(&attempt.turn_id)
+                && matches!(
+                    atom.lifecycle,
+                    pl_protocol::ChatAtomLifecycle::Active { .. }
+                )
+        }) {
+            response |= atom.kind == pl_protocol::ChatAtomKind::Text;
+            reasoning |= atom.kind == pl_protocol::ChatAtomKind::Reasoning;
+        }
+        return (response, reasoning);
+    }
     let Some(progress) = state
         .model_progress
         .as_ref()
@@ -1031,12 +1178,34 @@ impl ActivityProjection {
     ///
     /// `None` 表示当前没有活动，此时来源被清除；已完成正文不会回填当前态。
     /// 来源不变时只刷新有界活动本体与共享观察句柄，不物化正文。
+    #[cfg(test)]
     pub(in crate::studio) fn observe(
         &mut self,
         thread_id: &str,
         state: &ThreadSnapshot,
     ) -> Option<ThreadActivity> {
-        let mut activity = project_activity(thread_id, state, self.previous.as_ref());
+        self.observe_using(thread_id, state, None)
+    }
+
+    pub(super) fn observe_admitted(
+        &mut self,
+        thread_id: &str,
+        state: &ThreadSnapshot,
+        atoms: &[pl_protocol::ChatAtom],
+        active: &[super::current::ActiveText],
+    ) -> Option<ThreadActivity> {
+        let admitted = AdmittedActivity::new(state, atoms, active);
+        self.observe_using(thread_id, state, Some(&admitted))
+    }
+
+    fn observe_using(
+        &mut self,
+        thread_id: &str,
+        state: &ThreadSnapshot,
+        admitted: Option<&AdmittedActivity<'_>>,
+    ) -> Option<ThreadActivity> {
+        let mut activity =
+            project_activity_using(thread_id, state, self.previous.as_ref(), admitted);
         if let Some(act) = activity.as_mut() {
             let now = now_unix_seconds();
             if act.kind == ThreadActivityKind::Thinking {
@@ -1246,6 +1415,66 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn admitted_activity_excludes_completed_text_and_survives_missing_progress_window() {
+        let mut state = running_state("TEXT_A");
+        let generation = state
+            .model_progress
+            .as_ref()
+            .unwrap()
+            .progress
+            .observation()
+            .generation;
+        let reasoning = ObservedPart::new(ObservedPartIdentity::Aggregate {
+            channel: AggregateChannel::Reasoning,
+        });
+        let (id, _, shape) = super::super::live::observation_preview(
+            "attempt",
+            generation,
+            &reasoning,
+            &pl_protocol::ThreadContentLifecycle::streaming(),
+        )
+        .unwrap();
+        let item =
+            pl_protocol::ThreadItem::new(id, "thread".into(), "turn".into(), 1, 1, 10, 10, shape);
+        let mut atom = crate::studio::runtime::chat_item::atom(&item);
+        atom.attempt_id = Some("attempt".into());
+        let thinking = project_activity_using(
+            "thread",
+            &state,
+            None,
+            Some(&AdmittedActivity::new(&state, &[atom], &[])),
+        )
+        .unwrap();
+        assert_eq!(thinking.kind, ThreadActivityKind::Thinking);
+        assert!(!thinking.summary.contains("TEXT_A"));
+        assert_eq!(thinking.summary, "");
+
+        let response = &state.model_progress.as_ref().unwrap().progress.parts()[0];
+        let (id, _, shape) = super::super::live::observation_preview(
+            "attempt",
+            generation,
+            response,
+            &pl_protocol::ThreadContentLifecycle::streaming(),
+        )
+        .unwrap();
+        let item =
+            pl_protocol::ThreadItem::new(id, "thread".into(), "turn".into(), 2, 1, 11, 11, shape);
+        let mut atom = crate::studio::runtime::chat_item::atom(&item);
+        atom.attempt_id = Some("attempt".into());
+        state.model_progress = None;
+        let responding = project_activity_using(
+            "thread",
+            &state,
+            Some(&thinking),
+            Some(&AdmittedActivity::new(&state, &[atom], &[])),
+        )
+        .unwrap();
+        assert_eq!(responding.kind, ThreadActivityKind::Responding);
+        assert_eq!(responding.summary, "");
+        assert_eq!(responding.thinking_summary, None);
     }
 
     #[test]

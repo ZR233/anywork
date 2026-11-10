@@ -120,11 +120,11 @@ return single(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult Function( BridgeChatAtom atom,  String? completionId)?  single,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult Function( BridgeDisplayRecord record)?  single,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work() when work != null:
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single() when single != null:
-return single(_that.atom,_that.completionId);case _:
+return single(_that.record);case _:
   return orElse();
 
 }
@@ -142,11 +142,11 @@ return single(_that.atom,_that.completionId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)  work,required TResult Function( BridgeChatAtom atom,  String? completionId)  single,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)  work,required TResult Function( BridgeDisplayRecord record)  single,}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work():
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single():
-return single(_that.atom,_that.completionId);}
+return single(_that.record);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -160,11 +160,11 @@ return single(_that.atom,_that.completionId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult? Function( BridgeChatAtom atom,  String? completionId)?  single,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult? Function( BridgeDisplayRecord record)?  single,}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work() when work != null:
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single() when single != null:
-return single(_that.atom,_that.completionId);case _:
+return single(_that.record);case _:
   return null;
 
 }
@@ -246,11 +246,10 @@ as BridgeDisplayBlockRef,
 
 
 class BridgeDisplayBlockBody_Single extends BridgeDisplayBlockBody {
-  const BridgeDisplayBlockBody_Single({required this.atom, this.completionId}): super._();
+  const BridgeDisplayBlockBody_Single({required this.record}): super._();
 
 
- final  BridgeChatAtom atom;
- final  String? completionId;
+ final  BridgeDisplayRecord record;
 
 /// Create a copy of BridgeDisplayBlockBody
 /// with the given fields replaced by the non-null parameter values.
@@ -262,18 +261,18 @@ $BridgeDisplayBlockBody_SingleCopyWith<BridgeDisplayBlockBody_Single> get copyWi
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayBlockBody_Single&&(identical(other.atom, atom) || other.atom == atom)&&(identical(other.completionId, completionId) || other.completionId == completionId));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayBlockBody_Single&&(identical(other.record, record) || other.record == record));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,atom,completionId);
+    return Object.hash(runtimeType,record);
 }
 
 @override
 String toString() {
-    return 'BridgeDisplayBlockBody.single(atom: $atom, completionId: $completionId)';
+    return 'BridgeDisplayBlockBody.single(record: $record)';
 }
 
 
@@ -284,7 +283,7 @@ abstract mixin class $BridgeDisplayBlockBody_SingleCopyWith<$Res> implements $Br
   factory $BridgeDisplayBlockBody_SingleCopyWith(BridgeDisplayBlockBody_Single value, $Res Function(BridgeDisplayBlockBody_Single) _then) = _$BridgeDisplayBlockBody_SingleCopyWithImpl;
 @useResult
 $Res call({
- BridgeChatAtom atom, String? completionId
+ BridgeDisplayRecord record
 });
 
 
@@ -301,11 +300,346 @@ class _$BridgeDisplayBlockBody_SingleCopyWithImpl<$Res>
 
 /// Create a copy of BridgeDisplayBlockBody
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? atom = null,Object? completionId = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? record = null,}) {
   return _then(BridgeDisplayBlockBody_Single(
-atom: null == atom ? _self.atom : atom // ignore: cast_nullable_to_non_nullable
-as BridgeChatAtom,completionId: freezed == completionId ? _self.completionId : completionId // ignore: cast_nullable_to_non_nullable
-as String?,
+record: null == record ? _self.record : record // ignore: cast_nullable_to_non_nullable
+as BridgeDisplayRecord,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeDisplayContentSource {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayContentSource);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeDisplayContentSource()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeDisplayContentSourceCopyWith<$Res>  {
+$BridgeDisplayContentSourceCopyWith(BridgeDisplayContentSource _, $Res Function(BridgeDisplayContentSource) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeDisplayContentSource].
+extension BridgeDisplayContentSourcePatterns on BridgeDisplayContentSource {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeDisplayContentSource_CurrentAtom value)?  currentAtom,TResult Function( BridgeDisplayContentSource_FrozenObservation value)?  frozenObservation,TResult Function( BridgeDisplayContentSource_CompletedOriginal value)?  completedOriginal,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom() when currentAtom != null:
+return currentAtom(_that);case BridgeDisplayContentSource_FrozenObservation() when frozenObservation != null:
+return frozenObservation(_that);case BridgeDisplayContentSource_CompletedOriginal() when completedOriginal != null:
+return completedOriginal(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeDisplayContentSource_CurrentAtom value)  currentAtom,required TResult Function( BridgeDisplayContentSource_FrozenObservation value)  frozenObservation,required TResult Function( BridgeDisplayContentSource_CompletedOriginal value)  completedOriginal,}){
+final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom():
+return currentAtom(_that);case BridgeDisplayContentSource_FrozenObservation():
+return frozenObservation(_that);case BridgeDisplayContentSource_CompletedOriginal():
+return completedOriginal(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeDisplayContentSource_CurrentAtom value)?  currentAtom,TResult? Function( BridgeDisplayContentSource_FrozenObservation value)?  frozenObservation,TResult? Function( BridgeDisplayContentSource_CompletedOriginal value)?  completedOriginal,}){
+final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom() when currentAtom != null:
+return currentAtom(_that);case BridgeDisplayContentSource_FrozenObservation() when frozenObservation != null:
+return frozenObservation(_that);case BridgeDisplayContentSource_CompletedOriginal() when completedOriginal != null:
+return completedOriginal(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  currentAtom,TResult Function( PlatformInt64? capturedAt,  bool available)?  frozenObservation,TResult Function( String completionId)?  completedOriginal,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom() when currentAtom != null:
+return currentAtom();case BridgeDisplayContentSource_FrozenObservation() when frozenObservation != null:
+return frozenObservation(_that.capturedAt,_that.available);case BridgeDisplayContentSource_CompletedOriginal() when completedOriginal != null:
+return completedOriginal(_that.completionId);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  currentAtom,required TResult Function( PlatformInt64? capturedAt,  bool available)  frozenObservation,required TResult Function( String completionId)  completedOriginal,}) {final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom():
+return currentAtom();case BridgeDisplayContentSource_FrozenObservation():
+return frozenObservation(_that.capturedAt,_that.available);case BridgeDisplayContentSource_CompletedOriginal():
+return completedOriginal(_that.completionId);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  currentAtom,TResult? Function( PlatformInt64? capturedAt,  bool available)?  frozenObservation,TResult? Function( String completionId)?  completedOriginal,}) {final _that = this;
+switch (_that) {
+case BridgeDisplayContentSource_CurrentAtom() when currentAtom != null:
+return currentAtom();case BridgeDisplayContentSource_FrozenObservation() when frozenObservation != null:
+return frozenObservation(_that.capturedAt,_that.available);case BridgeDisplayContentSource_CompletedOriginal() when completedOriginal != null:
+return completedOriginal(_that.completionId);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeDisplayContentSource_CurrentAtom extends BridgeDisplayContentSource {
+  const BridgeDisplayContentSource_CurrentAtom(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayContentSource_CurrentAtom);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeDisplayContentSource.currentAtom()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeDisplayContentSource_FrozenObservation extends BridgeDisplayContentSource {
+  const BridgeDisplayContentSource_FrozenObservation({this.capturedAt, required this.available}): super._();
+
+
+ final  PlatformInt64? capturedAt;
+ final  bool available;
+
+/// Create a copy of BridgeDisplayContentSource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeDisplayContentSource_FrozenObservationCopyWith<BridgeDisplayContentSource_FrozenObservation> get copyWith => _$BridgeDisplayContentSource_FrozenObservationCopyWithImpl<BridgeDisplayContentSource_FrozenObservation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayContentSource_FrozenObservation&&(identical(other.capturedAt, capturedAt) || other.capturedAt == capturedAt)&&(identical(other.available, available) || other.available == available));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,capturedAt,available);
+}
+
+@override
+String toString() {
+    return 'BridgeDisplayContentSource.frozenObservation(capturedAt: $capturedAt, available: $available)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeDisplayContentSource_FrozenObservationCopyWith<$Res> implements $BridgeDisplayContentSourceCopyWith<$Res> {
+  factory $BridgeDisplayContentSource_FrozenObservationCopyWith(BridgeDisplayContentSource_FrozenObservation value, $Res Function(BridgeDisplayContentSource_FrozenObservation) _then) = _$BridgeDisplayContentSource_FrozenObservationCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64? capturedAt, bool available
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeDisplayContentSource_FrozenObservationCopyWithImpl<$Res>
+    implements $BridgeDisplayContentSource_FrozenObservationCopyWith<$Res> {
+  _$BridgeDisplayContentSource_FrozenObservationCopyWithImpl(this._self, this._then);
+
+  final BridgeDisplayContentSource_FrozenObservation _self;
+  final $Res Function(BridgeDisplayContentSource_FrozenObservation) _then;
+
+/// Create a copy of BridgeDisplayContentSource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? capturedAt = freezed,Object? available = null,}) {
+  return _then(BridgeDisplayContentSource_FrozenObservation(
+capturedAt: freezed == capturedAt ? _self.capturedAt : capturedAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64?,available: null == available ? _self.available : available // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeDisplayContentSource_CompletedOriginal extends BridgeDisplayContentSource {
+  const BridgeDisplayContentSource_CompletedOriginal({required this.completionId}): super._();
+
+
+ final  String completionId;
+
+/// Create a copy of BridgeDisplayContentSource
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeDisplayContentSource_CompletedOriginalCopyWith<BridgeDisplayContentSource_CompletedOriginal> get copyWith => _$BridgeDisplayContentSource_CompletedOriginalCopyWithImpl<BridgeDisplayContentSource_CompletedOriginal>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayContentSource_CompletedOriginal&&(identical(other.completionId, completionId) || other.completionId == completionId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,completionId);
+}
+
+@override
+String toString() {
+    return 'BridgeDisplayContentSource.completedOriginal(completionId: $completionId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeDisplayContentSource_CompletedOriginalCopyWith<$Res> implements $BridgeDisplayContentSourceCopyWith<$Res> {
+  factory $BridgeDisplayContentSource_CompletedOriginalCopyWith(BridgeDisplayContentSource_CompletedOriginal value, $Res Function(BridgeDisplayContentSource_CompletedOriginal) _then) = _$BridgeDisplayContentSource_CompletedOriginalCopyWithImpl;
+@useResult
+$Res call({
+ String completionId
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeDisplayContentSource_CompletedOriginalCopyWithImpl<$Res>
+    implements $BridgeDisplayContentSource_CompletedOriginalCopyWith<$Res> {
+  _$BridgeDisplayContentSource_CompletedOriginalCopyWithImpl(this._self, this._then);
+
+  final BridgeDisplayContentSource_CompletedOriginal _self;
+  final $Res Function(BridgeDisplayContentSource_CompletedOriginal) _then;
+
+/// Create a copy of BridgeDisplayContentSource
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? completionId = null,}) {
+  return _then(BridgeDisplayContentSource_CompletedOriginal(
+completionId: null == completionId ? _self.completionId : completionId // ignore: cast_nullable_to_non_nullable
+as String,
   ));
 }
 

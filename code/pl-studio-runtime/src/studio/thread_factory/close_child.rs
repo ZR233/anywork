@@ -1,13 +1,14 @@
 //! Closing a saved child checks frozen workspace ownership without restoring execution resources.
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::{
-    agent_close::{AgentWorktreeCleanup, state_error},
+    agent_close::state_error,
     agent_host::workspace_preparation,
     store::agent_close::{AgentCloseRecord, OwnedWorktreeBinding},
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
 use pl_protocol::Thread;
+use pl_tool::collaboration::control::AgentWorktreeCleanup;
 
 impl StudioThreadFactory {
     /// The caller holds the root/tree coordinator. No model or execution workspace is restored.

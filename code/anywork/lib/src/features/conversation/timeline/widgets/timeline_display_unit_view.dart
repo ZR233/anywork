@@ -1,5 +1,5 @@
 import 'package:anywork_client/models.dart' show ConversationActivityView;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../state/timeline_display_unit.dart';
@@ -74,7 +74,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
       id: unit.id,
       summary: unit.summary!,
       executionPresent: unit.executionPresent,
-      closing: unit.closing,
+      state: unit.state,
       initiallyExpanded: unit.expansion.expanded!,
       location: unit.historyPos == null
           ? WorkDisplayLocation.live

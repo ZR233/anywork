@@ -3,7 +3,7 @@ use super::*;
 use crate::studio::thread_projection::presentation::{
     DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta,
 };
-use pl_protocol::{DisplayBlock, DisplayBlockBody, PayloadData};
+use pl_protocol::{DisplayBlock, DisplayBlockBody, DisplayContentSource, PayloadData};
 use sea_orm::TransactionTrait;
 
 pub(in crate::studio) struct DisplayRecovery {
@@ -40,29 +40,25 @@ pub(in crate::studio) async fn watermarks(db: &impl ConnectionTrait) -> Result<(
 
 fn validate_header(header: &DisplayHeader) -> Result<()> {
     ensure!(
-        header.version == 1 && header.block_order > 0 && !header.id.is_empty(),
+        header.version == 2 && header.block_order > 0 && !header.id.is_empty(),
         "invalid display header"
     );
     if let Some(pos) = header.history_pos {
         ensure!(
             pos > 0
                 && (header.legacy || header.boundary.is_some())
-                && header.unfinished == 0
+                && header.sealed
                 && !header.skip_display,
             "published display header is not ready"
         );
     }
-    if let DisplayBlockBody::Single {
-        atom,
-        completion_id,
-    } = &header.body
-    {
+    if let DisplayBlockBody::Single { record } = &header.body {
         ensure!(
-            !matches!(atom.payload, Some(PayloadData::Inline { .. })),
+            !matches!(record.atom.payload, Some(PayloadData::Inline { .. })),
             "display header retains inline completion payload"
         );
         ensure!(
-            atom.completion_item_id == *completion_id,
+            completion_id(record) == record.atom.completion_item_id.as_deref(),
             "display Single completion differs"
         );
     }
@@ -79,6 +75,7 @@ fn validate_header(header: &DisplayHeader) -> Result<()> {
                     == summary
                         .running
                         .checked_add(summary.waiting)
+                        .and_then(|n| n.checked_add(summary.unavailable))
                         .context("display counter overflow")?,
             "display summary/member counters differ"
         );
@@ -97,6 +94,7 @@ fn decode_header(row: &QueryResult) -> Result<DisplayHeader> {
                     .try_get::<Option<i64>>("", "history_pos")?
                     .map(u64::try_from)
                     .transpose()?
+            && header.sealed == (row.try_get::<i64>("", "sealed")? == 1)
             && serde_json::to_string(&header.source)? == row.try_get::<String>("", "source_key")?,
         "display header differs from indexed identity; original history preserved"
     );
@@ -111,17 +109,30 @@ fn decode_member(row: &QueryResult) -> Result<DisplayMemberWrite> {
             && member.head.member_order == u64::try_from(row.try_get::<i64>("", "member_order")?)?
             && member.head.member_key == row.try_get::<String>("", "member_key")?
             && member.terminal == (row.try_get::<i64>("", "terminal")? == 1)
-            && member.head.completion_id == row.try_get::<Option<String>>("", "completion_id")?
-            && !matches!(member.head.atom.payload, Some(PayloadData::Inline { .. })),
+            && member.association_key == row.try_get::<String>("", "association_key")?
+            && completion_id(&member.head.record)
+                == row
+                    .try_get::<Option<String>>("", "completion_id")?
+                    .as_deref()
+            && !matches!(
+                member.head.record.atom.payload,
+                Some(PayloadData::Inline { .. })
+            ),
         "display member differs from indexed identity; original history preserved"
     );
     Ok(member)
 }
 
-const HEAD: &str = "block_id,source_key,block_order,history_pos,updated_effect,header";
-const MEMBER: &str =
-    "block_id,member_order,member_key,terminal,completion_id,updated_effect,metadata";
-const RECEIPT: &str = "studio.display-delta:v1";
+fn completion_id(record: &pl_protocol::DisplayRecord) -> Option<&str> {
+    match &record.content_source {
+        DisplayContentSource::CompletedOriginal { completion_id } => Some(completion_id),
+        _ => None,
+    }
+}
+
+const HEAD: &str = "block_id,source_key,block_order,history_pos,sealed,updated_effect,header";
+const MEMBER: &str = "block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata";
+const RECEIPT: &str = "studio.display-delta:v2";
 
 pub(in crate::studio) async fn verify(
     db: &impl ConnectionTrait,
@@ -179,6 +190,7 @@ pub(in crate::studio) async fn apply(
         expected_pos == delta.published_through,
         "display prefix lacks frozen heads"
     );
+    let mut previously_sealed = std::collections::BTreeSet::new();
     for write in &delta.blocks {
         let h = &write.header;
         validate_header(h)?;
@@ -196,12 +208,22 @@ pub(in crate::studio) async fn apply(
             serde_json::to_string(&h.source)?.into(),
             integer(h.block_order)?.into(),
             h.history_pos.map(integer).transpose()?.into(),
+            i64::from(h.sealed).into(),
             integer(delta.effect_seq)?.into(),
             serde_json::to_vec(h.as_ref())?.into(),
             h.id.clone().into(),
         ];
         if let Some(row) = existing {
             let old = decode_header(&row)?;
+            if old.sealed {
+                previously_sealed.insert(old.id.clone());
+                let mut published = old.clone();
+                published.history_pos = h.history_pos;
+                ensure!(
+                    published == **h && h.history_pos.is_some(),
+                    "sealed display header changed beyond initial publication"
+                );
+            }
             ensure!(
                 old.history_pos.is_none()
                     && old.source == h.source
@@ -211,12 +233,12 @@ pub(in crate::studio) async fn apply(
                 "display head conflicts with immutable ownership"
             );
             db.execute_raw(statement(
-                "UPDATE conversation_display_blocks SET source_key=?,block_order=?,history_pos=?,updated_effect=?,header=? WHERE block_id=?",
+                "UPDATE conversation_display_blocks SET source_key=?,block_order=?,history_pos=?,sealed=?,updated_effect=?,header=? WHERE block_id=?",
                 values
             )).await?;
         } else {
             db.execute_raw(statement(
-                "INSERT INTO conversation_display_blocks(source_key,block_order,history_pos,updated_effect,header,block_id) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO conversation_display_blocks(source_key,block_order,history_pos,sealed,updated_effect,header,block_id) VALUES(?,?,?,?,?,?,?)",
                 values
             )).await?;
         }
@@ -224,24 +246,42 @@ pub(in crate::studio) async fn apply(
     for member in &delta.members {
         ensure!(
             member.head.member_order > 0
-                && member.head.member_key
+                && !member.head.member_key.is_empty()
+                && member.association_key
                     == crate::studio::thread_projection::presentation::member_key(
-                        &member.head.atom
+                        &member.head.record.atom
                     )?
                 && member.terminal
                     == matches!(
-                        member.head.atom.lifecycle,
+                        member.head.record.atom.lifecycle,
                         pl_protocol::ChatAtomLifecycle::Terminal { .. }
                     )
-                && member.head.completion_id == member.head.atom.completion_item_id
-                && !matches!(member.head.atom.payload, Some(PayloadData::Inline { .. })),
+                && completion_id(&member.head.record)
+                    == member.head.record.atom.completion_item_id.as_deref()
+                && !matches!(
+                    member.head.record.atom.payload,
+                    Some(PayloadData::Inline { .. })
+                ),
             "invalid lightweight display member"
         );
-        if let Some(completion) = &member.head.completion_id {
+        let owner = db
+            .query_one_raw(statement(
+                "SELECT sealed,updated_effect FROM conversation_display_blocks WHERE block_id=?",
+                vec![member.block_id.clone().into()],
+            ))
+            .await?
+            .context("display member has no owner")?;
+        ensure!(
+            !previously_sealed.contains(&member.block_id)
+                && (owner.try_get::<i64>("", "sealed")? == 0
+                    || owner.try_get::<i64>("", "updated_effect")? == integer(delta.effect_seq)?),
+            "sealed block rejects member updates"
+        );
+        if let Some(completion) = completion_id(&member.head.record) {
             ensure!(
                 db.query_one_raw(statement(
                     "SELECT 1 FROM conversation_items WHERE item_id=?",
-                    vec![completion.clone().into()]
+                    vec![completion.into()]
                 ))
                 .await?
                 .is_some(),
@@ -256,7 +296,8 @@ pub(in crate::studio) async fn apply(
             .await?;
         let values = vec![
             i64::from(member.terminal).into(),
-            member.head.completion_id.clone().into(),
+            completion_id(&member.head.record).map(str::to_owned).into(),
+            member.association_key.clone().into(),
             integer(delta.effect_seq)?.into(),
             serde_json::to_vec(member.as_ref())?.into(),
             member.block_id.clone().into(),
@@ -266,19 +307,20 @@ pub(in crate::studio) async fn apply(
         if let Some(row) = existing {
             let old = decode_member(&row)?;
             ensure!(
-                !old.terminal
-                    && old.block_id == member.block_id
+                old.block_id == member.block_id
                     && old.head.member_order == member.head.member_order
+                    && old.association_key == member.association_key
+                    && (!old.terminal || old.head == member.head)
                     && row.try_get::<i64>("", "updated_effect")? < integer(delta.effect_seq)?,
                 "display member conflicts with immutable terminal or ownership"
             );
             db.execute_raw(statement(
-                "UPDATE conversation_display_members SET terminal=?,completion_id=?,updated_effect=?,metadata=? WHERE block_id=? AND member_order=? AND member_key=?",
+                "UPDATE conversation_display_members SET terminal=?,completion_id=?,association_key=?,updated_effect=?,metadata=? WHERE block_id=? AND member_order=? AND member_key=?",
                 values
             )).await?;
         } else {
             db.execute_raw(statement(
-                "INSERT INTO conversation_display_members(terminal,completion_id,updated_effect,metadata,block_id,member_order,member_key) VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO conversation_display_members(terminal,completion_id,association_key,updated_effect,metadata,block_id,member_order,member_key) VALUES(?,?,?,?,?,?,?,?)",
                 values
             )).await?;
         }
@@ -288,9 +330,9 @@ pub(in crate::studio) async fn apply(
             removed.history_pos.is_none()
                 && removed.skip_display
                 && removed.unfinished == 0
-                && matches!(&removed.body, DisplayBlockBody::Single { atom, .. }
-                if atom.kind == pl_protocol::ChatAtomKind::Text && atom.content_present == Some(false)
-                && matches!(atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal { .. })),
+                && matches!(&removed.body, DisplayBlockBody::Single { record }
+                if record.atom.kind == pl_protocol::ChatAtomKind::Text && record.atom.content_present == Some(false)
+                && matches!(record.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal { .. })),
             "RemoveEmpty requires reliable empty terminal text"
         );
         let existing = db
@@ -307,9 +349,9 @@ pub(in crate::studio) async fn apply(
                     && old.source == removed.source
                     && old.block_order == removed.block_order
                     && matches!((&old.body, &removed.body),
-                        (DisplayBlockBody::Single { atom: before, .. }, DisplayBlockBody::Single { atom: after, .. })
-                        if before.id == after.id && before.kind == pl_protocol::ChatAtomKind::Text
-                            && before.content_present != Some(true)),
+                        (DisplayBlockBody::Single { record: before }, DisplayBlockBody::Single { record: after })
+                        if before.atom.id == after.atom.id && before.atom.kind == pl_protocol::ChatAtomKind::Text
+                            && before.atom.content_present != Some(true)),
                 "cannot remove a published display"
             );
             db.execute_raw(statement(
@@ -324,6 +366,48 @@ pub(in crate::studio) async fn apply(
             .await?;
         }
     }
+    let mut observation_keys = std::collections::BTreeSet::new();
+    for member in &delta.members {
+        if matches!(
+            member.head.record.content_source,
+            DisplayContentSource::FrozenObservation {
+                available: true,
+                ..
+            }
+        ) {
+            let atom = &member.head.record.atom;
+            for reference in atom.contents.iter().map(|body| &body.reference).chain(
+                atom.payload.iter().filter_map(|payload| match payload {
+                    PayloadData::Deferred { reference, .. } => Some(reference),
+                    _ => None,
+                }),
+            ) {
+                let pl_protocol::ContentTarget::Body { owner, key } = &reference.target else {
+                    anyhow::bail!("frozen observation does not reference a Body");
+                };
+                ensure!(
+                    matches!(owner, pl_protocol::ContentOwner::DisplayObservation { block_id, member_key }
+                    if block_id == &member.block_id && member_key == &member.head.member_key),
+                    "frozen observation content escaped its display owner"
+                );
+                observation_keys.insert(pl_core::chat::ChatContentKey {
+                    owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+                    key: key.clone(),
+                });
+            }
+        }
+    }
+    for content in &delta.contents {
+        ensure!(
+            observation_keys.remove(&content.descriptor.key),
+            "unowned or duplicate observation content"
+        );
+        super::content::write_content(db, content, true).await?;
+    }
+    ensure!(
+        observation_keys.is_empty(),
+        "frozen observation content is missing from its effect"
+    );
     super::super::write_fact_receipt(
         db,
         integer(delta.effect_seq)?,
@@ -427,6 +511,9 @@ pub(in crate::studio) async fn recovery(db: &impl ConnectionTrait) -> Result<Dis
     let open = open_heads(db, None, i64::MAX as usize).await?;
     let mut unfinished = Vec::new();
     for header in &open {
+        if header.sealed {
+            continue;
+        }
         let rows = db.query_all_raw(statement(
             &format!("SELECT {MEMBER} FROM conversation_display_members WHERE block_id=? AND terminal=0 ORDER BY member_order"),
             vec![header.id.clone().into()]

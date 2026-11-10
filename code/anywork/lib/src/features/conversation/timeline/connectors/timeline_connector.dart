@@ -3,21 +3,26 @@ import 'dart:typed_data';
 
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
+import '../widgets/plan_summary_card.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
+import 'conversation_current_connector.dart';
+import '../view_models/conversation_activity_view_model.dart';
+import '../state/conversation_realtime_presentation.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -277,6 +282,38 @@ class _TimelineConnectorBodyState
       view: view,
       submissions: _submissions,
       controls: lease,
+      currentWork: Consumer(
+        builder: (_, ref, _) {
+          final activity = ref.watch(
+            conversationActivityViewModelProvider(threadId),
+          );
+          // A question occupies the output dock, not Timeline's independently
+          // admitted Work. Keep the same Work lease and disclosure while asking.
+          final region = switch (activity?.region) {
+            ContentRealtimeRegion region => region,
+            DockRealtimeRegion() => ContentRealtimeRegion(
+              live: lease.live.value,
+              notices: const [],
+            ),
+            HiddenRealtimeRegion() || null => null,
+          };
+          if (region == null) return const SizedBox.shrink();
+          return ConversationCurrentConnector(
+            key: ValueKey(('work', lease.generation)),
+            section: ConversationLiveSection.work,
+            session: ref.watch(threadSessionStoreProvider(threadId)),
+            content: lease.content,
+            region: region,
+            live: lease.live,
+            liveUnit: lease.liveUnit,
+            loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
+            registerDisplay: lease.registerCurrentDisplay,
+            images: lease.imageResources,
+            readAttachment: readAttachment,
+            isDisplayActive: active,
+          );
+        },
+      ),
       canonicalPresentationBuilder: (item, render) =>
           TimelineCanonicalPayloadConnector(
             key: ValueKey((lease.generation, item.id)),
@@ -358,13 +395,11 @@ class _TimelineConnectorBodyState
           : Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: SelectionContainer.disabled(
-                child: TextButton.icon(
+                child: PlanSummaryCard(
                   key: StudioDriverKeys.planSummary,
-                  onPressed: widget.onPlanToggle,
-                  icon: Icon(
-                    widget.planExpanded ? Icons.expand_less : Icons.expand_more,
-                  ),
-                  label: Text(plan.title),
+                  title: plan.title,
+                  expanded: widget.planExpanded,
+                  onToggle: widget.onPlanToggle,
                 ),
               ),
             ),

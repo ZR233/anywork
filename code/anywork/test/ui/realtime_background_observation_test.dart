@@ -22,30 +22,32 @@ TimelineDisplayUnit _single({
     id: blockId,
     historyPos: 2,
     body: SingleDisplayBlock(
-      completionId: 'completion',
-      atom: ChatAtom(
-        id: 'background-message-atom',
-        completionItemId: atomCompletionId,
-        completionSeq: completionSeq,
-        source: source,
-        sourceOrder: 1,
-        kind: ChatAtomKind.toolCall,
-        delivery: delivery,
-        lifecycle: TerminalChatAtom(
-          started: null,
-          ended: null,
-          outcome: outcome,
-        ),
-        turnId: turnId,
-        tool: ChatToolIdentity(callId: callId, name: 'exec'),
-        contents: const [],
-        payload: const DeferredPayload(
-          reference: ContentRef(
-            databaseId: 'db',
-            target: ItemPayloadTarget(itemId: 'completion'),
+      record: DisplayRecord(
+        atom: ChatAtom(
+          id: 'background-message-atom',
+          completionItemId: atomCompletionId,
+          completionSeq: completionSeq,
+          source: source,
+          sourceOrder: 1,
+          kind: ChatAtomKind.toolCall,
+          delivery: delivery,
+          lifecycle: TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: outcome,
           ),
-          byteLength: 1024,
+          turnId: turnId,
+          tool: ChatToolIdentity(callId: callId, name: 'exec'),
+          contents: const [],
+          payload: const DeferredPayload(
+            reference: ContentRef(
+              databaseId: 'db',
+              target: ItemPayloadTarget(itemId: 'completion'),
+            ),
+            byteLength: 1024,
+          ),
         ),
+        contentSource: CompletedOriginal(completionId: 'completion'),
       ),
     ),
   ),

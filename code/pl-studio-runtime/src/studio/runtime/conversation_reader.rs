@@ -784,6 +784,32 @@ impl ConversationReader {
             .as_ref()
             .and_then(|source| source.current_conversation());
         if let ContentTarget::Body { owner, key } = &reference.target {
+            if matches!(owner, ContentOwner::DisplayObservation { .. }) {
+                let content_key = core::ChatContentKey {
+                    owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+                    key: key.clone(),
+                };
+                let content = source.as_ref().and_then(|source| {
+                    source
+                        .presentation
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .observation_content(&content_key)
+                });
+                if let Some(content) = content {
+                    let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
+                    self.ensure()?;
+                    return Ok(ContentWindow {
+                        offset: range.offset,
+                        bytes: bytes.as_bytes().to_vec(),
+                        generation: content.descriptor.generation.to_string(),
+                        available_through: content.descriptor.byte_length,
+                        sealed: true,
+                    });
+                }
+                // A frozen observation never borrows the latest current atom. The
+                // original Session/storage path below reads this exact sealed namespace.
+            }
             // Cold Plan bytes must come from their original sealed content
             // store. Reconstructing the document from checkpoint state here
             // would hide missing/corrupt saved content blocks.

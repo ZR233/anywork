@@ -13,7 +13,7 @@ import 'package:anywork_client/src/conversation/data/conversation_repository_imp
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart'
     show InMemoryChatController, Message;
 import 'package:flutter_chat_ui/flutter_chat_ui.dart' show Chat;
@@ -69,7 +69,10 @@ void main() {
           MaterialApp(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: TimelineChildrenConnector(
@@ -169,7 +172,10 @@ void main() {
             MaterialApp(
               theme: pureStudioTheme(),
               locale: const Locale('zh'),
-              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              localizationsDelegates: [
+                AppLocalizations.delegate,
+                ...GlobalMaterialLocalizations.delegates,
+              ],
               supportedLocales: AppLocalizations.supportedLocales,
               home: Scaffold(
                 body: TimelineChildrenConnector(
@@ -250,7 +256,10 @@ void main() {
         MaterialApp(
           theme: pureStudioTheme(),
           locale: const Locale('zh'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          localizationsDelegates: [
+            AppLocalizations.delegate,
+            ...GlobalMaterialLocalizations.delegates,
+          ],
           supportedLocales: AppLocalizations.supportedLocales,
           home: Scaffold(
             body: SingleChildScrollView(
@@ -336,7 +345,10 @@ void main() {
       Widget host() => MaterialApp(
         theme: pureStudioTheme(),
         locale: const Locale('zh'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: TimelineChildrenConnector(
@@ -574,7 +586,10 @@ void main() {
         MaterialApp(
           theme: pureStudioTheme(),
           locale: const Locale('zh'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          localizationsDelegates: [
+            AppLocalizations.delegate,
+            ...GlobalMaterialLocalizations.delegates,
+          ],
           supportedLocales: AppLocalizations.supportedLocales,
           home: Scaffold(
             body: TimelineChildrenConnector(
@@ -652,7 +667,10 @@ void main() {
       Widget host(String parentId) => MaterialApp(
         theme: pureStudioTheme(),
         locale: const Locale('zh'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: TimelineChildrenConnector(
@@ -776,7 +794,10 @@ void main() {
           MaterialApp(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: TimelineChildrenConnector(

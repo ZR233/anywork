@@ -4,10 +4,11 @@ use super::{Registry, SessionRuntime, State, ThreadAssemblyError};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{ThreadLifecycle, input::InputState, task::TaskStatus},
-    tool::{
-        ToolOutput,
-        opaque::{Registration, ToolError},
-    },
+    tool::opaque::Registration,
+};
+use pl_tool::collaboration::control::{
+    AgentCallContext, AgentCloseOutcome, AgentInterruptResult, AgentSendResult, AgentSpawnResult,
+    ControlError, SpawnReceipt,
 };
 use pl_tool::collaboration::thread::{
     AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, AgentSpawnProfile,
@@ -15,12 +16,19 @@ use pl_tool::collaboration::thread::{
 };
 use std::sync::{Arc, Weak};
 
-#[derive(Debug)]
-struct AgentHost(Weak<Registry>);
+#[derive(Debug, Clone)]
+struct AgentHost {
+    registry: Weak<Registry>,
+    identity: pl_protocol::AgentThreadIdentity,
+    resources: Weak<crate::session::NativeResources>,
+}
 
 #[cfg(test)]
 #[path = "agents_archive_tests.rs"]
 pub(crate) mod archive_tests;
+#[cfg(test)]
+#[path = "agents_control_tests.rs"]
+mod control_tests;
 
 #[cfg(test)]
 mod future_sizes {
@@ -38,60 +46,132 @@ mod future_sizes {
         // The closure is never called: no fixture resources or leaked host are needed.
         bounded(
             "AgentHost spawn handoff",
-            |(host, context, request): (
-                &'static AgentHost,
-                pl_core::tool::opaque::CallContext,
-                AgentSpawn,
-            )| host.spawn(context, request),
+            |(host, context, request): (&'static AgentHost, AgentCallContext, AgentSpawn)| {
+                host.spawn(context, request)
+            },
         );
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum ControlError {
-    #[error("agent coordinator is closed")]
-    Closed,
-    #[error("agent is missing or not published: {0}")]
-    Missing(String),
-    #[error("target {target} is not a descendant of caller {caller}")]
-    Relationship { caller: String, target: String },
-    #[error("invalid agent ancestry")]
-    Ancestry,
-    #[error("agent {0} has no current execution to stop")]
-    StaleExecution(String),
-}
-
 impl AgentHost {
-    fn owner(&self) -> Result<SessionRuntime, ToolError> {
-        self.0
+    fn validate_instance(&self) -> Result<(), ControlError> {
+        let owner = self.owner()?;
+        let state = owner.0.state();
+        let id = self.identity.thread_id.as_str();
+        let entry = state
+            .entries
+            .get(id)
+            .ok_or_else(|| ControlError::Missing(id.into()))?;
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || entry.identity != self.identity
+            || !self
+                .resources
+                .ptr_eq(&Arc::downgrade(&entry.native.resources))
+            || !entry.native.ready
+            || entry.native.purpose != super::EntryPurpose::Execution
+            || entry.native.workspace_disposition.is_some()
+            || entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Open
+        {
+            return Err(ControlError::Closed);
+        }
+        if crate::studio::agent_close::is_explicitly_closed(&entry.native.thread.snapshot())
+            .map_err(|source| ControlError::service(super::agent_services::ServiceError(source)))?
+        {
+            return Err(ControlError::Closed);
+        }
+        Ok(())
+    }
+
+    fn caller(&self, context: &AgentCallContext) -> Result<String, ControlError> {
+        self.validate_instance()?;
+        if context.caller != self.identity.agent_id || context.cancellation.is_cancelled() {
+            return Err(ControlError::Closed);
+        }
+        Ok(self.identity.thread_id.to_string())
+    }
+
+    fn target_identity(
+        &self,
+        target: &str,
+    ) -> Result<pl_protocol::AgentThreadIdentity, ControlError> {
+        let owner = self.owner()?;
+        let state = owner.0.state();
+        let agent = pl_protocol::AgentId::new(target).map_err(ControlError::service)?;
+        if let Some(id) = state.by_agent.get(&agent) {
+            let entry = &state.entries[id];
+            if entry.identity.session_id == self.identity.session_id {
+                return Ok(entry.identity.clone());
+            }
+        }
+        if let Some(services) = &state.agent_services
+            && let Some(identity) = services
+                .events
+                .member_identity(&self.identity.session_id, &agent)
+        {
+            return Ok(identity);
+        }
+        Err(ControlError::Missing(target.into()))
+    }
+
+    fn target_thread(&self, target: &str) -> Result<String, ControlError> {
+        Ok(self.target_identity(target)?.thread_id.to_string())
+    }
+
+    fn target_agent(
+        &self,
+        owner: &SessionRuntime,
+        thread: &str,
+    ) -> Result<pl_protocol::AgentId, ControlError> {
+        owner
+            .0
+            .state()
+            .entries
+            .get(thread)
+            .map(|entry| entry.identity.agent_id.clone())
+            .ok_or_else(|| ControlError::Missing(thread.into()))
+    }
+
+    fn owner(&self) -> Result<SessionRuntime, ControlError> {
+        self.registry
             .upgrade()
             .map(SessionRuntime)
-            .ok_or_else(|| ToolError::new(ControlError::Closed))
+            .ok_or(ControlError::Closed)
     }
 }
 
-fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ToolError> {
+fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
     let mut path = Vec::new();
     let mut cursor = Some(id);
+    let session = state
+        .entries
+        .get(id)
+        .map(|entry| &entry.identity.session_id);
     while let Some(id) = cursor {
         if path.iter().any(|previous| previous == id) {
-            return Err(ToolError::new(ControlError::Ancestry));
+            return Err(ControlError::Ancestry);
         }
         let entry = state
             .entries
             .get(id)
-            .ok_or_else(|| ToolError::new(ControlError::Missing(id.into())))?;
+            .ok_or_else(|| ControlError::Missing(id.into()))?;
+        if Some(&entry.identity.session_id) != session {
+            return Err(ControlError::Ancestry);
+        }
         path.push(id.to_owned());
-        cursor = entry.native.parent_id.as_deref();
+        cursor = State::membership_parent(&state.by_agent, entry);
+        if entry.identity.parent_agent_id.is_some() && cursor.is_none() {
+            return Err(ControlError::Ancestry);
+        }
     }
     Ok(path)
 }
 
-fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ToolError> {
+fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlError> {
     if !state.entries.get(caller).is_some_and(|entry| {
         entry.native.ready && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
     }) {
-        return Err(ToolError::new(ControlError::Missing(caller.into())));
+        return Err(ControlError::Missing(caller.into()));
     }
     ancestry(state, caller)?;
     if caller == target
@@ -100,10 +180,10 @@ fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ToolError
             .skip(1)
             .any(|id| id == caller)
     {
-        return Err(ToolError::new(ControlError::Relationship {
+        return Err(ControlError::Relationship {
             caller: caller.into(),
             target: target.into(),
-        }));
+        });
     }
     Ok(())
 }
@@ -117,28 +197,47 @@ fn push_preparing_row(
     rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
     id: &str,
     parent: Option<&str>,
-) -> Result<(), ToolError> {
+) -> Result<(), ControlError> {
     let Some(parent) = parent else {
         return Ok(());
     };
     if ancestry(state, parent)?.last().is_some_and(|id| id == root) {
+        let identity = state
+            .entries
+            .get(id)
+            .map(|entry| entry.identity.clone())
+            .or_else(|| {
+                state
+                    .pending_activation
+                    .get(id)
+                    .map(|activation| activation.agent.clone())
+            })
+            .or_else(|| {
+                state.agent_services.as_ref().and_then(|services| {
+                    services
+                        .events
+                        .agent_execution_identity(id)
+                        .map(|(identity, _, _)| identity)
+                })
+            });
+        // New Native spawns explicitly allocate their member identity together with this
+        // reservation. Cold members instead retain the committed directory identity above.
+        let member = identity
+            .as_ref()
+            .map_or(id, |identity| identity.agent_id.as_str());
+        let parent = state
+            .entries
+            .get(parent)
+            .ok_or_else(|| ControlError::Missing(parent.into()))?
+            .identity
+            .agent_id
+            .as_str();
         rows.insert(
             id.to_owned(),
-            serde_json::json!({"id":id, "parentId":parent, "lifecycle":{"kind":"preparing"}}),
+            serde_json::json!({"id":member, "parentId":parent, "lifecycle":{"kind":"preparing"}}),
         );
     }
     Ok(())
-}
-
-fn output(value: impl serde::Serialize) -> Result<ToolOutput, ToolError> {
-    let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.agent-control", 1, encoded.clone())
-            .map_err(ToolError::new)?,
-        vec![ContextContent::Text {
-            text: Arc::from(encoded),
-        }],
-    ))
 }
 
 pub(super) fn agent_row(
@@ -155,20 +254,6 @@ pub(super) fn agent_row(
         "lastTurn":snapshot.turns.last(), "pendingInputs":snapshot.inputs.iter().filter(|input| input.state == InputState::Pending).count(),
         "runningTasks":snapshot.tasks.values().filter(|task| task.status == TaskStatus::Running).count() }),
     )
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SpawnReceipt {
-    agent_id: String,
-    profile_id: String,
-    model: pl_protocol::studio::NewThreadModelRoute,
-    delegation: pl_protocol::DelegationSettings,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workspace: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
-    message_accepted: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message_sequence: Option<u64>,
 }
 
 fn assigned_workspace(
@@ -195,10 +280,10 @@ async fn cleanup_spawn_failure(
     owner: &SessionRuntime,
     id: &str,
     operation: ThreadAssemblyError,
-) -> ToolError {
+) -> ControlError {
     match owner.discard_child_resources(id).await {
-        Ok(()) => ToolError::new(operation),
-        Err(cleanup) => ToolError::new(SpawnCleanupError {
+        Ok(()) => ControlError::service(operation),
+        Err(cleanup) => ControlError::service(SpawnCleanupError {
             id: id.into(),
             operation,
             cleanup,
@@ -210,20 +295,22 @@ impl AgentHost {
     async fn ensure_archive_execution_admission(
         owner: &SessionRuntime,
         id: &str,
-    ) -> Result<(), ToolError> {
+    ) -> Result<(), ControlError> {
         let services = { owner.0.state().agent_services.clone() };
         if let Some(services) = services {
             let record = services
                 .store
                 .read_thread(id)
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
-                .ok_or_else(|| ToolError::new(ControlError::Missing(id.to_owned())))?;
+                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| ControlError::Missing(id.to_owned()))?;
             services
                 .store
                 .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
         }
         Ok(())
     }
@@ -231,27 +318,28 @@ impl AgentHost {
     async fn spawn_owned(
         &self,
         owner: SessionRuntime,
-        context: pl_core::tool::opaque::CallContext,
+        context: AgentCallContext,
         request: AgentSpawn,
         _parent_operation: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<AgentSpawnResult, ControlError> {
+        let caller = self.caller(&context)?;
         owner
-            .ensure_agent_admission_open(&context.thread_id)
-            .map_err(ToolError::new)?;
-        Self::ensure_archive_execution_admission(&owner, &context.thread_id).await?;
+            .ensure_agent_admission_open(&caller)
+            .map_err(ControlError::service)?;
+        Self::ensure_archive_execution_admission(&owner, &caller).await?;
         let delegation = {
             let state = owner.0.state();
             let caller = state
                 .entries
-                .get(&context.thread_id)
-                .ok_or_else(|| ToolError::new(ControlError::Missing(context.thread_id.clone())))?;
+                .get(&caller)
+                .ok_or_else(|| ControlError::Missing(caller.clone()))?;
             crate::studio::delegation::saved(&caller.native.thread.snapshot())
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
-                .ok_or_else(|| {
-                    ToolError::new(ControlError::Missing("saved delegation selection".into()))
-                })?
+                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| ControlError::Missing("saved delegation selection".into()))?
         };
-        let factory = owner.child_factory(&context).map_err(ToolError::new)?;
+        let factory = owner
+            .child_factory(&context)
+            .map_err(ControlError::service)?;
         let admission = factory
             .admit(
                 &request.profile_id,
@@ -259,41 +347,53 @@ impl AgentHost {
                 request.model_selection.clone(),
             )
             .await
-            .map_err(ToolError::new)?;
-        let (_, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+            .map_err(ControlError::service)?;
+        // The model names a member; the existing Native review preparation consumes its
+        // default Thread binding, just like the Native send and close implementations.
+        let review_target_thread = request
+            .review_target_agent_id
+            .as_deref()
+            .map(|target| self.target_thread(target))
+            .transpose()?;
+        if review_target_thread.as_deref() == Some(caller.as_str()) {
+            return Err(ControlError::service(
+                ThreadAssemblyError::ReviewTargetInvalid(caller.clone()),
+            ));
+        }
+        let (_, reservation) = owner
+            .reserve_child(&context)
+            .map_err(ControlError::service)?;
         if let Some(services) = { owner.0.state().agent_services.clone() } {
-            let parent = services
-                .record(&context.thread_id)
-                .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+            let parent = services.record(&caller).await.map_err(|error| {
+                ControlError::service(super::agent_services::ServiceError(error))
+            })?;
             services
                 .store
                 .begin_thread_preparation(
                     crate::studio::store::thread_preparation::PreparationIdentity {
                         thread_id: reservation.id.clone(),
                         workspace_id: parent.workspace_id,
-                        parent_id: Some(context.thread_id.clone()),
+                        parent_id: Some(caller.clone()),
                         root_id: parent.root_thread_id,
                     },
                 )
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
         }
-        if request.review_target_agent_id.as_deref() == Some(context.thread_id.as_str()) {
-            return Err(ToolError::new(ThreadAssemblyError::ReviewTargetInvalid(
-                context.thread_id.clone(),
-            )));
-        }
-        let _review_operation = match request.review_target_agent_id.as_deref() {
+        let _review_operation = match review_target_thread.as_deref() {
             Some(target) => Some(owner.agent_operation(target).await),
             None => None,
         };
-        let review_target = match request.review_target_agent_id.as_deref() {
+        let review_target = match review_target_thread.as_deref() {
             Some(target) => Some(
                 owner
-                    .freeze_review_target(&context.thread_id, target, request.review_feedback)
+                    .freeze_review_target(&caller, target, request.review_feedback)
                     .await
-                    .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?,
+                    .map_err(|error| {
+                        ControlError::service(super::agent_services::ServiceError(error))
+                    })?,
             ),
             None => None,
         };
@@ -307,33 +407,41 @@ impl AgentHost {
                 .state()
                 .unpublished_children
                 .get(&reservation.id)
-                .ok_or_else(|| ToolError::new(ControlError::Missing(reservation.id.clone())))?
+                .ok_or_else(|| ControlError::Missing(reservation.id.clone()))?
                 .workspace
                 .clone()
         };
-        let spec = admission(super::ChildThreadRequest {
+        let preparation = admission(super::ChildThreadRequest {
             workspace_owner,
             id: reservation.id.clone(),
             cancellation: reservation.cancellation.clone(),
-            caller: context.thread_id.clone(),
+            caller: caller.clone(),
             call_id: context.call_id.clone(),
             profile_id: request.profile_id.clone(),
             model_selection: request.model_selection,
             delegation,
             task_summary: request.task_summary,
             writable_paths: request.writable_paths,
-            review_target_agent_id: request.review_target_agent_id,
+            review_target_agent_id: review_target_thread,
             review_feedback: request.review_feedback,
             review_target,
             review_workspace,
             metadata: OpaquePayload::new(
                 "pl.studio.agent-metadata",
                 1,
-                serde_json::to_string(&request.metadata).map_err(ToolError::new)?,
+                serde_json::to_string(&request.metadata).map_err(ControlError::service)?,
             )
-            .map_err(ToolError::new)?,
-        })
-        .await;
+            .map_err(ControlError::service)?,
+        });
+        tokio::pin!(preparation);
+        let spec = tokio::select! {
+            result = &mut preparation => result,
+            () = context.cancellation.cancelled() => {
+                reservation.cancellation.cancel();
+                // Keep the original factory future and its resource owner until it settles.
+                preparation.await
+            }
+        };
         let spec = match spec {
             Ok(spec) => spec,
             Err(error) => {
@@ -374,7 +482,15 @@ impl AgentHost {
             .await);
         }
         let options = spec.execution;
-        let child = owner.assemble_child(spec, &context).await;
+        let assembly = owner.assemble_child(spec, &context);
+        tokio::pin!(assembly);
+        let child = tokio::select! {
+            result = &mut assembly => result,
+            () = context.cancellation.cancelled() => {
+                reservation.cancellation.cancel();
+                assembly.await
+            }
+        };
         let child = match child {
             Ok(child) => child,
             Err(error) => {
@@ -416,6 +532,31 @@ impl AgentHost {
             }
         };
         let model = crate::studio::delegation::profile_model(&profile);
+        let agent_id = match self.target_agent(&owner, &id) {
+            Ok(agent) => agent.to_string(),
+            Err(source) => {
+                return Err(cleanup_spawn_failure(
+                    &owner,
+                    &id,
+                    ThreadAssemblyError::Resource {
+                        operation: "resolve prepared child identity",
+                        source: Box::new(source),
+                    },
+                )
+                .await);
+            }
+        };
+        // Freeze every creation fact before publication. Nothing after the handoff may
+        // turn a real published member into an error without its creation receipt.
+        let mut receipt = SpawnReceipt {
+            agent_id,
+            profile_id: request.profile_id,
+            model,
+            delegation,
+            workspace,
+            message_accepted: false,
+            message_sequence: None,
+        };
         if let Some(check) = &review_check
             && let Err(error) = check.confirm().await
         {
@@ -438,6 +579,16 @@ impl AgentHost {
             .await);
         }
         let operation = owner.agent_operation(&id).await;
+        if context.cancellation.is_cancelled() {
+            reservation.cancellation.cancel();
+            drop(operation);
+            return Err(cleanup_spawn_failure(
+                &owner,
+                &id,
+                pl_core::thread::ThreadError::Cancelled.into(),
+            )
+            .await);
+        }
         if let Err(error) = owner.publish_child_resources(&id) {
             // Retained disposal acquires this same identity's permit. Never join it while
             // holding the publication permit (the caller also owns the root spawn permit).
@@ -445,17 +596,20 @@ impl AgentHost {
             return Err(cleanup_spawn_failure(&owner, &id, error).await);
         }
         let _operation = operation;
-        if let Some(services) = { owner.0.state().agent_services.clone() } {
-            services
-                .store
-                .publish_preparation(&id)
-                .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+        if let Some(services) = { owner.0.state().agent_services.clone() }
+            && let Err(error) = services.store.publish_preparation(&id).await
+        {
+            return Ok(AgentSpawnResult {
+                receipt,
+                message_error: Some(ControlError::service(super::agent_services::ServiceError(
+                    error,
+                ))),
+            });
         }
         let message = pl_core::thread::inbox::ThreadMessage {
             kind: pl_core::context::AgentMessageKind::Task,
-            id: format!("initial:{}:{}", context.thread_id.len(), context.call_id),
-            source_id: format!("agent:{}", context.thread_id),
+            id: format!("initial:{}:{}", caller.len(), context.call_id),
+            source_id: format!("agent:{}", caller),
             payload: OpaquePayload::text(request.message.clone()),
             context: vec![ContextContent::Text {
                 text: Arc::from(request.message),
@@ -484,43 +638,35 @@ impl AgentHost {
             }
             Err(error) => Err(error),
         };
-        match delivery {
-            Ok(sequence) => output(SpawnReceipt {
-                agent_id: id,
-                profile_id: request.profile_id,
-                model,
-                delegation,
-                workspace,
-                message_accepted: true,
-                message_sequence: Some(sequence),
-            }),
-            Err(source) => Err(ToolError::new(source).with_output(output(SpawnReceipt {
-                agent_id: id,
-                profile_id: request.profile_id,
-                model,
-                delegation,
-                workspace,
-                message_accepted: false,
-                message_sequence: None,
-            })?)),
-        }
+        let (sequence, message_error) = match delivery {
+            Ok(sequence) => (Some(sequence), None),
+            Err(source) => (None, Some(ControlError::service(source))),
+        };
+        receipt.message_accepted = sequence.is_some();
+        receipt.message_sequence = sequence;
+        Ok(AgentSpawnResult {
+            receipt,
+            message_error,
+        })
     }
 }
 
 impl AgentControlHost for AgentHost {
     async fn spawn(
         &self,
-        context: pl_core::tool::opaque::CallContext,
+        context: AgentCallContext,
         request: AgentSpawn,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<AgentSpawnResult, ControlError> {
         let owner = self.owner()?;
-        let parent_operation = owner.agent_operation(&context.thread_id).await;
+        let caller = self.caller(&context)?;
+        let parent_operation = owner.agent_operation(&caller).await;
+        self.validate_instance()?;
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = services {
             let admission = owner.clone();
-            let caller = context.thread_id.clone();
+            let caller = caller.clone();
             let admitted_caller = caller.clone();
-            let host = AgentHost(self.0.clone());
+            let host = self.clone();
             services
                 .operations
                 .run(
@@ -540,14 +686,40 @@ impl AgentControlHost for AgentHost {
                     },
                 )
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?
         } else {
             Box::pin(self.spawn_owned(owner, context, request, parent_operation)).await
         }
     }
 
-    async fn send(&self, caller: &str, message: AgentMessage) -> Result<ToolOutput, ToolError> {
+    async fn send(
+        &self,
+        context: AgentCallContext,
+        mut message: AgentMessage,
+    ) -> Result<AgentSendResult, ControlError> {
+        let caller_id = self.caller(&context)?;
+        let caller = caller_id.as_str();
+        let target_agent = message.target.clone();
+        let identity = self.target_identity(&message.target)?;
+        if identity.parent_agent_id.as_ref() != Some(&self.identity.agent_id) {
+            return Err(ControlError::Relationship {
+                caller: context.caller.to_string(),
+                target: target_agent,
+            });
+        }
+        message.target = identity.thread_id.to_string();
         let owner = self.owner()?;
+        if caller == message.target {
+            return Err(ControlError::Relationship {
+                caller: caller.into(),
+                target: target_agent,
+            });
+        }
+        // Preserve caller qualification across cold activation and target admission.
+        let _caller_operation = owner.agent_operation(caller).await;
+        self.validate_instance()?;
         Self::ensure_archive_execution_admission(&owner, caller).await?;
         Self::ensure_archive_execution_admission(&owner, &message.target).await?;
         let services = owner.0.state().agent_services.clone();
@@ -555,12 +727,16 @@ impl AgentControlHost for AgentHost {
             services
                 .authorize(caller, &message.target)
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
             services
                 .store
                 .ensure_agent_execution_allowed(&message.target)
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
         }
         if owner.thread(&message.target).is_none() {
             let services = owner.0.state().agent_services.clone();
@@ -568,30 +744,31 @@ impl AgentControlHost for AgentHost {
                 services
                     .activate_child(&owner, caller, &message.target)
                     .await
-                    .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+                    .map_err(|error| {
+                        ControlError::service(super::agent_services::ServiceError(error))
+                    })?;
             }
         }
         let _operation = owner.agent_operation(&message.target).await;
         owner
             .ensure_agent_admission_open(&message.target)
-            .map_err(ToolError::new)?;
+            .map_err(ControlError::service)?;
         let (target, options) = {
             let state = owner.0.state();
             if state.closing {
-                return Err(ToolError::new(ControlError::Closed));
+                return Err(ControlError::Closed);
             }
             descendant(&state, caller, &message.target)?;
             let entry = state
                 .entries
                 .get(&message.target)
                 .filter(|entry| {
-                    entry.native.ready && entry.native.parent_id.as_deref() == Some(caller)
+                    entry.native.ready
+                        && State::membership_parent(&state.by_agent, entry) == Some(caller)
                 })
-                .ok_or_else(|| {
-                    ToolError::new(ControlError::Relationship {
-                        caller: caller.into(),
-                        target: message.target.clone(),
-                    })
+                .ok_or_else(|| ControlError::Relationship {
+                    caller: caller.into(),
+                    target: message.target.clone(),
                 })?;
             (entry.native.thread.clone(), entry.native.execution)
         };
@@ -611,53 +788,58 @@ impl AgentControlHost for AgentHost {
         let sequence = match owner
             .adjudicate_message(&message.target, &delivery)
             .await
-            .map_err(ToolError::new)?
+            .map_err(ControlError::service)?
         {
             DeliveryDisposition::Receipt(sequence) => sequence,
             DeliveryDisposition::New => {
                 owner
                     .prepare_input_admission(&message.target, &target)
                     .await
-                    .map_err(ToolError::new)?;
+                    .map_err(ControlError::service)?;
                 target
                     .send_message_and_continue(delivery, options)
                     .await
-                    .map_err(ToolError::new)?
+                    .map_err(ControlError::service)?
             }
             DeliveryDisposition::Conflict => {
-                return Err(ToolError::new(ThreadAssemblyError::MessageConflict(
+                return Err(ControlError::service(ThreadAssemblyError::MessageConflict(
                     message.id.clone(),
                 )));
             }
             DeliveryDisposition::Unverifiable => {
-                return Err(ToolError::new(ThreadAssemblyError::MessageUnverifiable(
-                    message.id.clone(),
-                )));
+                return Err(ControlError::service(
+                    ThreadAssemblyError::MessageUnverifiable(message.id.clone()),
+                ));
             }
         };
-        output(
-            serde_json::json!({"target":message.target, "messageId":message.id, "sequence":sequence}),
-        )
+        Ok(AgentSendResult {
+            target: target_agent,
+            message_id: message.id,
+            sequence,
+        })
     }
 
-    async fn list(&self, caller: &str) -> Result<ToolOutput, ToolError> {
+    async fn list(
+        &self,
+        context: AgentCallContext,
+    ) -> Result<Vec<serde_json::Value>, ControlError> {
+        let caller_id = self.caller(&context)?;
+        let caller = caller_id.as_str();
         let owner = self.owner()?;
         let mut rows = {
             let state = owner.0.state();
             if state.closing {
-                return Err(ToolError::new(ControlError::Closed));
+                return Err(ControlError::Closed);
             }
             if !state
                 .entries
                 .get(caller)
                 .is_some_and(|entry| entry.native.ready)
             {
-                return Err(ToolError::new(ControlError::Missing(caller.into())));
+                return Err(ControlError::Missing(caller.into()));
             }
             let path = ancestry(&state, caller)?;
-            let root = path
-                .last()
-                .ok_or_else(|| ToolError::new(ControlError::Ancestry))?;
+            let root = path.last().ok_or(ControlError::Ancestry)?;
             // A complete listing also covers in-flight members: reserved spawns and cold
             // activations that already hold tree capacity but are not published yet. They carry
             // no Thread snapshot, so only identity and the explicit preparing fact are projected.
@@ -686,16 +868,25 @@ impl AgentControlHost for AgentHost {
                             root,
                             &mut rows,
                             id,
-                            entry.native.parent_id.as_deref(),
+                            State::membership_parent(&state.by_agent, entry),
                         )?;
                     }
                     continue;
                 }
                 rows.insert(
                     id.clone(),
-                    agent_row(id, entry.native.parent_id.as_deref(), &snapshot).map_err(
-                        |error| ToolError::new(super::agent_services::ServiceError(error)),
-                    )?,
+                    agent_row(
+                        entry.identity.agent_id.as_str(),
+                        entry
+                            .identity
+                            .parent_agent_id
+                            .as_ref()
+                            .map(pl_protocol::AgentId::as_str),
+                        &snapshot,
+                    )
+                    .map_err(|error| {
+                        ControlError::service(super::agent_services::ServiceError(error))
+                    })?,
                 );
             }
             rows.into_values().collect::<Vec<_>>()
@@ -710,53 +901,74 @@ impl AgentControlHost for AgentHost {
                 services
                     .saved_agents(caller, &loaded)
                     .await
-                    .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?,
+                    .map_err(|error| {
+                        ControlError::service(super::agent_services::ServiceError(error))
+                    })?,
             );
         }
-        output(rows)
+        Ok(rows)
     }
 
-    async fn interrupt(&self, caller: &str, target: &str) -> Result<ToolOutput, ToolError> {
+    async fn interrupt(
+        &self,
+        context: AgentCallContext,
+        target: &str,
+    ) -> Result<AgentInterruptResult, ControlError> {
+        let caller_id = self.caller(&context)?;
+        let caller = caller_id.as_str();
+        let target_agent = target.to_owned();
+        let target_id = self.target_thread(target)?;
+        let target = target_id.as_str();
         let owner = self.owner()?;
+        let _caller_operation = owner.agent_operation(caller).await;
+        self.validate_instance()?;
+        owner
+            .ensure_agent_admission_open(target)
+            .map_err(ControlError::service)?;
         // The parent stops exactly the execution it observed, through the same precise stop the user
         // interfaces use. A superseded identity fails instead of cancelling whatever runs now.
         let (thread, execution) = {
             let state = owner.0.state();
             if state.closing {
-                return Err(ToolError::new(ControlError::Closed));
+                return Err(ControlError::Closed);
             }
             descendant(&state, caller, target)?;
             let entry = state
                 .entries
                 .get(target)
-                .ok_or_else(|| ToolError::new(ControlError::Missing(target.into())))?;
+                .ok_or_else(|| ControlError::Missing(target.into()))?;
             (
                 entry.native.thread.clone(),
                 entry.native.thread.snapshot().execution,
             )
         };
         let Some(execution) = execution else {
-            return Err(ToolError::new(ControlError::StaleExecution(target.into())));
+            return Err(ControlError::StaleExecution(target.into()));
         };
         let interrupted = thread
             .interrupt_execution(execution.id.clone())
             .await
-            .map_err(ToolError::new)?;
-        output(serde_json::json!({
-            "target":target,
-            "executionId":execution.id,
-            "interrupted":interrupted,
-        }))
+            .map_err(ControlError::service)?;
+        Ok(AgentInterruptResult {
+            target: target_agent,
+            execution_id: execution.id,
+            interrupted,
+        })
     }
 
     async fn close(
         &self,
-        caller: &str,
+        context: AgentCallContext,
         target: &str,
         options: pl_tool::collaboration::thread::AgentCloseOptions,
-    ) -> Result<ToolOutput, ToolError> {
+    ) -> Result<AgentCloseOutcome, ControlError> {
+        let caller_id = self.caller(&context)?;
+        let caller = caller_id.as_str();
+        let target_id = self.target_thread(target)?;
+        let target = target_id.as_str();
         let owner = self.owner()?;
         let root_operation = owner.agent_operation(caller).await;
+        self.validate_instance()?;
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = services {
             let admission = owner.clone();
@@ -777,7 +989,7 @@ impl AgentControlHost for AgentHost {
                                 .state()
                                 .entries
                                 .get(&root)
-                                .is_some_and(|entry| entry.native.parent_id.is_none()),
+                                .is_some_and(|entry| entry.identity.parent_agent_id.is_none()),
                             "only a root may close child agents"
                         );
                         Ok(())
@@ -789,30 +1001,46 @@ impl AgentControlHost for AgentHost {
                     },
                 )
                 .await
-                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
-            let receipt = output(&outcome)?;
-            return match outcome.error {
-                Some(error) => Err(ToolError::new(super::agent_services::ServiceError(
-                    anyhow::anyhow!(error.message),
-                ))
-                .with_output(receipt)),
-                None => Ok(receipt),
-            };
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
+            return Ok(outcome);
         }
-        Err(ToolError::new(super::agent_services::ServiceError(
+        Err(ControlError::service(super::agent_services::ServiceError(
             anyhow::anyhow!("final child retirement requires the Studio durable resource owner"),
         )))
     }
 }
 
 impl SessionRuntime {
+    pub(crate) fn agent_control_tools_for_thread(
+        &self,
+        id: &str,
+        thread: &pl_core::thread::ThreadHandle,
+        profiles: &crate::config::AgentProfilesSnapshot,
+        selection: pl_protocol::DelegationSettings,
+    ) -> Result<Vec<Registration>, ThreadAssemblyError> {
+        let (identity, resources) = {
+            let state = self.0.state();
+            let entry = state
+                .entries
+                .get(id)
+                .filter(|entry| entry.native.thread.same_instance(thread))
+                .ok_or(ThreadAssemblyError::Closed)?;
+            (entry.identity.clone(), entry.native.resources.clone())
+        };
+        self.agent_control_tools(&identity, &resources, profiles, selection)
+    }
+
     /// Creates control frontends and a query view from one published Profile generation.
     /// Tools hold a weak coordinator reference and cannot keep their registry alive.
     ///
     /// # Errors
     /// Returns catalog, schema construction, model declaration encoding or registration errors.
-    pub fn agent_control_tools(
+    pub(crate) fn agent_control_tools(
         &self,
+        caller: &pl_protocol::AgentThreadIdentity,
+        resources: &Arc<crate::session::NativeResources>,
         profiles: &crate::config::AgentProfilesSnapshot,
         selection: pl_protocol::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
@@ -837,7 +1065,11 @@ impl SessionRuntime {
                 workspace_mode: profile.workspace_mode,
             })
             .collect::<Vec<_>>();
-        let host = Arc::new(AgentHost(Arc::downgrade(&self.0)));
+        let host = Arc::new(AgentHost {
+            registry: Arc::downgrade(&self.0),
+            identity: caller.clone(),
+            resources: Arc::downgrade(resources),
+        });
         let mut kinds = vec![
             AgentControlKind::Send,
             AgentControlKind::List,
@@ -861,8 +1093,13 @@ impl SessionRuntime {
                     &spec,
                     pl_model::completion::ToolCallPolicy::DirectOnly,
                 )?;
-                tools
-                    .push(ThreadAgentControl::new(host.clone(), kind, spec).registration(prepared));
+                tools.push(
+                    ThreadAgentControl::new(host.clone(), kind, spec, caller.clone(), {
+                        let host = host.clone();
+                        move || host.validate_instance()
+                    })
+                    .registration(prepared),
+                );
             }
         }
         tools.extend(self.agent_query_tools(catalog, selection)?);

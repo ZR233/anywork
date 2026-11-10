@@ -50,7 +50,7 @@ void main() {
         LiveDisplayBlock(
           id: 'work',
           blockOrder: 1,
-          closing: false,
+          state: DisplayBlockState.open,
           body: displayWork('work', 1).body,
         ),
       ],

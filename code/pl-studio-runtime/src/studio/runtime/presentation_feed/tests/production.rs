@@ -98,7 +98,7 @@ async fn reliable_text_start_advances_p_without_h_and_member_completion_advances
         assert!(!active.sealed);
         assert_eq!(active.entries.len(), 1);
         assert!(matches!(
-            active.entries[0].atom.lifecycle,
+            active.entries[0].record.atom.lifecycle,
             ChatAtomLifecycle::Active {
                 status: ChatActiveStatus::Running,
                 ..
@@ -134,7 +134,7 @@ async fn reliable_text_start_advances_p_without_h_and_member_completion_advances
         );
         let terminal = members.next().await?.context("terminal member page")?;
         assert_eq!(terminal.entries[0].member_key, active.entries[0].member_key);
-        assert!(terminal.entries[0].completion_id.is_some());
+        assert!(terminal.entries[0].record.atom.completion_item_id.is_some());
         assert!(terminal.revision > active.revision);
         assert!(
             !terminal.sealed,

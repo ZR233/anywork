@@ -87,7 +87,7 @@ fn expand_tool(attributes: TokenStream2, item: TokenStream2) -> syn::Result<Toke
         Item::Impl(item) if item.trait_.is_none() => item,
         Item::Impl(item) => {
             return Err(Error::new_spanned(
-                &item.trait_.as_ref().expect("checked above").1,
+                &item.trait_.as_ref().expect("checked above").0,
                 "`#[tool]` only supports inherent impl blocks, not trait impls",
             ));
         }
@@ -419,7 +419,7 @@ fn validate_common_method(method: &ImplItemFn, name: &str) -> syn::Result<()> {
         ));
     }
     if method.sig.constness.is_some()
-        || method.sig.unsafety.is_some()
+        || !matches!(method.sig.safety, syn::Safety::Default)
         || method.sig.abi.is_some()
         || method.sig.variadic.is_some()
     {
@@ -438,12 +438,8 @@ fn validate_receiver(argument: &FnArg) -> syn::Result<()> {
             "the first parameter must be `&self`",
         ));
     };
-    let plain_reference = receiver.colon_token.is_none()
-        && receiver.mutability.is_none()
-        && receiver
-            .reference
-            .as_ref()
-            .is_some_and(|(_, lifetime)| lifetime.is_none());
+    let plain_reference = receiver.mutability.is_none()
+        && matches!(receiver.kind, syn::ReceiverKind::Reference(_, None, None));
     if !plain_reference {
         return Err(Error::new_spanned(
             receiver,
@@ -692,7 +688,7 @@ mod tests {
                 .trait_
                 .as_ref()
                 .expect("trait impl")
-                .1
+                .0
                 .to_token_stream()
                 .to_string(),
             "tool_api :: typed :: TypedTool"

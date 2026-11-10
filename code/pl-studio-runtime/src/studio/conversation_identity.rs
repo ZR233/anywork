@@ -6,6 +6,19 @@ use pl_protocol::ContentOwner;
 pub(in crate::studio) fn content_owner_key(owner: &ContentOwner) -> Result<ChatKey, ChatError> {
     match owner {
         ContentOwner::Item { item_id } => ChatKey::new("item", item_id),
+        ContentOwner::DisplayObservation {
+            block_id,
+            member_key,
+        } => {
+            if block_id.is_empty() || member_key.is_empty() {
+                return Err(ChatError::InvalidArgument(
+                    "display observation requires block and member identity".into(),
+                ));
+            }
+            let value = serde_json::to_string(&(block_id, member_key))
+                .map_err(|error| ChatError::InvalidArgument(error.to_string()))?;
+            ChatKey::new("display-observation", &value)
+        }
         ContentOwner::Current {
             domain,
             id,

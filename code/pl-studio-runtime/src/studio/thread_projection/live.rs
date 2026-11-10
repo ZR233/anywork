@@ -178,6 +178,10 @@ struct LivePreview {
     /// accumulated length), used only for de-duplication; it is not the window item's content
     /// version, which [`LiveProjection::revisions`] owns.
     observed_version: u64,
+    /// Position in the producer's current generation, not lexical preview or execution order.
+    /// Checked against that snapshot before activity reads the part; replacement/reordering
+    /// invalidates the observation version even when its bytes did not change.
+    model_part: Option<super::current::ModelPartLocation>,
 }
 
 /// Cheap stable identity of one provider/aggregate streaming observation.
@@ -202,6 +206,7 @@ enum ObservedKey {
 struct ObservedVersion {
     content: u64,
     ended: bool,
+    model_part: Option<super::current::ModelPartLocation>,
 }
 
 /// Cheap key of one observation identity, derived without building its projection id.
@@ -313,6 +318,8 @@ pub(in crate::studio) struct PreparedEffect {
     /// Reliable effect-local changes of already admitted members, not new immutable phases.
     /// Publication consumes these into the original frozen display delta.
     display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
+    /// Only requested boundary cuts survive retirement; publication never consults newer live data.
+    display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
     /// The frozen completion records this batch published atomically before the handoff.
@@ -427,6 +434,14 @@ impl PreparedEffect {
                 serde_json::to_vec(self.display_atom_updates.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
+            .saturating_add(self.display_observations.iter().fold(
+                0u64,
+                |bytes, (key, observation)| {
+                    bytes
+                        .saturating_add(key.len() as u64)
+                        .saturating_add(observation.retained_bytes())
+                },
+            ))
             .saturating_add(
                 serde_json::to_vec(self.current.source_changes.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1151,6 +1166,7 @@ impl Fact {
 #[cfg(test)]
 #[path = "live/completion_tests.rs"]
 mod completion_boundary_tests;
+mod observations;
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 mod provenance;
 #[cfg(test)]
@@ -1453,6 +1469,7 @@ impl LiveProjection {
                         block.clone(),
                         ordinal,
                         text_channel,
+                        preview.model_part,
                     )
                 })
             })
@@ -1610,6 +1627,9 @@ impl LiveProjection {
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         self.ensure_database_identity().await?;
         let mut provenance = self.begin_provenance(effect)?;
+        let observation_inputs = self
+            .observation_inputs(&thread.id)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let (items, review_delivery, mut completion_drafts) =
@@ -1620,6 +1640,21 @@ impl LiveProjection {
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
+        let display_facts = provenance
+            .2
+            .iter()
+            .chain(provenance.0.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let display_observations = self
+            .retain_display_observations(
+                &thread.id,
+                effect.sequence,
+                &display_facts,
+                &provenance.1,
+                observation_inputs,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         Arc::make_mut(&mut current).atom_facts = provenance.0.into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         // Admission, source ends and terminals are folded together only after
@@ -1632,6 +1667,7 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_observations,
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -1671,6 +1707,9 @@ impl LiveProjection {
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.ensure_database_identity().await?;
         let mut provenance = self.begin_provenance(effect)?;
+        let observation_inputs = self
+            .observation_inputs(&thread.id)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
@@ -1678,6 +1717,21 @@ impl LiveProjection {
             .await?;
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
+        let display_facts = provenance
+            .2
+            .iter()
+            .chain(provenance.0.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let display_observations = self
+            .retain_display_observations(
+                &thread.id,
+                effect.sequence,
+                &display_facts,
+                &provenance.1,
+                observation_inputs,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         Arc::make_mut(&mut current).atom_facts = provenance.0.into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let prepared = Arc::new(PreparedEffect {
@@ -1688,6 +1742,7 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_observations,
             items,
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
@@ -2211,28 +2266,40 @@ impl LiveProjection {
         // Existing-member Active updates precede this effect's starts/terminals, so a
         // terminal of the same identity remains its final display state. This walks only
         // effect-local changes; progress/token observation never enters this path.
+        let mut presentation = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let display_facts = prepared
             .display_atom_updates
             .iter()
+            .filter(|atom| presentation.accepts_update(atom))
             .chain(prepared.current.atom_facts.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let display = self
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .prepare(
+        let display = presentation
+            .prepare_capturing(
                 prepared.sequence,
                 prepared.committed_at,
                 &display_facts,
                 &prepared.current.source_changes,
                 &records,
+                |member| {
+                    prepared
+                        .display_observations
+                        .get(&member.association_key)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("boundary has no retained effect observation")
+                        })?
+                        .freeze()
+                },
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         let prepared = Arc::make_mut(prepared);
         Arc::make_mut(&mut prepared.current).display = Some(display.clone());
         prepared.display = Some(display);
         prepared.display_atom_updates = Arc::from([]);
+        prepared.display_observations = Arc::new(BTreeMap::new());
         prepared.completions = records;
         prepared.completion_drafts = None;
         Ok(())
@@ -2326,11 +2393,11 @@ impl LiveProjection {
         // The producer retires the whole-channel aggregate observation the moment it itemizes the
         // response, yet the aggregate preview rows it published before still have to leave the window
         // and this projection, otherwise the same text would show up twice.
-        if progress
-            .parts()
-            .iter()
-            .any(|part| matches!(part.identity(), ObservedPartIdentity::Provider(_)))
-        {
+        if progress.parts().iter().any(|part| {
+            #[cfg(test)]
+            super::activity::part_cost::model();
+            matches!(part.identity(), ObservedPartIdentity::Provider(_))
+        }) {
             for channel in [AggregateChannel::Text, AggregateChannel::Reasoning] {
                 let id = aggregate_id(
                     &attempt.attempt_id,
@@ -2400,6 +2467,7 @@ impl LiveProjection {
                 observed: None,
                 shape: static_state(&state),
                 observed_version: progress.version(),
+                model_part: None,
             };
             self.store_preview(id, entry);
         }
@@ -2430,6 +2498,8 @@ impl LiveProjection {
         let first = retired;
         for index in first..parts.len() {
             let part = parts.get(index).expect("model part index is in range");
+            #[cfg(test)]
+            super::activity::part_cost::model();
             // An observation with no body yet is not a displayable preview; wait for its first byte.
             if part.is_empty() {
                 continue;
@@ -2452,6 +2522,7 @@ impl LiveProjection {
             let observed_version = ObservedVersion {
                 content: part.version(),
                 ended: failure.is_some(),
+                model_part: Some(super::current::ModelPartLocation { generation, index }),
             };
             if self.observed.get(&key) == Some(&observed_version) {
                 continue;
@@ -2517,6 +2588,7 @@ impl LiveProjection {
                         observed: None,
                         shape,
                         observed_version: part.version(),
+                        model_part: observed_version.model_part,
                     }
                 }
             };
@@ -2526,6 +2598,7 @@ impl LiveProjection {
             }
             entry.observed = Some(key);
             entry.observed_version = part.version();
+            entry.model_part = observed_version.model_part;
             entry.fields.insert(field, part.content().clone());
             self.store_preview(id, entry);
         }
@@ -2599,6 +2672,7 @@ impl LiveProjection {
                         observed: None,
                         shape: static_state(committed.state()),
                         observed_version: progress.version(),
+                        model_part: None,
                     }
                 }
             };
@@ -3142,6 +3216,7 @@ impl LiveProjection {
         let version = ObservedVersion {
             content: entry.observed_version,
             ended: entry.shape.is_terminal(),
+            model_part: entry.model_part,
         };
         match self.previews.insert(id, entry) {
             Some(replaced) => {
@@ -3410,6 +3485,7 @@ impl LiveProjection {
                     ObservedVersion {
                         content: preview.observed_version,
                         ended: preview.shape.is_terminal(),
+                        model_part: preview.model_part,
                     },
                 );
             }
@@ -3806,6 +3882,7 @@ mod completion_tests {
                 )),
                 shape,
                 observed_version: revision,
+                model_part: None,
             },
         );
     }
@@ -3846,6 +3923,7 @@ mod completion_tests {
                         ObservedVersion {
                             content: preview.observed_version,
                             ended: preview.shape.is_terminal(),
+                            model_part: preview.model_part,
                         },
                     )
                 })
@@ -3974,6 +4052,7 @@ mod completion_tests {
                     ThreadContentLifecycle::streaming(),
                 )),
                 observed_version: 8,
+                model_part: None,
             },
         );
         let items = projection.attempt_preview_items("thread", "attempt", "turn")?;

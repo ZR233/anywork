@@ -1,9 +1,8 @@
 //! Network execution only. The invocation owner decides whether an operation can be retried.
 mod diagnostics;
-mod sse_lines;
+mod sse_limit;
 use diagnostics::RequestDiagnostics;
 
-use eventsource_stream::Eventsource;
 use futures::{StreamExt, stream::BoxStream};
 use pl_protocol::{PureError, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
@@ -302,31 +301,44 @@ pub(crate) async fn sse(
             Err(error)
         }
     });
-    let stream = sse_lines::complete_lines(body).eventsource();
+    let stream = sse_stream::SseByteStream::new(sse_limit::bounded(body));
     Ok(stream
         .take_while(|event| {
-            futures::future::ready(
-                !event
-                    .as_ref()
-                    .is_ok_and(|event| event.data.trim() == "[DONE]"),
-            )
+            futures::future::ready(!event.as_ref().is_ok_and(|event| {
+                event
+                    .data
+                    .as_deref()
+                    .is_some_and(|data| data.trim() == "[DONE]")
+            }))
         })
         .filter_map(move |event| {
             let diagnostics = diagnostics.clone();
             let request_id = request_id.clone();
             async move {
                 match event {
-                    Ok(event) if event.data.trim().is_empty() => None,
+                    Ok(event)
+                        if event
+                            .data
+                            .as_deref()
+                            .is_none_or(|data| data.trim().is_empty()) =>
+                    {
+                        None
+                    }
                     Ok(event) => Some(
-                        serde_json::from_str::<SseStreamEvent>(&event.data)
-                            .map(|mut event| {
-                                event.request_id = request_id;
-                                diagnostics.redact_event(&mut event);
-                                event
-                            })
-                            .map_err(|_| PureError::Protocol("invalid SSE JSON".into())),
+                        serde_json::from_str::<SseStreamEvent>(
+                            event.data.as_deref().expect("data checked above"),
+                        )
+                        .map(|mut event| {
+                            event.request_id = request_id;
+                            diagnostics.redact_event(&mut event);
+                            event
+                        })
+                        .map_err(|_| PureError::Protocol("invalid SSE JSON".into())),
                     ),
-                    Err(eventsource_stream::EventStreamError::Transport(error)) => Some(Err(error)),
+                    Err(sse_stream::Error::Body(error)) => Some(Err(error
+                        .downcast::<PureError>()
+                        .map(|error| *error)
+                        .unwrap_or_else(|_| PureError::Protocol("invalid SSE body".into())))),
                     Err(_) => Some(Err(PureError::Protocol("invalid SSE framing".into()))),
                 }
             }

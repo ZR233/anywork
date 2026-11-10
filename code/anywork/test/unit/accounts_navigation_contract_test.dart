@@ -170,12 +170,12 @@ void main() {
     final token = owner.leaveToken();
     listening.close();
     await h.container.pump();
-    expect(h.container.exists(provider), isTrue);
+    expect(h.container.read(provider.exists), isTrue);
     expect(owner.matchesLeaveToken(token), isTrue);
     expect(h.editorState(key).native!.name.raw, 'Discard');
     owner.finish();
     await h.container.pump();
-    expect(h.container.exists(provider), isFalse);
+    expect(h.container.read(provider.exists), isFalse);
     final next = editKey('fresh');
     await h.editor(next);
     expect(
@@ -516,7 +516,7 @@ void main() {
     // only actual entry removal, not observation lifetime, owns retirement.
     listening.close();
     await h.container.pump();
-    expect(h.container.exists(provider), isTrue);
+    expect(h.container.read(provider.exists), isTrue);
     expect(owner.matchesLeaveToken(token), isTrue);
     expect(session.isTemplateReplacementCurrent(source, replacement), isTrue);
     final next = session.replaceTemplate(

@@ -88,7 +88,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Validate Conventional Commit title
-        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
@@ -131,7 +131,7 @@ jobs:
         run: ./.github/scripts/studio-release-assets.tests.ps1
 
       - name: Validate workflows with actionlint
-        uses: reviewdog/action-actionlint@50842263c20a7c46bd0065b9e624d3c569db061e # v1
+        uses: reviewdog/action-actionlint@a7d35aaf8c309203a4ae861d32b7bd490baa7bf3 # v1.83.0
         with:
           fail_level: error
           filter_mode: nofilter
@@ -151,7 +151,7 @@ jobs:
           log_file="$(mktemp)"
           trap 'rm -f "$log_file"' EXIT
           for attempt in 1 2 3; do
-            if npx --yes release-please@17.10.4 release-pr \
+            if npx --yes release-please@17.11.2 release-pr \
               --dry-run \
               --repo-url="$VALIDATION_REPOSITORY" \
               --target-branch="$VALIDATION_BRANCH" \
@@ -234,7 +234,7 @@ jobs:
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
@@ -299,7 +299,7 @@ jobs:
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
@@ -328,7 +328,7 @@ jobs:
             --environment "$LINUX_BUILD_IMAGE"
       - name: Share the exact tool archive
         id: archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-linux-tools-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/quality.tar.gz
@@ -348,7 +348,7 @@ jobs:
       - name: Share the exact helper archive
         id: helper-archive
         if: needs.changes.outputs.remote_helpers == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-bundled-helpers-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/helpers/quality.tar.gz
@@ -430,7 +430,7 @@ jobs:
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
       - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
@@ -488,7 +488,7 @@ jobs:
           done
       - name: Preserve desktop reports and runner logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
@@ -541,7 +541,7 @@ jobs:
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
       - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
@@ -594,7 +594,7 @@ jobs:
           done
       - name: Preserve native reports and bounded diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
           path: |
@@ -637,7 +637,7 @@ jobs:
         if: needs.changes.outputs.windows_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.7
+          flutter-version: 3.47.9
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes
@@ -677,7 +677,7 @@ jobs:
         if: needs.changes.outputs.macos_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.7
+          flutter-version: 3.47.9
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes

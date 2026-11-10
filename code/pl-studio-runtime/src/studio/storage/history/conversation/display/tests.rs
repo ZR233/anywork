@@ -2,12 +2,175 @@ use super::*;
 use crate::studio::thread_projection::presentation::PresentationState;
 
 #[tokio::test]
+async fn observation_chunks_rollback_and_replay_with_the_original_display_transaction() -> Result<()>
+{
+    use pl_core::{
+        chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
+        model::ContentBlock,
+    };
+    use pl_protocol::*;
+    let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
+    super::super::super::schema::display_snapshots::upgrade(&db).await?;
+    super::super::super::schema::display_observations::upgrade(&db).await?;
+    let database: String = db
+        .query_one_raw(statement(
+            "SELECT database_id FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .unwrap()
+        .try_get("", "database_id")?;
+    let mut owner = PresentationState::default();
+    owner.bind(&database)?;
+    let mut atom: ChatAtom = serde_json::from_slice(&super::super::tests::metadata("active-cut"))?;
+    atom.kind = ChatAtomKind::ToolCall;
+    atom.source = ChatSourceId::ForegroundTurn {
+        turn_id: "turn".into(),
+    };
+    atom.delivery = ChatDeliveryKind::Foreground;
+    atom.completion_item_id = None;
+    atom.finished_at = None;
+    atom.lifecycle = ChatAtomLifecycle::Active {
+        started: Some(ChatFactPosition {
+            effect_seq: 1,
+            suborder: 0,
+        }),
+        status: ChatActiveStatus::Running,
+    };
+    let item_owner = ContentOwner::Item {
+        item_id: atom.id.clone(),
+    };
+    atom.contents = vec![ChatAtomContent {
+        role: ChatContentRole::ToolOutput,
+        reference: ContentRef {
+            database_id: database.clone(),
+            target: ContentTarget::Body {
+                owner: item_owner.clone(),
+                key: "tool.result".into(),
+            },
+        },
+    }];
+    let content = Arc::new(ChatContent {
+        descriptor: ContentDescriptor {
+            key: ChatContentKey {
+                owner: crate::studio::conversation_identity::content_owner_key(&item_owner)?,
+                key: "tool.result".into(),
+            },
+            byte_length: 6,
+            generation: 1,
+            media_type: None,
+        },
+        data: ContentData::text(ContentBlock::from_text("prefix")),
+    });
+    let begin = owner.prepare(1, 10, &[atom.clone()], &[], &[])?;
+    let tx = db.begin().await?;
+    apply(&tx, &begin).await?;
+    tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
+        .await?;
+    tx.commit().await?;
+    let mut body = atom.clone();
+    body.id = "new-body".into();
+    body.kind = ChatAtomKind::Text;
+    body.contents.clear();
+    body.lifecycle = ChatAtomLifecycle::Active {
+        started: Some(ChatFactPosition {
+            effect_seq: 2,
+            suborder: 0,
+        }),
+        status: ChatActiveStatus::Running,
+    };
+    let cut = owner.prepare_capturing(2, 20, &[body], &[], &[], |_| {
+        Ok(
+            crate::studio::thread_projection::presentation::ObservationInput::for_test(
+                atom.clone(),
+                vec![content.clone()],
+            ),
+        )
+    })?;
+    assert_eq!(
+        cut.contents.len(),
+        2,
+        "body and canonical observation payload"
+    );
+    db.execute_unprepared("CREATE TRIGGER reject_cut BEFORE INSERT ON conversation_contents BEGIN SELECT RAISE(ABORT,'chunk failure'); END").await?;
+    let tx = db.begin().await?;
+    assert!(apply(&tx, &cut).await.is_err());
+    tx.rollback().await?;
+    assert_eq!(watermarks(&db).await?, (0, 1));
+    assert!(history_heads(&db, 1, None, 8).await?.is_empty());
+    db.execute_unprepared("DROP TRIGGER reject_cut").await?;
+    let tx = db.begin().await?;
+    apply(&tx, &cut).await?;
+    tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
+        .await?;
+    tx.commit().await?;
+    verify(&db, &cut).await?;
+    // A lost acknowledgement repeats only the original frozen material.
+    apply(&db, &cut).await?;
+    let body_index = cut
+        .contents
+        .iter()
+        .position(|content| content.descriptor.key.key == "tool.result")
+        .context("frozen tool result")?;
+    let key = &cut.contents[body_index].descriptor.key;
+    assert_eq!(
+        super::super::content::read_body_bytes(&db, key, 0, 6).await?,
+        b"prefix"
+    );
+    let payload = cut
+        .contents
+        .iter()
+        .find(|content| content.descriptor.key.key == "display.payload")
+        .context("canonical observation payload")?;
+    let bytes = super::super::content::read_body_bytes(
+        &db,
+        &payload.descriptor.key,
+        0,
+        payload.descriptor.byte_length as usize,
+    )
+    .await?;
+    let envelope: serde_json::Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(envelope["contract"], "anywork.chat/1");
+    assert_eq!(envelope["bodies"][0]["key"], "tool.result");
+    let reference: ContentRef = serde_json::from_value(envelope["bodies"][0]["reference"].clone())?;
+    assert_eq!(
+        reference,
+        cut.members[0].head.record.atom.contents[0].reference
+    );
+    let mut conflict = cut.as_ref().clone();
+    conflict.contents[body_index] = Arc::new(ChatContent {
+        descriptor: cut.contents[body_index].descriptor.clone(),
+        data: ContentData::text(ContentBlock::from_text("OTHER!")),
+    });
+    assert!(
+        verify(&db, &conflict).await.is_err(),
+        "same length/generation cannot prove an observation"
+    );
+    let mut changed = cut.as_ref().clone();
+    changed.effect_seq = 3;
+    changed.blocks.clear();
+    changed.contents.clear();
+    let member = Arc::make_mut(&mut changed.members[0]);
+    member.head.record.atom.wait = None;
+    assert!(
+        apply(&db, &changed).await.is_err(),
+        "sealed block rejects even nonterminal updates"
+    );
+    assert_eq!(
+        super::super::content::read_body_bytes(&db, key, 0, 6).await?,
+        b"prefix"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result<()> {
     use pl_protocol::{
         ChatAtomKind, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
     };
     let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
     super::super::super::schema::display_snapshots::upgrade(&db).await?;
+    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -99,6 +262,7 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     use sea_orm::TransactionTrait;
     let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
     super::super::super::schema::display_snapshots::upgrade(&db).await?;
+    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",

@@ -176,6 +176,8 @@ SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发
 
 ChatController、焦点、滚动、feed、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
 
+应用的 Material 组件、主题扩展和本地化统一使用 Flutter 官方独立 `material_ui`，保持既有 Material 3 视觉、路由与状态所有权。仍依赖 SDK 内旧 Material 类型的第三方组件通过官方 `MaterialUiCompatibilityBridge` 消费同一应用主题和本地化；桥接仅承担第三方类型边界，不维护第二套产品主题、状态或组件实现。应用、预览与测试使用同一组件体系，不为单个 Markdown 组件手工映射平行主题。
+
 轮次、目录与命令仍按各自权威版本收敛；updatedAt 不替代版本，线程身份不被会话快照反写。历史原子发布后无 revision/saved/lifecycle 合并，后续费用校准、消费绑定和任务状态由实时领域表达。
 
 侧栏的搜索编辑器、筛选选择、归档视图、项目展开、滚动、悬停／焦点和最近指针模式属于生产组件的局部界面状态，使用 Flutter 官方组件及其 `State` 生命周期管理；预览宿主不维护第二套交互状态。纯侧栏入口不依赖 Client、AppGraph、ProviderScope 或 FRB，连接器只绑定不可变呈现值与类型化业务意图。
@@ -427,13 +429,13 @@ Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged �
 
 GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
-GUI 实时区保留尚未交接的权威展示块，包括同组已完成成员；只有真实边界已出现且成员真实终态齐备时才整组进入 Main。Main 的工作块只含轻量头与成员引用，未展开不读取参数/工具结果/思考/媒体；展开的成员窗口才持已加载成员。折叠撤销自身读取资格并 cancel/join，不留永久骨架、隐藏 Element 或无主成员快照；稳定 block_id 的展开意图由原 display lease 持有，跨实时到历史交接保留，但不要求 Widget 整体移交。
+工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，不冒领 history_pos；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
 生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。原 TimelineMessageController 持唯一已加载消息集合：Set 一次、Prepend/Append 批量插入冻结块，不更新历史尾组。历史插入与相同 ID live 退役共同完成才公开视图更新及 ACK，live=None 的分帧中间态保留其余实时块；纯 live 帧不枚举历史。原内容 owner 保留窗口/订阅，View 按布局补旧块，无总页数上限，ACK 不等布局。
 
-实时栏的纯呈现投影使用类型化状态集中选择区域可见性、问答占用与状态提示，有序实时块允许 closing Work 与正文并存；不复制 Rust 分组或执行生命周期。展开、滚动、跟随输出属于 display lease 内局部状态，稳定 block_id 保持跨区展开；遮蔽不销毁底层内容，冷读未恢复不画运行计时。
+正文输出区的类型化纯呈现投影仅承载真实正文及必要特殊提示；Work 在 Timeline 工作区呈现，不再与正文包在同一输出面板。已有同源正文 renderer 时不叠加普通“正在输出”，旧正文结束后不复用其摘要；当前阶段来自权威 owner，不以有界窗口缺正文推断无活动。保存/停止/审批/错误和冷读提示独立保留。展开、滚动、跟随输出属于原 display lease；冻结观察明确“封存时尚未结束”，不画运行计时或未恢复异常。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 

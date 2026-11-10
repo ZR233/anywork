@@ -23,7 +23,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -199,7 +199,12 @@ void main() {
           DisplayBlock(
             id: 'image-input',
             historyPos: 1,
-            body: SingleDisplayBlock(atom: head, completionId: 'completion'),
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: head,
+                contentSource: CompletedOriginal(completionId: 'completion'),
+              ),
+            ),
           ),
         ]),
       );
@@ -311,8 +316,10 @@ void main() {
               id: 'invalid-image-input',
               historyPos: 1,
               body: SingleDisplayBlock(
-                atom: _head(),
-                completionId: 'completion',
+                record: DisplayRecord(
+                  atom: _head(),
+                  contentSource: CompletedOriginal(completionId: 'completion'),
+                ),
               ),
             ),
           ]),
@@ -343,7 +350,12 @@ void main() {
           DisplayBlock(
             id: 'failed-image-input',
             historyPos: 1,
-            body: SingleDisplayBlock(atom: _head(), completionId: 'completion'),
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: _head(),
+                contentSource: CompletedOriginal(completionId: 'completion'),
+              ),
+            ),
           ),
         ]),
       );
@@ -388,7 +400,12 @@ void main() {
           DisplayBlock(
             id: 'single-block-not-record',
             historyPos: 1,
-            body: SingleDisplayBlock(atom: head, completionId: 'completion'),
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: head,
+                contentSource: CompletedOriginal(completionId: 'completion'),
+              ),
+            ),
           ),
         ]),
       );
@@ -579,8 +596,10 @@ void main() {
               id: 'block',
               historyPos: 1,
               body: SingleDisplayBlock(
-                atom: _head(),
-                completionId: 'completion',
+                record: DisplayRecord(
+                  atom: _head(),
+                  contentSource: CompletedOriginal(completionId: 'completion'),
+                ),
               ),
             ),
           ]),
@@ -624,7 +643,12 @@ void main() {
           DisplayBlock(
             id: 'restricted-block',
             historyPos: 1,
-            body: SingleDisplayBlock(atom: head, completionId: 'completion'),
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: head,
+                contentSource: CompletedOriginal(completionId: 'completion'),
+              ),
+            ),
           ),
         ]),
       );
@@ -712,8 +736,10 @@ class _Members implements DisplayMembers {
         DisplayMemberHead(
           memberKey: 'member-key',
           memberOrder: 1,
-          atom: atom,
-          completionId: 'completion',
+          record: DisplayRecord(
+            atom: atom,
+            contentSource: CompletedOriginal(completionId: 'completion'),
+          ),
         ),
       ],
     );

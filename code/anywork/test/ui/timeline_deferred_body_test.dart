@@ -22,7 +22,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plai
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/external_url_launcher.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -147,7 +147,10 @@ ContentWindow _window(String text, {int offset = 0, int? available}) =>
 Widget _app(Widget child) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );
@@ -167,8 +170,12 @@ final class _Controls implements TimelineUiControllers {
                       id: displayId ?? atom.id,
                       historyPos: 1,
                       body: SingleDisplayBlock(
-                        completionId: atom.completionItemId ?? atom.id,
-                        atom: atom,
+                        record: DisplayRecord(
+                          atom: atom,
+                          contentSource: CompletedOriginal(
+                            completionId: atom.completionItemId ?? atom.id,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -831,7 +838,6 @@ void main() {
               location: WorkDisplayLocation.history,
               initiallyExpanded: false,
               childBuilder: (_) => TimelineMemberAtom(
-                atom: _atom(text, deferred: deferred),
                 content: _Content((reference, range) async {
                   reads++;
                   expect(reference.target, isA<BodyContentTarget>());
@@ -841,6 +847,11 @@ void main() {
                 isActive: () => true,
                 images: images,
                 readAttachment: null,
+                record: DisplayRecord(
+                  atom: _atom(text, deferred: deferred),
+                  contentSource: const CurrentAtom(),
+                ),
+                displayId: "fixture-current",
               ),
             ),
           ),

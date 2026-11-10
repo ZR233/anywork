@@ -6,7 +6,7 @@ import 'package:anywork_client/studio_client.dart'
         ModeEditorLayout,
         ThreadModeDescriptorView,
         isValidModeId;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/routing/app_route.dart' show ModeWorkspaceRoute;

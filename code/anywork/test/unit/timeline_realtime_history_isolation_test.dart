@@ -91,20 +91,25 @@ void main() {
         LiveDisplayBlock(
           id: 'live',
           blockOrder: 1,
-          closing: false,
+          state: DisplayBlockState.open,
           body: SingleDisplayBlock(
-            atom: ChatAtom(
-              id: 'live',
-              source: const ForegroundTurnChatSource(turnId: 'turn-isolation'),
-              sourceOrder: 1,
-              kind: ChatAtomKind.text,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const ActiveChatAtom(
-                started: null,
-                status: ChatActiveStatus.running,
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'live',
+                source: const ForegroundTurnChatSource(
+                  turnId: 'turn-isolation',
+                ),
+                sourceOrder: 1,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                contents: const [],
+                payload: InlinePayload(bytes: [65]),
               ),
-              contents: const [],
-              payload: InlinePayload(bytes: [65]),
+              contentSource: const CurrentAtom(),
             ),
           ),
         ),

@@ -12,7 +12,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_disp
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/display_fixtures.dart';
@@ -46,7 +46,10 @@ ChatAtom _reasoning({PayloadData? payload}) => ChatAtom(
 Widget _host(TimelineDisplayUnit unit, _Content content) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(
     body: TimelineDisplayUnitView(
@@ -75,7 +78,7 @@ TimelineDisplayUnit _unit(
     block: LiveDisplayBlock(
       id: id,
       blockOrder: 1,
-      closing: false,
+      state: DisplayBlockState.open,
       body: WorkDisplayBlock(
         summary: displaySummary(82, terminal: 1, running: 81),
         members: DisplayBlockRef(databaseId: 'database', blockId: id),
@@ -103,8 +106,13 @@ DisplayMemberPage _page(
       DisplayMemberHead(
         memberKey: atoms[i].id,
         memberOrder: 71 + i,
-        atom: atoms[i],
-        completionId: atoms[i].completionItemId,
+        record: DisplayRecord(
+          atom: atoms[i],
+          contentSource: switch (atoms[i].completionItemId) {
+            null => const CurrentAtom(),
+            final id => CompletedOriginal(completionId: id),
+          },
+        ),
       ),
   ],
 );

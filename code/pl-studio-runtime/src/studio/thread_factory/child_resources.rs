@@ -493,13 +493,24 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("retain private archive temp responsibility", error))?;
         }
-        StudioChildResources::discard_unpublished(
-            self,
-            &record.identity.thread_id,
-            None,
-            pl_tool::collaboration::thread::WorkspaceRelease::Preserve,
-        )
-        .await?;
+        if purpose == crate::thread_assembler::ClosePurpose::Delete {
+            // Deletion already owns the frozen identity. Release the original resources without
+            // publishing spawn-failure compensation for a member that is about to be removed.
+            StudioChildResources::close_published(
+                self,
+                &record.identity.thread_id,
+                pl_tool::collaboration::thread::WorkspaceRelease::Preserve,
+            )
+            .await?;
+        } else {
+            StudioChildResources::discard_unpublished(
+                self,
+                &record.identity.thread_id,
+                None,
+                pl_tool::collaboration::thread::WorkspaceRelease::Preserve,
+            )
+            .await?;
+        }
         self.services
             .store
             .confirm_preparation_retirement(&record.identity.thread_id)

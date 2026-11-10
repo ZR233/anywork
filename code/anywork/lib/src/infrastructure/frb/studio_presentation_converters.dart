@@ -28,6 +28,7 @@ WorkSummary _workSummaryFromFrb(frb_presentation.BridgeWorkSummary value) =>
       terminal: _exactTimelineInt(value.terminal, 'work terminal'),
       running: _exactTimelineInt(value.running, 'work running'),
       waiting: _exactTimelineInt(value.waiting, 'work waiting'),
+      unavailable: _exactTimelineInt(value.unavailable, 'work unavailable'),
       failed: _exactTimelineInt(value.failed, 'work failed'),
       cancelled: _exactTimelineInt(value.cancelled, 'work cancelled'),
       transferred: _exactTimelineInt(value.transferred, 'work transferred'),
@@ -51,6 +52,34 @@ WorkSummary _workSummaryFromFrb(frb_presentation.BridgeWorkSummary value) =>
           : _contentRefFromFrb(value.thinkingContent!),
     );
 
+DisplayRecord _displayRecordFromFrb(
+  frb_presentation.BridgeDisplayRecord value,
+) => DisplayRecord(
+  atom: _chatAtomFromFrb(value.atom),
+  startFact: value.startFact == null
+      ? null
+      : _chatPositionFromFrb(value.startFact!),
+  endFact: value.endFact == null ? null : _chatPositionFromFrb(value.endFact!),
+  contentSource: switch (value.contentSource) {
+    frb_presentation.BridgeDisplayContentSource_CurrentAtom() =>
+      const CurrentAtom(),
+    frb_presentation.BridgeDisplayContentSource_FrozenObservation(
+      :final capturedAt,
+      :final available,
+    ) =>
+      FrozenObservation(
+        capturedAt: capturedAt == null
+            ? null
+            : _exactSignedTimelineInt(capturedAt),
+        available: available,
+      ),
+    frb_presentation.BridgeDisplayContentSource_CompletedOriginal(
+      :final completionId,
+    ) =>
+      CompletedOriginal(completionId: completionId),
+  },
+);
+
 DisplayBlockBody _displayBodyFromFrb(
   frb_presentation.BridgeDisplayBlockBody value,
 ) => switch (value) {
@@ -62,14 +91,8 @@ DisplayBlockBody _displayBodyFromFrb(
       summary: _workSummaryFromFrb(summary),
       members: _displayBlockRefFromFrb(members),
     ),
-  frb_presentation.BridgeDisplayBlockBody_Single(
-    :final atom,
-    :final completionId,
-  ) =>
-    SingleDisplayBlock(
-      atom: _chatAtomFromFrb(atom),
-      completionId: completionId,
-    ),
+  frb_presentation.BridgeDisplayBlockBody_Single(:final record) =>
+    SingleDisplayBlock(record: _displayRecordFromFrb(record)),
 };
 
 LiveDisplayWindow _liveDisplayWindowFromFrb(
@@ -88,7 +111,12 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
         blockOrder: _exactTimelineInt(block.blockOrder, 'live block order'),
         source: block.source == null ? null : _chatSourceFromFrb(block.source!),
         body: _displayBodyFromFrb(block.body),
-        closing: block.closing,
+        state: switch (block.state) {
+          frb_presentation.BridgeDisplayBlockState.open =>
+            DisplayBlockState.open,
+          frb_presentation.BridgeDisplayBlockState.sealed =>
+            DisplayBlockState.sealed,
+        },
       ),
   ],
   older: value.older,
@@ -140,8 +168,7 @@ DisplayMemberPage _displayMemberPageFromFrb(
           member.memberOrder,
           'display member order',
         ),
-        atom: _chatAtomFromFrb(member.atom),
-        completionId: member.completionId,
+        record: _displayRecordFromFrb(member.record),
       ),
   ],
   before: _exactNullableTimelineInt(value.before, 'display member boundary'),

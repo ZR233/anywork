@@ -5,6 +5,7 @@ mod background_results;
 pub(super) mod completion_boundary;
 mod conversion;
 mod demand_conversation;
+pub(in crate::studio::storage::history) mod display_observations;
 pub(in crate::studio::storage::history) mod display_snapshots;
 pub(in crate::studio::storage::history) mod immutable_completion_runs;
 pub(in crate::studio::storage::history) mod legacy_completion_projection;
@@ -135,6 +136,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(completion_boundary::CompletionBoundary),
             Box::new(immutable_completion_runs::ImmutableCompletionRuns),
             Box::new(display_snapshots::DisplaySnapshots),
+            Box::new(display_observations::DisplayObservations),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -187,6 +189,7 @@ const SOURCE_CLASSIFICATION: &str = "m20261108_000001_history_source_classificat
 const COMPLETION_BOUNDARY: &str = "m20261109_000001_history_completion_boundary";
 const IMMUTABLE_COMPLETION_RUNS: &str = "m20261110_000001_history_immutable_completion_runs";
 const DISPLAY_SNAPSHOTS: &str = "m20261109_000001_display_snapshots";
+const DISPLAY_OBSERVATIONS: &str = "m20261111_000001_display_observations";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 #[cfg(test)]
@@ -407,17 +410,21 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .iter()
         .any(|step| step.name() == IMMUTABLE_COMPLETION_RUNS);
     let display_pending = pending.iter().any(|step| step.name() == DISPLAY_SNAPSHOTS);
+    let observations_pending = pending
+        .iter()
+        .any(|step| step.name() == DISPLAY_OBSERVATIONS);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
-            && (source_classification_pending || matches!(version, 15..=19))
+            && (source_classification_pending || matches!(version, 15..=20))
             && thinking_summary_pending == (version < 16)
             && background_tail_pending == (version < 17)
             && runs_pending == (version < 18)
             && display_pending == (version < 19)
+            && observations_pending == (version < 20)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
                 9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -429,7 +436,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12..=19 => {
+                12..=20 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -469,6 +476,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                             | COMPLETION_BOUNDARY
                             | IMMUTABLE_COMPLETION_RUNS
                             | DISPLAY_SNAPSHOTS
+                            | DISPLAY_OBSERVATIONS
                     ) || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
@@ -480,11 +488,23 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 demand_conversation::validate_tables(db).await?;
             }
             match version {
+                19 => {
+                    display_snapshots::validate(db).await?;
+                    ensure!(
+                        pending
+                            .iter()
+                            .all(|step| step.name() == DISPLAY_OBSERVATIONS
+                                || is_lifecycle_migration(step.name())),
+                        "schema 19 has pending earlier content migrations; existing data preserved"
+                    );
+                }
                 18 => {
                     immutable_completion_runs::validate(db).await?;
                     ensure!(
-                        pending.iter().all(|step| step.name() == DISPLAY_SNAPSHOTS
-                            || is_lifecycle_migration(step.name())),
+                        pending.iter().all(|step| matches!(
+                            step.name(),
+                            DISPLAY_SNAPSHOTS | DISPLAY_OBSERVATIONS
+                        ) || is_lifecycle_migration(step.name())),
                         "schema 18 has pending earlier content migrations; existing data preserved"
                     );
                 }
@@ -501,6 +521,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | COMPLETION_BOUNDARY
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
+                                    | DISPLAY_OBSERVATIONS
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
@@ -525,6 +546,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | COMPLETION_BOUNDARY
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
+                                    | DISPLAY_OBSERVATIONS
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
@@ -550,6 +572,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | COMPLETION_BOUNDARY
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
+                                    | DISPLAY_OBSERVATIONS
                                     | TIMELINE_THINKING_SUMMARY
                                     | TIMELINE_BACKGROUND_TAIL
                             ) || is_lifecycle_migration(step.name())
@@ -577,6 +600,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | COMPLETION_BOUNDARY
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
+                                    | DISPLAY_OBSERVATIONS
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
@@ -602,6 +626,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | COMPLETION_BOUNDARY
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
+                                    | DISPLAY_OBSERVATIONS
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 16 has pending earlier content migrations; existing data preserved"
@@ -627,6 +652,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 | COMPLETION_BOUNDARY
                                 | IMMUTABLE_COMPLETION_RUNS
                                 | DISPLAY_SNAPSHOTS
+                                | DISPLAY_OBSERVATIONS
                         ) || is_lifecycle_migration(step.name())),
                         "schema 17 has pending earlier content migrations; existing data preserved"
                     );
@@ -817,7 +843,7 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
-    display_snapshots::validate(db).await
+    display_observations::validate(db).await
 }
 
 async fn validate_schema16_structure(db: &impl ConnectionTrait) -> Result<()> {
@@ -1318,6 +1344,7 @@ impl MigrationTrait for CombinedContent {
                             | COMPLETION_BOUNDARY
                             | IMMUTABLE_COMPLETION_RUNS
                             | DISPLAY_SNAPSHOTS
+                            | DISPLAY_OBSERVATIONS
                             | TIMELINE_THINKING_SUMMARY
                             | TIMELINE_BACKGROUND_TAIL
                     ) && !is_lifecycle_migration(step.name())

@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:anywork_client/models.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -393,9 +393,10 @@ class TimelineToolDetails extends StatelessWidget {
       icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
           ? Icons.stop_circle_outlined
           : _toolCategoryIcon(category),
-      label:
-          !item.executionPresent &&
-              _toolActiveStatuses.contains(item.statusString)
+      label: item.frozenObservation
+          ? '封存时尚未结束'
+          : !item.executionPresent &&
+                _toolActiveStatuses.contains(item.statusString)
           ? '工具尚未恢复'
           : _toolRowLabel(context, item, category, targets.label),
       active:

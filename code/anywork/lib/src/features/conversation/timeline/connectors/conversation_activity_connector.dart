@@ -1,9 +1,11 @@
-import 'package:flutter/material.dart';
+import 'package:anywork_client/models.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_state.dart';
+import '../../interactions/state/interaction_payload.dart';
 import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
 import '../state/conversation_activity_state.dart';
@@ -26,6 +28,11 @@ class ConversationActivityConnector extends ConsumerWidget {
     final session = conversations.existingSession(threadId);
     final content = session?.content;
     StudioDriverState.publishConversationActivity(state?.view);
+    // Only the selected plan's duplicate details are replaced by its reader and
+    // dock. Work belongs to Timeline; actual output and critical notices retain
+    // their original display qualification here.
+    final interaction = activePendingInteraction(sessionState.interactions);
+    final confirmingPlan = interaction?.planConfirmation != null;
     final children = <Widget>[];
     switch (state?.region) {
       case ContentRealtimeRegion region when content != null:
@@ -33,8 +40,11 @@ class ConversationActivityConnector extends ConsumerWidget {
         final timeline = ref.read(timelineSessionOwnerProvider);
         final lease = timeline.lease(threadId);
         if (lease != null && identical(lease.content, content)) {
+          // This renderer owns any explicitly loaded older window. Only it can
+          // decide whether its actual sources produce content or zero layout.
           children.add(
             ConversationCurrentConnector(
+              section: ConversationLiveSection.output,
               key: ValueKey((threadId, content, lease.generation)),
               session: sessionState,
               content: content,
@@ -67,9 +77,11 @@ class ConversationActivityConnector extends ConsumerWidget {
         break;
     }
     final reference = sessionState.businessRefs?.interactions;
-    // The dock owns actionable questions, not this independent read-only
-    // State reference. Hiding live output must not remove its details reader.
-    if (content != null &&
+    // Ordinary questions/approvals keep their independent details reader.
+    // The selected plan already has a dedicated reader; unmounting this one
+    // retires only its local demand, not the underlying interaction or tools.
+    if (!confirmingPlan &&
+        content != null &&
         reference != null &&
         sessionState.interactions.isNotEmpty) {
       children.add(
@@ -88,6 +100,7 @@ class ConversationActivityConnector extends ConsumerWidget {
         ),
       );
     }
+    if (children.isEmpty) return const SizedBox.shrink();
     return ConversationActivityViewport(
       key: ValueKey(threadId),
       children: children,

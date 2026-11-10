@@ -749,11 +749,11 @@ final class TimelineSessionOwner {
   void _markPresentedInputs(String threadId, TimelineBatch batch) {
     final inputIds = <String>[
       for (final block in batch.blocks)
-        if (block.body case SingleDisplayBlock(:final atom))
-          if (atom.source case InputChatSource(:final inputId)) inputId,
+        if (block.body case SingleDisplayBlock(:final record))
+          if (record.atom.source case InputChatSource(:final inputId)) inputId,
       for (final block in batch.live?.blocks ?? const <LiveDisplayBlock>[])
-        if (block.body case SingleDisplayBlock(:final atom))
-          if (atom.source case InputChatSource(:final inputId)) inputId,
+        if (block.body case SingleDisplayBlock(:final record))
+          if (record.atom.source case InputChatSource(:final inputId)) inputId,
     ];
     if (inputIds.isEmpty) return;
     client.drafts.existingComposer(threadId)?.markInputsPresented(inputIds);

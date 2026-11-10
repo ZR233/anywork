@@ -27,10 +27,18 @@ bool _sameDisplayBodyIdentity(
 ) => switch (previous) {
   WorkDisplayBlock(:final members) =>
     next is WorkDisplayBlock && next.members == members,
-  SingleDisplayBlock(:final atom, :final completionId) =>
+  SingleDisplayBlock(:final record) =>
     next is SingleDisplayBlock &&
-        _sameDisplayAtomIdentity(atom, next.atom) &&
-        (completionId == null || completionId == next.completionId),
+        _sameDisplayAtomIdentity(record.atom, next.record.atom) &&
+        switch (record.contentSource) {
+          CompletedOriginal(:final completionId) =>
+            switch (next.record.contentSource) {
+              CompletedOriginal(completionId: final nextId) =>
+                completionId == nextId,
+              _ => false,
+            },
+          _ => true,
+        },
 };
 
 const _demoDisplayIdentityFailure = StudioFailure(
@@ -82,14 +90,29 @@ extension _DemoDisplayHistory on _DemoHistory {
     if (atom == null) return;
     final heads = displayHeads.putIfAbsent(displayRef(id), () => []);
     final order = script.memberIds.indexOf(itemId) + 1;
+    final index = heads.indexWhere((h) => h.memberKey == itemId);
+    final start = index < 0 ? null : heads[index].record.startFact;
     final head = DisplayMemberHead(
       memberKey: itemId,
       memberOrder: order,
-      atom: atom,
-      completionId: entry?.recordId,
+      record: DisplayRecord(
+        atom: atom,
+        startFact:
+            start ??
+            switch (atom.lifecycle) {
+              ActiveChatAtom(:final started) => started,
+              TerminalChatAtom() => null,
+            },
+        endFact: switch (atom.lifecycle) {
+          TerminalChatAtom(:final ended) => ended,
+          ActiveChatAtom() => null,
+        },
+        contentSource: entry == null
+            ? const CurrentAtom()
+            : CompletedOriginal(completionId: entry.recordId),
+      ),
     );
-    final index = heads.indexWhere((h) => h.memberKey == itemId);
-    if (index >= 0 && identical(heads[index].atom, atom)) return;
+    if (index >= 0 && identical(heads[index].record.atom, atom)) return;
     if (index < 0) {
       heads.add(head);
       heads.sort((a, b) => a.memberOrder.compareTo(b.memberOrder));
@@ -104,10 +127,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     final heads = displayHeads[displayRef(script.id)] ?? const [];
     if (!script.work) {
       final head = heads.single;
-      return SingleDisplayBlock(
-        atom: head.atom,
-        completionId: head.completionId,
-      );
+      return SingleDisplayBlock(record: head.record);
     }
     var terminal = 0,
         running = 0,
@@ -116,7 +136,7 @@ extension _DemoDisplayHistory on _DemoHistory {
         cancelled = 0,
         transferred = 0;
     for (final head in heads) {
-      switch (head.atom.lifecycle) {
+      switch (head.record.atom.lifecycle) {
         case TerminalChatAtom(:final outcome):
           terminal++;
           if (outcome == ChatTerminalOutcome.failed) failed++;
@@ -137,6 +157,7 @@ extension _DemoDisplayHistory on _DemoHistory {
         terminal: terminal,
         running: running,
         waiting: waiting,
+        unavailable: 0,
         failed: failed,
         cancelled: cancelled,
         transferred: transferred,
@@ -144,14 +165,97 @@ extension _DemoDisplayHistory on _DemoHistory {
     );
   }
 
+  DisplayRecord freezeDisplayRecord(String blockId, DisplayMemberHead head) {
+    final record = head.record;
+    if (record.contentSource is! CurrentAtom) return record;
+    final owner = DisplayObservationContentOwner(
+      blockId: blockId,
+      memberKey: head.memberKey,
+    );
+    final snapshot = bodies.putIfAbsent(
+      jsonEncode(['display-observation', blockId, head.memberKey]),
+      () => {},
+    );
+    ContentRef capture(String key, _DemoBody body) {
+      snapshot[key] = body.frozen();
+      return ContentRef(
+        databaseId: epoch,
+        target: BodyContentTarget(owner: owner, key: key),
+      );
+    }
+
+    ContentRef captureRef(ContentRef reference) {
+      final target = reference.target;
+      final body = switch (target) {
+        ItemPayloadTarget(:final itemId) => payloads[itemId],
+        BodyContentTarget(owner: ItemContentOwner(:final itemId), :final key) =>
+          bodies[itemId]?[key],
+        BodyContentTarget(
+          owner: CurrentContentOwner(:final domain, :final id),
+          :final key,
+        ) =>
+          currentBodies[(domain, id, key)],
+        BodyContentTarget(
+          owner: DisplayObservationContentOwner(
+            :final blockId,
+            :final memberKey,
+          ),
+          :final key,
+        ) =>
+          bodies[jsonEncode(['display-observation', blockId, memberKey])]?[key],
+      };
+      if (body == null || reference.databaseId != epoch) {
+        throw StateError('Explicit Demo snapshot content is missing');
+      }
+      return capture(
+        jsonEncode(['content', contentRefToJson(reference)]),
+        body,
+      );
+    }
+
+    final payload = switch (record.atom.payload) {
+      InlinePayload(:final bytes) => DeferredPayload(
+        reference: capture('payload', _DemoBody()..append(bytes)),
+        byteLength: bytes.length,
+      ),
+      DeferredPayload(:final reference, :final byteLength) => DeferredPayload(
+        reference: captureRef(reference),
+        byteLength: byteLength,
+      ),
+      null => null,
+    };
+    return DisplayRecord(
+      atom: _demoCopy(
+        record.atom,
+        payload: payload,
+        contents: [
+          for (final content in record.atom.contents)
+            ChatAtomContent(
+              role: content.role,
+              reference: captureRef(content.reference),
+            ),
+        ],
+        frozen: true,
+      ),
+      startFact: record.startFact,
+      endFact: record.endFact,
+      contentSource: const FrozenObservation(available: true),
+    );
+  }
+
   void sealDisplay(String id) {
     final script = displayScripts[id]!;
     if (script.sealed) return;
     final heads = displayHeads[displayRef(id)] ?? const [];
-    if (heads.isEmpty ||
-        heads.any((h) => h.atom.lifecycle is! TerminalChatAtom)) {
-      throw StateError(
-        'A scripted display block seals only at its terminal boundary',
+    if (heads.isEmpty) {
+      throw StateError('An explicit Demo boundary requires a nonempty block');
+    }
+    for (var i = 0; i < heads.length; i++) {
+      final head = heads[i];
+      heads[i] = DisplayMemberHead(
+        memberKey: head.memberKey,
+        memberOrder: head.memberOrder,
+        record: freezeDisplayRecord(id, head),
       );
     }
     displayBlocks.add(
@@ -173,20 +277,26 @@ extension _DemoDisplayHistory on _DemoHistory {
       if (heads == null || heads.isEmpty) continue;
       for (var i = 0; i < heads.length; i++) {
         final head = heads[i];
-        if (head.atom.lifecycle case ActiveChatAtom(:final started)) {
+        if (head.record.atom.lifecycle case ActiveChatAtom(:final started)) {
           if (outcome == ChatTerminalOutcome.completed) {
             throw StateError('Successful story left an unfinished member');
           }
+          final ended = _fact();
           heads[i] = DisplayMemberHead(
             memberKey: head.memberKey,
             memberOrder: head.memberOrder,
-            atom: _demoCopy(
-              head.atom,
-              lifecycle: TerminalChatAtom(
-                started: started,
-                ended: _fact(),
-                outcome: outcome,
+            record: DisplayRecord(
+              atom: _demoCopy(
+                head.record.atom,
+                lifecycle: TerminalChatAtom(
+                  started: started,
+                  ended: ended,
+                  outcome: outcome,
+                ),
               ),
+              startFact: head.record.startFact,
+              endFact: ended,
+              contentSource: const CurrentAtom(),
             ),
           );
           for (final body in bodies[head.memberKey]?.values ?? <_DemoBody>[]) {
@@ -213,7 +323,7 @@ extension _DemoDisplayHistory on _DemoHistory {
       if (script != null &&
           (script.work != (body is WorkDisplayBlock) ||
               (body is SingleDisplayBlock &&
-                  body.atom.id != script.memberIds.single))) {
+                  body.record.atom.id != script.memberIds.single))) {
         throw _demoDisplayIdentityFailure;
       }
       final previous = existingBodies[id];
@@ -276,7 +386,7 @@ extension _DemoDisplayHistory on _DemoHistory {
             .firstOrNull;
         if (next == null ||
             next.memberOrder != previous.memberOrder ||
-            !_sameDisplayAtomIdentity(previous.atom, next.atom)) {
+            !_sameDisplayAtomIdentity(previous.record.atom, next.record.atom)) {
           throw _demoDisplayIdentityFailure;
         }
       }
@@ -319,16 +429,43 @@ extension _DemoDisplayHistory on _DemoHistory {
               displayScripts.keys.toList().indexOf(script.id) +
               1,
           body: scriptBody(script),
-          closing: false,
+          state: DisplayBlockState.open,
         ),
   ];
 }
 
+Object _displayRecordJson(DisplayRecord record) => {
+  'atom': chatAtomToJson(record.atom),
+  'startFact': record.startFact == null
+      ? null
+      : {
+          'effectSeq': record.startFact!.effectSeq,
+          'suborder': record.startFact!.suborder,
+        },
+  'endFact': record.endFact == null
+      ? null
+      : {
+          'effectSeq': record.endFact!.effectSeq,
+          'suborder': record.endFact!.suborder,
+        },
+  'contentSource': switch (record.contentSource) {
+    CurrentAtom() => {'kind': 'currentAtom'},
+    FrozenObservation(:final capturedAt, :final available) => {
+      'kind': 'frozenObservation',
+      'capturedAt': capturedAt,
+      'available': available,
+    },
+    CompletedOriginal(:final completionId) => {
+      'kind': 'completedOriginal',
+      'completionId': completionId,
+    },
+  },
+};
+
 Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
-  SingleDisplayBlock(:final atom, :final completionId) => {
+  SingleDisplayBlock(:final record) => {
     'kind': 'single',
-    'atom': chatAtomToJson(atom),
-    'completionId': completionId,
+    'record': _displayRecordJson(record),
   },
   WorkDisplayBlock(:final summary, :final members) => {
     'kind': 'work',
@@ -338,6 +475,7 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
       'terminal': summary.terminal,
       'running': summary.running,
       'waiting': summary.waiting,
+      'unavailable': summary.unavailable,
       'failed': summary.failed,
       'cancelled': summary.cancelled,
       'transferred': summary.transferred,
@@ -365,7 +503,7 @@ Object _liveJson(LiveDisplayWindow live) => {
         'blockOrder': b.blockOrder,
         if (b.source != null) 'source': chatSourceIdToJson(b.source!),
         'body': _displayBodyJson(b.body),
-        'closing': b.closing,
+        'state': b.state.name,
       },
   ],
 };
@@ -388,9 +526,13 @@ int _timelineBytes(TimelineBatch batch) => _demoEncoded({
 
 extension _DemoTimelineReader on _DemoReader {
   DisplayBlockBody fitDisplay(DisplayBlockBody body) => switch (body) {
-    SingleDisplayBlock(:final atom, :final completionId) => SingleDisplayBlock(
-      atom: fit(atom, 0),
-      completionId: completionId,
+    SingleDisplayBlock(:final record) => SingleDisplayBlock(
+      record: DisplayRecord(
+        atom: fit(record.atom, 0),
+        startFact: record.startFact,
+        endFact: record.endFact,
+        contentSource: record.contentSource,
+      ),
     ),
     WorkDisplayBlock() => body,
   };
@@ -421,7 +563,7 @@ extension _DemoTimelineReader on _DemoReader {
         blockOrder: b.blockOrder,
         source: b.source,
         body: fitDisplay(b.body),
-        closing: b.closing,
+        state: b.state,
       );
       final next = i > 0 ? cursor('display-live', revision, i) : null;
       final trial = LiveDisplayWindow(
@@ -736,8 +878,7 @@ final class _DemoDisplayMembers implements DisplayMembers {
               {
                 'memberKey': e.memberKey,
                 'memberOrder': e.memberOrder,
-                'atom': chatAtomToJson(e.atom),
-                'completionId': e.completionId,
+                'record': _displayRecordJson(e.record),
               },
           ],
         });
@@ -749,8 +890,12 @@ final class _DemoDisplayMembers implements DisplayMembers {
       final candidate = DisplayMemberHead(
         memberKey: h.memberKey,
         memberOrder: h.memberOrder,
-        atom: reader.fit(h.atom, 0),
-        completionId: h.completionId,
+        record: DisplayRecord(
+          atom: reader.fit(h.record.atom, 0),
+          startFact: h.record.startFact,
+          endFact: h.record.endFact,
+          contentSource: h.record.contentSource,
+        ),
       );
       final trial = [candidate, ...selected];
       final size = pageBytes(trial, i > 0 ? h.memberOrder : null);

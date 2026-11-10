@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
@@ -48,7 +48,8 @@ Future<void> deleteAccount(
   final modelsProvider = key.kind == AccountKind.native
       ? accountModelsViewModelProvider(key)
       : null;
-  final modelsOwner = modelsProvider != null && container.exists(modelsProvider)
+  final modelsOwner =
+      modelsProvider != null && container.read(modelsProvider.exists)
       ? container.read(modelsProvider.notifier)
       : null;
   final compactToken = modelsOwner?.compactLeaveToken();
@@ -56,8 +57,8 @@ Future<void> deleteAccount(
   // An absent owner must remain absent; checking must never create one.
   bool isCompactClean() {
     if (modelsProvider == null) return true;
-    if (modelsOwner == null) return !container.exists(modelsProvider);
-    return container.exists(modelsProvider) &&
+    if (modelsOwner == null) return !container.read(modelsProvider.exists);
+    return container.read(modelsProvider.exists) &&
         identical(container.read(modelsProvider.notifier), modelsOwner) &&
         modelsOwner.canRemove(expectedToken: compactToken!);
   }
@@ -66,9 +67,9 @@ Future<void> deleteAccount(
       context.mounted &&
       identical(ModalRoute.of(context), sourceRoute) &&
       sourceRoute.isCurrent &&
-      container.exists(accountsViewModelProvider) &&
+      container.read(accountsViewModelProvider.exists) &&
       identical(container.read(accountsViewModelProvider.notifier), accounts) &&
-      container.exists(accountsRepositoryProvider) &&
+      container.read(accountsRepositoryProvider.exists) &&
       identical(container.read(accountsRepositoryProvider), repository) &&
       repository.state.value.loaded &&
       repository.state.value.stamp?.ownerEpoch == ownerEpoch;
@@ -150,7 +151,7 @@ AccountModelActions accountModelActions(
     if (action == AccountModelAction.delete &&
         (!context.mounted ||
             ModalRoute.of(context)?.isCurrent != true ||
-            !ref.exists(accountModelsViewModelProvider(key.account)))) {
+            !ref.read(accountModelsViewModelProvider(key.account).exists))) {
       return;
     }
     final owner = ref.read(
@@ -191,10 +192,10 @@ AccountModelActions accountModelActions(
           if (!context.mounted ||
               !identical(ModalRoute.of(context), sourceRoute) ||
               !sourceRoute.isCurrent ||
-              !container.exists(provider) ||
+              !container.read(provider.exists) ||
               !identical(container.read(provider.notifier), owner) ||
               !owner.canRemove(expectedToken: compactToken) ||
-              !container.exists(modelsRepositoryProvider) ||
+              !container.read(modelsRepositoryProvider.exists) ||
               !identical(
                 container.read(modelsRepositoryProvider),
                 repository,

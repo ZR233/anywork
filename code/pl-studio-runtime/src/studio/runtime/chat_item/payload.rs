@@ -1,6 +1,6 @@
-//! 当前完成 payload 的私有编码结构，不构成第二套公开聊天 DTO。
+//! 当前聊天 payload 的私有编码结构，不构成第二套公开聊天 DTO。
 //!
-//! 仅在可靠完成时序列化一次；历史读取透传已冻结的 JSON，不反序列化这些类型。
+//! 仅在可靠完成或观察封存时序列化；历史读取透传已冻结的 JSON，不反序列化这些类型。
 //! 发布过的旧格式解码独立留在 storage 的迁移边界，不能借用本模块。
 
 use pl_protocol::{
@@ -46,6 +46,7 @@ pub(super) struct ThinkingDescriptor {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum ContentOutcome {
+    Streaming(pl_protocol::StreamingThreadContent),
     Completed(CompletedThreadContent),
     Failed(FailedThreadContent),
     Cancelled(CancelledThreadContent),
@@ -61,6 +62,8 @@ pub(super) struct AgentDescriptor {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum AgentOutcome {
+    Queued(pl_protocol::QueuedThreadAgent),
+    Running(pl_protocol::RunningThreadAgent),
     Succeeded(SucceededThreadAgent),
     Denied(DeniedThreadAgent),
     Cancelled(CancelledThreadAgent),
@@ -77,6 +80,8 @@ pub(super) struct TurnDescriptor {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum TurnOutcome {
+    Queued(pl_protocol::QueuedTurnState),
+    Running(pl_protocol::RunningTurnState),
     Completed(CompletedTurnState),
     Failed(FailedTurnState),
     Cancelled(CancelledTurnState),
@@ -94,6 +99,7 @@ pub(super) struct InferenceDescriptor {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum InferenceOutcome {
+    Running(pl_protocol::RunningThreadInference),
     Completed(CompletedThreadInference),
     Failed(FailedThreadInference),
     Cancelled(CancelledThreadInference),
@@ -160,6 +166,13 @@ pub(super) struct ToolInvocation {
     rename_all_fields = "camelCase"
 )]
 pub(super) enum ToolState {
+    Queued,
+    Cancelling(pl_protocol::CancellingThreadTool),
+    Started,
+    Streaming,
+    AwaitingApproval,
+    Approved,
+    Running(pl_protocol::RunningThreadTool),
     Interrupted {
         interrupted_at: i64,
         reason: String,

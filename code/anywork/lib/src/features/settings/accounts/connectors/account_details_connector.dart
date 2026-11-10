@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/accounts.dart' show AccountDemand;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
@@ -143,7 +143,8 @@ class _AccountDetailsConnectorState
         final modelsProvider = widget.account.kind == AccountKind.native
             ? accountModelsViewModelProvider(widget.account)
             : null;
-        final modelsOwner = modelsProvider != null && ref.exists(modelsProvider)
+        final modelsOwner =
+            modelsProvider != null && ref.read(modelsProvider.exists)
             ? ref.read(modelsProvider.notifier)
             : null;
         final canRemoveModels =

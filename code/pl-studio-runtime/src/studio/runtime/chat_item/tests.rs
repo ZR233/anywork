@@ -2,6 +2,78 @@ use super::*;
 use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel};
 
 #[test]
+fn completion_rejects_active_text_thinking_and_tool_with_shared_observation_codec() {
+    use pl_protocol::*;
+    for state in [
+        ThreadItemState::Text(ThreadTextItem::new(
+            ThreadTextChannel::Final,
+            "active".into(),
+            vec![],
+            ThreadContentLifecycle::streaming(),
+        )),
+        ThreadItemState::Thinking(ThreadThinkingItem::new(
+            vec![],
+            vec![],
+            ThreadContentLifecycle::streaming(),
+        )),
+        ThreadItemState::Tool(ThreadToolItem::new(
+            ThreadToolInvocation::new("call".into(), "exec".into(), "{}".into()),
+            ThreadToolState::Running(RunningThreadTool::new(String::new())),
+        )),
+    ] {
+        let item = ThreadItem::new(
+            "active".into(),
+            "thread".into(),
+            "turn".into(),
+            1,
+            1,
+            10,
+            11,
+            state,
+        );
+        assert!(completion_draft(&item, 1, "database").is_err());
+    }
+}
+
+#[test]
+fn observation_tool_descriptors_keep_all_nonterminal_phases_without_completion() -> Result<()> {
+    use pl_protocol::*;
+    for (kind, state) in [
+        ("queued", ThreadToolState::Queued(QueuedThreadTool)),
+        ("started", ThreadToolState::Started(StartedThreadTool)),
+        ("streaming", ThreadToolState::Streaming(StreamingThreadTool)),
+        (
+            "awaitingApproval",
+            ThreadToolState::AwaitingApproval(AwaitingApprovalThreadTool),
+        ),
+        ("approved", ThreadToolState::Approved(ApprovedThreadTool)),
+        (
+            "running",
+            ThreadToolState::Running(RunningThreadTool::new(String::new())),
+        ),
+    ] {
+        let state = ThreadItemState::Tool(ThreadToolItem::new(
+            ThreadToolInvocation::new("call".into(), "exec".into(), String::new()),
+            state,
+        ));
+        let encoded = serde_json::to_value(descriptor::observation_descriptor(&state, "thread")?)?;
+        assert_eq!(encoded["data"]["state"]["kind"], kind);
+        let item = ThreadItem::new(
+            "active".into(),
+            "thread".into(),
+            "turn".into(),
+            1,
+            1,
+            10,
+            11,
+            state,
+        );
+        assert!(completion_draft(&item, 1, "database").is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn active_wait_is_typed_without_payload_and_completion_keeps_only_original_wait() -> Result<()> {
     use pl_protocol::*;
     let waiting = ThreadWaitPresentation::new(

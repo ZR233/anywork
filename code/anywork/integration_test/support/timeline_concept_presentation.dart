@@ -1,3 +1,5 @@
+import 'display_record_observation.dart';
+
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -13,8 +15,9 @@ Future<ChatItemPresentation> waitForTimelineConceptSingle(
 }) async {
   expect(unit.body, isA<SingleDisplayBlock>());
   final body = unit.body as SingleDisplayBlock;
-  expect(body.completionId, isNotNull);
-  expect(body.atom.lifecycle, isA<TerminalChatAtom>());
+  if (body.record.contentSource is CompletedOriginal) {
+    expect(body.record.atom.lifecycle, isA<TerminalChatAtom>());
+  }
   final row = find.byWidgetPredicate(
     (widget) => widget is ChatItemView && widget.item.id == unit.id,
   );
@@ -25,14 +28,14 @@ Future<ChatItemPresentation> waitForTimelineConceptSingle(
     if (rows.isNotEmpty) {
       final item = rows.single.item;
       expect(item.displayUnit, same(unit));
-      expect(item.atom?.id, body.atom.id);
-      expect(item.atom?.source, body.atom.source);
-      expect(item.atom?.kind, body.atom.kind);
-      if (item.atom?.completionItemId case final recordId?) {
-        expect(recordId, body.completionId);
+      expect(item.atom?.id, body.record.atom.id);
+      expect(item.atom?.source, body.record.atom.source);
+      expect(item.atom?.kind, body.record.atom.kind);
+      if (completedOriginalId(body.record) case final recordId?) {
+        expect(item.atom?.completionItemId, recordId);
       }
-      expect(item.atom?.completionSeq, body.atom.completionSeq);
-      expect(item.atom?.lifecycle, body.atom.lifecycle);
+      expect(item.atom?.completionSeq, body.record.atom.completionSeq);
+      expect(item.atom?.lifecycle, body.record.atom.lifecycle);
       // Public Input Body may mount before its independent canonical metadata
       // finishes. It is valid visible content, but not evidence of completed
       // metadata/attachment recovery. Keep the original bounded wait.

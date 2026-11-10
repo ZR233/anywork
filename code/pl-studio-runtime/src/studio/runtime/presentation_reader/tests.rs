@@ -33,7 +33,7 @@ fn head(order: u64) -> LiveDisplayBlock {
             summary: Box::default(),
             members: reference(),
         },
-        closing: false,
+        state: pl_protocol::DisplayBlockState::Open,
     }
 }
 
@@ -42,35 +42,41 @@ fn member(order: u64) -> DisplayMemberHead {
     DisplayMemberHead {
         member_key: id.clone(),
         member_order: order,
-        atom: ChatAtom {
-            id,
-            completion_item_id: None,
-            completion_seq: None,
-            source: ChatSourceId::ForegroundTurn {
-                turn_id: "turn".into(),
+        record: pl_protocol::DisplayRecord {
+            atom: ChatAtom {
+                id,
+                completion_item_id: None,
+                completion_seq: None,
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: "turn".into(),
+                },
+                source_state: None,
+                source_order: Some(order),
+                kind: ChatAtomKind::ToolCall,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Terminal {
+                    started: None,
+                    ended: None,
+                    outcome: ChatTerminalOutcome::Cancelled,
+                },
+                turn_id: Some("turn".into()),
+                attempt_id: None,
+                tool: None,
+                wait: None,
+                text_channel: None,
+                started_at: None,
+                finished_at: None,
+                content_present: None,
+                contents: Vec::new(),
+                payload: None,
             },
-            source_state: None,
-            source_order: Some(order),
-            kind: ChatAtomKind::ToolCall,
-            delivery: ChatDeliveryKind::Foreground,
-            lifecycle: ChatAtomLifecycle::Terminal {
-                started: None,
-                ended: None,
-                outcome: ChatTerminalOutcome::Cancelled,
+            start_fact: None,
+            end_fact: None,
+            content_source: pl_protocol::DisplayContentSource::FrozenObservation {
+                captured_at: None,
+                available: true,
             },
-            turn_id: Some("turn".into()),
-            attempt_id: None,
-            tool: None,
-            wait: None,
-            text_channel: None,
-            started_at: None,
-            finished_at: None,
-            content_present: None,
-            contents: Vec::new(),
-            payload: None,
         },
-        // A genuine interrupted member has no fabricated ChatItem.
-        completion_id: None,
     }
 }
 
@@ -169,8 +175,12 @@ fn member_windows_preserve_stable_orders_and_real_terminal_without_body() -> Res
     );
     assert_eq!(page.before, Some(4));
     assert!(!page.sealed);
-    assert!(page.entries.iter().all(|m| m.completion_id.is_none()));
-    assert!(page.entries.iter().all(|m| m.atom.payload.is_none()));
+    assert!(
+        page.entries
+            .iter()
+            .all(|m| m.record.atom.completion_item_id.is_none())
+    );
+    assert!(page.entries.iter().all(|m| m.record.atom.payload.is_none()));
     let frozen = member_page(
         reference(),
         9,

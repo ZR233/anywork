@@ -7,7 +7,7 @@ import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -102,7 +102,10 @@ void main() {
         child: MaterialApp(
           theme: pureStudioTheme(),
           locale: const Locale('zh'),
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          localizationsDelegates: [
+            AppLocalizations.delegate,
+            ...GlobalMaterialLocalizations.delegates,
+          ],
           supportedLocales: AppLocalizations.supportedLocales,
           home: const Scaffold(
             body: SizedBox(
@@ -205,8 +208,8 @@ void main() {
             .data,
         '起草中',
       );
-      expect(find.text('计划正在起草'), findsOneWidget);
-      expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsOneWidget);
+      expect(find.text('计划正在起草'), findsNothing);
+      expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsNothing);
       expect(find.byKey(StudioDriverKeys.planDetailsMarkdown), findsNothing);
       expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
       await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));

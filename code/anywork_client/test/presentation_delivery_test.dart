@@ -8,8 +8,12 @@ import 'support/timeline_transport.dart';
 const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
 const _reference = DisplayBlockRef(databaseId: 'db', blockId: 'work');
 
-DisplayBlockBody _body(String id) =>
-    SingleDisplayBlock(atom: fixtureMember(id), completionId: id);
+DisplayBlockBody _body(String id) => SingleDisplayBlock(
+  record: DisplayRecord(
+    atom: fixtureMember(id),
+    contentSource: CompletedOriginal(completionId: id),
+  ),
+);
 DisplayBlock _block(String id, int pos) =>
     DisplayBlock(id: id, historyPos: pos, body: _body(id));
 LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
@@ -23,13 +27,13 @@ LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
             id: ids[i],
             blockOrder: i + 1,
             body: _body(ids[i]),
-            closing: true,
+            state: DisplayBlockState.sealed,
           ),
       ],
     );
 TimelineBatch _set({
   List<String> live = const ['work', 'text'],
-  int version = 1,
+  int version = 2,
 }) => TimelineBatch(
   presentationVersion: version,
   placement: ChatPlacement.set,
@@ -39,7 +43,7 @@ TimelineBatch _set({
 );
 TimelineBatch _append(String id, int pos, {LiveDisplayWindow? live}) =>
     TimelineBatch(
-      presentationVersion: 1,
+      presentationVersion: 2,
       placement: ChatPlacement.append,
       blocks: [_block(id, pos)],
       fromPos: pos - 1,
@@ -59,44 +63,46 @@ DisplayMemberHead _sealHead({
 }) => DisplayMemberHead(
   memberKey: memberKey,
   memberOrder: order,
-  completionId: completionId,
-  atom: ChatAtom(
-    id: 'member',
-    completionItemId: 'member',
-    completionSeq: 7,
-    source: const ForegroundTurnChatSource(turnId: 'turn'),
-    sourceState: sourceState,
-    sourceOrder: 4,
-    kind: ChatAtomKind.reasoning,
-    delivery: ChatDeliveryKind.foreground,
-    lifecycle:
-        lifecycle ??
-        TerminalChatAtom(
-          started: ChatFactPosition(effectSeq: 3, suborder: 1),
-          ended: ChatFactPosition(effectSeq: 8, suborder: 2),
-          outcome: ChatTerminalOutcome.completed,
-        ),
-    turnId: 'turn',
-    attemptId: 'attempt',
-    textChannel: ThreadTextChannel.finalAnswer,
-    contentPresent: true,
-    startedAt: 10,
-    finishedAt: finishedAt,
-    contents: [
-      ChatAtomContent(
-        role: ChatContentRole.reasoningSummary,
-        reference:
-            body ??
-            const ContentRef(
-              databaseId: 'db',
-              target: BodyContentTarget(
-                owner: ItemContentOwner(itemId: 'member'),
-                key: 'summary',
+  record: DisplayRecord(
+    atom: ChatAtom(
+      id: 'member',
+      completionItemId: 'member',
+      completionSeq: 7,
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
+      sourceState: sourceState,
+      sourceOrder: 4,
+      kind: ChatAtomKind.reasoning,
+      delivery: ChatDeliveryKind.foreground,
+      lifecycle:
+          lifecycle ??
+          TerminalChatAtom(
+            started: ChatFactPosition(effectSeq: 3, suborder: 1),
+            ended: ChatFactPosition(effectSeq: 8, suborder: 2),
+            outcome: ChatTerminalOutcome.completed,
+          ),
+      turnId: 'turn',
+      attemptId: 'attempt',
+      textChannel: ThreadTextChannel.finalAnswer,
+      contentPresent: true,
+      startedAt: 10,
+      finishedAt: finishedAt,
+      contents: [
+        ChatAtomContent(
+          role: ChatContentRole.reasoningSummary,
+          reference:
+              body ??
+              const ContentRef(
+                databaseId: 'db',
+                target: BodyContentTarget(
+                  owner: ItemContentOwner(itemId: 'member'),
+                  key: 'summary',
+                ),
               ),
-            ),
-      ),
-    ],
-    payload: payload ?? InlinePayload(bytes: [1, 2, 3]),
+        ),
+      ],
+      payload: payload ?? InlinePayload(bytes: [1, 2, 3]),
+    ),
+    contentSource: CompletedOriginal(completionId: completionId),
   ),
 );
 
@@ -205,6 +211,33 @@ void main() {
   );
 
   final invalidSeals = <String, DisplayMemberPage Function()>{
+    for (final changeSource in [false, true])
+      'changed display ${changeSource ? "content source" : "fact cut"}': () {
+        final page = _sealPage(sealed: true);
+        return DisplayMemberPage(
+          block: page.block,
+          revision: page.revision,
+          sealed: true,
+          before: page.before,
+          entries: [
+            for (final head in page.entries)
+              DisplayMemberHead(
+                memberKey: head.memberKey,
+                memberOrder: head.memberOrder,
+                record: DisplayRecord(
+                  atom: head.record.atom,
+                  startFact: changeSource
+                      ? head.record.startFact
+                      : const ChatFactPosition(effectSeq: 99, suborder: 0),
+                  endFact: head.record.endFact,
+                  contentSource: changeSource
+                      ? const FrozenObservation(capturedAt: 50, available: true)
+                      : head.record.contentSource,
+                ),
+              ),
+          ],
+        );
+      },
     'ordinary duplicate': () => _sealPage(),
     'revision regression': () => _sealPage(revision: 10, sealed: true),
     'different database': () => _sealPage(
@@ -433,7 +466,7 @@ void main() {
     feed.send(
       ConversationTimelineEvent(
         batch: TimelineBatch(
-          presentationVersion: 1,
+          presentationVersion: 2,
           placement: ChatPlacement.append,
           blocks: [],
           fromPos: 0,
@@ -447,7 +480,7 @@ void main() {
     feed.onOlder = (_, _) async {
       io.complete();
       return TimelineBatch(
-        presentationVersion: 1,
+        presentationVersion: 2,
         placement: ChatPlacement.prepend,
         blocks: [],
         throughPos: 0,
@@ -475,7 +508,7 @@ void main() {
       final h = _Harness();
       addTearDown(h.close);
       final feed = await h.open();
-      feed.send(ConversationTimelineEvent(batch: _set(version: 2)));
+      feed.send(ConversationTimelineEvent(batch: _set(version: 1)));
       await feed.requestCloseStarted.future;
       expect(h.consumer.values, isEmpty);
       expect(feed.acknowledgements, isEmpty);
@@ -585,7 +618,10 @@ void main() {
           DisplayMemberHead(
             memberKey: 'member',
             memberOrder: 10,
-            atom: fixtureMember('member'),
+            record: DisplayRecord(
+              atom: fixtureMember('member'),
+              contentSource: const CurrentAtom(),
+            ),
           ),
         ],
         before: 10,

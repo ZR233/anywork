@@ -1,3 +1,5 @@
+import 'display_record_observation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -147,7 +149,11 @@ final class ConversationCreditObservation {
       _setItemIds = List.unmodifiable(ids);
       _setContentItemIds = List.unmodifiable([
         for (final block in batch.blocks)
-          if (block.body case SingleDisplayBlock(:final completionId?))
+          if (block.body case SingleDisplayBlock(
+            record: DisplayRecord(
+              contentSource: CompletedOriginal(:final completionId),
+            ),
+          ))
             completionId,
       ]);
       evidence['heldSetItemIds'] = _setItemIds;
@@ -224,8 +230,8 @@ final class ConversationCreditObservation {
     required int historyPos,
     required SingleDisplayBlock single,
   }) async {
-    final atom = single.atom;
-    final itemId = single.completionId;
+    final atom = single.record.atom;
+    final itemId = completedOriginalId(single.record);
     final terminal = atom.lifecycle;
     if (_frames.length != 1 ||
         _acknowledged != 0 ||

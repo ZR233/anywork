@@ -694,11 +694,11 @@ final class _NativeLifecycleAssembly {
                 throw StateError('Saved display member window is not sealed');
               }
               for (final head in page.entries) {
-                if (head.atom.turnId != settled.turnId) continue;
-                final id = head.completionId;
-                if (id == null) continue;
+                if (head.record.atom.turnId != settled.turnId) continue;
+                final source = head.record.contentSource;
+                if (source is! CompletedOriginal) continue;
                 final entry = await scope.readCompleted(
-                  recordId: id,
+                  recordId: source.completionId,
                   demand: lease.demand,
                 );
                 inventory.addAll(
@@ -782,12 +782,15 @@ final class _NativeLifecycleAssembly {
     if (scope == null) throw const StaleConversationScope();
     return [
       for (final unit in _mainUnits(lease))
-        if (unit.body case SingleDisplayBlock(:final completionId))
-          if (completionId != null)
-            await scope.readCompleted(
-              recordId: completionId,
-              demand: lease.demand,
-            ),
+        if (unit.body case SingleDisplayBlock(
+          record: DisplayRecord(
+            contentSource: CompletedOriginal(:final completionId),
+          ),
+        ))
+          await scope.readCompleted(
+            recordId: completionId,
+            demand: lease.demand,
+          ),
     ];
   }
 

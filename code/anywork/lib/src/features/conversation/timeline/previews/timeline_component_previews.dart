@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
@@ -39,7 +39,10 @@ Widget _timelinePreviewHost(
   debugShowCheckedModeBanner: false,
   locale: const Locale('zh'),
   theme: pureStudioTheme(locale: const Locale('zh')),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, appChild) => MediaQuery(
     data: MediaQuery.of(context)
@@ -517,7 +520,10 @@ class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
         id: 'overlap-text',
         historyPos: 1,
         body: SingleDisplayBlock(
-          atom: TimelinePreviewFixtures.overlapText.atom,
+          record: DisplayRecord(
+            atom: TimelinePreviewFixtures.overlapText.atom,
+            contentSource: const CurrentAtom(),
+          ),
         ),
       ),
     ),

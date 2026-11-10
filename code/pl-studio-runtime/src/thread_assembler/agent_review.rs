@@ -247,7 +247,7 @@ impl SessionRuntime {
             let target = services.record(target_id).await?;
             ensure!(
                 !target.archived
-                    && target.parent_thread_id.as_deref() == Some(parent.as_str())
+                    && services.direct_child(&parent, target_id)?
                     && target.root_thread_id == reviewer.root_thread_id
                     && target.workspace_id == reviewer.workspace_id,
                 "review relationship is no longer valid"
@@ -383,7 +383,9 @@ impl SessionRuntime {
         let options = {
             let state = self.0.state();
             let Some(entry) = state.entries.get(target_id).filter(|entry| {
-                entry.native.ready && entry.native.parent_id.as_deref() == Some(parent.as_str())
+                entry.native.ready
+                    && super::State::membership_parent(&state.by_agent, entry)
+                        == Some(parent.as_str())
             }) else {
                 return reject(ReviewForwardReason::TargetUnavailable);
             };
@@ -459,7 +461,7 @@ impl SessionRuntime {
         let record = services.record(target).await?;
         let root = services.record(parent).await?;
         ensure!(
-            record.parent_thread_id.as_deref() == Some(parent)
+            services.direct_child(parent, target)?
                 && record.root_thread_id == root.root_thread_id
                 && record.workspace_id == root.workspace_id
                 && !record.archived,
@@ -587,7 +589,7 @@ impl SessionRuntime {
         let record = services.record(&target.agent_id).await?;
         let root = services.record(parent).await?;
         if record.archived
-            || record.parent_thread_id.as_deref() != Some(parent)
+            || !services.direct_child(parent, &target.agent_id)?
             || record.root_thread_id != root.root_thread_id
             || record.workspace_id != root.workspace_id
         {

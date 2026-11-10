@@ -1,5 +1,5 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
@@ -95,7 +95,7 @@ class ConversationActivityStatus extends StatelessWidget {
         icon: view.kind.icon,
         indicatorStyle: view.kind == ConversationActivityKind.responding
             ? TimelineActivityIndicatorStyle.writing
-            : TimelineActivityIndicatorStyle.catTail,
+            : TimelineActivityIndicatorStyle.restingCat,
         isIssue: view.kind.isIssue,
         active:
             view.waits ||

@@ -29,7 +29,7 @@ final class TimelineMemberDisclosure {
 /// Only bounded windows and resource handles live here, never chat messages or
 /// a text-delta accumulator.
 final class ConversationCurrentOwner extends ChangeNotifier {
-  ConversationCurrentOwner(this.content) {
+  ConversationCurrentOwner(this.content, {this.frozen = false}) {
     _attempt = content.currentAttemptId;
     _connection = content.state.watch((state) {
       if (_closed) return;
@@ -48,6 +48,7 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   }
 
   final ConversationContent content;
+  final bool frozen;
   Observation? _connection;
   Object? _attempt;
   List<CurrentWindowSource> _explicitSources = const [];
@@ -155,27 +156,43 @@ final class ConversationCurrentOwner extends ChangeNotifier {
           offset: _offsets[entry.key] ?? 0,
         );
         _windows[entry.key] = observation;
-        observation.subscription = scope
-            .watchContent(
-              reference: observation.source.reference,
-              range: ContentRange(
-                offset: observation.offset,
-                maxBytes: 32 * 1024,
-              ),
-            )
-            .listen(
-              (window) {
-                if (!_eligible(scope, observation, entry.key)) return;
-                observation.window = window;
-                observation.error = null;
-                _notify();
-              },
-              onError: (Object error, StackTrace stack) {
-                if (!_eligible(scope, observation, entry.key)) return;
-                observation.error = error;
-                _notify();
-              },
-            );
+        final range = ContentRange(
+          offset: observation.offset,
+          maxBytes: 32 * 1024,
+        );
+        final stream = frozen
+            ? Stream.fromFuture(
+                scope
+                    .readContent(
+                      reference: observation.source.reference,
+                      range: range,
+                    )
+                    .then((window) {
+                      if (!window.sealed) {
+                        throw const ConversationContinuityError(
+                          'Frozen observation content is not sealed',
+                        );
+                      }
+                      return window;
+                    }),
+              )
+            : scope.watchContent(
+                reference: observation.source.reference,
+                range: range,
+              );
+        observation.subscription = stream.listen(
+          (window) {
+            if (!_eligible(scope, observation, entry.key)) return;
+            observation.window = window;
+            observation.error = null;
+            _notify();
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!_eligible(scope, observation, entry.key)) return;
+            observation.error = error;
+            _notify();
+          },
+        );
       } catch (error) {
         cleanupError = error;
       }

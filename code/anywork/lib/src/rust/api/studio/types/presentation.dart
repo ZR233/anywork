@@ -12,7 +12,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeDisplayBlock {
   final String id;
@@ -47,8 +47,7 @@ sealed class BridgeDisplayBlockBody with _$BridgeDisplayBlockBody {
     required BridgeDisplayBlockRef members,
   }) = BridgeDisplayBlockBody_Work;
   const factory BridgeDisplayBlockBody.single({
-    required BridgeChatAtom atom,
-    String? completionId,
+    required BridgeDisplayRecord record,
   }) = BridgeDisplayBlockBody_Single;
 }
 
@@ -73,25 +72,37 @@ class BridgeDisplayBlockRef {
           blockId == other.blockId;
 }
 
+enum BridgeDisplayBlockState { open, sealed }
+
+@freezed
+sealed class BridgeDisplayContentSource with _$BridgeDisplayContentSource {
+  const BridgeDisplayContentSource._();
+
+  const factory BridgeDisplayContentSource.currentAtom() =
+      BridgeDisplayContentSource_CurrentAtom;
+  const factory BridgeDisplayContentSource.frozenObservation({
+    PlatformInt64? capturedAt,
+    required bool available,
+  }) = BridgeDisplayContentSource_FrozenObservation;
+  const factory BridgeDisplayContentSource.completedOriginal({
+    required String completionId,
+  }) = BridgeDisplayContentSource_CompletedOriginal;
+}
+
 class BridgeDisplayMemberHead {
   final String memberKey;
   final BigInt memberOrder;
-  final BridgeChatAtom atom;
-  final String? completionId;
+  final BridgeDisplayRecord record;
 
   const BridgeDisplayMemberHead({
     required this.memberKey,
     required this.memberOrder,
-    required this.atom,
-    this.completionId,
+    required this.record,
   });
 
   @override
   int get hashCode =>
-      memberKey.hashCode ^
-      memberOrder.hashCode ^
-      atom.hashCode ^
-      completionId.hashCode;
+      memberKey.hashCode ^ memberOrder.hashCode ^ record.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -100,8 +111,7 @@ class BridgeDisplayMemberHead {
           runtimeType == other.runtimeType &&
           memberKey == other.memberKey &&
           memberOrder == other.memberOrder &&
-          atom == other.atom &&
-          completionId == other.completionId;
+          record == other.record;
 }
 
 class BridgeDisplayMemberPage {
@@ -150,19 +160,50 @@ sealed class BridgeDisplayMemberWindow with _$BridgeDisplayMemberWindow {
   }) = BridgeDisplayMemberWindow_Before;
 }
 
+class BridgeDisplayRecord {
+  final BridgeChatAtom atom;
+  final BridgeChatFactPosition? startFact;
+  final BridgeChatFactPosition? endFact;
+  final BridgeDisplayContentSource contentSource;
+
+  const BridgeDisplayRecord({
+    required this.atom,
+    this.startFact,
+    this.endFact,
+    required this.contentSource,
+  });
+
+  @override
+  int get hashCode =>
+      atom.hashCode ^
+      startFact.hashCode ^
+      endFact.hashCode ^
+      contentSource.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeDisplayRecord &&
+          runtimeType == other.runtimeType &&
+          atom == other.atom &&
+          startFact == other.startFact &&
+          endFact == other.endFact &&
+          contentSource == other.contentSource;
+}
+
 class BridgeLiveDisplayBlock {
   final String id;
   final BigInt blockOrder;
   final BridgeChatSourceId? source;
   final BridgeDisplayBlockBody body;
-  final bool closing;
+  final BridgeDisplayBlockState state;
 
   const BridgeLiveDisplayBlock({
     required this.id,
     required this.blockOrder,
     this.source,
     required this.body,
-    required this.closing,
+    required this.state,
   });
 
   @override
@@ -171,7 +212,7 @@ class BridgeLiveDisplayBlock {
       blockOrder.hashCode ^
       source.hashCode ^
       body.hashCode ^
-      closing.hashCode;
+      state.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -182,7 +223,7 @@ class BridgeLiveDisplayBlock {
           blockOrder == other.blockOrder &&
           source == other.source &&
           body == other.body &&
-          closing == other.closing;
+          state == other.state;
 }
 
 class BridgeLiveDisplayWindow {
@@ -268,6 +309,7 @@ class BridgeWorkSummary {
   final BigInt terminal;
   final BigInt running;
   final BigInt waiting;
+  final BigInt unavailable;
   final BigInt failed;
   final BigInt cancelled;
   final BigInt transferred;
@@ -284,6 +326,7 @@ class BridgeWorkSummary {
     required this.terminal,
     required this.running,
     required this.waiting,
+    required this.unavailable,
     required this.failed,
     required this.cancelled,
     required this.transferred,
@@ -302,6 +345,7 @@ class BridgeWorkSummary {
       terminal.hashCode ^
       running.hashCode ^
       waiting.hashCode ^
+      unavailable.hashCode ^
       failed.hashCode ^
       cancelled.hashCode ^
       transferred.hashCode ^
@@ -322,6 +366,7 @@ class BridgeWorkSummary {
           terminal == other.terminal &&
           running == other.running &&
           waiting == other.waiting &&
+          unavailable == other.unavailable &&
           failed == other.failed &&
           cancelled == other.cancelled &&
           transferred == other.transferred &&

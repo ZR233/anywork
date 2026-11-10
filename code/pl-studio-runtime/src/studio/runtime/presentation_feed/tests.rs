@@ -46,7 +46,7 @@ fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
                     id,
                     block_order: *order,
                     source: None,
-                    closing: false,
+                    state: pl_protocol::DisplayBlockState::Open,
                 }
             })
             .collect(),

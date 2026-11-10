@@ -14,19 +14,39 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
-    'Demo state-only execution changes wake content Activity without Chat',
+    'Demo state-only execution changes wake completion Activity without Chat',
     () async {
       final (graph, transport) = await _open();
       final session = graph.client.conversations.session('thread-main');
-      final initial = await session.activity
-          .waitFor((activity) => activity != null)
-          .timeout(const Duration(seconds: 3));
-      expect(initial!.executionPresent, isFalse);
+      // GUI sessions consume Timeline. Activity belongs to the independent
+      // completion feed, whose delivery credit must be acknowledged.
+      final feed = await transport.openConversationFeed(
+        'thread-main',
+        scope: const MainChatScope(),
+        demand: chatDemand,
+      );
+      final events = StreamIterator(feed.events);
+      addTearDown(() async {
+        await events.cancel();
+        await feed.close();
+      });
+      expect(
+        await events.moveNext().timeout(const Duration(seconds: 3)),
+        isTrue,
+      );
+      expect(events.current.event, isA<ConversationChatEvent>());
+      await feed.acknowledge(events.current.deliverySequence);
+      expect(
+        await events.moveNext().timeout(const Duration(seconds: 3)),
+        isTrue,
+      );
+      final initial =
+          (events.current.event as ConversationActivityEvent).snapshot;
+      expect(initial.executionPresent, isFalse);
+      await feed.acknowledge(events.current.deliverySequence);
       final lease = graph.timeline.lease('thread-main')!;
       final messages = List.of(lease.controller.messages);
-      final running = session.activity.waitFor(
-        (activity) => activity?.executionPresent == true,
-      );
+      final running = events.moveNext().timeout(const Duration(seconds: 3));
       final now = DateTime.now();
 
       // This is the same state-only admission used by continuation: there is no
@@ -49,8 +69,14 @@ void main() {
       await session.source
           .waitFor((state) => state.activeTurn?.turnId == 'activity-only-turn')
           .timeout(const Duration(seconds: 3));
-      final activity = await running.timeout(const Duration(seconds: 3));
-      expect(activity!.completedThrough, initial.completedThrough);
+      expect(await running, isTrue);
+      // A Chat event here would fail the cast: the state-only change must
+      // publish Activity directly, without publishing a completed record.
+      final activity =
+          (events.current.event as ConversationActivityEvent).snapshot;
+      expect(activity.executionPresent, isTrue);
+      expect(activity.completedThrough, initial.completedThrough);
+      await feed.acknowledge(events.current.deliverySequence);
       expect(lease.controller.messages, orderedEquals(messages));
     },
   );
@@ -249,15 +275,15 @@ void main() {
       const InputChatSource(inputId: 'unique-user-input'),
     );
     final single = item.displayUnit!.body as SingleDisplayBlock;
-    expect(single.atom, same(item.atom));
-    expect(single.completionId, isNotNull);
+    expect(single.record.atom, same(item.atom));
+    final original = single.record.contentSource as CompletedOriginal;
     final scope = session.content.openScope(generation: 101);
     try {
       final completed = await scope.readCompleted(
-        recordId: single.completionId!,
+        recordId: original.completionId,
         demand: chatDemand,
       );
-      expect(completed.recordId, single.completionId);
+      expect(completed.recordId, original.completionId);
       expect(completed.atom.source, item.atom!.source);
       expect(
         ChatItemPresentation.decode(completed.atom).inlineText('body'),

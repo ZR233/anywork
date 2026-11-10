@@ -35,6 +35,33 @@ final class UnrestoredRealtimeNotice extends RealtimeNotice {
   const UnrestoredRealtimeNotice();
 }
 
+bool hasCurrentOutputRenderer({
+  required LiveDisplayWindow? live,
+  required String? activeTurnId,
+  required RealtimeNotice notice,
+}) {
+  if (notice is! ExecutionRealtimeNotice ||
+      notice.view.kind != ConversationActivityKind.responding ||
+      notice.view.errorMessage != null ||
+      notice.view.turnId != activeTurnId ||
+      activeTurnId == null ||
+      live?.executionPresent != true) {
+    return false;
+  }
+  return live!.blocks.any((block) {
+    if (block.state != DisplayBlockState.open) return false;
+    if (block.body case SingleDisplayBlock(
+      record: DisplayRecord(contentSource: CurrentAtom(), atom: final atom),
+    )) {
+      return atom.kind == ChatAtomKind.text &&
+          atom.lifecycle is ActiveChatAtom &&
+          atom.source is ForegroundTurnChatSource &&
+          (atom.source as ForegroundTurnChatSource).turnId == activeTurnId;
+    }
+    return false;
+  });
+}
+
 /// A normal notice may annotate only the latest open Work of the active Turn.
 /// Older windows, closing Work and critical notices keep independent surfaces.
 ({String blockId, ExecutionRealtimeNotice notice})? currentWorkNotice({
@@ -46,7 +73,14 @@ final class UnrestoredRealtimeNotice extends RealtimeNotice {
     return null;
   }
   final latest = live.blocks.lastOrNull;
-  if (latest == null || latest.closing || latest.body is! WorkDisplayBlock) {
+  if (latest == null ||
+      latest.state != DisplayBlockState.open ||
+      latest.body is! WorkDisplayBlock) {
+    return null;
+  }
+  final summary = (latest.body as WorkDisplayBlock).summary;
+  if (summary.unavailable != 0 ||
+      (summary.running <= 0 && summary.waiting <= 0)) {
     return null;
   }
   final source = latest.source;
@@ -72,7 +106,8 @@ ConversationRealtimeRegion projectConversationRealtime({
   required LiveDisplayWindow? live,
   required ThreadActivityView? status,
 }) {
-  if (interaction?.kind == InteractionKind.userInput) {
+  final confirmingPlan = interaction?.planConfirmation != null;
+  if (interaction?.kind == InteractionKind.userInput && !confirmingPlan) {
     return DockRealtimeRegion(interactionId: interaction!.id);
   }
   final activity = live?.executionPresent == false ? null : status;
@@ -118,9 +153,17 @@ ConversationRealtimeRegion projectConversationRealtime({
         )
       : null;
   final notices = <RealtimeNotice>[
-    if (live?.executionPresent == false && live!.blocks.isNotEmpty)
+    if (live?.executionPresent == false &&
+        live!.blocks.any((block) => block.state == DisplayBlockState.open))
       const UnrestoredRealtimeNotice(),
-    if (view != null) ExecutionRealtimeNotice(view),
+    // The plan dock already explains its own input wait. It does not replace
+    // actual output, other execution phases, storage faults or cold-read facts.
+    if (view != null &&
+        !(confirmingPlan &&
+            view.kind == ConversationActivityKind.awaitingInput &&
+            interaction?.turnId != null &&
+            view.turnId == interaction?.turnId))
+      ExecutionRealtimeNotice(view),
     if (approval != null) ExecutionRealtimeNotice(approval),
     if (storageNotice != null) ExecutionRealtimeNotice(storageNotice),
   ];

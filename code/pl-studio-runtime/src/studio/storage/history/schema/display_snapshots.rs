@@ -1,13 +1,10 @@
 //! Schema 18 -> 19. One-time lightweight legacy-run snapshot, in the original migration transaction.
 use super::*;
-use crate::studio::thread_projection::presentation::{
-    DisplayHeader, DisplayMemberWrite, lightweight, member_key,
-};
+use crate::studio::thread_projection::presentation::{lightweight, member_key};
+pub(super) mod legacy;
+use legacy::{DisplayBlockBody, DisplayHeader, DisplayMemberHead, DisplayMemberWrite};
 use pl_core::chat::ChatReadHint;
-use pl_protocol::{
-    ChatAtom, ChatAtomLifecycle, ChatTerminalOutcome, DisplayBlockBody, DisplayBlockRef,
-    DisplayMemberHead,
-};
+use pl_protocol::{ChatAtom, ChatAtomLifecycle, ChatTerminalOutcome, DisplayBlockRef};
 
 pub(super) struct DisplaySnapshots;
 impl MigrationName for DisplaySnapshots {
@@ -237,6 +234,20 @@ pub(in crate::studio::storage::history) async fn upgrade(db: &impl ConnectionTra
 /// Normal open checks schema/index gates and prefix endpoints, not all original/member rows.
 pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
     ensure!(version(db).await? == 19, "display history format is not 19");
+    validate_preserved(db).await?;
+    if let Some(row) = db.query_one_raw(statement(
+        "SELECT history_pos,header FROM conversation_display_blocks WHERE history_pos IS NOT NULL ORDER BY history_pos DESC LIMIT 1",
+        vec![],
+    )).await? {
+        let header: DisplayHeader = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "header")?)?;
+        ensure!(header.version == 1 && header.history_pos == Some(u64::try_from(row.try_get::<i64>("","history_pos")?)?)
+            && header.unfinished == 0 && (header.legacy || header.boundary.is_some()) && !header.skip_display,
+            "legacy published display header is not ready");
+    }
+    Ok(())
+}
+
+pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> {
     immutable_completion_runs::validate_preserved(db).await?;
     super::validate_keys(
         db,
@@ -296,9 +307,15 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
         effect <= u64::try_from(meta.try_get::<i64>("", "applied_write_seq")?)?,
         "display effect is ahead of original commit"
     );
-    let last = conversation::display::history_heads(db, i64::MAX as u64, None, 1).await?;
+    let last = db.query_one_raw(statement(
+        "SELECT history_pos FROM conversation_display_blocks WHERE history_pos IS NOT NULL ORDER BY history_pos DESC LIMIT 1",
+        vec![],
+    )).await?;
     ensure!(
-        last.first().map_or(0, |b| b.history_pos) == published,
+        last.map(|row| row.try_get::<i64>("", "history_pos"))
+            .transpose()?
+            .unwrap_or(0)
+            == integer(published)?,
         "display published head is missing; original history preserved"
     );
     Ok(())

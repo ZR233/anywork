@@ -606,7 +606,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
       if (modelsOwner == null ||
           expectedCompactToken == null ||
           !modelsOwner.canRemove(expectedToken: expectedCompactToken) ||
-          !ref.exists(provider) ||
+          !ref.read(provider.exists) ||
           !identical(ref.read(provider.notifier), modelsOwner)) {
         return false;
       }
@@ -927,7 +927,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     _releaseChatGptLogin();
     _finished = true;
     final key = _acpKey;
-    if (key != null && ref.exists(acpAccountViewModelProvider(key))) {
+    if (key != null && ref.read(acpAccountViewModelProvider(key).exists)) {
       ref.read(acpAccountViewModelProvider(key).notifier).finish();
     }
     _closeRetention?.call();
@@ -997,7 +997,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     final acpKey = _acpKey;
     final prepared =
         acpKey != null &&
-        ref.exists(acpAccountViewModelProvider(acpKey)) &&
+        ref.read(acpAccountViewModelProvider(acpKey).exists) &&
         ref
                 .read(acpAccountViewModelProvider(acpKey))
                 .asData

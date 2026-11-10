@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart' show ConversationActivityView;
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:anywork_client/models.dart' show ConversationActivityView;
+import 'package:material_ui/material_ui.dart';
 
 import '../state/conversation_realtime_presentation.dart';
 import '../state/timeline_display_diagnostics.dart';
@@ -14,10 +14,13 @@ import '../widgets/timeline_display_unit_view.dart';
 import 'completion_run_connector.dart';
 import 'timeline_member_atom.dart';
 
+enum ConversationLiveSection { work, output }
+
 /// Reads only the display lease's accepted cut, never SDK live independently.
 class ConversationCurrentConnector extends StatefulWidget {
   const ConversationCurrentConnector({
     required this.session,
+    required this.section,
     required this.content,
     required this.region,
     required this.live,
@@ -31,6 +34,7 @@ class ConversationCurrentConnector extends StatefulWidget {
     super.key,
   });
   final ThreadSessionState session;
+  final ConversationLiveSection section;
   final ConversationContent content;
   final ContentRealtimeRegion region;
   final ValueListenable<LiveDisplayWindow?> live;
@@ -209,58 +213,79 @@ class _CurrentState extends State<ConversationCurrentConnector>
         !live.executionPresent &&
         live.blocks.isNotEmpty &&
         live.blocks.every((block) => block.body is WorkDisplayBlock);
-    return ConversationActivityBar(
-      children: [
-        ConversationRealtimeNotices(
-          notices: [
-            for (final notice in widget.region.notices)
-              if (!identical(notice, merged?.notice) &&
-                  !(coldWorkOnly && notice is UnrestoredRealtimeNotice))
-                notice,
-          ],
+    final notices = <RealtimeNotice>[
+      for (final notice in widget.region.notices)
+        if (!identical(notice, merged?.notice) &&
+            !hasCurrentOutputRenderer(
+              live: live,
+              activeTurnId: widget.session.activeTurn?.turnId,
+              notice: notice,
+            ) &&
+            !(coldWorkOnly && notice is UnrestoredRealtimeNotice))
+          notice,
+    ];
+    final blocks = [
+      for (final block in live?.blocks ?? const <LiveDisplayBlock>[])
+        if ((block.body is WorkDisplayBlock) ==
+            (widget.section == ConversationLiveSection.work))
+          block,
+    ];
+    if (widget.section == ConversationLiveSection.output &&
+        blocks.isEmpty &&
+        notices.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final children = <Widget>[
+      if (widget.section == ConversationLiveSection.output &&
+          notices.isNotEmpty)
+        ConversationRealtimeNotices(notices: notices),
+      if (_olderError case final error?) Text(error.toString()),
+      if (_loadingOlder) const LinearProgressIndicator(),
+      if (live?.older case final before?)
+        TextButton(
+          onPressed: () => _loadOlder(before),
+          child: const Text('更早实时片段'),
         ),
-        if (_olderError case final error?) Text(error.toString()),
-        if (_loadingOlder) const LinearProgressIndicator(),
-        if (live?.older case final before?)
-          TextButton(
-            onPressed: () => _loadOlder(before),
-            child: const Text('更早实时片段'),
+      if (_older != null)
+        TextButton(
+          onPressed: () => setState(() {
+            _older = null;
+            _synchronize();
+          }),
+          child: const Text('最新实时片段'),
+        ),
+      for (final block in blocks)
+        switch (block.body) {
+          WorkDisplayBlock() => _work(
+            block,
+            live!.executionPresent,
+            activity: merged?.blockId == block.id ? merged?.notice.view : null,
           ),
-        if (_older != null)
-          TextButton(
-            onPressed: () => setState(() {
-              _older = null;
-              _synchronize();
-            }),
-            child: const Text('最新实时片段'),
+          SingleDisplayBlock(:final record) => TimelineMemberAtom(
+            key: ValueKey((block.id, _retirements[block.id])),
+            record: record,
+            displayId: block.id,
+            executionPresent: live!.executionPresent,
+            retirement: _retirements[block.id],
+            content: widget.content,
+            isActive: () => isCurrent && _retirements[block.id]?.value == false,
+            images: widget.images,
+            readAttachment: widget.readAttachment,
+            registerDisplay: (member) {
+              _members.add(member);
+              return () => _members.remove(member);
+            },
           ),
-        for (final block in live?.blocks ?? const <LiveDisplayBlock>[])
-          switch (block.body) {
-            WorkDisplayBlock() => _work(
-              block,
-              live!.executionPresent,
-              activity: merged?.blockId == block.id
-                  ? merged?.notice.view
-                  : null,
-            ),
-            SingleDisplayBlock(:final atom) => TimelineMemberAtom(
-              key: ValueKey((block.id, _retirements[block.id])),
-              atom: atom,
-              executionPresent: live!.executionPresent,
-              retirement: _retirements[block.id],
-              content: widget.content,
-              isActive: () =>
-                  isCurrent && _retirements[block.id]?.value == false,
-              images: widget.images,
-              readAttachment: widget.readAttachment,
-              registerDisplay: (member) {
-                _members.add(member);
-                return () => _members.remove(member);
-              },
-            ),
-          },
-      ],
-    );
+        },
+    ];
+    return widget.section == ConversationLiveSection.work
+        ? Column(
+            key: const ValueKey('timeline-current-work'),
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
+          )
+        : ConversationActivityBar(children: children);
   }
 
   Widget _work(

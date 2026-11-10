@@ -34,6 +34,7 @@ fn summary(value: protocol::WorkSummary) -> BridgeWorkSummary {
         terminal: value.terminal,
         running: value.running,
         waiting: value.waiting,
+        unavailable: value.unavailable,
         failed: value.failed,
         cancelled: value.cancelled,
         transferred: value.transferred,
@@ -47,6 +48,27 @@ fn summary(value: protocol::WorkSummary) -> BridgeWorkSummary {
     }
 }
 
+fn record(value: protocol::DisplayRecord) -> BridgeDisplayRecord {
+    BridgeDisplayRecord {
+        atom: chat::atom(value.atom),
+        start_fact: value.start_fact.map(chat::fact_position),
+        end_fact: value.end_fact.map(chat::fact_position),
+        content_source: match value.content_source {
+            protocol::DisplayContentSource::CurrentAtom => BridgeDisplayContentSource::CurrentAtom,
+            protocol::DisplayContentSource::FrozenObservation {
+                captured_at,
+                available,
+            } => BridgeDisplayContentSource::FrozenObservation {
+                captured_at,
+                available,
+            },
+            protocol::DisplayContentSource::CompletedOriginal { completion_id } => {
+                BridgeDisplayContentSource::CompletedOriginal { completion_id }
+            }
+        },
+    }
+}
+
 fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
     match value {
         protocol::DisplayBlockBody::Work {
@@ -56,12 +78,8 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
             summary: Box::new(summary(*value)),
             members: block_ref(members),
         },
-        protocol::DisplayBlockBody::Single {
-            atom,
-            completion_id,
-        } => BridgeDisplayBlockBody::Single {
-            atom: Box::new(chat::atom(*atom)),
-            completion_id,
+        protocol::DisplayBlockBody::Single { record: value } => BridgeDisplayBlockBody::Single {
+            record: Box::new(record(*value)),
         },
     }
 }
@@ -79,7 +97,10 @@ pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDispl
                 block_order: block.block_order,
                 source: block.source.map(chat::source_id),
                 body: body(block.body),
-                closing: block.closing,
+                state: match block.state {
+                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
+                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
+                },
             })
             .collect(),
         older: value.older,
@@ -118,8 +139,7 @@ pub(crate) fn member_page(value: protocol::DisplayMemberPage) -> BridgeDisplayMe
             .map(|member| BridgeDisplayMemberHead {
                 member_key: member.member_key,
                 member_order: member.member_order,
-                atom: chat::atom(member.atom),
-                completion_id: member.completion_id,
+                record: record(member.record),
             })
             .collect(),
         before: value.before,
@@ -199,7 +219,7 @@ mod tests {
                     turn_id: "original-work-turn".into(),
                 }),
                 body: work(),
-                closing: true,
+                state: protocol::DisplayBlockState::Sealed,
             }],
             older: Some("original-live-continuation".into()),
         });
@@ -208,7 +228,7 @@ mod tests {
         let live = mapped.live.unwrap();
         assert!(!live.execution_present);
         assert_eq!(live.older.as_deref(), Some("original-live-continuation"));
-        assert!(live.blocks[0].closing);
+        assert_eq!(live.blocks[0].state, BridgeDisplayBlockState::Sealed);
         assert!(matches!(&live.blocks[0].source,
             Some(BridgeChatSourceId::ForegroundTurn { turn_id }) if turn_id == "original-work-turn"));
         let BridgeDisplayBlockBody::Work { summary, members } = &live.blocks[0].body else {
@@ -236,7 +256,7 @@ mod tests {
                 block_order: 1,
                 source: None,
                 body: work(),
-                closing: false,
+                state: protocol::DisplayBlockState::Open,
             }],
             older: None,
         };
@@ -294,15 +314,25 @@ mod tests {
             entries: vec![protocol::DisplayMemberHead {
                 member_key: "original-member".into(),
                 member_order: 7,
-                atom: atom(protocol::ChatAtomLifecycle::Terminal {
-                    started: None,
-                    ended: Some(protocol::ChatFactPosition {
+                record: protocol::DisplayRecord {
+                    atom: atom(protocol::ChatAtomLifecycle::Terminal {
+                        started: None,
+                        ended: Some(protocol::ChatFactPosition {
+                            effect_seq: 19,
+                            suborder: 2,
+                        }),
+                        outcome: protocol::ChatTerminalOutcome::Cancelled,
+                    }),
+                    start_fact: None,
+                    end_fact: Some(protocol::ChatFactPosition {
                         effect_seq: 19,
                         suborder: 2,
                     }),
-                    outcome: protocol::ChatTerminalOutcome::Cancelled,
-                }),
-                completion_id: None,
+                    content_source: protocol::DisplayContentSource::FrozenObservation {
+                        captured_at: None,
+                        available: true,
+                    },
+                },
             }],
             before: Some(7),
         });
@@ -313,11 +343,25 @@ mod tests {
         let member = &mapped.entries[0];
         assert_eq!(member.member_key, "original-member");
         assert_eq!(member.member_order, 7);
-        assert!(member.completion_id.is_none());
-        assert!(member.atom.completion_seq.is_none());
-        assert!(member.atom.payload.is_none());
         assert!(matches!(
-            member.atom.lifecycle,
+            member.record.content_source,
+            BridgeDisplayContentSource::FrozenObservation {
+                available: true,
+                ..
+            }
+        ));
+        assert!(member.record.start_fact.is_none());
+        assert!(matches!(
+            member.record.end_fact,
+            Some(BridgeChatFactPosition {
+                effect_seq: 19,
+                suborder: 2
+            })
+        ));
+        assert!(member.record.atom.completion_seq.is_none());
+        assert!(member.record.atom.payload.is_none());
+        assert!(matches!(
+            member.record.atom.lifecycle,
             BridgeChatAtomLifecycle::Terminal {
                 ended: Some(BridgeChatFactPosition {
                     effect_seq: 19,

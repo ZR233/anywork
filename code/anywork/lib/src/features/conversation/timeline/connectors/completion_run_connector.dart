@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
@@ -61,7 +61,7 @@ class _MembersState extends State<CompletionRunConnector>
   Object? get error => isCurrent ? _controller?.error : null;
   @override
   Iterable<ChatAtom> get atoms => isCurrent
-      ? _controller?.page?.entries.map((entry) => entry.atom) ?? const []
+      ? _controller?.page?.entries.map((entry) => entry.record.atom) ?? const []
       : const [];
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows sync* {
@@ -84,6 +84,17 @@ class _MembersState extends State<CompletionRunConnector>
         demand: const ReadDemand(maxItems: 12, maxBytes: 32 * 1024),
         open: open,
       );
+    }
+    if (widget.unit.state == DisplayBlockState.sealed) {
+      _controller?.requireSealed();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CompletionRunConnector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.unit.state == DisplayBlockState.sealed) {
+      _controller?.requireSealed();
     }
   }
 
@@ -137,28 +148,33 @@ class _MembersState extends State<CompletionRunConnector>
           ),
           for (final entry
               in controller.page?.entries ?? const <DisplayMemberHead>[])
-            TimelineMemberAtom(
-              key: ValueKey((
-                blockReference,
-                entry.memberKey,
-                controller.disclosure(entry.memberKey),
-              )),
-              atom: entry.atom,
-              disclosure: controller.disclosure(entry.memberKey),
-              executionPresent: widget.unit.executionPresent,
-              content: widget.content,
-              retirement: widget.unit.expansion.retirement,
-              isActive: () =>
-                  isCurrent && widget.unit.expansion.expanded == true,
-              images: widget.images,
-              readAttachment: widget.readAttachment,
-              monotonicMicros: widget.monotonicMicros,
-              onContentLayout: widget.onContentLayout,
-              registerDisplay: (member) {
-                _members.add(member);
-                return () => _members.remove(member);
-              },
-            ),
+            if (controller.awaitingSealed &&
+                entry.record.contentSource is CurrentAtom)
+              const Text('正在读取封存观察…')
+            else
+              TimelineMemberAtom(
+                key: ValueKey((
+                  blockReference,
+                  entry.memberKey,
+                  controller.disclosure(entry.memberKey),
+                )),
+                record: entry.record,
+                displayId: entry.memberKey,
+                disclosure: controller.disclosure(entry.memberKey),
+                executionPresent: widget.unit.executionPresent,
+                content: widget.content,
+                retirement: widget.unit.expansion.retirement,
+                isActive: () =>
+                    isCurrent && widget.unit.expansion.expanded == true,
+                images: widget.images,
+                readAttachment: widget.readAttachment,
+                monotonicMicros: widget.monotonicMicros,
+                onContentLayout: widget.onContentLayout,
+                registerDisplay: (member) {
+                  _members.add(member);
+                  return () => _members.remove(member);
+                },
+              ),
         ],
       ),
     );

@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 19;
+const HISTORY_SCHEMA_VERSION: i64 = 20;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;

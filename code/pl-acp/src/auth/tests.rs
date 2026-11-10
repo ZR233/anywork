@@ -2,14 +2,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, AuthMethod as SdkAuthMethod, AuthMethodAgent, AuthenticateRequest,
     AuthenticateResponse, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
     Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
     PromptRequest, PromptResponse, SessionCapabilities, SessionCloseCapabilities,
     SessionNotification, SessionUpdate, StopReason, TextContent,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo, Responder};
+use agent_client_protocol::v1::{ConnectionTo, Responder};
+use agent_client_protocol::{Agent, Client};
 
 use super::*;
 
@@ -35,6 +36,7 @@ struct Scenario {
     requires_login: bool,
     deny_after_auth: bool,
     close_failure: bool,
+    prompt_failure: bool,
     cancel_at: Option<AuthStage>,
     choice: Choice,
 }
@@ -60,7 +62,7 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
     let agent_cancel = cancellation.clone();
     let agent_disconnect = disconnect.clone();
     let agent = tokio::spawn(async move {
-        Agent.builder()
+        Agent.v1()
             .on_receive_request({
                 let observed = agent_observed.clone();
                 let cancel = agent_cancel.clone();
@@ -113,7 +115,8 @@ async fn run(action: AuthAction, scenario: Scenario) -> (Result<AuthOutcome, Aut
                         SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(TextContent::new("not quota"))))))?;
                     connection.send_notification(SessionNotification::new(request.session_id,
                         SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(REPORT))))))?;
-                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                    if scenario.prompt_failure { responder.respond_with_error(RpcError::auth_required()) }
+                    else { responder.respond(PromptResponse::new(StopReason::EndTurn)) }
                 }
             }, agent_client_protocol::on_receive_request!())
             .on_receive_request({
@@ -344,6 +347,29 @@ async fn close_failure_does_not_publish_verified() {
         (AuthFailureKind::Cleanup, AuthStage::Close)
     );
     assert_eq!(observed.closes, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn usage_prompt_error_remains_nested_and_the_probe_is_closed() {
+    let (outcome, observed) = run(
+        AuthAction::QueryUsage,
+        Scenario {
+            prompt_failure: true,
+            ..Scenario::default()
+        },
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        Ok(AuthOutcome::Verified {
+            usage: Some(UsageReport::Failed(UsageFailure::Query)),
+            ..
+        })
+    ));
+    assert_eq!(observed.probes, 1);
+    assert_eq!(observed.authenticates, 0);
+    assert_eq!(observed.closes, 1);
+    assert_eq!(observed.prompts.len(), 1);
 }
 
 #[tokio::test(start_paused = true)]

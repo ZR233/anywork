@@ -580,15 +580,28 @@ bool _sameMemberPageContents(DisplayMemberPage a, DisplayMemberPage b) =>
       (a, b) =>
           a.memberKey == b.memberKey &&
           a.memberOrder == b.memberOrder &&
-          a.completionId == b.completionId &&
-          _atomFields(a.atom) == _atomFields(b.atom) &&
+          _factFields(a.record.startFact) == _factFields(b.record.startFact) &&
+          _factFields(a.record.endFact) == _factFields(b.record.endFact) &&
+          _displaySourceFields(a.record.contentSource) ==
+              _displaySourceFields(b.record.contentSource) &&
+          _atomFields(a.record.atom) == _atomFields(b.record.atom) &&
           _sameValues(
-            a.atom.contents,
-            b.atom.contents,
+            a.record.atom.contents,
+            b.record.atom.contents,
             (a, b) => a.role == b.role && a.reference == b.reference,
           ) &&
-          _samePayload(a.atom.payload, b.atom.payload),
+          _samePayload(a.record.atom.payload, b.record.atom.payload),
     );
+
+Object _displaySourceFields(DisplayContentSource source) => switch (source) {
+  CurrentAtom() => (CurrentAtom,),
+  FrozenObservation(:final capturedAt, :final available) => (
+    FrozenObservation,
+    capturedAt,
+    available,
+  ),
+  CompletedOriginal(:final completionId) => (CompletedOriginal, completionId),
+};
 
 Object _atomFields(ChatAtom atom) => (
   atom.id,

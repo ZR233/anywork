@@ -187,7 +187,7 @@ void main() {
             LiveDisplayBlock(
               id: reference.blockId,
               blockOrder: 1,
-              closing: false,
+              state: DisplayBlockState.open,
               body: body(total, terminal),
             ),
           ],
@@ -282,7 +282,7 @@ void main() {
     final work = LiveDisplayBlock(
       id: 'work',
       blockOrder: 1,
-      closing: true,
+      state: DisplayBlockState.sealed,
       body: WorkDisplayBlock(
         summary: displaySummary(2, terminal: 1, running: 1),
         members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),

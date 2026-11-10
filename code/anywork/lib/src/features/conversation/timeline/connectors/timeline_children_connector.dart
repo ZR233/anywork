@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/timeline_display_diagnostics.dart';
@@ -411,7 +411,13 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       isDisplayActive: active,
       atomBuilder: (atom) => TimelineMemberAtom(
         key: ValueKey((generation, atom.id)),
-        atom: atom,
+        displayId: atom.id,
+        record: DisplayRecord(
+          atom: atom,
+          contentSource: CompletedOriginal(
+            completionId: atom.completionItemId!,
+          ),
+        ),
         content: content,
         retirement: _parentRetirement,
         isActive: active,

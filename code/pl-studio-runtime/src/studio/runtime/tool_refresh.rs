@@ -495,7 +495,7 @@ impl StudioRuntime {
                         .context("Thread has no frozen delegation selection")?;
                     registrations.extend(
                         self.require_session(id)?
-                            .agent_control_tools(&profiles, selection)?,
+                            .agent_control_tools_for_thread(id, thread, &profiles, selection)?,
                     );
                     Some(profiles.revision)
                 }

@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    ChatAtom, ChatPlacement, ChatSourceId, ContentRef,
+    ChatAtom, ChatFactPosition, ChatPlacement, ChatSourceId, ContentRef,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
-pub const PRESENTATION_VERSION: u32 = 1;
+pub const PRESENTATION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,6 +28,8 @@ pub struct WorkSummary {
     pub failed: u64,
     pub cancelled: u64,
     pub transferred: u64,
+    /// Legacy observations whose state at the boundary cannot be proved.
+    pub unavailable: u64,
     /// First member creation's reliable effect time, in Unix seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
@@ -54,9 +56,41 @@ pub enum DisplayBlockBody {
         members: DisplayBlockRef,
     },
     Single {
-        atom: Box<ChatAtom>,
-        completion_id: Option<String>,
+        record: Box<DisplayRecord>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DisplayRecord {
+    pub atom: ChatAtom,
+    pub start_fact: Option<ChatFactPosition>,
+    pub end_fact: Option<ChatFactPosition>,
+    pub content_source: DisplayContentSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DisplayContentSource {
+    CurrentAtom,
+    FrozenObservation {
+        captured_at: Option<i64>,
+        available: bool,
+    },
+    CompletedOriginal {
+        completion_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DisplayBlockState {
+    Open,
+    Sealed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -75,7 +109,7 @@ pub struct LiveDisplayBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ChatSourceId>,
     pub body: DisplayBlockBody,
-    pub closing: bool,
+    pub state: DisplayBlockState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -171,8 +205,7 @@ pub enum DisplayMemberWindow {
 pub struct DisplayMemberHead {
     pub member_key: String,
     pub member_order: u64,
-    pub atom: ChatAtom,
-    pub completion_id: Option<String>,
+    pub record: DisplayRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -206,7 +239,7 @@ mod tests {
             block_order: 1,
             source: None,
             body: work("opaque-block"),
-            closing: false,
+            state: DisplayBlockState::Open,
         };
         let old = serde_json::to_value(&block).unwrap();
         assert!(old.get("source").is_none());
@@ -331,7 +364,7 @@ mod tests {
                     block_order: 1,
                     source: None,
                     body: work("g1"),
-                    closing: true,
+                    state: DisplayBlockState::Sealed,
                 }],
                 older: None,
             }),

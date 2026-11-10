@@ -886,6 +886,88 @@ pub(in crate::studio::runtime) async fn state_snapshot(
 }
 
 #[tokio::test]
+async fn terminal_publication_precedes_immediate_directory_and_one_shot_reads() -> Result<()> {
+    for realtime in [true, false] {
+        let stage = ReplyStage::new();
+        let env = support::Environment::new(
+            vec![support::prompt_step(
+                "terminal-directory-order",
+                0,
+                support::held_reply(&stage, "terminal-directory-response"),
+            )],
+            vec![],
+        )
+        .await?;
+        let result = async {
+            let started = env
+                .start(ThreadWorkspaceMode::Local, "terminal-directory-order")
+                .await?;
+            let id = &started.thread.id;
+            support::reached(&stage).await?;
+            let mut state = if realtime {
+                let mut state = env.runtime.open_conversation_state_feed(id).await?;
+                let _baseline = state_snapshot(&mut state).await?;
+                Some(state)
+            } else {
+                None
+            };
+            let feed = env
+                .runtime
+                .thread_observations
+                .live_feed(id)
+                .context("installed product observation owner")?;
+            let mut retained = feed.last_turn();
+            assert!(retained.borrow().is_none());
+            stage.release();
+            let terminal = tokio::time::timeout(Duration::from_secs(20), async {
+                if let Some(state) = state.as_mut() {
+                    while let Some(update) = state.recv().await? {
+                        if let ThreadSubscriptionUpdate::Notification { notification } = update
+                            && let ThreadNotification::TurnCompleted { turn } =
+                                notification.notification
+                        {
+                            return Ok::<_, anyhow::Error>(turn);
+                        }
+                    }
+                    bail!("State closed before terminal publication");
+                }
+                // No State subscriber exists: wait on the production retained fact, not on
+                // durability or an owner sync that would hide the publication-order window.
+                retained.changed().await?;
+                Ok(retained
+                    .borrow_and_update()
+                    .clone()
+                    .context("retained terminal")?
+                    .as_ref()
+                    .clone())
+            })
+            .await??;
+            assert!(terminal.state.is_terminal());
+            let directory = env.runtime.read_protocol_thread(id).await?;
+            assert_eq!(directory.status, pl_protocol::ThreadStatus::Idle);
+            let snapshot = env.runtime.thread_snapshot(id).await?;
+            assert_eq!(snapshot.thread.status, pl_protocol::ThreadStatus::Idle);
+            assert!(snapshot.active_turn.is_none());
+            if let Some(state) = state.as_mut() {
+                state.close().await?;
+            } else {
+                let mut reopened = env.runtime.open_conversation_state_feed(id).await?;
+                assert_eq!(
+                    state_snapshot(&mut reopened).await?.thread.status,
+                    pl_protocol::ThreadStatus::Idle
+                );
+                reopened.close().await?;
+            }
+            Ok(())
+        }
+        .await;
+        stage.release();
+        env.finish(result).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> Result<()> {
     let plan = format!("# 待确认计划\n\n{}", "步骤\n".repeat(9000));
     let stage = ReplyStage::new();
@@ -1028,6 +1110,21 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         reopened.reader().close().await?;
 
         env.restart().await?;
+        let saved = env
+            .runtime
+            .store
+            .history(id)
+            .await?
+            .checkpoint()
+            .await?
+            .context("normal shutdown checkpoint")?;
+        assert_eq!(
+            saved.state.lifecycle,
+            pl_core::thread::ThreadLifecycle::Closed,
+            "this journey must restore a normally shut down Core resource"
+        );
+        let directory = env.runtime.read_protocol_thread(id).await?;
+        assert_eq!(directory.status, pl_protocol::ThreadStatus::Idle);
         assert!(
             env.runtime
                 .session_of(id)
@@ -1041,6 +1138,11 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
         let mut cold_state = env.runtime.open_conversation_state_feed(id).await?;
         let baseline = state_snapshot(&mut cold_state).await?;
+        assert_eq!(baseline.thread.status, directory.status);
+        let point_in_time = env.runtime.thread_snapshot(id).await?;
+        assert_eq!(point_in_time.thread.status, directory.status);
+        assert_eq!(point_in_time.interactions, vec![pending.clone()]);
+        assert_eq!(point_in_time.business_refs, baseline.business_refs);
         assert!(
             baseline.activity.is_none(),
             "cold read invented execution activity"

@@ -20,14 +20,34 @@ fn position(
     })
 }
 
-fn member_base(effect: &ThreadEffectBatch) -> usize {
+fn slots(parts: &[usize]) -> Result<usize, ProjectionError> {
+    parts.iter().try_fold(0usize, |sum, part| {
+        sum.checked_add(*part)
+            .ok_or_else(|| ProjectionError::History("effect provenance position overflow".into()))
+    })
+}
+
+fn member_base(effect: &ThreadEffectBatch) -> Result<usize, ProjectionError> {
     // Positions name slots in the immutable effect, not the number of notifications emitted.
     // Duplicate suppression or activation restore must never shift another fact's evidence.
-    1_usize
-        .saturating_add(effect.inputs.len())
-        .saturating_add(effect.inbox.len())
-        .saturating_add(effect.context_compactions.len())
-        .saturating_add(effect.model_member_starts.len())
+    slots(&[
+        1,
+        effect.inputs.len(),
+        effect.inbox.len(),
+        effect.context_compactions.len(),
+        effect.model_member_starts.len(),
+    ])
+}
+
+fn turn_outcome(state: &pl_core::thread::TurnState) -> Option<ChatTerminalOutcome> {
+    match state {
+        pl_core::thread::TurnState::Running => None,
+        pl_core::thread::TurnState::Failed { .. } => Some(ChatTerminalOutcome::Failed),
+        pl_core::thread::TurnState::Cancelled | pl_core::thread::TurnState::Interrupted => {
+            Some(ChatTerminalOutcome::Cancelled)
+        }
+        pl_core::thread::TurnState::Finished(_) => Some(ChatTerminalOutcome::Completed),
+    }
 }
 
 impl LiveProjection {
@@ -185,21 +205,15 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
     ) -> Result<Changes, ProjectionError> {
         let mut changes = (Vec::new(), Vec::new(), Vec::new());
-        if let Some(turn) = &effect.turn {
-            let outcome = match turn.state {
-                pl_core::thread::TurnState::Running => None,
-                pl_core::thread::TurnState::Failed { .. } => Some(ChatTerminalOutcome::Failed),
-                pl_core::thread::TurnState::Cancelled | pl_core::thread::TurnState::Interrupted => {
-                    Some(ChatTerminalOutcome::Cancelled)
-                }
-                pl_core::thread::TurnState::Finished(_) => Some(ChatTerminalOutcome::Completed),
-            };
+        if let Some(turn) = &effect.turn
+            && turn_outcome(&turn.state).is_none()
+        {
             self.source_change(
                 ChatSourceId::ForegroundTurn {
                     turn_id: turn.turn_id.clone(),
                 },
-                outcome,
-                outcome.is_none(),
+                None,
+                true,
                 position(effect, 0)?,
                 &mut changes,
             )?;
@@ -212,7 +226,7 @@ impl LiveProjection {
                     },
                     Some(ChatTerminalOutcome::Completed),
                     true,
-                    position(effect, 1 + index)?,
+                    position(effect, slots(&[1, index])?)?,
                     &mut changes,
                 )?;
             }
@@ -242,10 +256,7 @@ impl LiveProjection {
             };
             let at = position(
                 effect,
-                1_usize
-                    .saturating_add(effect.inputs.len())
-                    .saturating_add(effect.inbox.len())
-                    .saturating_add(index),
+                slots(&[1, effect.inputs.len(), effect.inbox.len(), index])?,
             )?;
             self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut changes)?;
             if let Event::Started {
@@ -351,6 +362,7 @@ impl LiveProjection {
                         observed: None,
                         shape,
                         observed_version: 0,
+                        model_part: None,
                     },
                 );
             }
@@ -361,11 +373,13 @@ impl LiveProjection {
             atom.lifecycle = ChatAtomLifecycle::Active {
                 started: Some(position(
                     effect,
-                    1_usize
-                        .saturating_add(effect.inputs.len())
-                        .saturating_add(effect.inbox.len())
-                        .saturating_add(effect.context_compactions.len())
-                        .saturating_add(index),
+                    slots(&[
+                        1,
+                        effect.inputs.len(),
+                        effect.inbox.len(),
+                        effect.context_compactions.len(),
+                        index,
+                    ])?,
                 )?),
                 status: ChatActiveStatus::Running,
             };
@@ -418,6 +432,7 @@ impl LiveProjection {
                             observed: None,
                             shape: static_state(item.state()),
                             observed_version: 0,
+                            model_part: None,
                         },
                     );
                 }
@@ -456,7 +471,7 @@ impl LiveProjection {
                     | ChatAtomLifecycle::Terminal { started, .. } => started,
                 },
                 None => actual_start
-                    .then(|| position(effect, member_base(effect).saturating_add(item_index)))
+                    .then(|| position(effect, slots(&[member_base(effect)?, item_index])?))
                     .transpose()?,
             };
             atom.lifecycle = ChatAtomLifecycle::Active {
@@ -490,15 +505,54 @@ impl LiveProjection {
             }
         }
         let draft_count = drafts.len();
+        let draft_atoms = drafts
+            .iter()
+            .map(|draft| {
+                serde_json::from_slice::<ChatAtom>(&draft.metadata)
+                    .map_err(|error| ProjectionError::History(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let interrupted_ids = if let Some(attempt) = &effect.attempt
+            && matches!(
+                attempt.outcome,
+                pl_core::thread::AttemptOutcome::Interrupted
+            ) {
+            self.atom_starts
+                .values()
+                .filter(|atom| {
+                    atom.attempt_id.as_deref() == Some(attempt.attempt_id.as_str())
+                        && matches!(atom.kind, ChatAtomKind::Text | ChatAtomKind::Reasoning)
+                        && !draft_atoms.iter().any(|draft| draft.id == atom.id)
+                })
+                .map(|atom| atom.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let draft_base = slots(&[member_base(effect)?, items.len()])?;
+        let interruption_base = slots(&[draft_base, draft_count, effect.inbox.len()])?;
+        let receipt_base = slots(&[interruption_base, interrupted_ids.len()])?;
         for (index, draft) in drafts.iter_mut().enumerate() {
+            let mut atom = draft_atoms[index].clone();
+            let final_turn_receipt = atom.kind == ChatAtomKind::TurnReceipt
+                && effect.turn.as_ref().is_some_and(|turn| {
+                    turn_outcome(&turn.state).is_some()
+                        && atom.source
+                            == ChatSourceId::ForegroundTurn {
+                                turn_id: turn.turn_id.clone(),
+                            }
+                });
             let terminal_position = position(
                 effect,
-                member_base(effect)
-                    .saturating_add(items.len())
-                    .saturating_add(index),
+                slots(&[
+                    if final_turn_receipt {
+                        receipt_base
+                    } else {
+                        draft_base
+                    },
+                    index,
+                ])?,
             )?;
-            let mut atom: ChatAtom = serde_json::from_slice(&draft.metadata)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
             if atom.source_state.is_some() {
                 return Err(ProjectionError::History(
                     "frozen provenance contains a read-time source state".into(),
@@ -600,13 +654,7 @@ impl LiveProjection {
                         atom.source.clone(),
                         Some(outcome),
                         true,
-                        position(
-                            effect,
-                            member_base(effect)
-                                .saturating_add(items.len())
-                                .saturating_add(draft_count)
-                                .saturating_add(inbox_index),
-                        )?,
+                        position(effect, slots(&[draft_base, draft_count, inbox_index])?)?,
                         changes,
                     )?;
                 }
@@ -655,45 +703,43 @@ impl LiveProjection {
             draft.read_hint =
                 crate::studio::runtime::chat_item::native_read_hint_v1(&draft.query_class, &atom);
         }
-        if let Some(attempt) = &effect.attempt
-            && matches!(
-                attempt.outcome,
-                pl_core::thread::AttemptOutcome::Interrupted
-            )
-        {
-            let ids = self
+        for (index, id) in interrupted_ids.into_iter().enumerate() {
+            let mut atom = self
                 .atom_starts
-                .values()
-                .filter(|atom| {
-                    atom.attempt_id.as_deref() == Some(attempt.attempt_id.as_str())
-                        && matches!(atom.kind, ChatAtomKind::Text | ChatAtomKind::Reasoning)
-                })
-                .map(|atom| atom.id.clone())
-                .collect::<Vec<_>>();
-            for id in ids {
-                let mut atom = self
-                    .atom_starts
-                    .remove(&id)
-                    .expect("captured active identity");
-                let ChatAtomLifecycle::Active { started, .. } = atom.lifecycle else {
-                    continue;
-                };
-                atom.lifecycle = ChatAtomLifecycle::Terminal {
-                    started,
-                    ended: Some(position(
-                        effect,
-                        member_base(effect)
-                            .saturating_add(items.len())
-                            .saturating_add(draft_count),
-                    )?),
-                    outcome: ChatTerminalOutcome::Cancelled,
-                };
-                atom.finished_at = Some(effect.committed_at);
-                atom.contents.clear();
-                self.release_preview(&id);
-                changes.0.push(atom);
-            }
+                .remove(&id)
+                .expect("captured active identity");
+            let ChatAtomLifecycle::Active { started, .. } = atom.lifecycle else {
+                continue;
+            };
+            atom.lifecycle = ChatAtomLifecycle::Terminal {
+                started,
+                ended: Some(position(effect, slots(&[interruption_base, index])?)?),
+                outcome: ChatTerminalOutcome::Cancelled,
+            };
+            atom.finished_at = Some(effect.committed_at);
+            atom.contents.clear();
+            self.release_preview(&id);
+            changes.0.push(atom);
         }
+        if let Some(turn) = &effect.turn
+            && let Some(outcome) = turn_outcome(&turn.state)
+        {
+            self.source_change(
+                ChatSourceId::ForegroundTurn {
+                    turn_id: turn.turn_id.clone(),
+                },
+                Some(outcome),
+                false,
+                position(effect, slots(&[receipt_base, draft_count])?)?,
+                changes,
+            )?;
+        }
+        // Only the Turn-closing receipt changed its producer slot. Independent receipts
+        // retain their original slots; ordering consumes the producer's evidence, not UI kind.
+        changes.0.sort_by_key(|atom| match atom.lifecycle {
+            ChatAtomLifecycle::Active { started, .. } => started,
+            ChatAtomLifecycle::Terminal { ended, .. } => ended,
+        });
         // Only the original writer's durable acknowledgement may release unsaved source facts.
         if self.source_states.len() > LIVE_ITEM_WINDOW {
             return Err(ProjectionError::History(

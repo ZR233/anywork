@@ -420,6 +420,11 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
       'kind': 'body',
       'key': key,
       'owner': switch (owner) {
+        DisplayObservationContentOwner(:final blockId, :final memberKey) => {
+          'kind': 'displayObservation',
+          'blockId': blockId,
+          'memberKey': memberKey,
+        },
         ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
         CurrentContentOwner(:final domain, :final id, :final revision) => {
           'kind': 'current',

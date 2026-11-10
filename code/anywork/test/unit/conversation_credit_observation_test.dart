@@ -18,24 +18,35 @@ const _body = ContentRef(
 final _bytes = List<int>.filled(54, 120);
 
 SingleDisplayBlock _single(String id) => SingleDisplayBlock(
-  completionId: id == _targetId ? 'text-b-completion' : '$id-completion',
-  atom: ChatAtom(
-    id: '$id-atom',
-    completionItemId: id == _targetId ? 'text-b-completion' : '$id-completion',
-    completionSeq: 8,
-    source: const ForegroundTurnChatSource(turnId: 'turn'),
-    sourceOrder: 1,
-    kind: ChatAtomKind.text,
-    delivery: ChatDeliveryKind.foreground,
-    lifecycle: const TerminalChatAtom(
-      started: null,
-      ended: null,
-      outcome: ChatTerminalOutcome.completed,
+  record: DisplayRecord(
+    atom: ChatAtom(
+      id: '$id-atom',
+      completionItemId: id == _targetId
+          ? 'text-b-completion'
+          : '$id-completion',
+      completionSeq: 8,
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
+      sourceOrder: 1,
+      kind: ChatAtomKind.text,
+      delivery: ChatDeliveryKind.foreground,
+      lifecycle: const TerminalChatAtom(
+        started: null,
+        ended: null,
+        outcome: ChatTerminalOutcome.completed,
+      ),
+      turnId: 'turn',
+      contents: id == _targetId
+          ? [
+              const ChatAtomContent(
+                role: ChatContentRole.body,
+                reference: _body,
+              ),
+            ]
+          : [],
     ),
-    turnId: 'turn',
-    contents: id == _targetId
-        ? [const ChatAtomContent(role: ChatContentRole.body, reference: _body)]
-        : [],
+    contentSource: CompletedOriginal(
+      completionId: id == _targetId ? 'text-b-completion' : '$id-completion',
+    ),
   ),
 );
 
@@ -53,7 +64,7 @@ LiveDisplayWindow _live(int through, {bool showTarget = false}) =>
             id: _targetId,
             blockOrder: 1,
             body: _single(_targetId),
-            closing: false,
+            state: DisplayBlockState.open,
           ),
       ],
     );
@@ -66,7 +77,7 @@ ConversationTimelineEvent _append(
   bool showTarget = false,
 }) => ConversationTimelineEvent(
   batch: TimelineBatch(
-    presentationVersion: 1,
+    presentationVersion: 2,
     placement: ChatPlacement.append,
     blocks: blocks,
     fromPos: from,
@@ -354,7 +365,7 @@ final class _Feed extends Fake implements TimelineFeed {
     _script = [
       ConversationTimelineEvent(
         batch: TimelineBatch(
-          presentationVersion: 1,
+          presentationVersion: 2,
           placement: ChatPlacement.set,
           blocks: [for (var i = 1; i <= 3; i++) _block('seed-$i', i)],
           throughPos: 3,

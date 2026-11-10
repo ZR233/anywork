@@ -1,14 +1,12 @@
 //! The explicit execution seal and one original owned-worktree binding, not a history source.
+use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 mod migration;
 use super::{
     StudioStore,
     object::{PersistedStudioObject, decode_object, load_object, put_object},
 };
-use crate::studio::{
-    agent_close::{AgentCloseResult, AgentWorktreeCleanup},
-    agent_host::worktree_lease::{
-        WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
-    },
+use crate::studio::agent_host::worktree_lease::{
+    WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
 };
 use anyhow::{Context, Result, ensure};
 pub(super) use migration::upgrade_bindings;

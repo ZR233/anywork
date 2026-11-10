@@ -1,3 +1,5 @@
+import 'support/display_record_observation.dart';
+
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
@@ -14,6 +16,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -21,6 +24,7 @@ import 'package:anywork/src/features/conversation/timeline/state/tool_presentati
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
@@ -33,8 +37,8 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -45,6 +49,8 @@ import 'support/presentation_capture.dart';
 import 'support/timeline_concept_images.dart';
 import 'support/timeline_concept_presentation.dart';
 import 'support/timeline_observation.dart';
+
+part 'support/timeline_concept_media_handoff.dart';
 
 const _prompt = '把会话设计稿组件化，检查工作组与正文的交接边界。';
 const _textA = '已确认共享组件与交接边界，接下来检查收尾。';
@@ -75,25 +81,53 @@ void main() {
   final output = _environment('OUTPUT');
   final provider = Uri.parse(_environment('PROVIDER'));
   final emptyThread = _environment('EMPTY_THREAD');
-  final reopen = Platform.environment['ANYWORK_TIMELINE_CONCEPT_REOPEN'] == '1';
+  final requestedPhase = Platform.environment['ANYWORK_TIMELINE_CONCEPT_PHASE'];
+  final boundary =
+      requestedPhase == 'boundary' || requestedPhase == 'boundary-reopen';
+  final media =
+      requestedPhase == 'media-handoff' ||
+      requestedPhase == 'media-handoff-reopen';
+  if (requestedPhase?.startsWith('media-handoff') == true && !media) {
+    throw StateError('Unsupported media-handoff phase: $requestedPhase');
+  }
+  final reopen = boundary || media
+      ? requestedPhase == 'boundary-reopen' ||
+            requestedPhase == 'media-handoff-reopen'
+      : Platform.environment['ANYWORK_TIMELINE_CONCEPT_REOPEN'] == '1';
   final missing =
       Platform.environment['ANYWORK_TIMELINE_CONCEPT_MEDIA_FAULT'] == '1';
-  final phase = missing
+  final phase = boundary || media
+      ? requestedPhase!
+      : missing
       ? 'media-missing'
       : reopen
       ? 'reopen'
       : 'journey';
-  final reportName = missing
+  final reportName = boundary
+      ? (reopen ? 'timeline-boundary-reopen.json' : 'timeline-boundary.json')
+      : media
+      ? (reopen
+            ? 'timeline-media-handoff-reopen.json'
+            : 'timeline-media-handoff.json')
+      : missing
       ? 'timeline-concept-media-missing.json'
       : reopen
       ? 'timeline-concept-reopen.json'
       : 'timeline-concept.json';
   final report = <String, Object?>{
-    'scenario': 'timeline-concept',
+    'scenario': boundary
+        ? 'timeline-boundary'
+        : media
+        ? 'media-handoff'
+        : 'timeline-concept',
     'phase': phase,
     'runner': 'flutter.integration_test',
     'pass': false,
-    'expectedRequiredProviderSteps': 10,
+    'expectedRequiredProviderSteps': boundary
+        ? 1
+        : media
+        ? 2
+        : 10,
     'processObservation': {
       'dartIoPid': pid,
       'entryObservedAtUtc': DateTime.now().toUtc().toIso8601String(),
@@ -199,6 +233,11 @@ void main() {
     tester.testTextInput.register();
     addTearDown(() async {
       try {
+        final boundaryThread = report['threadId'];
+        final boundaryLease = boundary && boundaryThread is String
+            ? graph.timeline.lease(boundaryThread)
+            : null;
+        final boundaryCurrent = boundaryLease?.currentDisplay;
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
         expect(
@@ -207,6 +246,26 @@ void main() {
           )).complete,
           isTrue,
         );
+        if (boundary && assertionsPassed) expect(boundaryLease, isNotNull);
+        if (boundaryLease != null) {
+          await boundaryLease.released.timeout(const Duration(seconds: 5));
+          expect(boundaryLease.isRetired, isTrue);
+          expect(boundaryLease.isReleased, isTrue);
+          expect(boundaryLease.queryCleanupError, isNull);
+          if (boundaryCurrent != null) {
+            expect(boundaryCurrent.isCurrent, isFalse);
+            expect(boundaryCurrent.windows, isEmpty);
+          }
+          report['boundaryLeaseCleanup'] = {
+            'retired': boundaryLease.isRetired,
+            'released': boundaryLease.isReleased,
+            'queryCleanupError': null,
+            'currentWindowsRevoked': true,
+          };
+        }
+      } catch (_) {
+        assertionsPassed = false;
+        rethrow;
       } finally {
         tester.testTextInput.unregister();
         router.routerDelegate.removeListener(syncRoute);
@@ -222,7 +281,10 @@ void main() {
           child: MaterialApp.router(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             routerConfig: router,
             builder: (context, child) => ValueListenableBuilder<double>(
@@ -249,12 +311,44 @@ void main() {
       phase,
       textScale,
     );
-    await scene.openThread(emptyThread);
-    report['threadId'] = emptyThread;
+    Map<String, dynamic>? boundarySaved;
+    var selectedThread = emptyThread;
+    if (boundary && reopen) {
+      boundarySaved = jsonDecode(
+        await File('$output/timeline-boundary.json').readAsString(),
+      ) as Map<String, dynamic>;
+      expect(boundarySaved['pass'], isTrue);
+      expect(boundarySaved['shutdown'], 'completed');
+      expect(boundarySaved['phase'], 'boundary');
+      expect(boundarySaved['expectedRequiredProviderSteps'], 1);
+      selectedThread = boundarySaved['threadId'] as String;
+      expect(selectedThread, isNotEmpty);
+    }
+    report['threadId'] = selectedThread;
+    await scene.openThread(selectedThread);
     report['coldProcessSelection'] = await scene.observeSelectionFill(
       'cold-process-selection',
     );
-    if (reopen) {
+    if (boundary) {
+      if (reopen) {
+        await scene.idle();
+        final handoff = boundarySaved!['a07Handoff'] as Map<String, dynamic>;
+        await scene.verifyOverlapHistory(handoff);
+        report['a07Handoff'] = handoff;
+        await scene.capture('cold-reopened');
+        await scene._record('boundary-cold-reopened');
+      } else {
+        await scene.expectEmptyConversation();
+        await scene.overlap();
+      }
+    } else if (media) {
+      // Registered last, so lease release/join precedes even UI teardown and
+      // Studio shutdown when a native assertion throws.
+      if (!reopen) {
+        addTearDown(() => scene.closeMediaLease(success: assertionsPassed));
+      }
+      await scene.mediaHandoff(project, reopen: reopen);
+    } else if (reopen) {
       final saved = jsonDecode(
         await File('$output/timeline-concept.json').readAsString(),
       ) as Map<String, dynamic>;
@@ -303,6 +397,7 @@ Future<void> _until(
 typedef _ImageResult = ({
   ChatAtom foreground,
   TimelineDisplayUnit? finalUnit,
+  DisplayMemberHead? finalMember,
   ChatAtom finalAtom,
   ChatItemPresentation presentation,
 });
@@ -604,7 +699,7 @@ final class _ConceptScene {
                     'id': block.id,
                     'bodyKind': block.body.runtimeType.toString(),
                     'blockOrder': block.blockOrder,
-                    'closing': block.closing,
+                    'state': block.state.name,
                   },
               ],
             },
@@ -719,7 +814,7 @@ final class _ConceptScene {
       final activity = tester.widget<TimelineActivityIndicator>(indicator);
       expect(activity.icon, isNotNull);
       final summary = unit.summary!;
-      final live = unit.historyPos == null;
+      final live = unit.state == DisplayBlockState.open;
       if (!live || !unit.executionPresent || summary.failed > 0) {
         expect(activity.active, isFalse);
       } else if (summary.running > 0 || summary.waiting > 0) {
@@ -768,8 +863,6 @@ final class _ConceptScene {
           expect(text.data, l10n.timelineGroupUnrestored);
         } else if (thought?.isNotEmpty == true) {
           expect(text.data, thought);
-        } else if (unit.closing) {
-          expect(text.data, l10n.timelineGroupClosing);
         }
         final runningClock = unit.executionPresent && summary.createdAt != null;
         if (runningClock || savedElapsed != null && savedElapsed >= 0) {
@@ -828,18 +921,22 @@ final class _ConceptScene {
       expect(work.summary!.total, 2);
       expect(work.summary!.terminal, 1);
       expect(work.summary!.running, 1);
-      expect(work.historyPos, isNull);
       if (streamingAtomId != null) {
-        expect(work.closing, isTrue);
+        expect(work.historyPos, greaterThan(0));
+        expect(work.state, DisplayBlockState.sealed);
         final text = observed.liveBlocks.singleWhere(
           (block) =>
               block.body is SingleDisplayBlock &&
-              (block.body as SingleDisplayBlock).atom.id == streamingAtomId,
+              (block.body as SingleDisplayBlock).record.atom.id ==
+                  streamingAtomId,
         );
         expect(
-          (text.body as SingleDisplayBlock).atom.lifecycle,
+          (text.body as SingleDisplayBlock).record.atom.lifecycle,
           isA<ActiveChatAtom>(),
         );
+      } else {
+        expect(work.state, DisplayBlockState.open);
+        expect(work.historyPos, isNull);
       }
     }
 
@@ -853,7 +950,7 @@ final class _ConceptScene {
         for (final block in observed.liveBlocks)
           {
             'blockId': block.id,
-            'closing': block.closing,
+            'state': block.state.name,
             ...switch (block.body) {
               WorkDisplayBlock(:final summary) => {
                 'kind': 'work',
@@ -861,7 +958,7 @@ final class _ConceptScene {
                 'terminal': summary.terminal,
                 'running': summary.running,
               },
-              SingleDisplayBlock(:final atom) => {
+              SingleDisplayBlock(record: DisplayRecord(:final atom)) => {
                 'kind': 'single',
                 'atomId': atom.id,
               },
@@ -915,7 +1012,7 @@ final class _ConceptScene {
             await _until(
               tester,
               () => _incrementGlyph(streamingAtomId, _overlapText) != null,
-              'closing Work and fully readable streaming body at $name',
+              'sealed Work snapshot and fully readable streaming body at $name',
             );
           }
           await capture(name);
@@ -1069,7 +1166,7 @@ final class _ConceptScene {
           {
             'blockId': block.id,
             'blockOrder': block.blockOrder,
-            'closing': block.closing,
+            'state': block.state.name,
           },
       ],
       'businessRefs': {
@@ -1096,7 +1193,7 @@ final class _ConceptScene {
     final controller = owner.controller;
     final block = observed.liveBlocks.single;
     expect(block.body, isA<SingleDisplayBlock>());
-    final atom = (block.body as SingleDisplayBlock).atom;
+    final atom = (block.body as SingleDisplayBlock).record.atom;
     expect(atom.kind, ChatAtomKind.text);
     expect(atom.lifecycle, isA<ActiveChatAtom>());
     await _until(
@@ -1194,10 +1291,13 @@ final class _ConceptScene {
       );
       final current = observed.liveBlocks.single;
       expect(current.id, block.id);
-      expect((current.body as SingleDisplayBlock).atom.id, atom.id);
-      expect((current.body as SingleDisplayBlock).atom.source, atom.source);
+      expect((current.body as SingleDisplayBlock).record.atom.id, atom.id);
       expect(
-        (current.body as SingleDisplayBlock).atom.lifecycle,
+        (current.body as SingleDisplayBlock).record.atom.source,
+        atom.source,
+      );
+      expect(
+        (current.body as SingleDisplayBlock).record.atom.lifecycle,
         isA<ActiveChatAtom>(),
       );
       sample['pass'] = true;
@@ -1545,7 +1645,7 @@ final class _ConceptScene {
     final originalBody = originalWindow.window!;
     expect(lease, same(before));
     final originalHead = work.expansion.members!.page!.entries.single;
-    expect(originalHead.atom.id, member.id);
+    expect(originalHead.record.atom.id, member.id);
     final selectedThread = threadId;
     await tap(find.byKey(StudioDriverKeys.settingsOpen));
     await _until(
@@ -1610,7 +1710,7 @@ final class _ConceptScene {
         .single;
     expect(resumedHead.memberKey, originalHead.memberKey);
     expect(resumedHead.memberOrder, originalHead.memberOrder);
-    expect(resumedHead.atom.id, member.id);
+    expect(resumedHead.record.atom.id, member.id);
     final resumedWindow = await readableMemberWindow(
       after.currentDisplay!,
       'the newly mounted member reads the same first reasoning delta',
@@ -1815,8 +1915,8 @@ final class _ConceptScene {
         unit,
         expectedCount: unit.summary!.total,
       );
-      expect(heads.map((head) => head.atom.id).toSet(), ids);
-      return heads.map((head) => head.atom.id).toList();
+      expect(heads.map((head) => head.record.atom.id).toSet(), ids);
+      return heads.map((head) => head.record.atom.id).toList();
     } catch (error) {
       _recordMemberInventory('failed', id, original: original, error: error);
       rethrow;
@@ -1875,166 +1975,97 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     List<ChatAtom> atoms,
   ) async {
-    final source = atoms.first.source;
-    expect(source, isA<ForegroundTurnChatSource>());
-    expect(atoms.every((atom) => atom.source == source), isTrue);
-    final turnId = (source as ForegroundTurnChatSource).turnId;
-    final tools = atoms
-        .where((atom) => atom.kind == ChatAtomKind.toolCall)
-        .toList();
-    expect(tools, hasLength(_imageCalls.length + 1));
-    expect(tools.map((atom) => atom.tool?.callId).toSet(), {
-      ..._imageCalls,
-      'concept-image-failed',
-    });
-    final foreground = {for (final atom in tools) atom.tool!.callId: atom};
-    final tasks = <String, String>{};
+    final source = atoms.first.source as ForegroundTurnChatSource;
+    final records = await collectDisplayRecords(
+      observed,
+      turnId: source.turnId,
+    );
     final results = <_ImageResult>[];
-
-    TimelineToolPresentation toolOf(ChatItemPresentation value) {
-      expect(value.compatibility, ChatItemCompatibility.current);
-      expect(value.type, 'tool');
-      expect(value.toolCard, isA<DecodedToolCard>());
-      return (value.toolCard as DecodedToolCard).value;
-    }
-
-    void accept(
-      ChatAtom atom,
-      TimelineDisplayUnit? finalUnit,
-      ChatAtom finalAtom,
-      ChatItemPresentation value,
-    ) {
-      final tool = toolOf(value);
-      expect(tool.name, 'view_image');
-      expect(tool.toolCallId, atom.tool!.callId);
+    for (final call in [..._imageCalls, 'concept-image-failed']) {
+      final starts = records
+          .where(
+            (entry) =>
+                entry.record.atom.source == source &&
+                entry.record.atom.tool?.callId == call &&
+                entry.record.contentSource is CompletedOriginal,
+          )
+          .toList();
+      if (starts.isEmpty) continue;
       expect(
-        results.where(
-          (result) => result.foreground.tool!.callId == tool.toolCallId,
-        ),
-        isEmpty,
-        reason: 'Each image call has exactly one real final presentation',
+        starts,
+        hasLength(1),
+        reason: 'One original foreground receipt per call',
       );
-      if (tool.toolCallId == 'concept-image-failed') {
-        expect(tool.outcome, TimelineToolOutcome.failed);
+      final receipt = await readDisplayRecord(
+        lease,
+        starts.single.record,
+        displayId: starts.single.member?.memberKey ?? starts.single.unit.id,
+      );
+      final foreground = receipt.atom!;
+      final frontTool = (receipt.toolCard as DecodedToolCard).value;
+      ObservedDisplayRecord location = starts.single;
+      ChatItemPresentation value = receipt;
+      if (foreground.delivery == ChatDeliveryKind.backgroundHandoff) {
+        expect(
+          (foreground.lifecycle as TerminalChatAtom).outcome,
+          ChatTerminalOutcome.transferred,
+        );
+        expect(frontTool.statusString, 'backgroundStarted');
+        expect(frontTool.outcome, isNull);
+        expect(frontTool.taskId, isNotEmpty);
+        final finals = records
+            .where(
+              (entry) =>
+                  entry.record.atom.source is BackgroundResultChatSource &&
+                  entry.record.atom.tool?.callId == call &&
+                  entry.record.contentSource is CompletedOriginal,
+            )
+            .toList();
+        if (finals.isEmpty) continue;
+        expect(finals, hasLength(1));
+        location = finals.single;
+        value = await readDisplayRecord(
+          lease,
+          location.record,
+          displayId: location.member?.memberKey ?? location.unit.id,
+        );
+        expect(value.atom!.source, isA<BackgroundResultChatSource>());
+        expect(value.atom!.delivery, ChatDeliveryKind.independent);
+        expect(
+          (value.toolCard as DecodedToolCard).value.taskId,
+          frontTool.taskId,
+        );
+      } else {
+        expect(foreground.delivery, ChatDeliveryKind.foreground);
+      }
+      final tool = (value.toolCard as DecodedToolCard).value;
+      expectImageOriginalOutcome(
+        value.atom!,
+        failed: call == 'concept-image-failed',
+      );
+      expect(value.atom!.turnId, source.turnId);
+      expect(tool.name, 'view_image');
+      expect(tool.toolCallId, call);
+      expect(
+        tool.outcome,
+        call == 'concept-image-failed'
+            ? TimelineToolOutcome.failed
+            : TimelineToolOutcome.succeeded,
+      );
+      if (call == 'concept-image-failed') {
         expect(tool.error, contains('image source is not a regular file'));
         expect(value.attachments, isEmpty);
       } else {
-        expect(tool.outcome, TimelineToolOutcome.succeeded);
         expect(tool.error, isNull);
         expect(value.attachments, hasLength(1));
       }
       results.add((
-        foreground: atom,
-        finalUnit: finalUnit,
-        finalAtom: finalAtom,
+        foreground: foreground,
+        finalUnit: location.unit,
+        finalMember: location.member,
+        finalAtom: value.atom!,
         presentation: value,
       ));
-    }
-
-    for (final atom in tools) {
-      expect(atom.source, source);
-      expect(atom.turnId, turnId);
-      expect(atom.tool!.name, 'view_image');
-      expect(atom.lifecycle, isA<TerminalChatAtom>());
-      final terminal = atom.lifecycle as TerminalChatAtom;
-      final value = ChatItemPresentation.decode(atom);
-      final tool = toolOf(value);
-      expect(tool.toolCallId, atom.tool!.callId);
-      expect(tool.name, atom.tool!.name);
-      switch (atom.delivery) {
-        case ChatDeliveryKind.foreground:
-          expect(
-            terminal.outcome,
-            tool.toolCallId == 'concept-image-failed'
-                ? ChatTerminalOutcome.failed
-                : ChatTerminalOutcome.completed,
-          );
-          accept(atom, null, atom, value);
-        case ChatDeliveryKind.backgroundHandoff:
-          expect(terminal.outcome, ChatTerminalOutcome.transferred);
-          expect(tool.statusString, 'backgroundStarted');
-          expect(tool.outcome, isNull);
-          expect(tool.taskId, isNotNull);
-          expect(tool.taskId, isNotEmpty);
-          tasks[tool.toolCallId] = tool.taskId!;
-        default:
-          fail('Unexpected foreground image delivery: ${atom.delivery}');
-      }
-    }
-    expect(tasks.values.toSet(), hasLength(tasks.length));
-    // Independent background terminals are canonical Main Single rows. Read
-    // the original completion instead of inferring results from group members.
-    for (final finalUnit in observed.singleBlocks.toList()) {
-      final row = finalUnit.body as SingleDisplayBlock;
-      final head = row.atom;
-      if (head.source is! BackgroundResultChatSource || head.turnId != turnId) {
-        continue;
-      }
-      expect(finalUnit.historyPos, greaterThan(0));
-      expect(finalUnit.memberReference, isNull);
-      expect(head.delivery, ChatDeliveryKind.independent);
-      expect(head.lifecycle, isA<TerminalChatAtom>());
-      final completionId = row.completionId;
-      expect(completionId, isNotNull);
-      expect(completionId, isNotEmpty);
-      expect(head.completionItemId, completionId);
-      expect(head.completionSeq, isNotNull);
-      final scope = lease.content.openScope(generation: lease.generation);
-      late final ChatAtom item;
-      try {
-        final completed = await scope.readCompleted(
-          recordId: completionId!,
-          demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
-        );
-        expect(completed.recordId, completionId);
-        expect(completed.completionSeq, head.completionSeq);
-        expect(completed.atom.id, head.id);
-        expect(completed.atom.source, head.source);
-        expect(completed.atom.turnId, head.turnId);
-        expect(completed.atom.completionItemId, completionId);
-        expect(completed.atom.completionSeq, completed.completionSeq);
-        expect(completed.atom.delivery, ChatDeliveryKind.independent);
-        expect(completed.atom.lifecycle, isA<TerminalChatAtom>());
-        item = completed.atom;
-      } finally {
-        scope.retire();
-        expect((await scope.close()).complete, isTrue);
-      }
-      expect(item.kind, ChatAtomKind.toolCall);
-      final value = ChatItemPresentation.decode(item);
-      final reading = value.toolCard;
-      if (reading is! DecodedToolCard) {
-        if (item.turnId == turnId) {
-          fail('Image Turn Main result ${item.id} has no decoded tool card');
-        }
-        continue;
-      }
-      final tool = reading.value;
-      expect(tool.toolCallId, item.tool!.callId);
-      expect(tool.name, item.tool!.name);
-      if (item.turnId != turnId &&
-          !foreground.containsKey(tool.toolCallId) &&
-          !tasks.containsValue(tool.taskId)) {
-        continue;
-      }
-      expect(item.turnId, turnId);
-      expect(finalUnit.body, isA<SingleDisplayBlock>());
-      expect(item.source, isA<BackgroundResultChatSource>());
-      expect(item.delivery, ChatDeliveryKind.independent);
-      expect(item.lifecycle, isA<TerminalChatAtom>());
-      expect(
-        (item.lifecycle as TerminalChatAtom).outcome,
-        tool.toolCallId == 'concept-image-failed'
-            ? ChatTerminalOutcome.failed
-            : ChatTerminalOutcome.completed,
-      );
-      expect(item.completionItemId, isNotNull);
-      expect(item.completionItemId, isNotEmpty);
-      expect(tasks.containsKey(tool.toolCallId), isTrue);
-      expect(tool.taskId, tasks[tool.toolCallId]);
-      final atom = foreground[tool.toolCallId]!;
-      expect(item.completionItemId, isNot(atom.completionItemId));
-      accept(atom, finalUnit, item, value);
     }
     return results;
   }
@@ -2043,11 +2074,19 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) async {
-    final atoms = await observed.readFixtureAtoms(
+    final seed = await observed.readFixtureAtoms(
       unit,
-      expectedCount: _imageMemberCount,
+      expectedCount: unit.summary!.total,
     );
-    final source = atoms.first.source;
+    final source = seed.first.source;
+    final records = await collectDisplayRecords(observed, source: source);
+    final originals = records
+        .where((entry) => entry.record.contentSource is CompletedOriginal)
+        .toList();
+    final atoms = <ChatAtom>[];
+    for (final entry in originals) {
+      atoms.add((await readDisplayRecord(lease, entry.record)).atom!);
+    }
     expect(source, isA<ForegroundTurnChatSource>());
     expect(
       lease.groupDisplays.singleWhere((value) => value.unitId == unit.id),
@@ -2060,12 +2099,15 @@ final class _ConceptScene {
     expect(display.error, isNull);
     expect(display.atoms, isNotEmpty);
     expect(display.atoms.length, lessThanOrEqualTo(12));
-    expect(unit.summary!.total, _imageMemberCount);
-    expect(atoms.map((atom) => atom.id).toSet(), hasLength(_imageMemberCount));
+    expect(unit.summary!.total, greaterThanOrEqualTo(1));
+    expect(atoms.map((atom) => atom.id).toSet(), hasLength(atoms.length));
     expect(atoms.map((atom) => atom.source).toSet(), {source});
     expect(
       display.atoms.every(
-        (member) => atoms.any((atom) => atom.id == member.id),
+        (member) => records.any(
+          (entry) =>
+              entry.unit.id == unit.id && entry.record.atom.id == member.id,
+        ),
       ),
       isTrue,
     );
@@ -2103,7 +2145,10 @@ final class _ConceptScene {
           '检查设计截图与读取边界 $index',
       ]),
     );
-    final tools = atoms.where((atom) => atom.kind == ChatAtomKind.toolCall);
+    final tools = atoms.where(
+      (atom) =>
+          atom.kind == ChatAtomKind.toolCall && atom.tool?.name == 'view_image',
+    );
     expect(tools, hasLength(_imageCalls.length + 1));
     expect(tools.map((atom) => atom.tool?.callId).toSet(), {
       ..._imageCalls,
@@ -2114,7 +2159,7 @@ final class _ConceptScene {
     expect(
       atoms.every((atom) => atom.source == source),
       isTrue,
-      reason: 'Background final results keep their independent blocks',
+      reason: 'Foreground originals retain their source across display blocks',
     );
     final inventories =
         (report['imageMemberInventories'] ??= <Map<String, Object?>>[])
@@ -2154,9 +2199,9 @@ final class _ConceptScene {
       'finalResults': [
         for (final result in results)
           {
-            'domain': result.finalUnit == null
-                ? 'ForegroundWork'
-                : 'IndependentBackgroundBlock',
+            'domain': result.finalMember != null ? 'WorkMember' : 'MainSingle',
+            'blockId': result.finalUnit?.id,
+            'memberKey': result.finalMember?.memberKey,
             'foregroundMemberId': result.foreground.id,
             'id': result.presentation.id,
             'contentItemId': result.finalAtom.completionItemId,
@@ -2191,7 +2236,7 @@ final class _ConceptScene {
     return results;
   }
 
-  Future<void> journey(String project) async {
+  Future<void> expectEmptyConversation() async {
     await _until(tester, () => !lease.hasOlder, 'empty conversation EOF');
     expect(lease.controller.messages, isEmpty);
     expect(live, isEmpty);
@@ -2206,6 +2251,10 @@ final class _ConceptScene {
     expect(find.byType(TimelineActivityRow), findsNothing);
     expect(find.byType(TimelineDisplayUnitView), findsNothing);
     await capture('empty');
+  }
+
+  Future<void> journey(String project) async {
+    await expectEmptyConversation();
     final evidence = <String, Object?>{};
     report['conversationCredit'] = evidence;
     Future<TimelineFeed>? opening;
@@ -2317,6 +2366,7 @@ final class _ConceptScene {
     final active = (await observed.readMemberPage(initialWork.memberReference!))
         .entries
         .single
+        .record
         .atom;
     final source = active.source;
     expect(source, isA<ForegroundTurnChatSource>());
@@ -2398,6 +2448,7 @@ final class _ConceptScene {
           live.any((atom) => atom.kind == ChatAtomKind.text) && hasText(_textA),
     );
     final a = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
+    _expectCurrentTextSurface(a, _textA);
     final frozenFirst = observed.unit(g1);
     expect(frozenFirst.historyPos, greaterThan(0));
     expect(frozenFirst.memberReference, firstWork.memberReference);
@@ -2423,6 +2474,16 @@ final class _ConceptScene {
       () => observed.liveWork.any((unit) => unit.id != g1),
     );
     final secondWork = observed.liveWork.single;
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TimelineMemberAtom &&
+            widget.atom.id == a.id &&
+            widget.atom.lifecycle is ActiveChatAtom,
+      ),
+      findsNothing,
+    );
+    _expectNoRespondingNotice(a.turnId!);
     final g2 = secondWork.id;
     expect(g2, isNot(g1));
     expect(secondWork.memberReference, isNot(firstWork.memberReference));
@@ -2430,6 +2491,7 @@ final class _ConceptScene {
       (await observed.readMemberPage(secondWork.memberReference!))
           .entries
           .single
+          .record
           .atom
           .source,
       source,
@@ -2454,6 +2516,7 @@ final class _ConceptScene {
           live.any((atom) => atom.kind == ChatAtomKind.text) && hasText(_textB),
     );
     final b = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
+    _expectCurrentTextSurface(b, _textB);
     expect(observed.unit(g2).historyPos, greaterThan(aEntry.historyPos!));
     expect(observed.unit(g2).memberReference, secondWork.memberReference);
     await release('second-text');
@@ -2484,7 +2547,9 @@ final class _ConceptScene {
         historyPos: completedTextB.historyPos!,
       );
       await credit.verifyClosed(
-        (completedTextB.body as SingleDisplayBlock).completionId!,
+        completedOriginalId(
+          (completedTextB.body as SingleDisplayBlock).record,
+        )!,
       );
     });
     await release('before-turn-end');
@@ -2582,23 +2647,50 @@ final class _ConceptScene {
     late TimelineDisplayUnit imageWork;
     try {
       await fixtureGate(tester, provider, 'images-ready');
-      await _until(
-        tester,
-        () =>
-            observed.liveWork
-                .where(
-                  (unit) =>
-                      unit.summary!.total == _imageMemberCount &&
-                      unit.summary!.terminal == _imageMemberCount,
-                )
-                .length ==
-            1,
-        'all terminal image members remain in the live Work until a boundary',
-      );
-      imageWork = observed.liveWork.singleWhere(
-        (unit) => unit.summary!.total == _imageMemberCount,
-      );
-      expect(main.any((unit) => unit.id == imageWork.id), isFalse);
+      final imageClock = Stopwatch()..start();
+      while (true) {
+        final records = await collectDisplayRecords(observed);
+        final calls = records
+            .where(
+              (entry) =>
+                  entry.record.atom.source is ForegroundTurnChatSource &&
+                  entry.record.atom.tool?.callId == _imageCalls.first &&
+                  entry.record.contentSource is CompletedOriginal,
+            )
+            .toList();
+        expect(calls.length, lessThanOrEqualTo(1));
+        if (calls.isNotEmpty) {
+          final source = calls.single.record.atom.source;
+          final originals = records
+              .where(
+                (entry) =>
+                    entry.record.atom.source == source &&
+                    entry.record.contentSource is CompletedOriginal,
+              )
+              .toList();
+          final reasoning = originals
+              .where(
+                (entry) => entry.record.atom.kind == ChatAtomKind.reasoning,
+              )
+              .toList();
+          final images = originals
+              .where((entry) => entry.record.atom.tool?.name == 'view_image')
+              .toList();
+          if (reasoning.length == _imageReasoningCount &&
+              images.length == _imageCalls.length + 1) {
+            imageWork = reasoning.first.unit;
+            expect(imageWork.memberReference, isNotNull);
+            break;
+          }
+        }
+        if (imageClock.elapsed >= const Duration(seconds: 60)) {
+          fail(
+            'Image turn did not expose all 40 reasoning and 4 image originals',
+          );
+        }
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
       report['imageWorkItemId'] = imageWork.id;
       imageDisplay = await observed.openWork(imageWork.id);
       await contentIdentitiesForItem(imageWork.id);
@@ -2679,13 +2771,61 @@ final class _ConceptScene {
     };
   }
 
+  void _expectNoRespondingNotice(String turnId) {
+    final notices = tester.widgetList<ConversationRealtimeNotices>(
+      find.byType(ConversationRealtimeNotices),
+    );
+    expect(
+      notices
+          .expand((widget) => widget.notices)
+          .whereType<ExecutionRealtimeNotice>()
+          .where(
+            (notice) =>
+                notice.view.turnId == turnId &&
+                notice.view.kind == ConversationActivityKind.responding,
+          ),
+      isEmpty,
+      reason:
+          'A rendered body or subsequent thinking has no stale output label',
+    );
+  }
+
+  void _expectCurrentTextSurface(ChatAtom atom, String text) {
+    final row = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineMemberAtom &&
+          widget.atom.id == atom.id &&
+          widget.atom.lifecycle is ActiveChatAtom,
+    );
+    expect(row, findsOneWidget);
+    final body = find.descendant(
+      of: row,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is TimelineMarkdown && widget.text == text,
+      ),
+    );
+    expect(
+      body,
+      findsOneWidget,
+      reason: 'Ordinary current text has exactly one real body renderer',
+    );
+    for (final window in tester.widgetList<ConversationCurrentWindowView>(
+      find.descendant(
+        of: row,
+        matching: find.byType(ConversationCurrentWindowView),
+      ),
+    )) {
+      expect(window.label, isNull);
+    }
+    _expectNoRespondingNotice(atom.turnId!);
+  }
+
   Future<void> showImageContinuation(TimelineDisplayUnit imageWork) async {
     final owner = lease;
-    final source = (await observed.readMemberPage(imageWork.memberReference!))
-        .entries
-        .single
-        .atom
-        .source;
+    final source = (await observed.readFixtureAtoms(
+      imageWork,
+      expectedCount: imageWork.summary!.total,
+    )).firstWhere((atom) => atom.source is ForegroundTurnChatSource).source;
     expect(source, isA<ForegroundTurnChatSource>());
     final turnId = (source as ForegroundTurnChatSource).turnId;
     final observation = <String, Object?>{
@@ -2739,7 +2879,9 @@ final class _ConceptScene {
       observation.addAll({
         'mainAdmitted': true,
         'blockId': entry.id,
-        'recordId': (entry.body as SingleDisplayBlock).completionId,
+        'recordId': completedOriginalId(
+          (entry.body as SingleDisplayBlock).record,
+        ),
         'historyPos': entry.historyPos,
         'completionSeq': entry.atom!.completionSeq,
         'atomId': entry.atom!.id,
@@ -2752,13 +2894,15 @@ final class _ConceptScene {
         try {
           final readable = await scope
               .readCompleted(
-                recordId: (entry.body as SingleDisplayBlock).completionId!,
+                recordId: completedOriginalId(
+                  (entry.body as SingleDisplayBlock).record,
+                )!,
                 demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
               )
               .timeout(remaining());
           expect(
             readable.recordId,
-            (entry.body as SingleDisplayBlock).completionId,
+            completedOriginalId((entry.body as SingleDisplayBlock).record),
           );
           expect(readable.completionSeq, entry.atom!.completionSeq);
           expect(readable.atom.id, entry.atom!.id);
@@ -2852,7 +2996,9 @@ final class _ConceptScene {
             for (final entry in candidates().take(8))
               {
                 'blockId': entry.id,
-                'recordId': (entry.body as SingleDisplayBlock).completionId,
+                'recordId': completedOriginalId(
+                  (entry.body as SingleDisplayBlock).record,
+                ),
                 'historyPos': entry.historyPos,
                 'completionSeq': entry.atom!.completionSeq,
                 'atomId': entry.atom!.id,
@@ -2883,7 +3029,7 @@ final class _ConceptScene {
 
     final atoms = await observed.readFixtureAtoms(
       unit,
-      expectedCount: _imageMemberCount,
+      expectedCount: unit.summary!.total,
     );
     while (true) {
       remaining();
@@ -3029,20 +3175,22 @@ final class _ConceptScene {
     TimelineDisplayUnit text,
   ) async {
     expect(heads, hasLength(2));
-    expect(heads.first.memberOrder, lessThan(heads.last.memberOrder));
+    expect(heads.first.memberKey, isNot(heads.last.memberKey));
+    expect(heads.first.record.startFact, isNull);
+    expect(heads.first.record.endFact, isNotNull);
     final scope = lease.content.openScope(generation: lease.generation);
     try {
       final originals = <CompletedEntry>[];
       for (final head in heads) {
-        expect(head.completionId, isNotNull);
+        expect(completedOriginalId(head.record), isNotNull);
         final original = await scope.readCompleted(
-          recordId: head.completionId!,
+          recordId: completedOriginalId(head.record)!,
           demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
         );
-        expect(original.recordId, head.completionId);
-        expect(original.atom.id, head.atom.id);
-        expect(original.atom.source, head.atom.source);
-        expect(original.completionSeq, head.atom.completionSeq);
+        expect(original.recordId, completedOriginalId(head.record));
+        expect(original.atom.id, head.record.atom.id);
+        expect(original.atom.source, head.record.atom.source);
+        expect(original.completionSeq, head.record.atom.completionSeq);
         expect(
           (original.atom.lifecycle as TerminalChatAtom).outcome,
           ChatTerminalOutcome.completed,
@@ -3051,13 +3199,13 @@ final class _ConceptScene {
       }
       final body = text.body as SingleDisplayBlock;
       final original = await scope.readCompleted(
-        recordId: body.completionId!,
+        recordId: completedOriginalId(body.record)!,
         demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
       );
-      expect(original.recordId, body.completionId);
-      expect(original.atom.id, body.atom.id);
-      expect(original.atom.source, heads.first.atom.source);
-      expect(original.completionSeq, body.atom.completionSeq);
+      expect(original.recordId, completedOriginalId(body.record));
+      expect(original.atom.id, body.record.atom.id);
+      expect(original.atom.source, heads.first.record.atom.source);
+      expect(original.completionSeq, body.record.atom.completionSeq);
       expect(original.atom.completionItemId, original.recordId);
       expect(original.atom.completionSeq, original.completionSeq);
       expect(original.atom.lifecycle, isA<TerminalChatAtom>());
@@ -3072,6 +3220,52 @@ final class _ConceptScene {
     }
   }
 
+  Future<Map<String, Object?>> _overlapFrozenCut(
+    TimelineDisplayUnit work,
+  ) async {
+    expect(work.state, DisplayBlockState.sealed);
+    expect(work.historyPos, greaterThan(0));
+    final page = await observed.readMemberPage(
+      work.memberReference!,
+      demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
+    );
+    expect(page.sealed, isTrue);
+    expect(page.before, isNull);
+    expect(page.entries, hasLength(2));
+    final summary = work.summary!;
+    final bodies = <List<String>>[];
+    for (final head in page.entries) {
+      final value = await readDisplayRecord(lease, head.record);
+      bodies.add(await displayBodyTexts(lease, value));
+    }
+    expect(page.entries.first.record.contentSource, isA<FrozenObservation>());
+    expect(page.entries.first.record.atom.lifecycle, isA<ActiveChatAtom>());
+    expect(page.entries.first.record.startFact, isNotNull);
+    expect(page.entries.first.record.endFact, isNull);
+    expect(page.entries.last.record.contentSource, isA<CompletedOriginal>());
+    expect(bodies.first, contains(_overlapReasoning));
+    expect(bodies.last, contains(_overlapEarlyReasoning));
+    return {
+      'rowId': work.id,
+      'historyPos': work.historyPos,
+      'state': work.state.name,
+      'members': {
+        'databaseId': work.memberReference!.databaseId,
+        'blockId': work.memberReference!.blockId,
+      },
+      'summary': workSummaryEvidence(summary),
+      'heads': [
+        for (final head in page.entries)
+          {
+            'memberKey': head.memberKey,
+            'order': head.memberOrder,
+            ...displayRecordEvidence(head.record),
+          },
+      ],
+      'bodies': bodies,
+    };
+  }
+
   Future<void> overlap() async {
     await submit(_overlapPrompt);
     await reach(
@@ -3083,28 +3277,19 @@ final class _ConceptScene {
     final work = observed.liveWork.single;
     final ref = work.memberReference!;
     final reasonHead = (await observed.readMemberPage(ref)).entries.single;
-    final reason = reasonHead.atom;
-    expect(reason.kind, ChatAtomKind.reasoning);
-    expect(reason.lifecycle, isA<ActiveChatAtom>());
-    final originalLease = lease;
-    final originalController = lease.controller;
-    final originalGeneration = lease.generation;
+    final reason = reasonHead.record.atom;
+    final source = reason.source as ForegroundTurnChatSource;
+    final owner = lease;
     final current = lease.currentDisplay!;
-    final source = reason.source;
-    expect(source, isA<ForegroundTurnChatSource>());
-    final turnId = (source as ForegroundTurnChatSource).turnId;
-    final baselineIds = main.map((unit) => unit.id).toList();
-    void expectLiveWork() {
-      expect(lease, same(originalLease));
-      expect(lease.controller, same(originalController));
-      expect(lease.generation, originalGeneration);
-      expect(main.map((unit) => unit.id), orderedEquals(baselineIds));
-      expect(observed.unit(work.id).memberReference, ref);
-      expect(observed.unit(work.id).historyPos, isNull);
-      expect(observed.unit(work.id).expansion, same(work.expansion));
-    }
-
-    expect(lease.groupDisplays, isEmpty);
+    final controller = lease.controller;
+    final generation = lease.generation;
+    expect(reason.lifecycle, isA<ActiveChatAtom>());
+    await observed.revealMember(reason, reference: ref);
+    await _until(
+      tester,
+      () => hasText(_overlapReasoning),
+      'A original active prefix is readable before B starts',
+    );
     await release('a07-reasoning-start');
     await reach(
       'a07-b-terminal',
@@ -3115,185 +3300,143 @@ final class _ConceptScene {
             unit.summary!.terminal == 1,
       ),
     );
-    expectLiveWork();
     final earlyHeads = await observed.readMemberInventory(
       observed.unit(work.id),
       expectedCount: 2,
     );
-    expect(earlyHeads.first.memberKey, reasonHead.memberKey);
-    expect(earlyHeads.first.atom.id, reason.id);
-    expect(earlyHeads.first.atom.lifecycle, isA<ActiveChatAtom>());
-    final earlyHead = earlyHeads.last;
-    final earlyMember = earlyHead.atom;
-    expect(earlyMember.id, isNot(reason.id));
-    expect(earlyMember.source, source);
-    expect(earlyMember.lifecycle, isA<TerminalChatAtom>());
-    expect(earlyHead.completionId, isNotNull);
-    // The compact header may show the authoritative thinking summary. A
-    // collapsed Work must not mount the member's body or its read windows.
-    expect(observed.unit(work.id).expansion.expanded, isNot(isTrue));
-    expect(observed.memberRow(earlyMember.id), findsNothing);
-    expect(lease.groupDisplays, isEmpty);
-    final earlyDisplay = await observed.openWork(work.id);
-    await observed.revealMember(earlyMember, reference: ref);
+    final early = earlyHeads.last;
+    expect(early.record.atom.id, isNot(reason.id));
+    expect(early.record.contentSource, isA<CompletedOriginal>());
+    await observed.revealMember(early.record.atom, reference: ref);
     await _until(
       tester,
-      () => find
-          .descendant(
-            of: observed.memberRow(earlyMember.id),
-            matching: find.textContaining(
-              _overlapEarlyReasoning,
-              findRichText: true,
-            ),
-          )
-          .evaluate()
-          .isNotEmpty,
-      'B is readable within the still live Work',
+      () => hasText(_overlapEarlyReasoning),
+      'B original body before text',
     );
-    expectLiveWork();
     await captureAccessibleVariants('a07-b-terminal', workBlockId: work.id);
-    await observed.closeWork(earlyDisplay);
-    expect(earlyDisplay.atoms, isEmpty);
-    expect(earlyDisplay.windows, isEmpty);
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(observed.unit(work.id).expansion.expanded, isNot(isTrue));
-    expect(observed.memberRow(earlyMember.id), findsNothing);
-    expect(earlyDisplay.atoms, isEmpty);
-    expect(earlyDisplay.windows, isEmpty);
-    await capture('a07-b-completed-before-text');
-    final display = await observed.openWork(work.id);
+    await observed.closeWork(
+      lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
+    );
+    await release('a07-b-terminal');
+    await reach(
+      'a07-text-start',
+      () => main.any((unit) => unit.id == work.id) && hasText('正文已经开始且可以读取，'),
+    );
+    final frozen = observed.unit(work.id);
+    expect(frozen.memberReference, ref);
+    expect(
+      observed.liveBlocks.any((block) => block.id == work.id),
+      isFalse,
+      reason: 'Text Started freezes the old Work immediately; it is not footer work',
+    );
+    final textBlock = observed.liveBlocks.singleWhere(
+      (block) => block.body is SingleDisplayBlock,
+    );
+    final text = (textBlock.body as SingleDisplayBlock).record.atom;
+    expect(text.lifecycle, isA<ActiveChatAtom>());
+    final frozenCut = await _overlapFrozenCut(frozen);
+    Future<void> unchanged() async {
+      expect(lease, same(owner));
+      expect(lease.controller, same(controller));
+      expect(lease.generation, generation);
+      expect(await _overlapFrozenCut(observed.unit(work.id)), frozenCut);
+    }
+
     await observed.revealMember(reason, reference: ref);
     await _until(
       tester,
       () => hasText(_overlapReasoning),
-      'A body stays readable while the same Work is closing',
+      'sealed A prefix remains readable',
     );
-    final memberController = work.expansion.members;
-    await release('a07-b-terminal');
-    await reach(
-      'a07-text-start',
-      () => observed.liveBlocks.length == 2 && hasText('正文已经开始且可以读取，'),
-    );
-    expectLiveWork();
-    expect(observed.unit(work.id).closing, isTrue);
-    final textBlock = observed.liveBlocks.singleWhere(
-      (block) => block.body is SingleDisplayBlock,
-    );
-    final text = (textBlock.body as SingleDisplayBlock).atom;
-    expect(text.kind, ChatAtomKind.text);
-    expect(observed.liveBlocks.map((block) => block.id), [
-      work.id,
-      textBlock.id,
-    ]);
+    await capture('a07-sealed-work-active-text');
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
-    expectLiveWork();
-    await capture('a07-late-reasoning');
-    await capture('a07-closing-work-streaming-text');
+    await unchanged();
     await captureAccessibleVariants(
       'a07-text-readable',
       workBlockId: work.id,
       streamingAtomId: text.id,
     );
+    await observed.closeWork(
+      lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
+    );
     await release('a07-text-readable');
     await reach(
       'a07-text-terminal',
-      () => observed.liveBlocks.any(
-        (block) =>
-            block.id == textBlock.id &&
-            (block.body as SingleDisplayBlock).atom.lifecycle
-                is TerminalChatAtom,
-      ),
+      () => items.any((unit) => unit.atom!.id == text.id),
     );
-    expectLiveWork();
-    expect(observed.liveBlocks.map((block) => block.id), [
-      work.id,
-      textBlock.id,
-    ], reason: 'A reliable text cannot pass an earlier unfinished Work');
-    expect(display.isCurrent, isTrue);
-    expect(work.expansion.members, same(memberController));
-    await release('a07-text-terminal');
-    await reach('a07-reasoning-terminal', () {
-      final historyIds = main.map((unit) => unit.id).toSet();
-      final liveIds = observed.liveBlocks.map((block) => block.id).toSet();
-      expect(historyIds.intersection(liveIds), isEmpty);
-      expect(
-        historyIds.contains(work.id) || liveIds.contains(work.id),
-        isTrue,
-        reason: 'The whole Work never vanishes between live and history',
-      );
-      return historyIds.contains(work.id) && historyIds.contains(textBlock.id);
-    });
-    final frozen = observed.unit(work.id);
-    final completedText = observed.unit(textBlock.id);
-    expect(frozen.summary!.total, 2);
-    expect(frozen.summary!.terminal, 2);
-    expect(frozen.memberReference, ref);
-    expect(frozen.expansion, same(work.expansion));
-    expect(frozen.expansion.members, same(memberController));
-    expect(frozen.expansion.expanded, isTrue);
+    await unchanged();
+    final completedText = items.singleWhere((unit) => unit.atom!.id == text.id);
     expect(frozen.historyPos!, lessThan(completedText.historyPos!));
-    final heads = await observed.readMemberInventory(frozen, expectedCount: 2);
     expect(
-      heads.map((head) => (head.memberKey, head.memberOrder, head.atom.id)),
-      orderedEquals(
-        earlyHeads.map(
-          (head) => (head.memberKey, head.memberOrder, head.atom.id),
-        ),
-      ),
+      observed.liveBlocks.any((block) => block.id == textBlock.id),
+      isFalse,
     );
-    final originals = await _readOverlapOriginals(heads, completedText);
-    expect(await contentIdentitiesForItem(work.id), [
-      reason.id,
-      earlyMember.id,
-    ]);
-    final visibleIds = {work.id, completedText.id};
-    expect(
-      main.where((unit) => visibleIds.contains(unit.id)).map((unit) => unit.id),
-      [work.id, completedText.id],
+    await capture('a07-text-complete-frozen-prefix');
+    await release('a07-text-terminal');
+    await fixtureGate(tester, provider, 'a07-reasoning-terminal');
+    final lateClock = Stopwatch()..start();
+    late ObservedDisplayRecord lateEnd;
+    while (true) {
+      final records = await collectDisplayRecords(observed, source: source);
+      final lateEnds = records
+          .where(
+            (entry) =>
+                entry.unit.id != work.id &&
+                entry.record.atom.id == reason.id &&
+                entry.record.contentSource is CompletedOriginal,
+          )
+          .toList();
+      expect(lateEnds.length, lessThanOrEqualTo(1));
+      if (lateEnds.isNotEmpty) {
+        lateEnd = lateEnds.single;
+        break;
+      }
+      if (lateClock.elapsed >= const Duration(seconds: 60)) {
+        fail('A terminal was not admitted as a new end record');
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+    }
+    expect(lateEnd.member, isNotNull);
+    expect(lateEnd.member!.memberKey, isNot(reasonHead.memberKey));
+    expect(lateEnd.record.startFact, isNull);
+    expect(lateEnd.record.endFact, isNotNull);
+    expect(lateEnd.record.atom.lifecycle, isA<TerminalChatAtom>());
+    await unchanged();
+    final originals = await _readOverlapOriginals([
+      lateEnd.member!,
+      early,
+    ], completedText);
+    expect(originals[1].completionSeq, lessThan(originals[2].completionSeq));
+    expect(originals[2].completionSeq, lessThan(originals[0].completionSeq));
+    await observed.revealMember(
+      lateEnd.record.atom,
+      reference: lateEnd.unit.memberReference!,
     );
-    expect(
-      observed.liveBlocks.where((block) => visibleIds.contains(block.id)),
-      isEmpty,
+    await _until(
+      tester,
+      () => hasText(_overlapReasoning),
+      'new real A terminal body',
+    );
+    await capture('a07-late-end-new-work');
+    await observed.closeWork(
+      lease.groupDisplays.singleWhere((d) => d.unitId == lateEnd.unit.id),
     );
     await release('a07-reasoning-terminal');
     await idle();
-    await _until(tester, () {
-      final turn = graph.client.conversations.session(threadId).state.lastTurn;
-      return turn?.turnId == turnId &&
-          turn?.state.status == StudioTurnStatus.completed;
-    }, 'original overlap Turn finishes');
-    report['overlapAtomIds'] = [reason.id, earlyMember.id];
-    Map<String, Object?> identity(TimelineDisplayUnit unit) => {
-      'messageId': unit.id,
-      'blockId': unit.id,
-      'historyPos': unit.historyPos,
-      'kind': unit.body is WorkDisplayBlock ? 'work' : 'single',
-      if (unit.memberReference case final reference?)
-        'members': {
-          'databaseId': reference.databaseId,
-          'blockId': reference.blockId,
-        },
-      if (unit.body case SingleDisplayBlock(:final completionId, :final atom))
-        'original': {
-          'recordId': completionId,
-          'atomId': atom.id,
-          'completionSeq': atom.completionSeq,
-        },
-    };
+    await unchanged();
+    final endUnit = observed.unit(lateEnd.unit.id);
+    expect(endUnit.historyPos, greaterThan(completedText.historyPos!));
     final handoff = <String, Object?>{
-      'records': [identity(frozen), identity(completedText)],
-      'sourceTurnId': turnId,
-      'memberHeads': [
-        for (final head in heads)
-          {
-            'memberKey': head.memberKey,
-            'memberOrder': head.memberOrder,
-            'atomId': head.atom.id,
-            'recordId': head.completionId,
-            'completionSeq': head.atom.completionSeq,
-          },
-      ],
+      'sourceTurnId': source.turnId,
+      'frozenCut': frozenCut,
+      'oldWorkId': work.id,
+      'textRowId': completedText.id,
+      'endWorkId': endUnit.id,
+      'lateMemberKey': lateEnd.member!.memberKey,
+      'reasonId': reason.id,
+      'earlyReasonId': early.record.atom.id,
       'completionOrder': [
         originals[1].recordId,
         originals[2].recordId,
@@ -3304,125 +3447,64 @@ final class _ConceptScene {
         originals[2].completionSeq,
         originals[0].completionSeq,
       ],
-      'earlyBodyReadThroughWork': true,
-      'earlyDemandRevokedBeforeText': !earlyDisplay.isCurrent,
-      'expansionAndMemberControllerSurvivedHandoff': true,
     };
+    report['overlapAtomIds'] = [reason.id, early.record.atom.id];
     report['a07Handoff'] = handoff;
-    await observed.closeWork(display);
-    expect(
-      (await graph.client.conversations.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      )).complete,
-      isTrue,
-    );
-    expect(lease, same(originalLease));
-    expect(lease.controller, same(originalController));
-    expect(lease.generation, originalGeneration);
-    expect(display.isCurrent, isFalse);
-    expect(display.atoms, isEmpty);
-    expect(display.windows, isEmpty);
-    final selectedThread = threadId;
     await tap(find.byKey(StudioDriverKeys.settingsOpen));
     await _until(
       tester,
-      () => originalLease.isRetired && originalLease.isReleased,
-      'A07 original Main lease and member/body queries released on navigation',
+      () => owner.isRetired && owner.isReleased,
+      'original A07 lease and queries released',
     );
-    await originalLease.released;
-    expect(originalLease.queryCleanupError, isNull);
+    await owner.released;
+    expect(owner.queryCleanupError, isNull);
     expect(current.isCurrent, isFalse);
     expect(current.windows, isEmpty);
     await backFromSettings();
-    await openThread(selectedThread);
-    expect(lease, isNot(same(originalLease)));
-    expect(lease.generation, greaterThan(originalGeneration));
-    await _until(
-      tester,
-      () => lease.appliedSets == 1,
-      'fresh Main Set after the completed A07 selection reopens',
-    );
+    await openThread(threadId);
+    expect(lease, isNot(same(owner)));
+    expect(lease.generation, greaterThan(generation));
     await verifyOverlapHistory(handoff);
-    handoff['selectionReopened'] = {
-      'oldGeneration': originalGeneration,
-      'newGeneration': lease.generation,
-      'oldLeaseReleased': originalLease.isReleased,
-      'mainSets': lease.appliedSets,
-    };
-    await _record('a07-closed');
+    await _record('a07-sealed-history-reopened');
   }
 
   Future<void> verifyOverlapHistory(Map<String, dynamic> saved) async {
-    final records = (saved['records'] as List).cast<Map<String, dynamic>>();
-    expect(records, hasLength(2));
-    final source = ForegroundTurnChatSource(
-      turnId: saved['sourceTurnId'] as String,
+    final oldId = saved['oldWorkId'] as String;
+    final textId = saved['textRowId'] as String;
+    final endId = saved['endWorkId'] as String;
+    await _admitSavedMain({oldId, textId, endId});
+    final old = observed.unit(oldId);
+    expect(await _overlapFrozenCut(old), saved['frozenCut']);
+    final frozenHeads = await observed.readMemberInventory(
+      old,
+      expectedCount: 2,
     );
-    final owner = lease;
-    final controller = lease.controller;
-    final units = <TimelineDisplayUnit>[];
-    for (final record in records) {
-      final id = record['messageId'] as String;
-      await observed.reveal(
-        record['kind'] == 'work'
-            ? observed.groupHeader(id)
-            : observed.itemRow(id),
-        id,
-      );
-      final unit = observed.unit(id);
-      expect(unit.id, record['blockId']);
-      expect(unit.historyPos, record['historyPos']);
-      units.add(unit);
-    }
-    final work = units.first;
-    final text = units.last;
-    expect(work.atom, isNull);
-    expect(work.summary!.total, 2);
-    expect(work.summary!.terminal, 2);
-    final reference = records.first['members'] as Map<String, dynamic>;
-    expect(work.memberReference!.databaseId, reference['databaseId']);
-    expect(work.memberReference!.blockId, reference['blockId']);
-    expect(work.historyPos!, lessThan(text.historyPos!));
-    final heads = await observed.readMemberInventory(work, expectedCount: 2);
-    final savedHeads = (saved['memberHeads'] as List)
-        .cast<Map<String, dynamic>>();
-    expect(heads, hasLength(savedHeads.length));
-    for (var i = 0; i < heads.length; i++) {
-      final head = heads[i];
-      final expected = savedHeads[i];
-      expect(head.memberKey, expected['memberKey']);
-      expect(head.memberOrder, expected['memberOrder']);
-      expect(head.atom.id, expected['atomId']);
-      expect(head.atom.source, source);
-      expect(head.completionId, expected['recordId']);
-      expect(head.atom.completionSeq, expected['completionSeq']);
-      await observed.revealMember(head.atom, reference: work.memberReference!);
-      final expectedBody = i == 0 ? _overlapReasoning : _overlapEarlyReasoning;
-      await _until(
-        tester,
-        () => find
-            .descendant(
-              of: observed.memberRow(head.atom.id),
-              matching: find.textContaining(expectedBody, findRichText: true),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'saved A07 member body $i',
-      );
-    }
-    final display = lease.groupDisplays.singleWhere(
-      (display) => display.unitId == work.id,
+    await observed.revealMember(
+      frozenHeads.first.record.atom,
+      reference: old.memberReference!,
     );
-    await observed.closeWork(display);
-    expect(display.atoms, isEmpty);
-    expect(display.windows, isEmpty);
-    final body = text.body as SingleDisplayBlock;
-    final original = records.last['original'] as Map<String, dynamic>;
-    expect(body.completionId, original['recordId']);
-    expect(body.atom.id, original['atomId']);
-    expect(body.atom.source, source);
-    expect(body.atom.completionSeq, original['completionSeq']);
-    final originals = await _readOverlapOriginals(heads, text);
+    await _until(
+      tester,
+      () => hasText(_overlapReasoning),
+      'reopened frozen A prefix',
+    );
+    await observed.closeWork(
+      lease.groupDisplays.singleWhere((d) => d.unitId == oldId),
+    );
+    final ends = await observed.readMemberInventory(
+      observed.unit(endId),
+      expectedCount: observed.unit(endId).summary!.total,
+    );
+    final end = ends.singleWhere(
+      (head) => head.memberKey == saved['lateMemberKey'],
+    );
+    expect(end.record.startFact, isNull);
+    expect(end.record.endFact, isNotNull);
+    expect(end.memberKey, isNot(frozenHeads.first.memberKey));
+    final originals = await _readOverlapOriginals([
+      end,
+      frozenHeads.last,
+    ], observed.unit(textId));
     expect([
       originals[1].recordId,
       originals[2].recordId,
@@ -3433,42 +3515,22 @@ final class _ConceptScene {
       originals[2].completionSeq,
       originals[0].completionSeq,
     ], saved['completionSeqs']);
-    await observed.revealSingle(text);
+    final endDisplay = await observed.revealMember(
+      end.record.atom,
+      reference: observed.unit(endId).memberReference!,
+    );
     await _until(
       tester,
-      () => find
-          .descendant(
-            of: observed.itemRow(text.id),
-            matching: find.textContaining(_overlapText, findRichText: true),
-          )
-          .evaluate()
-          .isNotEmpty,
-      'saved A07 completed text body',
+      () => hasText(_overlapReasoning),
+      'reopened late A original body',
     );
-    final ids = units.map((unit) => unit.id).toSet();
-    expect(
-      main.where((unit) => ids.contains(unit.id)).map((unit) => unit.id),
-      orderedEquals(units.map((unit) => unit.id)),
+    await observed.closeWork(endDisplay);
+    await observed.revealSingle(observed.unit(textId));
+    await _until(
+      tester,
+      () => hasText(_overlapText),
+      'reopened actual A07 answer',
     );
-    expect(lease, same(owner));
-    expect(lease.controller, same(controller));
-    expect(lease.appliedSets, 1);
-    expect(
-      (await graph.client.conversations.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      )).complete,
-      isTrue,
-    );
-    report['a07HistoryVerified'] = {
-      'phase': phase,
-      'generation': lease.generation,
-      'displayOrder': units.map((unit) => unit.id).toList(),
-      'historyPositions': units.map((unit) => unit.historyPos).toList(),
-      'completionOrder': saved['completionOrder'],
-      'completionSeqs': saved['completionSeqs'],
-      'workMembersExplicitlyVerified': 2,
-      'memberScopesJoined': true,
-    };
   }
 
   Future<void> emptyText() async {
@@ -3482,7 +3544,7 @@ final class _ConceptScene {
         lease.live.value?.blocks
             .map((block) => block.body)
             .whereType<SingleDisplayBlock>()
-            .map((body) => body.atom)
+            .map((body) => body.record.atom)
             .where((atom) => atom.kind == ChatAtomKind.text) ??
         const [];
     await reach('a14-before-empty', () {
@@ -3682,10 +3744,10 @@ final class _ConceptScene {
         expect(page!.block, reference);
         expect(page.sealed, isTrue);
         expect(page.entries, hasLength(1));
-        expect(page.entries.single.atom.source, source);
-        expect(page.entries.single.atom.id, isNot(empty.id));
+        expect(page.entries.single.record.atom.source, source);
+        expect(page.entries.single.record.atom.id, isNot(empty.id));
         membersByBlock[reference.blockId] = page.entries
-            .map((member) => member.atom.id)
+            .map((member) => member.record.atom.id)
             .toList();
         expect(await members.next(), isNull);
       } finally {
@@ -3704,7 +3766,15 @@ final class _ConceptScene {
     final item = result.presentation;
     final tool = (item.toolCard as DecodedToolCard).value;
     final finalUnit = result.finalUnit;
-    if (finalUnit == null) {
+    final finalMember = result.finalMember;
+    TimelineGroupDisplay? resultDisplay;
+    if (finalMember != null) {
+      expect(finalUnit, isNotNull);
+      resultDisplay = await observed.revealMember(
+        result.finalAtom,
+        reference: finalUnit!.memberReference!,
+      );
+    } else if (finalUnit == null) {
       expect(display, isNotNull);
       expect(
         await observed.revealMember(
@@ -3719,12 +3789,24 @@ final class _ConceptScene {
       await observed.revealSingle(finalUnit);
       await waitForTimelineConceptSingle(tester, finalUnit);
     }
-    final card = finalUnit == null
+    final card = finalMember != null
+        ? find.descendant(
+            of: observed.groupRow(finalUnit!.id),
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is ChatItemView &&
+                  widget.item.id == finalMember.memberKey,
+            ),
+          )
+        : finalUnit == null
         ? observed.memberRow(result.finalAtom.id)
         : observed.itemRow(finalUnit.id);
     expect(card, findsOneWidget);
     final rendered = tester.widget<ChatItemView>(card).item;
-    expect(rendered.id, finalUnit == null ? item.id : finalUnit.id);
+    expect(
+      rendered.id,
+      finalMember?.memberKey ?? (finalUnit == null ? item.id : finalUnit.id),
+    );
     expect(rendered.compatibility, ChatItemCompatibility.current);
     expect(
       rendered.attachments.map((attachment) => attachment.id),
@@ -3801,6 +3883,111 @@ final class _ConceptScene {
     // Viewer and UI close too, rather than granting each step a new deadline.
     final readWait = Stopwatch()..start();
     Duration remaining() => const Duration(seconds: 60) - readWait.elapsed;
+    Future<void> waitForDecodedMediaImage(
+      Finder subtree, {
+      required String stage,
+      required List<int> expectedBytes,
+      bool viewer = false,
+    }) async {
+      final rawImages = find.descendant(
+        of: subtree,
+        matching: find.byType(RawImage),
+      );
+      Map<String, Object?>? evidence;
+      await _until(
+        tester,
+        () {
+          expect(subtree, findsOneWidget);
+          final decodeErrors = find.descendant(
+            of: subtree,
+            matching: find.textContaining('图片解码失败'),
+          );
+          expect(decodeErrors, findsNothing);
+          if (viewer) {
+            final route = ModalRoute.of(tester.element(subtree));
+            expect(route, isNotNull);
+            if (!route!.isCurrent || route.animation?.isCompleted != true) {
+              return false;
+            }
+            final image = tester.widget<Image>(
+              find.descendant(of: subtree, matching: find.byType(Image)),
+            );
+            expect(image.image, isA<MemoryImage>());
+            expect(
+              (image.image as MemoryImage).bytes,
+              orderedEquals(expectedBytes),
+            );
+          }
+          final raw = tester.widgetList<RawImage>(rawImages).toList();
+          expect(raw.length, lessThanOrEqualTo(1));
+          if (raw.isEmpty || raw.single.image == null) return false;
+          expect(raw.single.image!.width, 64);
+          expect(raw.single.image!.height, 64);
+          final render = tester.renderObject<RenderImage>(rawImages);
+          if (!render.attached || !render.hasSize || render.image == null) {
+            return false;
+          }
+          expect(render.image!.width, 64);
+          expect(render.image!.height, 64);
+          if (!render.size.isFinite || render.size.isEmpty) return false;
+          final rectangle = MatrixUtils.transformRect(
+            render.getTransformTo(null),
+            Offset.zero & render.size,
+          );
+          if (!rectangle.isFinite || rectangle.isEmpty) return false;
+          var visible = rectangle.intersect(
+            Offset.zero &
+                (tester.view.physicalSize / tester.view.devicePixelRatio),
+          );
+          RenderObject? ancestor = render.parent;
+          while (ancestor != null) {
+            if (ancestor is RenderOffstage && ancestor.offstage) return false;
+            if (ancestor is RenderOpacity && ancestor.opacity != 1) {
+              return false;
+            }
+            if (ancestor is RenderClipRect ||
+                ancestor is RenderClipRRect ||
+                ancestor is RenderAbstractViewport) {
+              visible = visible.intersect(
+                MatrixUtils.transformRect(
+                  ancestor.getTransformTo(null),
+                  ancestor.paintBounds,
+                ),
+              );
+            }
+            ancestor = ancestor.parent;
+          }
+          if (visible.isEmpty ||
+              visible.width < rectangle.width - 1 ||
+              visible.height < rectangle.height - 1 ||
+              rawImages.hitTestable().evaluate().length != 1) {
+            return false;
+          }
+          evidence = {
+            'stage': stage,
+            'rowId': rendered.id,
+            'resourceId': item.attachments.single.id,
+            'decodedWidth': render.image!.width,
+            'decodedHeight': render.image!.height,
+            'renderWidth': render.size.width,
+            'renderHeight': render.size.height,
+            'visibleWidth': visible.width,
+            'visibleHeight': visible.height,
+            'hitTestable': true,
+            if (viewer) 'viewerTransitionCompleted': true,
+            if (viewer) 'viewerProviderBytesEqual': true,
+          };
+          return true;
+        },
+        'decoded, painted-size and visible $stage image ${tool.toolCallId}',
+        timeout: remaining(),
+      );
+      final observations =
+          (report['mediaImageRendering'] ??= <Map<String, Object?>>[])
+              as List<Map<String, Object?>>;
+      observations.add(evidence!);
+    }
+
     final declarations = result.finalAtom.contents
         .where(
           (content) =>
@@ -3865,6 +4052,21 @@ final class _ConceptScene {
       } else {
         expect(view.error, isNull);
         expect(view.bytes, isNotEmpty);
+        if (phase.startsWith('media-handoff')) {
+          expect(
+            view.bytes,
+            orderedEquals(
+              await File('${_environment('PROJECT')}/concept-image-a.png')
+                  .readAsBytes(),
+            ),
+          );
+          await waitForDecodedMediaImage(
+            images,
+            stage: 'details',
+            expectedBytes: view.bytes!,
+          );
+          await capture('background-main-details');
+        }
         final entry = StudioDriverKeys.toolImageEntryId(
           rendered.id,
           item.attachments.single.id,
@@ -3886,6 +4088,15 @@ final class _ConceptScene {
           find.descendant(of: dialog, matching: find.byType(InteractiveViewer)),
           findsOneWidget,
         );
+        if (phase.startsWith('media-handoff')) {
+          await waitForDecodedMediaImage(
+            dialog,
+            stage: 'viewer',
+            expectedBytes: view.bytes!,
+            viewer: true,
+          );
+          await capture('background-main-viewer');
+        }
         await observed.tap(
           find.descendant(
             of: dialog,
@@ -3915,7 +4126,7 @@ final class _ConceptScene {
         'toolId': tool.id,
         'rowId': rendered.id,
         'toolCallId': tool.toolCallId,
-        'delivery': finalUnit == null ? 'ForegroundMembers' : 'MainSingle',
+        'delivery': finalMember != null ? 'WorkMember' : 'MainSingle',
         'error': error.toString(),
       };
       report['imageResultUiFailure'] = failure;
@@ -4002,9 +4213,9 @@ final class _ConceptScene {
         (report['imageResultUi'] ??= <Map<String, Object?>>[])
             as List<Map<String, Object?>>;
     observations.add({
-      'domain': finalUnit == null ? 'ForegroundMembers' : 'MainSingle',
+      'domain': finalMember != null ? 'WorkMember' : 'MainSingle',
       'foregroundMemberId': result.foreground.id,
-      'rowId': finalUnit?.id ?? item.id,
+      'rowId': finalMember?.memberKey ?? finalUnit?.id ?? item.id,
       'atomId': result.finalAtom.id,
       'toolCallId': tool.toolCallId,
       'taskId': tool.taskId,
@@ -4017,6 +4228,11 @@ final class _ConceptScene {
       'originalBodyWindowsRevoked': true,
       'titleExpandedAfterClose': false,
     });
+    if (resultDisplay != null) {
+      await observed.closeWork(resultDisplay, timeout: remaining());
+      expect(resultDisplay.windows, isEmpty);
+      expect(resultDisplay.atoms, isEmpty);
+    }
   }
 
   Future<void> verifyImages({
@@ -4046,8 +4262,8 @@ final class _ConceptScene {
     final imageGroup = main.singleWhere((unit) => unit.id == imageWorkItemId);
     try {
       expect(imageGroup.body, isA<WorkDisplayBlock>());
-      expect(imageGroup.summary!.total, _imageMemberCount);
-      expect(imageGroup.summary!.terminal, _imageMemberCount);
+      expect(imageGroup.summary!.total, greaterThan(0));
+      expect(imageGroup.state, DisplayBlockState.sealed);
       expect(imageGroup.atom, isNull);
       expect(imageGroup.memberReference, isNotNull);
     } catch (error) {
@@ -4344,9 +4560,8 @@ final class _ConceptScene {
       input['itemId'] as String,
       saved['imageWorkItemId'] as String,
       ...(saved['coreOrder'] as List).cast<String>(),
-      for (final record
-          in (saved['a07Handoff'] as Map<String, dynamic>)['records'] as List)
-        (record as Map<String, dynamic>)['messageId'] as String,
+      for (final field in ['oldWorkId', 'textRowId', 'endWorkId'])
+        (saved['a07Handoff'] as Map<String, dynamic>)[field] as String,
       for (final field in [
         'partialItemId',
         'failureItemId',
@@ -4365,7 +4580,7 @@ final class _ConceptScene {
     );
     expect(item.id, input['itemId']);
     expect(
-      (item.body as SingleDisplayBlock).completionId,
+      completedOriginalId((item.body as SingleDisplayBlock).record),
       input['contentItemId'],
     );
     expect(item.historyPos, input['historyPos']);

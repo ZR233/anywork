@@ -1,3 +1,5 @@
+import 'support/display_record_observation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -16,7 +18,7 @@ import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/infrastructure/frb/studio_update_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -172,7 +174,10 @@ void main() {
           child: MaterialApp.router(
             theme: pureStudioTheme(),
             locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             routerConfig: router,
           ),
@@ -238,7 +243,7 @@ void main() {
           graph.timeline.lease(threadId) != null &&
           observed.singleBlocks.any(
             (block) =>
-                (block.body as SingleDisplayBlock).atom.source
+                (block.body as SingleDisplayBlock).record.atom.source
                     is InputChatSource,
           ),
       'first real InputChatSource applied',
@@ -280,7 +285,7 @@ void main() {
     expect(
       observed.singleBlocks.where(
         (block) =>
-            (block.body as SingleDisplayBlock).atom.source ==
+            (block.body as SingleDisplayBlock).record.atom.source ==
             InputChatSource(inputId: inputId),
       ),
       isEmpty,
@@ -307,7 +312,7 @@ void main() {
     expect(
       observed.singleBlocks.where(
         (block) =>
-            (block.body as SingleDisplayBlock).atom.source ==
+            (block.body as SingleDisplayBlock).record.atom.source ==
             InputChatSource(inputId: inputId),
       ),
       isEmpty,
@@ -323,7 +328,7 @@ void main() {
           observed.singleBlocks
                   .where(
                     (block) =>
-                        (block.body as SingleDisplayBlock).atom.source ==
+                        (block.body as SingleDisplayBlock).record.atom.source ==
                         InputChatSource(inputId: inputId),
                   )
                   .length ==
@@ -333,11 +338,11 @@ void main() {
     expect(card, findsNothing);
     final canonical = observed.singleBlocks.singleWhere(
       (block) =>
-          (block.body as SingleDisplayBlock).atom.source ==
+          (block.body as SingleDisplayBlock).record.atom.source ==
           InputChatSource(inputId: inputId),
     );
     final canonicalBody = canonical.body as SingleDisplayBlock;
-    expect(canonicalBody.completionId, isNotNull);
+    expect(completedOriginalId(canonicalBody.record), isNotNull);
     await observed.revealSingle(canonical);
     final row = observed.itemRow(canonical.id);
     expect(row.hitTestable(), findsOneWidget);
@@ -349,7 +354,7 @@ void main() {
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,
       'blockId': canonical.id,
-      'recordId': canonicalBody.completionId,
+      'recordId': completedOriginalId(canonicalBody.record),
       'deliverySequence': transport.lastHeldSequence,
     });
     await capturePresentation(tester, 'submission-canonical.png');
@@ -361,9 +366,9 @@ void main() {
           turn.state.status == StudioTurnStatus.completed &&
           observed.singleBlocks.any(
             (block) =>
-                (block.body as SingleDisplayBlock).atom.source ==
+                (block.body as SingleDisplayBlock).record.atom.source ==
                     ForegroundTurnChatSource(turnId: turn.turnId) &&
-                (block.body as SingleDisplayBlock).atom.kind ==
+                (block.body as SingleDisplayBlock).record.atom.kind ==
                     ChatAtomKind.text,
           );
     }, 'second real model turn completed after interrupting the first');

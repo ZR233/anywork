@@ -37,6 +37,299 @@ fn atom(id: &str, kind: ChatAtomKind, terminal: bool) -> ChatAtom {
         payload: None,
     }
 }
+
+#[test]
+fn start_and_end_merge_only_in_the_open_group() -> Result<()> {
+    let mut s = state();
+    let start = atom("call", ChatAtomKind::ToolCall, false);
+    s.prepare(1, 10, &[start], &[], &[])?;
+    let key = s.member_heads(&s.blocks[&1].id, None, 8)[0]
+        .head
+        .member_key
+        .clone();
+    let merged = s.prepare(
+        2,
+        20,
+        &[atom("call", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    assert_eq!(merged.members.len(), 1);
+    assert_eq!(merged.members[0].head.member_key, key);
+    assert_eq!(merged.members[0].head.record.start_fact, Some(at(1)));
+    assert_eq!(merged.members[0].head.record.end_fact, Some(at(2)));
+    let only_end = s.prepare(
+        3,
+        30,
+        &[atom("only-end", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    assert_eq!(only_end.members[0].head.record.start_fact, None);
+    assert_eq!(summary(&s.blocks[&1]).total, 2);
+    Ok(())
+}
+
+#[test]
+fn same_effect_terminal_capture_uses_the_full_boundary_position() -> Result<()> {
+    for end_suborder in [0, 1, 2] {
+        let mut s = state();
+        let active = atom("call", ChatAtomKind::ToolCall, false);
+        s.prepare(1, 10, std::slice::from_ref(&active), &[], &[])?;
+        let old = s.blocks[&1].id.clone();
+        let mut text = atom("body", ChatAtomKind::Text, false);
+        let boundary = ChatFactPosition {
+            effect_seq: 2,
+            suborder: 1,
+        };
+        text.lifecycle = ChatAtomLifecycle::Active {
+            started: Some(boundary),
+            status: ChatActiveStatus::Running,
+        };
+        let mut terminal = atom("call", ChatAtomKind::ToolCall, true);
+        let end = ChatFactPosition {
+            effect_seq: 2,
+            suborder: end_suborder,
+        };
+        terminal.lifecycle = ChatAtomLifecycle::Terminal {
+            started: Some(at(1)),
+            ended: Some(end),
+            outcome: ChatTerminalOutcome::Completed,
+        };
+        let facts = if end <= boundary {
+            vec![terminal, text]
+        } else {
+            vec![text, terminal]
+        };
+        let mut captured = 0;
+        let delta = s.prepare_capturing(2, 20, &facts, &[], &[], |_| {
+            captured += 1;
+            Ok(ObservationInput::for_test(active.clone(), Vec::new()))
+        })?;
+        assert_eq!(captured, usize::from(end > boundary));
+        let members = s.member_heads(&old, None, 8);
+        assert_eq!(
+            members[0].head.record.end_fact,
+            if end <= boundary { Some(end) } else { None }
+        );
+        if end > boundary {
+            let late = delta
+                .members
+                .iter()
+                .find(|m| m.block_id != old && m.head.record.atom.id == "call")
+                .unwrap();
+            assert_eq!(late.head.record.start_fact, None);
+            assert_eq!(late.head.record.end_fact, Some(end));
+            assert_ne!(late.head.member_key, members[0].head.member_key);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn terminal_without_original_cannot_authorize_a_dynamic_body() -> Result<()> {
+    let mut s = state();
+    let mut terminal = atom("interrupted", ChatAtomKind::Reasoning, true);
+    terminal.contents.push(pl_protocol::ChatAtomContent {
+        role: ChatContentRole::Body,
+        reference: ContentRef {
+            database_id: "db".into(),
+            target: ContentTarget::Body {
+                owner: pl_protocol::ContentOwner::Item {
+                    item_id: "interrupted".into(),
+                },
+                key: "body".into(),
+            },
+        },
+    });
+    assert!(s.prepare(1, 10, &[terminal], &[], &[]).is_err());
+    assert_eq!(s.applied_effect, 0);
+    assert!(s.blocks.is_empty());
+    Ok(())
+}
+
+#[test]
+fn boundary_freezes_content_state_time_and_late_end_gets_a_new_key() -> Result<()> {
+    use pl_core::{
+        chat::{ChatContentKey, ContentData, ContentDescriptor},
+        model::ContentBlock,
+    };
+    use pl_protocol::{ChatAtomContent, ContentOwner};
+    let mut s = state();
+    let mut start = atom("call", ChatAtomKind::ToolCall, false);
+    let owner = ContentOwner::Item {
+        item_id: "call".into(),
+    };
+    start.contents.push(ChatAtomContent {
+        role: ChatContentRole::ToolOutput,
+        reference: ContentRef {
+            database_id: "db".into(),
+            target: ContentTarget::Body {
+                owner: owner.clone(),
+                key: "tool.result".into(),
+            },
+        },
+    });
+    let prefix = ContentBlock::from_text("prefix");
+    let content = Arc::new(ChatContent {
+        descriptor: ContentDescriptor {
+            key: ChatContentKey {
+                owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+                key: "tool.result".into(),
+            },
+            byte_length: 6,
+            generation: 1,
+            media_type: None,
+        },
+        data: ContentData::text(prefix.clone()),
+    });
+    s.prepare(1, 10, &[start.clone()], &[], &[])?;
+    let block = s.blocks[&1].id.clone();
+    let old_key = s.member_heads(&block, None, 8)[0].head.member_key.clone();
+    let mut observed = start.clone();
+    observed.lifecycle = ChatAtomLifecycle::Active {
+        started: Some(at(1)),
+        status: ChatActiveStatus::Waiting,
+    };
+    observed.payload = Some(PayloadData::Inline {
+        bytes: br#"{"public":"cut"}"#.to_vec(),
+    });
+    let cut = s.prepare_capturing(
+        2,
+        25,
+        &[atom("text", ChatAtomKind::Text, false)],
+        &[],
+        &[],
+        |_| {
+            Ok(ObservationInput::for_test(
+                observed.clone(),
+                vec![content.clone()],
+            ))
+        },
+    )?;
+    assert_eq!(
+        cut.published_through, 1,
+        "unfinished members do not delay freezing"
+    );
+    let frozen = s.pending[&1].clone();
+    let member = s.member_heads(&block, None, 8)[0].clone();
+    assert_eq!(member.head.member_key, old_key);
+    assert_eq!(member.head.record.end_fact, None);
+    assert!(matches!(
+        member.head.record.content_source,
+        DisplayContentSource::FrozenObservation {
+            captured_at: Some(25),
+            available: true
+        }
+    ));
+    assert_eq!(
+        (
+            summary(&cut.blocks[0].header).running,
+            summary(&cut.blocks[0].header).waiting
+        ),
+        (0, 1)
+    );
+    assert!(!s.accepts_update(&start));
+    let appended = ContentBlock::append(&prefix, "-later");
+    let replacement = ContentBlock::from_text("OTHER!");
+    assert_eq!(appended.len(), 12);
+    assert_eq!(replacement.len(), 6);
+    let ContentTarget::Body { owner, key } = &member.head.record.atom.contents[0].reference.target
+    else {
+        panic!()
+    };
+    let key = ChatContentKey {
+        owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+        key: key.clone(),
+    };
+    assert_eq!(
+        s.observation_content(&key)
+            .unwrap()
+            .data
+            .range(0, 64)?
+            .as_bytes(),
+        b"prefix"
+    );
+    let late = s.prepare(
+        3,
+        99,
+        &[atom("call", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    assert_ne!(late.members[0].head.member_key, old_key);
+    assert_eq!(late.members[0].head.record.start_fact, None);
+    assert_eq!(
+        summary(
+            &late
+                .blocks
+                .iter()
+                .find(|w| matches!(w.header.body, DisplayBlockBody::Work { .. }))
+                .unwrap()
+                .header
+        )
+        .created_at,
+        Some(99)
+    );
+    assert_eq!(*s.pending[&1], *frozen);
+    assert_eq!(s.member_heads(&block, None, 8)[0].head, member.head);
+    Ok(())
+}
+
+#[test]
+fn failed_boundary_capture_keeps_the_effect_retryable() -> Result<()> {
+    let mut s = state();
+    s.prepare(
+        1,
+        10,
+        &[atom("call", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
+    let before = s.blocks[&1].clone();
+    assert!(
+        s.prepare_capturing(
+            2,
+            20,
+            &[atom("body", ChatAtomKind::Text, false)],
+            &[],
+            &[],
+            |_| anyhow::bail!("injected capture failure")
+        )
+        .is_err()
+    );
+    assert_eq!(s.applied_effect, 1);
+    assert_eq!(s.blocks[&1], before);
+    assert_eq!(s.blocks.len(), 1);
+    assert_eq!(s.published, 0);
+    assert!(
+        s.prepare_capturing(
+            2,
+            20,
+            &[atom("body", ChatAtomKind::Text, false)],
+            &[],
+            &[],
+            |member| {
+                let mut input =
+                    ObservationInput::for_test(member.head.record.atom.clone(), Vec::new());
+                input.state =
+                    pl_protocol::ThreadItemState::Thinking(pl_protocol::ThreadThinkingItem::new(
+                        Vec::new(),
+                        Vec::new(),
+                        pl_protocol::ThreadContentLifecycle::completed(20),
+                    ));
+                Ok(input)
+            },
+        )
+        .is_err(),
+        "invalid observation encoding must fail before revoking membership"
+    );
+    assert_eq!(s.applied_effect, 1);
+    assert_eq!(s.blocks[&1], before);
+    let retry = s.prepare(2, 20, &[atom("body", ChatAtomKind::Text, false)], &[], &[])?;
+    assert_eq!(retry.published_through, 1);
+    Ok(())
+}
 fn at(effect_seq: u64) -> ChatFactPosition {
     ChatFactPosition {
         effect_seq,
@@ -213,9 +506,14 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
         &[],
     )?;
     s.prepare(2, 20, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
+    assert_eq!(
+        s.published, 1,
+        "TextStarted freezes unfinished R/A immediately"
+    );
+    let first = s.pending[&1].clone();
     s.prepare(3, 30, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
     s.prepare(4, 40, &[atom("A", ChatAtomKind::ToolCall, true)], &[], &[])?;
-    assert_eq!(s.published, 0);
+    assert_eq!(s.published, 2);
     let mut background = atom("A", ChatAtomKind::ToolCall, true);
     background.source = ChatSourceId::BackgroundResult {
         message_id: "result".into(),
@@ -227,27 +525,33 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
     };
     input.delivery = ChatDeliveryKind::Independent;
     s.prepare(5, 50, &[background, input], &[], &[])?;
-    assert_eq!(s.published, 2);
-    assert_eq!(s.blocks.len(), 2);
-    assert_eq!(summary(&s.blocks[&1]).created_at, Some(10));
-    assert_eq!(summary(&s.blocks[&1]).elapsed_ms, Some(30_000));
-    let delta = s.prepare(6, 60, &[atom("R", ChatAtomKind::Reasoning, true)], &[], &[])?;
     assert_eq!(s.published, 4);
+    assert_eq!(s.blocks.len(), 1);
+    assert_eq!(summary(&s.blocks[&3]).created_at, Some(40));
+    assert_eq!(summary(&s.blocks[&3]).elapsed_ms, Some(0));
+    let ended = s.prepare(6, 60, &[atom("R", ChatAtomKind::Reasoning, true)], &[], &[])?;
+    assert_eq!(ended.members[0].head.record.start_fact, None);
+    assert_eq!(s.published, 4);
+    let delta = s.prepare(7, 70, &[atom("T2", ChatAtomKind::Text, false)], &[], &[])?;
     assert_eq!(
         delta
             .blocks
             .iter()
             .filter_map(|w| w.header.history_pos)
             .collect::<Vec<_>>(),
-        vec![3, 4]
+        vec![5]
     );
-    assert!(matches!(s.pending[&3].body, DisplayBlockBody::Work { .. }));
+    assert_eq!(
+        *s.pending[&1], *first,
+        "late terminals never rewrite the boundary cut"
+    );
+    assert!(matches!(s.pending[&5].body, DisplayBlockBody::Work { .. }));
     assert!(
-        matches!(&s.pending[&3].body, DisplayBlockBody::Work { summary, .. }
-        if summary.created_at == Some(10) && summary.elapsed_ms == Some(50_000))
+        matches!(&s.pending[&5].body, DisplayBlockBody::Work { summary, .. }
+        if summary.created_at == Some(40) && summary.elapsed_ms == Some(30_000))
     );
     assert!(matches!(
-        s.pending[&4].body,
+        s.pending[&2].body,
         DisplayBlockBody::Single { .. }
     ));
     Ok(())
@@ -441,7 +745,7 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
         assert_eq!(delta.members.len(), 1);
         assert!(serde_json::to_vec(delta.blocks[0].header.as_ref())?.len() < 2048);
         assert!(matches!(
-            delta.members[0].head.atom.payload,
+            delta.members[0].head.record.atom.payload,
             Some(PayloadData::Deferred { .. })
         ));
     }

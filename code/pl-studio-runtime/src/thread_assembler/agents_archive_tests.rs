@@ -1,5 +1,17 @@
 //! Real spawn/assembly/retained-disposal interleavings; only the physical factory is a fixture.
 use super::*;
+use pl_core::tool::{ToolOutput, opaque::ToolError};
+
+fn host(owner: &SessionRuntime, id: &str) -> AgentHost {
+    let state = owner.0.state();
+    let entry = &state.entries[id];
+    AgentHost {
+        registry: Arc::downgrade(&owner.0),
+        identity: entry.identity.clone(),
+        resources: Arc::downgrade(&entry.native.resources),
+    }
+}
+
 use crate::thread_assembler::{ChildThreadRequest, StudioChildFactory, StudioThreadSpec};
 use pl_core::thread::extensions::ExtensionMutation;
 use std::{
@@ -158,23 +170,14 @@ pub(crate) async fn spawn_failed_archive_fixture(
     owner: SessionRuntime,
     root: String,
     factory: impl StudioChildFactory,
-) -> Result<ToolOutput, ToolError> {
+) -> Result<AgentSpawnResult, ControlError> {
     owner.0.state().child_factory = Some(crate::thread_assembler::children::ChildFactory::new(
         factory,
     ));
-    let context = pl_core::tool::opaque::CallContext {
-        grant: Default::default(),
-        context: Default::default(),
-        history_fence: 0,
-        model_projection: None,
-        tasks: None,
-        thread_id: root.clone(),
-        turn_id: "fixture".into(),
+    let context = AgentCallContext {
+        caller: pl_protocol::AgentId::new(root.clone()).unwrap(),
         call_id: "archive-first-write".into(),
         cancellation: Default::default(),
-        extensions: Arc::new(BTreeMap::new()),
-        catalog: Arc::from([]),
-        extension_sequence: 0,
     };
     let request = AgentSpawn {
         profile_id: "fixture".into(),
@@ -187,7 +190,7 @@ pub(crate) async fn spawn_failed_archive_fixture(
         metadata: serde_json::Value::Null,
     };
     let permit = owner.agent_operation(&root).await;
-    AgentHost(Arc::downgrade(&owner.0))
+    host(&owner, "root")
         .spawn_owned(owner, context, request, permit)
         .await
 }
@@ -212,19 +215,10 @@ async fn unsupported_profile_fails_outer_spawn_before_reservation_or_review_work
         }])
         .await
         .unwrap();
-    let context = pl_core::tool::opaque::CallContext {
-        grant: Default::default(),
-        context: Default::default(),
-        history_fence: 0,
-        model_projection: None,
-        tasks: None,
-        thread_id: "root".into(),
-        turn_id: "turn".into(),
+    let context = AgentCallContext {
+        caller: pl_protocol::AgentId::new("root").unwrap(),
         call_id: "unsupported-spawn".into(),
         cancellation: Default::default(),
-        extensions: Arc::new(BTreeMap::new()),
-        catalog: Arc::from([]),
-        extension_sequence: 0,
     };
     let request = AgentSpawn {
         profile_id: "acp-profile".into(),
@@ -237,12 +231,15 @@ async fn unsupported_profile_fails_outer_spawn_before_reservation_or_review_work
         metadata: serde_json::Value::Null,
     };
     let permit = owner.agent_operation("root").await;
-    let error = AgentHost(Arc::downgrade(&owner.0))
+    let error = host(&owner, "root")
         .spawn_owned(owner.clone(), context, request, permit)
         .await
         .unwrap_err();
     assert!(matches!(
-        error.source.downcast_ref::<ThreadAssemblyError>(),
+        match &error {
+            ControlError::Service(source) => source.downcast_ref::<ThreadAssemblyError>(),
+            _ => None,
+        },
         Some(ThreadAssemblyError::UnsupportedBackend {
             backend: pl_protocol::AgentBackendKind::Acp
         })
@@ -298,19 +295,10 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
         }])
         .await
         .unwrap();
-    let context = pl_core::tool::opaque::CallContext {
-        grant: Default::default(),
-        context: Default::default(),
-        history_fence: 0,
-        model_projection: None,
-        tasks: None,
-        thread_id: "root".into(),
-        turn_id: "turn".into(),
+    let context = AgentCallContext {
+        caller: pl_protocol::AgentId::new("root").unwrap(),
         call_id: "spawn".into(),
         cancellation: Default::default(),
-        extensions: Arc::new(BTreeMap::new()),
-        catalog: Arc::from([]),
-        extension_sequence: 0,
     };
     let request = AgentSpawn {
         profile_id: "fixture".into(),
@@ -322,7 +310,7 @@ async fn archive_spawn_publication_failure_releases_child_permit_and_joins_root_
         review_feedback: None,
         metadata: serde_json::Value::Null,
     };
-    let host = AgentHost(Arc::downgrade(&owner.0));
+    let host = host(&owner, "root");
     let parent_operation = owner.agent_operation("root").await;
     let spawn = host.spawn_owned(owner.clone(), context, request, parent_operation);
     tokio::pin!(spawn);

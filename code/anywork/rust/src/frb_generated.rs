@@ -8616,15 +8616,6 @@ impl SseDecode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
-impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        return Box::new(
-            <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer),
-        );
-    }
-}
-
 impl SseDecode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8639,6 +8630,17 @@ impl SseDecode for Box<crate::api::studio::types::product_topic::BridgeChildInte
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         return Box::new(
             <crate::api::studio::types::product_topic::BridgeChildInteractionsState>::sse_decode(
+                deserializer,
+            ),
+        );
+    }
+}
+
+impl SseDecode for Box<crate::api::studio::types::presentation::BridgeDisplayRecord> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        return Box::new(
+            <crate::api::studio::types::presentation::BridgeDisplayRecord>::sse_decode(
                 deserializer,
             ),
         );
@@ -12841,12 +12843,20 @@ impl SseDecode for crate::api::studio::types::chat::BridgeContentOwner {
         let mut tag_ = <i32>::sse_decode(deserializer);
         match tag_ {
             0 => {
+                let mut var_blockId = <String>::sse_decode(deserializer);
+                let mut var_memberKey = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::chat::BridgeContentOwner::DisplayObservation {
+                    block_id: var_blockId,
+                    member_key: var_memberKey,
+                };
+            }
+            1 => {
                 let mut var_itemId = <String>::sse_decode(deserializer);
                 return crate::api::studio::types::chat::BridgeContentOwner::Item {
                     item_id: var_itemId,
                 };
             }
-            1 => {
+            2 => {
                 let mut var_domain = <String>::sse_decode(deserializer);
                 let mut var_id = <String>::sse_decode(deserializer);
                 let mut var_revision = <u64>::sse_decode(deserializer);
@@ -13522,14 +13532,11 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                 };
             }
             1 => {
-                let mut var_atom =
-                    <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_decode(
-                        deserializer,
-                    );
-                let mut var_completionId = <Option<String>>::sse_decode(deserializer);
+                let mut var_record = <Box<
+                    crate::api::studio::types::presentation::BridgeDisplayRecord,
+                >>::sse_decode(deserializer);
                 return crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
-                    atom: var_atom,
-                    completion_id: var_completionId,
+                    record: var_record,
                 };
             }
             _ => {
@@ -13551,19 +13558,55 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockRe
     }
 }
 
+impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::presentation::BridgeDisplayBlockState::Open,
+            1 => crate::api::studio::types::presentation::BridgeDisplayBlockState::Sealed,
+            _ => unreachable!("Invalid variant for BridgeDisplayBlockState: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayContentSource {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::studio::types::presentation::BridgeDisplayContentSource::CurrentAtom;
+            }
+            1 => {
+                let mut var_capturedAt = <Option<i64>>::sse_decode(deserializer);
+                let mut var_available = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::presentation::BridgeDisplayContentSource::FrozenObservation{captured_at: var_capturedAt, available: var_available};
+            }
+            2 => {
+                let mut var_completionId = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::presentation::BridgeDisplayContentSource::CompletedOriginal{completion_id: var_completionId};
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberHead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_memberKey = <String>::sse_decode(deserializer);
         let mut var_memberOrder = <u64>::sse_decode(deserializer);
-        let mut var_atom =
-            <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer);
-        let mut var_completionId = <Option<String>>::sse_decode(deserializer);
+        let mut var_record =
+            <crate::api::studio::types::presentation::BridgeDisplayRecord>::sse_decode(
+                deserializer,
+            );
         return crate::api::studio::types::presentation::BridgeDisplayMemberHead {
             member_key: var_memberKey,
             member_order: var_memberOrder,
-            atom: var_atom,
-            completion_id: var_completionId,
+            record: var_record,
         };
     }
 }
@@ -13608,6 +13651,32 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberW
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayRecord {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_atom =
+            <crate::api::studio::types::chat::BridgeChatAtom>::sse_decode(deserializer);
+        let mut var_startFact =
+            <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_decode(
+                deserializer,
+            );
+        let mut var_endFact =
+            <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_decode(
+                deserializer,
+            );
+        let mut var_contentSource =
+            <crate::api::studio::types::presentation::BridgeDisplayContentSource>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::presentation::BridgeDisplayRecord {
+            atom: var_atom,
+            start_fact: var_startFact,
+            end_fact: var_endFact,
+            content_source: var_contentSource,
+        };
     }
 }
 
@@ -14051,13 +14120,16 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayBlo
             <crate::api::studio::types::presentation::BridgeDisplayBlockBody>::sse_decode(
                 deserializer,
             );
-        let mut var_closing = <bool>::sse_decode(deserializer);
+        let mut var_state =
+            <crate::api::studio::types::presentation::BridgeDisplayBlockState>::sse_decode(
+                deserializer,
+            );
         return crate::api::studio::types::presentation::BridgeLiveDisplayBlock {
             id: var_id,
             block_order: var_blockOrder,
             source: var_source,
             body: var_body,
-            closing: var_closing,
+            state: var_state,
         };
     }
 }
@@ -20302,6 +20374,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeWorkSummary {
         let mut var_terminal = <u64>::sse_decode(deserializer);
         let mut var_running = <u64>::sse_decode(deserializer);
         let mut var_waiting = <u64>::sse_decode(deserializer);
+        let mut var_unavailable = <u64>::sse_decode(deserializer);
         let mut var_failed = <u64>::sse_decode(deserializer);
         let mut var_cancelled = <u64>::sse_decode(deserializer);
         let mut var_transferred = <u64>::sse_decode(deserializer);
@@ -20318,6 +20391,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeWorkSummary {
             terminal: var_terminal,
             running: var_running,
             waiting: var_waiting,
+            unavailable: var_unavailable,
             failed: var_failed,
             cancelled: var_cancelled,
             transferred: var_transferred,
@@ -29576,15 +29650,24 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeCo
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::chat::BridgeContentOwner {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
+            crate::api::studio::types::chat::BridgeContentOwner::DisplayObservation {
+                block_id,
+                member_key,
+            } => [
+                0.into_dart(),
+                block_id.into_into_dart().into_dart(),
+                member_key.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
             crate::api::studio::types::chat::BridgeContentOwner::Item { item_id } => {
-                [0.into_dart(), item_id.into_into_dart().into_dart()].into_dart()
+                [1.into_dart(), item_id.into_into_dart().into_dart()].into_dart()
             }
             crate::api::studio::types::chat::BridgeContentOwner::Current {
                 domain,
                 id,
                 revision,
             } => [
-                1.into_dart(),
+                2.into_dart(),
                 domain.into_into_dart().into_dart(),
                 id.into_into_dart().into_dart(),
                 revision.into_into_dart().into_dart(),
@@ -30465,15 +30548,9 @@ impl flutter_rust_bridge::IntoDart
                 members.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
-                atom,
-                completion_id,
-            } => [
-                1.into_dart(),
-                atom.into_into_dart().into_dart(),
-                completion_id.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
+            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single { record } => {
+                [1.into_dart(), record.into_into_dart().into_dart()].into_dart()
+            }
             _ => {
                 unimplemented!("");
             }
@@ -30520,14 +30597,65 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeDisplayBlockState
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Open => 0.into_dart(),
+            Self::Sealed => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeDisplayBlockState
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeDisplayBlockState,
+    > for crate::api::studio::types::presentation::BridgeDisplayBlockState
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayBlockState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeDisplayContentSource
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {crate::api::studio::types::presentation::BridgeDisplayContentSource::CurrentAtom => { [0.into_dart()].into_dart() }
+crate::api::studio::types::presentation::BridgeDisplayContentSource::FrozenObservation{captured_at,available} => { [1.into_dart(),
+captured_at.into_into_dart().into_dart(),
+available.into_into_dart().into_dart()].into_dart() }
+crate::api::studio::types::presentation::BridgeDisplayContentSource::CompletedOriginal{completion_id} => { [2.into_dart(),
+completion_id.into_into_dart().into_dart()].into_dart() }
+ _ => { unimplemented!(""); }}
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeDisplayContentSource
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeDisplayContentSource,
+    > for crate::api::studio::types::presentation::BridgeDisplayContentSource
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayContentSource {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::presentation::BridgeDisplayMemberHead
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.member_key.into_into_dart().into_dart(),
             self.member_order.into_into_dart().into_dart(),
-            self.atom.into_into_dart().into_dart(),
-            self.completion_id.into_into_dart().into_dart(),
+            self.record.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -30601,6 +30729,31 @@ impl
     > for crate::api::studio::types::presentation::BridgeDisplayMemberWindow
 {
     fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayMemberWindow {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeDisplayRecord
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.atom.into_into_dart().into_dart(),
+            self.start_fact.into_into_dart().into_dart(),
+            self.end_fact.into_into_dart().into_dart(),
+            self.content_source.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeDisplayRecord
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::presentation::BridgeDisplayRecord>
+    for crate::api::studio::types::presentation::BridgeDisplayRecord
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayRecord {
         self
     }
 }
@@ -31262,7 +31415,7 @@ impl flutter_rust_bridge::IntoDart
             self.block_order.into_into_dart().into_dart(),
             self.source.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
-            self.closing.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -38631,6 +38784,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::
             self.terminal.into_into_dart().into_dart(),
             self.running.into_into_dart().into_dart(),
             self.waiting.into_into_dart().into_dart(),
+            self.unavailable.into_into_dart().into_dart(),
             self.failed.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
             self.transferred.into_into_dart().into_dart(),
@@ -40193,13 +40347,6 @@ impl SseEncode for Box<crate::api::studio::types::bots::BridgeBotsStateSnapshot>
     }
 }
 
-impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatAtom> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(*self, serializer);
-    }
-}
-
 impl SseEncode for Box<crate::api::studio::types::chat::BridgeChatBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -40211,6 +40358,15 @@ impl SseEncode for Box<crate::api::studio::types::product_topic::BridgeChildInte
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::studio::types::product_topic::BridgeChildInteractionsState>::sse_encode(
+            *self, serializer,
+        );
+    }
+}
+
+impl SseEncode for Box<crate::api::studio::types::presentation::BridgeDisplayRecord> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::presentation::BridgeDisplayRecord>::sse_encode(
             *self, serializer,
         );
     }
@@ -43650,8 +43806,16 @@ impl SseEncode for crate::api::studio::types::chat::BridgeContentOwner {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {
-            crate::api::studio::types::chat::BridgeContentOwner::Item { item_id } => {
+            crate::api::studio::types::chat::BridgeContentOwner::DisplayObservation {
+                block_id,
+                member_key,
+            } => {
                 <i32>::sse_encode(0, serializer);
+                <String>::sse_encode(block_id, serializer);
+                <String>::sse_encode(member_key, serializer);
+            }
+            crate::api::studio::types::chat::BridgeContentOwner::Item { item_id } => {
+                <i32>::sse_encode(1, serializer);
                 <String>::sse_encode(item_id, serializer);
             }
             crate::api::studio::types::chat::BridgeContentOwner::Current {
@@ -43659,7 +43823,7 @@ impl SseEncode for crate::api::studio::types::chat::BridgeContentOwner {
                 id,
                 revision,
             } => {
-                <i32>::sse_encode(1, serializer);
+                <i32>::sse_encode(2, serializer);
                 <String>::sse_encode(domain, serializer);
                 <String>::sse_encode(id, serializer);
                 <u64>::sse_encode(revision, serializer);
@@ -44167,15 +44331,11 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                     members, serializer,
                 );
             }
-            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
-                atom,
-                completion_id,
-            } => {
+            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single { record } => {
                 <i32>::sse_encode(1, serializer);
-                <Box<crate::api::studio::types::chat::BridgeChatAtom>>::sse_encode(
-                    atom, serializer,
+                <Box<crate::api::studio::types::presentation::BridgeDisplayRecord>>::sse_encode(
+                    record, serializer,
                 );
-                <Option<String>>::sse_encode(completion_id, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -44192,13 +44352,44 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockRe
     }
 }
 
+impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::presentation::BridgeDisplayBlockState::Open => 0,
+                crate::api::studio::types::presentation::BridgeDisplayBlockState::Sealed => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayContentSource {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {crate::api::studio::types::presentation::BridgeDisplayContentSource::CurrentAtom => { <i32>::sse_encode(0, serializer);  }
+crate::api::studio::types::presentation::BridgeDisplayContentSource::FrozenObservation{captured_at,available} => { <i32>::sse_encode(1, serializer); <Option<i64>>::sse_encode(captured_at, serializer);
+<bool>::sse_encode(available, serializer);
+ }
+crate::api::studio::types::presentation::BridgeDisplayContentSource::CompletedOriginal{completion_id} => { <i32>::sse_encode(2, serializer); <String>::sse_encode(completion_id, serializer);
+ }
+ _ => { unimplemented!(""); }}
+    }
+}
+
 impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberHead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.member_key, serializer);
         <u64>::sse_encode(self.member_order, serializer);
-        <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(self.atom, serializer);
-        <Option<String>>::sse_encode(self.completion_id, serializer);
+        <crate::api::studio::types::presentation::BridgeDisplayRecord>::sse_encode(
+            self.record,
+            serializer,
+        );
     }
 }
 
@@ -44235,6 +44426,25 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberW
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayRecord {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::chat::BridgeChatAtom>::sse_encode(self.atom, serializer);
+        <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+            self.start_fact,
+            serializer,
+        );
+        <Option<crate::api::studio::types::chat::BridgeChatFactPosition>>::sse_encode(
+            self.end_fact,
+            serializer,
+        );
+        <crate::api::studio::types::presentation::BridgeDisplayContentSource>::sse_encode(
+            self.content_source,
+            serializer,
+        );
     }
 }
 
@@ -44581,7 +44791,9 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveDisplayBlo
         <crate::api::studio::types::presentation::BridgeDisplayBlockBody>::sse_encode(
             self.body, serializer,
         );
-        <bool>::sse_encode(self.closing, serializer);
+        <crate::api::studio::types::presentation::BridgeDisplayBlockState>::sse_encode(
+            self.state, serializer,
+        );
     }
 }
 
@@ -49321,6 +49533,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeWorkSummary {
         <u64>::sse_encode(self.terminal, serializer);
         <u64>::sse_encode(self.running, serializer);
         <u64>::sse_encode(self.waiting, serializer);
+        <u64>::sse_encode(self.unavailable, serializer);
         <u64>::sse_encode(self.failed, serializer);
         <u64>::sse_encode(self.cancelled, serializer);
         <u64>::sse_encode(self.transferred, serializer);

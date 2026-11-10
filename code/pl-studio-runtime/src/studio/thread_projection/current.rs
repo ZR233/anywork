@@ -22,12 +22,19 @@ use std::{
 
 const PREVIEW_BYTES: usize = 512;
 const PREVIEW_COUNT: usize = 4;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::studio) struct ModelPartLocation {
+    pub generation: u32,
+    pub index: usize,
+}
+
 pub(super) type ActiveText = (
     String,
     BodyKey,
     Arc<ContentBlock>,
     u64,
     Option<ThreadTextChannel>,
+    Option<ModelPartLocation>,
 );
 
 #[derive(Debug)]
@@ -193,7 +200,10 @@ impl CurrentOwner {
             .database_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current owner has no database identity"))?;
-        let activity = self.activity.observe(&thread.id, state);
+        let active = active.into_iter().collect::<Vec<_>>();
+        let activity = self
+            .activity
+            .observe_admitted(&thread.id, state, &self.atoms, &active);
         let mut projection = CurrentProjection::empty(sequence, super::status(state));
         projection.sources = self
             .sources
@@ -268,7 +278,7 @@ impl CurrentOwner {
                 .ok_or_else(|| anyhow::anyhow!("current position exhausted"))?;
             Ok(next_position)
         };
-        for (id, position, block, _ordinal, text_channel) in active {
+        for (id, position, block, _ordinal, text_channel, _model_part) in active {
             let key = position.as_key();
             let owner = ContentOwner::Item {
                 item_id: id.clone(),
@@ -795,7 +805,14 @@ mod tests {
                 &thread,
                 &state,
                 1,
-                [("part".into(), BodyKey::Body, block.clone(), 1, channel)],
+                [(
+                    "part".into(),
+                    BodyKey::Body,
+                    block.clone(),
+                    1,
+                    channel,
+                    None,
+                )],
             )?;
             let preview = &current.projection().previews[0];
             let generation = current
@@ -843,7 +860,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, block.clone(), 1, None)],
+            [("active".into(), BodyKey::Body, block.clone(), 1, None, None)],
         )?;
         assert!(
             first
@@ -860,7 +877,14 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, appended.clone(), 1, None)],
+            [(
+                "active".into(),
+                BodyKey::Body,
+                appended.clone(),
+                1,
+                None,
+                None,
+            )],
         )?;
         let content = next.contents.values().next().unwrap();
         assert!(
@@ -880,7 +904,14 @@ mod tests {
             &thread,
             &state,
             2,
-            [("active".into(), BodyKey::Body, appended.clone(), 1, None)],
+            [(
+                "active".into(),
+                BodyKey::Body,
+                appended.clone(),
+                1,
+                None,
+                None,
+            )],
         )?;
         assert!(
             prepared.contents.is_empty(),
@@ -900,6 +931,7 @@ mod tests {
                 BodyKey::Body,
                 ContentBlock::from_text(&appended.text()),
                 1,
+                None,
                 None,
             )],
         )?;
@@ -985,6 +1017,7 @@ mod business_tests {
                 BodyKey::Body,
                 ContentBlock::from_text("token"),
                 1,
+                None,
                 None,
             )],
         )?;
