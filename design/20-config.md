@@ -228,8 +228,8 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 - **SSH 服务器作用域（`McpScope::Ssh { ssh_alias }`）**：保存在 `~/.anywork/mcp/ssh/<ssh-key>/<server-key>.toml`，定义该 SSH 服务器的专属 MCP 服务、对同名 Host 服务的覆盖配置或禁用墓碑。
 
 `server-key` 与 `ssh-key` 分别为稳定服务 ID 与 SSH alias 的 SHA-256，由现有路径 owner 生成；文件名不是语义 ID。每份文档必须携带字符串 `id`，仅允许包含 ASCII 字母、数字、`_` 与 `-`，目录条目交付实际文档引用供读取和编辑，调用方不能根据显示名称猜文件路径。文档通过 `kind` 区分三类配置：
-- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），包含 `enabled`（默认 `true`）与传输方式 `transport`（`stdio` 或 `streamableHttp`）。`stdio` 服务须配置 `command`、`args`、`env` 及可选 `cwd`（SSH 作用域下 `cwd` 必须为远端 POSIX 绝对路径）；`streamableHttp` 服务须配置 `url`、`headers` 及可选 `bearer_token_env_var`。
-- `kind = "builtin"`：内置智谱 Coding Plan MCP 服务的启用开关覆盖（仅限保留 ID `zhipu_search`、`zhipu_reader`、`zhipu_zread`、`zhipu_vision`），仅包含 `enabled: bool`。
+- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），显式声明 `transport`（`stdio` 或 `streamableHttp`）。stdio 必须提供命令，HTTP 必须提供 URL，两类传输字段不能混用；进程参数、环境、HTTP 头、超时和工具过滤等完整字段及默认值见内置 [MCP 配置指南](../code/pl-studio-runtime/assets/skills/studio-config/references/mcp.md)。SSH stdio 的工作目录按远端 POSIX 语义解析：省略时使用实际工作区，相对路径相对于该工作区解析，也可直接使用绝对路径。
+- `kind = "builtin"`：内置服务的启用开关覆盖，`id` 与 `builtin_id` 必须匹配保留身份；只有 stdio 内置服务允许指定工作目录，端点、命令和凭据来源由产品管理。
 - `kind = "disabled"`：仅限 SSH 作用域目录使用的**按服务器禁用墓碑**，显式屏蔽继承自 Host 的同名自定义或内置服务；删除该墓碑文件即可恢复继承 Host 配置。Host 作用域下禁止写入 `kind = "disabled"`。
 
 `McpScope::Ssh { ssh_alias }` 的有效目录按稳定 `id` 合并（严禁在 SSH 覆盖失败、禁用或配置损坏时静默回退到 Host 配置）：
@@ -254,7 +254,7 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 - `disabled`：禁用的技能名称列表，默认空列表。
 - `auto_learn_min_tool_calls`：触发自学习审查所需的最少工具调用次数，默认 `5`。
 
-用户技能直接读取平台用户主目录 `.agents/skills/`，不配置 `user_dir`，不受 Studio home 覆盖影响。配置升级在具名迁移中移除旧字段且保留其他选择；旧内容只保全，不向标准目录复制或覆盖。目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 `studio-config` 技能是面向智能体的 `anywork` 配置指南；任何涉及配置文件路径、结构版本、配置段字段及默认值、凭据解析优先级或保存重载语义的变更，均须在同一提交中同步更新该技能文档。
+用户技能直接读取平台用户主目录 `.agents/skills/`，不配置 `user_dir`，不受 Studio home 覆盖影响。配置升级在具名迁移中移除旧字段且保留其他选择；旧内容只保全，不向标准目录复制或覆盖。目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 [studio-config](../code/pl-studio-runtime/assets/skills/studio-config/SKILL.md) 提供当前实现的配置位置、格式、默认值、有效示例及生效验证说明，按配置领域拆分参考文档；不保存历史格式或迁移流水账。本文保留所有权、发布和迁移契约，不再复制完整操作手册。新增配置及配置变更的同提交同步要求见 [项目规约](../AGENTS.md)。
 
 ## 20.10 配置草稿与保存前校验
 

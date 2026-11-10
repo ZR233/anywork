@@ -20,7 +20,6 @@ the Studio host cannot serve a remote project through a local path.
 
 Each file has its own `schema_version = 1` and an `id` matching the filename.
 IDs contain ASCII letters, digits, `-`, `_` or `.`, excluding `.` and `..`.
-The main `config.toml` no longer accepts `[lsp.servers]`.
 Local defaults may live at `<studio-home>/lsp/host/<server-id>.toml`; a workspace
 document with the same ID replaces the entire default. SSH does not inherit Host
 defaults. Prefer workspace documents for project-specific configuration.
@@ -67,9 +66,22 @@ configuration strings to refer to the actual absolute execution workspace.
 Do not put `~`, shell substitutions or a compound shell command in `command`.
 
 Required fields are `schema_version`, `id`, `command` and nonempty `language_ids`.
-Optional fields include `display_name`, `args`, `env`, `extensions`, `detection`,
-`operations`, `initialization_options` and `settings`. Empty detection matches any
-workspace; otherwise use root filenames or supported single-segment patterns.
+Unknown fields are rejected. There is no `cwd`, `enabled` or `transport` field;
+execution uses the actual workspace and the command driver.
+
+| Optional field | Type/default |
+| --- | --- |
+| `display_name` | string; omitted uses `id` |
+| `args` | string array, `[]` |
+| `env` | string-to-string table, `{}` |
+| `extensions` | string array, `[]`; extensions normalize to lowercase with a leading dot |
+| `detection` | string array, `[]`; empty matches any workspace, otherwise root filenames or single-segment globs |
+| `operations` | string array; omitted enables all supported operations below |
+| `initialization_options`, `settings` | nested TOML values; omitted means no supplied value |
+
+Operation names are `goToDefinition`, `findReferences`, `hover`, `documentSymbol`,
+`workspaceSymbol`, `goToImplementation`, `prepareCallHierarchy`, `incomingCalls`,
+`outgoingCalls`, `diagnostics`. Server capabilities still determine availability.
 Avoid two servers claiming the same language in one workspace.
 
 ## Initialization options and settings
