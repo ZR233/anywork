@@ -17,7 +17,6 @@ mod message;
 mod model_context;
 mod observed_state;
 mod permission;
-pub mod process_worker;
 pub mod remote;
 pub mod session;
 pub mod session_runtime;
@@ -75,11 +74,11 @@ pub use conversation::*;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
-    DELEGATION_MODEL_CURSOR_VERSION, DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX,
-    DelegationMode, DelegationModelCapability, DelegationModelCursor, DelegationModelDetail,
-    DelegationModelFilter, DelegationModelKey, DelegationModelList, DelegationModelListItem,
-    DelegationPreference, DelegationSettings, EvaluateAgentReceipt, EvaluateAgentRequest,
-    GetDelegationModelRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
+    DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX, DelegationMode,
+    DelegationModelCapability, DelegationModelDetail, DelegationModelFilter, DelegationModelList,
+    DelegationModelListItem, DelegationPreference, DelegationSettings, EvaluateAgentReceipt,
+    EvaluateAgentRequest, GetDelegationModelRequest, ListDelegationModelsRequest,
+    LocalModelPerformanceSummary,
 };
 pub use error::{PureError, Result};
 pub use event::{

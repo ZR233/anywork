@@ -1,5 +1,6 @@
 //! Host bindings for independent search tools; routing and core context stay here.
 use super::WebSearchClient;
+use super::standalone::{SearchRequest, SearchSettings};
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, ContextSnapshot, ContextSource, OpaquePayload},
@@ -9,7 +10,6 @@ use pl_core::{
     },
 };
 use pl_model::protocol::deepseek::tools::{self, Observed, ToolsClient, ToolsError};
-use pl_protocol::search::SearchSettings;
 use pl_tool_search::support::{
     FetchResponse, FetchService, SearchResponse, SearchService, SearchSource, ServiceFailure,
 };
@@ -35,20 +35,15 @@ impl pl_tool_search::tools::web_search::SearchService for StandaloneSearchServic
         &self,
         request: pl_tool_search::tools::web_search::Request,
     ) -> Result<pl_tool_search::tools::web_search::Response, Self::Error> {
-        let request = pl_protocol::search::SearchRequest {
+        let request = SearchRequest {
             id: request.id,
             model: self.options.model.clone(),
             input: request.input,
-            commands: serde_json::from_value(serde_json::to_value(request.commands)?)?,
+            commands: request.commands,
             settings: self.options.settings.clone(),
             max_output_tokens: self.options.max_output_tokens,
         };
-        let response = self.client.search(&request).await?;
-        Ok(pl_tool_search::tools::web_search::Response {
-            encrypted_output: response.encrypted_output,
-            output: response.output,
-            results: response.results,
-        })
+        self.client.search(&request).await
     }
 }
 

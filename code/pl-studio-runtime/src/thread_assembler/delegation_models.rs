@@ -1,14 +1,16 @@
 //! Read-only candidate projections over the config, performance and evaluation owners.
+mod cursor;
+
 use anyhow::{Context, Result};
+use cursor::{DelegationModelCursor, DelegationModelKey};
 use pl_model::{
     config::{AccountId, AccountModelEntry, ModelRouteConfig, ReasoningEffort},
     model::ModelType,
 };
 use pl_protocol::{
-    DelegationModelCapability as Capability, DelegationModelCursor, DelegationModelDetail,
-    DelegationModelKey, DelegationModelList, DelegationModelListItem, GetDelegationModelRequest,
-    ListDelegationModelsRequest, LocalModelPerformanceSummary, ModelCapabilitiesDto,
-    ModelModalityDto,
+    DelegationModelCapability as Capability, DelegationModelDetail, DelegationModelList,
+    DelegationModelListItem, GetDelegationModelRequest, ListDelegationModelsRequest,
+    LocalModelPerformanceSummary, ModelCapabilitiesDto, ModelModalityDto,
 };
 
 #[derive(Clone)]

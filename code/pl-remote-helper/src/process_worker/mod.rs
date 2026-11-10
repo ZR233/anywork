@@ -12,7 +12,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
-use pl_protocol::process_worker::{ProcessWorkerCommand, ProcessWorkerEvent};
+use pl_remote_helper::process_worker_protocol::{ProcessWorkerCommand, ProcessWorkerEvent};
 
 use channel::Channel;
 use kernel::{Kernel, Reaped};
@@ -54,7 +54,8 @@ pub(super) fn run(control: UnixStream) -> Result<(), WorkerError> {
     })?;
     channel
         .enqueue(ProcessWorkerEvent::Ready {
-            protocol_version: pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION,
+            protocol_version:
+                pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION,
         })
         .map_err(|source| WorkerError {
             operation: "ready",

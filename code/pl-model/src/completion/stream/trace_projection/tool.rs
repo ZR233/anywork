@@ -6,7 +6,7 @@ use pl_protocol::trace::{
 };
 
 use crate::completion::ToolCall;
-use pl_protocol::search::WebSearchAction;
+use crate::completion::stream::event::WebSearchAction;
 
 use super::super::tool_stream::ToolCallAccumulatorSnapshot;
 use super::TraceProjection;

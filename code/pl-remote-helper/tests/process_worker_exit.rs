@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::process::Stdio;
 use std::time::Duration;
 
-use pl_protocol::process_worker::{
+use pl_remote_helper::process_worker_protocol::{
     PROCESS_WORKER_PROTOCOL_VERSION, ProcessWorkerCommand, ProcessWorkerConfiguration,
     ProcessWorkerEvent,
 };

@@ -117,14 +117,14 @@ fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u
         ));
     }
     if metadata.worker_protocol_version
-        != pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION
+        != pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
     {
         return Err(format!(
             "bundled helper metadata {} declares worker protocol {}, expected {}; rebuild the \
              application bundle",
             metadata_path.display(),
             metadata.worker_protocol_version,
-            pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION
+            pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
         ));
     }
     if metadata.remote_protocol_version != pl_protocol::remote::REMOTE_PROTOCOL_VERSION {

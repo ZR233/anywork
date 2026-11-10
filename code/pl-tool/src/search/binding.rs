@@ -112,7 +112,7 @@ impl WebSearchPlans {
                             client,
                             ThreadSearchOptions {
                                 model,
-                                settings: pl_protocol::search::SearchSettings::from_config(config),
+                                settings: super::SearchSettings::from_config(config),
                                 max_output_tokens: backend.max_output_tokens,
                             },
                         );

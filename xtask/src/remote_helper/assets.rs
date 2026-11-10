@@ -159,7 +159,7 @@ fn verify_local_asset(binary: &Path) -> Result<()> {
             .and_then(|n| n.to_str())
             == Some(metadata.target.as_str())
             && metadata.worker_protocol_version
-                == pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION
+                == pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
             && metadata.remote_protocol_version == pl_protocol::remote::REMOTE_PROTOCOL_VERSION
             && metadata.sha256 == actual,
         "helper build metadata mismatch; run cargo xtask build-remote-helper --all-targets"

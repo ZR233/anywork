@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use pl_protocol::process_worker::{
+use crate::process_worker_protocol::{
     PROCESS_WORKER_PROTOCOL_VERSION, ProcessWorkerCommand, ProcessWorkerEvent,
 };
 use tokio::process::Child;

@@ -24,6 +24,7 @@ use crate::completion::{
 
 use super::event::{
     ModelBlockContent, ModelBlockField, ModelBlockKind, ModelStreamEvent, ToolInputDeltaPayload,
+    WebSearchAction,
 };
 use super::lifecycle::{self, StreamLifecycle};
 use super::state::{CompletedStream, FailedStream, StreamAccumulatorState};
@@ -859,7 +860,7 @@ impl StreamCompletionAccumulator {
     fn record_web_search_started(
         &mut self,
         item_id: &str,
-        action: pl_protocol::search::WebSearchAction,
+        action: WebSearchAction,
         event_tx: &AgentEventSender,
     ) {
         self.publish_trace(event_tx, |trace| trace.start_web_search(item_id, action));
@@ -868,7 +869,7 @@ impl StreamCompletionAccumulator {
     fn record_web_search_completed(
         &mut self,
         item_id: &str,
-        action: pl_protocol::search::WebSearchAction,
+        action: WebSearchAction,
         results: Option<Vec<serde_json::Value>>,
         event_tx: &AgentEventSender,
     ) {
