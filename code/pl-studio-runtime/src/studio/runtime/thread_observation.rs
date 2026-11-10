@@ -1388,6 +1388,15 @@ impl LiveOwner {
             .newest_terminal_turn()
             .await?
         {
+            // The retained terminal may describe an older Turn while this installed snapshot
+            // already has newer work. Accept the current runtime cut, not a status inferred from
+            // that historical Turn, before any subscriber can observe its terminal fact.
+            projector.events.patch_thread_runtime(
+                &owner.thread.id,
+                crate::studio::thread_projection::status(snapshot),
+                owner.thread.updated_at.max(turn.updated_at),
+                snapshot,
+            )?;
             owner.feed.publish_last_turn(Arc::new(turn));
         }
         Ok(owner)
@@ -1643,7 +1652,7 @@ impl LiveOwner {
                 &pending.prepared.accounting,
             )?;
         }
-        self.handover_pending()
+        self.handover_pending(services)
     }
 
     /// Freezes the managed terminal-delivery authority beside the retained batch.
@@ -1739,10 +1748,29 @@ impl LiveOwner {
     /// owner's responsibility with an explicit refusal, or handed over with its facts published
     /// exactly once. `prepare` accepting is the explicit handoff, not a durability confirmation —
     /// durability remains the writer's own watermark.
-    fn handover_pending(&mut self) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
+    fn handover_pending(
+        &mut self,
+        services: &ObservationServices,
+    ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let Some(pending) = self.pending.as_ref() else {
             return Ok(None);
         };
+        if pending.mode == HandoffMode::Live
+            && crate::studio::thread_projection::prepared_terminal_turn(&pending.prepared).is_some()
+        {
+            // This is the original frozen commit even after a failed report wait. The directory
+            // accepts its runtime state synchronously, through its explicit-close latch, before
+            // either retained or realtime completion becomes visible at handoff. Keep this ahead
+            // of channel.prepare: a failed patch must leave the reliable batch solely pending.
+            // Behind/history transfers never acquire the right to regress the current directory.
+            let snapshot = &pending.write.checkpoint.state;
+            services.events.patch_thread_runtime(
+                &self.thread.id,
+                crate::studio::thread_projection::status(snapshot),
+                pending.write.effect.committed_at,
+                snapshot,
+            )?;
+        }
         let sequence = pending.prepared.sequence;
         let handed_over = pending.hand_over(&self.channel, &self.feed);
         let report = match handed_over {
@@ -4591,9 +4619,10 @@ mod storage_fault_tests {
         fixture: &ObservationFixture,
         thread: &pl_protocol::Thread,
         channel: &Arc<HistoryChannel>,
+        snapshot: Option<ThreadSnapshot>,
     ) -> Result<(ThreadHandle, Arc<ThreadLiveFeed>, LiveOwner)> {
         let handle = ThreadHandle::resume_without_model(thread.id.clone(), None)?;
-        let snapshot = handle.snapshot();
+        let snapshot = snapshot.unwrap_or_else(|| handle.snapshot());
         let (progress, owner_progress) = watch::channel(Progress::default());
         let state = Arc::new(WorkerState {
             deletion: Default::default(),
@@ -4625,6 +4654,136 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn terminal_seed_uses_current_runtime_and_preserves_close_through_handoffs() -> Result<()>
+    {
+        use pl_protocol::ThreadStatus;
+
+        for (newer_running, explicitly_closed) in [(false, false), (true, false), (false, true)] {
+            let fixture = observation_fixture().await?;
+            let mut thread = if explicitly_closed {
+                let parent = bound_thread("terminal-seed-parent");
+                register_test_thread(&fixture.store, &parent).await?;
+                child_thread("terminal-seed-directory", &parent.id)
+            } else {
+                bound_thread("terminal-seed-directory")
+            };
+            thread.status = ThreadStatus::Running;
+            register_test_thread(&fixture.store, &thread).await?;
+            publish_test_directory(&fixture.store, &fixture.services.events).await?;
+            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+            let channel = fixture
+                .store
+                .thread_persistence()
+                .history_channel(&thread.id);
+            let (handle, _, mut live) =
+                state_observation_owner(&fixture, &thread, &channel, None).await?;
+            let result: Result<()> = async {
+                let (_, write) = terminal_turn_write(&thread, "seeded-terminal")?;
+                let write = Arc::new(write);
+                sink.admit(&thread.id, write.as_ref().clone())?;
+                live.advance(&fixture.services, &thread.id, &write).await?;
+                sink.flush(&thread.id, 1).await?;
+                drop(live);
+                let mut installed = write.checkpoint.state.clone();
+                if newer_running {
+                    let mut turns = installed.turns.to_vec();
+                    turns.push(TurnRecord {
+                        input_id: None,
+                        turn_id: "newer-running-turn".into(),
+                        state: TurnState::Running,
+                        model_steps: 0,
+                        elapsed_ms: None,
+                    });
+                    installed.turns = turns.into();
+                }
+                // Deliberately leave the opposite directory state to prove installation accepts
+                // its snapshot before exposing the durable terminal, without a worker's end pass.
+                fixture.services.events.patch_thread_runtime(
+                    &thread.id,
+                    if newer_running {
+                        ThreadStatus::Idle
+                    } else {
+                        ThreadStatus::Running
+                    },
+                    1,
+                    &installed,
+                )?;
+                if explicitly_closed {
+                    fixture
+                        .services
+                        .events
+                        .commit_explicit_close(&thread.id)
+                        .await?;
+                    fixture.services.events.patch_thread_runtime(
+                        &thread.id,
+                        ThreadStatus::Closed,
+                        1,
+                        &ThreadSnapshot {
+                            lifecycle: ThreadLifecycle::Closed,
+                            ..installed.clone()
+                        },
+                    )?;
+                }
+                let expected = if explicitly_closed {
+                    ThreadStatus::Closed
+                } else if newer_running {
+                    ThreadStatus::Running
+                } else {
+                    ThreadStatus::Idle
+                };
+                let (reopened, feed, mut owner) =
+                    state_observation_owner(&fixture, &thread, &channel, Some(installed)).await?;
+                let retained = feed.last_turn().borrow().clone().context("terminal seed")?;
+                assert_eq!(retained.id, "seeded-terminal");
+                assert_eq!(
+                    fixture
+                        .services
+                        .events
+                        .thread_snapshot(&thread.id)
+                        .unwrap()
+                        .status,
+                    expected
+                );
+                if explicitly_closed {
+                    let (_, mut next) = terminal_turn_write(&thread, "late-live-terminal")?;
+                    Arc::make_mut(&mut next.effect).sequence = 2;
+                    let mut snapshot = next.checkpoint.state.clone();
+                    snapshot.commit_sequence = 2;
+                    next.checkpoint =
+                        ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, snapshot);
+                    let next = Arc::new(next);
+                    sink.admit(&thread.id, next.as_ref().clone())?;
+                    owner.advance(&fixture.services, &thread.id, &next).await?;
+                    assert_eq!(
+                        feed.last_turn().borrow().as_ref().unwrap().id,
+                        "late-live-terminal"
+                    );
+                    assert_eq!(
+                        fixture
+                            .services
+                            .events
+                            .thread_snapshot(&thread.id)
+                            .unwrap()
+                            .status,
+                        ThreadStatus::Closed
+                    );
+                    sink.flush(&thread.id, 2).await?;
+                }
+                drop(owner);
+                reopened.close().await?;
+                Ok(())
+            }
+            .await;
+            handle.close().await?;
+            drop(sink);
+            channel.stop_and_join().await?;
+            fixture.writer.shutdown().await?;
+            result?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_lagging_state_receiver_does_not_block_live_handoff_or_durability() -> Result<()> {
         let fixture = observation_fixture().await?;
         let thread = bound_thread("state-observation-lag");
@@ -4634,7 +4793,8 @@ mod storage_fault_tests {
             .store
             .thread_persistence()
             .history_channel(&thread.id);
-        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let (handle, feed, mut live) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
         let result = async {
             let database_id = fixture
                 .store
@@ -4804,17 +4964,18 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn behind_handoff_saves_old_facts_without_republishing_a_newer_resource_cut() -> Result<()>
     {
-        use crate::studio::storage_fault_test_support::ticket;
-
         let fixture = observation_fixture().await?;
-        let thread = bound_thread("behind-business-cut");
+        let mut thread = bound_thread("behind-business-cut");
+        thread.status = pl_protocol::ThreadStatus::Running;
         register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
         let channel = fixture
             .store
             .thread_persistence()
             .history_channel(&thread.id);
-        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let (handle, feed, mut live) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
         let result = async {
             let database = fixture
                 .store
@@ -4841,10 +5002,20 @@ mod storage_fault_tests {
             let references = published.current.business_refs();
             let mut receiver = feed.subscribe();
 
-            let write = Arc::new(ticket(&thread.id, 1));
+            let (_, write) = terminal_turn_write(&thread, "old-behind-terminal")?;
+            let write = Arc::new(write);
             sink.admit(&thread.id, write.as_ref().clone())?;
             live.prepare_behind(&fixture.services, &thread.id, &write)
                 .await?;
+            assert_eq!(
+                fixture
+                    .services
+                    .events
+                    .thread_snapshot(&thread.id)
+                    .unwrap()
+                    .status,
+                pl_protocol::ThreadStatus::Running
+            );
             let after = feed.current_conversation().context("public cut retained")?;
             assert!(Arc::ptr_eq(&published, &after));
             assert_eq!(after.current.business_refs(), references);
@@ -4899,7 +5070,8 @@ mod storage_fault_tests {
             .store
             .thread_persistence()
             .history_channel(&thread.id);
-        let (handle, feed, mut live) = state_observation_owner(&fixture, &thread, &channel).await?;
+        let (handle, feed, mut live) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
         let result = async {
             let call_id = "state-pending-question";
             // The tool's existing body is fixture input; the question itself is introduced only by
