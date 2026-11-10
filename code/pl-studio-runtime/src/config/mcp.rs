@@ -183,11 +183,13 @@ pub fn effective_mcp_servers(
         } else {
             McpServerStatusKind::MissingCredential
         };
+        let mut config = definition.config(token.as_deref());
+        config.enabled = builtin_enabled;
         servers.insert(
             definition.id.to_string(),
             EffectiveMcpServerConfig {
                 id: definition.id.to_string(),
-                config: definition.config(token.as_deref()),
+                config,
                 source_kind: McpServerSourceKind::BuiltIn,
                 source_label: "Built-in".to_string(),
                 source_detail: Some(definition.source_detail.to_string()),
@@ -234,6 +236,7 @@ pub fn zhipu_coding_plan_token(models: &pl_model::config::AgentModelConfig) -> O
 pub fn build_builtin_effective_config(
     builtin_id: &str,
     enabled: bool,
+    required: bool,
     cwd: Option<String>,
     models: &pl_model::config::AgentModelConfig,
 ) -> Option<EffectiveMcpServerConfig> {
@@ -249,7 +252,8 @@ pub fn build_builtin_effective_config(
         McpServerStatusKind::MissingCredential
     };
     let mut config = definition.config(token.as_deref());
-    config.enabled = status_kind == McpServerStatusKind::Enabled;
+    config.enabled = enabled;
+    config.required = required;
     if definition.transport == McpServerTransport::Stdio {
         config.cwd = cwd;
     }
@@ -325,7 +329,8 @@ impl BuiltinMcpServerDefinition {
             env.insert(key.to_string(), token.to_string());
         }
         McpServerConfig {
-            enabled: zhipu_token.is_some(),
+            enabled: true,
+            required: false,
             transport: self.transport,
             command: self.command.map(ToOwned::to_owned),
             args: self.args.iter().map(|arg| (*arg).to_string()).collect(),
@@ -348,4 +353,31 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StudioConfig;
+
+    #[test]
+    fn required_builtin_without_credential_keeps_enabled_intent() {
+        let config = StudioConfig::default_config().unwrap();
+        let effective =
+            build_builtin_effective_config(ZHIPU_SEARCH_MCP_ID, true, true, None, &config.models)
+                .unwrap();
+        assert_eq!(
+            effective.status_kind,
+            McpServerStatusKind::MissingCredential
+        );
+        assert!(effective.config.enabled);
+        assert!(effective.config.required);
+
+        let disabled =
+            build_builtin_effective_config(ZHIPU_SEARCH_MCP_ID, false, true, None, &config.models)
+                .unwrap();
+        assert_eq!(disabled.status_kind, McpServerStatusKind::Disabled);
+        assert!(!disabled.config.enabled);
+        assert!(disabled.config.required);
+    }
 }

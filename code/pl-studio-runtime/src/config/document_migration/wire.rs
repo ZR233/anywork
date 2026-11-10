@@ -1171,6 +1171,7 @@ impl From<McpServerConfig> for pl_tool::mcp::config::McpServerConfig {
     fn from(value: McpServerConfig) -> Self {
         Self {
             enabled: value.enabled,
+            required: false,
             transport: value.transport.into(),
             command: value.command,
             args: value.args,

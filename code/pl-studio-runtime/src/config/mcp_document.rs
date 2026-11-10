@@ -25,6 +25,7 @@ pub enum McpFileSpecV1 {
     Server(Box<McpServerConfig>),
     Builtin {
         enabled: bool,
+        required: bool,
         builtin_id: String,
         cwd: Option<String>,
     },
@@ -39,6 +40,8 @@ struct StdioServerWire {
     kind: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    required: bool,
     transport: McpServerTransport,
     command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -65,6 +68,8 @@ struct StreamableHttpServerWire {
     kind: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    required: bool,
     transport: McpServerTransport,
     url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +94,8 @@ struct BuiltinDocWire {
     kind: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    required: bool,
     builtin_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cwd: Option<String>,
@@ -118,6 +125,7 @@ impl McpFileV1 {
             id: id.clone(),
             spec: McpFileSpecV1::Builtin {
                 enabled,
+                required: false,
                 builtin_id: id,
                 cwd,
             },
@@ -140,6 +148,7 @@ impl McpFileV1 {
                 id: builtin_id.to_owned(),
                 spec: McpFileSpecV1::Builtin {
                     enabled: true,
+                    required: false,
                     builtin_id: builtin_id.to_owned(),
                     cwd: None,
                 },
@@ -215,6 +224,7 @@ impl McpFileV1 {
                         })?;
                         McpServerConfig {
                             enabled: wire.enabled,
+                            required: wire.required,
                             transport: McpServerTransport::Stdio,
                             command: Some(wire.command),
                             args: wire.args,
@@ -235,6 +245,7 @@ impl McpFileV1 {
                         })?;
                         McpServerConfig {
                             enabled: wire.enabled,
+                            required: wire.required,
                             transport: McpServerTransport::StreamableHttp,
                             command: None,
                             args: Vec::new(),
@@ -270,6 +281,7 @@ impl McpFileV1 {
                     id: wire.id,
                     spec: McpFileSpecV1::Builtin {
                         enabled: wire.enabled,
+                        required: wire.required,
                         builtin_id: wire.builtin_id,
                         cwd: wire.cwd,
                     },
@@ -358,6 +370,7 @@ impl McpFileV1 {
                         id: self.id.clone(),
                         kind: "server".to_owned(),
                         enabled: config.enabled,
+                        required: config.required,
                         transport: McpServerTransport::Stdio,
                         command: config.command.clone().unwrap_or_default(),
                         args: config.args.clone(),
@@ -376,6 +389,7 @@ impl McpFileV1 {
                         id: self.id.clone(),
                         kind: "server".to_owned(),
                         enabled: config.enabled,
+                        required: config.required,
                         transport: McpServerTransport::StreamableHttp,
                         url: config.url.clone().unwrap_or_default(),
                         bearer_token_env_var: config.bearer_token_env_var.clone(),
@@ -390,6 +404,7 @@ impl McpFileV1 {
             },
             McpFileSpecV1::Builtin {
                 enabled,
+                required,
                 builtin_id,
                 cwd,
             } => {
@@ -398,6 +413,7 @@ impl McpFileV1 {
                     id: self.id.clone(),
                     kind: "builtin".to_owned(),
                     enabled: *enabled,
+                    required: *required,
                     builtin_id: builtin_id.clone(),
                     cwd: cwd.clone(),
                 };
@@ -476,9 +492,72 @@ fn default_true() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 pub const ALL_BUILTIN_IDS: [&str; 4] = [
     ZHIPU_SEARCH_MCP_ID,
     ZHIPU_READER_MCP_ID,
     ZHIPU_ZREAD_MCP_ID,
     ZHIPU_VISION_MCP_ID,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_round_trips_for_server_transports_and_builtin() {
+        let host = McpScope::Host;
+        for (id, transport_fields) in [
+            (
+                "required_stdio",
+                "transport = \"stdio\"\ncommand = \"mcp-server\"\n",
+            ),
+            (
+                "required_http",
+                "transport = \"streamableHttp\"\nurl = \"https://example.com/mcp\"\n",
+            ),
+        ] {
+            let raw = format!(
+                "schema_version = 1\nid = \"{id}\"\nkind = \"server\"\nrequired = true\n{transport_fields}"
+            );
+            let parsed = McpFileV1::parse_and_validate(&raw, &host).unwrap();
+            let encoded = parsed.encode().unwrap();
+            let reparsed = McpFileV1::parse_and_validate(&encoded, &host).unwrap();
+            assert_eq!(parsed, reparsed);
+            assert!(encoded.contains("required = true"));
+        }
+
+        let builtin_raw = format!(
+            "schema_version = 1\nid = \"{}\"\nkind = \"builtin\"\nrequired = true\nbuiltin_id = \"{}\"\n",
+            ZHIPU_SEARCH_MCP_ID, ZHIPU_SEARCH_MCP_ID
+        );
+        let builtin = McpFileV1::parse_and_validate(&builtin_raw, &host).unwrap();
+        let encoded = builtin.encode().unwrap();
+        let reparsed = McpFileV1::parse_and_validate(&encoded, &host).unwrap();
+        assert_eq!(builtin, reparsed);
+        assert!(encoded.contains("required = true"));
+
+        for (id, raw) in [
+            (
+                "legacy_stdio",
+                "schema_version = 1\nid = \"legacy_stdio\"\nkind = \"server\"\ntransport = \"stdio\"\ncommand = \"mcp-server\"\n",
+            ),
+            (
+                ZHIPU_SEARCH_MCP_ID,
+                "schema_version = 1\nid = \"zhipu_search\"\nkind = \"builtin\"\nbuiltin_id = \"zhipu_search\"\n",
+            ),
+        ] {
+            let legacy = McpFileV1::parse_and_validate(raw, &host).unwrap();
+            let encoded = legacy.encode().unwrap();
+            assert!(!encoded.contains("required"));
+            match legacy.spec {
+                McpFileSpecV1::Server(config) => assert!(!config.required),
+                McpFileSpecV1::Builtin { required, .. } => assert!(!required),
+                _ => panic!("unexpected MCP spec for {id}"),
+            }
+        }
+    }
+}

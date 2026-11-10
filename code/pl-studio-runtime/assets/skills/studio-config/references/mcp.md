@@ -46,6 +46,7 @@ are optional:
 | Field | Type and default | Meaning |
 | --- | --- | --- |
 | `enabled` | boolean, `true` | Desired enablement |
+| `required` | boolean, `false` | An enabled server must finish connection and tool discovery before a new Thread can start |
 | `args` | string array, `[]` | Separate arguments, not a shell command |
 | `env` | string-to-string table, `{}` | Additional process environment |
 | `cwd` | nonblank string, omitted | Process working directory |
@@ -58,6 +59,14 @@ For example, append top-level `cwd = '/work/my-app'` before any table, and put
 environment entries under `[env]`. Do not add HTTP fields to a stdio document.
 The process uses argv; shell substitutions and `~` are not automatically expanded.
 Do not assume LSP's `{workspaceRoot}` substitution also exists for MCP.
+
+Optional servers prepare in the Thread's background and do not delay the first
+input. Their tools are unavailable until readiness is published; newly available
+tools enter later model steps, not an already-sent request. Set top-level
+`required = true` when the first request must have this server's tools. Missing
+credentials, startup failure or timeout then rejects initial Thread preparation.
+`enabled = false` takes precedence and does not start or wait for that server.
+Existing documents without `required` remain valid and default to optional.
 
 Omitted `cwd` uses the Thread workspace for Host-local or SSH-override stdio.
 Inherited Host stdio in an SSH Thread uses the Host base directory. Host relative
@@ -120,8 +129,9 @@ enabled = true
 
 `id` must equal `builtin_id`. Current reserved IDs are `zhipu_search`,
 `zhipu_reader`, `zhipu_zread`, and `zhipu_vision`; custom servers cannot use them.
-Built-ins accept only identity, schema, kind, `enabled` (default `true`) and
-optional `cwd`. Only the stdio `zhipu_vision` accepts `cwd`; HTTP built-ins do not.
+Built-ins accept only identity, schema, kind, `enabled` (default `true`),
+`required` (default `false`) and optional `cwd`. Only the stdio `zhipu_vision`
+accepts `cwd`; HTTP built-ins do not.
 Endpoint/command/credential fields are product-owned. A usable credential comes
 from the first `zhipu-coding-plan` account in stable account-ID order; another
 template or a matching endpoint is not a credential substitute.
@@ -150,7 +160,9 @@ not a repair for malformed configuration.
 
 The Settings catalog describes desired configuration, not connection health.
 Inspect the target Thread's MCP state and discovered tools; connections belong to
-Threads. Reconnect the affected server after fixing an executable/environment or
+Threads. A successfully created Thread does not prove optional servers are ready:
+check each server's connecting, ready or unavailable state and actual tool catalog.
+Reconnect the affected server after fixing an executable/environment or
 handshake error. Keep errors and other working documents intact. A successful
 standalone protocol probe can diagnose the server, but does not prove Studio loaded
 the file or that the Thread can call it.

@@ -403,7 +403,7 @@ impl StudioRuntime {
     }
 
     pub(in crate::studio::runtime) async fn ensure_prompt_runtime_ready(&self) -> Result<()> {
-        if !self.runtime_snapshot().await?.state.is_ready() {
+        if !self.runtime_state.snapshot().state.is_ready() {
             bail!("Studio runtime is not ready");
         }
         Ok(())

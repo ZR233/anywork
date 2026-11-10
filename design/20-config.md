@@ -223,6 +223,8 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 
 ## 20.8 MCP 按环境独立单文件配置与合并规则
 
+自定义与内置 MCP 服务均可配置布尔字段 `required`，默认 `false`；旧文档省略该字段即视为可选，不重写用户文件或凭据。该字段仅约束已启用服务，禁用优先；启用且必需的服务缺少凭据或准备失败会阻止会话初次装配。继承或整份覆盖同时携带该字段，不维护第二份启动策略。准备、状态和工具目录语义见 [9.6](./09-tool-runtime.md#96-mcp-能力声明thread-独占运行时与轮次租约)，操作示例见内置 MCP 配置指南。
+
 MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模型（独立根版本 `schema_version = 1`），不再嵌入 `config.toml`：
 - **Host 作用域（`McpScope::Host`）**：保存在 `~/.anywork/mcp/host/<server-key>.toml`，定义本地会话的 MCP 服务及 SSH 会话的默认继承基线。
 - **SSH 服务器作用域（`McpScope::Ssh { ssh_alias }`）**：保存在 `~/.anywork/mcp/ssh/<ssh-key>/<server-key>.toml`，定义该 SSH 服务器的专属 MCP 服务、对同名 Host 服务的覆盖配置或禁用墓碑。

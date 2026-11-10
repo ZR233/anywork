@@ -2890,6 +2890,8 @@ fn write_config_with_mcp_server(
         server_id.to_owned(),
         StudioMcpServerEntry {
             enabled: true,
+            // This scenario must start the fixture process tree before testing shutdown.
+            required: true,
             transport: McpServerTransport::Stdio,
             command: Some(command.to_string_lossy().into_owned()),
             args: args.to_vec(),

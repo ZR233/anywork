@@ -27,7 +27,7 @@ impl StudioThreadFactory {
             .resolve_workspace_identity(project, Path::new(&project.path))
             .await
             .with_context(|| format!("resolve project execution resource {}", project.path))?;
-        self.verify_execution_identity(project, &identity).await
+        Self::verify_resolved_execution_identity(&identity).await
     }
 
     /// Audit never opens cold history. Admission resolves unknown child bindings on demand only;
@@ -102,8 +102,7 @@ impl StudioThreadFactory {
                 frozen.as_ref().is_none_or(|frozen| *frozen == identity),
                 "bot physical execution identity changed"
             );
-            self.verify_execution_identity(&effective, &identity)
-                .await?;
+            Self::verify_resolved_execution_identity(&identity).await?;
             if check != ExecutionWorkspaceCheck::Audit {
                 self.ensure_bot_execution_workspace(thread, snapshot)
                     .await?;
@@ -186,7 +185,7 @@ impl StudioThreadFactory {
                 "execution canonical path or endpoint changed".into()
             )
         );
-        self.verify_execution_identity(&effective, &actual).await?;
+        Self::verify_resolved_execution_identity(&actual).await?;
         if let Some(lease) = lease {
             let manager = workspace_preparation::manager_from_lease(
                 &self.services.store,
@@ -209,19 +208,9 @@ impl StudioThreadFactory {
         Ok(())
     }
 
-    async fn verify_execution_identity(
-        &self,
-        project: &WorkspaceRecord,
-        identity: &WorkspaceIdentity,
-    ) -> Result<()> {
-        let current = self
-            .resolve_workspace_identity(project, Path::new(&identity.root))
-            .await
-            .with_context(|| format!("verify execution root {}", identity.root))?;
-        ensure!(
-            current == *identity,
-            "execution resource changed canonical identity"
-        );
+    // Call only with the identity just resolved for this admission. Frozen identity/lease
+    // comparisons remain at the caller; resolving this same root twice is not a stronger seal.
+    async fn verify_resolved_execution_identity(identity: &WorkspaceIdentity) -> Result<()> {
         if identity.endpoint == WorkspaceEndpoint::Local {
             ensure!(
                 tokio::fs::metadata(&identity.root).await?.is_dir(),
