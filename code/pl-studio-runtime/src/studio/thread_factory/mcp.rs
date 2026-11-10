@@ -734,12 +734,7 @@ impl StudioThreadFactory {
             !owner.lifetime.cancellation.is_cancelled(),
             "member MCP is closing"
         );
-        owner.pause_projection();
-        tokio::select! {
-            biased;
-            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
-            result = owner.finish_preparation() => result.map_err(|error| resource_error("finish MCP preparation before reconnect", error))?,
-        }
+        // Reject invalid commands without fencing projection or joining another producer.
         let resolved_servers = self.services.config_runtime.resolve_thread_mcp_configs(
             &owner.scope,
             &owner.workspace_root,
@@ -753,6 +748,12 @@ impl StudioThreadFactory {
                 "MCP server '{target_id}' is not enabled in Thread '{thread_id}'"
             ))
             .into());
+        }
+        owner.pause_projection();
+        tokio::select! {
+            biased;
+            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
+            result = owner.finish_preparation() => result.map_err(|error| resource_error("finish MCP preparation before reconnect", error))?,
         }
         let configuration_changed = *owner
             .servers

@@ -515,6 +515,61 @@ async fn required_failures_compensate_and_disabled_required_does_not_start() -> 
 }
 
 #[tokio::test]
+async fn invalid_reconnect_preserves_pending_optional_preparation() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for failure in ["", "list"] {
+            let server = Server::new(failure).await?;
+            let env =
+                Environment::new(&[("optional", &server, false, "startup_timeout_secs = 60\n")])
+                    .await?;
+            let response = env.create().await?;
+            server.gate.reached.cancelled().await;
+            let thread = env.runtime.ensure_thread_owner(&response.thread.id).await?;
+            // The actor's initial directory is installed and answers discovery while the
+            // optional handshake remains held. A rejected command must not fence that owner.
+            thread.reveal_tools(vec!["discover_tools".into()]).await?;
+            let before = env.runtime.read_thread_mcp(&response.thread.id).await?;
+            assert_eq!(before.servers[0].lifecycle, Lifecycle::Connecting);
+
+            let rejected = tokio::time::timeout(
+                Duration::from_secs(2),
+                env.runtime
+                    .reconnect_thread_mcp(pl_protocol::ReconnectThreadMcpRequest {
+                        thread_id: response.thread.id.clone(),
+                        server_id: Some("missing".into()),
+                    }),
+            )
+            .await
+            .context("invalid reconnect waited for the unrelated optional handshake")?
+            .expect_err("a missing reconnect target must be rejected");
+            assert!(rejected.to_string().contains("not enabled"), "{rejected:#}");
+            assert!(!server.gate.release.is_cancelled());
+            assert_eq!(
+                env.runtime.read_thread_mcp(&response.thread.id).await?,
+                before,
+                "rejection must not mutate the existing preparation projection"
+            );
+
+            server.gate.release.cancel();
+            let expected = if failure.is_empty() {
+                Lifecycle::Available
+            } else {
+                Lifecycle::Unavailable
+            };
+            wait_state(&env.runtime, &response.thread.id, "optional", expected).await?;
+            if failure.is_empty() {
+                wait_tool(&env.runtime, &thread, tool_id("optional")).await?;
+            }
+            assert_eq!(server.gate.handshakes.load(Ordering::SeqCst), 1);
+            env.shutdown().await?;
+            server.close().await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
+#[tokio::test]
 async fn pending_preparation_is_joined_on_configuration_reconnect_and_shutdown() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(30), async {
         for action in [
