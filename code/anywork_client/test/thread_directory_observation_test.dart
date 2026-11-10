@@ -81,24 +81,10 @@ final class _Handle implements ThreadsObservationHandle {
   }
 }
 
-SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
-    SessionDirectoryRow(
-      sessionId: id,
-      agentId: id,
-      threadId: id,
-      workspaceId: 'workspace',
-      title: title,
-      mode: ThreadModeId.simple,
-      delegationMode: DelegationMode.profile,
-      delegationPreference: DelegationPreference.balanced,
-      updatedAt: DateTime.utc(2026),
-      workspacePath: '/workspace',
-    );
-
 ThreadDirectoryFrame _frame(
   DirectoryQuery query,
   DirectoryWindow window,
-  List<SessionDirectoryRow> rows, {
+  List<String> threadIds, {
   int revision = 1,
   String? nextCursor,
 }) => ThreadDirectoryFrame(
@@ -109,11 +95,38 @@ ThreadDirectoryFrame _frame(
     ownerEpoch: 'runtime',
     revision: revision,
   ),
-  rows: rows,
+  threadIds: threadIds,
   nextCursor: nextCursor,
 );
 
 void main() {
+  test('directory frames freeze and validate ordered thread identities', () {
+    final ids = ['first', 'second'];
+    final frame = _frame(
+      const DirectoryQuery(),
+      DirectoryWindow(limit: 2),
+      ids,
+    );
+    ids.add('later');
+    expect(frame.threadIds, ['first', 'second']);
+    expect(() => frame.threadIds.add('later'), throwsUnsupportedError);
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(), ['same', 'same']),
+      throwsArgumentError,
+    );
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(), ['']),
+      throwsArgumentError,
+    );
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(limit: 1), [
+        'one',
+        'two',
+      ]),
+      throwsArgumentError,
+    );
+  });
+
   test(
     'same demand shares one owner and A to B to A retires exact slots',
     () async {
@@ -132,8 +145,8 @@ void main() {
       final bHandle = _Handle();
       feed.threads[0].result.complete(aHandle);
       feed.threads[1].result.complete(bHandle);
-      aHandle.add(_frame(a, window, [_thread('a')]));
-      bHandle.add(_frame(b, window, [_thread('b')]));
+      aHandle.add(_frame(a, window, ['a']));
+      bHandle.add(_frame(b, window, ['b']));
       await a1.state.waitFor((state) => state.frame != null);
       await b1.state.waitFor((state) => state.frame != null);
       expect(store.observedWindows.map((frame) => frame.query), {a, b});
@@ -161,7 +174,7 @@ void main() {
       expect(feed.threads, hasLength(3), reason: 'retired A is never revived');
       final nextAHandle = _Handle();
       feed.threads[2].result.complete(nextAHandle);
-      nextAHandle.add(_frame(a, window, [_thread('a2')], revision: 2));
+      nextAHandle.add(_frame(a, window, ['a2'], revision: 2));
       await a3.state.waitFor((state) => state.frame?.stamp.revision == 2);
 
       final closingB = b1.release();
@@ -186,9 +199,7 @@ void main() {
       final observation = store.observeThreads(query, window);
       final first = _Handle();
       feed.threads.single.result.complete(first);
-      first.add(
-        _frame(query, window, [_thread('older')], nextCursor: 'cursor-40'),
-      );
+      first.add(_frame(query, window, ['older'], nextCursor: 'cursor-40'));
       await observation.state.waitFor((state) => state.frame != null);
 
       final refreshing = observation.refresh();
@@ -200,15 +211,11 @@ void main() {
       expect(feed.threads.last.window, window);
       final second = _Handle();
       feed.threads.last.result.complete(second);
-      second.add(
-        _frame(query, window, [
-          _thread('older', title: 'changed'),
-        ], revision: 2),
-      );
+      second.add(_frame(query, window, ['older'], revision: 2));
       final refreshed = await observation.state.waitFor(
         (state) => state.frame?.stamp.revision == 2,
       );
-      expect(refreshed.frame!.rows.single.title, 'changed');
+      expect(refreshed.frame!.threadIds, ['older']);
 
       final closing = observation.release();
       await second.closeEntered.future;
@@ -271,7 +278,7 @@ void main() {
       expect(feed.threads, hasLength(1));
       final firstHandle = _Handle();
       feed.threads.single.result.complete(firstHandle);
-      firstHandle.add(_frame(query, window, [_thread('pin-a')]));
+      firstHandle.add(_frame(query, window, ['pin-a']));
       await firstBorrow.state.waitFor((state) => state.frame != null);
 
       await firstBorrow.release();
@@ -293,9 +300,7 @@ void main() {
       );
       final replacementHandle = _Handle();
       feed.threads.last.result.complete(replacementHandle);
-      replacementHandle.add(
-        _frame(replacementQuery, window, [_thread('replacement')]),
-      );
+      replacementHandle.add(_frame(replacementQuery, window, ['replacement']));
       await replacement.state.waitFor((state) => state.frame != null);
 
       final retrying = store.retryCleanup();

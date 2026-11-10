@@ -58,4 +58,4 @@ final class ProjectStoreProvider
   }
 }
 
-String _$projectStoreHash() => r'662ee237c59f7879dcc063db4cc66382f1383670';
+String _$projectStoreHash() => r'6571bbd7f61cf6bd9dd4c64f1eff5c04d38781d0';

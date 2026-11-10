@@ -177,6 +177,61 @@ abstract final class TimelinePreviewFixtures {
     body('tool.result', '00:04 +12: All tests passed!'),
   ];
 
+  /// 紧凑多文件补丁：新增、带移动的更新（@@ 定位、缩进、空行、EOF）、删除。
+  static final applyPatchText = r'''*** Begin Patch
+*** Environment ID: preview-env
+*** Add File: lib/example/greeter.dart
++class Greeter {
++  final String name;
++
++  Greeter(this.name);
++
++  String greet() => '你好，' + name;
++}
+*** Update File: lib/example/legacy.dart
+*** Move to: lib/example/renamed.dart
+@@ class Greeter {
+-  String greet() => throw UnimplementedError();
++  String greet() => '你好，' + name;
+@@
++
++  @override
++  String toString() => 'Greeter(' + name + ')';
+ }
+*** End of File
+*** Delete File: docs/legacy-notes.md
+*** End Patch''';
+
+  static const _applyPatchChangedFiles = [
+    'lib/example/greeter.dart',
+    'lib/example/renamed.dart',
+    'docs/legacy-notes.md',
+  ];
+
+  static final applyPatchTool = item(
+    'preview-apply-patch',
+    'tool',
+    {
+      'invocation': {
+        'toolCallId': 'preview-apply-patch-call',
+        'name': 'apply_patch',
+        'presentationContract': 'builtin.apply_patch@1',
+      },
+      'state': {
+        'kind': 'succeeded',
+        'completedAt': 1735689602,
+        'output': {'changedFiles': _applyPatchChangedFiles},
+      },
+    },
+    bodies: [
+      body('tool.arguments', applyPatchText),
+      body(
+        'tool.result',
+        jsonEncode({'changedFiles': _applyPatchChangedFiles}),
+      ),
+    ],
+  );
+
   // All member identities, lifecycle facts and group summaries below are
   // explicitly projected synthetic inputs, not a grouping fixture engine.
   static const groupSource = ForegroundTurnChatSource(turnId: 'preview-turn');

@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart' show AnyworkClient;
-import 'package:flutter/foundation.dart'
-    show DiagnosticsProperty, StringProperty;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
@@ -14,7 +12,6 @@ import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/recovery_store.dart';
-import '../../presentation/providers/thread_directory_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 
 import '../../shared/studio_loading.dart';
@@ -51,7 +48,7 @@ import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'thread_preparation_card.dart';
 import 'sidebar/sidebar_views.dart';
-import 'sidebar/sidebar_directory_owner.dart';
+import 'sidebar/sidebar_connectors.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';
@@ -72,6 +69,11 @@ class _StudioShellState extends ConsumerState<StudioShell> {
   static const _sidebarDividerWidth = 5.0;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _sidebarKey = GlobalKey<_SidebarState>();
+  // Header/runtime updates must not update the independent sidebar subtree.
+  late final _sidebarWidget = _Sidebar(
+    key: _sidebarKey,
+    onNavigate: () => _scaffoldKey.currentState?.closeDrawer(),
+  );
   final _startupClock = Stopwatch()..start();
   final _sidebarResizeFocus = FocusNode(debugLabel: 'Sidebar resize');
 
@@ -190,7 +192,6 @@ class _StudioShellState extends ConsumerState<StudioShell> {
         }
         final selection = ref.watch(shellSelectionProvider);
         final chrome = ref.watch(shellChromeViewProvider);
-        final sidebar = ref.watch(sidebarViewProvider);
         final header = ref.watch(headerViewProvider);
         if (!_reportedReady) {
           _reportedReady = true;
@@ -233,12 +234,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
               drawer: overlay
                   ? Drawer(
                       width: (constraints.maxWidth - 24).clamp(0.0, 360.0),
-                      child: _Sidebar(
-                        key: _sidebarKey,
-                        state: sidebar,
-                        onNavigate: () =>
-                            _scaffoldKey.currentState?.closeDrawer(),
-                      ),
+                      child: _sidebarWidget,
                     )
                   : null,
               backgroundColor: context.colors.surface,
@@ -247,10 +243,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                 child: Row(
                   children: [
                     if (!overlay) ...[
-                      SizedBox(
-                        width: width,
-                        child: _Sidebar(key: _sidebarKey, state: sidebar),
-                      ),
+                      SizedBox(width: width, child: _sidebarWidget),
                       Focus(
                         focusNode: _sidebarResizeFocus,
                         onFocusChange: (focused) {

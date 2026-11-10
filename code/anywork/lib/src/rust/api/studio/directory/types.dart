@@ -19,14 +19,14 @@ class BridgeThreadDirectoryFrame {
   final BridgeThreadDirectoryQuery query;
   final BridgeThreadDirectoryWindow window;
   final BridgeResourceStamp stamp;
-  final List<BridgeSessionDirectoryRow> rows;
+  final List<String> threadIds;
   final String? nextCursor;
 
   const BridgeThreadDirectoryFrame({
     required this.query,
     required this.window,
     required this.stamp,
-    required this.rows,
+    required this.threadIds,
     this.nextCursor,
   });
 
@@ -35,7 +35,7 @@ class BridgeThreadDirectoryFrame {
       query.hashCode ^
       window.hashCode ^
       stamp.hashCode ^
-      rows.hashCode ^
+      threadIds.hashCode ^
       nextCursor.hashCode;
 
   @override
@@ -46,7 +46,7 @@ class BridgeThreadDirectoryFrame {
           query == other.query &&
           window == other.window &&
           stamp == other.stamp &&
-          rows == other.rows &&
+          threadIds == other.threadIds &&
           nextCursor == other.nextCursor;
 }
 

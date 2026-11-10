@@ -425,7 +425,7 @@ void main() {
           final directoryFrame = await directoryDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(directoryFrame.frame!.rows, isEmpty);
+          expect(directoryFrame.frame!.threadIds, isEmpty);
           final metadataDemand = graph.client.threadDirectory.observeThread(
             'thread-alt',
           );
@@ -503,7 +503,7 @@ void main() {
           // independent sidebar query still has no matching rows.
           expect(graph.client.findThread('thread-alt'), isNotNull);
           expect(facts.workspace!.threadId, 'thread-alt');
-          expect(directoryDemand.state.value.frame!.rows, isEmpty);
+          expect(directoryDemand.state.value.frame!.threadIds, isEmpty);
           expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
           expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(

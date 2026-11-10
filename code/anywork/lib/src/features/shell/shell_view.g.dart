@@ -317,7 +317,320 @@ final class SidebarViewProvider
   }
 }
 
-String _$sidebarViewHash() => r'143430e906ffedddecaf2f1b2593e90614863842';
+String _$sidebarViewHash() => r'1014afa8f10ad0932b2a6efbb04a7bc0be6c5378';
+
+/// Select by value so another project's fresh DTO does not rebuild this one.
+
+@ProviderFor(sidebarProjectView)
+final sidebarProjectViewProvider = SidebarProjectViewFamily._();
+
+/// Select by value so another project's fresh DTO does not rebuild this one.
+
+final class SidebarProjectViewProvider
+    extends $FunctionalProvider<StudioProject?, StudioProject?, StudioProject?>
+    with $Provider<StudioProject?> {
+  /// Select by value so another project's fresh DTO does not rebuild this one.
+  SidebarProjectViewProvider._({
+    required SidebarProjectViewFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'sidebarProjectViewProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$sidebarProjectViewHash();
+
+  @override
+  String toString() {
+    return r'sidebarProjectViewProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<StudioProject?> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  StudioProject? create(Ref ref) {
+    final argument = this.argument as String;
+    return sidebarProjectView(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(StudioProject? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<StudioProject?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is SidebarProjectViewProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$sidebarProjectViewHash() =>
+    r'efe8ce63e7e6317c12afcad5cfa3f279aced13c2';
+
+/// Select by value so another project's fresh DTO does not rebuild this one.
+
+final class SidebarProjectViewFamily extends $Family
+    with $FunctionalFamilyOverride<StudioProject?, String> {
+  SidebarProjectViewFamily._()
+    : super(
+        retry: null,
+        name: r'sidebarProjectViewProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// Select by value so another project's fresh DTO does not rebuild this one.
+
+  SidebarProjectViewProvider call(String projectId) =>
+      SidebarProjectViewProvider._(argument: projectId, from: this);
+
+  @override
+  String toString() => r'sidebarProjectViewProvider';
+}
+
+@ProviderFor(sidebarSelectedRootThreadId)
+final sidebarSelectedRootThreadIdProvider =
+    SidebarSelectedRootThreadIdProvider._();
+
+final class SidebarSelectedRootThreadIdProvider
+    extends $FunctionalProvider<String?, String?, String?>
+    with $Provider<String?> {
+  SidebarSelectedRootThreadIdProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'sidebarSelectedRootThreadIdProvider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$sidebarSelectedRootThreadIdHash();
+
+  @$internal
+  @override
+  $ProviderElement<String?> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  String? create(Ref ref) {
+    return sidebarSelectedRootThreadId(ref);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(String? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<String?>(value),
+    );
+  }
+}
+
+String _$sidebarSelectedRootThreadIdHash() =>
+    r'4a1c6aafa117293e83191d2ae81562ba9ae5f2bf';
+
+@ProviderFor(sidebarRecoveryIssue)
+final sidebarRecoveryIssueProvider = SidebarRecoveryIssueFamily._();
+
+final class SidebarRecoveryIssueProvider
+    extends
+        $FunctionalProvider<
+          StudioRecoveryIssue?,
+          StudioRecoveryIssue?,
+          StudioRecoveryIssue?
+        >
+    with $Provider<StudioRecoveryIssue?> {
+  SidebarRecoveryIssueProvider._({
+    required SidebarRecoveryIssueFamily super.from,
+    required (String?, {String? threadId}) super.argument,
+  }) : super(
+         retry: null,
+         name: r'sidebarRecoveryIssueProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$sidebarRecoveryIssueHash();
+
+  @override
+  String toString() {
+    return r'sidebarRecoveryIssueProvider'
+        ''
+        '$argument';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<StudioRecoveryIssue?> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  StudioRecoveryIssue? create(Ref ref) {
+    final argument = this.argument as (String?, {String? threadId});
+    return sidebarRecoveryIssue(ref, argument.$1, threadId: argument.threadId);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(StudioRecoveryIssue? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<StudioRecoveryIssue?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is SidebarRecoveryIssueProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$sidebarRecoveryIssueHash() =>
+    r'814f246d61bfb7abc4daeb112d4ad54fb7a7c79b';
+
+final class SidebarRecoveryIssueFamily extends $Family
+    with
+        $FunctionalFamilyOverride<
+          StudioRecoveryIssue?,
+          (String?, {String? threadId})
+        > {
+  SidebarRecoveryIssueFamily._()
+    : super(
+        retry: null,
+        name: r'sidebarRecoveryIssueProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  SidebarRecoveryIssueProvider call(String? workspaceId, {String? threadId}) =>
+      SidebarRecoveryIssueProvider._(
+        argument: (workspaceId, threadId: threadId),
+        from: this,
+      );
+
+  @override
+  String toString() => r'sidebarRecoveryIssueProvider';
+}
+
+/// Read-only, per-identity projection; no list overlay or runtime subscription.
+
+@ProviderFor(sidebarThreadView)
+final sidebarThreadViewProvider = SidebarThreadViewFamily._();
+
+/// Read-only, per-identity projection; no list overlay or runtime subscription.
+
+final class SidebarThreadViewProvider
+    extends
+        $FunctionalProvider<
+          SidebarThreadView,
+          SidebarThreadView,
+          SidebarThreadView
+        >
+    with $Provider<SidebarThreadView> {
+  /// Read-only, per-identity projection; no list overlay or runtime subscription.
+  SidebarThreadViewProvider._({
+    required SidebarThreadViewFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'sidebarThreadViewProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$sidebarThreadViewHash();
+
+  @override
+  String toString() {
+    return r'sidebarThreadViewProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<SidebarThreadView> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  SidebarThreadView create(Ref ref) {
+    final argument = this.argument as String;
+    return sidebarThreadView(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(SidebarThreadView value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<SidebarThreadView>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is SidebarThreadViewProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$sidebarThreadViewHash() => r'e9df734a40d49cbbae71560270a26aa4be1a243e';
+
+/// Read-only, per-identity projection; no list overlay or runtime subscription.
+
+final class SidebarThreadViewFamily extends $Family
+    with $FunctionalFamilyOverride<SidebarThreadView, String> {
+  SidebarThreadViewFamily._()
+    : super(
+        retry: null,
+        name: r'sidebarThreadViewProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// Read-only, per-identity projection; no list overlay or runtime subscription.
+
+  SidebarThreadViewProvider call(String threadId) =>
+      SidebarThreadViewProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'sidebarThreadViewProvider';
+}
 
 @ProviderFor(headerView)
 final headerViewProvider = HeaderViewProvider._();

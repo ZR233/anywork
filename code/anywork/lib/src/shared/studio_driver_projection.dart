@@ -61,8 +61,9 @@ StudioDriverFacts queryStudioDriverFacts(
   var directoryHasMore = false;
   for (final frame in client.threadDirectory.observedWindows) {
     directoryHasMore = directoryHasMore || frame.nextCursor != null;
-    for (final row in frame.rows) {
-      rowsById.putIfAbsent(row.threadId, () => row);
+    for (final threadId in frame.threadIds) {
+      final row = client.threadDirectory.observedThread(threadId);
+      if (row != null) rowsById.putIfAbsent(threadId, () => row);
     }
   }
   final rootRows = [
@@ -103,11 +104,19 @@ StudioDriverFacts queryStudioDriverFacts(
   );
   SessionDirectoryRow? rootRow;
   if (sessionId != null) {
-    final candidate = rowsById[sessionId];
-    if (candidate != null && candidate.isRootRow) {
-      rootRow = candidate;
-    } else if (row?.isRootRow == true && row?.sessionId == sessionId) {
+    if (row?.isRootRow == true && row?.sessionId == sessionId) {
       rootRow = row;
+    } else {
+      final rootThreadId = agents
+          .where(
+            (agent) =>
+                agent.sessionId == sessionId && agent.parentAgentId == null,
+          )
+          .firstOrNull
+          ?.threadId;
+      rootRow = rootThreadId == null
+          ? null
+          : client.threadDirectory.observedThread(rootThreadId);
     }
   }
   final threadComposer = observedThreadId == null

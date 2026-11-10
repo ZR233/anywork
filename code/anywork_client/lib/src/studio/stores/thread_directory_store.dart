@@ -76,7 +76,7 @@ final class ThreadDirectoryStore {
               'Thread directory observation resource mismatch',
             );
           }
-          if (frame.rows.length > window.limit) {
+          if (frame.threadIds.length > window.limit) {
             throw _protocolFailure('Thread directory frame exceeds its window');
           }
         },

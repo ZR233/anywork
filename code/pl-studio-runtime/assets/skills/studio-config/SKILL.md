@@ -1,286 +1,67 @@
 ---
 name: studio-config
-description: Use when asked where anywork stores configuration, project/session data, temporary files, or helper transfers, or how to configure accounts, model routes, permissions, skills, MCP, LSP, UI, or web search. Covers storage ownership, TOML schema, credentials, and safe editing.
+description: Configure anywork accounts, model routes, MCP servers, language servers (LSP), skills, Agent Profiles and work modes. Explains current file formats, configuration paths, scope, reload and verification. Use for setup or configuration repair, including Dart MCP.
 metadata:
   category: guides
 ---
 
-# anywork Configuration
+# anywork configuration
 
-Use this skill when the user asks where anywork keeps its settings or wants to configure something outside the Settings page.
+Use the current formats below to configure anywork. Read only the reference for
+the requested feature; do not copy another client's JSON configuration into anywork.
 
-## Where Configuration Lives
+## Find the correct location
 
-anywork reads a single user config file:
+`<studio-home>` is the running application's configuration root, resolved in order:
+`--studio-home <absolute path>`, `ANYWORK_HOME` (nonempty absolute path), then
+the platform user's `.anywork` directory. On Windows the default is
+`%USERPROFILE%\.anywork`; on Unix it is `$HOME/.anywork`.
+An isolated application may use a different root. Confirm the running instance's
+root before writing; the default path alone is not evidence of the active root.
 
-```text
-~/.anywork/config.toml          Windows: %USERPROFILE%\.anywork\config.toml
-```
+For a local Thread, inspect the inherited `ANYWORK_HOME` value with the available
+command tool (`$env:ANYWORK_HOME` in PowerShell); do not dump the whole environment.
+Check any known launch override before using it. If necessary, inspect the running
+instance's launch arguments or product settings. A remote shell's environment does
+not identify the Studio host's root. Ask for the missing root only after available
+local evidence cannot establish it; absence of a settings tool alone is not proof
+that the path is unavailable.
 
-The home directory can be overridden, in resolution order:
+`<workspace>` means this Thread's actual execution checkout/worktree. SSH workspace
+paths refer to the remote machine. Studio-owned configuration and execution-side
+configuration are different locations:
 
-1. `--studio-home <absolute path>` launch argument
-2. `ANYWORK_HOME` environment variable (absolute, non-empty)
-3. default `<user home>/.anywork`
+| Configure | Current file/location | Read next |
+| --- | --- | --- |
+| Accounts, routes, runtime, skills, UI, search, ACP | `<studio-home>/config.toml`, TOML schema 32 | [Main configuration](references/main-config.md) |
+| MCP, including Dart MCP | `<studio-home>/mcp/host/<key>.toml` or `mcp/ssh/<ssh-key>/<key>.toml`, TOML schema 1; both directories are on the Studio host | [MCP formats and setup](references/mcp.md) |
+| Language servers | `<workspace>/.anywork/lsp/<id>.toml`, TOML schema 1; local defaults at `<studio-home>/lsp/host/<id>.toml` | [LSP formats and setup](references/lsp.md) |
+| User child Agent Profiles | `<studio-home>/agents/<id>.toml`, TOML schema 2 | [Profiles and work modes](references/agents-and-modes.md) |
+| Custom work modes | `<studio-home>/modes/<id>.json`, JSON editing document | [Profiles and work modes](references/agents-and-modes.md) |
+| SSH connections, project instructions, skill files | Standard user/project locations, independent of Studio home | [Other configuration and storage](references/other-config.md) |
 
-The only current persistent root is `<home>/data/`, without a version in its directory name. It holds `studio.sqlite`, canonical `catalog.toml`, `workspaces.toml`, `settings.toml`, model catalogs, bots and `calls/`. Every Workspace, including Standalone, owns `workspaces/<workspace-key>/sessions/<thread-key>/`: `history.sqlite`, `attachments.toml`, shared content-addressed `resources/<sha256>` and host-only `temp/`. Keys hash the original stable IDs, not names or working directories. Never edit these files by hand.
+## Edit and verify
 
-`workspace.toml` and `session.toml` are runtime-owned identity manifests, not editable settings. Mutable summaries stay in canonical indexes; route, Mode, Plan, notes and execution state stay in the checkpoint. Only v2 data migrates to the current layout. The resumable operation preserves sources in `migration-backups/`; earlier data remains isolated. Migration failure stops startup, preserves evidence and never triggers backup-and-defaults recovery. Normal execution never falls back to old directories.
+1. Inspect the active scope and existing configuration. Prefer available product
+   settings/document operations for validation and correct path generation. For a
+   file edit, preserve the original and change only the requested settings.
+   When the root and write scope are established, complete the authorized file edit
+   even if reload is a separate unavailable operation; report that remaining step.
+2. Follow the relevant reference's exact field spelling and nesting. Schema
+   versions belong to individual documents; never bump a header to repair a file.
+   Use TOML literal strings for Windows paths, for example `'C:\SDK\dart.exe'`,
+   or escape backslashes in double-quoted strings.
+3. Preserve account IDs and credential associations. Use Settings for credential
+   changes; do not print secrets or copy tokens into examples, logs or skill files.
+4. Apply the feature's reload mechanism. Main settings, MCP and LSP do not have
+   interchangeable reload behavior. If no suitable operation is exposed to the
+   current agent, report the required UI action rather than inventing a tool.
+5. Confirm the canonical configuration and actual behavior. For MCP, a saved file
+   is not a connection: verify discovered tools and a meaningful tool call. For
+   LSP, verify initialization and a real semantic query. Preserve exact failures;
+   do not report success based only on a process, a version check or your own summary.
 
-## Session Files and Helper Transfers
-
-- Use the latest `studio.session-files` host fact for this Thread's workspace-relative `scratch/`, `artifacts/`, and command-output directory. These are under `<workspace>/.anywork/sessions/<thread-key>/`; SSH paths belong to the remote workspace, not the local home. Each child and reviewer has its own Thread directory even when sharing a checkout.
-- The host fact's `scratch` points at the execution-side `temp/`; captures, uploads and optional `.venv` are children of it. Unfinished deliverables belong in sibling `artifacts/`. Put final files in the requested location and report other deliverables' real paths. Tool-managed outputs keep their existing entry points.
-- Host `temp/` is internal transfer staging, not a model-writable database directory. Remote captures are downloaded there before durable retention; unbound attachment drafts live in `<home>/data/temp/attachment-drafts/`.
-- Archiving first stops and joins producers and confirms durable saves/resources, then removes only the Thread's host and execution `temp/`. It preserves artifacts, history, reliable resources, user files and Git worktrees. Offline SSH or cleanup failure is a failed archive with retry responsibility, not success. Restoring an archive does not restore temporary files.
-- Helper executables are shared remote-user assets in `$HOME/.anywork/remote-helper/<version>/<digest>/`. Upload staging is unique and beside the final executable; ordinary atomic file writes stage beside their target. Neither location is a general-purpose task scratch directory.
-- Runtime pools contain non-overwriting `.gitignore` files. Do not overwrite user ignore rules, clear active scratch/history, or scan old `target/pure/` output as a cleanup shortcut. Directory write scopes, read-only roles, and SSH/worktree confinement still apply.
-
-Feishu bots live in `<home>/data/bots/<bot-id>/` with versioned `config.toml` and `state.sqlite`; App Secret uses the independent credential account `bot:<bot-id>` and never enters TOML or SQLite. The runtime talks to Feishu with native Rust HTTP/WebSocket/Protobuf only. Bot Threads use the same Workspace-bound session layout described above.
-
-## Format Rules
-
-- TOML with snake_case keys; the current runtime accepts `schema_version = 32`. Changing the version number alone does not migrate a configuration.
-- A missing file means in-memory defaults shown in Settings; nothing is written until you save.
-- Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
-- Schema 21 to 22 migrates model declarations from `slug` to `model_id`. Schema 22 to 23 migrates `models.providers` to `models.accounts`, `preset`/`adapter` to `template`/`protocol`, and route/Profile `provider`/`model` to `account_id`/`model_id`. Account and template ID values, endpoint, headers, model overrides and user choices are preserved. Older supported versions continue through these steps; changing only the version number is invalid.
-- Schema 26 to 27 converts each account's `disabled_models` into `model_enabled_overrides` entries with value `false`, removes the old field, and leaves other models automatic. It uses the normal protected backup and recoverable migration, preserving identity, credentials, routes and other overrides. Normal configuration only uses the new map.
-- Schema 27 to 28 gives existing accounts the explicit `apiKey` authentication method, preserving their endpoints, credential associations, routes and model overrides. A subscription billing label never converts an API account into an OAuth account.
-- Schema 28 to 29 removes `skills.user_dir` while preserving the remaining skill settings and all account/credential associations. User discovery uses only the standard user-home `.agents/skills` directory. Old private skills are preserved separately, never copied into or merged with the standard directory.
-- Schema 29 to 30 permits verified Codex workspace and plan metadata. Existing API/SIWC accounts, credential associations and model choices remain unchanged; upgrading does not sign in or convert accounts.
-- Schema 30 to 31 extracts `[mcp.servers.<id>]` and `[mcp.builtin_servers.<id>]` from `config.toml` into standalone per-server files under `<home>/mcp/host/<server-key>.toml` (`schema_version = 1`, `kind = "server" | "builtin"`), and removes `[mcp]` and `runtime.active_mcp_servers` from `config.toml`. Normal execution reads only the Host and SSH MCP document directories and never dual-reads `[mcp]` from `config.toml`.
-- Schema 31 to 32 extracts `[lsp.servers.<id>]` into `<home>/lsp/host/<server-id>.toml`, one document per server with `schema_version = 1` and its explicit `id`. The protected migration preserves originals and resumes interrupted writes; conflicting existing documents are not overwritten. Normal execution no longer reads `[lsp]` in `config.toml`. Host defaults apply only to local workspaces; SSH uses its remote workspace documents.
-- Main configuration, user Profiles and credential associations use a recoverable migration operation. Protected original bytes are backed up before replacement; interrupted commits finish their recorded operation, candidate bytes and target version before preparing a later upgrade. Profiles have their own `schema_version = 2`: version 1 and unversioned historical Profiles migrate independently even when the main configuration is already current. The Native route, effort and instructions move into the Native binding without changing values; ACP bindings reference only the existing account and connection revision, with no Native placeholders. Current consumers read definition/binding; frozen Native history keeps its own format. Old/current identity keys with equal values can be normalized only at the import boundary; conflicts or incomplete identities are rejected. No unchanged main configuration is rewritten just because a Profile needs upgrading. Existing v2 model-route/Profile extensions, typed bills and call records migrate at their versioned storage boundary without activating all sessions or rewriting opaque vendor payloads.
-- Each active TOML document has an independent positive-integer root schema, separate from content revisions. Typed migration paths use `version-migrate`; its semantic versions are an in-memory boundary detail, never a new disk format. A current file is not rewritten on read. Missing/invalid headers (except the explicit unversioned Profile import), unsupported/future versions, malformed files and migration validation failures stop the affected load as `Migration`, preserve the file and operation, and never trigger backup-and-defaults recovery. Do not change a version number by hand or delete a migration journal to bypass a failure.
-- Unrelated unrecoverable global database corruption retains its existing one-time startup backup and recovery policy: `config.toml`, `agents/`, `modes/` and current `data/` are preserved under `<home>/startup-backups/<unique-id>/original/` before initializing defaults. The durable `startup-recovery.toml` journal resumes an interrupted recovery and the UI reports its location. Permission, capacity, file-lock, credential-service and internal failures stop initialization without resetting. System credentials, old-version directories, remote connection configuration and physical project/worktree directories are preserved. Individual session read failures and isolated invalid Bots do not reset global data.
-- Explicit reload while Studio is running remains strict: it reports the invalid file instead of replacing it.
-- Saving from Settings writes atomically. External file edits are not picked up automatically; use explicit reload after editing a valid current-schema file.
-- Account save replies confirm the credential/configuration transaction, not MCP readiness or usage API completion. All templates use the same save path; MCP follows canonical configuration in the background and reports its own status.
-
-## Common Sections
-
-- `[models.accounts.<id>]` — account endpoint, template, credential reference, model catalog.
-- `[mode_model_routes."<mode-id>"]` — new/root Thread default route per full Mode ID. `mode.simple` and `mode.task` are required; custom Modes inherit `mode.simple` until explicitly saved.
-- `[models.routes.<system-agent-id>]` — optional explicit model override for a declared system child. Omitted entries inherit the complete `mode.simple` route; existing explicit entries remain authoritative and must resolve. Unknown IDs and root identities are rejected. Root Threads keep their route in the Thread state checkpoint instead of a global `planner` route.
-- `[runtime]` — `permission_mode` (`request-approval` | `auto-review` | `full-access`) and `active_skills`.
-- `[skills]` — enable/disable, auto-learn, project/external directories and disabled skills. The default writable project directory is `.agents/skills`. User skills are read directly and read-only from `$HOME/.agents/skills` on Linux or `%USERPROFILE%\.agents\skills` on Windows, independently of Studio home. There is no `user_dir` setting, product-private user copy or compatibility fallback. Migration preserves old private skills without copying into or overwriting the standard user directory.
-- `<home>/mcp/host/<server-key>.toml` and `<home>/mcp/ssh/<ssh-key>/<server-key>.toml` — single-file MCP documents with independent `schema_version = 1` and `kind = "server" | "builtin" | "disabled"` (`disabled` is valid only in SSH scope as a per-server tombstone to block an inherited Host MCP server). Path keys are SHA-256 hashes of the stable server ID and SSH alias; each document carries its semantic `id`. Use the catalog's document reference rather than guessing a filename. Each active Thread owns its own `McpRuntime` for its workspace scope (`Host` or `Ssh`); Settings edits only desired configuration files and never probes MCP connections.
-- `<execution-workspace>/.anywork/lsp/<server-id>.toml` — one executable LSP configuration per server, read on the execution side, including SSH and worktrees. No servers are bundled or automatically installed. See [Configure and verify LSP](references/lsp.md) before configuring a server; it covers Rust, server settings, session scratch, asynchronous status, failure recovery and remote paths.
-- `[ui]` — `language` (`system` | `zh` | `en`, default `system`), `follow_active_turn`, `compact_timeline`, and sidebar preferences. Interface language can be selected in General settings and applies after the canonical save reply; it does not change conversation content or model instructions. Studio always uses its fixed light theme. The obsolete `follow_system_theme` key is ignored when reading current-schema files and omitted on the next normal save; no configuration reset is needed.
-- `[web_search]` — OpenAI standalone `/alpha/search` configuration: mode, context size, allowed domains, location.
-- `[deepseek_web_search]` — Two independent switches for the DeepSeek Search & Fetch tools: `enabled` (web search) and `fetch_enabled` (page fetch), both defaulting to `true`. The section, a missing key, and a missing section all mean enabled. It defines no result count, content toggle, OpenAI-specific mode, domain, location, or context option; those request details are fixed deployment constants in code.
-- `[instructions]` — base override, trusted developer-source rules, user context, and project doc limits. `developer` names a configuration source, not the API role sent to every provider.
-
-System-prompt composition belongs to Studio: it combines the selected base, frozen Agent role,
-Mode, and other trusted sources in a stable order. `base_override` replaces the model base; an
-absent model base uses the builtin prompt. Project documents and dynamic runtime facts keep their
-user-context boundary. The model protocol layer maps the combined prompt to OpenAI Responses
-`developer`, DeepSeek Responses `system`, or the selected adapter's supported role. Do not change
-account settings to force a role or enable history updates merely because a model answered a probe.
-Append-only prompt updates require an explicit capability for the actual wire API; DeepSeek's
-Messages `in-history` declaration does not establish Responses support. Unsupported updates replace
-the effective instruction prefix while ordinary conversation history remains append-only.
-
-## Agent definitions and child Profiles
-
-Every root and child Agent uses the same declaration, instruction assembly, and frozen-snapshot model.
-Built-in declarations are typed entries in `src/agent/catalog.rs`; each instruction is Markdown under
-`src/agent/prompts/*.md` and compiled into the binary with `include_str!`, so runtime does not read an
-Agent resource directory. Add a declaration entry and its prompt file together. Product entry points
-bind a trusted root identity. The root is not a configurable child Profile and has no global `planner`
-route or user-facing role selector. `list_agent_profiles` and the Agents settings page expose only
-eligible child declarations; user TOML files also define children only.
-
-Builtin child IDs come from the embedded declaration catalog, not a fixed list in this guide. A system
-child may omit `[models.routes.<agent-id>]`; when absent, its effective account, model, and effort inherit
-`mode.simple` without being written back to TOML. An explicit child route takes precedence, and an
-unavailable explicit route does not fall back. User child Profiles keep their explicit route in their
-own TOML file, with the independent root `schema_version = 2` and a closed backend binding. Only child Profiles can be enabled/disabled or dispatched; root identity, metadata, and
-instruction text cannot grant child or root privileges.
-
-A few sections are omitted when left at defaults (`runtime`, `instructions`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` , `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true` and `fetch_enabled = true`, so do not delete them assuming they are unused.
-
-Web search is not a single selection. Both services are resolved independently of the session, route, or current model: OpenAI standalone search uses the account's `gpt-6-sol` when its catalog has it (otherwise the account's first valid model), DeepSeek search calls the official `POST {root}/v1/tools/search` and `POST {root}/v1/tools/fetch` endpoints without resolving any model, and accounts are ordered by stable ID. Account availability depends only on capability plus a usable key; whether the current model supports function calling only decides whether that thread registers the additive tools. At runtime the OpenAI `web_search`, DeepSeek `deepseek_web_search` (`queries`, 1–4 merged queries) and `deepseek_web_fetch` (`url`), and any generic MCP tools (including Zhipu, discovered and registered through generic MCP when a valid key is available) coexist as additive tools; there is no `selected` backend and no exclusive route that hides the other tools. Only the two DeepSeek tool descriptions mention per-request billing and the fallback condition, and searches are neither ordered nor automatically fallen back across accounts. `enabled` and `fetch_enabled` gate the tools independently, and each switch only affects its own tool. A DeepSeek account instance that overrides the template's canonical base URL stops inheriting the DeepSeek standalone capability unless it explicitly declares the `deep_seek_tools_api` dialect; the pre-21 token `deep_seek_anthropic_messages` is rewritten by the configuration migration and is rejected if written by hand. This revocation is DeepSeek-only and does not change the existing OpenAI `/alpha/search` standalone inheritance for non-canonical OpenAI endpoints.
-
-## Work modes
-
-Custom work modes are separate JSON files, not sections in `config.toml`:
-
-```text
-~/.anywork/modes/<mode-id>.json    Windows: %USERPROFILE%\.anywork\modes\<mode-id>.json
-```
-
-The file name must match the document `id`. For example, `mode.review-flow` is stored as `mode.review-flow.json`. A document has six execution fields at the top level plus optional `editor.nodes`:
-
-```json
-{
-  "id": "mode.review-flow",
-  "displayName": "Review flow",
-  "description": "Review one bounded change.",
-  "order": 10,
-  "prompt": "Follow the active review stage.",
-  "workflow": {
-    "title": "Review",
-    "goal": "Finish the review.",
-    "initialStateId": "inspect",
-    "states": [
-      {
-        "id": "inspect",
-        "title": "Inspect",
-        "instructions": "Inspect the change.",
-        "completionCriteria": ["Findings are recorded."],
-        "kind": "atomic"
-      },
-      {
-        "id": "done",
-        "title": "Done",
-        "instructions": "",
-        "completionCriteria": [],
-        "kind": "final"
-      }
-    ],
-    "transitions": [
-      {
-        "sourceStateId": "inspect",
-        "targetStateId": "done",
-        "guard": "The review is complete."
-      }
-    ]
-  },
-  "editor": {
-    "nodes": [
-      { "stateId": "inspect", "x": 80, "y": 80 },
-      { "stateId": "done", "x": 320, "y": 80 }
-    ]
-  }
-}
-```
-
-The runtime compiles the workflow before publishing it. State and transition IDs must be unique and bounded; the initial state and every transition endpoint must exist; atomic stages need completion criteria; final stages cannot have outgoing transitions; and every stage must be reachable and able to reach a final stage. `editor.nodes` only stores finite canvas coordinates for existing state IDs. It is validated separately and never changes the workflow graph hash.
-
-`mode.simple` and `mode.task` are built in and read-only. Saving or deleting a built-in ID is rejected; copy it to a new custom ID instead. A custom Mode inherits the `mode.simple` model route until a `[mode_model_routes."<mode-id>"]` entry is saved. Queries read the published catalog; external JSON edits require explicit reload. Reload validates every file before replacing the catalog. A malformed file, mismatched file name, unknown field, invalid layout, or compiler error rejects the whole reload and leaves the previous catalog intact. Keep the original file and report the exact validation issue rather than deleting it or bypassing validation.
-
-## Model compaction thresholds
-
-Each account catalog may store `auto_compact_overrides` keyed by exact `model_id`. A missing key means no user override: the model layer resolves the automatic value from its declared threshold and safe input capacity. Use its effective value and adjustment reason; do not assume every automatic threshold is 90% of a displayed context window. Unknown capacity stays unknown; never substitute zero or a guessed window. User overrides must be positive and remain subject to the model layer's safety policy. Restore automatic behavior by removing only the corresponding override key; do not copy computed defaults into the configuration.
-
-Edit a threshold in the account's model list or model information page: typing and percentage presets change only the shared draft. Save submits the exact positive integer; Restore automatic explicitly clears the override. Keep the raw input when the backend reports an adjusted effective value or a failure. An unknown save outcome must be confirmed before resubmission. Other account connection, credential and model-declaration edits also use their editor's Save/Cancel draft. A successful configuration reply does not change an in-flight model request; new bindings use it at their next safe refresh boundary.
-
-## Credentials
-
-Native OpenAI accounts offer API and ChatGPT subscription authentication in the same
-create/edit form. New subscription sign-ins use Codex's official browser OAuth flow
-with PKCE and a validated signed workspace identity. Never import the operator's
-Codex credential files. A successful sign-in is still an unsaved
-editor result until the account transaction is confirmed. Cancelling, discarding or
-switching authentication invalidates that editor's pending result.
-
-ChatGPT access, refresh and ID tokens remain in the protected Rust credential store,
-never TOML, Dart, logs or screenshots. The stable installation host ID lives in
-`<home>/data/chatgpt-host.toml`; account registrations remain separate even when emails
-match. Refresh rotation requires strict persistence and shared locking, not a
-process-only credential lease. Use Settings to reconnect the selected registration;
-do not copy tokens or alter a refresh-in-flight marker to repair an uncertain result.
-Subscription authentication only sends credentials to the official OpenAI resource;
-switching back to API requires an API credential, not preservation of OAuth material.
-Authentication and billing intent are independent, and neither login nor the model
-catalog proves remaining quota. Codex accounts query the official usage endpoint
-with their own bearer token and workspace ID. Lists and details show the reported
-plan, quota windows, remaining percentages and reset times; missing limits do not
-mean unlimited usage. Existing SIWC registrations retain their resource and
-credentials until an explicit successful reconnection is saved. Users can also
-manage plan access in ChatGPT usage settings.
-
-Authentication changes coordinate configuration and credential generations. Pending
-recovery keeps a non-secret, independently versioned journal under
-`<home>/data/credential-transactions/`; secret snapshots remain in the system credential
-store. Startup and explicit reload recover only that home's transactions. Shared
-pending markers also block another home's writes and old sessions, so changing
-`ANYWORK_HOME` does not bypass recovery. If recovery is required, preserve the journal,
-credential entries and markers; restore the affected storage or credential service
-and let the owning runtime recover. Never delete these materials or replay a token
-exchange to force a save to appear successful.
-
-Tokens never live in `config.toml`. Saving from Settings clears any inline token and stores it in the system credential store (service `anywork`, account `account:<id>`). Bot App Secrets use the same service with account `bot:<bot-id>` and the Preserve/Replace/Clear transaction; a missing system keyring keeps a process-only lease marked `sessionOnly`. To use an environment variable instead, set `bearer_token_env`; when both exist, the stored credential takes precedence.
-
-During the versioned account migration only, an old `provider:<id>` credential is copied to `account:<id>` and read back before committing configuration. A different existing target credential is a conflict, not permission to overwrite it. Original credential entries are retained, but normal execution never falls back to them. Environment-only references remain environment-only; no blank key is manufactured. Do not delete old credentials or edit migration records as a repair.
-
-Account IDs are stable after creation. Changing the display name does not rekey credentials, routes, catalogs or statistics. Create an account from an account template; its default name follows the template display name, and multiple accounts may use the same template. The model identity in selectors and top-level statistics is `(account_id, configured model_id)`; reasoning effort is a second-level breakdown and sent/reported models remain diagnostics. Unknown historical identities stay unknown.
-
-Leaving the credential field empty during account creation or editing means Preserve, not Clear. A nonempty replacement is an explicit credential change; never manufacture a key or expose a stored secret to fill the editor. Required-credential validation remains in force.
-
-The four built-in Zhipu MCP servers only borrow a usable key from `template = "zhipu-coding-plan"`. With multiple instances, the first usable key in stable account-ID order wins. Ordinary `zhipu` templates and matching endpoint hosts are not credential fallbacks. A missing/blank key does not connect, discover or register callable tools; an explicit builtin disable remains disabled. They use the same generic MCP runtime and published-generation leases as user MCP servers, with no account-specific Thread.
-
-## Model catalog sources
-
-A account catalog either bundles a built-in model list or declares only user models. `additional_models` entries are user-authored and the only entries a user may add or delete; a `Bundled` catalog without an observation still resolves to its built-in list.
-
-A Native account with an empty Explicit catalog may be saved and reloaded before any route references it. Its catalog remains empty and has no online discovery or selectable model; it cannot become the default account or resolve an executable route until a usable model is added. Creating the account and setting it as default are separate operations: a rejected default change keeps the created account identity. Other declarations, overrides and route references must still be valid; deleting the last model referenced by an Explicit route is not allowed by this empty-account rule.
-
-Online discovery is declared per catalog, never per adapter: a catalog that supports it records the discovery transport; no model families are excluded. During startup the runtime queries every instance whose catalog declares discovery, one independent task per instance with its own query identity, timeout and cache file. Explicit account-level model synchronization uses the same discovery and atomic publication path; repeated requests for the same query identity share the in-flight operation. A successful response replaces that instance's observed list as a whole, and a valid empty list is an accepted replacement. A failed query records that instance's typed error and retains its last successful snapshot, or its built-in list on first launch; it does not rewrite saved configuration or reset selections. Catalog status and account-local metadata changes publish through the separate catalog revision.
-
-The management catalog always retains the account's bound built-in definitions alongside its current observed list and user models, deduplicated by exact (account_id, model_id). Online-only members disappear when withdrawn; missing built-in members remain `bundled`. Metadata and parameter observations resolve only inside that account, with explicit online fields ahead of that account's explicit configuration and bound built-in definitions; another account's same model_id never supplies missing values. Snapshots mark every entry's origin (`bundled`, `online`, `manual`) so the UI groups them instead of inferring from model_id differences.
-
-Display names are the exception: an existing manual model's `display_name` takes precedence over an online name, then the account's bound built-in name, then the original model ID. A nonblank name explicitly supplied online is preserved verbatim even when it equals the model ID; only an absent, empty or whitespace-only online name falls back. Declaration presence must remain distinct from decoder-generated defaults, including cached observations. The account editor already supports names on manual models; there is no separate rename setting for built-in or online entries, and no additional setting is needed.
-
-`model_enabled_overrides` maps exact model IDs to explicit `true` or `false`; absence means automatic. Online and manual members are enabled automatically, as are built-ins before any successful observation. Once an observation exists (including a successful empty list or last-success cache), built-ins absent from it are disabled automatically but remain visible in account settings. Users may explicitly enable them with the existing switch; this persists across restarts and source changes without changing online observations or creating manual definitions. Explicit enablement never creates an unknown member or bypasses context, modality, credential or transport admission; actual service availability is still determined by the provider. Client projections retain the backend default when no explicit override exists.
-
-Model queries without a type return this complete catalog. Session and Agent menus request the `text` type: the backend checks text input, text output and a positive resolved context window after account-local resolution. Account settings keep the complete catalog. A saved route that no longer matches the filter remains selected with an explanation; filtering never rewrites routes or replaces request-time validation. Unknown context stays unknown unless an exact-ID declaration supplies it.
-
-Parameter defaults are independent of candidate order. A valid explicit selection takes precedence over a configured default, then the model-declared default, then the first candidate. Online defaults retain their own declaration order: missing fields and HTTP 304 do not promote an old value, explicit null clears it, and a default cannot restore withdrawn candidates. Cache normalization upgrades keep the last successful snapshot while forcing a fresh response body before resuming conditional requests.
-
-The model section offers explicit synchronization, not periodic polling. It preserves existing models and all user overrides on failure, and account configuration, credential changes or deletion prevent stale results from publishing. Deleting a user model requires an expected settings revision, is rejected for non-user entries, and also removes that model_id's enablement, connection and compaction overrides. Supported online prices with explicit currency and token units override only that account route; missing or unsupported prices keep the local route price. Invalid recognized prices reject the observation. A route without a price stays unpriced rather than zero, and a catalog change never recomputes recorded costs.
-
-The Accounts tab reads canonical account and model-domain snapshots through their repositories; it does not poll instances or implicitly synchronize when the tab becomes visible. The read-only `usageQueryRevision` is a non-secret, runtime-owned query identity, not a TOML setting or secret fingerprint.
-
-## Minimal Working Example
-
-Every account needs `name`, `base_url`, and a `catalog` section. The two root Mode routes are required;
-a system child route is optional and, when present, is an explicit override. `effort` is optional and
-must match the model's supported effort candidates.
-
-```toml
-schema_version = 32
-
-[deepseek_web_search]
-enabled = true
-fetch_enabled = true
-
-[models.accounts.deepseek]
-template = "deepseek"
-protocol = "deep_seek"
-name = "DeepSeek"
-authentication = "apiKey"
-base_url = "https://api.deepseek.com"
-bearer_token_env = "DEEPSEEK_API_KEY"
-
-[models.accounts.deepseek.catalog]
-source = "bundled"
-catalog = "deepseek"
-
-[models.routes.explorer]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-[mode_model_routes."mode.simple"]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-[mode_model_routes."mode.task"]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-```
-
-## Safe Editing Workflow
-
-1. Prefer the Settings page; it validates and persists correctly.
-2. For manual edits, copy `config.toml` aside first.
-3. Keep `schema_version` and both built-in Mode routes valid. Any explicit system-child route must reference a currently declared child ID and remain valid; omitted entries inherit without being persisted.
-4. Reference tokens via `bearer_token_env`; never paste raw tokens.
-5. Add accounts from Settings or a template (`deepseek`, `openai`, `zhipu`, ...) rather than hand-writing catalog metadata.
-6. After external edits, use explicit reload and confirm the canonical settings reflect the change. If validation fails, preserve the original settings and report the error; do not restart as a repair step.
-7. Work-mode JSON validation and schema are exposed by the Settings editor and the runtime APIs `validate_thread_mode_definition` and `thread_mode_definition_schema`, not a standalone shell command. External edits require explicit reload; built-in IDs are never valid save targets.
+Keep only current supported formats in this skill. Migration journals, backups,
+databases and credential records are runtime-owned; do not edit or delete them to
+make configuration validation pass. Historical migration details are not setup
+instructions.

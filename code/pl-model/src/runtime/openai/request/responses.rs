@@ -1,6 +1,6 @@
 use pl_protocol::{
     AttachmentModality, ContentPart, MessageContent, MessageRole, ResponsesContextItem, Result,
-    ToolCallKind, ToolCallRecord, ToolSpec,
+    ToolCallKind, ToolCallRecord, ToolCallerMode, ToolSpec,
 };
 use serde::Serialize;
 
@@ -15,12 +15,28 @@ use super::content::{
 use super::protocol_error;
 use super::tool_history::{record_arguments_text, record_custom_input, tool_callers_by_call_id};
 // Provider envelope only: the canonical context remains the producer's original string.
-fn programmatic_result_output(output: String) -> String {
+fn json_object_result_output(output: String) -> String {
     match serde_json::from_str::<serde_json::Value>(&output) {
         Ok(serde_json::Value::Object(_)) => output,
         Ok(value) => serde_json::json!({ "content": value }).to_string(),
         Err(_) => serde_json::json!({ "content": output }).to_string(),
     }
+}
+
+// A direct tool result may be text, a bounded preview, or an error; its author
+// schema describes successful output, not necessarily the model-visible value.
+// Hosted programmatic calling needs a schema, so advertise only the object shape
+// that this wire projection can guarantee.
+fn uses_model_output_schema(allowed_callers: &[ToolCallerMode], has_schema: bool) -> bool {
+    has_schema && allowed_callers.contains(&ToolCallerMode::Programmatic)
+}
+
+fn model_view_output_schema(
+    allowed_callers: &[ToolCallerMode],
+    schema: &Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    uses_model_output_schema(allowed_callers, schema.is_some())
+        .then(|| serde_json::json!({"type": "object", "additionalProperties": true}))
 }
 
 /// 回放 provider 原生 Responses 上下文项时的输入投影。
@@ -175,8 +191,29 @@ impl ResponsesRequestBody {
                     })?;
                     let caller = tool_callers.get(&record.call_id).cloned();
                     let output = message_content_text(&msg.content);
-                    let output = if caller.is_some() {
-                        programmatic_result_output(output)
+                    let has_output_schema = request.tools.iter().any(|tool| match tool {
+                        ToolSpec::Function {
+                            name,
+                            allowed_callers,
+                            output_schema,
+                            ..
+                        }
+                        | ToolSpec::Custom {
+                            name,
+                            allowed_callers,
+                            output_schema,
+                            ..
+                        } => {
+                            name == &record.name
+                                && uses_model_output_schema(
+                                    allowed_callers,
+                                    output_schema.is_some(),
+                                )
+                        }
+                        ToolSpec::ProgrammaticToolCalling | ToolSpec::WebSearch { .. } => false,
+                    });
+                    let output = if caller.is_some() || has_output_schema {
+                        json_object_result_output(output)
                     } else {
                         output
                     };
@@ -446,7 +483,7 @@ impl From<&ToolSpec> for ResponsesTool {
                 description: description.clone(),
                 parameters: input_schema.clone(),
                 allowed_callers: allowed_callers.clone(),
-                output_schema: output_schema.clone(),
+                output_schema: model_view_output_schema(allowed_callers, output_schema),
             },
             ToolSpec::Custom {
                 name,
@@ -459,7 +496,7 @@ impl From<&ToolSpec> for ResponsesTool {
                 description: description.clone(),
                 format: ToolFormatBody::from(format),
                 allowed_callers: allowed_callers.clone(),
-                output_schema: output_schema.clone(),
+                output_schema: model_view_output_schema(allowed_callers, output_schema),
             },
             ToolSpec::ProgrammaticToolCalling => Self::ProgrammaticToolCalling,
             ToolSpec::WebSearch { options } => match options {

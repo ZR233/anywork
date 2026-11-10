@@ -27,6 +27,7 @@ use crate::{
 use super::StudioStore;
 use super::agent_host::ThreadWriteBehindWriter;
 use super::ids::unix_seconds;
+pub(crate) use thread_directory::ThreadMetadataSignal;
 use topics::TopicChannels;
 
 /// Studio 低频产品状态 owner 与事件通道。

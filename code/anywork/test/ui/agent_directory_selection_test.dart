@@ -79,6 +79,9 @@ void main() {
       );
       await container.pump();
       expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(container.read(sidebarSelectedRootThreadIdProvider), 'T');
+      expect(container.read(sidebarThreadViewProvider('T')).selected, isTrue);
+      expect(container.read(sidebarThreadViewProvider('C')).selected, isFalse);
       expect(
         container.read(conversationWorkspaceProvider('C'))?.rootRow.threadId,
         'T',

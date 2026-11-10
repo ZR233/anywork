@@ -1,6 +1,7 @@
 //! An ordered, loopback-only provider wire fixture shared by integration tests and GUI runs.
 
 use std::{
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -4580,8 +4581,13 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
         )
             .into_response(),
         Ok(Reply::Json(body)) => Json(body).into_response(),
+        Err(MatchError::InvalidFunctionOutput) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":{"code":"invalid_value","message":INVALID_FUNCTION_OUTPUT}})),
+        )
+            .into_response(),
         Ok(Reply::WebSocket(_) | Reply::WebSocketScript(_) | Reply::WebSocketHandshake { .. })
-        | Err(()) => (
+        | Err(MatchError::Unexpected) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error":{"code":"fixture_mismatch","message":"unexpected request"}})),
         )
@@ -4681,6 +4687,10 @@ async fn websocket(mut socket: WebSocket, state: AppState) {
                 events.into_iter().map(WebSocketAction::Event).collect()
             }
             Ok(Reply::WebSocketScript(actions)) => actions,
+            Err(MatchError::InvalidFunctionOutput) => {
+                let _ = socket.send(WsMessage::Text(json!({"type":"error","status":400,"error":{"code":"invalid_value","message":INVALID_FUNCTION_OUTPUT}}).to_string().into())).await;
+                return;
+            }
             _ => {
                 let _ = socket.send(WsMessage::Text(json!({"type":"response.failed","response":{"error":{"code":"fixture_mismatch","message":"unexpected request"}}}).to_string().into())).await;
                 return;
@@ -4765,8 +4775,114 @@ fn canonical_script_path(path: &str) -> String {
     path.to_owned()
 }
 
-fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Result<Reply, ()> {
+const INVALID_FUNCTION_OUTPUT: &str = "Invalid function_call_output.output: expected a JSON string because the function declares output_schema.";
+
+#[derive(Debug)]
+enum MatchError {
+    Unexpected,
+    InvalidFunctionOutput,
+}
+
+// The real Responses service treats output_schema as a promise that the function
+// output is a string containing JSON. Only validate calls whose declaration and
+// identity are visible; the fixture does not implement arbitrary JSON Schema.
+fn invalid_schema_function_output(body: &Value, script: &ScriptState) -> bool {
+    let items = body.get("input").and_then(Value::as_array);
+    let declarations = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            items
+                .into_iter()
+                .flatten()
+                .filter(|item| item["type"] == "additional_tools")
+                .filter_map(|item| item.get("tools").and_then(Value::as_array))
+                .flatten(),
+        );
+    let schema_tools: HashSet<&str> = declarations
+        .filter(|tool| {
+            tool["type"] == "function"
+                && tool
+                    .get("output_schema")
+                    .is_some_and(|value| !value.is_null())
+        })
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
+    let Some(items) = items.filter(|_| !schema_tools.is_empty()) else {
+        return false;
+    };
+    let mut calls: HashMap<&str, &str> = items
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .filter_map(|item| Some((item.get("call_id")?.as_str()?, item.get("name")?.as_str()?)))
+        .collect();
+    // WebSocket continuation may send only new outputs and reference the previous
+    // response. Resolve its calls from already-consumed fixture replies.
+    if let Some(previous) = body.get("previous_response_id").and_then(Value::as_str) {
+        for step in &script.steps[..script.cursor] {
+            let events: Vec<&Value> = match &step.reply {
+                Reply::Sse(events) | Reply::WebSocket(events) => events.iter().collect(),
+                Reply::WebSocketScript(actions) => actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        WebSocketAction::Event(event) => Some(event),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            if !events
+                .iter()
+                .any(|event| event["response"]["id"].as_str() == Some(previous))
+            {
+                continue;
+            }
+            for event in events {
+                let item = &event["item"];
+                if item["type"] == "function_call"
+                    && let (Some(id), Some(name)) =
+                        (item["call_id"].as_str(), item["name"].as_str())
+                {
+                    calls.entry(id).or_insert(name);
+                }
+            }
+        }
+    }
+    items.iter().any(|item| {
+        item["type"] == "function_call_output"
+            && item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .and_then(|id| calls.get(id))
+                .is_some_and(|name| schema_tools.contains(name))
+            && item
+                .get("output")
+                .and_then(Value::as_str)
+                .is_none_or(|output| serde_json::from_str::<Value>(output).is_err())
+    })
+}
+
+fn match_step(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Reply, MatchError> {
     let mut script = state.script.lock().expect("fixture state poisoned");
+    if path == "/v1/responses" && invalid_schema_function_output(body, &script) {
+        let mut diagnostic = reject_diagnostic(&script, method, path, body);
+        diagnostic.category = "invalid_function_call_output".into();
+        script.requests.push(RecordedRequest {
+            method: method.to_owned(),
+            path: path.to_owned(),
+            body: body.clone(),
+            accepted: false,
+            diagnostic: Some(diagnostic),
+        });
+        return Err(MatchError::InvalidFunctionOutput);
+    }
     let selected = (script.cursor..script.steps.len())
         .take_while(|&index| index == script.cursor || script.steps[index - 1].optional)
         .find(|&index| {
@@ -4894,7 +5010,7 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
         accepted,
         diagnostic,
     });
-    let index = selected.ok_or(())?;
+    let index = selected.ok_or(MatchError::Unexpected)?;
     let pending = match script.steps[index].request.base() {
         RequestMatch::ToolScrollCompletion { call_ids, .. } => tool_scroll_pending(body, call_ids),
         RequestMatch::ToolImages {

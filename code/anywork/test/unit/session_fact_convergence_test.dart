@@ -16,7 +16,7 @@ import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 
 /// AppGraph/Riverpod 适配契约：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
-/// canonical 事实流收敛**——mode 走目录增量，Thread route 走 Thread 有序流。
+/// canonical 事实流收敛**——mode 走定向元数据观察，Thread route 走 Thread 有序流。
 ///
 /// 这里用 AppGraph/Client owner 与只读 Riverpod adapter，只把
 /// transport 换成 Demo；它不证明 native FRB，但 Demo
@@ -96,7 +96,7 @@ void main() {
   AccountModelView? modelFor(String accountId, String model) =>
       _modelFor(container, accountId, model);
 
-  test('任务模式由目录增量交付，Thread route 由状态帧交付', () async {
+  test('任务模式由定向元数据交付，Thread route 由状态帧交付', () async {
     expect(
       container
           .read(composerDockViewModelProvider(threadId))
@@ -107,10 +107,7 @@ void main() {
       reason: 'demo fixture 的根会话默认是简洁模式',
     );
     final routeRevisionBefore = routeRevision();
-    final directory = graph.client.threadDirectory.observeThreads(
-      DirectoryQuery(workspaceId: 'project-local'),
-      DirectoryWindow(),
-    );
+    final directory = graph.client.threadDirectory.observeThread(threadId);
     try {
       final initial = await directory.state
           .waitFor((state) => state.frame != null)
@@ -127,12 +124,7 @@ void main() {
           .source
           .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
       final updated = await directory.state.waitFor(
-        (state) =>
-            state.frame?.rows.any(
-              (row) =>
-                  row.threadId == threadId && row.mode == ThreadModeId.task,
-            ) ==
-            true,
+        (state) => state.frame?.row?.mode == ThreadModeId.task,
       );
       expect(
         updated.frame!.stamp.revision,

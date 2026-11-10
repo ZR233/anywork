@@ -17961,7 +17961,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       query: dco_decode_bridge_thread_directory_query(arr[0]),
       window: dco_decode_bridge_thread_directory_window(arr[1]),
       stamp: dco_decode_bridge_resource_stamp(arr[2]),
-      rows: dco_decode_list_bridge_session_directory_row(arr[3]),
+      threadIds: dco_decode_list_String(arr[3]),
       nextCursor: dco_decode_opt_String(arr[4]),
     );
   }
@@ -32603,13 +32603,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_query = sse_decode_bridge_thread_directory_query(deserializer);
     var var_window = sse_decode_bridge_thread_directory_window(deserializer);
     var var_stamp = sse_decode_bridge_resource_stamp(deserializer);
-    var var_rows = sse_decode_list_bridge_session_directory_row(deserializer);
+    var var_threadIds = sse_decode_list_String(deserializer);
     var var_nextCursor = sse_decode_opt_String(deserializer);
     return BridgeThreadDirectoryFrame(
       query: var_query,
       window: var_window,
       stamp: var_stamp,
-      rows: var_rows,
+      threadIds: var_threadIds,
       nextCursor: var_nextCursor,
     );
   }
@@ -47172,7 +47172,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_thread_directory_query(self.query, serializer);
     sse_encode_bridge_thread_directory_window(self.window, serializer);
     sse_encode_bridge_resource_stamp(self.stamp, serializer);
-    sse_encode_list_bridge_session_directory_row(self.rows, serializer);
+    sse_encode_list_String(self.threadIds, serializer);
     sse_encode_opt_String(self.nextCursor, serializer);
   }
 
