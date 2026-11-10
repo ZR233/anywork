@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
@@ -11,6 +12,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -1177,6 +1179,204 @@ void main() {
       );
       await tester.pumpWidget(const SizedBox());
       failedResources.release();
+    },
+  );
+
+  testWidgets(
+    'apply_patch direct arguments render fragments and hide duplicate success output',
+    (tester) async {
+      const patch =
+          '*** Begin Patch\n'
+          '*** Update File: lib/a.dart\n'
+          '@@\n'
+          '-旧实现\n'
+          '+新实现\n'
+          '*** End Patch';
+      final item = _tool(
+        'builtin.apply_patch@1',
+        name: 'apply_patch',
+        arguments: patch,
+        extra: const {
+          'state': {'kind': 'succeeded', 'completedAt': 12},
+        },
+        bodies: [
+          _body('tool.arguments', patch),
+          _body('tool.result', '{"changedFiles":["lib/a.dart"]}'),
+        ],
+      );
+      await _show(tester, item);
+      // 折叠行标题继续使用权威 changedFiles，不从补丁猜文件。
+      expect(find.textContaining('a.dart'), findsOneWidget);
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(find.byType(TimelinePatchDiffView), findsOneWidget);
+      expect(find.textContaining('*** Begin Patch'), findsNothing);
+      expect(find.textContaining('changedFiles'), findsNothing);
+      final plainText = tester
+          .widgetList<RichText>(find.byType(RichText))
+          .map((rich) => rich.text.toPlainText())
+          .join('\n');
+      expect(plainText, contains('+ 新实现'));
+      expect(plainText, contains('- 旧实现'));
+      expect(
+        find.descendant(
+          of: find.byType(TimelinePatchDiffView),
+          matching: find.text('lib/a.dart'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'apply_patch failure keeps diagnostics, output and request fragments',
+    (tester) async {
+      const patch =
+          '*** Begin Patch\n*** Delete File: lib/b.dart\n*** End Patch';
+      final item = _tool(
+        'builtin.apply_patch@1',
+        name: 'apply_patch',
+        arguments: patch,
+        extra: const {
+          'state': {
+            'kind': 'failed',
+            'failedAt': 13,
+            'failure': {'kind': 'generic', 'message': '路径不存在'},
+          },
+        },
+        bodies: [
+          _body('tool.arguments', patch),
+          _body('tool.result', 'remove failed'),
+        ],
+      );
+      await _show(tester, item);
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(find.text('路径不存在'), findsOneWidget);
+      expect(find.text('remove failed'), findsOneWidget);
+      expect(find.byType(TimelinePatchDiffView), findsOneWidget);
+      expect(find.text('删除'), findsOneWidget);
+      expect(find.text('lib/b.dart'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'apply_patch declared ranges reuse the renderer and suppress success output',
+    (tester) async {
+      const patch =
+          '*** Begin Patch\n'
+          '*** Update File: lib/a.dart\n'
+          '@@\n'
+          '-旧实现\n'
+          '+新实现\n'
+          '*** End Patch';
+      for (final truncated in [false, true]) {
+        final tool = _tool(
+          'builtin.apply_patch@1',
+          name: 'apply_patch',
+          arguments: patch,
+          extra: const {
+            'state': {'kind': 'succeeded', 'completedAt': 12},
+          },
+          bodies: [
+            _body('tool.arguments', patch),
+            _body('tool.result', '{"changedFiles":["lib/a.dart"]}'),
+          ],
+        );
+        final bytes = utf8.encode(patch);
+        final served = truncated ? bytes.sublist(0, bytes.length - 20) : bytes;
+        final owner = ItemContentOwner(itemId: 'patch-declared-$truncated');
+        final atom = ChatAtom(
+          id: 'patch-declared-$truncated',
+          source: BackgroundResultChatSource(messageId: 'patch-$truncated'),
+          sourceOrder: null,
+          kind: ChatAtomKind.toolCall,
+          delivery: ChatDeliveryKind.independent,
+          lifecycle: const TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: ChatTerminalOutcome.completed,
+          ),
+          turnId: 'patch-turn',
+          payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
+          contents: [
+            ChatAtomContent(
+              role: ChatContentRole.toolArguments,
+              reference: ContentRef(
+                databaseId: 'patch-db',
+                target: BodyContentTarget(owner: owner, key: 'tool.arguments'),
+              ),
+            ),
+            ChatAtomContent(
+              role: ChatContentRole.toolOutput,
+              reference: ContentRef(
+                databaseId: 'patch-db',
+                target: BodyContentTarget(owner: owner, key: 'tool.result'),
+              ),
+            ),
+          ],
+        );
+        final unit = TimelineDisplayUnit(
+          entry: CompletedEntry(
+            recordId: 'patch-declared-$truncated',
+            completionSeq: 1,
+            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
+            mainPresentation: MainPresentation.single,
+            atom: atom,
+          ),
+        );
+        addTearDown(unit.expansion.dispose);
+        final item = ChatItemPresentation.forUnit(unit);
+        final requested = <String>[];
+        await tester.pumpWidget(
+          _host(
+            ChatItemView(
+              key: ValueKey(truncated),
+              item: item,
+              contentRangeBuilder: (id, key, label, reference, witness) {
+                requested.add(key);
+                return TimelineContentRangeConnector(
+                  itemId: id,
+                  contentKey: key,
+                  label: label,
+                  reference: reference,
+                  witness: witness,
+                  readContent: (_, range) async => ContentWindow(
+                    offset: range.offset,
+                    bytes: range.offset == 0
+                        ? served
+                        : bytes.sublist(range.offset),
+                    generation: 'g',
+                    availableThrough: bytes.length,
+                    sealed: true,
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        // 声明范围随展开区挂载，读取与片段渲染都发生在展开之后。
+        await tester.tap(_rowTap);
+        await tester.pumpAndSettle();
+        // 成功时只挂参数声明范围；输出声明不再渲染。
+        expect(requested, [ChatContentRole.toolArguments.name]);
+        expect(find.text('工具输出'), findsNothing);
+        if (truncated) {
+          expect(find.byType(TimelinePatchDiffView), findsNothing);
+          expect(find.text('补丁片段不可用：内容不完整或无法完整解析'), findsOneWidget);
+          expect(find.text('下一段'), findsOneWidget);
+        } else {
+          expect(find.byType(TimelinePatchDiffView), findsOneWidget);
+          final plainText = tester
+              .widgetList<RichText>(find.byType(RichText))
+              .map((rich) => rich.text.toPlainText())
+              .join('\n');
+          expect(plainText, contains('+ 新实现'));
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
     },
   );
 }

@@ -15,6 +15,7 @@ import '../state/timeline_display_unit.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_patch_diff_view.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_reasoning_view.dart';
 import 'timeline_tool_blocks.dart';
@@ -374,11 +375,16 @@ class _ChatItemViewState extends State<ChatItemView> {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
       final declaredContents = item.atom?.contents;
+      final applyPatch = tool.presentationContract == 'builtin.apply_patch@1';
+      // apply_patch 成功不重复呈现原始输出；行标题继续使用权威 changedFiles。
+      final suppressSuccessOutput =
+          applyPatch && tool.statusString == 'succeeded';
       final contents = declaredContents
           ?.where(
             (content) =>
                 content.role == ChatContentRole.toolArguments ||
-                content.role == ChatContentRole.toolOutput,
+                (content.role == ChatContentRole.toolOutput &&
+                    !suppressSuccessOutput),
           )
           .toList();
       final wait = item.atom?.wait ?? tool.wait;
@@ -395,6 +401,11 @@ class _ChatItemViewState extends State<ChatItemView> {
             : [
                 for (final content in contents)
                   TimelineBodyReadIntent(
+                    bodyBuilder:
+                        applyPatch &&
+                            content.role == ChatContentRole.toolArguments
+                        ? timelineApplyPatchWindowBody
+                        : null,
                     child:
                         widget.contentRangeBuilder?.call(
                           item.id,
