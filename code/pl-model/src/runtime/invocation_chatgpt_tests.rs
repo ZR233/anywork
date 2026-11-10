@@ -97,7 +97,10 @@ fn siwc_additional_tools_preserve_declarations_history_and_call_pairing() {
     let schema = json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"],"additionalProperties":false});
     request.tools = vec![
         crate::completion::tool_definition_to_spec(
-            &pl_agent_tool::ToolDefinition::json("lookup", "lookup", schema.clone()).unwrap(),
+            &pl_agent_tool::ToolDefinition::json("lookup", "lookup", schema.clone())
+                .unwrap()
+                .with_output_schema(json!({"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}))
+                .unwrap(),
             crate::completion::ToolCallPolicy::DirectOnly,
         ),
         crate::completion::tool_definition_to_spec(
@@ -155,6 +158,7 @@ fn siwc_additional_tools_preserve_declarations_history_and_call_pairing() {
     // Retain the existing canonical tool-schema ordering, not a new SIWC registry.
     assert_eq!(declarations["tools"][1]["name"], "lookup");
     assert_eq!(declarations["tools"][1]["parameters"], schema);
+    assert!(declarations["tools"][1].get("output_schema").is_none());
     assert_eq!(declarations["tools"][0]["name"], "edit");
     assert_eq!(
         declarations["tools"][0]["format"],
@@ -168,8 +172,10 @@ fn siwc_additional_tools_preserve_declarations_history_and_call_pairing() {
     assert_eq!(encoded["input"][4]["name"], "lookup");
     assert_eq!(encoded["input"][5]["type"], "custom_tool_call_output");
     assert_eq!(encoded["input"][5]["call_id"], "call-edit");
+    assert_eq!(encoded["input"][5]["output"], "edited");
     assert_eq!(encoded["input"][6]["type"], "function_call_output");
     assert_eq!(encoded["input"][6]["call_id"], "call-lookup");
+    assert_eq!(encoded["input"][6]["output"], "found");
     assert_eq!(encoded["store"], false);
     assert_eq!(encoded["stream"], true);
     assert!(
