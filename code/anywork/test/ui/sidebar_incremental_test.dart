@@ -5,7 +5,10 @@ import 'package:anywork/src/features/shell/sidebar/sidebar_views.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -252,6 +255,271 @@ void main() {
     expect(nameRect.width, greaterThan(25));
     expect(tester.getRect(find.text(alias)).width, lessThanOrEqualTo(64));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'hovered row actions follow the pointer without changing selection',
+    (tester) async {
+      final first = _project;
+      const second = StudioProject(
+        id: 'second',
+        name: 'Second project',
+        path: '/second',
+      );
+      final selected = <String>[];
+      Widget projectRow(StudioProject project) => SidebarProjectRow(
+        project: project,
+        selected: false,
+        expanded: false,
+        pinned: false,
+        onToggle: () {},
+        onSelect: () => selected.add(project.id),
+        onNewSession: () {},
+        onAction: (_) {},
+      );
+      await tester.pumpWidget(
+        _host(Column(children: [projectRow(first), projectRow(second)])),
+      );
+      final firstMenu = find.byKey(StudioDriverKeys.projectMenu(first.id));
+      final secondMenu = find.byKey(StudioDriverKeys.projectMenu(second.id));
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer();
+      expect(firstMenu, findsOneWidget);
+      expect(secondMenu, findsOneWidget);
+      expect(
+        tester
+            .widget<Visibility>(
+              find
+                  .ancestor(of: firstMenu, matching: find.byType(Visibility))
+                  .first,
+            )
+            .visible,
+        isFalse,
+      );
+
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(StudioDriverKeys.projectRow(first.id))),
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+      expect(find.text('/project'), findsOneWidget);
+      expect(find.text('/second'), findsNothing);
+      expect(
+        tester
+            .widget<Visibility>(
+              find
+                  .ancestor(of: firstMenu, matching: find.byType(Visibility))
+                  .first,
+            )
+            .visible,
+        isTrue,
+      );
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(StudioDriverKeys.projectRow(second.id))),
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+      expect(find.text('/project'), findsNothing);
+      expect(find.text('/second'), findsOneWidget);
+      expect(
+        tester
+            .widget<Visibility>(
+              find
+                  .ancestor(of: firstMenu, matching: find.byType(Visibility))
+                  .first,
+            )
+            .visible,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<Visibility>(
+              find
+                  .ancestor(of: secondMenu, matching: find.byType(Visibility))
+                  .first,
+            )
+            .visible,
+        isTrue,
+      );
+      expect(selected, isEmpty);
+      await mouse.moveTo(const Offset(290, 400));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pumpAndSettle();
+      expect(find.text('/project'), findsNothing);
+      expect(find.text('/second'), findsNothing);
+      expect(
+        tester
+            .widget<Visibility>(
+              find
+                  .ancestor(of: secondMenu, matching: find.byType(Visibility))
+                  .first,
+            )
+            .visible,
+        isFalse,
+      );
+    },
+  );
+
+  testWidgets('archived row hover keeps its available restore action', (
+    tester,
+  ) async {
+    final actions = <SidebarThreadAction>[];
+    await tester.pumpWidget(
+      _host(
+        SidebarThreadRow(
+          row: _row('archived'),
+          project: _project,
+          selected: false,
+          pinned: false,
+          hostApps: _apps,
+          archived: true,
+          onSelect: () => fail('archived row must not select'),
+          onAction: actions.add,
+        ),
+      ),
+    );
+    final row = find.byKey(StudioDriverKeys.threadRow('archived'));
+    final restore = find.byKey(const ValueKey('thread-restore-archived'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer();
+    expect(restore, findsOneWidget);
+    expect(
+      tester
+          .widget<Visibility>(
+            find.ancestor(of: restore, matching: find.byType(Visibility)).first,
+          )
+          .visible,
+      isFalse,
+    );
+    await mouse.moveTo(tester.getCenter(row));
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(
+      tester
+          .widget<Visibility>(
+            find.ancestor(of: restore, matching: find.byType(Visibility)).first,
+          )
+          .visible,
+      isTrue,
+    );
+    await tester.tap(restore);
+    expect(actions, [SidebarThreadAction.restore]);
+    expect(tester.takeException(), isNull);
+
+    await mouse.moveTo(const Offset(290, 400));
+    await tester.pumpAndSettle();
+    actions.clear();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      _host(
+        SidebarThreadRow(
+          row: _row('archived'),
+          project: _project,
+          selected: false,
+          pinned: false,
+          hostApps: _apps,
+          archived: true,
+          touchMode: true,
+          onSelect: () => fail('archived row must not select'),
+          onAction: actions.add,
+        ),
+      ),
+    );
+    expect(
+      tester
+          .widget<Visibility>(
+            find.ancestor(of: restore, matching: find.byType(Visibility)).first,
+          )
+          .visible,
+      isTrue,
+    );
+    await tester.tap(restore);
+    expect(actions, [SidebarThreadAction.restore]);
+  });
+
+  testWidgets('keyboard traversal activates the row and restores menu focus', (
+    tester,
+  ) async {
+    var selections = 0;
+    var toggles = 0;
+    final nextFocus = FocusNode(debugLabel: 'after-sidebar-row');
+    addTearDown(nextFocus.dispose);
+    await tester.pumpWidget(
+      _host(
+        Column(
+          children: [
+            SidebarProjectRow(
+              project: _project,
+              selected: false,
+              expanded: false,
+              pinned: false,
+              onToggle: () => toggles++,
+              onSelect: () => selections++,
+              onNewSession: () {},
+              onAction: (_) {},
+            ),
+            TextButton(
+              key: const ValueKey('after-sidebar-row'),
+              focusNode: nextFocus,
+              onPressed: () {},
+              child: const Text('After sidebar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final expand = find.byKey(StudioDriverKeys.projectExpand(_project.id));
+    final menuAnchor = tester.widget<MenuAnchor>(
+      find.byKey(StudioDriverKeys.projectMenu(_project.id)),
+    );
+    final more = find.descendant(
+      of: find.byKey(StudioDriverKeys.projectMenu(_project.id)),
+      matching: find.byIcon(Icons.more_horiz),
+    );
+    final moreButton = tester.widget<IconButton>(
+      find.ancestor(of: more, matching: find.byType(IconButton)).first,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(Focus.of(tester.element(expand)).hasPrimaryFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(selections, 1);
+    expect(toggles, 0);
+    for (var i = 0; i < 5 && !moreButton.focusNode!.hasFocus; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+    }
+    expect(moreButton.focusNode!.hasFocus, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(menuAnchor.controller!.isOpen, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(menuAnchor.controller!.isOpen, isFalse);
+    expect(moreButton.focusNode!.hasFocus, isTrue);
+    expect(
+      tester
+          .widget<Visibility>(
+            find.ancestor(of: more, matching: find.byType(Visibility)).first,
+          )
+          .visible,
+      isTrue,
+    );
+    for (var i = 0; i < 5 && !nextFocus.hasPrimaryFocus; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+    }
+    expect(nextFocus.hasPrimaryFocus, isTrue);
+    expect(
+      tester
+          .widget<Visibility>(
+            find.ancestor(of: more, matching: find.byType(Visibility)).first,
+          )
+          .visible,
+      isFalse,
+    );
   });
 
   testWidgets(
