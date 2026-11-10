@@ -40,6 +40,9 @@ category: guides
   冻结身份，不能从当前 Profile、root 模型或供应商别名反推；未知历史保留未知。
 - 会话/成员身份按 design/12 的 typed 四元组（session/agent/parentAgent/thread）判定：
   root/child 只读 `parentAgentId`，执行后端读 binding，不从 ID 前缀或 Native 快照反推。
+- 协作端口与 Native 适配按 [12.3.1](../../../design/12-collaboration.md#1231-协作端口与-native-适配)
+  分工：先核验冻结工具的本次实例资格，再构造可信业务上下文；旧绑定不能按同名成员恢复资格。
+  业务结果保留创建后首消息失败及逐成员关闭部分失败事实，工具输出编码留在适配器。
 
 ## 评价与生命周期
 

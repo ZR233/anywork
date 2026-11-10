@@ -2,11 +2,10 @@
 use super::{
     CloseStorage, EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices,
 };
-use crate::studio::agent_close::{
-    AgentCloseOutcome, AgentCloseResult, AgentWorktreeCleanup, state_error,
-};
+use crate::studio::agent_close::state_error;
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{ThreadHandle, ThreadLifecycle};
+use pl_tool::collaboration::control::{AgentCloseOutcome, AgentCloseResult, AgentWorktreeCleanup};
 use pl_tool::collaboration::thread::{AgentCloseOptions, WorkspaceRelease};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -22,9 +21,10 @@ impl AgentServices {
         owner.ensure_agent_admission_open(&caller)?;
         ensure!(caller != target, "close target must be a strict descendant");
         self.authorize(&caller, &target).await?;
-        let root = self.record(&caller).await?;
+        let root = self.identity(&caller)?;
+        let target_identity = self.identity(&target)?;
         ensure!(
-            root.parent_thread_id.is_none() && root.root_thread_id == caller,
+            root.parent_agent_id.is_none(),
             "close caller must be an active root"
         );
         let target_record = self.record(&target).await?;
@@ -39,11 +39,15 @@ impl AgentServices {
         let mut targets = Vec::new();
         for record in records.values() {
             let path = self.authorize(&caller, &record.id).await?;
-            if path.iter().any(|id| id.as_str() == target) {
+            if path.contains(&target_identity.agent_id) {
                 targets.push((path.len(), record.id.clone()));
             }
         }
         targets.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        let member_ids = targets
+            .iter()
+            .map(|(_, id)| Ok((id.clone(), self.identity(id)?.agent_id)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
         // Generic resource release is always Preserve. Only the close domain below may remove Git.
         let _seals = owner
             .seal_agent_close(&targets, WorkspaceRelease::Preserve)
@@ -183,10 +187,15 @@ impl AgentServices {
             failures.push("child close has unfinished execution or worktree cleanup".into());
         }
         Ok(AgentCloseOutcome {
-            target,
+            target: target_identity.agent_id.to_string(),
             agents: targets
                 .iter()
-                .filter_map(|(_, id)| facts.remove(id))
+                .filter_map(|(_, id)| {
+                    facts.remove(id).map(|mut fact| {
+                        fact.agent_id = member_ids[id].to_string();
+                        fact
+                    })
+                })
                 .collect(),
             error: (!failures.is_empty())
                 .then(|| state_error(&anyhow::anyhow!("{}", failures.join("; ")))),

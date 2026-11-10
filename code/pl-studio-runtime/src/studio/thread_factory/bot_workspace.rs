@@ -690,7 +690,7 @@ mod migration_tests {
             assert!(result.execution_closed);
             assert_eq!(
                 result.worktree_cleanup,
-                crate::studio::agent_close::AgentWorktreeCleanup::NotApplicable
+                pl_tool::collaboration::control::AgentWorktreeCleanup::NotApplicable
             );
             assert!(
                 store

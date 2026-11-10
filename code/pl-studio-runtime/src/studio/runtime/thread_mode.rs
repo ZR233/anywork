@@ -298,7 +298,7 @@ impl StudioRuntime {
                     .context("Thread has no frozen delegation selection")?;
                 registrations.extend(
                     self.require_session(thread_id)?
-                        .agent_control_tools(&profiles, selection)?,
+                        .agent_control_tools_for_thread(thread_id, &thread, &profiles, selection)?,
                 );
                 if self.config_runtime.agent_profiles_snapshot()?.revision != profiles.revision {
                     return Err(pl_core::thread::ThreadError::Cancelled.into());

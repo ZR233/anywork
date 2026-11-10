@@ -31,7 +31,7 @@ impl AgentServices {
             ensure!(
                 parent.native.ready
                     && !state.sealed_agents.contains_key(caller)
-                    && parent.native.parent_id.is_none()
+                    && parent.identity.parent_agent_id.is_none()
                     && parent.native.thread.snapshot().lifecycle == ThreadLifecycle::Open,
                 "only an active parent root may evaluate its direct child"
             );
@@ -52,7 +52,7 @@ impl AgentServices {
         };
         let record = self.record(&request.target).await?;
         ensure!(
-            record.parent_thread_id.as_deref() == Some(caller) && record.root_thread_id == caller,
+            self.direct_child(caller, &request.target)?,
             "evaluate_agent target must be the caller's direct child"
         );
         // A close seal denies writes, not the receipt of an already committed identical write.
@@ -271,7 +271,7 @@ impl SessionRuntime {
                             .state()
                             .entries
                             .get(&root)
-                            .is_some_and(|entry| entry.native.parent_id.is_none()),
+                            .is_some_and(|entry| entry.identity.parent_agent_id.is_none()),
                         "evaluation caller is not an active root"
                     );
                     Ok(())

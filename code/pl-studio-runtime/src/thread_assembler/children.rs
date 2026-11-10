@@ -340,25 +340,30 @@ impl Drop for ChildReservation {
 impl super::SessionRuntime {
     pub(super) fn child_factory(
         &self,
-        context: &pl_core::tool::opaque::CallContext,
+        context: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<ChildFactory, ThreadAssemblyError> {
         let state = self.0.state();
+        let caller = state
+            .by_agent
+            .get(&context.caller)
+            .ok_or(ThreadAssemblyError::Closed)?
+            .clone();
         if state.closing
-            || state.sealed_agents.contains_key(&context.thread_id)
+            || state.sealed_agents.contains_key(&caller)
             || context.cancellation.is_cancelled()
         {
             return Err(ThreadAssemblyError::Closed);
         }
         let parent = state
             .entries
-            .get(&context.thread_id)
+            .get(&caller)
             .filter(|entry| {
                 entry.native.ready
                     && entry.native.thread.snapshot().lifecycle
                         == pl_core::thread::ThreadLifecycle::Open
             })
-            .ok_or_else(|| ThreadAssemblyError::Identity(context.thread_id.clone()))?;
-        if parent.native.parent_id.is_some() {
+            .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
+        if parent.identity.parent_agent_id.is_some() {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         state
@@ -369,27 +374,32 @@ impl super::SessionRuntime {
 
     pub(super) fn reserve_child(
         &self,
-        context: &pl_core::tool::opaque::CallContext,
+        context: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<(ChildFactory, ChildReservation), ThreadAssemblyError> {
         const MAX_TREE_THREADS: usize = 16;
         let mut state = self.0.state();
+        let caller = state
+            .by_agent
+            .get(&context.caller)
+            .ok_or(ThreadAssemblyError::Closed)?
+            .clone();
         if state.closing
-            || state.sealed_agents.contains_key(&context.thread_id)
+            || state.sealed_agents.contains_key(&caller)
             || context.cancellation.is_cancelled()
         {
             return Err(ThreadAssemblyError::Closed);
         }
         let parent = state
             .entries
-            .get(&context.thread_id)
+            .get(&caller)
             .filter(|entry| {
                 entry.native.ready
                     && entry.native.thread.snapshot().lifecycle
                         == pl_core::thread::ThreadLifecycle::Open
             })
-            .ok_or_else(|| ThreadAssemblyError::Identity(context.thread_id.clone()))?;
+            .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
         // Studio's current product policy permits only root agents to create children.
-        if parent.native.parent_id.is_some() {
+        if parent.identity.parent_agent_id.is_some() {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         let factory = state
@@ -397,13 +407,13 @@ impl super::SessionRuntime {
             .clone()
             .ok_or(ThreadAssemblyError::Closed)?;
         let mut occupied = std::collections::BTreeSet::new();
-        occupied.insert(context.thread_id.as_str());
+        occupied.insert(caller.as_str());
         occupied.extend(
             state
                 .entries
                 .iter()
                 .filter(|(_, entry)| {
-                    entry.native.parent_id.as_deref() == Some(context.thread_id.as_str())
+                    super::State::membership_parent(&state.by_agent, entry) == Some(caller.as_str())
                 })
                 .map(|(id, _)| id.as_str()),
         );
@@ -412,7 +422,7 @@ impl super::SessionRuntime {
                 .creating
                 .iter()
                 .filter(|(_, preparation)| {
-                    preparation.parent_id.as_deref() == Some(context.thread_id.as_str())
+                    preparation.parent_id.as_deref() == Some(caller.as_str())
                 })
                 .map(|(id, _)| id.as_str()),
         );
@@ -420,21 +430,22 @@ impl super::SessionRuntime {
             state
                 .preparing_children
                 .iter()
-                .filter(|(_, preparing)| preparing.parent == context.thread_id)
+                .filter(|(_, preparing)| preparing.parent == caller)
                 .map(|(id, _)| id.as_str()),
         );
         occupied.extend(
             state
                 .unpublished_children
                 .iter()
-                .filter(|(_, child)| child.parent == context.thread_id)
+                .filter(|(_, child)| child.parent == caller)
                 .map(|(id, _)| id.as_str()),
         );
         if occupied.len() >= MAX_TREE_THREADS {
             return Err(ThreadAssemblyError::ChildCapacity(MAX_TREE_THREADS));
         }
         let id = crate::studio::new_id("thread");
-        let cancellation = context.cancellation.child_token();
+        // Preparation belongs to the session; a published child must not inherit call cancellation.
+        let cancellation = tokio_util::sync::CancellationToken::new();
         let workspace = super::WorkspacePreparationOwner::default();
         workspace.bind_admission(self, &id, &cancellation)?;
         state.unpublished_children.insert(
@@ -443,7 +454,7 @@ impl super::SessionRuntime {
                 retirement: Default::default(),
                 workspace,
                 disposal: Default::default(),
-                parent: context.thread_id.clone(),
+                parent: caller.clone(),
                 factory: factory.clone(),
                 cleanup: Arc::new(CleanupGate::default()),
             },
@@ -451,7 +462,7 @@ impl super::SessionRuntime {
         state.preparing_children.insert(
             id.clone(),
             PreparingChild {
-                parent: context.thread_id.clone(),
+                parent: caller.clone(),
                 cancellation: cancellation.clone(),
             },
         );

@@ -176,7 +176,7 @@ impl QueryTool {
                 .context("agent caller is missing")?;
             if !matches!(self.kind, Kind::Session) {
                 anyhow::ensure!(
-                    caller.native.parent_id.is_none(),
+                    caller.identity.parent_agent_id.is_none(),
                     "delegation tools are root-only"
                 );
             }
@@ -199,8 +199,16 @@ impl QueryTool {
                 })
             }
             Kind::Session => {
-                let input: SessionInput =
+                let mut input: SessionInput =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let caller = services.identity(&context.thread_id)?;
+                let target = pl_protocol::AgentId::new(&input.target)?;
+                input.target = services
+                    .events
+                    .member_identity(&caller.session_id, &target)
+                    .context("agent session target is outside the caller's session")?
+                    .thread_id
+                    .to_string();
                 let path = services
                     .authorize(&context.thread_id, &input.target)
                     .await?;
@@ -237,6 +245,20 @@ impl QueryTool {
     }
 }
 impl AgentServices {
+    pub(super) fn identity(&self, thread: &str) -> Result<pl_protocol::AgentThreadIdentity> {
+        self.events
+            .agent_execution_identity(thread)
+            .map(|(identity, _, _)| identity)
+            .context("agent directory identity is missing")
+    }
+
+    pub(super) fn direct_child(&self, caller: &str, target: &str) -> Result<bool> {
+        let caller = self.identity(caller)?;
+        let target = self.identity(target)?;
+        Ok(caller.session_id == target.session_id
+            && target.parent_agent_id.as_ref() == Some(&caller.agent_id))
+    }
+
     fn delegation_models(&self) -> super::delegation_models::DelegationModels {
         super::delegation_models::DelegationModels {
             config: self.config.clone(),
@@ -250,6 +272,7 @@ impl AgentServices {
         caller: &str,
         loaded: &std::collections::BTreeSet<String>,
     ) -> Result<Vec<serde_json::Value>> {
+        let caller_identity = self.identity(caller)?;
         let caller = self.record(caller).await?;
         let mut rows = Vec::new();
         // 冷 agent 查询只消费 `catalog.toml` 的目录摘要，不逐个 child 读取 checkpoint。
@@ -259,12 +282,19 @@ impl AgentServices {
             .list_threads_for_root(&caller.root_thread_id)
             .await?
         {
-            if loaded.contains(&record.id) {
+            let identity = self.identity(&record.id)?;
+            if loaded.contains(identity.agent_id.as_str()) {
+                continue;
+            }
+            if identity.session_id != caller_identity.session_id {
                 continue;
             }
             let mut row = super::agents::agent_row(
-                &record.id,
-                record.parent_thread_id.as_deref(),
+                identity.agent_id.as_str(),
+                identity
+                    .parent_agent_id
+                    .as_ref()
+                    .map(pl_protocol::AgentId::as_str),
                 &directory_snapshot(record.status),
             )?;
             row["frozenModel"] = serde_json::to_value(record.frozen_model)?;
@@ -306,7 +336,7 @@ impl AgentServices {
         resources?;
         self.recovery.ensure_thread_execution_access(&record)?;
         anyhow::ensure!(
-            record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
+            self.direct_child(caller, target)? && !record.archived,
             "only an active direct child can be resumed"
         );
         let activated = owner.activate(activation, self.factory.clone()).await;
@@ -342,7 +372,7 @@ impl AgentServices {
             self.recovery.ensure_thread_read_access(&record)?;
             self.recovery.ensure_thread_execution_access(&record)?;
             anyhow::ensure!(
-                record.parent_thread_id.as_deref() == Some(caller) && !record.archived,
+                self.direct_child(caller, target)? && !record.archived,
                 "only the original direct child can consume a local review proof"
             );
             Ok::<_, anyhow::Error>(record)
@@ -379,39 +409,32 @@ impl AgentServices {
         caller: &str,
         target: &str,
     ) -> Result<Vec<pl_protocol::AgentId>> {
-        let caller = self.record(caller).await?;
-        let mut record = self.record(target).await?;
-        let target_root = record.root_thread_id.clone();
-        let mut thread_path = Vec::new();
+        let caller = self.identity(caller)?;
+        let mut member = self.identity(target)?;
+        let mut path = Vec::new();
         loop {
-            if thread_path
-                .iter()
-                .any(|id: &pl_protocol::ThreadId| id.as_str() == record.id)
-            {
+            anyhow::ensure!(
+                member.session_id == caller.session_id,
+                "agent query target belongs to another tree"
+            );
+            if path.contains(&member.agent_id) {
                 bail!("cyclic agent ancestry");
             }
-            thread_path.push(pl_protocol::ThreadId::new(record.id.clone())?);
-            let Some(parent) = record.parent_thread_id else {
+            path.push(member.agent_id.clone());
+            let Some(parent) = member.parent_agent_id else {
                 break;
             };
-            record = self.record(&parent).await?;
+            member = self
+                .events
+                .member_identity(&caller.session_id, &parent)
+                .context("agent parent directory identity is missing")?;
         }
-        validate_scope(
-            &caller.id,
-            &caller.root_thread_id,
-            &target_root,
-            &thread_path,
-        )?;
-        thread_path.reverse();
-        thread_path
-            .into_iter()
-            .map(|thread_id| {
-                self.events
-                    .agent_execution_identity(thread_id.as_str())
-                    .map(|(identity, _, _)| identity.agent_id)
-                    .context("agent directory identity is missing")
-            })
-            .collect()
+        anyhow::ensure!(
+            path.contains(&caller.agent_id),
+            "agent query target is not the caller or its descendant"
+        );
+        path.reverse();
+        Ok(path)
     }
     async fn session_page(
         &self,
@@ -626,21 +649,6 @@ impl SessionRuntime {
             })
             .collect()
     }
-}
-
-fn validate_scope(
-    caller: &str,
-    caller_root: &str,
-    target_root: &str,
-    target_ancestry: &[pl_protocol::ThreadId],
-) -> Result<()> {
-    if caller_root != target_root {
-        bail!("agent query target belongs to another tree");
-    }
-    if !target_ancestry.iter().any(|id| id.as_str() == caller) {
-        bail!("agent query target is not the caller or its descendant");
-    }
-    Ok(())
 }
 
 /// 由 catalog 目录摘要构造只读 snapshot：仅承载 durable lifecycle，不含 Turn/Task 明细。
