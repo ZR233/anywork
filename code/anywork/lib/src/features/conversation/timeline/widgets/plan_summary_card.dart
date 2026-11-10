@@ -40,7 +40,7 @@ class PlanSummaryCard extends StatelessWidget {
             onTap: onToggle,
             borderRadius: radius,
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -70,14 +70,7 @@ class PlanSummaryCard extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          context.l10n.planDetailAwaitingHelp,
-                          style: context.text.bodyMedium?.copyWith(
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 10),
                         Wrap(
                           alignment: WrapAlignment.spaceBetween,
                           spacing: 16,

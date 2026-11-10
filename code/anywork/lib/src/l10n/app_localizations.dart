@@ -4206,24 +4206,6 @@ abstract class AppLocalizations {
   /// **'Reason'**
   String get interactionReasonLabel;
 
-  /// No description provided for @interactionPlanConfirmTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Confirm implementation plan'**
-  String get interactionPlanConfirmTitle;
-
-  /// No description provided for @interactionPlanConfirmSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Approve to continue with this plan, or request changes.'**
-  String get interactionPlanConfirmSubtitle;
-
-  /// No description provided for @interactionPlanReadyTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Implementation plan ready'**
-  String get interactionPlanReadyTitle;
-
   /// No description provided for @interactionPlanAwaitingConfirmation.
   ///
   /// In en, this message translates to:
@@ -4247,42 +4229,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Changes requested'**
   String get planDetailRevisionRequested;
-
-  /// No description provided for @planDetailDraftingHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'You will be asked to confirm when the plan is ready.'**
-  String get planDetailDraftingHelp;
-
-  /// No description provided for @planDetailAwaitingHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'Read the plan, then approve it or request changes.'**
-  String get planDetailAwaitingHelp;
-
-  /// No description provided for @planDetailRevisionHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'Your feedback was submitted. You will be asked to confirm the updated plan.'**
-  String get planDetailRevisionHelp;
-
-  /// No description provided for @planDetailApprovedHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'Approved and available to read at any time.'**
-  String get planDetailApprovedHelp;
-
-  /// No description provided for @planDetailEmptyTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'The plan is being drafted'**
-  String get planDetailEmptyTitle;
-
-  /// No description provided for @planDetailEmptyHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'You can read the full plan here when it is ready.'**
-  String get planDetailEmptyHelp;
 
   /// No description provided for @planDecisionSubmitting.
   ///

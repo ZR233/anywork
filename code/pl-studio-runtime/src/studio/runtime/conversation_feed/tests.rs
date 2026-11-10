@@ -1028,6 +1028,21 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         reopened.reader().close().await?;
 
         env.restart().await?;
+        let saved = env
+            .runtime
+            .store
+            .history(id)
+            .await?
+            .checkpoint()
+            .await?
+            .context("normal shutdown checkpoint")?;
+        assert_eq!(
+            saved.state.lifecycle,
+            pl_core::thread::ThreadLifecycle::Closed,
+            "this journey must restore a normally shut down Core resource"
+        );
+        let directory = env.runtime.read_protocol_thread(id).await?;
+        assert_eq!(directory.status, pl_protocol::ThreadStatus::Idle);
         assert!(
             env.runtime
                 .session_of(id)
@@ -1041,6 +1056,11 @@ async fn pending_plan_is_delivered_live_and_restored_on_hot_and_cold_open() -> R
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
         let mut cold_state = env.runtime.open_conversation_state_feed(id).await?;
         let baseline = state_snapshot(&mut cold_state).await?;
+        assert_eq!(baseline.thread.status, directory.status);
+        let point_in_time = env.runtime.thread_snapshot(id).await?;
+        assert_eq!(point_in_time.thread.status, directory.status);
+        assert_eq!(point_in_time.interactions, vec![pending.clone()]);
+        assert_eq!(point_in_time.business_refs, baseline.business_refs);
         assert!(
             baseline.activity.is_none(),
             "cold read invented execution activity"

@@ -52,8 +52,7 @@ void main() {
       expect(find.text('查看完整计划'), findsOneWidget);
       expect(find.byType(InkWell), findsOneWidget);
       final titleRect = tester.getRect(find.text('完整实施计划'));
-      final helpRect = tester.getRect(find.text('请阅读计划，再批准或提出修改意见。'));
-      expect(helpRect.left, titleRect.left);
+      expect(find.text('请阅读计划，再批准或提出修改意见。'), findsNothing);
       final badgeRect = tester.getRect(
         find
             .ancestor(
@@ -69,7 +68,7 @@ void main() {
       );
       expect(
         tester.getRect(find.byIcon(Icons.expand_more)).right,
-        tester.getRect(find.byType(Card)).right - 16,
+        tester.getRect(find.byType(Card)).right - 12,
       );
 
       // The title, document icon and action all belong to the same hit target.

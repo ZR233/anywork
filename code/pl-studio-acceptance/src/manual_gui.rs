@@ -5078,7 +5078,11 @@ fn run_plan_recovery_scenario(
             )?;
             let at_card = plan_recovery_settled_baseline(status_file)?;
             capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
-            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "first")?;
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "first")?;
+            ensure!(
+                status.success(),
+                "plan-recovery first GUI launcher exited with {status}"
+            );
             at_card
         };
         let after_first = plan_recovery_read_status(status_file)?;
@@ -5125,7 +5129,11 @@ fn run_plan_recovery_scenario(
             )?;
             let at_card = plan_recovery_settled_baseline(status_file)?;
             capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
-            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "restart")?;
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "restart")?;
+            ensure!(
+                status.success(),
+                "plan-recovery restart GUI launcher exited with {status}"
+            );
             fs::write(
                 output.join("plan-recovery-requests-restart.json"),
                 serde_json::to_vec_pretty(&serde_json::json!({
@@ -5182,7 +5190,11 @@ fn run_plan_recovery_scenario(
                 Duration::from_secs(3_600),
             )?;
             capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
-            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "recheck")?;
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "recheck")?;
+            ensure!(
+                status.success(),
+                "plan-recovery recheck GUI launcher exited with {status}"
+            );
             let final_status = plan_recovery_read_status(status_file)?;
             fs::write(
                 output.join("plan-recovery-requests-recheck.json"),
@@ -5337,6 +5349,19 @@ fn configure_isolated_gui_home(command: &mut Command, home: &Path) -> Result<()>
         .env("USERPROFILE", home)
         .env("CARGO_HOME", cargo_home)
         .env("RUSTUP_HOME", rustup_home);
+    #[cfg(target_os = "linux")]
+    {
+        // A synthetic HOME has no desktop user-dirs configuration. Provide the
+        // standard Documents entry instead of reading the operator's XDG config
+        // or making the product fall back to an invented workspace location.
+        let config = home.join(".config");
+        fs::create_dir_all(&config)?;
+        fs::write(
+            config.join("user-dirs.dirs"),
+            "XDG_DOCUMENTS_DIR=\"$HOME/Documents\"\n",
+        )?;
+        command.env("XDG_CONFIG_HOME", config);
+    }
     Ok(())
 }
 
