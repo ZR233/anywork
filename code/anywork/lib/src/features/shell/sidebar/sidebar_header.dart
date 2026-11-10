@@ -297,7 +297,7 @@ class SidebarPageStatus extends StatelessWidget {
               child: Text(context.l10n.sidebarRetry),
             ),
           ),
-        ] else if (showEmpty && !window.loading && window.rows.isEmpty)
+        ] else if (showEmpty && !window.loading && window.threadIds.isEmpty)
           Padding(
             padding: const EdgeInsets.only(left: 22, top: 6, bottom: 6),
             child: Text(

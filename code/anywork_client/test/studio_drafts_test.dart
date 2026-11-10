@@ -35,6 +35,7 @@ final class _DraftTransport extends AccountsTestTransport
   Object? standalonePrepareFailure;
   Completer<void>? openProjectEntered;
   Completer<StudioProject>? openProjectReply;
+  Completer<StudioProject>? openRemoteProjectReply;
   Completer<void>? activateProjectEntered;
   Completer<void>? activateProjectGate;
   final Map<ProductTopic, StreamController<ProductTopicFrame>>
@@ -149,6 +150,13 @@ final class _DraftTransport extends AccountsTestTransport
           UnsupportedError('Unscripted project open'),
         );
   }
+
+  @override
+  Future<StudioProject> openRemoteProject(String alias, String path) =>
+      openRemoteProjectReply?.future ??
+      Future<StudioProject>.error(
+        UnsupportedError('Unscripted remote project open'),
+      );
 
   @override
   Future<ProjectDirectoryState> prepareStandaloneWorkspace() {
@@ -1693,6 +1701,134 @@ void main() {
       await _close(client, transport);
     },
   );
+
+  test(
+    'remote project default root selection returns success after committing',
+    () async {
+      const remote = StudioProject(
+        id: 'remote-project',
+        name: 'Remote',
+        path: '/remote',
+        sshAlias: 'remote-alias',
+      );
+      final transport = _DraftTransport()
+        ..directoryThreads.clear()
+        ..seedThread(
+          SessionDirectoryRow(
+            sessionId: 'remote-root',
+            agentId: 'remote-root',
+            threadId: 'remote-root',
+            workspaceId: remote.id,
+            title: 'Remote root',
+            mode: ThreadModeId.simple,
+            delegationMode: DelegationMode.profile,
+            delegationPreference: DelegationPreference.balanced,
+            updatedAt: DateTime.utc(2026),
+            workspacePath: remote.path,
+          ),
+        )
+        ..openRemoteProjectReply = (Completer<StudioProject>()
+          ..complete(remote));
+      final client = await _client(transport);
+
+      final opened = await client.directoryCommands.openRemoteProject(
+        'remote-alias',
+        remote.path,
+      );
+
+      expect(opened, isTrue);
+      expect(client.selection.state.selectedProjectId, remote.id);
+      expect(client.selection.state.selectedThreadId, 'remote-root');
+      expect(transport.openedDirectoryQueries, [
+        const DirectoryQuery(workspaceId: 'remote-project'),
+      ]);
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'remote project with no root still returns success after project selection',
+    () async {
+      const remote = StudioProject(
+        id: 'empty-remote',
+        name: 'Empty remote',
+        path: '/empty-remote',
+        sshAlias: 'remote-alias',
+      );
+      final transport = _DraftTransport()
+        ..directoryThreads.clear()
+        ..openRemoteProjectReply = (Completer<StudioProject>()
+          ..complete(remote));
+      final client = await _client(transport);
+
+      final opened = await client.directoryCommands.openRemoteProject(
+        'remote-alias',
+        remote.path,
+      );
+
+      expect(opened, isTrue);
+      expect(client.selection.state.selectedProjectId, remote.id);
+      expect(client.selection.state.selectedThreadId, isNull);
+      await _close(client, transport);
+    },
+  );
+
+  test('late remote metadata is superseded and reports false without overriding selection', () async {
+    const other = StudioProject(id: 'other', name: 'Other', path: '/other');
+    const remote = StudioProject(
+      id: 'project',
+      name: 'Project',
+      path: '/project',
+      sshAlias: 'remote-alias',
+    );
+    final transport = _DraftTransport()
+      ..directoryThreads.clear()
+      ..seedThread(_row('a-first'))
+      ..seedThread(_row('a-second'))
+      ..seedThread(
+        SessionDirectoryRow(
+          sessionId: 'b-root',
+          agentId: 'b-root',
+          threadId: 'b-root',
+          workspaceId: other.id,
+          title: 'Other',
+          mode: ThreadModeId.simple,
+          delegationMode: DelegationMode.profile,
+          delegationPreference: DelegationPreference.balanced,
+          updatedAt: DateTime.utc(2026),
+          workspacePath: other.path,
+        ),
+      )
+      ..openRemoteProjectReply = (Completer<StudioProject>()..complete(remote))
+      ..metadataOpenGates['a-first'] = Completer<void>();
+    final client = await _client(transport);
+    client.project.applyProjectDirectory(
+      ProjectDirectoryState(values: [_project, other], revision: 2),
+    );
+    final metadataReadsBeforeNavigation =
+        transport.openedMetadataThreadIds.length;
+
+    final openingFirstProject = client.directoryCommands.openRemoteProject(
+      'remote-alias',
+      remote.path,
+    );
+    await transport.metadataOpenStarted('a-first');
+    final selectingOtherProject = client.directoryCommands.selectProject(
+      other.id,
+    );
+    transport.metadataOpenGates['a-first']!.complete();
+    final remoteOpened = await openingFirstProject;
+    await selectingOtherProject;
+
+    expect(remoteOpened, isFalse);
+    expect(client.selection.state.selectedProjectId, other.id);
+    expect(client.selection.state.selectedThreadId, 'b-root');
+    expect(
+      transport.openedMetadataThreadIds.skip(metadataReadsBeforeNavigation),
+      ['a-first', 'b-root'],
+    );
+    await _close(client, transport);
+  });
 
   test('queued standalone navigation clears preparation when direct selection supersedes it', () async {
     final transport = _DraftTransport()

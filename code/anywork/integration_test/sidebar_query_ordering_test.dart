@@ -18,10 +18,8 @@ void main() {
     final feed = _DirectoryFeed();
     final store = ThreadDirectoryStore(feed: feed);
     var changes = 0;
-    final owner = SidebarDirectoryOwner(
-      observeThreads: store.observeThreads,
-      onChanged: () => changes++,
-    );
+    final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
+    owner.addListener(() => changes++);
     addTearDown(() async {
       owner.dispose();
       await store.close();
@@ -66,12 +64,12 @@ void main() {
     );
     secondA.emit(
       _frame(secondARequest, [
-        _thread('current-a', 'Current A', 2026),
+        _thread('current-a', 'current-a', 2026),
       ], revision: 3),
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.rows.singleOrNull?.title == 'Current A',
+      () => owner.windows[_projectId]?.threadIds.singleOrNull == 'current-a',
       'second query A frame reaches production owner',
     );
 
@@ -86,7 +84,7 @@ void main() {
       () => firstA.closeCalled,
       'retired A close converges after its in-flight next',
     );
-    expect(owner.windows[_projectId]!.rows.single.title, 'Current A');
+    expect(owner.windows[_projectId]!.threadIds.single, 'current-a');
     expect(owner.windows[_projectId]!.error, isNull);
     expect(changes, greaterThan(0));
 
@@ -102,10 +100,7 @@ void main() {
   ) async {
     final feed = _DirectoryFeed();
     final store = ThreadDirectoryStore(feed: feed);
-    final owner = SidebarDirectoryOwner(
-      observeThreads: store.observeThreads,
-      onChanged: () {},
-    );
+    final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
     addTearDown(() async {
       owner.dispose();
       await store.close();
@@ -133,7 +128,7 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.rows.length == 20,
+      () => owner.windows[_projectId]?.threadIds.length == 20,
       'initial 20-row frame',
     );
 
@@ -158,7 +153,7 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.rows.length == 40,
+      () => owner.windows[_projectId]?.threadIds.length == 40,
       'expanded 40-row frame',
     );
 
@@ -184,10 +179,10 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => owner.windows[_projectId]?.rows.firstOrNull?.title == 'refreshed-0',
+      () => owner.windows[_projectId]?.threadIds.firstOrNull == 'refreshed-0',
       'refreshed expanded frame',
     );
-    expect(owner.windows[_projectId]!.rows, hasLength(40));
+    expect(owner.windows[_projectId]!.threadIds, hasLength(40));
 
     owner.dispose();
     final report = await store.close();
@@ -202,10 +197,7 @@ void main() {
   ) async {
     final feed = _DirectoryFeed();
     final store = ThreadDirectoryStore(feed: feed);
-    final owner = SidebarDirectoryOwner(
-      observeThreads: store.observeThreads,
-      onChanged: () {},
-    );
+    final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
     addTearDown(() async {
       owner.dispose();
       await store.close();
@@ -262,14 +254,8 @@ void main() {
           owner.pinnedWindows[_projectId]?.loaded == true,
       'complete ordinary and pinned frames',
     );
-    expect(owner.windows[_projectId]!.rows.map((row) => row.threadId), [
-      'ordinary-b',
-      'ordinary-a',
-    ]);
-    expect(owner.pinnedWindows[_projectId]!.rows.map((row) => row.threadId), [
-      'pin-b',
-      'pin-a',
-    ]);
+    expect(owner.windows[_projectId]!.threadIds, ['ordinary-b', 'ordinary-a']);
+    expect(owner.pinnedWindows[_projectId]!.threadIds, ['pin-b', 'pin-a']);
 
     owner.more(_projectId);
     await _pumpUntil(
@@ -296,14 +282,10 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () =>
-          owner.windows[_projectId]?.rows.firstOrNull?.threadId == 'ordinary-c',
+      () => owner.windows[_projectId]?.threadIds.firstOrNull == 'ordinary-c',
       'expanded ordinary frame',
     );
-    expect(owner.pinnedWindows[_projectId]!.rows.map((row) => row.threadId), [
-      'pin-b',
-      'pin-a',
-    ]);
+    expect(owner.pinnedWindows[_projectId]!.threadIds, ['pin-b', 'pin-a']);
     expect(pinned.closeRequested, isFalse);
 
     owner.configure(
@@ -345,10 +327,8 @@ void main() {
     await _pumpUntil(
       tester,
       () =>
-          owner.windows[_projectId]?.rows.singleOrNull?.threadId ==
-              'ordinary-d' &&
-          owner.pinnedWindows[_projectId]?.rows.singleOrNull?.threadId ==
-              'pin-c',
+          owner.windows[_projectId]?.threadIds.singleOrNull == 'ordinary-d' &&
+          owner.pinnedWindows[_projectId]?.threadIds.singleOrNull == 'pin-c',
       'replacement frames',
     );
 
@@ -392,7 +372,7 @@ ThreadDirectoryFrame _frame(
     ownerEpoch: 'sidebar-owner-test',
     revision: revision,
   ),
-  rows: rows,
+  threadIds: rows.map((row) => row.threadId).toList(),
   nextCursor: nextCursor,
 );
 

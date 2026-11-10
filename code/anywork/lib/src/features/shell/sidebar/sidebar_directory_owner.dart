@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/foundation.dart';
 
 import 'sidebar_models.dart';
 
@@ -35,22 +36,14 @@ final class SidebarDirectoryCloseFailure {
 ///
 /// Frames are projected whole. This owner never merges pages, derives query
 /// membership, sorts domain rows, or interprets metadata changes.
-final class SidebarDirectoryOwner {
-  SidebarDirectoryOwner({
-    required this.observeThreads,
-    required this.onChanged,
-    this.onCloseError,
-  });
+final class SidebarDirectoryOwner extends ChangeNotifier {
+  SidebarDirectoryOwner({required this.observeThreads, this.onCloseError});
 
   final SidebarThreadsObserve observeThreads;
-  final void Function() onChanged;
   final void Function(SidebarDirectoryCloseFailure failure)? onCloseError;
   final _ordinaryEntries = <String, _SidebarDirectoryEntry>{};
   final _pinnedEntries = <String, _SidebarDirectoryEntry>{};
-  SidebarQuerySelection _selection = SidebarQuerySelection();
   bool _disposed = false;
-
-  SidebarQuerySelection get selection => _selection;
 
   void configure(
     List<StudioProject> projects,
@@ -58,7 +51,6 @@ final class SidebarDirectoryOwner {
     Iterable<String> pinnedThreadIds = const [],
   }) {
     if (_disposed) return;
-    _selection = selection;
     final pinnedIds = List<String>.of(pinnedThreadIds);
     final projectIds = {for (final project in projects) project.id};
     final visibleIds = {
@@ -198,7 +190,7 @@ final class SidebarDirectoryOwner {
     final state = entry.resource.state.value;
     final frame = state.frame;
     return SidebarWindow(
-      rows: frame?.rows ?? const [],
+      threadIds: frame?.threadIds ?? const [],
       loading: state.isLoading,
       error: state.error?.toString(),
       hasMore: paged && frame?.nextCursor != null,
@@ -258,9 +250,10 @@ final class SidebarDirectoryOwner {
   }
 
   void _publish() {
-    if (!_disposed) onChanged();
+    if (!_disposed) notifyListeners();
   }
 
+  @override
   void dispose() {
     if (_disposed) return;
     _disposed = true;
@@ -272,6 +265,7 @@ final class SidebarDirectoryOwner {
     }
     _ordinaryEntries.clear();
     _pinnedEntries.clear();
+    super.dispose();
   }
 }
 

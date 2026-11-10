@@ -75,41 +75,27 @@ final List<SessionDirectoryRow> _localThreads = List.unmodifiable([
 ]);
 
 final SidebarData sidebarPreviewData = SidebarData(
-  projects: sidebarPreviewProjects,
-  windows: {
-    'project-local': SidebarWindow(
-      rows: _localThreads,
-      loaded: true,
-      hasMore: true,
-    ),
-    'project-ssh': SidebarWindow(
-      rows: [
-        sidebarPreviewThread(
-          id: 'thread-ssh',
-          title: '远端 GTK 环境检查',
-          workspaceId: 'project-ssh',
-          status: ThreadStatusView.waitingTool,
-        ),
-      ],
-      loaded: true,
-    ),
-    'standalone': SidebarWindow(
-      rows: [
-        sidebarPreviewThread(
-          id: 'thread-standalone',
-          title: '查询济南今日天气',
-          workspaceId: 'standalone',
-        ),
-      ],
-      loaded: true,
-    ),
-  },
+  projectIds: sidebarPreviewProjects.map((project) => project.id).toList(),
+  standaloneProjectId: 'standalone',
   selectedProjectId: 'project-local',
-  selectedThreadId: 'thread-active',
   pinnedProjectIds: const {'project-ssh'},
-  pinnedThreadIds: const {'thread-queued'},
   hasUpdate: true,
 );
+
+final List<SessionDirectoryRow> sidebarPreviewThreads = List.unmodifiable([
+  ..._localThreads,
+  sidebarPreviewThread(
+    id: 'thread-ssh',
+    title: '远端 GTK 环境检查',
+    workspaceId: 'project-ssh',
+    status: ThreadStatusView.waitingTool,
+  ),
+  sidebarPreviewThread(
+    id: 'thread-standalone',
+    title: '查询济南今日天气',
+    workspaceId: 'standalone',
+  ),
+]);
 
 const SidebarHostApps sidebarPreviewHostApps = SidebarHostApps(
   vsCode: true,

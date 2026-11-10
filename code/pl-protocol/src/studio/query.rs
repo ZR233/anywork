@@ -74,7 +74,7 @@ pub struct ThreadDirectoryFrame {
     pub query: ThreadDirectoryQuery,
     pub window: ThreadDirectoryWindow,
     pub stamp: super::ResourceStamp,
-    pub rows: Vec<crate::SessionDirectoryRow>,
+    pub thread_ids: Vec<String>,
     pub next_cursor: Option<String>,
 }
 

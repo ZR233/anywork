@@ -56,7 +56,7 @@ pub(crate) fn directory_frame(value: p::ThreadDirectoryFrame) -> BridgeThreadDir
             limit: value.window.limit,
         },
         stamp: stamp(value.stamp),
-        rows: value.rows.into_iter().map(bridge_session_row).collect(),
+        thread_ids: value.thread_ids,
         next_cursor: value.next_cursor,
     }
 }

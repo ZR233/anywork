@@ -12,6 +12,8 @@ use pl_protocol::studio::{
 };
 use pl_protocol::{SessionDirectoryRow, ThreadStatus};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex, Weak};
+use tokio::sync::watch;
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -76,6 +78,37 @@ pub(super) struct ThreadDirectoryIndex {
     explicitly_closed: HashSet<String>,
     deleted: HashSet<String>,
     deleted_sessions: HashSet<String>,
+    metadata_signals: HashMap<String, watch::Sender<()>>,
+}
+
+/// A demand-scoped wakeup registration, not a metadata/version source.
+pub(crate) struct ThreadMetadataSignal {
+    receiver: Option<watch::Receiver<()>>,
+    index: Weak<Mutex<ThreadDirectoryIndex>>,
+    thread_id: String,
+}
+
+impl ThreadMetadataSignal {
+    pub(crate) fn receiver(&mut self) -> &mut watch::Receiver<()> {
+        self.receiver.as_mut().expect("live metadata registration")
+    }
+}
+
+impl Drop for ThreadMetadataSignal {
+    fn drop(&mut self) {
+        // Remove the receiver before checking the last demand under the same lock as registration.
+        self.receiver.take();
+        if let Some(index) = self.index.upgrade() {
+            let mut index = index.lock().expect("thread index lock poisoned");
+            if index
+                .metadata_signals
+                .get(&self.thread_id)
+                .is_some_and(|sender| sender.receiver_count() == 0)
+            {
+                index.metadata_signals.remove(&self.thread_id);
+            }
+        }
+    }
 }
 
 impl ThreadDirectoryIndex {
@@ -91,6 +124,7 @@ impl ThreadDirectoryIndex {
             explicitly_closed: HashSet::new(),
             deleted: HashSet::new(),
             deleted_sessions: HashSet::new(),
+            metadata_signals: HashMap::new(),
         };
         for session in sessions {
             let key = (session.directory_sort_time(), session.session_id.clone());
@@ -115,7 +149,15 @@ impl ThreadDirectoryIndex {
             return;
         }
         let key = (session.directory_sort_time(), session.session_id.clone());
+        let mut changed_members = Vec::new();
         if let Some(previous) = self.sessions.get_mut(&session.session_id) {
+            for agent in previous.agents.values() {
+                if self.metadata_signals.contains_key(&agent.thread_id)
+                    && row_projection(&previous.session, agent) != row_projection(&session, agent)
+                {
+                    changed_members.push(agent.thread_id.clone());
+                }
+            }
             self.order.remove(&(
                 previous.session.directory_sort_time(),
                 session.session_id.clone(),
@@ -128,15 +170,26 @@ impl ThreadDirectoryIndex {
             );
         }
         self.order.insert(key);
+        for id in changed_members {
+            self.metadata_signals[&id].send_replace(());
+        }
     }
 
     fn insert_agent(&mut self, agent: AgentDirectoryRecord) -> Option<()> {
         if self.deleted.contains(&agent.thread_id) {
             return None;
         }
-        self.sessions
-            .get_mut(&agent.session_id)?
-            .insert_agent(agent);
+        let entry = self.sessions.get_mut(&agent.session_id)?;
+        let changed = self.metadata_signals.contains_key(&agent.thread_id)
+            && entry
+                .agent_by_thread(&agent.thread_id)
+                .map(|previous| row_projection(&entry.session, previous))
+                != Some(row_projection(&entry.session, &agent));
+        let thread_id = agent.thread_id.clone();
+        entry.insert_agent(agent);
+        if changed {
+            self.metadata_signals[&thread_id].send_replace(());
+        }
         Some(())
     }
 
@@ -148,6 +201,9 @@ impl ThreadDirectoryIndex {
             && let Some(agent) = entry.agents.remove(agent_id)
         {
             entry.agents_by_thread.remove(&agent.thread_id);
+            if let Some(signal) = self.metadata_signals.get(&agent.thread_id) {
+                signal.send_replace(());
+            }
         }
         self.explicitly_closed.remove(agent_id);
     }
@@ -161,6 +217,9 @@ impl ThreadDirectoryIndex {
                         agent.session_id.clone(),
                     ));
                     for member in entry.agents.values() {
+                        if let Some(signal) = self.metadata_signals.get(&member.thread_id) {
+                            signal.send_replace(());
+                        }
                         self.explicitly_closed.remove(&member.agent_id);
                         self.deleted.insert(member.thread_id.clone());
                     }
@@ -362,11 +421,28 @@ struct DirectoryReadMetrics {
     materialized: usize,
 }
 
+#[derive(Debug)]
 struct DirectoryRead {
-    frame: ThreadDirectoryFrame,
+    query: ThreadDirectoryQuery,
+    window: ThreadDirectoryWindow,
+    stamp: ResourceStamp,
+    rows: Vec<SessionDirectoryRow>,
+    next_cursor: Option<String>,
     updated_at: i64,
     #[cfg(test)]
     metrics: DirectoryReadMetrics,
+}
+
+impl DirectoryRead {
+    fn into_frame(self) -> ThreadDirectoryFrame {
+        ThreadDirectoryFrame {
+            query: self.query,
+            window: self.window,
+            stamp: self.stamp,
+            thread_ids: self.rows.into_iter().map(|row| row.thread_id).collect(),
+            next_cursor: self.next_cursor,
+        }
+    }
 }
 
 fn rebase_command_session(
@@ -426,6 +502,28 @@ fn rebase_command_agent(
 }
 
 impl ProductEventBus {
+    pub(crate) fn subscribe_thread_metadata(&self, thread_id: &str) -> ThreadMetadataSignal {
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let receiver = index
+            .metadata_signals
+            .entry(thread_id.to_owned())
+            .or_insert_with(|| watch::channel(()).0)
+            .subscribe();
+        ThreadMetadataSignal {
+            receiver: Some(receiver),
+            index: Arc::downgrade(&self.thread_index),
+            thread_id: thread_id.to_owned(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn metadata_signal_count(&self) -> usize {
+        self.thread_index.lock().unwrap().metadata_signals.len()
+    }
+
     pub(in crate::studio) async fn record_attachments(
         &self,
         records: Vec<crate::studio::AttachmentRecord>,
@@ -454,9 +552,11 @@ impl ProductEventBus {
         window: &ThreadDirectoryWindow,
         owner_epoch: &str,
     ) -> Result<ThreadDirectoryFrame> {
-        let read = self.read_threads_window_inner(query, window, owner_epoch)?;
-        Self::check_frame_size(&read.frame)?;
-        Ok(read.frame)
+        let frame = self
+            .read_threads_window_inner(query, window, owner_epoch)?
+            .into_frame();
+        Self::check_frame_size(&frame)?;
+        Ok(frame)
     }
 
     pub fn read_thread_metadata(
@@ -520,17 +620,15 @@ impl ProductEventBus {
             "read thread directory window"
         );
         Ok(DirectoryRead {
-            frame: ThreadDirectoryFrame {
-                query,
-                window: window.clone(),
-                stamp: ResourceStamp {
-                    resource_key: THREAD_DIRECTORY_RESOURCE_KEY.into(),
-                    owner_epoch: owner_epoch.into(),
-                    revision,
-                },
-                rows,
-                next_cursor,
+            query,
+            window: window.clone(),
+            stamp: ResourceStamp {
+                resource_key: THREAD_DIRECTORY_RESOURCE_KEY.into(),
+                owner_epoch: owner_epoch.into(),
+                revision,
             },
+            rows,
+            next_cursor,
             updated_at,
             #[cfg(test)]
             metrics,
@@ -573,19 +671,20 @@ impl ProductEventBus {
             },
             "",
         )?;
-        Self::check_frame_size(&read.frame)?;
         #[cfg(test)]
         tests::pause(&self.directory_test_pauses.page_captured).await;
-        Ok(StudioThreadDirectoryPage {
+        let page = StudioThreadDirectoryPage {
             state: pl_protocol::ObservedResource::ready(
-                read.frame.stamp.revision,
+                read.stamp.revision,
                 read.updated_at,
                 StudioThreadDirectoryPageData {
-                    rows: read.frame.rows,
-                    next_cursor: read.frame.next_cursor,
+                    rows: read.rows,
+                    next_cursor: read.next_cursor,
                 },
             ),
-        })
+        };
+        Self::check_frame_size(&page)?;
+        Ok(page)
     }
 
     /// Legacy one-shot page entry; it uses the same current RAM owner as observations.
@@ -652,7 +751,10 @@ impl ProductEventBus {
             Self::index_insert_row(index, row.clone());
         }
         for id in &removed {
-            index.remove_agent(id);
+            if let Some(agent) = index.agent_by_thread(id) {
+                let agent_id = agent.agent_id.clone();
+                index.remove_agent(&agent_id);
+            }
         }
         for row in archived {
             Self::index_insert_row(index, row);

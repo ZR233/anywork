@@ -26,7 +26,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         await _api.activateProject(project.id);
       }
       if (!_ownsNavigation(intent)) return;
-      await _selectProjectDefault(project.id);
+      await _selectProjectDefault(project.id, intent);
     });
   }
 
@@ -49,7 +49,11 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
           await _api.activateProject(project.id);
         }
         if (!_ownsNavigation(intent)) return false;
-        await _selectProjectDefault(project.id);
+        final selectedByIntent = await _selectProjectDefault(
+          project.id,
+          intent,
+        );
+        if (!selectedByIntent) return false;
         final selected = project;
         return selected.id == project.id &&
             selected.sshAlias == alias &&
@@ -72,7 +76,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         await _api.activateProject(workspaceId);
       }
       if (!_ownsNavigation(intent)) return;
-      await _selectProjectDefault(workspaceId);
+      await _selectProjectDefault(workspaceId, intent);
     });
   }
 
@@ -494,24 +498,31 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     });
   }
 
-  Future<void> _selectProjectDefault(String workspaceId) async {
+  Future<bool> _selectProjectDefault(String workspaceId, int intent) async {
+    if (!_ownsNavigation(intent)) return false;
     final frame = await _readThreads(
       DirectoryQuery(workspaceId: workspaceId),
       DirectoryWindow(),
     );
-    final threadId = frame.rows
-        .where(
-          (row) =>
-              row.isRootRow &&
-              row.workspaceId == workspaceId &&
-              _accessBlocker(
-                    workspaceId: row.workspaceId,
-                    threadId: row.threadId,
-                  ) ==
-                  null,
-        )
-        .firstOrNull
-        ?.threadId;
+    if (!_ownsNavigation(intent)) return false;
+    String? threadId;
+    for (final candidateId in frame.threadIds) {
+      if (!_ownsNavigation(intent)) return false;
+      final row = await _readThread(candidateId);
+      if (!_ownsNavigation(intent)) return false;
+      if (row != null &&
+          row.isRootRow &&
+          row.workspaceId == workspaceId &&
+          _accessBlocker(
+                workspaceId: row.workspaceId,
+                threadId: row.threadId,
+              ) ==
+              null) {
+        threadId = candidateId;
+        break;
+      }
+    }
+    if (!_ownsNavigation(intent)) return false;
     if (threadId == null) {
       _client.selection.selectProject(workspaceId);
     } else {
@@ -520,6 +531,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         threadId: threadId,
       );
     }
+    return true;
   }
 
   List<StudioAgentView> _sessionMembers(String sessionId) =>

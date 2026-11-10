@@ -130,7 +130,6 @@ async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -
         events.read_threads_window_inner(&ThreadDirectoryQuery::default(), &window, "owner-a")?;
     assert_eq!(
         first
-            .frame
             .rows
             .iter()
             .map(|row| row.thread_id.as_str())
@@ -142,7 +141,7 @@ async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -
     let second = query(
         &events,
         &ThreadDirectoryQuery::default(),
-        first.frame.next_cursor,
+        first.next_cursor,
         2,
     )?;
     assert_eq!(
@@ -234,11 +233,24 @@ async fn invalid_window_cursor_and_oversized_frame_are_typed_failures() -> Resul
         vec![project("p1", "Project", "/workspace/project")],
     )
     .await?;
-    let error = query(&events, &ThreadDirectoryQuery::default(), None, 1)
-        .expect_err("oversized frame must fail");
-    let error = error.downcast_ref::<StudioError>().unwrap();
-    assert_eq!(error.code, StudioErrorCode::Overloaded);
-    assert!(!error.retryable);
+    // Titles are not part of the structural delivery budget.
+    let structure = events.read_threads_window(
+        &ThreadDirectoryQuery::default(),
+        &ThreadDirectoryWindow {
+            before: None,
+            limit: 1,
+        },
+        "owner-test",
+    )?;
+    assert_eq!(structure.thread_ids, ["large"]);
+    let error = events
+        .query_threads(&ThreadDirectoryQuery::default(), None, 1)
+        .await
+        .expect_err("oversized one-shot row page must fail");
+    assert_eq!(
+        error.downcast_ref::<StudioError>().unwrap().code,
+        StudioErrorCode::Overloaded
+    );
     let error = events
         .read_thread_metadata("large", "owner-test")
         .expect_err("oversized metadata frame must fail");

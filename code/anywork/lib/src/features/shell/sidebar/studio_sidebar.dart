@@ -26,11 +26,9 @@ class StudioSidebar extends StatefulWidget {
   const StudioSidebar({
     super.key,
     required this.data,
-    required this.hostApps,
     required this.onQueryChanged,
-    required this.onLoadPage,
-    this.onFirstPage,
-    this.onRetryPinned,
+    required this.projectStructureBuilder,
+    required this.threadBuilder,
     required this.onNewSession,
     required this.onAddProject,
     required this.onSelectProject,
@@ -43,11 +41,25 @@ class StudioSidebar extends StatefulWidget {
   });
 
   final SidebarData data;
-  final SidebarHostApps hostApps;
   final ValueChanged<SidebarQuerySelection> onQueryChanged;
-  final void Function(String workspaceId, bool more) onLoadPage;
-  final ValueChanged<String>? onFirstPage;
-  final ValueChanged<String>? onRetryPinned;
+  final Widget Function(
+    BuildContext context,
+    String projectId,
+    SidebarQuerySelection selection,
+    Widget Function(StudioProject project, SidebarProjectStructure structure)
+    builder,
+  )
+  projectStructureBuilder;
+  final Widget Function(
+    BuildContext context,
+    StudioProject project,
+    String threadId,
+    bool touchMode,
+    bool archived,
+    ValueChanged<SessionDirectoryRow> onSelect,
+    void Function(SessionDirectoryRow row, SidebarThreadAction action) onAction,
+  )
+  threadBuilder;
   final VoidCallback? onNewSession;
   final VoidCallback? onAddProject;
   final ValueChanged<StudioProject> onSelectProject;
@@ -77,9 +89,10 @@ class _StudioSidebarState extends State<StudioSidebar> {
   bool _archived = false;
   bool _touchInput = false;
   Timer? _searchDebounce;
+  String _querySearch = '';
 
   bool get _filtered =>
-      _search.text.trim().isNotEmpty ||
+      _querySearch.trim().isNotEmpty ||
       _filter != DirectoryFilter.all ||
       _archived;
 
@@ -96,10 +109,8 @@ class _StudioSidebarState extends State<StudioSidebar> {
   void didUpdateWidget(StudioSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
     final id = widget.data.selectedProjectId;
-    _projectKeys.removeWhere(
-      (id, _) => !widget.data.projects.any((project) => project.id == id),
-    );
-    _expanded.retainAll(widget.data.projects.map((project) => project.id));
+    _projectKeys.removeWhere((id, _) => !widget.data.projectIds.contains(id));
+    _expanded.retainAll(widget.data.projectIds);
     if (oldWidget.data.selectedProjectId != id && id != null) {
       _expanded.add(id);
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -124,14 +135,21 @@ class _StudioSidebarState extends State<StudioSidebar> {
 
   void _change(VoidCallback update) {
     _searchDebounce?.cancel();
-    setState(update);
+    setState(() {
+      update();
+      _querySearch = _search.text;
+    });
     _publishQuery();
   }
 
   void _changeSearch() {
     setState(() {});
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 200), _publishQuery);
+    _searchDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      setState(() => _querySearch = _search.text);
+      _publishQuery();
+    });
   }
 
   @override
@@ -147,40 +165,19 @@ class _StudioSidebarState extends State<StudioSidebar> {
     final data = widget.data;
     final projects =
         [
-          ...data.projects.where((project) {
-            if (project.isStandalone) return false;
-            final window = data.windows[project.id];
-            final pinnedWindow = data.pinnedWindows[project.id];
-            final pinsExpected = data.pinnedThreadIds.isNotEmpty;
-            if (!_filtered ||
-                window?.loaded != true ||
-                window?.loading == true ||
-                window?.error != null ||
-                window!.rows.isNotEmpty ||
-                (pinsExpected &&
-                    (pinnedWindow?.loaded != true ||
-                        pinnedWindow?.loading == true ||
-                        pinnedWindow?.error != null ||
-                        pinnedWindow!.rows.isNotEmpty))) {
-              return true;
-            }
-            return !_archived &&
-                _filter == DirectoryFilter.all &&
-                '${project.name} ${project.path}'.toLowerCase().contains(
-                  _search.text.trim().toLowerCase(),
-                );
-          }),
+          for (final id in data.projectIds)
+            if (id != data.standaloneProjectId) id,
         ]..sort((a, b) {
           final pin =
-              (data.pinnedProjectIds.contains(b.id) ? 1 : 0) -
-              (data.pinnedProjectIds.contains(a.id) ? 1 : 0);
+              (data.pinnedProjectIds.contains(b) ? 1 : 0) -
+              (data.pinnedProjectIds.contains(a) ? 1 : 0);
           return pin != 0
               ? pin
-              : data.projects.indexOf(a).compareTo(data.projects.indexOf(b));
+              : data.projectIds
+                    .indexOf(a)
+                    .compareTo(data.projectIds.indexOf(b));
         });
-    final standalone = data.projects
-        .where((project) => project.isStandalone)
-        .firstOrNull;
+    final standalone = data.standaloneProjectId;
     return Listener(
       onPointerDown: (event) {
         final touch =
@@ -262,39 +259,51 @@ class _StudioSidebarState extends State<StudioSidebar> {
                           padding: const EdgeInsets.all(12),
                           child: Text(context.l10n.sidebarNoResults),
                         ),
-                      for (final project in projects) ...[
-                        KeyedSubtree(
-                          key: _projectKeys.putIfAbsent(
-                            project.id,
-                            GlobalKey.new,
-                          ),
-                          child: SidebarProjectRow(
-                            project: project,
-                            selected:
-                                data.selectedProjectId == project.id &&
-                                data.selectedThreadId == null,
-                            expanded:
-                                _filtered || _expanded.contains(project.id),
-                            pinned: data.pinnedProjectIds.contains(project.id),
-                            touchMode: _touchInput,
-                            recoveryIssue:
-                                data.projectRecoveryIssues[project.id],
-                            onToggle: () => _change(() {
-                              if (!_expanded.remove(project.id)) {
-                                _expanded.add(project.id);
-                              }
-                            }),
-                            onSelect: () => widget.onSelectProject(project),
-                            onNewSession: () =>
-                                widget.onNewProjectSession(project),
-                            onAction: (action) =>
-                                widget.onProjectAction(project, action),
-                          ),
-                        ),
-                        if (_filtered || _expanded.contains(project.id))
-                          _threads(project),
-                        const SizedBox(height: 4),
-                      ],
+                      for (final projectId in projects)
+                        _projectStructure(projectId, (project, structure) {
+                          if (!_showProject(project, structure)) {
+                            return const SizedBox.shrink();
+                          }
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              KeyedSubtree(
+                                key: _projectKeys.putIfAbsent(
+                                  project.id,
+                                  GlobalKey.new,
+                                ),
+                                child: SidebarProjectRow(
+                                  project: project,
+                                  selected:
+                                      data.selectedProjectId == project.id &&
+                                      !data.hasSelectedThread,
+                                  expanded:
+                                      _filtered ||
+                                      _expanded.contains(project.id),
+                                  pinned: data.pinnedProjectIds.contains(
+                                    project.id,
+                                  ),
+                                  touchMode: _touchInput,
+                                  recoveryIssue: structure.recoveryIssue,
+                                  onToggle: () => _change(() {
+                                    if (!_expanded.remove(project.id)) {
+                                      _expanded.add(project.id);
+                                    }
+                                  }),
+                                  onSelect: () =>
+                                      widget.onSelectProject(project),
+                                  onNewSession: () =>
+                                      widget.onNewProjectSession(project),
+                                  onAction: (action) =>
+                                      widget.onProjectAction(project, action),
+                                ),
+                              ),
+                              if (_filtered || _expanded.contains(project.id))
+                                _threads(project, structure),
+                              const SizedBox(height: 4),
+                            ],
+                          );
+                        }),
                       const Divider(height: 20),
                       KeyedSubtree(
                         key: StudioDriverKeys.nonProjectSessionsArea,
@@ -313,7 +322,11 @@ class _StudioSidebarState extends State<StudioSidebar> {
                               ),
                             ),
                             if (standalone != null)
-                              _threads(standalone)
+                              _projectStructure(
+                                standalone,
+                                (project, structure) =>
+                                    _threads(project, structure),
+                              )
                             else
                               Padding(
                                 padding: EdgeInsets.fromLTRB(
@@ -350,13 +363,50 @@ class _StudioSidebarState extends State<StudioSidebar> {
     );
   }
 
-  Widget _threads(StudioProject project) {
-    final window = widget.data.windows[project.id] ?? SidebarWindow();
-    final pinnedWindow = widget.data.pinnedWindows[project.id];
-    final pinnedRows = pinnedWindow?.rows ?? const <SessionDirectoryRow>[];
+  Widget _projectStructure(
+    String projectId,
+    Widget Function(StudioProject, SidebarProjectStructure) builder,
+  ) => widget.projectStructureBuilder(
+    context,
+    projectId,
+    SidebarQuerySelection(
+      search: _querySearch,
+      filter: _filter,
+      archived: _archived,
+      expandedProjectIds: _expanded,
+    ),
+    builder,
+  );
+
+  bool _showProject(StudioProject project, SidebarProjectStructure structure) {
+    final window = structure.window;
+    final pinned = structure.pinnedWindow;
+    if (!_filtered ||
+        !window.loaded ||
+        window.loading ||
+        window.error != null ||
+        window.threadIds.isNotEmpty ||
+        (pinned != null &&
+            (!pinned.loaded ||
+                pinned.loading ||
+                pinned.error != null ||
+                pinned.threadIds.isNotEmpty))) {
+      return true;
+    }
+    return !_archived &&
+        _filter == DirectoryFilter.all &&
+        '${project.name} ${project.path}'.toLowerCase().contains(
+          _querySearch.trim().toLowerCase(),
+        );
+  }
+
+  Widget _threads(StudioProject project, SidebarProjectStructure structure) {
+    final window = structure.window;
+    final pinnedWindow = structure.pinnedWindow;
+    final pinnedIds = pinnedWindow?.threadIds ?? const <String>[];
     final showOrdinaryEmpty =
         pinnedWindow == null ||
-        (pinnedWindow.loaded && pinnedWindow.rows.isEmpty);
+        (pinnedWindow.loaded && pinnedWindow.threadIds.isEmpty);
     // 第一列展开箭头宽度为 28px（触控 44px）：
     // 竖向引导线居中在第一列中心 x = 14px（触控 22px），
     // 会话行卡片从 x = 20px（触控 36px）起，配合 8px 左内边距使
@@ -377,20 +427,19 @@ class _StudioSidebarState extends State<StudioSidebar> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final row in pinnedRows)
-                SidebarThreadRow(
-                  key: ValueKey('sidebar-thread-${row.threadId}'),
-                  row: row,
-                  project: project,
-                  selected: widget.data.selectedThreadId == row.threadId,
-                  pinned: widget.data.pinnedThreadIds.contains(row.threadId),
-                  touchMode: _touchInput,
-                  archived: _archived,
-                  recoveryIssue: widget.data.threadRecoveryIssues[row.threadId],
-                  hostApps: widget.hostApps,
-                  onSelect: () => widget.onSelectThread(row),
-                  onAction: (action) =>
-                      widget.onThreadAction(project, row, action),
+              for (final threadId in pinnedIds)
+                KeyedSubtree(
+                  key: ValueKey('sidebar-thread-$threadId'),
+                  child: widget.threadBuilder(
+                    context,
+                    project,
+                    threadId,
+                    _touchInput,
+                    _archived,
+                    widget.onSelectThread,
+                    (row, action) =>
+                        widget.onThreadAction(project, row, action),
+                  ),
                 ),
               if (pinnedWindow != null)
                 SidebarPageStatus(
@@ -398,24 +447,21 @@ class _StudioSidebarState extends State<StudioSidebar> {
                   window: pinnedWindow,
                   keyPrefix: 'sidebar-pinned',
                   showEmpty: false,
-                  onRetry: widget.onRetryPinned == null
-                      ? null
-                      : () => widget.onRetryPinned!(project.id),
+                  onRetry: structure.onRetryPinned,
                 ),
-              for (final row in window.rows)
-                SidebarThreadRow(
-                  key: ValueKey('sidebar-thread-${row.threadId}'),
-                  row: row,
-                  project: project,
-                  selected: widget.data.selectedThreadId == row.threadId,
-                  pinned: widget.data.pinnedThreadIds.contains(row.threadId),
-                  touchMode: _touchInput,
-                  archived: _archived,
-                  recoveryIssue: widget.data.threadRecoveryIssues[row.threadId],
-                  hostApps: widget.hostApps,
-                  onSelect: () => widget.onSelectThread(row),
-                  onAction: (action) =>
-                      widget.onThreadAction(project, row, action),
+              for (final threadId in window.threadIds)
+                KeyedSubtree(
+                  key: ValueKey('sidebar-thread-$threadId'),
+                  child: widget.threadBuilder(
+                    context,
+                    project,
+                    threadId,
+                    _touchInput,
+                    _archived,
+                    widget.onSelectThread,
+                    (row, action) =>
+                        widget.onThreadAction(project, row, action),
+                  ),
                 ),
               SidebarPageStatus(
                 workspaceId: project.id,
@@ -423,11 +469,9 @@ class _StudioSidebarState extends State<StudioSidebar> {
                 filtered: _filtered,
                 standalone: project.isStandalone,
                 showEmpty: showOrdinaryEmpty,
-                onRetry: () => widget.onLoadPage(project.id, false),
-                onMore: () => widget.onLoadPage(project.id, true),
-                onFirst: widget.onFirstPage == null
-                    ? null
-                    : () => widget.onFirstPage!(project.id),
+                onRetry: structure.onRetry,
+                onMore: structure.onLoadPage,
+                onFirst: structure.onFirstPage,
               ),
             ],
           ),
