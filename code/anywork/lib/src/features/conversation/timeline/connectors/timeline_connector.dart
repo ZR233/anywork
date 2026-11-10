@@ -14,6 +14,7 @@ import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
+import '../widgets/plan_summary_card.dart';
 import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
@@ -346,13 +347,11 @@ class _TimelineConnectorBodyState
           : Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: SelectionContainer.disabled(
-                child: TextButton.icon(
+                child: PlanSummaryCard(
                   key: StudioDriverKeys.planSummary,
-                  onPressed: widget.onPlanToggle,
-                  icon: Icon(
-                    widget.planExpanded ? Icons.expand_less : Icons.expand_more,
-                  ),
-                  label: Text(plan.title),
+                  title: plan.title,
+                  expanded: widget.planExpanded,
+                  onToggle: widget.onPlanToggle,
                 ),
               ),
             ),

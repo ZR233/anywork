@@ -1,9 +1,11 @@
+import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_state.dart';
+import '../../interactions/state/interaction_payload.dart';
 import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
 import '../widgets/conversation_activity_bar.dart';
@@ -25,6 +27,14 @@ class ConversationActivityConnector extends ConsumerWidget {
     final session = conversations.existingSession(threadId);
     final content = session?.content;
     StudioDriverState.publishConversationActivity(state?.view);
+    // The plan reader and decision dock replace this presentation, not its
+    // underlying activity. Unmounting also retires the original display reads.
+    // Use the same active interaction priority as the actionable dock so a
+    // pending plan cannot suppress a higher-priority tool approval.
+    final interaction = activePendingInteraction(sessionState.interactions);
+    if (interaction?.planConfirmation != null) {
+      return const SizedBox.shrink();
+    }
     final children = <Widget>[];
     if (content != null && state?.activity != null) {
       ref.watch(timelineViewModelProvider(threadId));

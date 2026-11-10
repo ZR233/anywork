@@ -243,11 +243,9 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       saveBlocked:
           storage != null && (storage.hasFault || storage.resumeRequired),
       recoveryIssue: recoveryBlocker,
-      // 目录行与已加载 canonical workspace.thread 任一 closing/closed
-      // 都不显示执行入口；这是纯投影，事实源仍是两个 canonical 观察。
-      executionClosed:
-          (row?.status.blocksNewExecution ?? false) ||
-          (session.workspace?.thread.status.blocksNewExecution ?? false),
+      // 永久关闭由当前目录身份判定；会话快照属于另一版本域，
+      // 不能用其旧的 Core 资源关闭状态否决目录中仍可执行的会话。
+      executionClosed: row?.status.blocksNewExecution ?? false,
       // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
       // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
       // 仍由在途操作持有的观察可借当前 canonical 作为本地基线。

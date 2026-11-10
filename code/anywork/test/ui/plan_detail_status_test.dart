@@ -87,4 +87,32 @@ void main() {
       '已请求修改',
     );
   });
+
+  testWidgets('没有计划正文时仅显示头部的真实状态', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: PlanDetailView(
+            identity: 'plan',
+            title: 'Delivery',
+            body: null,
+            status: PlanDetailStatus.drafting,
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('起草中'), findsOneWidget);
+    expect(find.text('计划准备好后会请你确认。'), findsNothing);
+    expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsNothing);
+  });
 }

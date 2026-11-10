@@ -221,6 +221,18 @@ class RecordingConversationFeed implements ConversationFeed {
     );
   }
 
+  void emitActivity(ActivitySnapshot snapshot) {
+    if (_closed) return;
+    _events.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: ++_sequence,
+        event: ConversationActivityEvent(snapshot: snapshot),
+      ),
+    );
+  }
+
   void emitError(Object error) {
     if (!_closed) _events.addError(error);
   }
