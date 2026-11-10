@@ -333,7 +333,7 @@ impl State {
         Some(entry)
     }
 
-    /// 成员树父 Thread。优先用冻结 `parent_agent_id` 解析，不从 id 字节相等推断。
+    /// 成员树父 Thread。只用冻结 `parent_agent_id` 解析，不从 Native 字段回退。
     fn membership_parent<'a>(
         by_agent: &'a BTreeMap<pl_protocol::AgentId, String>,
         entry: &'a AgentInstance,
@@ -341,7 +341,7 @@ impl State {
         if let Some(parent) = entry.identity.parent_agent_id.as_ref() {
             return by_agent.get(parent).map(String::as_str);
         }
-        entry.native.parent_id.as_deref()
+        None
     }
 }
 
@@ -712,10 +712,6 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        if spec.parent_id.is_some() && !spec.agent_controls.is_empty() {
-            return Err(ThreadAssemblyError::ChildDepth);
-        }
-        spec.tools.append(&mut spec.agent_controls);
         if spec.model_available {
             let services = { self.0.state().agent_services.clone() };
             if let Some(services) = services {
@@ -741,6 +737,11 @@ impl SessionRuntime {
         }
         let identity = activation.agent.clone();
         let binding = activation.binding.clone();
+        let is_root = identity.parent_agent_id.is_none();
+        if !is_root && !spec.agent_controls.is_empty() {
+            return Err(ThreadAssemblyError::ChildDepth);
+        }
+        spec.tools.append(&mut spec.agent_controls);
         // Model opening is still owned by the managed preparation, including the unpublished
         // use. If it fails, install a cleanup-only Thread so every allocated tool is closed/joined.
         // Successful restoration keeps core's normal model-at-resume contract for pending inputs.
@@ -761,7 +762,6 @@ impl SessionRuntime {
                 None,
             )
         };
-        let is_root = spec.parent_id.is_none();
         let resources = self
             .0
             .state()
@@ -936,10 +936,16 @@ impl SessionRuntime {
     pub async fn assemble_child(
         &self,
         spec: StudioThreadSpec,
-        caller: &pl_core::tool::opaque::CallContext,
+        caller: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
-        if spec.parent_id.as_deref() != Some(caller.thread_id.as_str()) || spec.checkpoint.is_some()
-        {
+        let caller_thread = self
+            .0
+            .state()
+            .by_agent
+            .get(&caller.caller)
+            .cloned()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        if spec.parent_id.as_deref() != Some(caller_thread.as_str()) || spec.checkpoint.is_some() {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
         self.assemble(spec).await
@@ -981,7 +987,7 @@ impl SessionRuntime {
             cursor = state
                 .entries
                 .get(parent)
-                .and_then(|entry| entry.native.parent_id.as_deref())
+                .and_then(|entry| State::membership_parent(&state.by_agent, entry))
                 .or_else(|| {
                     state
                         .creating
@@ -1059,7 +1065,7 @@ impl SessionRuntime {
             let mut state = self.0.state();
             if state.creating.contains_key(id)
                 || state.entries.get(id).is_some_and(|entry| {
-                    (entry.native.parent_id.is_some() || entry.identity.parent_agent_id.is_some())
+                    entry.identity.parent_agent_id.is_some()
                         && entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Closed
                 })
                 || state
@@ -1164,7 +1170,7 @@ impl SessionRuntime {
                     cursor = state
                         .entries
                         .get(current)
-                        .and_then(|entry| entry.native.parent_id.as_deref())
+                        .and_then(|entry| State::membership_parent(&state.by_agent, entry))
                         .or_else(|| {
                             members
                                 .iter()
@@ -1225,7 +1231,7 @@ impl SessionRuntime {
                     let parent = state
                         .entries
                         .get(cursor)
-                        .and_then(|entry| entry.native.parent_id.as_deref())
+                        .and_then(|entry| State::membership_parent(&state.by_agent, entry))
                         .or_else(|| {
                             members
                                 .iter()
@@ -1418,7 +1424,7 @@ impl SessionRuntime {
         if let Some((child, _)) = state
             .entries
             .iter()
-            .find(|(_, entry)| entry.native.parent_id.as_deref() == Some(id))
+            .find(|(_, entry)| State::membership_parent(&state.by_agent, entry) == Some(id))
         {
             return Err(ThreadAssemblyError::Descendant(child.clone()));
         }

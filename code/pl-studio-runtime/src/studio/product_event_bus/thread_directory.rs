@@ -1226,6 +1226,26 @@ impl ProductEventBus {
             .execution_identity(thread_id)
     }
 
+    /// Resolve a product member without activating Native resources or reading history.
+    pub(crate) fn member_identity(
+        &self,
+        session: &pl_protocol::SessionId,
+        agent: &pl_protocol::AgentId,
+    ) -> Option<pl_protocol::AgentThreadIdentity> {
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let member = index
+            .sessions
+            .get(session.as_str())?
+            .agents
+            .get(agent.as_str())?;
+        index
+            .execution_identity(&member.thread_id)
+            .map(|(identity, _, _)| identity)
+    }
+
     /// 注册一个 child 成员：typed delta 与摘要集合共同形成内存提交。
     pub(in crate::studio) async fn register_child_agent(
         &self,

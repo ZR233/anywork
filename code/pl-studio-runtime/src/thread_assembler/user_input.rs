@@ -196,7 +196,7 @@ impl SessionRuntime {
                 (
                     entry.native.thread.clone(),
                     entry.native.execution,
-                    entry.native.parent_id.is_none(),
+                    entry.identity.parent_agent_id.is_none(),
                 )
             })
         }

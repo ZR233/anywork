@@ -1,4 +1,8 @@
 //! Agent control tool frontends; directory ownership and access decisions belong to the product host.
+use super::control::{
+    AgentCallContext, AgentCloseOutcome, AgentInterruptResult, AgentSendResult, AgentSpawnResult,
+    ControlError,
+};
 pub use pl_agent_tool::ToolDefinition;
 use pl_core::{
     context::OpaquePayload,
@@ -136,33 +140,33 @@ pub struct AgentCloseOptions {
     pub force: bool,
 }
 
-/// Product coordinator ports. Return the original business facts and the chosen model projection together.
+/// Product coordinator ports. Native encoding belongs to the frontend, not the owner.
 pub trait AgentControlHost: Send + Sync + std::fmt::Debug + 'static {
     fn spawn(
         &self,
-        context: CallContext,
+        context: AgentCallContext,
         request: AgentSpawn,
-    ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
+    ) -> impl std::future::Future<Output = Result<AgentSpawnResult, ControlError>> + Send;
     fn send(
         &self,
-        caller: &str,
+        context: AgentCallContext,
         message: AgentMessage,
-    ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
+    ) -> impl std::future::Future<Output = Result<AgentSendResult, ControlError>> + Send;
     fn list(
         &self,
-        caller: &str,
-    ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
+        context: AgentCallContext,
+    ) -> impl std::future::Future<Output = Result<Vec<serde_json::Value>, ControlError>> + Send;
     fn interrupt(
         &self,
-        caller: &str,
+        context: AgentCallContext,
         target: &str,
-    ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
+    ) -> impl std::future::Future<Output = Result<AgentInterruptResult, ControlError>> + Send;
     fn close(
         &self,
-        caller: &str,
+        context: AgentCallContext,
         target: &str,
         options: AgentCloseOptions,
-    ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
+    ) -> impl std::future::Future<Output = Result<AgentCloseOutcome, ControlError>> + Send;
 }
 
 /// Stable agent-control operations; none grants permission to bypass the host's relationship checks.
@@ -240,20 +244,39 @@ impl AgentControlKind {
 }
 
 /// One Thread's frontend over a shared product coordination service.
-#[derive(Debug)]
 pub struct ThreadAgentControl<H> {
     definition: ToolDefinition,
     host: Arc<H>,
     kind: AgentControlKind,
+    caller: pl_protocol::AgentThreadIdentity,
+    validate: Box<dyn Fn() -> Result<(), ControlError> + Send + Sync>,
+}
+
+impl<H: std::fmt::Debug> std::fmt::Debug for ThreadAgentControl<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadAgentControl")
+            .field("host", &self.host)
+            .field("kind", &self.kind)
+            .field("caller", &self.caller)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<H: AgentControlHost> ThreadAgentControl<H> {
     /// Associates an operation with its product-owned coordinator.
-    pub fn new(host: Arc<H>, kind: AgentControlKind, definition: ToolDefinition) -> Self {
+    pub fn new(
+        host: Arc<H>,
+        kind: AgentControlKind,
+        definition: ToolDefinition,
+        caller: pl_protocol::AgentThreadIdentity,
+        validate: impl Fn() -> Result<(), ControlError> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             host,
             kind,
             definition,
+            caller,
+            validate: Box::new(validate),
         }
     }
 
@@ -309,18 +332,37 @@ impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
+        if context.thread_id != self.caller.thread_id.as_str() {
+            return Err(ToolError::new(ControlError::Missing(context.thread_id)));
+        }
+        (self.validate)().map_err(ToolError::new)?;
+        let call = AgentCallContext {
+            caller: self.caller.agent_id.clone(),
+            call_id: context.call_id.clone(),
+            cancellation: context.cancellation,
+        };
         match self.kind {
             AgentControlKind::Spawn => {
                 let request: AgentSpawn =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                self.host.spawn(context, request).await
+                let result = self
+                    .host
+                    .spawn(call, request)
+                    .await
+                    .map_err(ToolError::new)?;
+                let receipt = output(result.receipt)?;
+                match result.message_error {
+                    Some(error) => Err(ToolError::new(error).with_output(receipt)),
+                    None => Ok(receipt),
+                }
             }
             AgentControlKind::Send => {
                 let input: SendInput =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                self.host
+                let result = self
+                    .host
                     .send(
-                        &context.thread_id,
+                        call,
                         AgentMessage {
                             id: format!(
                                 "agent-message:{}:{}:{}",
@@ -333,32 +375,130 @@ impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
                         },
                     )
                     .await
+                    .map_err(ToolError::new)?;
+                output(result)
             }
             AgentControlKind::List => {
                 let _: Empty =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                self.host.list(&context.thread_id).await
+                output(self.host.list(call).await.map_err(ToolError::new)?)
             }
             AgentControlKind::Interrupt => {
                 let target: Target =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                self.host
-                    .interrupt(&context.thread_id, &target.target)
-                    .await
+                output(
+                    self.host
+                        .interrupt(call, &target.target)
+                        .await
+                        .map_err(ToolError::new)?,
+                )
             }
             AgentControlKind::Close => {
                 let target: CloseInput =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                self.host
+                let outcome = self
+                    .host
                     .close(
-                        &context.thread_id,
+                        call,
                         &target.target,
                         AgentCloseOptions {
                             force: target.force,
                         },
                     )
                     .await
+                    .map_err(ToolError::new)?;
+                let receipt = output(&outcome)?;
+                match outcome.error {
+                    Some(error) => Err(ToolError::new(CloseIncomplete(error)).with_output(receipt)),
+                    None => Ok(receipt),
+                }
             }
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Agent service failed: {}", .0.message)]
+struct CloseIncomplete(pl_protocol::StateError);
+
+fn output(value: impl serde::Serialize) -> Result<ToolOutput, ToolError> {
+    let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
+    Ok(ToolOutput::new(
+        OpaquePayload::new("pl.studio.agent-control", 1, encoded.clone())
+            .map_err(ToolError::new)?,
+        vec![pl_core::context::ContextContent::Text {
+            text: Arc::from(encoded),
+        }],
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup, SpawnReceipt};
+
+    #[test]
+    fn spawn_receipt_preserves_native_wire_and_model_projection() {
+        let receipt = SpawnReceipt {
+            agent_id: "published-child".into(),
+            profile_id: "executor".into(),
+            model: NewThreadModelRoute {
+                account_id: "account".into(),
+                model_id: "model".into(),
+                effort: None,
+            },
+            delegation: Default::default(),
+            workspace: None,
+            message_accepted: false,
+            message_sequence: None,
+        };
+        let encoded = output(receipt).unwrap();
+        assert_eq!(encoded.payload().format(), "pl.studio.agent-control");
+        assert_eq!(encoded.payload().version(), 1);
+        let value: serde_json::Value = serde_json::from_str(encoded.payload().content()).unwrap();
+        assert_eq!(value["agentId"], "published-child");
+        assert_eq!(value["messageAccepted"], false);
+        assert!(value.get("messageSequence").is_none());
+        assert!(
+            matches!(encoded.context(), [pl_core::context::ContextContent::Text { text }]
+            if text.as_ref() == encoded.payload().content())
+        );
+    }
+
+    #[test]
+    fn close_outcome_keeps_every_member_and_cleanup_fact() {
+        let outcome = AgentCloseOutcome {
+            target: "child".into(),
+            agents: vec![
+                AgentCloseResult {
+                    agent_id: "grandchild".into(),
+                    execution_closed: true,
+                    worktree_cleanup: AgentWorktreeCleanup::NotPresent {
+                        path: "/workspace/child".into(),
+                        registration_present: true,
+                    },
+                },
+                AgentCloseResult {
+                    agent_id: "child".into(),
+                    execution_closed: false,
+                    worktree_cleanup: AgentWorktreeCleanup::Pending,
+                },
+            ],
+            error: Some(pl_protocol::StateError {
+                code: "agentCloseIncomplete".into(),
+                message: "save ACK failed".into(),
+                retryable: true,
+            }),
+        };
+        let encoded = output(outcome).unwrap();
+        let value: serde_json::Value = serde_json::from_str(encoded.payload().content()).unwrap();
+        assert_eq!(value["agents"][0]["worktreeCleanup"]["kind"], "notPresent");
+        assert_eq!(
+            value["agents"][0]["worktreeCleanup"]["registrationPresent"],
+            true
+        );
+        assert_eq!(value["agents"][1]["executionClosed"], false);
+        assert_eq!(value["agents"][1]["worktreeCleanup"]["kind"], "pending");
+        assert_eq!(value["error"]["code"], "agentCloseIncomplete");
     }
 }

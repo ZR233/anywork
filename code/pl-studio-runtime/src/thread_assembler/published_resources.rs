@@ -101,7 +101,7 @@ impl SessionRuntime {
                 Ok(())
             };
             for (id, entry) in &state.entries {
-                observe(id, entry.native.parent_id.as_deref())?;
+                observe(id, super::State::membership_parent(&state.by_agent, entry))?;
             }
             for (id, entry) in &state.creating {
                 observe(id, entry.parent_id.as_deref())?;
@@ -363,7 +363,7 @@ impl SessionRuntime {
                 .entries
                 .get(id)
                 .filter(|entry| {
-                    entry.native.parent_id.is_some()
+                    entry.identity.parent_agent_id.is_some()
                         && Arc::ptr_eq(&entry.native.incarnation, incarnation)
                 })
                 .map(|entry| entry.native.cleanup.clone())

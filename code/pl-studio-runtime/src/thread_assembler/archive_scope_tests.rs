@@ -232,6 +232,17 @@ async fn archive_closure_keeps_unpublished_resources_until_the_real_disposal_ack
 async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() {
     let owner = SessionRuntime::default();
     let temp = tempfile::tempdir().unwrap();
+    owner.install_explicit_activation(crate::thread_assembler::ThreadActivation::native_test(
+        "root", None,
+    ));
+    owner
+        .assemble(crate::thread_assembler::archive_test_spec(
+            "root".into(),
+            None,
+            temp.path(),
+        ))
+        .await
+        .unwrap();
     let resource = temp.path().join("resource");
     tokio::fs::write(&resource, b"owned").await.unwrap();
     let child = pl_core::thread::ThreadHandle::resume_without_model("child".into(), None).unwrap();
@@ -239,7 +250,7 @@ async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() 
     let activation = crate::thread_assembler::ThreadActivation::native_test("child", Some("root"));
     {
         let mut state = owner.0.state();
-        state.entries.insert(
+        state.insert_entry(
             "child".into(),
             crate::session::AgentInstance {
                 identity: activation.agent,
@@ -291,6 +302,8 @@ async fn archive_seal_racing_publication_cannot_release_the_unpublished_owner() 
     assert!(!owner.0.state().entries.contains_key("child"));
     assert!(!resource.exists());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(scope);
+    owner.close("root").await.unwrap();
 }
 
 #[tokio::test]

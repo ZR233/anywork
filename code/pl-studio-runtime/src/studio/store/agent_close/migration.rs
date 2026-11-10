@@ -1,7 +1,6 @@
 //! Only the named product migration reads schema-1 close records and their branch-bound lease.
 use super::{AgentCloseGitGrant, AgentCloseRecord, OwnedWorktreeBinding};
 use crate::studio::{
-    agent_close::AgentWorktreeCleanup,
     agent_host::worktree_lease::{
         WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
     },
@@ -10,6 +9,7 @@ use crate::studio::{
 };
 use anyhow::{Result, ensure};
 use pl_core::context::content_hash;
+use pl_tool::collaboration::control::AgentWorktreeCleanup;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
     QueryFilter, QueryOrder,

@@ -44,7 +44,7 @@ impl StudioRuntime {
         for record in self.store.agent_closes().await? {
             let residual_registration = matches!(
                 record.worktree_cleanup,
-                crate::studio::agent_close::AgentWorktreeCleanup::NotPresent {
+                pl_tool::collaboration::control::AgentWorktreeCleanup::NotPresent {
                     registration_present: true,
                     ..
                 }
