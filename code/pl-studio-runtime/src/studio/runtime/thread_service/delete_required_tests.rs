@@ -556,3 +556,156 @@ async fn permanent_delete_private_required_save_records_real_stop_without_save_a
     runtime.shutdown_runtime().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn permanent_delete_unpublished_bound_root_retries_after_restart() -> Result<()> {
+    use crate::studio::store::thread_archive::ArchiveScope;
+    for (restart, remote) in [(false, false), (true, false), (false, true), (true, true)] {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let _endpoint = configure(&home)?;
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        let project = runtime.open_project(&workspace).await?;
+        // Publish only directory identity: the original preparation never attached storage.
+        let (delta, session, agent) = DirectoryDelta::register_session(
+            "private-root".into(),
+            &project.id,
+            "root",
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            workspace.to_string_lossy().into_owned(),
+            crate::config::ROOT_AGENT_ROUTE_KEY,
+        );
+        runtime
+            .agent_facility
+            .product_events
+            .commit_directory(delta)
+            .await?;
+        let root = ThreadRecord::from_directory_thread(crate::studio::records::thread_projection(
+            &session, &agent,
+        ));
+        let neighbor = runtime
+            .create_thread_with_id("private-root-neighbor", &project.id, "keep")
+            .await?;
+        runtime
+            .store
+            .begin_removal_preparation(
+                PreparationIdentity {
+                    thread_id: root.id.clone(),
+                    workspace_id: project.id.clone(),
+                    parent_id: None,
+                    root_id: root.id.clone(),
+                },
+                false,
+            )
+            .await?;
+        let binding = if remote {
+            WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Ssh {
+                    host: "fixture.invalid".into(),
+                    port: 22,
+                    username: "fixture".into(),
+                },
+                "/isolated/workspace".into(),
+            )?
+        } else {
+            WorkspaceIdentity::canonical(
+                WorkspaceEndpoint::Local,
+                dunce::canonicalize(&workspace)?
+                    .to_string_lossy()
+                    .into_owned(),
+            )?
+        };
+        runtime
+            .store
+            .bind_thread_preparation(&root.id, &binding)
+            .await?;
+        let execution = workspace.join(SessionFiles::new(&root.id).root());
+        tokio::fs::create_dir_all(&execution).await?;
+        tokio::fs::write(execution.join("marker"), b"remove").await?;
+        let host = runtime.store.session_paths(&project.id, &root.id)?;
+        tokio::fs::create_dir_all(host.root()).await?;
+        tokio::fs::write(host.root().join("marker"), b"host").await?;
+        runtime
+            .agent_facility
+            .product_events
+            .drain_directory_writes()
+            .await?;
+        // Retirement must release resources without writing a child-failure projection.
+        // The directory becomes writable again before actual deletion publication.
+        let catalog = runtime.store.paths().catalog_file();
+        let catalog_bytes = tokio::fs::read(&catalog).await?;
+        tokio::fs::remove_file(&catalog).await?;
+        tokio::fs::create_dir(&catalog).await?;
+        runtime.store.database().execute_unprepared(
+            "CREATE TRIGGER pause_private_root BEFORE UPDATE ON studio_objects
+             WHEN NEW.object_kind='threadDelete' AND json_extract(NEW.payload_json,'$.phase')='removing'
+             BEGIN SELECT RAISE(ABORT,'pause private root deletion'); END"
+        ).await?;
+        let error = runtime
+            .delete_thread("pause-private-root".into(), root.id.clone())
+            .await
+            .expect_err("pause before removal");
+        ensure!(
+            format!("{error:#}").contains("pause private root deletion"),
+            "{error:#}"
+        );
+        let archive = runtime
+            .store
+            .thread_archive(&ArchiveScope::Thread(root.id.clone()))
+            .await?
+            .unwrap();
+        assert!(archive.members.is_empty());
+        assert_eq!(archive.private_members.len(), 1);
+        let preparation = runtime.store.thread_preparation(&root.id).await?.unwrap();
+        assert!(preparation.stopped && preparation.retired && preparation.deletion_stopped);
+        assert!(!preparation.published && preparation.storage.is_none());
+        assert!(execution.exists());
+        assert_eq!(
+            runtime.store.catalog().get_agent(&root.id).unwrap().status,
+            agent.status
+        );
+        tokio::fs::remove_dir(&catalog).await?;
+        tokio::fs::write(&catalog, catalog_bytes).await?;
+        runtime
+            .store
+            .database()
+            .execute_unprepared("DROP TRIGGER pause_private_root")
+            .await?;
+        let runtime = if restart {
+            runtime.shutdown_runtime().await?;
+            StudioRuntime::initialize(options(&home)).await?
+        } else {
+            runtime
+        };
+        let result = runtime
+            .delete_thread("finish-private-root".into(), root.id.clone())
+            .await;
+        if remote {
+            // No real SSH service is contacted. Retirement must finish even when its original
+            // endpoint is unavailable; independent host removal still proceeds, with remote
+            // cleanup retained as a real failure rather than silently falling back to local.
+            let error = result.expect_err("unconfigured original endpoint must remain pending");
+            ensure!(
+                format!("{error:#}").contains("delete frozen SSH endpoint is no longer configured"),
+                "{error:#}"
+            );
+            let operation = runtime.store.thread_delete(&root.id).await?.unwrap();
+            assert_eq!(operation.phase, DeletePhase::Removing);
+            assert!(operation.members[0].host_deleted);
+            assert!(!operation.members[0].execution_deleted);
+            assert!(execution.exists());
+            assert!(runtime.store.read_thread(&root.id).await?.is_some());
+        } else {
+            result?.context("root deletion must finish")?;
+            assert!(!execution.exists());
+            assert!(runtime.store.read_thread(&root.id).await?.is_none());
+        }
+        assert!(!host.root().exists());
+        assert!(runtime.store.read_thread(&neighbor.id).await?.is_some());
+        runtime.shutdown_runtime().await?;
+    }
+    Ok(())
+}
