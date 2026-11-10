@@ -4,5 +4,5 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/app_graph.dart';
 
 final anyworkClientProvider = Provider<AnyworkClient>(
-  (ref) => ref.read(appGraphProvider).client,
+  (ref) => ref.watch(appGraphProvider).client,
 );

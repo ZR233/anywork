@@ -2,7 +2,7 @@ part of 'studio_shell.dart';
 
 final _standalonePreparationStateProvider =
     Provider.autoDispose<({bool isPreparing, String? error})>((ref) {
-      final source = ref.read(anyworkClientProvider).directoryCommands.source;
+      final source = ref.watch(anyworkClientProvider).directoryCommands.source;
       final commandState = observeClient(
         ref,
         source,
@@ -15,8 +15,7 @@ final _standalonePreparationStateProvider =
     });
 
 class _Sidebar extends ConsumerStatefulWidget {
-  const _Sidebar({super.key, required this.state, this.onNavigate});
-  final SidebarView state;
+  const _Sidebar({super.key, this.onNavigate});
   final VoidCallback? onNavigate;
 
   @override
@@ -26,7 +25,6 @@ class _Sidebar extends ConsumerStatefulWidget {
 /// Thin shell connector: commands, native capabilities, routing and errors only.
 class _SidebarState extends ConsumerState<_Sidebar> {
   late AnyworkClient _client;
-  late SidebarDirectoryOwner _directory;
   int _navigation = 0;
 
   @override
@@ -37,33 +35,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
 
   void _bindClient(AnyworkClient client) {
     _client = client;
-    late final SidebarDirectoryOwner owner;
-    owner = SidebarDirectoryOwner(
-      observeThreads: client.threadDirectory.observeThreads,
-      onChanged: () {
-        scheduleMicrotask(() {
-          if (mounted && identical(_directory, owner)) setState(() {});
-        });
-      },
-      onCloseError: (failure) {
-        FlutterError.reportError(
-          FlutterErrorDetails(
-            exception: failure.error,
-            stack: failure.stackTrace,
-            library: 'anywork sidebar directory',
-            context: ErrorDescription(
-              'closing ${failure.group.name} directory observation',
-            ),
-            informationCollector: () => [
-              StringProperty('workspaceId', failure.workspaceId),
-              DiagnosticsProperty<Object>('query', failure.query),
-              DiagnosticsProperty<Object>('window', failure.window),
-            ],
-          ),
-        );
-      },
-    );
-    _directory = owner;
   }
 
   /// Drawer close/reopen retires completions from the preceding drawer scope.
@@ -72,7 +43,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   @override
   void dispose() {
     retireNavigation();
-    _directory.dispose();
     super.dispose();
   }
 
@@ -113,88 +83,67 @@ class _SidebarState extends ConsumerState<_Sidebar> {
   @override
   Widget build(BuildContext context) {
     final client = ref.watch(anyworkClientProvider);
-    final general = ref.watch(shellGeneralProvider);
+    final state = ref.watch(sidebarViewProvider);
+    final pinnedProjects = ref.watch(
+      shellGeneralProvider.select((general) => general.pinnedProjectIds),
+    );
     if (!identical(client, _client)) {
-      final selection = _directory.selection;
-      _directory.dispose();
       retireNavigation();
       _bindClient(client);
-      _directory.configure(
-        widget.state.projects,
-        selection,
-        pinnedThreadIds: general.pinnedThreadIds,
-      );
     }
     final preparation = ref.watch(_standalonePreparationStateProvider);
-    final directory = _directory;
-    directory.configure(
-      widget.state.projects,
-      directory.selection,
-      pinnedThreadIds: general.pinnedThreadIds,
+    final hostApps = SidebarHostApps(
+      vsCode: ref.watch(vsCodeAvailabilityProvider).value ?? false,
+      zed: ref.watch(zedAvailabilityProvider).value ?? false,
+      terminal: ref.watch(terminalAvailabilityProvider).value ?? false,
+      vsCodeIcon: ref.watch(hostAppIconProvider(HostAppIcon.vsCode)).value,
+      zedIcon: ref.watch(hostAppIconProvider(HostAppIcon.zed)).value,
+      terminalIcon: ref.watch(hostAppIconProvider(HostAppIcon.terminal)).value,
+      terminalUnavailableReason: _terminalUnavailableReason(context),
     );
-    final windows = directory.windows;
-    final pinnedWindows = directory.pinnedWindows;
-    final selectedThreadId = client.selection.state.selectedThreadId;
-    final selectedThread = selectedThreadId == null
-        ? null
-        : ref.watch(threadMetadataStoreProvider(selectedThreadId)).frame?.row;
-    final selectedRootThreadId = selectedThread?.sessionId;
-    final recovery =
-        ref.watch(recoveryStoreProvider).value?.values ??
-        const <StudioRecoveryIssue>[];
-    final threadIssues = <String, StudioRecoveryIssue>{};
-    for (final window in [...pinnedWindows.values, ...windows.values]) {
-      for (final row in window.rows) {
-        final issue = recoveryIssuesForTarget(
-          recovery,
-          workspaceId: row.workspaceId,
-          threadId: row.threadId,
-        ).firstOrNull;
-        if (issue != null) threadIssues[row.threadId] = issue;
-      }
-    }
     return StudioSidebar(
       data: SidebarData(
-        projects: widget.state.projects,
-        windows: windows,
-        pinnedWindows: pinnedWindows,
-        selectedProjectId: widget.state.selectedProjectId,
-        selectedThreadId: selectedRootThreadId,
-        pinnedProjectIds: general.pinnedProjectIds.toSet(),
-        pinnedThreadIds: general.pinnedThreadIds.toSet(),
-        projectRecoveryIssues: widget.state.projectRecoveryIssues,
-        threadRecoveryIssues: threadIssues,
+        projectIds: state.projectIds,
+        standaloneProjectId: state.standaloneProjectId,
+        selectedProjectId: state.selectedProjectId,
+        hasSelectedThread: ref.watch(
+          shellSelectionProvider.select(
+            (selection) => selection.selectedThreadId != null,
+          ),
+        ),
+        pinnedProjectIds: pinnedProjects.toSet(),
         preparing: preparation.isPreparing,
         preparationError: preparation.error,
         hasUpdate: ref.watch(
           studioUpdateControllerProvider.select((state) => state.hasUpdate),
         ),
       ),
-      hostApps: SidebarHostApps(
-        vsCode: ref.watch(vsCodeAvailabilityProvider).value ?? false,
-        zed: ref.watch(zedAvailabilityProvider).value ?? false,
-        terminal: ref.watch(terminalAvailabilityProvider).value ?? false,
-        vsCodeIcon: ref.watch(hostAppIconProvider(HostAppIcon.vsCode)).value,
-        zedIcon: ref.watch(hostAppIconProvider(HostAppIcon.zed)).value,
-        terminalIcon: ref
-            .watch(hostAppIconProvider(HostAppIcon.terminal))
-            .value,
-        terminalUnavailableReason: _terminalUnavailableReason(context),
-      ),
-      onQueryChanged: (selection) => directory.configure(
-        widget.state.projects,
-        selection,
-        pinnedThreadIds: general.pinnedThreadIds,
-      ),
-      onLoadPage: (id, more) {
-        if (more) {
-          directory.more(id);
-        } else {
-          unawaited(directory.refresh(id));
-        }
-      },
-      onFirstPage: directory.first,
-      onRetryPinned: (id) => unawaited(directory.refreshPinned(id)),
+      onQueryChanged: (_) {},
+      projectStructureBuilder: (context, projectId, selection, builder) =>
+          SidebarProjectConnector(
+            key: ValueKey(('sidebar-project-structure', client, projectId)),
+            projectId: projectId,
+            selection: selection,
+            builder: builder,
+          ),
+      threadBuilder:
+          (
+            context,
+            project,
+            threadId,
+            touchMode,
+            archived,
+            onSelect,
+            onAction,
+          ) => SidebarThreadConnector(
+            threadId: threadId,
+            project: project,
+            touchMode: touchMode,
+            archived: archived,
+            hostApps: hostApps,
+            onSelect: onSelect,
+            onAction: onAction,
+          ),
       onNewSession: () => unawaited(
         _navigate(
           client.directoryCommands.beginStandaloneThread,
@@ -239,7 +188,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
             case SidebarProjectAction.pin:
               await _saveSidebarPreferences(
                 ref,
-                general: general,
+                general: ref.read(shellGeneralProvider),
                 workspaceId: project.id,
               );
             case SidebarProjectAction.copyPath:
@@ -284,7 +233,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
             case SidebarThreadAction.pin:
               await _saveSidebarPreferences(
                 ref,
-                general: general,
+                general: ref.read(shellGeneralProvider),
                 threadId: row.threadId,
               );
             case SidebarThreadAction.rename:

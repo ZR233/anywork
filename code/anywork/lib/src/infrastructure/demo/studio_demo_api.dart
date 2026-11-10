@@ -87,16 +87,20 @@ const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
 );
 
 final class _DemoDirectoryChangeSignal {
-  _DemoDirectoryChangeSignal(DemoStudioTransport transport) {
+  _DemoDirectoryChangeSignal(
+    DemoStudioTransport transport, {
+    bool Function(ProductTopicFrame frame)? isRelevant,
+  }) : _isRelevant = isRelevant ?? _allDirectoryChanges {
     _subscription = transport
         .subscribeProductTopic(const ThreadDirectoryTopic())
         .listen(
-          (_) {
+          (frame) {
             if (_baselinePending) {
               _baselinePending = false;
               if (!_ready.isCompleted) _ready.complete();
               return;
             }
+            if (!_isRelevant(frame)) return;
             _dirty = true;
             if (_wake case final wake? when !wake.isCompleted) wake.complete();
           },
@@ -109,7 +113,10 @@ final class _DemoDirectoryChangeSignal {
         );
   }
 
+  static bool _allDirectoryChanges(ProductTopicFrame _) => true;
+
   late final StreamSubscription<ProductTopicFrame> _subscription;
+  final bool Function(ProductTopicFrame frame) _isRelevant;
   final Completer<void> _ready = Completer<void>();
   Completer<void>? _wake;
   bool _baselinePending = true;
@@ -156,6 +163,7 @@ final class _DemoThreadsObservation implements ThreadsObservationHandle {
   final DirectoryWindow window;
   final _DemoDirectoryChangeSignal _changes;
   Future<ThreadDirectoryFrame?>? _next;
+  ThreadDirectoryFrame? _lastFrame;
   bool _closed = false;
 
   @override
@@ -165,8 +173,19 @@ final class _DemoThreadsObservation implements ThreadsObservationHandle {
       return Future.error(StateError('Directory next is already in flight'));
     }
     final work = () async {
-      if (!await _changes.next()) return null;
-      return transport._readDirectoryFrame(query, window);
+      while (!_closed) {
+        if (!await _changes.next()) return null;
+        final frame = transport._readDirectoryFrame(query, window);
+        if (_closed) return null;
+        final previous = _lastFrame;
+        if (previous == null ||
+            previous.nextCursor != frame.nextCursor ||
+            !_sameThreadIds(previous.threadIds, frame.threadIds)) {
+          _lastFrame = frame;
+          return frame;
+        }
+      }
+      return null;
     }();
     _next = work;
     unawaited(
@@ -195,9 +214,28 @@ final class _DemoThreadsObservation implements ThreadsObservationHandle {
   }
 }
 
+bool _sameThreadIds(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
 final class _DemoThreadObservation implements ThreadObservationHandle {
   _DemoThreadObservation(this.transport, this.threadId)
-    : _changes = _DemoDirectoryChangeSignal(transport);
+    : _changes = _DemoDirectoryChangeSignal(
+        transport,
+        isRelevant: (frame) => switch (frame) {
+          ProductTopicDataFrame(:final event) => switch (event.payload) {
+            ThreadDirectoryChangedPayload(:final upserted, :final removed) =>
+              upserted.any((row) => row.threadId == threadId) ||
+                  removed.contains(threadId),
+            _ => false,
+          },
+          _ => true,
+        },
+      );
 
   final DemoStudioTransport transport;
   final String threadId;
@@ -1793,8 +1831,12 @@ class DemoStudioTransport extends StudioTransport
         : int.tryParse(window.before!) ??
               (throw ArgumentError.value(window.before, 'before'));
     if (offset < 0) throw ArgumentError.value(window.before, 'before');
-    final rows = matching.skip(offset).take(window.limit).toList();
-    final nextOffset = offset + rows.length;
+    final threadIds = matching
+        .skip(offset)
+        .take(window.limit)
+        .map((row) => row.threadId)
+        .toList();
+    final nextOffset = offset + threadIds.length;
     final stamp = _demoStamp('thread-directory', _threadDirectoryRevision);
     _checkDemoFrameSize({
       'query': {
@@ -1807,14 +1849,14 @@ class DemoStudioTransport extends StudioTransport
       },
       'window': {'before': window.before, 'limit': window.limit},
       'stamp': _demoStampWireFields(stamp),
-      'rows': rows.map(_demoRowWireFields).toList(),
+      'threadIds': threadIds,
       'nextCursor': nextOffset < matching.length ? '$nextOffset' : null,
     });
     return ThreadDirectoryFrame(
       query: query,
       window: window,
       stamp: stamp,
-      rows: rows,
+      threadIds: threadIds,
       nextCursor: nextOffset < matching.length ? '$nextOffset' : null,
     );
   }

@@ -6,6 +6,9 @@ mixin DirectoryFeedFixture on StudioTransport {
   String directoryOwnerEpoch = 'test-runtime';
   int directoryRevision = 1;
   final Map<String, SessionDirectoryRow?> directoryThreads = {};
+  final List<String> openedMetadataThreadIds = [];
+  final Map<String, Completer<void>> metadataOpenGates = {};
+  final Map<String, Completer<void>> _metadataOpenSignals = {};
   final List<DirectoryQuery> openedDirectoryQueries = [];
   final Map<String, List<_MetadataHandle>> _metadataHandles = {};
   final List<_ThreadsHandle> _threadsHandles = [];
@@ -14,6 +17,9 @@ mixin DirectoryFeedFixture on StudioTransport {
 
   void seedThread(SessionDirectoryRow row) =>
       directoryThreads[row.threadId] = row;
+
+  Future<void> metadataOpenStarted(String threadId) =>
+      _metadataOpenSignals.putIfAbsent(threadId, Completer<void>.new).future;
 
   void emitThread(
     SessionDirectoryRow? row,
@@ -34,6 +40,13 @@ mixin DirectoryFeedFixture on StudioTransport {
 
   @override
   Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
+    openedMetadataThreadIds.add(threadId);
+    final signal = _metadataOpenSignals.putIfAbsent(
+      threadId,
+      Completer<void>.new,
+    );
+    if (!signal.isCompleted) signal.complete();
+    await metadataOpenGates[threadId]?.future;
     final handle = _MetadataHandle(_closeDirectoryHandle);
     _metadataHandles.putIfAbsent(threadId, () => []).add(handle);
     handle.add(
@@ -59,8 +72,19 @@ mixin DirectoryFeedFixture on StudioTransport {
         query: query,
         window: window,
         stamp: _stamp(directoryRevision),
-        rows: directoryThreads.values
-            .whereType<SessionDirectoryRow>()
+        threadIds: directoryThreads.entries
+            .where((entry) {
+              final row = entry.value;
+              return row != null &&
+                  row.isRootRow &&
+                  row.archived == query.archived &&
+                  (query.workspaceId == null ||
+                      row.workspaceId == query.workspaceId) &&
+                  (query.threadIds == null ||
+                      query.threadIds!.contains(row.threadId)) &&
+                  !query.excludedThreadIds.contains(row.threadId);
+            })
+            .map((entry) => entry.key)
             .take(window.limit)
             .toList(),
       ),

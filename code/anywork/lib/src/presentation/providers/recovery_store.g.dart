@@ -59,4 +59,4 @@ final class RecoveryStoreProvider
   }
 }
 
-String _$recoveryStoreHash() => r'4fd6205601bf044943159cd8fa8a5abfd179e24a';
+String _$recoveryStoreHash() => r'5ceff9f8255c68c97e6d6d15b6247804edaada63';

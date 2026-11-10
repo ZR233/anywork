@@ -58,4 +58,4 @@ final class SettingsStoreProvider
   }
 }
 
-String _$settingsStoreHash() => r'83faca3cf814e1a5864c0e5a45846efaa5e5fb7b';
+String _$settingsStoreHash() => r'7c7f8566235c5170e56f1136ef78e1eab9cf278c';

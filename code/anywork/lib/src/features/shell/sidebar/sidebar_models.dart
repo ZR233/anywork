@@ -39,15 +39,15 @@ class SidebarQuerySelection {
 @immutable
 class SidebarWindow {
   SidebarWindow({
-    List<SessionDirectoryRow> rows = const [],
+    List<String> threadIds = const [],
     this.loading = false,
     this.error,
     this.hasMore = false,
     this.hasPrevious = false,
     this.loaded = false,
-  }) : rows = List.unmodifiable(rows);
+  }) : threadIds = List.unmodifiable(threadIds);
 
-  final List<SessionDirectoryRow> rows;
+  final List<String> threadIds;
   final bool loading;
   final String? error;
   final bool hasMore;
@@ -55,42 +55,51 @@ class SidebarWindow {
   final bool loaded;
 }
 
-/// Bounded presentation values. SDK immutable rows are shared, not mirrored.
+/// Shell values only; project structure and thread content have separate slots.
 @immutable
 class SidebarData {
   SidebarData({
-    required List<StudioProject> projects,
-    Map<String, SidebarWindow> windows = const {},
-    Map<String, SidebarWindow> pinnedWindows = const {},
+    required List<String> projectIds,
+    this.standaloneProjectId,
     this.selectedProjectId,
-    this.selectedThreadId,
+    this.hasSelectedThread = false,
     Set<String> pinnedProjectIds = const {},
-    Set<String> pinnedThreadIds = const {},
-    Map<String, StudioRecoveryIssue> projectRecoveryIssues = const {},
-    Map<String, StudioRecoveryIssue> threadRecoveryIssues = const {},
     this.preparing = false,
     this.preparationError,
     this.hasUpdate = false,
-  }) : projects = List.unmodifiable(projects),
-       windows = Map.unmodifiable(windows),
-       pinnedWindows = Map.unmodifiable(pinnedWindows),
-       pinnedProjectIds = Set.unmodifiable(pinnedProjectIds),
-       pinnedThreadIds = Set.unmodifiable(pinnedThreadIds),
-       projectRecoveryIssues = Map.unmodifiable(projectRecoveryIssues),
-       threadRecoveryIssues = Map.unmodifiable(threadRecoveryIssues);
+  }) : projectIds = List.unmodifiable(projectIds),
+       pinnedProjectIds = Set.unmodifiable(pinnedProjectIds);
 
-  final List<StudioProject> projects;
-  final Map<String, SidebarWindow> windows;
-  final Map<String, SidebarWindow> pinnedWindows;
+  final List<String> projectIds;
+  final String? standaloneProjectId;
   final String? selectedProjectId;
-  final String? selectedThreadId;
+  final bool hasSelectedThread;
   final Set<String> pinnedProjectIds;
-  final Set<String> pinnedThreadIds;
-  final Map<String, StudioRecoveryIssue> projectRecoveryIssues;
-  final Map<String, StudioRecoveryIssue> threadRecoveryIssues;
   final bool preparing;
   final String? preparationError;
   final bool hasUpdate;
+}
+
+/// One project's independently observed structure and pagination intents.
+@immutable
+class SidebarProjectStructure {
+  const SidebarProjectStructure({
+    required this.window,
+    this.pinnedWindow,
+    this.recoveryIssue,
+    required this.onLoadPage,
+    required this.onRetry,
+    required this.onFirstPage,
+    required this.onRetryPinned,
+  });
+
+  final SidebarWindow window;
+  final SidebarWindow? pinnedWindow;
+  final StudioRecoveryIssue? recoveryIssue;
+  final VoidCallback onLoadPage;
+  final VoidCallback onRetry;
+  final VoidCallback onFirstPage;
+  final VoidCallback onRetryPinned;
 }
 
 /// Native probing belongs to the connector. Preview needs no platform channel.

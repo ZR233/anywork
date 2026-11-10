@@ -17288,15 +17288,13 @@ impl SseDecode for crate::api::studio::directory::types::BridgeThreadDirectoryFr
             );
         let mut var_stamp =
             <crate::api::studio::types::command::BridgeResourceStamp>::sse_decode(deserializer);
-        let mut var_rows = <Vec<
-            crate::api::studio::types::session_directory::BridgeSessionDirectoryRow,
-        >>::sse_decode(deserializer);
+        let mut var_threadIds = <Vec<String>>::sse_decode(deserializer);
         let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::directory::types::BridgeThreadDirectoryFrame {
             query: var_query,
             window: var_window,
             stamp: var_stamp,
-            rows: var_rows,
+            thread_ids: var_threadIds,
             next_cursor: var_nextCursor,
         };
     }
@@ -34609,7 +34607,7 @@ impl flutter_rust_bridge::IntoDart
             self.query.into_into_dart().into_dart(),
             self.window.into_into_dart().into_dart(),
             self.stamp.into_into_dart().into_dart(),
-            self.rows.into_into_dart().into_dart(),
+            self.thread_ids.into_into_dart().into_dart(),
             self.next_cursor.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -46182,9 +46180,7 @@ impl SseEncode for crate::api::studio::directory::types::BridgeThreadDirectoryFr
         <crate::api::studio::types::command::BridgeResourceStamp>::sse_encode(
             self.stamp, serializer,
         );
-        <Vec<crate::api::studio::types::session_directory::BridgeSessionDirectoryRow>>::sse_encode(
-            self.rows, serializer,
-        );
+        <Vec<String>>::sse_encode(self.thread_ids, serializer);
         <Option<String>>::sse_encode(self.next_cursor, serializer);
     }
 }

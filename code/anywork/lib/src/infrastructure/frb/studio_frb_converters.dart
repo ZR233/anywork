@@ -1043,7 +1043,7 @@ ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
     ownerEpoch: value.stamp.ownerEpoch,
     revision: value.stamp.revision.toInt(),
   ),
-  rows: value.rows.map(_sessionDirectoryRowFromFrb).toList(),
+  threadIds: value.threadIds,
   nextCursor: value.nextCursor,
 );
 

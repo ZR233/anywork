@@ -11,6 +11,6 @@ part 'settings_store.g.dart';
 /// Riverpod owns this display observation; the Client owns the resource.
 @riverpod
 SettingsStoreState settingsStore(Ref ref) {
-  final source = ref.read(anyworkClientProvider).settings.source;
+  final source = ref.watch(anyworkClientProvider).settings.source;
   return observeClient(ref, source, (_) => ref.invalidateSelf());
 }
