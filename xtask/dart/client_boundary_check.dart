@@ -460,6 +460,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     }
     if (isAccountState &&
         (uri.startsWith('package:flutter/') ||
+            uri.startsWith('package:material_ui/') ||
+            uri.startsWith('package:cupertino_ui/') ||
             resolved.startsWith('code/anywork/lib/src/l10n/') ||
             resolved.startsWith('code/anywork/lib/src/app/theme/') ||
             resolved == 'code/anywork/lib/src/shared/account_brand.dart' ||
@@ -474,6 +476,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     if (isAccountViewModel &&
         ((uri.startsWith('package:flutter/') &&
                 uri != 'package:flutter/foundation.dart') ||
+            uri.startsWith('package:material_ui/') ||
+            uri.startsWith('package:cupertino_ui/') ||
             uri.startsWith('package:flutter_riverpod/') ||
             resolved == '${_accountsRoot}accounts_views.dart' ||
             const ['views/', 'widgets/', 'connectors/', 'previews/'].any(

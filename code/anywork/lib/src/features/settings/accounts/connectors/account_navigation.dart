@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
@@ -17,7 +17,7 @@ Future<bool> confirmLeaveAccountEditorEntry(
 ) async {
   final container = ProviderScope.containerOf(context, listen: false);
   final provider = accountEditorSessionViewModelProvider(entry);
-  if (!container.exists(provider)) return false;
+  if (!container.read(provider.exists)) return false;
   final slot = container.read(provider.notifier);
   final session = slot.currentOwner();
   if (session == null || !slot.isCurrentOwner(session) || !session.isActive) {
@@ -32,7 +32,7 @@ Future<bool> confirmLeaveAccountEditorEntry(
   // Before the first await, invalidate pending template/default callbacks.
   final decision = session.beginLeaveDecision();
   bool current() =>
-      container.exists(provider) &&
+      container.read(provider.exists) &&
       identical(container.read(provider.notifier), slot) &&
       slot.isCurrentOwner(session) &&
       session.isActive &&
@@ -69,7 +69,7 @@ Future<AccountLeaveChoice?> confirmAccountTemplateReplacement(
 }) async {
   final container = ProviderScope.containerOf(context, listen: false);
   final provider = accountEditorSessionViewModelProvider(entry);
-  if (!container.exists(provider)) return null;
+  if (!container.read(provider.exists)) return null;
   final slot = container.read(provider.notifier);
   final session = slot.currentOwner();
   if (session == null || !slot.isCurrentOwner(session) || !session.isActive) {
@@ -78,7 +78,7 @@ Future<AccountLeaveChoice?> confirmAccountTemplateReplacement(
   final drafts = _ExistingDrafts.capture(container, source, source?.target);
   if (drafts == null) return null;
   bool current() =>
-      container.exists(provider) &&
+      container.read(provider.exists) &&
       identical(container.read(provider.notifier), slot) &&
       slot.isCurrentOwner(session) &&
       session.isActive &&
@@ -111,7 +111,7 @@ Future<bool> confirmLeaveAccountContext(
       return false;
     }
     final provider = accountEditorSessionViewModelProvider(guardedEditorEntry);
-    if (!container.exists(provider)) return false;
+    if (!container.read(provider.exists)) return false;
     final slot = container.read(provider.notifier);
     final session = slot.currentOwner();
     return session != null &&
@@ -157,7 +157,7 @@ final class _ExistingDrafts {
     AccountEditorViewModel? editor;
     if (source != null) {
       final provider = accountEditorViewModelProvider(source);
-      if (!container.exists(provider) ||
+      if (!container.read(provider.exists) ||
           container.read(provider).asData == null) {
         return null;
       }
@@ -166,7 +166,7 @@ final class _ExistingDrafts {
     AccountModelsViewModel? models;
     if (account?.kind == AccountKind.native) {
       final provider = accountModelsViewModelProvider(account!);
-      if (container.exists(provider)) {
+      if (container.read(provider.exists)) {
         if (container.read(provider).asData == null) return null;
         models = container.read(provider.notifier);
       }
@@ -185,7 +185,7 @@ final class _ExistingDrafts {
   bool get isCurrent {
     if (source != null) {
       final provider = accountEditorViewModelProvider(source!);
-      if (!container.exists(provider) ||
+      if (!container.read(provider.exists) ||
           !identical(container.read(provider.notifier), editor) ||
           !editor!.matchesLeaveToken(editorToken!)) {
         return false;
@@ -193,8 +193,8 @@ final class _ExistingDrafts {
     }
     if (account?.kind == AccountKind.native) {
       final provider = accountModelsViewModelProvider(account!);
-      if (models == null) return !container.exists(provider);
-      return container.exists(provider) &&
+      if (models == null) return !container.read(provider.exists);
+      return container.read(provider.exists) &&
           identical(container.read(provider.notifier), models) &&
           models!.matchesCompactLeaveToken(compactToken!);
     }

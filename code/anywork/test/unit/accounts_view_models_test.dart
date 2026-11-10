@@ -1568,7 +1568,7 @@ void main() {
         nativeKey,
         isCompactClean: () {
           cleanChecks++;
-          return h.container.exists(modelsProvider) &&
+          return h.container.read(modelsProvider.exists) &&
               identical(h.container.read(modelsProvider.notifier), models) &&
               models.canRemove(expectedToken: token);
         },

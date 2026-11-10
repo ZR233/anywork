@@ -24,7 +24,8 @@ use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient,
     StreamableHttpClientTransportConfig, StreamableHttpError, StreamableHttpPostResponse,
 };
-use sse_stream::{Sse, SseStream};
+use sse_stream::SseByteStream;
+use sse_stream_rmcp::Sse;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -845,5 +846,77 @@ fn bounded_sse_stream(
         cancel,
         failed: false,
     };
-    SseStream::from_bytes_stream(stream).boxed()
+    // rmcp's public transport contract still uses sse-stream 0.2. Keep that
+    // type conversion at this boundary; all wire decoding uses 0.3.
+    SseByteStream::new(stream)
+        .map(|event| {
+            event
+                .map(|event| Sse {
+                    event: event.event,
+                    data: event.data,
+                    id: event.id,
+                    retry: event.retry,
+                })
+                .map_err(|error| match error {
+                    sse_stream::Error::Body(error) => SseError::Body(error),
+                    sse_stream::Error::Utf8Parse(error) => SseError::Utf8Parse(error),
+                    error => SseError::Body(Box::new(error)),
+                })
+        })
+        .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn current_decoder_preserves_metadata_at_the_rmcp_boundary() {
+        let input = concat!(
+            "\u{feff}extension: ignored\r\n",
+            "event: old\r\nevent: message\r\n",
+            "id: old\r\nid: last\r\nid: ignored\0id\r\n",
+            "retry: 10\r\nretry: 20\r\nretry: invalid\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":1,\"result\":{}}\r\n\r\n",
+        );
+        let bytes = input.bytes().map(|byte| Ok(Bytes::from(vec![byte])));
+        let fatal = Arc::new(Mutex::new(None));
+        let mut stream = bounded_sse_stream(
+            futures::stream::iter(bytes.collect::<Vec<_>>()).boxed(),
+            1024,
+            fatal.clone(),
+            CancellationToken::new(),
+        );
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.event.as_deref(), Some("message"));
+        assert_eq!(event.id.as_deref(), Some("last"));
+        assert_eq!(event.retry, Some(20));
+        let data: serde_json::Value = serde_json::from_str(event.data.as_deref().unwrap()).unwrap();
+        assert_eq!(data["id"], 1);
+        assert_eq!(data["result"], serde_json::json!({}));
+        assert!(stream.next().await.is_none());
+        assert!(fatal.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn decoder_errors_end_once_and_receive_limits_cancel_the_owner() {
+        for (input, limit, oversized) in [
+            (&b"data: \xff\n\ndata: later\n\n"[..], 1024, false),
+            (&b"data: too large\n\ndata: later\n\n"[..], 8, true),
+        ] {
+            let fatal = Arc::new(Mutex::new(None));
+            let cancel = CancellationToken::new();
+            let mut stream = bounded_sse_stream(
+                futures::stream::iter(vec![Ok(Bytes::copy_from_slice(input))]).boxed(),
+                limit,
+                fatal.clone(),
+                cancel.clone(),
+            );
+            assert!(stream.next().await.unwrap().is_err());
+            assert!(stream.next().await.is_none());
+            assert!(stream.next().await.is_none());
+            assert_eq!(cancel.is_cancelled(), oversized);
+            assert_eq!(fatal.lock().unwrap().is_some(), oversized);
+        }
+    }
 }

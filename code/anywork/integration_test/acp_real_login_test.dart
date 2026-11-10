@@ -16,7 +16,7 @@ import 'package:anywork/src/features/settings/statistics/view_models/statistics_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -87,7 +87,10 @@ void main() {
             child: MaterialApp.router(
               theme: pureStudioTheme(),
               locale: const Locale('zh'),
-              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              localizationsDelegates: [
+                AppLocalizations.delegate,
+                ...GlobalMaterialLocalizations.delegates,
+              ],
               supportedLocales: AppLocalizations.supportedLocales,
               routerConfig: router,
             ),

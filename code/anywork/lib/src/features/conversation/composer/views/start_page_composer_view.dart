@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 起始页只负责创建期外壳，内层输入组件由 connector 与运行期共用。
 class StartPageComposerView extends StatelessWidget {

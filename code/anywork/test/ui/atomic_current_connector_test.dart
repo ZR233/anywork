@@ -10,7 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -20,7 +20,7 @@ import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _source = ForegroundTurnChatSource(turnId: 'T');
@@ -142,7 +142,10 @@ Widget _host(
 }) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(disableAnimations: disableAnimations),
@@ -248,7 +251,7 @@ void main() {
         reason: '文本活动沿用普通正文样式，工具和思考窗口仍由原样式呈现',
       );
       final tail = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final pen = tester
           .widget<TimelineWritingIndicator>(
@@ -290,10 +293,10 @@ void main() {
       expect(find.byType(TimelineWritingIndicator), findsNothing);
       expect(find.text('实际活动正文'), findsNothing);
       expect(scope.closed, isTrue);
-      expect(find.byType(TimelineCatTail), findsOneWidget);
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
       h.accept([]);
       await tester.pump();
-      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byType(TimelineRestingCat), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(tester.binding.transientCallbackCount, 0);

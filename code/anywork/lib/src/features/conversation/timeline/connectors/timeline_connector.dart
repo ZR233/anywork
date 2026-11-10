@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/timeline_commands.dart';

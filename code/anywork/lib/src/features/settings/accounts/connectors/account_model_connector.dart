@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/routing/app_route.dart';
@@ -115,7 +115,7 @@ class _AccountModelConnectorState extends ConsumerState<AccountModelConnector> {
           scheduleMicrotask(() {
             if (mounted &&
                 widget.model == key &&
-                ref.exists(accountModelsViewModelProvider(key.account)) &&
+                ref.read(accountModelsViewModelProvider(key.account).exists) &&
                 identical(
                   ref.read(
                     accountModelsViewModelProvider(key.account).notifier,

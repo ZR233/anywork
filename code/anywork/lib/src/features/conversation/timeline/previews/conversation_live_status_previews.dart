@@ -1,5 +1,5 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
 import '../../../../app/theme/material3_theme.dart';
@@ -12,6 +12,7 @@ import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_activity_section.dart';
+import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
 import '../state/completion_run_presentation.dart';
@@ -21,7 +22,10 @@ Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
   debugShowCheckedModeBanner: false,
   locale: const Locale('zh'),
   theme: pureStudioTheme(locale: const Locale('zh')),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   builder: (context, appChild) => MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
@@ -108,6 +112,31 @@ Widget _status(ConversationActivityKind kind, {String? error}) =>
         errorMessage: error,
       ),
     );
+
+@Preview(name: '趴卧猫 · 尾巴摆动', group: '实时状态栏', size: Size(760, 300))
+Widget conversationRestingCatPreview() => liveStatusPreviewHost(
+  Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SizedBox.square(
+        dimension: 180,
+        child: Center(
+          child: Transform.scale(
+            scale: 7,
+            child: const TimelineActivityIndicator(
+              icon: null,
+              color: Colors.black,
+              active: true,
+            ),
+          ),
+        ),
+      ),
+      ConversationActivityBar(
+        children: [_status(ConversationActivityKind.thinking)],
+      ),
+    ],
+  ),
+);
 
 @Preview(name: '思考中 · 无内容', group: '实时状态栏', size: Size(760, 110))
 Widget conversationLiveStatusWaitingPreview() => liveStatusPreviewHost(

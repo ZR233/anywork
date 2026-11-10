@@ -9,7 +9,7 @@ import 'package:anywork/src/features/settings/statistics/views/statistics_view.d
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/statistics.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -58,7 +58,10 @@ void main() {
           MaterialApp(
             locale: locale,
             theme: presentationTheme ?? theme,
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: StatisticsView(
@@ -333,7 +336,10 @@ void main() {
           MaterialApp(
             locale: const Locale('en'),
             theme: pureStudioTheme(),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: SingleChildScrollView(
@@ -499,7 +505,10 @@ void main() {
           MaterialApp(
             locale: const Locale('en'),
             theme: pureStudioTheme(),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: SingleChildScrollView(
@@ -755,7 +764,10 @@ Future<void> _pumpStatistics(
       child: MaterialApp(
         locale: const Locale('en'),
         theme: pureStudioTheme(),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: const Scaffold(body: StatisticsConnector(visible: true)),
       ),

@@ -149,23 +149,27 @@ class _SafeQrView extends StatelessWidget {
     return SizedBox(
       width: 168,
       height: 168,
-      child: PrettyQrView.data(
-        data: url,
-        errorBuilder: (context, error, stackTrace) {
-          return ColoredBox(
-            color: context.colors.surfaceContainerHigh,
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Text(
-                  context.l10n.settingsBotsQrFailed,
-                  textAlign: TextAlign.center,
-                  style: context.text.bodySmall,
+      // pretty_qr_code still reads its theme from SDK Material.
+      // ignore: deprecated_member_use
+      child: MaterialUiCompatibilityBridge(
+        child: PrettyQrView.data(
+          data: url,
+          errorBuilder: (context, error, stackTrace) {
+            return ColoredBox(
+              color: context.colors.surfaceContainerHigh,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    context.l10n.settingsBotsQrFailed,
+                    textAlign: TextAlign.center,
+                    style: context.text.bodySmall,
+                  ),
                 ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }

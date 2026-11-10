@@ -117,6 +117,14 @@ void main() {
       source: "import '../accounts_views.dart';",
       rule: 'UI-02',
     ),
+    for (final package in ['material_ui', 'cupertino_ui'])
+      for (final layer in ['state', 'view_models'])
+        (
+          name: 'Account $layer cannot import standalone $package Widgets',
+          path: '$_accountsFeature$layer/fixture.dart',
+          source: "import 'package:$package/$package.dart';",
+          rule: 'UI-02',
+        ),
     (
       name: 'Account VM cannot import domain transport ports',
       path: '${_accountsFeature}view_models/fixture.dart',

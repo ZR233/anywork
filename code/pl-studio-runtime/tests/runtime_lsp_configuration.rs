@@ -14,7 +14,7 @@ use pl_studio_runtime::{
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
 };
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use support::{Environment, prompt_step, receipt, text_reply, tool_reply};
 
 const REPAIR_PATH: &str = ".anywork/lsp/fixture.toml";
@@ -289,8 +289,9 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
                 "failure must be actionable: {failed}"
             );
             ensure!(
-                failed["configurationPath"].as_str().is_some_and(|path|
-                    PathBuf::from(path) == directory.join(format!("{id}.toml"))),
+                failed["configurationPath"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path) == directory.join(format!("{id}.toml"))),
                 "failure must identify its source: {failed}"
             );
         }

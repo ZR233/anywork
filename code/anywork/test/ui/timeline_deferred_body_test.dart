@@ -23,7 +23,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plai
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/external_url_launcher.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -148,7 +148,10 @@ ContentWindow _window(String text, {int offset = 0, int? available}) =>
 Widget _app(Widget child) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
-  localizationsDelegates: AppLocalizations.localizationsDelegates,
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );
