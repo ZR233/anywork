@@ -695,6 +695,26 @@ Widget timelineToolDetailsPreview() => _timelinePreviewHost(
   ),
 );
 
+@Preview(
+  name: '工具 / apply_patch 修改片段',
+  group: 'Timeline · 历史组件',
+  size: Size(760, 560),
+)
+@Preview(
+  name: '工具 / apply_patch 修改片段 · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineApplyPatchPreview() => _timelinePreviewHost(
+  TimelineActivityTileTheme(
+    child: TimelineToolDetails(
+      item: (TimelinePreviewFixtures.applyPatchTool.toolCard as DecodedToolCard)
+          .value,
+      initiallyExpanded: true,
+    ),
+  ),
+);
+
 @Preview(name: '工具 / 网页搜索', group: 'Timeline · 历史组件', size: Size(720, 320))
 Widget timelineWebSearchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(

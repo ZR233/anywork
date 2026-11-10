@@ -11,6 +11,7 @@ import '../../../../shared/typed_json.dart';
 import '../state/tool_presentation.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_clock.dart';
+import 'timeline_patch_diff_view.dart';
 
 /// 默认显示的工具摘要来源：命令首行 / 路径 / 查询词。
 String? _commandSummary(String arguments) {
@@ -303,8 +304,17 @@ class TimelineToolDetails extends StatelessWidget {
           'builtin.workflow_transition@1',
           'builtin.workflow_restart@1',
         }.contains(item.presentationContract);
+    final applyPatch = item.presentationContract == 'builtin.apply_patch@1';
+    // apply_patch 成功的权威结果（changedFiles）已由行标题与诊断呈现，
+    // 展开区不再重复原始成功输出；失败/拒绝仍照旧保留错误事实。
+    final hideOutput =
+        hidePayload || (applyPatch && item.statusString == 'succeeded');
     final arguments = hidePayload ? null : tool.arguments;
-    final output = hidePayload ? null : tool.output;
+    final output = hideOutput ? null : tool.output;
+    // 直接参数路径与声明正文路径使用同一片段语义（design/26 §26.9.1）。
+    final patchBody = applyPatch
+        ? timelineApplyPatchBody(tool.arguments)
+        : null;
     final error = item.error;
     final showError =
         error != null && error.isNotEmpty && output?.trim() != error.trim();
@@ -324,7 +334,10 @@ class TimelineToolDetails extends StatelessWidget {
         ),
       if (!hidePayload && declaredContents != null) ...declaredContents!,
       if (declaredContents == null) ...[
-        if (arguments != null && arguments.trim().isNotEmpty)
+        ?patchBody,
+        if (patchBody == null &&
+            arguments != null &&
+            arguments.trim().isNotEmpty)
           StudioCodeBlock(
             text: _prettyToolPayload(arguments),
             language: context.l10n.timelineToolArguments,
