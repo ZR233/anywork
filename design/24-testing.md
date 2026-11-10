@@ -263,6 +263,10 @@ PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 x
 
 Linux 自动桌面与原生作业除 Xvfb 外，还须显式提供可初始化的系统凭据服务：在作业自有隔离目录内使用独立 D-Bus session、仅启用 secrets 组件的 GNOME Keyring 及私有 XDG 数据、配置和运行目录，不访问操作者已有凭据库。复用官方 `dbus-run-session` 管理 bus 生命周期，等待 `org.freedesktop.secrets` 注册后再运行原 xtask；服务名就绪不替代产品实际初始化和业务验收。精确 Linux 镜像声明相应命令依赖，不依赖宿主恰好已有桌面登录会话。
 
+依赖 X11 的 PID 归属窗口控制须与 GUI 实际后端一致。`xvfb-run` 只设置显示与认证变量，不限定 GTK 后端；即使没有 `WAYLAND_DISPLAY`，GTK 仍可能连接继承运行目录中的默认 Wayland socket。此类 Linux Xvfb 验收用命令级 `GDK_BACKEND=x11` 明确后端，例如 `GDK_BACKEND=x11 xvfb-run -a cargo xtask test-project --suite desktop --case realtime_presentation`；不改全局环境、不清除用户运行目录，也不把生产应用强制为 X11。继续验证真实 PID、唯一可见窗口及实际尺寸，不能以 `DISPLAY` 存在或查询连通代替窗口归属证明。官方后端选择语义见 [GTK 3 环境变量](https://docs.gtk.org/gtk3/running.html)。
+
+需要同帧多目标可见性的场景须固定并核验真实原生视口，不能仅记录请求尺寸，也不能让是否输出截图决定场景几何。复用既有原生窗口控制和 Flutter 官方字形定位，保留原 ScrollPosition 身份、实际滚动轴向、所有裁剪层的可见性与命中检查；反向列表的滚动起边不等于屏幕上沿。程序定位只准备几何，用户阅读意图仍由真实滚动输入产生；手势须符合官方测试控制器的拖动阈值，不能通过直接派发阅读模式或替换控制器伪造“返回最新”旅程。
+
 隔离服务的启动失败使该命令失败；正常或失败结束都须终止并等待自有 daemon，保留被包裹命令的原退出状态，再清理自有目录。服务就绪、业务与退出分别判定，不延长既有场景期限，不把凭据服务不可访问改成条目缺失或内存凭据成功。Keyring 的 `NoDefaultStore` 可以表示其一次原生初始化失败，不能单凭该类别推定具体 D-Bus 原因或缺少手动注册。
 
 独立 bus 结束不等于其私有运行目录内的 FUSE 挂载已经消失。退出清理先核对本次新建根目录的身份和所属用户，使用 util-linux `findmnt` 的结构化挂载信息，只对该目录内精确的 `runtime/doc`（`fuse.portal`）和 `runtime/gvfs`（`fuse.gvfsd-fuse`）、且 `user_id` 属于当前用户的挂载调用一次官方 `fusermount3 -u`。挂载已自然消失则不卸载；未知挂载、身份变化、普通卸载失败或复核仍有挂载时保留目录并明确失败，不使用强制／懒卸载、不操作用户会话挂载、不跨挂载递归删除。只有该私有根目录内已无挂载，才删除本次自有目录。清理失败不覆盖原命令的非零退出码；原命令成功而清理失败时，包装命令必须失败，不能把业务与资源收束合并成成功。

@@ -4719,6 +4719,23 @@ mod storage_fault_tests {
                 )?;
                 if explicitly_closed {
                     fixture
+                        .store
+                        .save_agent_close(&crate::studio::store::agent_close::AgentCloseRecord {
+                            agent_id: thread.id.clone(),
+                            parent_id: thread.parent_thread_id.clone().context("close parent")?,
+                            root_id: thread.root_thread_id.clone(),
+                            workspace_id: thread.workspace_id.clone(),
+                            revision: 1,
+                            force: false,
+                            worktree: None,
+                            git: None,
+                            execution_closed: true,
+                            worktree_cleanup:
+                                pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
+                            error: None,
+                        })
+                        .await?;
+                    fixture
                         .services
                         .events
                         .commit_explicit_close(&thread.id)
@@ -6234,7 +6251,7 @@ mod storage_fault_tests {
             recovered_source.ended,
             Some(pl_protocol::ChatFactPosition {
                 effect_seq: 2,
-                suborder: 0,
+                suborder: 4,
             })
         );
         assert_eq!(

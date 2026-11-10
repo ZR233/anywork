@@ -38,6 +38,7 @@ impl MigratorTraitSelf for Published13 {
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -66,6 +67,7 @@ impl MigratorTraitSelf for Published14 {
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -91,6 +93,7 @@ impl MigratorTraitSelf for Published16 {
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .collect()
@@ -772,6 +775,7 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
             COMPLETION_BOUNDARY,
             IMMUTABLE_COMPLETION_RUNS,
             DISPLAY_SNAPSHOTS,
+            DISPLAY_OBSERVATIONS,
         ];
         assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
         for step in appended_steps {
@@ -1012,12 +1016,12 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 7,
-        "content preparation appends the seven named content/display upgrades, not lifecycle migrations"
+        original_ledger.len() + 8,
+        "content preparation appends the eight named content/display upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1026,6 +1030,7 @@ async fn formal_migration_round_trip() -> Result<()> {
                 TIMELINE_BACKGROUND_TAIL.into(),
                 IMMUTABLE_COMPLETION_RUNS.into(),
                 DISPLAY_SNAPSHOTS.into(),
+                DISPLAY_OBSERVATIONS.into(),
             ],
         ))
         .await?
@@ -1041,7 +1046,8 @@ async fn formal_migration_round_trip() -> Result<()> {
             DISPLAY_SNAPSHOTS,
             COMPLETION_BOUNDARY,
             TIMELINE_BACKGROUND_TAIL,
-            IMMUTABLE_COMPLETION_RUNS
+            IMMUTABLE_COMPLETION_RUNS,
+            DISPLAY_OBSERVATIONS
         ]
     );
     for record in &original_ledger {

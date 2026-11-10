@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -17,6 +18,43 @@ import '../support/mapped_conversation_feed.dart';
 // The transport supplies only explicit facts and I/O barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('current renderer borrows coexist, unregister independently and retire together', () async {
+    final h = _Harness([chatMessage('main')]);
+    await h.open();
+    final lease = h.lease..bind();
+    final work = _CurrentDisplay();
+    final output = _CurrentDisplay();
+    final unregisterWork = lease.registerCurrentDisplay(work);
+    final unregisterOutput = lease.registerCurrentDisplay(output);
+    expect(lease.isMounted, isTrue);
+    expect(lease.currentDisplays, unorderedEquals([work, output]));
+    unregisterOutput();
+    expect(lease.currentDisplays, [work]);
+    final unregisterOutputAgain = lease.registerCurrentDisplay(output);
+    unregisterWork();
+    expect(lease.currentDisplays, [output]);
+    unregisterWork();
+    expect(lease.currentDisplays, [output]);
+    lease.registerCurrentDisplay(work);
+    output.isCurrent = false;
+    expect(lease.currentDisplays, [work]);
+    output.isCurrent = true;
+    expect(lease.currentDisplays, unorderedEquals([work, output]));
+    expect(h.transport.opens, 1, reason: 'borrowing never opens a feed');
+    final retiring = lease.retire();
+    expect(lease.isRetired, isTrue);
+    expect(lease.currentDisplays, isEmpty);
+    lease.registerCurrentDisplay(_CurrentDisplay());
+    expect(lease.currentDisplays, isEmpty);
+    unregisterOutputAgain();
+    expect(lease.currentDisplays, isEmpty);
+    // Resource registration does not take over renderer teardown.
+    expect(work.isCurrent, isTrue);
+    expect(output.isCurrent, isTrue);
+    await lease.unbind();
+    await retiring;
+  });
 
   test('Children close failure releases its display and other side without retiring Main', () async {
     final transport = _ScopedTransport();
@@ -326,6 +364,21 @@ void main() {
     expect(card.body('body'), same(body));
     expect(card.inlineText('body'), 'unchanged');
   });
+}
+
+final class _CurrentDisplay implements TimelineCurrentDisplay {
+  @override
+  bool isCurrent = true;
+  @override
+  String? get turnId => 'turn';
+  @override
+  String? get activityId => 'activity';
+  @override
+  bool get expanded => false;
+  @override
+  Iterable<TimelineCurrentCollectionDisplay> get collections => const [];
+  @override
+  Iterable<TimelineCurrentWindowDisplay> get windows => const [];
 }
 
 final class _Harness {

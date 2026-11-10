@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
@@ -125,6 +126,13 @@ Map<String, Object?> timelineWaitFailureSnapshot({
             'id': execution.id,
             'turnId': execution.turnId,
             'phase': execution.phase.name,
+          },
+    'activity': session?.activity == null
+        ? null
+        : {
+            'kind': session!.activity!.kind.name,
+            'count': session.activity!.tools.count,
+            'background': session.activity!.tools.background,
           },
     'lease': lease == null
         ? null
@@ -255,6 +263,12 @@ Finder timelineActivityTitleFinder(
   skipOffstage: skipOffstage,
 );
 
+typedef ObservedLiveDisplayRecord = ({
+  String blockId,
+  String displayId,
+  DisplayRecord record,
+});
+
 /// UI operations and synchronous borrows of the production presentation owner.
 /// No copied group/current list, payload fallback, query, or test-owned reducer.
 final class TimelineObservation {
@@ -303,6 +317,69 @@ final class TimelineObservation {
     for (final display in lease.groupDisplays) {
       if (workIds.contains(display.unitId)) yield* display.atoms;
     }
+  }
+
+  // Resolve display identity only from the admitted block or its mounted page.
+  // No query, ID decoding, or parallel member inventory is involved.
+  Iterable<ObservedLiveDisplayRecord> liveDisplayRecords(
+    LiveDisplayBlock block,
+  ) sync* {
+    switch (block.body) {
+      case SingleDisplayBlock(:final record):
+        yield (blockId: block.id, displayId: block.id, record: record);
+      case WorkDisplayBlock(:final members):
+        final group = lease.groupDisplays
+            .where(
+              (display) =>
+                  display.unitId == block.id &&
+                  display.blockReference == members &&
+                  display.expanded &&
+                  !display.loading,
+            )
+            .singleOrNull;
+        if (group == null) return;
+        expect(group.error, isNull);
+        final page = unit(block.id).expansion.members?.page;
+        if (page == null) return;
+        expect(page.block, members);
+        for (final entry in page.entries) {
+          yield (
+            blockId: block.id,
+            displayId: entry.memberKey,
+            record: entry.record,
+          );
+        }
+    }
+  }
+
+  Finder liveRenderer(ObservedLiveDisplayRecord head) {
+    final row = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineMemberAtom &&
+          widget.displayId == head.displayId &&
+          widget.record == head.record &&
+          identical(widget.content, lease.content) &&
+          widget.isActive(),
+    );
+    final block = liveBlocks.singleWhere((block) => block.id == head.blockId);
+    return block.body is WorkDisplayBlock
+        ? find.descendant(of: groupRow(block.id), matching: row)
+        : row;
+  }
+
+  TimelineCurrentDisplay currentDisplayForWork(String blockId) {
+    final parent = find.ancestor(
+      of: groupRow(blockId),
+      matching: find.byType(ConversationCurrentConnector),
+    );
+    expect(parent, findsOneWidget);
+    final current = tester.state(parent) as TimelineCurrentDisplay;
+    expect(
+      lease.currentDisplays.where((display) => identical(display, current)),
+      hasLength(1),
+    );
+    expect(current.isCurrent, isTrue);
+    return current;
   }
 
   Iterable<TimelineDisplayUnit> get workBlocks =>

@@ -1607,6 +1607,16 @@ mod tests {
 
         state.execution = None;
         state.turns = Arc::from([]);
+        state.tasks.get_mut("background").unwrap().cancel_requested = false;
+        let tool_only = projection.observe("thread", &state).unwrap();
+        assert_eq!(tool_only.turn_id.as_deref(), Some("background-turn"));
+        assert_eq!(tool_only.execution_id, None);
+        assert_eq!(tool_only.kind, ThreadActivityKind::RunningTool);
+        assert_eq!(tool_only.tools.count, 1);
+        assert_eq!(tool_only.tools.background, 0);
+        assert_eq!(tool_only.tools.active[0].call_id, "background-call");
+
+        state.tasks.get_mut("background").unwrap().cancel_requested = true;
         let background = projection.observe("thread", &state).unwrap();
         assert_eq!(background.turn_id.as_deref(), Some("background-turn"));
         assert_eq!(background.execution_id, None);

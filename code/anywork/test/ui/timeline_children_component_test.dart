@@ -974,6 +974,7 @@ Message _controllerMessage(ChatAtom item) {
 
 ChatAtom _deferred({String? body}) => ChatAtom(
   id: 'deferred',
+  completionItemId: 'deferred',
   source: const ReceiptChatSource(receiptId: 'deferred'),
   sourceOrder: null,
   kind: ChatAtomKind.text,

@@ -68,7 +68,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int _mutations = 0;
   Object? queryCleanupError;
   final Set<TimelineChildrenDisplay> _childrenDisplays = {};
-  TimelineCurrentDisplay? _currentDisplay;
+  final Set<TimelineCurrentDisplay> _currentDisplays = {};
   TimelineContentLayout? _firstContentLayout;
   int _appliedSets = 0;
   int _appliedPrepends = 0;
@@ -223,19 +223,18 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return () => _childrenDisplays.remove(display);
   }
 
-  TimelineCurrentDisplay? get currentDisplay {
-    if (_retired) return null;
-    final display = _currentDisplay;
-    return display != null && display.isCurrent ? display : null;
+  Iterable<TimelineCurrentDisplay> get currentDisplays sync* {
+    if (_retired) return;
+    for (final display in _currentDisplays) {
+      if (display.isCurrent) yield display;
+    }
   }
 
-  /// Borrows only the current mounted resource. Querying never opens its read scope.
+  /// Borrows one mounted resource. Enumeration never opens its read scope.
   void Function() registerCurrentDisplay(TimelineCurrentDisplay display) {
     if (_retired) return () {};
-    _currentDisplay = display;
-    return () {
-      if (identical(_currentDisplay, display)) _currentDisplay = null;
-    };
+    _currentDisplays.add(display);
+    return () => _currentDisplays.remove(display);
   }
 
   void _recordBatch(ChatPlacement placement) {
@@ -325,7 +324,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       }
       _childrenDisplays.clear();
       _groupDisplays.clear();
-      _currentDisplay = null;
+      _currentDisplays.clear();
       imageResources.retire();
       retirement.value = true;
       _queries = null;

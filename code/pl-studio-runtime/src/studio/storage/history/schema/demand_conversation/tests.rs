@@ -33,6 +33,7 @@ impl MigratorTraitSelf for Published11 {
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .filter(|step| {
@@ -67,6 +68,7 @@ impl MigratorTraitSelf for Published12 {
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .filter(|step| {

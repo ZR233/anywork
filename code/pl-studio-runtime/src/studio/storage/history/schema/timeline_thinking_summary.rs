@@ -69,6 +69,7 @@ mod tests {
                             | COMPLETION_BOUNDARY
                             | IMMUTABLE_COMPLETION_RUNS
                             | DISPLAY_SNAPSHOTS
+                            | DISPLAY_OBSERVATIONS
                     )
                 })
                 .collect()

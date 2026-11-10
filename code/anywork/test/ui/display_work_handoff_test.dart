@@ -46,7 +46,10 @@ void main() {
       Widget host(TimelineDisplayUnit unit, String parent) => MaterialApp(
         theme: pureStudioTheme(),
         locale: const Locale('zh'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: KeyedSubtree(

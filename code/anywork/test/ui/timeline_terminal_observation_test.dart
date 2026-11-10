@@ -242,7 +242,7 @@ void main() {
     });
     expect(
       ((cut['live'] as Map)['blocks'] as List).single,
-      containsPair('closing', false),
+      containsPair('state', 'open'),
     );
     expect(cut['mainScrollableCount'], 0);
     expect(cut['previousTurnId'], 'previous-turn');

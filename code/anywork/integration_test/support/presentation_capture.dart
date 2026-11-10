@@ -17,12 +17,15 @@ final _safeFileName = RegExp(r'^[a-z0-9][a-z0-9-]*\.png$');
 /// native window. Captures show the official integration_test render surface.
 const presentationCaptureKey = ValueKey('integration-presentation-surface');
 
-/// Request the concept's logical viewport through the existing PID-bound native
-/// window support. Never override the test view's metrics or surface size.
+/// Requests the logical viewport through the existing PID-bound native window.
+///
+/// [requireNativeResize] fixes the real viewport for layout-sensitive scenarios
+/// even without screenshot output. Never overrides test-view metrics or size.
 Future<Map<String, Object?>> configurePresentationWindow(
   WidgetTester tester, {
   double logicalWidth = 1440,
   double logicalHeight = 1000,
+  bool requireNativeResize = false,
 }) async {
   if (!logicalWidth.isFinite ||
       !logicalHeight.isFinite ||
@@ -32,7 +35,9 @@ Future<Map<String, Object?>> configurePresentationWindow(
   }
   final view = tester.view;
   WindowResizeResult? resized;
-  if (Platform.environment.containsKey(_environment)) {
+  final resizeRequested =
+      requireNativeResize || Platform.environment.containsKey(_environment);
+  if (resizeRequested) {
     final width = (logicalWidth * view.devicePixelRatio).round();
     final height = (logicalHeight * view.devicePixelRatio).round();
     ({Object error, StackTrace stackTrace})? readinessFailure;
@@ -91,7 +96,7 @@ Future<Map<String, Object?>> configurePresentationWindow(
     'guiPid': pid,
     'platform': Platform.operatingSystem,
     'resizeMethod': 'PID-bound resizeOwnedWindow; no test-view metric override',
-    'nativeResizeRequested': Platform.environment.containsKey(_environment),
+    'nativeResizeRequested': resizeRequested,
     'requestedLogicalWidth': logicalWidth,
     'requestedLogicalHeight': logicalHeight,
     'width': view.physicalSize.width / view.devicePixelRatio,
@@ -160,42 +165,45 @@ Future<WindowResizeResult> _resizePresentationWindowWhenReady(
     failureStackTrace = stackTrace;
     rethrow;
   } finally {
-    try {
-      final directory = Directory(Platform.environment[_environment]!);
-      await directory.create(recursive: true);
-      final diagnostic = {
-        'guiPid': pid,
-        'firstFrameRasterized': firstFrameRasterized,
-        'elapsedMs': elapsed.elapsedMilliseconds,
-        'retryWindowMs': 5000,
-        'deadlineScope':
-            'Re-probe window checked after synchronous calls return; '
-            'blocking X11 calls retain the outer harness deadline, '
-            'not a per-call or strict total timeout.',
-        if (failure != null) 'failure': '$failure',
-        if (failureStackTrace != null)
-          'failureStackTrace': '$failureStackTrace',
-        'observations': observations,
-      };
-      await File(
-        '${directory.path}${Platform.pathSeparator}window-readiness-$pid-${width}x$height.json',
-      ).writeAsString(
-        '${const JsonEncoder.withIndent('  ').convert(diagnostic)}\n',
-        flush: true,
-      );
-    } on Object catch (diagnosticError, diagnosticStackTrace) {
-      if (failure != null) {
-        Error.throwWithStackTrace(
-          _PresentationReadinessAndDiagnosticFailure(
-            primaryError: failure,
-            primaryStackTrace: failureStackTrace!,
-            diagnosticError: diagnosticError,
-            diagnosticStackTrace: diagnosticStackTrace,
-          ),
-          failureStackTrace,
+    final captureDirectory = Platform.environment[_environment];
+    if (captureDirectory != null) {
+      try {
+        final directory = Directory(captureDirectory);
+        await directory.create(recursive: true);
+        final diagnostic = {
+          'guiPid': pid,
+          'firstFrameRasterized': firstFrameRasterized,
+          'elapsedMs': elapsed.elapsedMilliseconds,
+          'retryWindowMs': 5000,
+          'deadlineScope':
+              'Re-probe window checked after synchronous calls return; '
+              'blocking X11 calls retain the outer harness deadline, '
+              'not a per-call or strict total timeout.',
+          if (failure != null) 'failure': '$failure',
+          if (failureStackTrace != null)
+            'failureStackTrace': '$failureStackTrace',
+          'observations': observations,
+        };
+        await File(
+          '${directory.path}${Platform.pathSeparator}window-readiness-$pid-${width}x$height.json',
+        ).writeAsString(
+          '${const JsonEncoder.withIndent('  ').convert(diagnostic)}\n',
+          flush: true,
         );
+      } on Object catch (diagnosticError, diagnosticStackTrace) {
+        if (failure != null) {
+          Error.throwWithStackTrace(
+            _PresentationReadinessAndDiagnosticFailure(
+              primaryError: failure,
+              primaryStackTrace: failureStackTrace!,
+              diagnosticError: diagnosticError,
+              diagnosticStackTrace: diagnosticStackTrace,
+            ),
+            failureStackTrace,
+          );
+        }
+        rethrow;
       }
-      rethrow;
     }
   }
 }

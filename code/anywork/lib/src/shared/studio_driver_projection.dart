@@ -285,7 +285,11 @@ TimelineDisplayFacts? _timelineFacts(
     appliedSets: lease?.appliedSets,
     appliedPrepends: lease?.appliedPrepends,
     appliedAppends: lease?.appliedAppends,
-    current: _currentDisplayJson(lease?.currentDisplay),
+    currentDisplays: [
+      for (final display
+          in lease?.currentDisplays ?? const <TimelineCurrentDisplay>[])
+        _currentDisplayJson(display),
+    ],
     groups: [
       for (final display
           in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
@@ -344,8 +348,7 @@ TimelineDisplayFacts? _timelineFacts(
 }
 
 /// Serializes only already mounted, admitted resources. No getter opens a scope or performs IO.
-Map<String, Object?>? _currentDisplayJson(TimelineCurrentDisplay? display) {
-  if (display == null || !display.isCurrent) return null;
+Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
   return {
     'turnId': display.turnId,
     'activityId': display.activityId,

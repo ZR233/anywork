@@ -502,7 +502,7 @@ void main() {
           .widget<ChatItemView>(find.byType(ChatItemView).last)
           .item;
       expect(member.atom, same(head));
-      expect(member.id, 'atom');
+      expect(member.id, 'member-key');
       await tester.tap(find.text('canonical-exec 已完成'));
       await tester.pumpAndSettle();
       expect(find.text('真实工具结果'), findsOneWidget);
@@ -764,7 +764,10 @@ class _Harness {
   Widget host() => MaterialApp(
     theme: pureStudioTheme(),
     locale: const Locale('zh'),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    localizationsDelegates: [
+      AppLocalizations.delegate,
+      ...GlobalMaterialLocalizations.delegates,
+    ],
     supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(
       body: TimelineView(

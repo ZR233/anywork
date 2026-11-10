@@ -254,7 +254,12 @@ void main() {
     );
     final taskId = startedTask.taskId;
     expect(taskId, isA<String>());
-    scene.expectBackgroundTaskLive(prepared, startedTask);
+    scene.expectBackgroundTaskLive(
+      prepared,
+      startedTask,
+      expectedKind: ThreadActivityKind.runningTool,
+      expectedBackground: 0,
+    );
     final prepareTurn = scene.latestTurnId;
     await scene.closeTurn(prepared);
     await scene.submit('[[wait_cancel]]');
@@ -271,7 +276,12 @@ void main() {
       ChatTerminalOutcome.cancelled,
     );
     expect(stoppedReceipt.atom!.kind, ChatAtomKind.turnReceipt);
-    scene.expectBackgroundTaskLive(prepared, startedTask);
+    scene.expectBackgroundTaskLive(
+      prepared,
+      startedTask,
+      expectedKind: ThreadActivityKind.runningTool,
+      expectedBackground: 0,
+    );
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -529,14 +539,16 @@ final class _Scene {
         return false;
       }
       if (checkActivity && backgroundTask != null) {
-        final tools = graph.client.conversations
+        final activity = graph.client.conversations
             .existingSession(id)
             ?.state
-            .activity
-            ?.tools;
-        if (tools == null ||
+            .activity;
+        final tools = activity?.tools;
+        if (activity?.kind != ThreadActivityKind.runningTool ||
+            tools == null ||
+            tools.count != 1 ||
             tools.active.length != 1 ||
-            tools.background != 1 ||
+            tools.background != 0 ||
             !_matchesBackgroundTask(tools.active.single, backgroundTask)) {
           return false;
         }
@@ -592,15 +604,11 @@ final class _Scene {
               : observed.liveBlocks
                     .where((block) => block.source == source)
                     .toList();
-          final activities = id == null
-              ? const <ThreadActivityToolEntry>[]
-              : graph.client.conversations
-                        .existingSession(id)
-                        ?.state
-                        .activity
-                        ?.tools
-                        .active ??
-                    const <ThreadActivityToolEntry>[];
+          final activity = id == null
+              ? null
+              : graph.client.conversations.existingSession(id)?.state.activity;
+          final activities =
+              activity?.tools.active ?? const <ThreadActivityToolEntry>[];
           final mainTools = originalLease == null
               ? const <String>[]
               : observed.mountedMembers
@@ -630,6 +638,9 @@ final class _Scene {
               'candidate=${candidate?.turnId}/${candidate?.state.status} '
               'terminal=${candidate?.state.isTerminal} expected=$outcome '
               'lease=${originalLease != null} viewportCount=$viewportCount '
+              'activity.kind=${activity?.kind.name} '
+              'activity.count=${activity?.tools.count} '
+              'activity.background=${activity?.tools.background} '
               'sameSourceLiveBlocks=${liveBlocks.map((block) => block.id).toList()}\n'
               'activeTools=${activities.map(_activityDiagnostic).toList()}\n'
               'sameSourceMountedCompletedTools=$mainTools';
@@ -714,23 +725,80 @@ final class _Scene {
 
   void expectBackgroundTaskLive(
     StudioTurnView sourceTurn,
-    _StartedBackgroundTask task,
-  ) {
-    expect(graph.client.selection.state.selectedThreadId, sourceTurn.threadId);
-    final activity = graph.client.conversations
+    _StartedBackgroundTask task, {
+    ThreadActivityKind? expectedKind,
+    required int expectedBackground,
+  }) {
+    final state = graph.client.conversations
         .existingSession(sourceTurn.threadId)
-        ?.state
-        .activity;
+        ?.state;
+    final activity = state?.activity;
+    final activeTurn = state?.activeTurn;
+    final execution = state?.runtime?.execution;
+    final activities =
+        activity?.tools.active ?? const <ThreadActivityToolEntry>[];
+    final diagnostic = <String, Object?>{
+      'selectedThreadId': graph.client.selection.state.selectedThreadId,
+      'sourceThreadId': sourceTurn.threadId,
+      'sourceTurnId': sourceTurn.turnId,
+      'submittedTurnId': _submittedTurnId,
+      'expected': {
+        'kind': expectedKind?.name,
+        'count': 1,
+        'background': expectedBackground,
+        'callId': task.callId,
+        'taskId': task.taskId,
+        'state': ThreadActivityToolState.running.name,
+      },
+      'activeTurn': activeTurn == null
+          ? null
+          : {
+              'threadId': activeTurn.threadId,
+              'turnId': activeTurn.turnId,
+              'status': activeTurn.state.status.name,
+              'activity': activeTurn.state.activity?.name,
+            },
+      'execution': execution == null
+          ? null
+          : {
+              'id': execution.id,
+              'turnId': execution.turnId,
+              'phase': execution.phase.name,
+            },
+      'activity': activity == null
+          ? null
+          : {
+              'threadId': activity.threadId,
+              'turnId': activity.turnId,
+              'kind': activity.kind.name,
+              'count': activity.tools.count,
+              'background': activity.tools.background,
+              'active': [
+                for (final entry in activities)
+                  {
+                    'callId': entry.callId,
+                    'taskId': entry.taskId,
+                    'name': entry.name,
+                    'state': entry.state.name,
+                    'ordinal': entry.ordinal,
+                    'startedAt': entry.startedAt,
+                  },
+              ],
+            },
+    };
+    (captureReport.putIfAbsent(
+      'backgroundTaskLive:$name',
+      () => <Map<String, Object?>>[],
+    ) as List<Map<String, Object?>>).add(diagnostic);
+    debugPrintSynchronously('WAIT_BACKGROUND_LIVE ${jsonEncode(diagnostic)}');
+    expect(graph.client.selection.state.selectedThreadId, sourceTurn.threadId);
     expect(activity, isNotNull);
     expect(activity!.threadId, sourceTurn.threadId);
-    final activities = activity.tools.active;
+    if (expectedKind != null) expect(activity.kind, expectedKind);
+    expect(activity.tools.count, 1);
     expect(activities, hasLength(1));
-    expect(activity.tools.background, 1);
+    expect(activity.tools.background, expectedBackground);
     expect(_matchesBackgroundTask(activities.single, task), isTrue);
-    debugPrint(
-      'WAIT_BACKGROUND_LIVE callId=${task.callId} taskId=${task.taskId} '
-      'sourceTurn=${sourceTurn.turnId} ${_activityDiagnostic(activities.single)}',
-    );
   }
 
   String _activityDiagnostic(ThreadActivityToolEntry entry) =>
@@ -909,37 +977,70 @@ final class _Scene {
     }, 'live work item with explicit member reference');
     final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
     await observed.openSourceWork(source);
-    await until(
-      () =>
-          observed.liveAtoms
-              .where(
-                (atom) =>
-                    atom.source == source &&
-                    atom.tool?.callId.startsWith(prefix) == true,
-              )
-              .length ==
-          1,
-      'exact live wait atom',
-    );
-    final atom = observed.liveAtoms.singleWhere(
-      (atom) =>
-          atom.source == source && atom.tool?.callId.startsWith(prefix) == true,
-    );
+    Iterable<ObservedLiveDisplayRecord> currentWaitRecords() => observed
+        .liveBlocks
+        .where((block) => block.state == DisplayBlockState.open)
+        .expand(observed.liveDisplayRecords)
+        .where(
+          (head) =>
+              head.record.contentSource is CurrentAtom &&
+              head.record.atom.source == source &&
+              head.record.atom.turnId == _submittedTurnId &&
+              head.record.atom.tool?.callId.startsWith(prefix) == true &&
+              head.record.atom.lifecycle is ActiveChatAtom,
+        );
+    await until(() => currentWaitRecords().length == 1, 'exact live wait atom');
+    final atom = currentWaitRecords().single.record.atom;
     expect(atom.lifecycle, isA<ActiveChatAtom>());
     expect(atom.wait?.state, ThreadWaitStateView.waiting);
-    final panel = find.byWidgetPredicate(
-      (widget) =>
-          widget is TimelineWaitPanel &&
-          widget.identity == atom.id &&
-          widget.presentation.state == ThreadWaitStateView.waiting,
-    );
-    await until(
-      () => panel.evaluate().length == 1,
-      'typed production Waiting panel',
-    );
+    final originalLease = lease;
+    final generation = originalLease.generation;
+    late Finder panel;
+    await until(() {
+      expect(lease, same(originalLease));
+      expect(originalLease.generation, generation);
+      expect(originalLease.isMounted && !originalLease.isRetired, isTrue);
+      expect(
+        graph.client.selection.state.selectedThreadId,
+        originalLease.threadId,
+      );
+      final heads = currentWaitRecords()
+          .where(
+            (head) =>
+                head.record.atom.id == atom.id &&
+                head.record.atom.source == source &&
+                head.record.atom.turnId == _submittedTurnId &&
+                head.record.atom.tool?.callId == atom.tool!.callId &&
+                head.record.atom.lifecycle is ActiveChatAtom,
+          )
+          .toList();
+      if (heads.length != 1) return false;
+      final head = heads.single;
+      expect(head.record.atom.wait?.state, ThreadWaitStateView.waiting);
+      final renderer = observed.liveRenderer(head);
+      if (renderer.evaluate().length != 1) return false;
+      panel = find.descendant(
+        of: renderer,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is TimelineWaitPanel &&
+              widget.identity == head.displayId &&
+              widget.presentation.state == ThreadWaitStateView.waiting,
+        ),
+      );
+      return panel.evaluate().length == 1;
+    }, 'typed production Waiting panel');
     expect(
-      observed.liveAtoms
-          .singleWhere((member) => member.id == atom.id)
+      currentWaitRecords()
+          .singleWhere(
+            (head) =>
+                head.record.atom.id == atom.id &&
+                head.record.atom.source == source &&
+                head.record.atom.turnId == _submittedTurnId &&
+                head.record.atom.tool?.callId == atom.tool!.callId,
+          )
+          .record
+          .atom
           .lifecycle,
       isA<ActiveChatAtom>(),
     );

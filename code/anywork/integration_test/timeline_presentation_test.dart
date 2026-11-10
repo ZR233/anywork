@@ -447,6 +447,7 @@ typedef _StreamingTurn = ({
   TimelineDisplayLease lease,
   TimelineMemberDisplay display,
   String blockId,
+  String displayId,
   DisplayBlockRef? members,
   String turnId,
   String activityId,
@@ -697,7 +698,8 @@ final class _TimelineScene {
       expect(lease, same(display));
       expect(display.isMounted && !display.isRetired, isTrue);
       for (final block in display.live.value!.blocks) {
-        for (final response in _liveBlockAtoms(display, block)) {
+        for (final head in observed.liveDisplayRecords(block)) {
+          final response = head.record.atom;
           if (response.kind != ChatAtomKind.text ||
               response.lifecycle is! ActiveChatAtom ||
               response.source != source ||
@@ -708,12 +710,12 @@ final class _TimelineScene {
               .where((content) => content.role == ChatContentRole.body)
               .singleOrNull;
           if (body == null) continue;
-          final row = _liveMember(display, response.id);
+          final row = observed.liveRenderer(head);
           if (row.evaluate().length != 1) continue;
           final member = tester.state(row) as TimelineMemberDisplay;
           final windows = member.windows.where(
             (window) =>
-                window.id == response.id &&
+                window.id == head.displayId &&
                 contentReferenceIdentity(window.reference) ==
                     contentReferenceIdentity(body.reference),
           );
@@ -730,6 +732,7 @@ final class _TimelineScene {
               lease: display,
               display: member,
               blockId: block.id,
+              displayId: head.displayId,
               members: switch (block.body) {
                 WorkDisplayBlock(:final members) => members,
                 SingleDisplayBlock() => null,
@@ -752,32 +755,11 @@ final class _TimelineScene {
     }
   }
 
-  Iterable<ChatAtom> _liveBlockAtoms(
-    TimelineDisplayLease display,
-    LiveDisplayBlock block,
-  ) => switch (block.body) {
-    SingleDisplayBlock(record: DisplayRecord(:final atom)) => [atom],
-    WorkDisplayBlock(:final members) =>
-      display.groupDisplays
-          .where(
-            (group) =>
-                group.unitId == block.id &&
-                group.blockReference == members &&
-                group.isCurrent &&
-                group.expanded &&
-                !group.loading,
-          )
-          .expand((group) {
-            expect(group.error, isNull);
-            return group.atoms;
-          }),
-  };
-
   Finder _liveMember(TimelineDisplayLease display, String id) =>
       find.byWidgetPredicate(
         (widget) =>
             widget is TimelineMemberAtom &&
-            widget.atom.id == id &&
+            widget.displayId == id &&
             identical(widget.content, display.content) &&
             widget.isActive(),
       );
@@ -795,7 +777,7 @@ final class _TimelineScene {
     await until(
       () {
         expectStreamingTurn(streaming);
-        final item = _liveMember(streaming.lease, streaming.response.id);
+        final item = _liveMember(streaming.lease, streaming.displayId);
         if (item.evaluate().length != 1) return false;
         expect(tester.state(item), same(streaming.display));
         final body = find.descendant(
@@ -886,13 +868,15 @@ final class _TimelineScene {
       WorkDisplayBlock(:final members) => members,
       SingleDisplayBlock() => null,
     }, streaming.members);
-    final row = _liveMember(display, streaming.response.id);
+    final observed = TimelineObservation(tester, () => display);
+    final head = observed
+        .liveDisplayRecords(block)
+        .singleWhere((head) => head.displayId == streaming.displayId);
+    final row = observed.liveRenderer(head);
     expect(row, findsOneWidget);
     expect(tester.state(row), same(streaming.display));
-    final response = _liveBlockAtoms(
-      display,
-      block,
-    ).singleWhere((atom) => atom.id == streaming.response.id);
+    final response = head.record.atom;
+    expect(response.id, streaming.response.id);
     expect(response.kind, ChatAtomKind.text);
     expect(response.lifecycle, isA<ActiveChatAtom>());
     expect(response.source, streaming.response.source);
@@ -906,7 +890,7 @@ final class _TimelineScene {
     );
     final window = streaming.display.windows.singleWhere(
       (window) =>
-          window.id == response.id &&
+          window.id == streaming.displayId &&
           contentReferenceIdentity(window.reference) ==
               contentReferenceIdentity(body.reference),
     );

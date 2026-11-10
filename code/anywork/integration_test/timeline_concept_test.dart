@@ -237,7 +237,7 @@ void main() {
         final boundaryLease = boundary && boundaryThread is String
             ? graph.timeline.lease(boundaryThread)
             : null;
-        final boundaryCurrent = boundaryLease?.currentDisplay;
+        final boundaryDisplays = boundaryLease?.currentDisplays.toList() ?? [];
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
         expect(
@@ -252,7 +252,7 @@ void main() {
           expect(boundaryLease.isRetired, isTrue);
           expect(boundaryLease.isReleased, isTrue);
           expect(boundaryLease.queryCleanupError, isNull);
-          if (boundaryCurrent != null) {
+          for (final boundaryCurrent in boundaryDisplays) {
             expect(boundaryCurrent.isCurrent, isFalse);
             expect(boundaryCurrent.windows, isEmpty);
           }
@@ -562,7 +562,7 @@ final class _ConceptScene {
     final state = session?.state;
     final target = selected == null ? null : graph.timeline.lease(selected);
     final snapshot = target?.live.value;
-    final current = target?.currentDisplay;
+    final currentDisplays = target?.currentDisplays.toList() ?? [];
     final status = state?.activity;
     final execution = state?.runtime?.execution;
     const activityKey = ValueKey('conversation-activity');
@@ -676,15 +676,16 @@ final class _ConceptScene {
         'contentState': target?.content.state.value.runtimeType.toString(),
         'sameSessionContent':
             session != null && identical(session.content, target?.content),
-        'currentDisplay': current == null
-            ? null
-            : {
-                'isCurrent': current.isCurrent,
-                'expanded': current.expanded,
-                'turnId': current.turnId,
-                'activityId': current.activityId,
-                'windowCount': current.windows.length,
-              },
+        'currentDisplays': [
+          for (final current in currentDisplays)
+            {
+              'isCurrent': current.isCurrent,
+              'expanded': current.expanded,
+              'turnId': current.turnId,
+              'activityId': current.activityId,
+              'windowCount': current.windows.length,
+            },
+        ],
       },
       'live': snapshot == null
           ? null
@@ -1581,7 +1582,14 @@ final class _ConceptScene {
     expect(member.contents, isNotEmpty);
     final state = graph.client.conversations.session(threadId).state;
     expect(state.activeTurn?.turnId, activeTurnId);
-    final originalCurrent = before.currentDisplay!;
+    final originalGroup = before.groupDisplays.singleWhere(
+      (display) =>
+          display.unitId == work.id &&
+          display.blockReference == work.memberReference,
+    );
+    final originalHead = work.expansion.members!.page!.entries.single;
+    expect(originalHead.record.atom.id, member.id);
+    final originalCurrent = observed.currentDisplayForWork(work.id);
     expect(originalCurrent.isCurrent, isTrue);
     final historyIds = items.map((item) => item.id).toList();
     expect(historyIds, isNotEmpty);
@@ -1608,6 +1616,8 @@ final class _ConceptScene {
     final summaryIdentity = contentReferenceIdentity(summary.reference);
     Future<TimelineCurrentWindowDisplay> readableMemberWindow(
       TimelineCurrentDisplay current,
+      TimelineGroupDisplay group,
+      DisplayMemberHead head,
       String description,
     ) async {
       TimelineCurrentWindowDisplay? observation;
@@ -1615,8 +1625,18 @@ final class _ConceptScene {
       // a missing production reference or a renderer that never opens it.
       await _until(tester, () {
         expect(current.isCurrent, isTrue);
-        final windows = current.windows
-            .where((window) => window.id == member.id)
+        expect(group.isCurrent && group.expanded, isTrue);
+        expect(group.unitId, work.id);
+        expect(group.blockReference, work.memberReference);
+        final row = observed.liveRenderer((
+          blockId: work.id,
+          displayId: head.memberKey,
+          record: head.record,
+        ));
+        if (row.evaluate().length != 1) return false;
+        final renderer = tester.state(row) as TimelineMemberDisplay;
+        final windows = renderer.windows
+            .where((window) => window.id == head.memberKey)
             .toList();
         for (final window in windows) {
           expect(window.error, isNull);
@@ -1624,6 +1644,14 @@ final class _ConceptScene {
         if (windows.isEmpty) return false;
         expect(windows, hasLength(1));
         observation = windows.single;
+        expect(
+          group.windows.where((window) => identical(window, observation)),
+          hasLength(1),
+        );
+        expect(
+          current.windows.where((window) => identical(window, observation)),
+          hasLength(1),
+        );
         expect(
           contentReferenceIdentity(observation!.reference),
           summaryIdentity,
@@ -1640,12 +1668,12 @@ final class _ConceptScene {
 
     final originalWindow = await readableMemberWindow(
       originalCurrent,
+      originalGroup,
+      originalHead,
       'the mounted original member reads the first reasoning delta',
     );
     final originalBody = originalWindow.window!;
     expect(lease, same(before));
-    final originalHead = work.expansion.members!.page!.entries.single;
-    expect(originalHead.record.atom.id, member.id);
     final selectedThread = threadId;
     await tap(find.byKey(StudioDriverKeys.settingsOpen));
     await _until(
@@ -1688,14 +1716,15 @@ final class _ConceptScene {
       isEmpty,
       reason: 'A new display lease starts folded, without member demand',
     );
-    await observed.openWork(work.id);
+    final resumedGroup = await observed.openWork(work.id);
     await _until(
       tester,
       () => live.any((atom) => atom.id == member.id && atom.source == source),
       'the same live member after explicit Work expansion',
     );
     expect(lease.generation, greaterThan(before.generation));
-    expect(lease.currentDisplay!.turnId, activeTurnId);
+    final resumedCurrent = observed.currentDisplayForWork(work.id);
+    expect(resumedCurrent.turnId, activeTurnId);
     final resumed = live.singleWhere((atom) => atom.id == member.id);
     expect(resumed.kind, member.kind);
     expect(resumed.sourceOrder, member.sourceOrder);
@@ -1712,7 +1741,9 @@ final class _ConceptScene {
     expect(resumedHead.memberOrder, originalHead.memberOrder);
     expect(resumedHead.record.atom.id, member.id);
     final resumedWindow = await readableMemberWindow(
-      after.currentDisplay!,
+      resumedCurrent,
+      resumedGroup,
+      resumedHead,
       'the newly mounted member reads the same first reasoning delta',
     );
     expect(resumedWindow, isNot(same(originalWindow)));
@@ -1756,7 +1787,7 @@ final class _ConceptScene {
   }
 
   Future<void> idle() async {
-    final current = lease.currentDisplay;
+    final currentDisplays = lease.currentDisplays.toList();
     await _until(
       tester,
       () =>
@@ -1772,8 +1803,8 @@ final class _ConceptScene {
       find.byType(ConversationCurrentConnector, skipOffstage: false),
       findsNothing,
     );
-    expect(lease.currentDisplay, isNull);
-    if (current != null) {
+    expect(lease.currentDisplays, isEmpty);
+    for (final current in currentDisplays) {
       expect(current.isCurrent, isFalse);
       expect(current.windows, isEmpty);
     }
@@ -2246,7 +2277,7 @@ final class _ConceptScene {
       find.byType(ConversationCurrentConnector, skipOffstage: false),
       findsNothing,
     );
-    expect(lease.currentDisplay, isNull);
+    expect(lease.currentDisplays, isEmpty);
     expect(find.byType(ConversationActivityBar), findsNothing);
     expect(find.byType(TimelineActivityRow), findsNothing);
     expect(find.byType(TimelineDisplayUnitView), findsNothing);
@@ -3280,7 +3311,7 @@ final class _ConceptScene {
     final reason = reasonHead.record.atom;
     final source = reason.source as ForegroundTurnChatSource;
     final owner = lease;
-    final current = lease.currentDisplay!;
+    final current = observed.currentDisplayForWork(work.id);
     final controller = lease.controller;
     final generation = lease.generation;
     expect(reason.lifecycle, isA<ActiveChatAtom>());
@@ -3410,10 +3441,132 @@ final class _ConceptScene {
     ], completedText);
     expect(originals[1].completionSeq, lessThan(originals[2].completionSeq));
     expect(originals[2].completionSeq, lessThan(originals[0].completionSeq));
-    await observed.revealMember(
-      lateEnd.record.atom,
-      reference: lateEnd.unit.memberReference!,
-    );
+    try {
+      await observed.revealMember(
+        lateEnd.record.atom,
+        reference: lateEnd.unit.memberReference!,
+      );
+    } catch (error, stack) {
+      // Capture the failing cut synchronously, before teardown or another pump.
+      // This borrows existing resources only and does not expose member bodies.
+      final failure = <String, Object?>{
+        'stage': 'a07-reasoning-terminal-header',
+        'exceptionType': error.runtimeType.toString(),
+        'stack': stack.toString(),
+      };
+      report['lateEndFailure'] = failure;
+      try {
+        final id = lateEnd.unit.id;
+        Map<String, Object?> unitCut(TimelineDisplayUnit unit) => {
+          'id': unit.id,
+          'historyPos': unit.historyPos,
+          'memberBlockId': unit.memberReference?.blockId,
+          'memberDatabaseId': unit.memberReference?.databaseId,
+        };
+        Map<String, Object?> elementCut(Element element) {
+          final render = element.findRenderObject();
+          final box = render is RenderBox && render.attached && render.hasSize
+              ? render
+              : null;
+          final bounds = box == null
+              ? null
+              : box.localToGlobal(Offset.zero) & box.size;
+          return {
+            'mounted': element.mounted,
+            'attached': render?.attached,
+            'bounds': bounds == null
+                ? null
+                : [bounds.left, bounds.top, bounds.right, bounds.bottom],
+            if (element.widget case TimelineDisplayUnitView(:final unit))
+              'unit': unitCut(unit),
+          };
+        }
+
+        failure.addAll({
+          ..._stageFailure('a07-reasoning-terminal-header', error, stack),
+          'target': unitCut(lateEnd.unit),
+          'mainMatches': [
+            for (final unit in main.where((unit) => unit.id == id))
+              unitCut(unit),
+          ],
+          'headerOnstage': observed.groupHeader(id).evaluate().length,
+          'headerAll': observed
+              .groupHeader(id, skipOffstage: false)
+              .evaluate()
+              .map(elementCut)
+              .toList(),
+          'rowsAll': observed
+              .groupRow(id, skipOffstage: false)
+              .evaluate()
+              .map(elementCut)
+              .toList(),
+          'scrollPositions': [
+            for (final position in lease.scrollController.positions)
+              {
+                'pixels': position.hasPixels ? position.pixels : null,
+                'min': position.hasContentDimensions
+                    ? position.minScrollExtent
+                    : null,
+                'max': position.hasContentDimensions
+                    ? position.maxScrollExtent
+                    : null,
+                'viewport': position.hasViewportDimension
+                    ? position.viewportDimension
+                    : null,
+              },
+          ],
+          'workParents': [
+            for (final parent
+                in find
+                    .byWidgetPredicate(
+                      (widget) =>
+                          widget is ConversationCurrentConnector &&
+                          widget.section == ConversationLiveSection.work &&
+                          identical(widget.content, lease.content),
+                      skipOffstage: false,
+                    )
+                    .evaluate())
+              {
+                ...elementCut(parent),
+                'eligible': (parent.widget as ConversationCurrentConnector)
+                    .isDisplayActive(),
+                'selectedWorkRows': [
+                  for (final row
+                      in find
+                          .descendant(
+                            of: find.byElementPredicate(
+                              (element) => identical(element, parent),
+                              skipOffstage: false,
+                            ),
+                            matching: find.byType(
+                              TimelineDisplayUnitView,
+                              skipOffstage: false,
+                            ),
+                            skipOffstage: false,
+                          )
+                          .evaluate()
+                          .take(16))
+                    elementCut(row),
+                ],
+                'latestControlCount': find
+                    .descendant(
+                      of: find.byElementPredicate(
+                        (element) => identical(element, parent),
+                        skipOffstage: false,
+                      ),
+                      matching: find.text('最新实时片段', skipOffstage: false),
+                      skipOffstage: false,
+                    )
+                    .evaluate()
+                    .length,
+              },
+          ],
+        });
+      } catch (diagnosticError) {
+        failure['diagnosticErrorType'] = diagnosticError.runtimeType.toString();
+      }
+      rethrow;
+    }
     await _until(
       tester,
       () => hasText(_overlapReasoning),

@@ -9,6 +9,7 @@ import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
@@ -208,7 +209,10 @@ void main() {
           ),
         ),
       );
-      report['nativeWindow'] = await configurePresentationWindow(tester);
+      report['nativeWindow'] = await configurePresentationWindow(
+        tester,
+        requireNativeResize: full,
+      );
       await graph.client.directoryCommands.openProject(project);
       graph.setConversationPageVisible(true);
       final scene = _RealtimeScene(tester, graph, project, report);
@@ -445,6 +449,13 @@ void main() {
       final cancelledText = await scene.untilReadableCurrentText(
         timeout: const Duration(seconds: 30),
       );
+      final cancelledDisplay = scene.observed.liveBlocks
+          .expand(scene.observed.liveDisplayRecords)
+          .singleWhere(
+            (head) =>
+                head.record.atom.id == cancelledText.id &&
+                head.record.atom.source == cancelledText.source,
+          );
       await scene.captureEvidence(
         'realtime-before-cancel.png',
         'Realtime cancellable stream; before stop request',
@@ -462,7 +473,9 @@ void main() {
         reason: 'accepted partial text survives cancellation',
       );
       expect(
-        scene.liveWindows.where((window) => window.id == cancelledText.id),
+        scene.liveWindows.where(
+          (window) => window.id == cancelledDisplay.displayId,
+        ),
         isEmpty,
       );
       Map<String, Object?> stoppedCut() {
@@ -482,7 +495,9 @@ void main() {
           hasLength(1),
         );
         expect(
-          scene.liveWindows.where((window) => window.id == cancelledText.id),
+          scene.liveWindows.where(
+            (window) => window.id == cancelledDisplay.displayId,
+          ),
           isEmpty,
         );
         return {
@@ -637,22 +652,19 @@ final class _RealtimeScene {
   }
 
   // Borrow only actual mounted live member scopes. Both Single and expanded
-  // Work members expose these windows; no Activity/currentDisplay is involved.
+  // Work members expose these windows; no Activity query is involved.
   Iterable<TimelineCurrentWindowDisplay> get liveWindows sync* {
     final original = lease;
-    final ids = observed.liveAtoms.map((atom) => atom.id).toSet();
-    final rows = find.byWidgetPredicate(
-      (widget) =>
-          widget is TimelineMemberAtom &&
-          identical(widget.content, original.content) &&
-          widget.isActive() &&
-          ids.contains(widget.atom.id),
-    );
-    for (final element in rows.evaluate()) {
-      expect(lease, same(original));
-      expect(original.isMounted && !original.isRetired, isTrue);
-      yield* ((element as StatefulElement).state as TimelineMemberDisplay)
-          .windows;
+    for (final head in observed.liveBlocks.expand(
+      observed.liveDisplayRecords,
+    )) {
+      final rows = observed.liveRenderer(head);
+      for (final element in rows.evaluate()) {
+        expect(lease, same(original));
+        expect(original.isMounted && !original.isRetired, isTrue);
+        yield* ((element as StatefulElement).state as TimelineMemberDisplay)
+            .windows;
+      }
     }
   }
 
@@ -892,12 +904,29 @@ final class _RealtimeScene {
       timeout: remaining(),
     );
     await _revealTextFragment(tester, reasoningRow, _backgroundResultReasoning);
-    // The foreground disclosure can resize Main after its first reveal.
+    // Reserve the remaining Main viewport for the foreground Work; the cut
+    // below still requires its header and both glyph ranges in the same frame.
+    final mainPosition = prepared.lease.scrollController.position;
+    final backgroundAlignment = switch (mainPosition.axisDirection) {
+      AxisDirection.up => 1.0,
+      AxisDirection.down => 0.0,
+      _ => throw StateError('Main timeline must scroll vertically'),
+    };
+    evidence['backgroundRevealFraming'] = {
+      'mainAxis': mainPosition.axisDirection.name,
+      'alignment': backgroundAlignment,
+      'mainViewportExtent': mainPosition.viewportDimension,
+      'actualLogicalWidth':
+          tester.view.physicalSize.width / tester.view.devicePixelRatio,
+      'actualLogicalHeight':
+          tester.view.physicalSize.height / tester.view.devicePixelRatio,
+    };
     await _revealTextFragment(
       tester,
       backgroundOutput,
       'realtime-parallel-a-line-05',
-      expectedScrollPosition: lease.scrollController.position,
+      alignment: backgroundAlignment,
+      expectedScrollPosition: mainPosition,
     );
     remaining();
     final executionId = graph.client.conversations
@@ -2679,39 +2708,78 @@ final class _RealtimeScene {
 
   Future<void> returnAfterReadingHistory() async {
     // Programmatic revelation is not a user's reading intent.
-    final scroll = lease.scrollController;
+    final originalLease = lease;
+    final generation = originalLease.generation;
+    final scroll = originalLease.scrollController;
     expect(scroll.hasClients, isTrue);
-    if (scroll.position.maxScrollExtent <= 0.5) return;
+    final position = scroll.position;
+    if (position.maxScrollExtent <= 0.5) return;
+    void expectOriginalPosition() {
+      expect(lease, same(originalLease));
+      expect(originalLease.generation, generation);
+      expect(originalLease.isMounted && !originalLease.isRetired, isTrue);
+      expect(originalLease.scrollController, same(scroll));
+      expect(scroll.hasClients, isTrue);
+      expect(scroll.position, same(position));
+    }
+
+    expectOriginalPosition();
     final main = find.byWidgetPredicate(
       (widget) => widget is Scrollable && identical(widget.controller, scroll),
     );
-    final towardLatest = scroll.position.pixels > 0.5;
-    final distance =
-        (towardLatest
-                ? scroll.position.pixels / 2
-                : scroll.position.maxScrollExtent / 2)
-            .clamp(1.0, 60.0)
-            .toDouble();
-    final delta = towardLatest ? -distance : distance;
-    debugPrintSynchronously(
-      'Main history gesture: ${jsonEncode({'mode': lease.mode.name, 'pixels': scroll.position.pixels, 'maxExtent': scroll.position.maxScrollExtent, 'axis': scroll.position.axisDirection.name, 'logicalDelta': delta})}',
-    );
-    await tester.drag(main, switch (scroll.position.axisDirection) {
-      AxisDirection.up => Offset(0, delta),
-      AxisDirection.down => Offset(0, -delta),
-      _ => throw StateError('Main timeline must scroll vertically'),
-    });
+    expect(main, findsOneWidget);
+    final beforePixels = position.pixels;
+    // Establish latest geometry only. The subsequent real drag must separately
+    // produce the user ScrollUpdate that admits production history mode.
+    scroll.jumpTo(position.minScrollExtent);
     await tester.pump();
+    expect(tester.takeException(), isNull);
+    expectOriginalPosition();
+    final distance = position.viewportDimension / 4;
+    expect(distance, greaterThan(kDragSlopDefault));
+    final delta = switch (position.axisDirection) {
+      AxisDirection.up => Offset(0, distance),
+      AxisDirection.down => Offset(0, -distance),
+      _ => throw StateError('Main timeline must scroll vertically'),
+    };
     final latest = find.byKey(StudioDriverKeys.timelineReturnLive);
-    await until(
-      () => latest.hitTestable().evaluate().isNotEmpty,
-      'production return-to-latest action after reading history',
+    Map<String, Object?> gestureCut() => {
+      'beforePixels': beforePixels,
+      'pixels': position.pixels,
+      'maxExtent': position.maxScrollExtent,
+      'axis': position.axisDirection.name,
+      'viewportDimension': position.viewportDimension,
+      'plannedDrag': {'dx': delta.dx, 'dy': delta.dy},
+      'mode': originalLease.mode.name,
+      'returnButtonOnstage': latest.evaluate().length,
+      'returnButtonAll': find
+          .byKey(StudioDriverKeys.timelineReturnLive, skipOffstage: false)
+          .evaluate()
+          .length,
+      'returnButtonHitTestable': latest.hitTestable().evaluate().length,
+    };
+    debugPrintSynchronously(
+      'Main history gesture prepared: ${jsonEncode(gestureCut())}',
     );
+    await tester.drag(main, delta);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expectOriginalPosition();
+    debugPrintSynchronously(
+      'Main history gesture applied: ${jsonEncode(gestureCut())}',
+    );
+    await until(() {
+      expectOriginalPosition();
+      return originalLease.mode == TimelineDisplayMode.history &&
+          latest.evaluate().length == 1 &&
+          latest.hitTestable().evaluate().length == 1;
+    }, 'production return-to-latest action after reading history');
     await tap(latest);
-    await until(
-      () => scroll.position.pixels.abs() < 0.5,
-      'latest timeline viewport after reading receipts',
-    );
+    await until(() {
+      expectOriginalPosition();
+      return position.pixels.abs() < 0.5 &&
+          originalLease.mode == TimelineDisplayMode.live;
+    }, 'latest timeline viewport after reading receipts');
   }
 
   Future<void> until(
@@ -3100,21 +3168,25 @@ final class _RealtimeScene {
             }
             previousObservation = signature;
           }
-          for (final atom in candidates) {
+          for (final head in observed.liveBlocks.expand(
+            observed.liveDisplayRecords,
+          )) {
+            final atom = head.record.atom;
+            if (!candidates.any(
+              (candidate) =>
+                  candidate.id == atom.id && candidate.source == atom.source,
+            )) {
+              continue;
+            }
             if (liveCut?.executionPresent != true) continue;
-            final row = find.byWidgetPredicate(
-              (widget) =>
-                  widget is TimelineMemberAtom &&
-                  widget.atom.id == atom.id &&
-                  identical(widget.content, lease.content) &&
-                  widget.isActive(),
-            );
+            final row = observed.liveRenderer(head);
+            if (row.evaluate().length != 1) continue;
             final view = find.descendant(
               of: row,
               matching: find.byWidgetPredicate(
                 (widget) =>
                     widget is ConversationCurrentWindowView &&
-                    widget.id == atom.id &&
+                    widget.id == head.displayId &&
                     widget.error == null &&
                     widget.text.isNotEmpty,
               ),
@@ -3124,10 +3196,11 @@ final class _RealtimeScene {
                 .where((content) => content.role == ChatContentRole.body)
                 .singleOrNull;
             if (body == null) continue;
-            final windows = allWindows
+            final renderer = tester.state(row) as TimelineMemberDisplay;
+            final windows = renderer.windows
                 .where(
                   (window) =>
-                      window.id == atom.id &&
+                      window.id == head.displayId &&
                       contentReferenceIdentity(window.reference) ==
                           contentReferenceIdentity(body.reference),
                 )
@@ -3169,51 +3242,145 @@ final class _RealtimeScene {
     }
   }
 
-  Finder _unscopedToolCard(ChatAtom atom) {
-    final reading = tester
-        .widgetList<ChatItemView>(observed.memberRow(atom.id))
-        .singleOrNull
-        ?.item
-        .toolCard;
-    // Use the renderer's same typed facts for active and completed waits.
-    final wait =
-        atom.wait ?? (reading is DecodedToolCard ? reading.value.wait : null);
-    return wait != null
-        ? find.byWidgetPredicate(
-            (widget) =>
-                widget is TimelineWaitPanel && widget.identity == atom.id,
+  bool _sameToolAtom(ChatAtom candidate, ChatAtom atom) =>
+      candidate.id == atom.id &&
+      candidate.source == atom.source &&
+      candidate.turnId == atom.turnId &&
+      candidate.kind == atom.kind &&
+      candidate.tool?.callId == atom.tool?.callId &&
+      candidate.tool?.name == atom.tool?.name &&
+      (candidate.lifecycle is ActiveChatAtom) ==
+          (atom.lifecycle is ActiveChatAtom) &&
+      candidate.completionItemId == atom.completionItemId &&
+      candidate.completionSeq == atom.completionSeq;
+
+  bool _isOriginalToolCompletion(DisplayRecord record, ChatAtom atom) {
+    final source = record.contentSource;
+    return atom.lifecycle is TerminalChatAtom &&
+        record.atom.lifecycle is TerminalChatAtom &&
+        source is CompletedOriginal &&
+        atom.completionItemId != null &&
+        atom.completionSeq != null &&
+        source.completionId == atom.completionItemId &&
+        _sameToolAtom(record.atom, atom);
+  }
+
+  Iterable<ObservedLiveDisplayRecord> _toolDisplayRecords(ChatAtom atom) sync* {
+    for (final block in observed.liveBlocks) {
+      for (final head in observed.liveDisplayRecords(block)) {
+        if (!_sameToolAtom(head.record.atom, atom)) continue;
+        if (atom.lifecycle is ActiveChatAtom) {
+          if (block.state != DisplayBlockState.open ||
+              head.record.contentSource is! CurrentAtom) {
+            continue;
+          }
+        } else if (!_isOriginalToolCompletion(head.record, atom)) {
+          continue;
+        }
+        yield head;
+      }
+    }
+    // Completed tools can still be borrowed from their mounted original Work.
+    // Read only that renderer's admitted page, never open another member query.
+    if (atom.lifecycle is! TerminalChatAtom ||
+        atom.completionItemId == null ||
+        atom.completionSeq == null) {
+      return;
+    }
+    for (final unit in observed.workBlocks) {
+      final display = lease.groupDisplays
+          .where(
+            (display) =>
+                display.unitId == unit.id &&
+                display.blockReference == unit.memberReference &&
+                display.expanded &&
+                !display.loading,
           )
-        : find.byWidgetPredicate(
-            (widget) =>
-                widget is TimelineToolDetails &&
-                widget.item.id == atom.id &&
-                widget.item.toolCallId == atom.tool?.callId &&
-                widget.item.name == atom.tool?.name,
+          .singleOrNull;
+      if (display == null) continue;
+      expect(display.error, isNull);
+      final page = unit.expansion.members?.page;
+      if (page == null) continue;
+      expect(page.block, display.blockReference);
+      for (final head in page.entries) {
+        if (_isOriginalToolCompletion(head.record, atom)) {
+          yield (
+            blockId: unit.id,
+            displayId: head.memberKey,
+            record: head.record,
           );
+        }
+      }
+    }
+  }
+
+  Finder _unscopedToolCard(
+    ChatAtom atom, {
+    List<ObservedLiveDisplayRecord>? records,
+  }) {
+    final heads = records ?? _toolDisplayRecords(atom).toList();
+    final waitIds = <String>{};
+    for (final head in heads) {
+      final reading = tester
+          .widgetList<ChatItemView>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is ChatItemView &&
+                  widget.item.id == head.displayId &&
+                  widget.item.atom != null &&
+                  _sameToolAtom(widget.item.atom!, atom),
+            ),
+          )
+          .singleOrNull
+          ?.item
+          .toolCard;
+      // Use the actual renderer's typed facts for active and completed waits.
+      if (head.record.atom.wait != null ||
+          (reading is DecodedToolCard && reading.value.wait != null)) {
+        waitIds.add(head.displayId);
+      }
+    }
+    return find.byWidgetPredicate(
+      (widget) => heads.any(
+        (head) => waitIds.contains(head.displayId)
+            ? widget is TimelineWaitPanel && widget.identity == head.displayId
+            : widget is TimelineToolDetails &&
+                  widget.item.id == head.displayId &&
+                  widget.item.toolCallId == atom.tool?.callId &&
+                  widget.item.name == atom.tool?.name,
+      ),
+    );
   }
 
   Finder currentToolCard(ChatAtom atom) {
+    final originalLease = lease;
     final active = atom.lifecycle is ActiveChatAtom;
+    final heads = _toolDisplayRecords(atom).toList();
     final runs = [
-      if (!active)
-        for (final display in lease.groupDisplays)
-          if (display.isCurrent &&
-              display.atoms.any(
-                (member) =>
-                    member.completionItemId == atom.completionItemId &&
-                    member.completionSeq == atom.completionSeq,
-              ))
-            display.blockReference,
+      for (final display in originalLease.groupDisplays)
+        if (display.isCurrent &&
+            heads.any((head) => head.blockId == display.unitId))
+          display.blockReference,
     ];
+    final singles = observed.liveBlocks.where(
+      (block) =>
+          block.body is SingleDisplayBlock &&
+          heads.any((head) => head.blockId == block.id),
+    );
     final scope = find.byWidgetPredicate(
-      (widget) => active
-          ? widget is ConversationCurrentConnector &&
-                identical(widget.content, lease.content) &&
-                widget.isDisplayActive()
-          : widget is CompletionRunConnector &&
-                widget.threadId == lease.threadId &&
-                runs.contains(widget.unit.memberReference) &&
-                widget.unit.expansion.expanded == true,
+      (widget) =>
+          originalLease.isMounted &&
+          !originalLease.isRetired &&
+          ((widget is ConversationCurrentConnector &&
+                  singles.isNotEmpty &&
+                  identical(widget.content, originalLease.content) &&
+                  widget.isDisplayActive()) ||
+              (widget is CompletionRunConnector &&
+                  widget.threadId == originalLease.threadId &&
+                  identical(widget.content, originalLease.content) &&
+                  heads.any((head) => head.blockId == widget.unit.id) &&
+                  runs.contains(widget.unit.memberReference) &&
+                  widget.unit.expansion.expanded == true)),
     );
     final member = find.descendant(
       of: scope,
@@ -3221,23 +3388,34 @@ final class _RealtimeScene {
         (widget) =>
             widget is TimelineMemberAtom &&
             widget.isActive() &&
+            heads.any(
+              (head) =>
+                  widget.displayId == head.displayId &&
+                  widget.record == head.record,
+            ) &&
             widget.atom.id == atom.id &&
             widget.atom.source == atom.source &&
             (widget.atom.lifecycle is ActiveChatAtom) == active &&
             widget.atom.completionItemId == atom.completionItemId &&
             widget.atom.completionSeq == atom.completionSeq &&
             (active
-                ? identical(widget.content, lease.content)
+                ? identical(widget.content, originalLease.content)
                 : atom.completionItemId != null &&
                       atom.lifecycle is TerminalChatAtom),
       ),
     );
-    return find.descendant(of: member, matching: _unscopedToolCard(atom));
+    return find.descendant(
+      of: member,
+      matching: _unscopedToolCard(atom, records: heads),
+    );
   }
 
   Map<String, Object?> _toolFinderObservation(ChatAtom atom) {
     final all = _unscopedToolCard(atom).evaluate().toList();
     return {
+      'displayIds': _toolDisplayRecords(atom)
+          .map((head) => head.displayId)
+          .toList(),
       'unscopedCount': all.length,
       'qualifiedCount': currentToolCard(atom).evaluate().length,
       'matches': [
@@ -3251,6 +3429,7 @@ final class _RealtimeScene {
               if (widget is TimelineMemberAtom) {
                 match['member'] = {
                   'id': widget.atom.id,
+                  'displayId': widget.displayId,
                   'lifecycle': widget.atom.lifecycle.runtimeType.toString(),
                   'completionItemId': widget.atom.completionItemId,
                   'completionSeq': widget.atom.completionSeq,
@@ -3571,6 +3750,7 @@ Future<void> _revealTextFragment(
   WidgetTester tester,
   Finder finder,
   String fragment, {
+  double alignment = 0.5,
   ScrollPosition? expectedScrollPosition,
 }) async {
   expect(_laidOut(finder), isTrue);
@@ -3605,9 +3785,9 @@ Future<void> _revealTextFragment(
   if (expectedScrollPosition != null) {
     expect(position, same(expectedScrollPosition));
   }
-  // Center the actual glyph range in its own viewport. Edge-only implicit
-  // reveal can leave the first line clipped after a disclosure changes layout.
-  final reveal = viewport.getOffsetToReveal(paragraph, 0.5, rect: bounds);
+  // Align the actual glyph range in its own viewport, centered by default.
+  // Explicit edge alignment can reserve space for related content in Main.
+  final reveal = viewport.getOffsetToReveal(paragraph, alignment, rect: bounds);
   await position.moveTo(reveal.offset, duration: Duration.zero);
   await tester.pump();
   expect(tester.takeException(), isNull);

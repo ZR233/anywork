@@ -30,7 +30,10 @@ impl MigratorTraitSelf for Published16 {
         .filter(|step| {
             !matches!(
                 step.name(),
-                COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS | DISPLAY_SNAPSHOTS
+                COMPLETION_BOUNDARY
+                    | IMMUTABLE_COMPLETION_RUNS
+                    | DISPLAY_SNAPSHOTS
+                    | DISPLAY_OBSERVATIONS
             )
         })
         .collect()
