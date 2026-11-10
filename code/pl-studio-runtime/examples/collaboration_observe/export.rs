@@ -7,13 +7,63 @@ use pl_protocol::{
     PayloadData, ReadDemand,
 };
 use pl_studio_runtime::{ConversationEvent, ConversationReader, StudioRuntime};
-use std::{collections::HashSet, io::Write};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io::Write,
+};
 
 const DEMAND: ReadDemand = ReadDemand {
     max_items: 100,
     max_bytes: 256 * 1024,
 };
 const WINDOW_BYTES: u32 = 64 * 1024;
+
+/// Background handoff and terminal delivery are separate immutable records. Match the
+/// complete invocation identity across exported scopes; a handoff is not a running task.
+#[derive(Default)]
+struct ToolCompletionEvidence {
+    handoffs: BTreeMap<(String, String), String>,
+    terminals: BTreeMap<(String, String), String>,
+    unknown: Vec<String>,
+}
+
+impl ToolCompletionEvidence {
+    fn observe(&mut self, data: &serde_json::Value, path: &str) -> Result<()> {
+        let identity = data["invocation"]["callId"]
+            .as_str()
+            .zip(data["invocation"]["taskId"].as_str())
+            .map(|(call, task)| (call.to_owned(), task.to_owned()));
+        match data["state"]["kind"].as_str() {
+            Some(state @ ("succeeded" | "failed" | "denied" | "cancelled" | "interrupted")) => {
+                if let Some(identity) = identity {
+                    if let Some(previous) = self.terminals.get(&identity) {
+                        ensure!(previous == state, "conflicting terminal tool evidence");
+                    }
+                    self.terminals.insert(identity, state.into());
+                }
+            }
+            Some("backgroundStarted") => {
+                let identity = identity.context("background handoff omitted call/task identity")?;
+                self.handoffs.entry(identity).or_insert_with(|| path.into());
+            }
+            _ => self.unknown.push(path.into()),
+        }
+        Ok(())
+    }
+
+    fn unresolved(&self) -> Vec<&str> {
+        self.unknown
+            .iter()
+            .map(String::as_str)
+            .chain(
+                self.handoffs
+                    .iter()
+                    .filter(|(identity, _)| !self.terminals.contains_key(*identity))
+                    .map(|(_, path)| path.as_str()),
+            )
+            .collect()
+    }
+}
 
 pub(super) async fn thread(
     runtime: &StudioRuntime,
@@ -37,6 +87,7 @@ pub(super) async fn thread(
     evidence.json(&format!("{prefix}/snapshot.json"), id, &snapshot)?;
     let mut scopes = vec![ChatScope::Main];
     let mut parents = HashSet::new();
+    let mut tools = ToolCompletionEvidence::default();
     let mut cursor = None;
     let mut page_index = 0;
     loop {
@@ -217,6 +268,9 @@ pub(super) async fn thread(
                             ChatAtomKind::Plan => payload_kind == Some("plan"),
                             ChatAtomKind::Compaction => payload_kind == Some("contextCompaction"),
                             ChatAtomKind::TurnReceipt => payload_kind == Some("turn"),
+                            ChatAtomKind::Raw => payload_kind == Some("raw"),
+                            ChatAtomKind::Agent => payload_kind == Some("agent"),
+                            ChatAtomKind::Inference => payload_kind == Some("inference"),
                             ChatAtomKind::Receipt | ChatAtomKind::Unknown => true,
                         };
                         ensure!(
@@ -262,20 +316,10 @@ pub(super) async fn thread(
                             }
                         }
                         if value["type"] == "tool" {
-                            let state = value["data"]["state"]["kind"].as_str();
-                            if !matches!(
-                                state,
-                                Some(
-                                    "succeeded" | "failed" | "denied" | "cancelled" | "interrupted"
-                                )
-                            ) {
-                                let path = format!("{item_prefix}.nonterminal.json");
-                                evidence.json(&path, identity, &value)?;
-                                manifest.thread_exports[export_index].nonterminal_tools += 1;
-                                manifest.unfinished.push(format!(
-                                    "{id}: exported tool has nonterminal/unknown state; see {path}"
-                                ));
-                            }
+                            tools.observe(
+                                &value["data"],
+                                &format!("{item_prefix}.payload.json"),
+                            )?;
                         }
                     }
                     // Manifests are producer-supplied. Do not decode tool history
@@ -353,8 +397,71 @@ pub(super) async fn thread(
         read?;
         scope_index += 1;
     }
+    let unresolved = tools.unresolved();
+    manifest.thread_exports[export_index].nonterminal_tools = unresolved.len();
+    for path in unresolved {
+        manifest.unfinished.push(format!(
+            "{id}: exported tool lacks terminal evidence or has unknown state; see {path}"
+        ));
+    }
     manifest.thread_exports[export_index].complete = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(call: &str, task: &str, state: &str) -> serde_json::Value {
+        serde_json::json!({
+            "invocation": {"callId": call, "taskId": task},
+            "state": {"kind": state},
+        })
+    }
+
+    #[test]
+    fn handoff_requires_matching_terminal_delivery_not_another_call_or_task() -> Result<()> {
+        let mut evidence = ToolCompletionEvidence::default();
+        evidence.observe(&tool("a", "task-a", "backgroundStarted"), "main/a.json")?;
+        evidence.observe(&tool("a", "task-a", "backgroundStarted"), "children/a.json")?;
+        evidence.observe(&tool("b", "task-a", "succeeded"), "other-call.json")?;
+        evidence.observe(&tool("a", "task-b", "succeeded"), "other-task.json")?;
+        assert_eq!(evidence.unresolved(), ["main/a.json"]);
+        evidence.observe(&tool("a", "task-a", "succeeded"), "terminal.json")?;
+        assert!(evidence.unresolved().is_empty());
+
+        let mut reversed = ToolCompletionEvidence::default();
+        reversed.observe(&tool("a", "task-a", "failed"), "terminal-first.json")?;
+        reversed.observe(
+            &tool("a", "task-a", "backgroundStarted"),
+            "handoff-later.json",
+        )?;
+        assert!(reversed.unresolved().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_states_missing_identity_and_conflicting_terminals_remain_fail_closed() -> Result<()>
+    {
+        let mut evidence = ToolCompletionEvidence::default();
+        evidence.observe(&tool("a", "task-a", "running"), "running.json")?;
+        evidence.observe(&tool("a", "task-a", "succeeded"), "terminal.json")?;
+        assert_eq!(evidence.unresolved(), ["running.json"]);
+        assert!(
+            evidence
+                .observe(&tool("a", "task-a", "failed"), "conflict.json")
+                .is_err()
+        );
+        assert!(
+            evidence
+                .observe(
+                    &serde_json::json!({"state": {"kind": "backgroundStarted"}}),
+                    "missing.json",
+                )
+                .is_err()
+        );
+        Ok(())
+    }
 }
 
 #[expect(

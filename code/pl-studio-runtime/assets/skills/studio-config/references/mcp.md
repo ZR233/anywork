@@ -151,12 +151,31 @@ server document and set `enabled = false` instead.
 ## Apply, inspect and repair
 
 Settings document creation/update validates and publishes the catalog, then
-reconciles affected open Threads. Direct filesystem edits require explicit reload
-of the corresponding MCP catalog in Settings; file creation alone does not publish
-it. The product API is `reload_mcp_catalog`, not necessarily a model-exposed tool.
-If the current tool inventory has no reload operation, state the required Settings
-reload; do not claim a new tool is usable before it appears. Restarting Studio is
+incrementally reconciles affected open Threads; deletion and explicit reload use
+the same application path. Unchanged servers keep their connections. Direct
+filesystem edits require explicit reload; file creation alone does not publish
+them. Use Settings reload (`reload_mcp_catalog`) or the model-facing `refresh_mcp`
+when that tool is present in the current Thread's inventory. Restarting Studio is
 not a repair for malformed configuration.
+
+Call `refresh_mcp` with an empty object. Its target is the calling Thread's fixed
+execution scope; an SSH Thread also reloads its Host inheritance. It accepts no
+Thread ID, scope, path, command or credential override, and does not edit files.
+It applies configuration differences and re-lists tools over available connections,
+without restarting all servers. Inspect the returned catalog revision, runtime
+generation, per-server discovery results and tool-directory installation state.
+Connecting, skipped and failed entries are not successful discoveries; preserve
+their diagnostics. A discovery failure keeps the still-valid previous tool list.
+Servers still connecting publish their tools after initialization.
+If configuration changes while discovery is running, the obsolete refresh may
+return an expiration error instead of a success receipt for the old revision.
+Inspect the current configuration and Thread state before refreshing again.
+Deleted or disabled capabilities cannot be reauthorized by a late old tool list.
+
+`discover_tools` remains a read-only search of the calling Thread's frozen tool
+directory, not a reload operation. After refresh, discover the actual updated
+tools and schemas before invoking them; do not claim usability solely from a
+saved file or a runtime generation.
 
 The Settings catalog describes desired configuration, not connection health.
 Inspect the target Thread's MCP state and discovered tools; connections belong to

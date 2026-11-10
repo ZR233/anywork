@@ -164,6 +164,35 @@ async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
 #[derive(Debug)]
 struct FenceTool(Arc<Mutex<Vec<u64>>>);
 
+#[tokio::test]
+async fn revoked_late_registration_is_rejected_and_closed_by_original_owner() {
+    use pl_core::tool::opaque::ToolAuthorization;
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("late-revoked".into(), DynModelSession::new(model)).unwrap();
+    let authorization = ToolAuthorization::unique();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let candidate = Registration::prepare("late".into(), OpaquePayload::text("late"))
+        .unwrap()
+        .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+            events,
+        )))
+        .with_authorization(authorization.clone());
+    authorization.revoke();
+    assert!(matches!(
+        thread
+            .register_tools_if_extensions(thread.snapshot().extension_sequence, vec![candidate])
+            .await,
+        Err(ThreadError::ToolPermissionRevoked)
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        assert_eq!(received.recv().await, Some("closed"));
+        assert_eq!(received.recv().await, Some("dropped"));
+    })
+    .await
+    .expect("revoked candidate lost its cleanup owner");
+    thread.close().await.unwrap();
+}
+
 #[derive(Debug)]
 struct FailingClose {
     first: AtomicBool,
@@ -298,6 +327,16 @@ impl Drop for InFlightTool {
 
 #[tokio::test]
 async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
+    replaced_executor_result_is_committed(false).await;
+}
+
+#[tokio::test]
+async fn an_accepted_result_survives_authority_revocation() {
+    replaced_executor_result_is_committed(true).await;
+}
+
+async fn replaced_executor_result_is_committed(revoke: bool) {
+    let authority = pl_core::tool::opaque::ToolAuthorization::unique();
     let (model, _) = ScriptedModel::new(&["leased"]);
     let thread = ThreadHandle::start("frozen-tool".into(), DynModelSession::new(model)).unwrap();
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -310,6 +349,7 @@ async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
                     events,
                     release: release.clone(),
                 }))
+                .with_authorization(authority.clone())
                 .foreground_coexisting(),
         ])
         .await
@@ -319,6 +359,9 @@ async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
         tokio::spawn(async move { thread.run_turn(turn("lease")).await })
     };
     assert_eq!(received.recv().await, Some("executing"));
+    if revoke {
+        authority.revoke();
+    }
     thread.register_tools(Vec::new()).await.unwrap();
     assert!(
         received.try_recv().is_err(),

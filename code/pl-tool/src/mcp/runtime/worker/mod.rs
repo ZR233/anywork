@@ -15,9 +15,9 @@ use rmcp::model::Tool;
 use tokio::sync::{broadcast, mpsc};
 
 use super::{LeaseSnapshot, McpGeneration, McpResetScope, RuntimeCommand, ShutdownCompletion};
-use crate::mcp::McpConnector;
 use crate::mcp::config::EffectiveMcpServerConfig;
 use crate::mcp::health::{McpAvailabilityKind, McpAvailabilitySnapshot};
+use crate::mcp::{McpConnector, McpServerToolRefresh, McpToolRefreshReport, McpToolRefreshStatus};
 
 mod dispatch;
 mod reconcile;
@@ -26,8 +26,8 @@ mod server;
 mod tools;
 
 use reconcile::{
-    ActivePreparation, PendingReconcile, await_preparation, cancel_and_collect_reconciles,
-    prepare_generation,
+    ActivePreparation, PendingMutation, PendingReconcile, await_preparation,
+    cancel_and_collect_reconciles, prepare_generation,
 };
 use server::{
     RuntimeGeneration, assign_tool_descriptors, reset_failed, server_fingerprint, unique_sessions,
@@ -62,6 +62,14 @@ struct RuntimeWorker {
 
 struct ActiveToolRefresh {
     future: BoxFuture<'static, ToolRefreshCandidate>,
+}
+
+/// The worker owns discovery even if the requesting future is dropped. No new sessions
+/// are created here, and shutdown drops the discovery future before closing its session.
+struct ExplicitToolRefresh {
+    remaining: VecDeque<String>,
+    servers: Vec<McpServerToolRefresh>,
+    reply: tokio::sync::oneshot::Sender<Result<McpToolRefreshReport>>,
 }
 
 struct ToolRefreshCandidate {
@@ -109,12 +117,89 @@ impl RuntimeWorker {
         let mut preparation = None;
         let mut pending_tool_refreshes = BTreeSet::new();
         let mut tool_refresh = None;
+        let mut explicit_refresh: Option<ExplicitToolRefresh> = None;
         loop {
             if !self.shutting_down && preparation.is_none() && tool_refresh.is_none() {
-                if let Some(request) = pending.pop_front() {
-                    preparation = Some(self.start_preparation(request));
-                } else if let Some(server_id) = pending_tool_refreshes.pop_first() {
+                if explicit_refresh.is_none() {
+                    match pending.pop_front() {
+                        Some(PendingMutation::Reconcile(mut request)) => {
+                            if request.config_authority.is_none() {
+                                request.config_authority =
+                                    self.current_generation().config_authority.clone();
+                            }
+                            if request
+                                .config_authority
+                                .as_ref()
+                                .is_some_and(|authority| !authority.is_active())
+                            {
+                                let _ = request.reply.send(Err(expired_authority_error()));
+                                continue;
+                            }
+                            // Compare against the configuration at this serial queue position,
+                            // not the older generation that was current when it was enqueued.
+                            // Equal policy identities can still have independent revocation flags.
+                            if request.reset_scope.is_none()
+                                && match (
+                                    request.config_authority.as_ref(),
+                                    self.current_generation().config_authority.as_ref(),
+                                ) {
+                                    (None, None) => true,
+                                    (Some(requested), Some(current)) => {
+                                        requested.same_instance(current)
+                                    }
+                                    _ => false,
+                                }
+                                && self.current_generation().authorization.is_active()
+                                && self.configuration_matches(&request.servers)
+                            {
+                                let _ = request.reply.send(Ok(()));
+                                continue;
+                            }
+                            preparation = Some(self.start_preparation(request));
+                        }
+                        Some(PendingMutation::RefreshTools(reply)) => {
+                            if let Err(error) = self.current_generation().ensure_active() {
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
+                            explicit_refresh = Some(ExplicitToolRefresh {
+                                remaining: self
+                                    .current_generation()
+                                    .servers
+                                    .keys()
+                                    .cloned()
+                                    .collect(),
+                                servers: Vec::new(),
+                                reply,
+                            });
+                        }
+                        None => {}
+                    }
+                }
+                if let Some(explicit) = explicit_refresh.as_mut() {
+                    while let Some(server_id) = explicit.remaining.pop_front() {
+                        if let Some(refresh) = self.start_tool_refresh(server_id.clone()) {
+                            tool_refresh = Some(refresh);
+                            break;
+                        }
+                        explicit.servers.push(self.skipped_tool_refresh(server_id));
+                    }
+                    if tool_refresh.is_none() {
+                        let explicit = explicit_refresh.take().expect("completed explicit refresh");
+                        let _ = explicit.reply.send(Ok(McpToolRefreshReport {
+                            generation: self.current.0,
+                            servers: explicit.servers,
+                        }));
+                        // More mutations may already be queued; do not wait for another command.
+                        continue;
+                    }
+                } else if preparation.is_none()
+                    && let Some(server_id) = pending_tool_refreshes.pop_first()
+                {
                     tool_refresh = self.start_tool_refresh(server_id);
+                    if tool_refresh.is_none() {
+                        continue;
+                    }
                 }
             }
             tokio::select! {
@@ -122,7 +207,10 @@ impl RuntimeWorker {
                     let active = preparation
                         .take()
                         .expect("completed MCP preparation must exist");
-                    let result = if active.reset_scope.as_ref().is_some_and(|scope| {
+                    let result = if let Err(error) = generation.ensure_active() {
+                        self.close_unpublished_generation(generation).await;
+                        Err(error)
+                    } else if active.reset_scope.as_ref().is_some_and(|scope| {
                         reset_failed(scope, &generation)
                     }) {
                         self.close_unpublished_generation(generation).await;
@@ -131,19 +219,25 @@ impl RuntimeWorker {
                             error: "MCP reset candidate failed; current generation was preserved".to_string(),
                         })
                     } else {
-                        self.activate_generation(generation).await;
-                        Ok(())
+                        self.activate_generation(generation).await
                     };
                     let _ = active.reply.send(result);
                 }
                 candidate = await_tool_refresh(&mut tool_refresh), if tool_refresh.is_some() => {
                     tool_refresh = None;
                     if !self.shutting_down {
-                        self.apply_tool_refresh(candidate, &mut pending_tool_refreshes).await;
+                        let result = self.apply_tool_refresh(candidate, &mut pending_tool_refreshes).await;
+                        if let Some(explicit) = explicit_refresh.as_mut() {
+                            explicit.servers.push(result);
+                        }
                     }
                 }
                 command = self.receiver.recv() => {
                     let Some(command) = command else {
+                        drop(tool_refresh.take());
+                        if let Some(explicit) = explicit_refresh.take() {
+                            let _ = explicit.reply.send(Err(shutting_down_error()));
+                        }
                         if let Some(mut unpublished) =
                             cancel_and_collect_reconciles(preparation.take(), &mut pending).await
                         {
@@ -161,15 +255,12 @@ impl RuntimeWorker {
                         let _ = reply.send(Err(shutting_down_error()));
                         continue;
                     }
-                    if self.configuration_matches(&servers) {
-                        let _ = reply.send(Ok(()));
-                        continue;
-                    }
-                    pending.push_back(PendingReconcile {
+                    pending.push_back(PendingMutation::Reconcile(PendingReconcile {
                         servers,
+                        config_authority: self.current_generation().config_authority.clone(),
                         reset_scope: None,
                         reply,
-                    });
+                    }));
                 }
                 RuntimeCommand::Reset {
                     servers,
@@ -180,11 +271,43 @@ impl RuntimeWorker {
                         let _ = reply.send(Err(shutting_down_error()));
                         continue;
                     }
-                    pending.push_back(PendingReconcile {
+                    pending.push_back(PendingMutation::Reconcile(PendingReconcile {
                         servers,
+                        config_authority: self.current_generation().config_authority.clone(),
                         reset_scope: Some(scope),
                         reply,
-                    });
+                    }));
+                }
+                RuntimeCommand::ReconcileAuthorized { servers, authorization, reply } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
+                    pending.push_back(PendingMutation::Reconcile(PendingReconcile {
+                        servers,
+                        config_authority: Some(authorization),
+                        reset_scope: None,
+                        reply,
+                    }));
+                }
+                RuntimeCommand::ResetAuthorized { servers, scope, authorization, reply } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
+                    pending.push_back(PendingMutation::Reconcile(PendingReconcile {
+                        servers,
+                        config_authority: Some(authorization),
+                        reset_scope: Some(scope),
+                        reply,
+                    }));
+                }
+                RuntimeCommand::RefreshTools { reply } => {
+                    if self.shutting_down {
+                        let _ = reply.send(Err(shutting_down_error()));
+                        continue;
+                    }
+                    pending.push_back(PendingMutation::RefreshTools(reply));
                 }
                 RuntimeCommand::AcquireLease { reply } => {
                     if self.shutting_down {
@@ -245,6 +368,9 @@ impl RuntimeWorker {
                 RuntimeCommand::Shutdown { reply } => {
                     self.shutting_down = true;
                     tool_refresh = None;
+                    if let Some(explicit) = explicit_refresh.take() {
+                        let _ = explicit.reply.send(Err(shutting_down_error()));
+                    }
                     pending_tool_refreshes.clear();
                     if let Some(mut unpublished) =
                         cancel_and_collect_reconciles(preparation.take(), &mut pending).await
@@ -290,6 +416,7 @@ impl RuntimeWorker {
             self.connector.clone(),
             generation_id,
             request.servers,
+            request.config_authority,
             reusable,
             cancel.clone(),
         );
@@ -302,6 +429,7 @@ impl RuntimeWorker {
     }
 
     fn start_tool_refresh(&self, server_id: String) -> Option<ActiveToolRefresh> {
+        self.current_generation().ensure_active().ok()?;
         let generation = self.current;
         let server = self.current_generation().servers.get(&server_id)?;
         if server.availability != McpAvailabilityKind::Available {
@@ -336,20 +464,28 @@ impl RuntimeWorker {
         &mut self,
         candidate: ToolRefreshCandidate,
         pending: &mut BTreeSet<String>,
-    ) {
+    ) -> McpServerToolRefresh {
+        if self.current_generation().ensure_active().is_err() {
+            return McpServerToolRefresh {
+                server_id: candidate.server_id,
+                status: McpToolRefreshStatus::Failed,
+                tool_count: None,
+                message: Some(expired_authority_error().to_string()),
+            };
+        }
         if candidate.observed_generation != self.current {
             if self
                 .current_generation()
                 .servers
                 .contains_key(&candidate.server_id)
             {
-                pending.insert(candidate.server_id);
+                pending.insert(candidate.server_id.clone());
             }
-            return;
+            return self.skipped_tool_refresh(candidate.server_id);
         }
         let Some(current_server) = self.current_generation().servers.get(&candidate.server_id)
         else {
-            return;
+            return self.skipped_tool_refresh(candidate.server_id);
         };
         if current_server.availability != McpAvailabilityKind::Available
             || current_server
@@ -357,31 +493,85 @@ impl RuntimeWorker {
                 .as_ref()
                 .is_none_or(|session| !Arc::ptr_eq(session, &candidate.session))
         {
-            return;
+            return self.skipped_tool_refresh(candidate.server_id);
         }
+        let tool_count = current_server.definitions.len();
         let definitions = match candidate.definitions {
             Ok(definitions) => definitions,
             Err(error) => {
                 tracing::warn!(
                     server_id = %candidate.server_id,
                     %error,
-                    "MCP tools/list_changed refresh failed; preserving the current generation"
+                    "MCP tool refresh failed; preserving the current generation"
                 );
-                return;
+                return McpServerToolRefresh {
+                    server_id: candidate.server_id,
+                    status: McpToolRefreshStatus::Failed,
+                    tool_count: Some(tool_count),
+                    message: Some(error),
+                };
             }
         };
+        if current_server.definitions == definitions {
+            return McpServerToolRefresh {
+                server_id: candidate.server_id,
+                status: McpToolRefreshStatus::Unchanged,
+                tool_count: Some(tool_count),
+                message: None,
+            };
+        }
+        let tool_count = definitions.len();
         let generation_id = McpGeneration(self.next_generation);
         self.next_generation += 1;
         let mut next = RuntimeGeneration::empty(generation_id);
+        next.config_authority = self.current_generation().config_authority.clone();
         next.servers = self.current_generation().servers.clone();
         let Some(server) = next.servers.get_mut(&candidate.server_id) else {
-            return;
+            return self.skipped_tool_refresh(candidate.server_id);
         };
         server.message = Some(format!("Available with {} tools", definitions.len()));
         server.last_checked_at = Some(crate::unix_seconds());
         server.definitions = definitions;
         assign_tool_descriptors(&mut next.servers);
-        self.activate_generation(next).await;
+        if let Err(error) = self.activate_generation(next).await {
+            return McpServerToolRefresh {
+                server_id: candidate.server_id,
+                status: McpToolRefreshStatus::Failed,
+                tool_count: None,
+                message: Some(error.to_string()),
+            };
+        }
+        McpServerToolRefresh {
+            server_id: candidate.server_id,
+            status: McpToolRefreshStatus::Updated,
+            tool_count: Some(tool_count),
+            message: None,
+        }
+    }
+
+    fn skipped_tool_refresh(&self, server_id: String) -> McpServerToolRefresh {
+        // Do not echo configuration/credential diagnostics into the explicit response.
+        let message = match self.current_generation().servers.get(&server_id) {
+            _ if self.current_generation().ensure_active().is_err() => {
+                "MCP configuration authorization was revoked"
+            }
+            None => "MCP server is no longer configured",
+            Some(server) => match server.availability {
+                McpAvailabilityKind::Checking => "MCP server is still connecting",
+                McpAvailabilityKind::Disabled => "MCP server is disabled",
+                McpAvailabilityKind::MissingCredential => "MCP server has missing credentials",
+                McpAvailabilityKind::Unavailable => "MCP server is unavailable",
+                McpAvailabilityKind::Available => {
+                    "MCP server connection changed during tool refresh"
+                }
+            },
+        };
+        McpServerToolRefresh {
+            server_id,
+            status: McpToolRefreshStatus::Skipped,
+            tool_count: None,
+            message: Some(message.to_string()),
+        }
     }
 
     fn configuration_matches(&self, servers: &BTreeMap<String, EffectiveMcpServerConfig>) -> bool {
@@ -395,7 +585,11 @@ impl RuntimeWorker {
             })
     }
 
-    async fn activate_generation(&mut self, mut next: RuntimeGeneration) {
+    async fn activate_generation(&mut self, mut next: RuntimeGeneration) -> Result<()> {
+        if let Err(error) = next.ensure_active() {
+            self.close_unpublished_generation(next).await;
+            return Err(error);
+        }
         self.propagate_pending_session_failures(&mut next);
         next.freeze_authorization(self.current_generation());
         if let Some(previous) = self.generations.get_mut(&self.current) {
@@ -405,9 +599,10 @@ impl RuntimeWorker {
         self.generations.insert(next.id, next);
         self.cleanup_retired().await;
         self.emit_update();
+        Ok(())
     }
 
-    async fn close_unpublished_generation(&self, generation: RuntimeGeneration) {
+    async fn close_unpublished_generation(&mut self, mut generation: RuntimeGeneration) {
         let current_sessions = self
             .current_generation()
             .servers
@@ -415,7 +610,7 @@ impl RuntimeWorker {
             .filter_map(|server| server.session.as_ref())
             .map(|session| Arc::as_ptr(session) as usize)
             .collect::<BTreeSet<_>>();
-        let sessions = unique_sessions(generation.servers)
+        let sessions = unique_sessions(generation.servers.clone())
             .into_iter()
             .filter(|session| !current_sessions.contains(&(Arc::as_ptr(session) as usize)))
             .collect::<Vec<_>>();
@@ -423,13 +618,26 @@ impl RuntimeWorker {
         // consume the budget of the others.
         let outcomes =
             futures::future::join_all(sessions.iter().map(|session| session.close())).await;
-        for outcome in outcomes {
+        let mut failed = BTreeSet::new();
+        for (session, outcome) in sessions.iter().zip(outcomes) {
             if let Err(error) = outcome {
+                failed.insert(Arc::as_ptr(session) as usize);
                 tracing::warn!(
                     %error,
                     "MCP session did not confirm closure while discarding an unpublished generation"
                 );
             }
+        }
+        if !failed.is_empty() {
+            // Keep unconfirmed owners for the runtime's existing retirement/shutdown retry.
+            generation.servers.retain(|_, server| {
+                server
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| failed.contains(&(Arc::as_ptr(session) as usize)))
+            });
+            generation.retired = true;
+            self.generations.insert(generation.id, generation);
         }
     }
 
@@ -462,6 +670,7 @@ impl RuntimeWorker {
                 error: "MCP current generation is unavailable".to_string(),
             }
         })?;
+        generation.ensure_active()?;
         generation.leases += 1;
         let tools = generation
             .servers
@@ -554,29 +763,64 @@ impl RuntimeWorker {
             .filter(|(_, generation)| generation.retired && generation.leases == 0)
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
-        let mut sessions = Vec::new();
-        for id in retired {
-            let Some(generation) = self.generations.remove(&id) else {
-                continue;
-            };
-            for session in unique_sessions(generation.servers) {
-                // A session still referenced by another generation is owned elsewhere; the
-                // generation that still holds it retires it.
-                if Arc::strong_count(&session) == 1 {
-                    sessions.push(session);
-                }
+        let owners = retired
+            .into_iter()
+            .filter_map(|id| self.generations.remove(&id))
+            .collect::<Vec<_>>();
+        let mut candidates = BTreeMap::new();
+        for generation in &owners {
+            for session in generation
+                .servers
+                .values()
+                .filter_map(|server| server.session.as_ref())
+            {
+                candidates
+                    .entry(Arc::as_ptr(session) as usize)
+                    .or_insert_with(|| session.clone());
             }
         }
+        let sessions = candidates
+            .into_values()
+            .filter(|session| {
+                // Account for the retained retry owners as well as this unique candidate.
+                // Other generations and already accepted requests keep shared sessions alive.
+                let local_references = owners
+                    .iter()
+                    .flat_map(|generation| generation.servers.values())
+                    .filter(|server| {
+                        server
+                            .session
+                            .as_ref()
+                            .is_some_and(|owned| Arc::ptr_eq(owned, session))
+                    })
+                    .count()
+                    + 1;
+                Arc::strong_count(session) == local_references
+            })
+            .collect::<Vec<_>>();
         // Independent owners: cancel and await them concurrently so one slow server cannot
         // consume the budget of the others.
         let outcomes =
             futures::future::join_all(sessions.iter().map(|session| session.close())).await;
-        for outcome in outcomes {
+        let mut failed = BTreeSet::new();
+        for (session, outcome) in sessions.iter().zip(outcomes) {
             if let Err(error) = outcome {
+                failed.insert(Arc::as_ptr(session) as usize);
                 tracing::warn!(
                     %error,
                     "MCP session did not confirm closure while retiring a generation"
                 );
+            }
+        }
+        for mut generation in owners {
+            generation.servers.retain(|_, server| {
+                server
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| failed.contains(&(Arc::as_ptr(session) as usize)))
+            });
+            if !generation.servers.is_empty() {
+                self.generations.insert(generation.id, generation);
             }
         }
     }
@@ -666,5 +910,12 @@ fn shutting_down_error() -> PureError {
     PureError::ToolExecutionFailed {
         tool: "mcp".to_string(),
         error: "MCP runtime is shutting down".to_string(),
+    }
+}
+
+pub(super) fn expired_authority_error() -> PureError {
+    PureError::ToolExecutionFailed {
+        tool: "mcp".to_string(),
+        error: "MCP configuration authorization was revoked".to_string(),
     }
 }

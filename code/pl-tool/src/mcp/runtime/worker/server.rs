@@ -28,6 +28,7 @@ pub(super) struct RuntimeGeneration {
     pub(super) leases: usize,
     pub(super) retired: bool,
     pub(super) authorization: pl_core::tool::opaque::ToolAuthorization,
+    pub(super) config_authority: Option<pl_core::tool::opaque::ToolAuthorization>,
     authorization_scope: AuthorizationScope,
 }
 
@@ -39,6 +40,7 @@ impl RuntimeGeneration {
             leases: 0,
             retired: false,
             authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
+            config_authority: None,
             authorization_scope: AuthorizationScope::default(),
         }
     }
@@ -46,10 +48,35 @@ impl RuntimeGeneration {
     /// Called only by the serial worker at publication, never on a retired generation.
     pub(super) fn freeze_authorization(&mut self, previous: &Self) {
         let scope = AuthorizationScope::from_servers(&self.servers);
-        if scope == previous.authorization_scope {
+        if scope == previous.authorization_scope
+            && match (
+                self.config_authority.as_ref(),
+                previous.config_authority.as_ref(),
+            ) {
+                (None, None) => true,
+                (Some(current), Some(previous)) => current.same_instance(previous),
+                _ => false,
+            }
+            && previous.authorization.is_active()
+        {
             self.authorization = previous.authorization.clone();
+        } else if let Some(authority) = &self.config_authority {
+            self.authorization = self.authorization.guarded_by(authority);
         }
         self.authorization_scope = scope;
+    }
+
+    pub(super) fn ensure_active(&self) -> pl_protocol::Result<()> {
+        if self.authorization.is_active()
+            && self
+                .config_authority
+                .as_ref()
+                .is_none_or(|authority| authority.is_active())
+        {
+            Ok(())
+        } else {
+            Err(super::expired_authority_error())
+        }
     }
 }
 

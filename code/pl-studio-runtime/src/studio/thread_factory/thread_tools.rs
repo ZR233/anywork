@@ -415,6 +415,13 @@ impl StudioThreadFactory {
                 .await?,
             )?;
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_mcp", elapsed_ms = mcp_started.elapsed().as_millis() as u64, "completed");
+            let owner = self
+                .mcp_owner(thread_id)
+                .ok_or(ThreadAssemblyError::Closed)?;
+            tools = tools.with_tools(vec![super::mcp_refresh_tool::registration(
+                self.clone(),
+                &owner,
+            )?]);
         }
         let mut skill_catalog = None;
         if config.runtime.tool_capabilities.skills && config.skills.enabled {

@@ -298,6 +298,19 @@ impl Harness {
         Arc<Notify>,
         tokio::task::JoinHandle<Result<ToolDispatch, ThreadError>>,
     ) {
+        self.retain_authorized_access(turn_id, waiting, None).await
+    }
+
+    async fn retain_authorized_access(
+        &self,
+        turn_id: &str,
+        waiting: bool,
+        authority: Option<pl_core::tool::opaque::ToolAuthorization>,
+    ) -> (
+        TaskAccess,
+        Arc<Notify>,
+        tokio::task::JoinHandle<Result<ToolDispatch, ThreadError>>,
+    ) {
         let (started, mut ready) = mpsc::unbounded_channel();
         let release = Arc::new(Notify::new());
         let registration = Registration::prepare("waiter".into(), OpaquePayload::text("waiter"))
@@ -306,6 +319,13 @@ impl Harness {
                 started,
                 release: release.clone(),
             }));
+        let registration = if let Some(authority) = authority {
+            registration
+                .with_authorization(authority)
+                .with_task_cancellation()
+        } else {
+            registration
+        };
         let registration = if waiting {
             registration.with_task_waiting()
         } else {
@@ -644,6 +664,33 @@ async fn wait_reports_ready_instead_of_timeout_when_the_deadline_competes() {
     let observed = waiting.await.unwrap();
     assert!(!observed.timed_out);
     assert_eq!(observed.tasks[0].status, TaskStatus::Succeeded);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn revoked_authority_denies_wait_and_cancel_without_replacing_the_registry() {
+    let harness = Harness::start("revoked-authority").await;
+    let target = harness.running_task("held-turn", "held").await;
+    let authority = pl_core::tool::opaque::ToolAuthorization::unique();
+    let (access, release, runner) = harness
+        .retain_authorized_access("wait-turn", true, Some(authority.clone()))
+        .await;
+    authority.revoke();
+    assert!(matches!(
+        access
+            .wait(&[], Duration::ZERO, CancellationToken::new())
+            .await,
+        Err(ThreadError::ToolPermissionRevoked)
+    ));
+    assert!(matches!(
+        access.cancel(target.id.clone()).await,
+        Err(ThreadError::ToolPermissionRevoked)
+    ));
+    assert_eq!(
+        harness.thread.snapshot().tasks[&target.id].status,
+        TaskStatus::Running
+    );
     finish(release, runner).await;
     harness.thread.close().await.unwrap();
 }

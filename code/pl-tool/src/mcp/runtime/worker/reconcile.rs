@@ -19,8 +19,14 @@ use crate::mcp::config::McpServerStatusKind;
 use crate::mcp::health::McpAvailabilityKind;
 use crate::mcp::{McpConnectRequest, McpConnector};
 
+pub(super) enum PendingMutation {
+    Reconcile(PendingReconcile),
+    RefreshTools(tokio::sync::oneshot::Sender<Result<crate::mcp::McpToolRefreshReport>>),
+}
+
 pub(super) struct PendingReconcile {
     pub(super) servers: BTreeMap<String, EffectiveMcpServerConfig>,
+    pub(super) config_authority: Option<pl_core::tool::opaque::ToolAuthorization>,
     pub(super) reset_scope: Option<McpResetScope>,
     pub(super) reply: tokio::sync::oneshot::Sender<Result<()>>,
 }
@@ -45,10 +51,17 @@ pub(super) async fn await_preparation(
 
 pub(super) async fn cancel_and_collect_reconciles(
     preparation: Option<ActivePreparation>,
-    pending: &mut VecDeque<PendingReconcile>,
+    pending: &mut VecDeque<PendingMutation>,
 ) -> Option<RuntimeGeneration> {
     for request in pending.drain(..) {
-        let _ = request.reply.send(Err(runtime_stopping_error()));
+        match request {
+            PendingMutation::Reconcile(request) => {
+                let _ = request.reply.send(Err(runtime_stopping_error()));
+            }
+            PendingMutation::RefreshTools(reply) => {
+                let _ = reply.send(Err(runtime_stopping_error()));
+            }
+        }
     }
     let active = preparation?;
     let _ = active.reply.send(Err(runtime_stopping_error()));
@@ -67,10 +80,12 @@ pub(super) async fn prepare_generation(
     connector: McpConnector,
     generation_id: McpGeneration,
     servers: BTreeMap<String, EffectiveMcpServerConfig>,
+    config_authority: Option<pl_core::tool::opaque::ToolAuthorization>,
     mut reusable: BTreeMap<String, RuntimeServer>,
     cancel: CancellationToken,
 ) -> RuntimeGeneration {
     let mut next = RuntimeGeneration::empty(generation_id);
+    next.config_authority = config_authority;
     let mut connecting = FuturesUnordered::new();
     for (server_id, config) in servers {
         let fingerprint = server_fingerprint(&config);
