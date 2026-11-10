@@ -205,6 +205,45 @@ void main() {
   );
 
   test(
+    'new owner starts an independent query for the same account revision',
+    () async {
+      final transport = _UsageTransport();
+      final client = _client(transport, [_account('a')]);
+      final old = _refresh(client, 'a');
+      await transport.calls.single.entered.future;
+      final oldResponse = transport.publishEvent('a');
+      transport.epoch = 'next';
+      client.domains.adoptOwnerEpoch('next');
+      client.seed(_settings([_account('a')]));
+      final next = _refresh(client, 'a');
+      expect(next, isNot(same(old)));
+      expect(transport.calls, hasLength(2));
+      expect(_refresh(client, 'a'), same(next));
+      transport.calls[0].reply.complete(oldResponse);
+      await old;
+      expect(
+        _usages(client),
+        isEmpty,
+        reason: 'The retired owner cannot publish',
+      );
+      transport.calls[1].reply.complete(
+        usageFrame(transport.revision + 1, [
+          AccountUsageObservation(
+            identity: const NativeAccountIdentity('a'),
+            queryRevision: 1,
+            revision: transport.revision + 1,
+            phase: AccountUsagePhase.unsupported,
+          ),
+        ], epoch: 'next'),
+      );
+      await next;
+      expect(_usages(client).single.identity.accountId, 'a');
+      expect(client.domains.usage.state.value.stamp!.ownerEpoch, 'next');
+      expect(_loading(client), isEmpty);
+    },
+  );
+
+  test(
     'close rejects new queries and joins the admitted response before disposal',
     () async {
       final transport = _UsageTransport();
@@ -249,16 +288,56 @@ void main() {
     expect(_usages(first).single.identity.accountId, 'a');
   });
 
-  test('visible demand starts each account immediately and admitted queries remain joined as a batch', () async {
+  test('account observation starts no queries and explicit parallel refreshes remain joined as a batch', () async {
     final transport = _UsageTransport();
     final client = _client(transport, [_account('a'), _account('b')]);
-    final visible = client.domains.usage.observeVisible();
+    final visible = client.domains.usage.observeAccount(
+      const NativeAccountIdentity('a'),
+    );
     addTearDown(visible.release);
+    final details = client.domains.usage.observeAccount(
+      const NativeAccountIdentity('a'),
+    );
+    addTearDown(details.release);
+    final sibling = client.domains.usage.observeAccount(
+      const NativeAccountIdentity('b'),
+    );
+    addTearDown(sibling.release);
+    final summaries = await transport.attachedAccount(
+      const AccountSummariesTarget(),
+    );
+    final usage = await transport.attachedAccount(const AccountUsageTarget());
+    expect(transport.calls, isEmpty);
+    expect(_loading(client), isEmpty);
+    expect(
+      transport.observations[const AccountSummariesTarget()],
+      hasLength(1),
+    );
+    expect(transport.observations[const AccountUsageTarget()], hasLength(1));
+    final releasing = visible.release();
+    expect(visible.release(), same(releasing));
+    await releasing;
+    expect(summaries.closed, isFalse);
+    expect(usage.closed, isFalse);
+    final started = Future.wait([_refresh(client, 'a'), _refresh(client, 'b')]);
     await transport.calls[0].entered.future;
     await transport.calls[1].entered.future;
     await _waitLoading(client, {'a', 'b'});
     expect(_loading(client), {'a', 'b'});
-    final started = Future.wait([_refresh(client, 'a'), _refresh(client, 'b')]);
+    await details.release();
+    expect(
+      summaries.closed,
+      isFalse,
+      reason: 'B still owns its display demand',
+    );
+    expect(usage.closed, isFalse);
+    await sibling.release();
+    expect(summaries.closed, isTrue);
+    expect(
+      usage.closed,
+      isFalse,
+      reason: 'Admitted queries own their observations',
+    );
     var batchDone = false;
     final joined = started.then((_) {
       batchDone = true;
@@ -271,6 +350,7 @@ void main() {
     );
     expect(_usages(client).map((item) => item.identity.accountId), ['b']);
     expect(batchDone, isFalse);
+    expect(usage.closed, isFalse, reason: 'A is still in flight');
     transport.complete(0);
     await joined;
     expect(batchDone, isTrue);
@@ -280,6 +360,8 @@ void main() {
     });
     expect(_usageRevision(client), transport.revision);
     expect(transport.calls, hasLength(2));
+    await usage.stopped.future;
+    expect(usage.closed, isTrue);
   });
 
   test(
@@ -318,83 +400,100 @@ void main() {
     },
   );
 
-  test('visible automatic queries retain A transport failure without uncaught errors or clearing B', () async {
-    final transport = _UsageTransport();
-    final client = _client(transport, [_account('a'), _account('b')]);
-    // package:test's own guarded zone fails on any uncaught automatic query
-    // error, including errors after another account's successful response.
-    final visible = client.domains.usage.observeVisible();
-    addTearDown(visible.release);
-    await transport.calls[0].entered.future;
-    await transport.calls[1].entered.future;
-    await _waitLoading(client, {'a', 'b'});
-    transport.calls[0].reply.completeError(StateError('usage failed'));
-    await client.domains.usage.queryFailures.waitFor(
-      (failures) => failures.containsKey(const NativeAccountIdentity('a')),
-    );
-    expect(
-      client
-          .domains
-          .usage
-          .queryFailures
-          .value[const NativeAccountIdentity('a')]!
-          .code,
-      StudioFailureCode.internal,
-    );
-    transport.complete(1);
-    await client.domains.usage.state.waitFor(
-      (state) =>
-          state.value?[const NativeAccountIdentity('b')]?.phase ==
-          AccountUsagePhase.unsupported,
-    );
-    expect(
-      client.domains.usage.queryFailures.value.containsKey(
+  test(
+    'explicit queries retain A transport failure without clearing B',
+    () async {
+      final transport = _UsageTransport();
+      final client = _client(transport, [_account('a'), _account('b')]);
+      final visible = client.domains.usage.observeAccount(
         const NativeAccountIdentity('a'),
-      ),
-      isTrue,
-    );
-    expect(_usages(client).map((item) => item.identity.accountId), ['b']);
-    expect(
-      transport.calls,
-      hasLength(2),
-      reason: 'A failed visible attempt does not automatically loop',
-    );
-    final retry = _refresh(client, 'a');
-    final failedRetry = expectLater(retry, throwsStateError);
-    await transport.calls[2].entered.future;
-    transport.calls[2].reply.completeError(StateError('retry also unknown'));
-    await failedRetry;
-    client.domains.acceptFrame(transport.publishEvent('a'));
-    expect(
-      client.domains.usage.queryFailures.value,
-      isEmpty,
-      reason:
-          'Only a new terminal for A can settle its unknown transport result',
-    );
-    expect(_loading(client), isEmpty);
-    await visible.release();
+      );
+      addTearDown(visible.release);
+      final usage = await transport.attachedAccount(const AccountUsageTarget());
+      final failed = expectLater(_refresh(client, 'a'), throwsStateError);
+      final b = _refresh(client, 'b');
+      await transport.calls[0].entered.future;
+      await transport.calls[1].entered.future;
+      await _waitLoading(client, {'a', 'b'});
+      transport.calls[0].reply.completeError(StateError('usage failed'));
+      await failed;
+      await visible.release();
+      expect(usage.closed, isFalse);
+      await client.domains.usage.queryFailures.waitFor(
+        (failures) => failures.containsKey(const NativeAccountIdentity('a')),
+      );
+      expect(
+        client
+            .domains
+            .usage
+            .queryFailures
+            .value[const NativeAccountIdentity('a')]!
+            .code,
+        StudioFailureCode.internal,
+      );
+      transport.complete(1);
+      await b;
+      await client.domains.usage.state.waitFor(
+        (state) =>
+            state.value?[const NativeAccountIdentity('b')]?.phase ==
+            AccountUsagePhase.unsupported,
+      );
+      expect(
+        client.domains.usage.queryFailures.value.containsKey(
+          const NativeAccountIdentity('a'),
+        ),
+        isTrue,
+      );
+      expect(_usages(client).map((item) => item.identity.accountId), ['b']);
+      expect(
+        usage.closed,
+        isFalse,
+        reason:
+            'A unknown outcome still owns observation after display and B end',
+      );
+      expect(
+        transport.calls,
+        hasLength(2),
+        reason: 'A failed displayed query does not automatically loop',
+      );
+      final retry = _refresh(client, 'a');
+      final failedRetry = expectLater(retry, throwsStateError);
+      await transport.calls[2].entered.future;
+      transport.calls[2].reply.completeError(StateError('retry also unknown'));
+      await failedRetry;
+      client.domains.acceptFrame(transport.publishEvent('a'));
+      expect(
+        client.domains.usage.queryFailures.value,
+        isEmpty,
+        reason:
+            'Only a new terminal for A can settle its unknown transport result',
+      );
+      expect(_loading(client), isEmpty);
+      await usage.stopped.future;
+      expect(usage.closed, isTrue);
 
-    final rejected = _refresh(client, 'a');
-    final rejection = expectLater(rejected, throwsA(isA<StudioFailure>()));
-    await transport.calls[3].entered.future;
-    transport.calls[3].reply.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message: 'No longer supported',
-        retryable: false,
-        correlationId: 'usage-rejected',
-      ),
-    );
-    await rejection;
-    expect(
-      client.domains.usage.queryFailures.value,
-      contains(const NativeAccountIdentity('a')),
-    );
-    client.seed(_settings([_account('b')], revision: 2));
-    expect(
-      client.domains.usage.queryFailures.value,
-      isEmpty,
-      reason: 'Deleting an identity also invalidates known-rejection diagnostics, not just unknown outcomes',
-    );
-  });
+      final rejected = _refresh(client, 'a');
+      final rejection = expectLater(rejected, throwsA(isA<StudioFailure>()));
+      await transport.calls[3].entered.future;
+      transport.calls[3].reply.completeError(
+        const StudioFailure(
+          code: StudioFailureCode.invalidArgument,
+          message: 'No longer supported',
+          retryable: false,
+          correlationId: 'usage-rejected',
+        ),
+      );
+      await rejection;
+      expect(
+        client.domains.usage.queryFailures.value,
+        contains(const NativeAccountIdentity('a')),
+      );
+      client.seed(_settings([_account('b')], revision: 2));
+      expect(
+        client.domains.usage.queryFailures.value,
+        isEmpty,
+        reason: 'Deleting an identity also invalidates known-rejection diagnostics, not just unknown outcomes',
+      );
+    },
+  );
 }

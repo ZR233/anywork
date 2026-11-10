@@ -5,6 +5,7 @@ import '../accounts_views.dart';
 import 'account_preview_fixtures.dart';
 import 'account_preview_host.dart';
 import 'account_template_preview_fixtures.dart';
+import 'account_list_preview_data.dart';
 
 // Sizes below are available MAIN CONTENT AREA, excluding the settings sidebar.
 // First Web preview still compiles Flutter. No application graph is initialized.
@@ -66,7 +67,7 @@ Widget accountsListEnglishSummaryNarrowPreview() => accountListPreview(
   size: Size(408, 1000),
 )
 Widget accountsListLongMixedLastGoodNarrowPreview() => accountListPreview(
-  AccountsListPresentation(
+  AccountListPreviewData(
     canRefresh: true,
     rows: [AccountPreviewFixtures.stackedLastGoodRow],
   ),
@@ -99,12 +100,12 @@ Widget accountsListLargeTextPreview() => accountListPreview(
   size: Size(780, 600),
 )
 Widget accountsListLoadingPreview() => accountListPreview(
-  const AccountsListPresentation(phase: AccountListPhase.loading),
+  const AccountListPreviewData(phase: AccountListPhase.loading),
 );
 
 @Preview(name: 'List / empty', group: 'Accounts · List', size: Size(780, 600))
 Widget accountsListEmptyPreview() =>
-    accountListPreview(const AccountsListPresentation());
+    accountListPreview(const AccountListPreviewData());
 
 @Preview(
   name: 'List / no search results',
@@ -112,7 +113,7 @@ Widget accountsListEmptyPreview() =>
   size: Size(780, 600),
 )
 Widget accountsListNoSearchPreview() => accountListPreview(
-  const AccountsListPresentation(
+  const AccountListPreviewData(
     search: 'no-such-account',
     searchHasNoResults: true,
   ),
@@ -182,7 +183,7 @@ Widget accountsListHealthPreview() => accountListPreview(
   size: Size(780, 600),
 )
 Widget accountsListFailurePreview() => accountListPreview(
-  const AccountsListPresentation(
+  const AccountListPreviewData(
     phase: AccountListPhase.failed,
     error: '合成读取错误：账号列表暂时不可用。',
   ),
@@ -670,7 +671,7 @@ AccountDetailsPresentation _withNative(
   );
 }
 
-AccountsListPresentation _englishSummaryListFixture() {
+AccountListPreviewData _englishSummaryListFixture() {
   final source = AccountPreviewFixtures.list;
   return source.copyWith(
     rows: [for (final row in source.rows) _withEnglishQuotaLabels(row)],

@@ -318,6 +318,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 account_id: "account".into(),
                 connection_revision: slot.revision,
                 generation: 1,
+                action: pl_protocol::studio::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),
@@ -364,6 +365,15 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         assert!(accepted.changed);
         assert!(matches!(&accepted.snapshot.accounts[0].state,
             AcpAuthState::Authenticating { operation_id, .. } if operation_id == "flow"));
+        // busy 状态与活动操作投影来自同一操作槽位：ID、修订与启动动作一致。
+        assert_eq!(
+            accepted.snapshot.accounts[0].active_operation,
+            Some(pl_protocol::studio::AcpAuthActiveOperation {
+                operation_id: "flow".into(),
+                connection_revision: operation.connection_revision,
+                action: pl_protocol::studio::AcpAuthAction::Check,
+            })
+        );
         assert!(
             matches!(commands.try_recv(), Ok(pl_acp::auth::AuthCommand::Authenticate { method_id }) if method_id == "browser")
         );
@@ -400,6 +410,18 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             runtime.acp_auth.inner.lock().slots["account"].state,
             AcpAuthState::Cancelled
         ));
+        // 终态与释放槽位同事务提交：活动操作投影随之清空。
+        assert_eq!(
+            runtime
+                .acp_auth
+                .inner
+                .lock()
+                .snapshot()
+                .accounts
+                .first()
+                .and_then(|account| account.active_operation.clone()),
+            None
+        );
         runtime.shutdown_runtime().await?;
         Ok(())
     }
@@ -438,6 +460,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 account_id: "account".into(),
                 connection_revision: slot.revision,
                 generation: 1,
+                action: pl_protocol::studio::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),

@@ -498,6 +498,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthActiveOperation
+  dco_decode_box_autoadd_bridge_acp_auth_active_operation(dynamic raw);
+
+  @protected
   BridgeAcpAuthFailure dco_decode_box_autoadd_bridge_acp_auth_failure(
     dynamic raw,
   );
@@ -1756,6 +1760,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpAuthAction dco_decode_bridge_acp_auth_action(dynamic raw);
+
+  @protected
+  BridgeAcpAuthActiveOperation dco_decode_bridge_acp_auth_active_operation(
+    dynamic raw,
+  );
 
   @protected
   BridgeAcpAuthCommandReply dco_decode_bridge_acp_auth_command_reply(
@@ -4323,6 +4332,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthActiveOperation?
+  dco_decode_opt_box_autoadd_bridge_acp_auth_active_operation(dynamic raw);
+
+  @protected
   BridgeAcpAuthFailure? dco_decode_opt_box_autoadd_bridge_acp_auth_failure(
     dynamic raw,
   );
@@ -5251,6 +5264,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpAnnotations sse_decode_box_autoadd_bridge_acp_annotations(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthActiveOperation
+  sse_decode_box_autoadd_bridge_acp_auth_active_operation(
     SseDeserializer deserializer,
   );
 
@@ -6853,6 +6872,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpAuthAction sse_decode_bridge_acp_auth_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthActiveOperation sse_decode_bridge_acp_auth_active_operation(
     SseDeserializer deserializer,
   );
 
@@ -10102,6 +10126,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthActiveOperation?
+  sse_decode_opt_box_autoadd_bridge_acp_auth_active_operation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpAuthFailure? sse_decode_opt_box_autoadd_bridge_acp_auth_failure(
     SseDeserializer deserializer,
   );
@@ -11227,6 +11257,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_acp_annotations(
     BridgeAcpAnnotations self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation self,
     SseSerializer serializer,
   );
 
@@ -13045,6 +13081,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_auth_action(
     BridgeAcpAuthAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation self,
     SseSerializer serializer,
   );
 
@@ -16981,6 +17023,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_acp_annotations(
     BridgeAcpAnnotations? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation? self,
     SseSerializer serializer,
   );
 

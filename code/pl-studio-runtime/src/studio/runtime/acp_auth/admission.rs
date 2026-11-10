@@ -368,7 +368,7 @@ impl AcpAuthInner {
             ));
         }
 
-        let (connection_revision, occupied) = {
+        let (connection_revision, busy) = {
             let Some(slot) = registry.slots.get(&request.account_id) else {
                 return Err(acp_error(
                     StudioErrorCode::NotFound,
@@ -390,14 +390,22 @@ impl AcpAuthInner {
                     false,
                 ));
             }
-            (slot.revision, slot.operation.is_some())
+            // 忙碌切面与拒绝裁决同锁捕获：账号当前修订、快照修订与占用操作身份
+            // 描述同一时刻，不能在解锁后重读或拼接较新修订（design/28 §28.9）。
+            let busy = slot.operation.as_ref().map(|operation| {
+                pl_protocol::studio::AcpAuthBusyRejection {
+                    acp_auth_busy: pl_protocol::studio::AcpAuthBusyDetails {
+                        account_id: request.account_id.clone(),
+                        connection_revision: slot.revision,
+                        snapshot_revision: registry.revision,
+                        active_operation: operation.active_operation_view(),
+                    },
+                }
+            });
+            (slot.revision, busy)
         };
-        if occupied {
-            return Err(acp_error(
-                StudioErrorCode::Busy,
-                "该接入已有进行中的认证操作",
-                true,
-            ));
+        if let Some(busy) = busy {
+            return Err(super::mapping::acp_busy_error(busy));
         }
 
         let generation = registry.mint_generation();
@@ -406,6 +414,8 @@ impl AcpAuthInner {
             account_id: request.account_id.clone(),
             connection_revision,
             generation,
+            // 冻结准入意图：后续快照投影与收尾裁决都以此为准，不回读 state。
+            action: request.action.clone(),
             cancel: tokio_util::sync::CancellationToken::new(),
             authentication,
             cleanup_retry: tokio::sync::Notify::new(),
@@ -444,5 +454,255 @@ impl AcpAuthInner {
             snapshot,
             changed: true,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AcpAccountConfig, AcpProvider, ConfigPaths, ConfigStore, StudioConfig};
+    use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+    use pl_protocol::studio::{
+        AcpAuthAction, AcpAuthActiveOperation, AcpAuthBusyDetails, AcpAuthBusyRejection,
+        StudioError,
+    };
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    async fn test_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
+        let home = tempfile::tempdir()?;
+        let mut config = StudioConfig::default_config()?;
+        config.acp.accounts.insert(
+            "account".into(),
+            AcpAccountConfig {
+                name: "Antigravity".into(),
+                provider: AcpProvider::Antigravity,
+            },
+        );
+        ConfigStore::new(ConfigPaths::from_config_dir(home.path())).save(&config)?;
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            studio_home: Some(home.path().to_owned()),
+            host: StudioHostKind::Test,
+            ..StudioRuntimeOptions::desktop()
+        })
+        .await?;
+        Ok((home, runtime))
+    }
+
+    /// 用真实受理身份的冻结字段占用槽位；busy 状态与占用操作保持一致。
+    fn occupy_slot(runtime: &StudioRuntime, action: AcpAuthAction) -> (u64, u64) {
+        let mut registry = runtime.acp_auth.inner.lock();
+        let generation = registry.mint_generation();
+        let slot = registry
+            .slots
+            .get_mut("account")
+            .expect("configured account");
+        let frozen_revision = slot.revision;
+        let (sender, _commands) = tokio::sync::mpsc::channel(1);
+        slot.operation = Some(Arc::new(Operation {
+            operation_id: "flow".into(),
+            account_id: "account".into(),
+            connection_revision: frozen_revision,
+            generation,
+            action,
+            cancel: CancellationToken::new(),
+            authentication: sender,
+            cleanup_retry: tokio::sync::Notify::new(),
+            join: tokio::sync::Mutex::new(None),
+        }));
+        slot.state = AcpAuthState::Checking {
+            operation_id: "flow".into(),
+        };
+        (frozen_revision, generation)
+    }
+
+    fn busy_rejection(
+        runtime: &StudioRuntime,
+        expected_connection_revision: u64,
+    ) -> pl_protocol::studio::AcpAuthBusyRejection {
+        let error = match runtime.acp_auth.start(StartAcpAuthRequest {
+            operation_id: "second".into(),
+            account_id: "account".into(),
+            expected_connection_revision,
+            action: AcpAuthAction::QueryUsage,
+        }) {
+            Ok(_) => panic!("occupied slot must reject a new start"),
+            Err(error) => error,
+        };
+        let error = error
+            .downcast_ref::<StudioError>()
+            .expect("admission errors are typed StudioError");
+        assert_eq!(error.code, StudioErrorCode::Busy);
+        assert!(error.retryable);
+        assert_eq!(error.message, "该接入已有进行中的认证操作");
+        serde_json::from_value(
+            error
+                .details
+                .as_deref()
+                .expect("busy rejection carries details")
+                .clone(),
+        )
+        .expect("typed busy rejection details")
+    }
+
+    #[tokio::test]
+    async fn busy_rejection_carries_the_atomic_slot_slice() -> Result<()> {
+        for action in [AcpAuthAction::Check, AcpAuthAction::QueryUsage] {
+            let (home, runtime) = test_runtime().await?;
+            let (revision, generation) = occupy_slot(&runtime, action.clone());
+            let snapshot_revision = runtime.acp_auth.inner.lock().revision;
+            // 请求动作与占用方不同也只投影占用方的真实身份与动作。
+            let rejection = busy_rejection(&runtime, revision);
+            assert_eq!(
+                rejection,
+                AcpAuthBusyRejection {
+                    acp_auth_busy: AcpAuthBusyDetails {
+                        account_id: "account".into(),
+                        connection_revision: revision,
+                        snapshot_revision,
+                        active_operation: AcpAuthActiveOperation {
+                            operation_id: "flow".into(),
+                            connection_revision: revision,
+                            action,
+                        },
+                    },
+                }
+            );
+            // fake 操作没有 supervisor 句柄：按真实终态路径释放槽位后再关闭运行时。
+            runtime.acp_auth.inner.complete_operation(
+                "account",
+                generation,
+                revision,
+                AcpAuthState::Verified {
+                    checked_at: 1,
+                    server: None,
+                },
+                None,
+            );
+            runtime.shutdown_runtime().await?;
+            drop(home);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn busy_rejection_keeps_the_old_connection_slice_after_replacement() -> Result<()> {
+        let (_home, runtime) = test_runtime().await?;
+        let (frozen_revision, generation) = occupy_slot(&runtime, AcpAuthAction::QueryUsage);
+        // 模拟 observe_committed 的身份变化分支：账号已换新修订，旧操作仍在收束。
+        let current_revision = {
+            let mut registry = runtime.acp_auth.inner.lock();
+            let revision = registry.mint_connection_revision();
+            let slot = registry
+                .slots
+                .get_mut("account")
+                .expect("configured account");
+            slot.revision = revision;
+            slot.state = AcpAuthState::Closing {
+                operation_id: "flow".into(),
+                failure: None,
+            };
+            revision
+        };
+        assert_ne!(current_revision, frozen_revision);
+        let rejection = busy_rejection(&runtime, current_revision);
+        // 账号修订是当前值，占用身份仍是旧连接的冻结修订与动作。
+        assert_eq!(
+            rejection.acp_auth_busy.connection_revision,
+            current_revision
+        );
+        assert_eq!(
+            rejection.acp_auth_busy.active_operation,
+            AcpAuthActiveOperation {
+                operation_id: "flow".into(),
+                connection_revision: frozen_revision,
+                action: AcpAuthAction::QueryUsage,
+            }
+        );
+        // fake 操作没有 supervisor 句柄：按真实终态路径释放槽位后再关闭运行时。
+        runtime.acp_auth.inner.complete_operation(
+            "account",
+            generation,
+            frozen_revision,
+            AcpAuthState::Verified {
+                checked_at: 1,
+                server: None,
+            },
+            None,
+        );
+        runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn busy_slice_is_immutable_after_the_occupant_finishes() -> Result<()> {
+        let (_home, runtime) = test_runtime().await?;
+        let (revision, generation) = occupy_slot(&runtime, AcpAuthAction::Check);
+        let snapshot_revision = runtime.acp_auth.inner.lock().revision;
+        let rejection = busy_rejection(&runtime, revision);
+        // 占用方终态：快照修订前进、槽位释放。
+        runtime.acp_auth.inner.complete_operation(
+            "account",
+            generation,
+            revision,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            None,
+        );
+        let advanced = runtime.acp_auth.inner.lock().revision;
+        assert!(advanced > snapshot_revision);
+        // 已返回的切面不被占用方后续终态改写。
+        assert_eq!(rejection.acp_auth_busy.snapshot_revision, snapshot_revision);
+        assert_eq!(
+            rejection.acp_auth_busy.active_operation,
+            AcpAuthActiveOperation {
+                operation_id: "flow".into(),
+                connection_revision: revision,
+                action: AcpAuthAction::Check,
+            }
+        );
+        // 槽位已释放：新的 start 不再被 Busy 拒绝。
+        let accepted = runtime.acp_auth.start(StartAcpAuthRequest {
+            operation_id: "after-settle".into(),
+            account_id: "account".into(),
+            expected_connection_revision: revision,
+            action: AcpAuthAction::Check,
+        });
+        assert!(accepted.is_ok());
+        runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idle_admission_and_non_busy_errors_carry_no_fabricated_details() -> Result<()> {
+        let (_home, runtime) = test_runtime().await?;
+        let revision = runtime.acp_auth.inner.lock().slots["account"].revision;
+        // 未占用：正常受理，没有任何错误详情。
+        let accepted = runtime.acp_auth.start(StartAcpAuthRequest {
+            operation_id: "first".into(),
+            account_id: "account".into(),
+            expected_connection_revision: revision,
+            action: AcpAuthAction::Check,
+        })?;
+        assert!(accepted.changed);
+        // 非 Busy 拒绝不附加虚构字段。
+        let stale = match runtime.acp_auth.start(StartAcpAuthRequest {
+            operation_id: "second".into(),
+            account_id: "account".into(),
+            expected_connection_revision: revision + 100,
+            action: AcpAuthAction::Check,
+        }) {
+            Ok(_) => panic!("a stale connection revision must be rejected"),
+            Err(error) => error,
+        };
+        let stale = stale
+            .downcast_ref::<StudioError>()
+            .expect("admission errors are typed StudioError");
+        assert_eq!(stale.code, StudioErrorCode::StaleRevision);
+        assert!(stale.details.is_none());
+        runtime.shutdown_runtime().await?;
+        Ok(())
     }
 }

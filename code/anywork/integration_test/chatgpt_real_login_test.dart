@@ -370,9 +370,8 @@ void main() {
       tester
           .widget<AccountsListView>(find.byType(AccountsListView))
           .value
-          .rows
+          .members
           .single
-          .key
           .id,
       identity.accountId,
     );

@@ -309,7 +309,7 @@ abstract class AccountRowPresentation with _$AccountRowPresentation {
 abstract class AccountsListPresentation with _$AccountsListPresentation {
   const factory AccountsListPresentation({
     @Default(AccountListPhase.ready) AccountListPhase phase,
-    @Default(<AccountRowPresentation>[]) List<AccountRowPresentation> rows,
+    @Default(<AccountDisplayKey>[]) List<AccountDisplayKey> members,
     @Default('') String search,
     @Default(false) bool searchHasNoResults,
     @Default(false) bool refreshing,

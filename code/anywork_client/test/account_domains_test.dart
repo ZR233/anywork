@@ -1032,7 +1032,7 @@ void main() {
     );
   }
 
-  test('same-next owner preparation preserves the new usage attempt and ready baseline across accounts notification', () async {
+  test('same-next owner preparation preserves the new usage query and ready baseline across accounts notification', () async {
     final fixture = _Fixture();
     addTearDown(fixture.close);
     final response = Completer<AccountUsageFrame>();
@@ -1049,6 +1049,7 @@ void main() {
     };
     var admitted = false;
     late AccountDemand visible;
+    late Future<void> nested;
     final listener = fixture.resources.accounts.state.watch((value) {
       if (admitted || !value.stale) return;
       admitted = true;
@@ -1067,13 +1068,16 @@ void main() {
           ),
         ]),
       );
-      visible = fixture.resources.usage.observeVisible();
+      visible = fixture.resources.usage.observeAccount(_native);
+      nested = fixture.resources.usage.refresh(_native);
+      nested.ignore();
     });
     addTearDown(listener.cancel);
     fixture.resources.adoptOwnerEpoch('next');
     addTearDown(visible.release);
     final ready = fixture.resources.usage.state.value;
     final query = fixture.resources.usage.refresh(_native);
+    expect(query, same(nested));
     final failed = expectLater(query, throwsA(same(failure)));
     response.completeError(failure);
     await failed;
@@ -1084,7 +1088,7 @@ void main() {
     expect(
       queries,
       1,
-      reason: 'A new owner attempt cannot be erased and automatically retried by the old invalidation',
+      reason: 'A new owner query cannot be erased by the old invalidation',
     );
     expect((ready.loaded, ready.stale, ready.loading), (true, false, false));
     expect(fixture.resources.usage.queryFailures.value[_native], same(failure));
@@ -1106,6 +1110,7 @@ void main() {
     final response = Completer<AccountUsageFrame>();
     fixture.port.usage = (_) => response.future;
     late AccountDemand visible;
+    late Future<void> nested;
     var admitted = false;
     final listener = fixture.resources.accounts.state.watch((value) {
       if (admitted || !value.stale) return;
@@ -1115,11 +1120,14 @@ void main() {
           _summary(),
         ]),
       );
-      visible = fixture.resources.usage.observeVisible();
+      visible = fixture.resources.usage.observeAccount(_native);
+      nested = fixture.resources.usage.refresh(_native);
+      nested.ignore();
     });
     addTearDown(listener.cancel);
     fixture.resources.adoptOwnerEpoch('next');
     final query = fixture.resources.usage.refresh(_native);
+    expect(query, same(nested));
     final failure = expectLater(query, throwsStateError);
     response.completeError(StateError('Unknown new-owner query outcome'));
     await failure;
@@ -1920,6 +1928,51 @@ void main() {
     });
   });
 
+  test(
+    'reentrant display release keeps the admitted usage query observation',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      final response = Completer<AccountUsageFrame>();
+      fixture.port.usage = (_) => response.future;
+      final usage = fixture.resources.usage;
+      final display = usage.observeAccount(_native);
+      addTearDown(display.release);
+      final summariesHandle =
+          fixture.port.handles[const AccountSummariesTarget()]!;
+      final usageHandle = fixture.port.handles[const AccountUsageTarget()]!;
+      await summariesHandle.reading.future;
+      await usageHandle.reading.future;
+      final query = usage.refresh(_native);
+      late Future<void> reentrant;
+      summariesHandle.onRequestClose = () {
+        reentrant = display.release();
+      };
+      final releasing = display.release();
+      await releasing;
+      final sameRelease = identical(reentrant, releasing);
+      final retained = !usageHandle.closed;
+      response.complete(
+        AccountUsageFrame(_stamp('account-usage', 1), const [
+          AccountUsageObservation(
+            identity: _native,
+            queryRevision: 1,
+            revision: 1,
+            phase: AccountUsagePhase.succeeded,
+          ),
+        ]),
+      );
+      await query;
+      await usageHandle.requested.future;
+      expect(sameRelease, isTrue);
+      expect(retained, isTrue);
+      expect(
+        usage.state.value.value![_native]!.phase,
+        AccountUsagePhase.succeeded,
+      );
+    },
+  );
+
   test('usage identity dedup, exact money and failure last-good stay independent of noCharge', () async {
     final fixture = _Fixture();
     addTearDown(fixture.close);
@@ -2015,11 +2068,11 @@ void main() {
       fixture.resources.accounts.state.value.account(_native)!.billingKind,
       BillingKind.noCharge,
     );
-    final demand = usage.observeVisible();
+    final demand = usage.observeAccount(_native);
     expect(
       pending,
       hasLength(2),
-      reason: 'Failed is attempted; visibility must not loop',
+      reason: 'Observing a failed query must not start another query',
     );
     await demand.release();
     fixture.resources.acceptFrame(
@@ -2059,19 +2112,21 @@ void main() {
 
     summaries(4, [unsupportedAccount]);
     expect(queries, isEmpty, reason: 'Hidden summaries do not start checks');
-    var visible = usage.observeVisible();
+    var visible = usage.observeAccount(_native);
     addTearDown(() => visible.release());
+    expect(
+      queries,
+      isEmpty,
+      reason: 'Observation does not start classification',
+    );
+    final initial = usage.refresh(_native);
+    expect(identical(initial, usage.refresh(_native)), isTrue);
     expect(
       queries,
       [(_native, 3)],
       reason:
-          'First visibility must classify even without remote query capability',
+          'Explicit refresh classifies even without remote query capability',
     );
-    final initial = usage.refresh(_native);
-    expect(identical(initial, usage.refresh(_native)), isTrue);
-    expect(queries, [
-      (_native, 3),
-    ], reason: 'Manual refresh joins automatic work');
     const unsupported = AccountUsageObservation(
       identity: _native,
       queryRevision: 3,
@@ -2087,10 +2142,8 @@ void main() {
     expect(usage.state.value.value![_native], same(unsupported));
     expect(usage.queryFailures.value, isEmpty);
     await visible.release();
-    visible = usage.observeVisible();
-    expect(queries, [
-      (_native, 3),
-    ], reason: 'Reopening does not repeat a terminal check');
+    visible = usage.observeAccount(_native);
+    expect(queries, [(_native, 3)], reason: 'Reopening does not start a query');
 
     // Config commits can publish the usage baseline before the new summary.
     fixture.resources.acceptFrame(
@@ -2107,11 +2160,9 @@ void main() {
     expect(usage.state.value.value, isNot(contains(added)));
     expect(queries, [(_native, 3)]);
     summaries(5, [unsupportedAccount, addedAccount]);
-    expect(
-      queries,
-      [(_native, 3), (added, 1)],
-      reason: 'The arriving summary starts only its previously unseen identity',
-    );
+    expect(queries, [
+      (_native, 3),
+    ], reason: 'A new summary does not start a query');
     final addition = usage.refresh(added);
     expect(identical(addition, usage.refresh(added)), isTrue);
     const addedUnsupported = AccountUsageObservation(
@@ -2133,8 +2184,9 @@ void main() {
     expect(usage.state.value.value![_native], same(unsupported));
 
     summaries(6, [unsupportedAccount, addedAccount, missingAccount]);
-    expect(queries, [(_native, 3), (added, 1), (missing, 1)]);
+    expect(queries, [(_native, 3), (added, 1)]);
     final missingCheck = usage.refresh(missing);
+    expect(queries, [(_native, 3), (added, 1), (missing, 1)]);
     const missingCredential = AccountUsageObservation(
       identity: missing,
       queryRevision: 1,
@@ -2173,13 +2225,15 @@ void main() {
       missingAccount,
     ]);
     expect(queries, [(_native, 3), (added, 1), (missing, 1)]);
-    visible = usage.observeVisible();
+    visible = usage.observeAccount(added);
     expect(
       queries,
-      [(_native, 3), (added, 1), (missing, 1), (added, 2)],
-      reason: 'Visibility resumes only the changed query identity, not its siblings',
+      [(_native, 3), (added, 1), (missing, 1)],
+      reason:
+          'Observing a changed query identity still requires explicit refresh',
     );
     final deletedCheck = usage.refresh(added);
+    expect(queries, [(_native, 3), (added, 1), (missing, 1), (added, 2)]);
     summaries(8, [unsupportedAccount, missingAccount]);
     replies[3].complete(
       AccountUsageFrame(_stamp('account-usage', 15), const [

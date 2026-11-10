@@ -599,6 +599,37 @@ final class AcpFailedState extends AcpAuthStateView {
   int get hashCode => Object.hash(0x0209, failure);
 }
 
+/// 当前操作槽位投影出的进行中认证操作；与 state 由认证所有者同一边界发布。
+///
+/// 连接已替换但旧操作仍在收束时，[connectionRevision] 可以小于账号当前连接修订，
+/// [action] 仍是旧操作启动时冻结的真实意图；不从忙碌阶段、时间或已有额度推导。
+class AcpAuthActiveOperationView {
+  const AcpAuthActiveOperationView({
+    required this.operationId,
+    required this.connectionRevision,
+    required this.action,
+  });
+
+  final String operationId;
+
+  /// 该操作启动时冻结的连接修订；与账号当前修订不同表示旧连接仍在收束。
+  final int connectionRevision;
+
+  /// 该操作真实的启动动作。
+  final AcpAuthActionView action;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpAuthActiveOperationView &&
+          operationId == other.operationId &&
+          connectionRevision == other.connectionRevision &&
+          action == other.action;
+
+  @override
+  int get hashCode => Object.hash(operationId, connectionRevision, action);
+}
+
 /// 单个接入在认证观察里的条目。
 class AcpAuthAccountView {
   const AcpAuthAccountView({
@@ -606,6 +637,7 @@ class AcpAuthAccountView {
     required this.connectionRevision,
     required this.state,
     this.usage,
+    this.activeOperation,
   });
 
   final String accountId;
@@ -615,6 +647,9 @@ class AcpAuthAccountView {
 
   final AcpAuthStateView state;
   final AcpUsageObservationView? usage;
+
+  /// 当前操作槽位上的进行中操作；无在途操作时为 null，不按 state 猜测。
+  final AcpAuthActiveOperationView? activeOperation;
 
   /// 只有账号身份 **和** 连接身份同时匹配时才可用。
   ///
@@ -631,10 +666,12 @@ class AcpAuthAccountView {
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
           state == other.state &&
-          usage == other.usage;
+          usage == other.usage &&
+          activeOperation == other.activeOperation;
 
   @override
-  int get hashCode => Object.hash(accountId, connectionRevision, state, usage);
+  int get hashCode =>
+      Object.hash(accountId, connectionRevision, state, usage, activeOperation);
 }
 
 /// 由 ACP 所有者发布的额度观察，独立于认证结论。

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
 import 'package:anywork_client/account_usage.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,8 +37,14 @@ void main() {
     final graph = _graph(transport);
     final uncaught = <Object>[];
     await runZonedGuarded(() async {
-      final demand = graph.accountUsage.observeVisible();
-      addTearDown(demand.release);
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      addTearDown(container.dispose);
+      final list = container.listen(accountsViewModelProvider, (_, _) {});
+      addTearDown(list.close);
+      await container.read(accountsViewModelProvider.future);
+      container.read(accountsViewModelProvider.notifier).setVisible(true);
       final a = await transport.started('a');
       final b = await transport.started('b');
       expect(transport.calls.map((call) => call.identity.accountId), [

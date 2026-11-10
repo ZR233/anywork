@@ -27,6 +27,11 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
   String? _error;
   bool _billingSaving = false;
   AccountDemand? _detailDemand;
+  AccountDemand? _usageDemand;
+  ({String ownerEpoch, int revision})? _usageSource;
+  ({String ownerEpoch, int revision})? _automaticUsage;
+  Object _usageGeneration = Object();
+  String? _usageError;
   Object _owner = Object();
   Object? _billingAttempt;
   String? _ownerEpoch;
@@ -35,6 +40,7 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
 
   @override
   FutureOr<AccountDetailsViewState> build(AccountDisplayKey key) {
+    final lifetime = ref;
     _key = key;
     _accounts = ref.read(accountsRepositoryProvider);
     _usage = ref.read(accountUsageRepositoryProvider);
@@ -42,6 +48,13 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
     _details = _accounts.details(domainIdentity(key));
     _ownerEpoch = _details.value.stamp?.ownerEpoch;
     _wasStale = _details.value.stale || _accounts.state.value.stale;
+    _usageSource = _currentUsageSource();
+    _automaticUsage = null;
+    _usageGeneration = Object();
+    _usageError = null;
+    _usageDemand = key.kind == AccountKind.native
+        ? _usage.observeAccount(NativeAccountIdentity(key.id))
+        : null;
     // Header commands remain owned by AccountsViewModel. Listen to its full
     // immutable action projection, not a row which search may have filtered out.
     ref.listen(accountsViewModelProvider, (_, _) => _publish());
@@ -52,9 +65,16 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
       _usage.queryFailures.watch((_) => _publish()),
     ];
     ref.onDispose(() {
+      _usageGeneration = Object();
       releaseAccountDemand(_detailDemand);
+      releaseAccountDemand(_usageDemand);
       for (final observation in [...observations, ..._operations]) {
         observation.cancel();
+      }
+    });
+    scheduleMicrotask(() {
+      if (lifetime.mounted && identical(lifetime, ref)) {
+        _startAutomaticUsage();
       }
     });
     return _derive();
@@ -91,16 +111,44 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
   }
 
   Future<void> refreshUsage() async {
-    if (_key.kind != AccountKind.native) return;
+    final source = _currentUsageSource();
+    if (!ref.mounted || source == null) return;
+    final lifetime = ref;
     final owner = _owner;
+    final generation = _usageGeneration;
+    _usageError = null;
+    _publish();
     try {
       await _usage.refresh(NativeAccountIdentity(_key.id));
     } catch (error) {
-      if (ref.mounted && identical(owner, _owner)) {
-        _error = safeAccountError(error, _strings);
+      if (lifetime.mounted &&
+          identical(lifetime, ref) &&
+          identical(owner, _owner) &&
+          identical(generation, _usageGeneration) &&
+          source == _currentUsageSource()) {
+        _usageError = safeAccountError(error, _strings);
         _publish();
       }
     }
+  }
+
+  ({String ownerEpoch, int revision})? _currentUsageSource() {
+    if (_key.kind != AccountKind.native) return null;
+    final source = _accounts.state.value;
+    final revision = source.account(domainIdentity(_key))?.usageQueryRevision;
+    if (!source.loaded || source.stale || revision == null) return null;
+    return (ownerEpoch: source.stamp!.ownerEpoch, revision: revision);
+  }
+
+  void _startAutomaticUsage() {
+    if (!ref.mounted) return;
+    final source = _currentUsageSource();
+    if (source == null || source == _automaticUsage) return;
+    // One initial intent per current query identity. A summary arriving after
+    // the detail owner, or a changed query revision, can make it queryable.
+    // Rebuilds, manual refreshes and list visibility do not reset this identity.
+    _automaticUsage = source;
+    unawaited(refreshUsage());
   }
 
   Future<void> setBilling(AccountBilling? billing) async {
@@ -212,6 +260,7 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
             ? _strings['stale']
             : action?.message ??
                   _error ??
+                  _usageError ??
                   resource.failure?.message ??
                   (resource.loaded && detail == null
                       ? _strings['notFound']
@@ -290,6 +339,7 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
       _billingAttempt = null;
       _billingSaving = false;
       _error = null;
+      _usageError = null;
       for (final observation in _operations) {
         observation.cancel();
       }
@@ -297,7 +347,18 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
     }
     _ownerEpoch = epoch ?? _ownerEpoch;
     _wasStale = stale;
+    final usageSource = _currentUsageSource();
+    if (usageSource != _usageSource) {
+      _usageGeneration = Object();
+      _usageError = null;
+      _usageSource = usageSource;
+    }
+    final accounts = _accounts.state.value;
+    if (accounts.loaded && accounts.account(domainIdentity(_key)) == null) {
+      _automaticUsage = null;
+    }
     _publish();
+    _startAutomaticUsage();
   }
 
   void _publish() {

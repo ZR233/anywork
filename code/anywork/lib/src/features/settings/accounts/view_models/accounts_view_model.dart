@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:anywork_client/accounts.dart';
-import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/studio_client.dart'
     show OperationId, OperationState, OperationPhase;
@@ -12,8 +11,84 @@ import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import 'account_projection.dart';
 import 'account_operation_result.dart';
+import 'account_card_view_model.dart';
 
 part 'accounts_view_model.g.dart';
+
+typedef _CardObservationSource = ({
+  String? ownerEpoch,
+  int? connectionRevision,
+  bool stale,
+});
+
+/// This list's read-only retention of one card scope and its provider listener.
+/// Cancellation is idempotent and never closes an account/service owner.
+final class _CardObservationLease {
+  _CardObservationLease({
+    required this.source,
+    required this._cancelCardObservation,
+    required this._detachSubscription,
+    required this._boundScope,
+    required this._pushAction,
+  });
+
+  final _CardObservationSource source;
+  void Function()? _cancelCardObservation;
+  void Function()? _detachSubscription;
+  Object? _boundScope;
+  void Function(AccountActionPresentation? action)? _pushAction;
+  AccountActionPresentation? _pushed;
+  bool _pushedOnce = false;
+
+  Object? get boundScope => _boundScope;
+  bool get closed => _pushAction == null && _cancelCardObservation == null;
+
+  /// Deliver only an action that belongs to this lease. A new card scope starts
+  /// empty; callers must pass a freshly derived projection, never a replay of
+  /// the previous scope's value.
+  void push(AccountActionPresentation? action) {
+    final sink = _pushAction;
+    if (sink == null) return;
+    final accepted = action != null && _belongs(action) ? action : null;
+    if (_pushedOnce && _pushed == accepted) return;
+    _pushedOnce = true;
+    _pushed = accepted;
+    sink(accepted);
+  }
+
+  void rebind({
+    required Object scope,
+    required void Function(AccountActionPresentation? action) pushAction,
+  }) {
+    if (_pushAction == null) return;
+    _boundScope = scope;
+    _pushAction = pushAction;
+    _pushed = null;
+    _pushedOnce = false;
+  }
+
+  bool _belongs(AccountActionPresentation action) {
+    if (action.ownerEpoch != source.ownerEpoch) return false;
+    if (action.removing) return true;
+    return action.acpConnectionRevision == source.connectionRevision;
+  }
+
+  void cancel() {
+    final cancelCard = _cancelCardObservation;
+    final detach = _detachSubscription;
+    _cancelCardObservation = null;
+    _detachSubscription = null;
+    // Detach before cancellation. A pending-intent cancel can rebuild the
+    // card synchronously; this lease must not deliver into that new scope.
+    _pushAction = null;
+    _boundScope = null;
+    try {
+      cancelCard?.call();
+    } finally {
+      detach?.call();
+    }
+  }
+}
 
 final class _ListAttempt {
   _ListAttempt(
@@ -56,18 +131,16 @@ final class _ListAttempt {
 @riverpod
 class AccountsViewModel extends _$AccountsViewModel {
   late AccountsRepository _accounts;
-  late AccountUsageRepository _usage;
   late AcpService _acp;
   AccountStrings _strings = const AccountStrings.empty();
-  AccountDemand? _usageDemand;
   AccountDemand? _summaryDemand;
-  AccountDemand? _acpAuthDemand;
+  bool _visible = false;
+  Map<AccountDisplayKey, _CardObservationLease> _cards = {};
+  Object _cardSync = Object();
   String _search = '';
   final Map<AccountDisplayKey, String> _errors = {};
   final Set<AccountDisplayKey> _pending = {};
   final Map<AccountDisplayKey, _ListAttempt> _attempts = {};
-  final Map<AccountDisplayKey, ({int? query, String message})> _refreshErrors =
-      {};
   Object _ownerLifecycle = Object();
   String? _ownerEpoch;
   bool _ownerStale = false;
@@ -75,27 +148,38 @@ class AccountsViewModel extends _$AccountsViewModel {
   @override
   FutureOr<AccountsViewState> build() {
     final lifetime = ref;
+    // Each provider build owns its own leases, even if Riverpod reuses this
+    // notifier. An old disposal callback can only detach its captured set.
+    final cards = <AccountDisplayKey, _CardObservationLease>{};
+    _cards = cards;
+    _cardSync = Object();
     _accounts = ref.read(accountsRepositoryProvider);
-    _usage = ref.read(accountUsageRepositoryProvider);
     _acp = ref.read(acpServiceProvider);
     _ownerEpoch = _accounts.state.value.stamp?.ownerEpoch;
     _ownerStale = _accounts.state.value.stale;
     _summaryDemand = _accounts.observeSummaries();
     final observations = [
-      _accounts.state.watch(_summariesChanged),
-      _usage.state.watch((_) => _publish()),
-      _usage.queryFailures.watch((_) => _publish()),
-      _acp.auth.watch((_) => _publish()),
+      _accounts.state.watch((source) {
+        if (lifetime.mounted && identical(lifetime, ref)) {
+          _summariesChanged(source);
+        }
+      }),
     ];
     ref.onDispose(() {
+      for (final observation in observations) {
+        observation.cancel();
+      }
       releaseAccountDemand(_summaryDemand);
-      releaseAccountDemand(_usageDemand);
-      releaseAccountDemand(_acpAuthDemand);
+      for (final lease in cards.values.toList()) {
+        lease.cancel();
+      }
       for (final attempt in _attempts.values.toList()) {
         if (identical(attempt.lifetime, lifetime)) _retireAttempt(attempt);
       }
-      for (final observation in observations) {
-        observation.cancel();
+    });
+    scheduleMicrotask(() {
+      if (lifetime.mounted && identical(cards, _cards) && _visible) {
+        _syncCards();
       }
     });
     return _derive();
@@ -103,23 +187,106 @@ class AccountsViewModel extends _$AccountsViewModel {
 
   void setStrings(AccountStrings strings) {
     _strings = strings;
+    for (final key in _cards.keys) {
+      ref.read(accountCardViewModelProvider(key).notifier).setStrings(strings);
+    }
     _publish();
   }
 
   void setVisible(bool visible) {
-    if (visible) {
-      _usageDemand ??= _usage.observeVisible();
-      // Retain the shared auth snapshot for visible list projection only;
-      // observing it does not issue a quota query.
-      _acpAuthDemand ??= _acp.observeAuth();
-    } else {
-      final demand = _usageDemand;
-      _usageDemand = null;
-      releaseAccountDemand(demand);
-      final acpDemand = _acpAuthDemand;
-      _acpAuthDemand = null;
-      releaseAccountDemand(acpDemand);
+    if (!ref.mounted) return;
+    _visible = visible;
+    _syncCards();
+  }
+
+  void _syncCards() {
+    final lifetime = ref;
+    final cards = _cards;
+    final pass = Object();
+    _cardSync = pass;
+    bool isCurrent() =>
+        lifetime.mounted &&
+        identical(lifetime, ref) &&
+        identical(cards, _cards) &&
+        identical(pass, _cardSync);
+    final source = _accounts.state.value;
+    final members = {
+      if (_visible)
+        for (final account in source.accounts)
+          displayIdentity(account.identity),
+    };
+    for (final key in cards.keys.toList()) {
+      if (!members.contains(key)) {
+        cards.remove(key)!.cancel();
+        if (!isCurrent()) return;
+      }
     }
+    for (final key in members) {
+      final identity = (
+        ownerEpoch: source.stamp?.ownerEpoch,
+        connectionRevision: source
+            .account(domainIdentity(key))
+            ?.acpConnectionRevision,
+        stale: source.stale,
+      );
+      if (cards.containsKey(key)) {
+        if (cards[key]!.source == identity) continue;
+        cards.remove(key)!.cancel();
+        if (!isCurrent()) return;
+      }
+      if (!ref
+          .read(accountCardViewModelProvider(key).notifier)
+          .isObservationActive()) {
+        ref.invalidate(accountCardViewModelProvider(key));
+      }
+      if (!isCurrent()) return;
+      // Retain every real member, not just rows surviving the search filter.
+      _CardObservationLease? installed;
+      final subscription = ref.listen(accountCardViewModelProvider(key), (
+        _,
+        _,
+      ) {
+        final lease = installed;
+        if (lease == null || !isCurrent() || !identical(cards[key], lease)) {
+          return;
+        }
+        _rebindRebuiltCard(key, lease);
+      }, weak: false);
+      final card = ref.read(accountCardViewModelProvider(key).notifier);
+      final lease = _CardObservationLease(
+        source: identity,
+        cancelCardObservation: card.cancellationForCurrentObservation(),
+        detachSubscription: subscription.close,
+        boundScope: card.currentObservationScope(),
+        pushAction: card.actionSinkForCurrentObservation(),
+      );
+      installed = lease;
+      if (!isCurrent()) {
+        lease.cancel();
+        return;
+      }
+      cards[key] = lease;
+      card.setStrings(_strings);
+      if (!isCurrent()) return;
+      // Fresh derivation only. Do not replay the previously published action:
+      // an owner/revision replacement may still be sitting in that old state.
+      lease.push(_derive().actions[key]);
+      if (!isCurrent()) return;
+    }
+  }
+
+  void _rebindRebuiltCard(AccountDisplayKey key, _CardObservationLease lease) {
+    if (lease.closed || !identical(_cards[key], lease)) return;
+    final card = ref.read(accountCardViewModelProvider(key).notifier);
+    if (!card.isObservationActive() ||
+        identical(card.currentObservationScope(), lease.boundScope)) {
+      return;
+    }
+    lease.rebind(
+      scope: card.currentObservationScope(),
+      pushAction: card.actionSinkForCurrentObservation(),
+    );
+    lease.push(_derive().actions[key]);
   }
 
   void search(String raw) {
@@ -128,36 +295,17 @@ class AccountsViewModel extends _$AccountsViewModel {
   }
 
   Future<void> refresh(AccountDisplayKey key) async {
-    if (key.kind != AccountKind.native) return;
-    final owner = _ownerLifecycle;
-    final query = _accounts.state.value
-        .account(domainIdentity(key))
-        ?.usageQueryRevision;
-    _refreshErrors.remove(key);
-    try {
-      await _usage.refresh(NativeAccountIdentity(key.id));
-    } catch (error) {
-      if (ref.mounted &&
-          identical(owner, _ownerLifecycle) &&
-          _accounts.state.value.loaded &&
-          _accounts.state.value
-                  .account(domainIdentity(key))
-                  ?.usageQueryRevision ==
-              query) {
-        _refreshErrors[key] = (
-          query: query,
-          message: safeAccountError(error, _strings),
-        );
-        _publish();
-      }
-    }
+    if (!_cards.containsKey(key)) return;
+    await ref.read(accountCardViewModelProvider(key).notifier).refresh();
   }
 
   Future<void> refreshAll() async {
     final keys = [
       for (final account in _accounts.state.value.accounts)
-        if (account.identity is NativeAccountIdentity &&
-            account.capabilities.queryUsage)
+        if ((account.identity is NativeAccountIdentity &&
+                account.capabilities.queryUsage) ||
+            (account.identity is AcpAccountIdentity &&
+                account.acpConnectionRevision != null))
           displayIdentity(account.identity),
     ];
     await Future.wait(keys.map(refresh));
@@ -170,18 +318,6 @@ class AccountsViewModel extends _$AccountsViewModel {
 
   String accountName(AccountDisplayKey key) =>
       _accounts.state.value.account(domainIdentity(key))?.name ?? key.id;
-  AcpUsagePresentation? _projectRowAcpUsage(AccountSummary account) {
-    final revision = account.acpConnectionRevision;
-    if (revision == null) return null;
-    final projection = projectAcpUsage(
-      snapshot: _acp.auth.value.value,
-      stale: _acp.auth.value.stale,
-      accountId: account.identity.accountId,
-      connectionRevision: revision,
-      strings: _strings,
-    );
-    return projection.queried || projection.busy ? projection : null;
-  }
 
   bool needsReplacement(AccountDisplayKey key) =>
       key.kind == AccountKind.native &&
@@ -474,7 +610,6 @@ class AccountsViewModel extends _$AccountsViewModel {
         (epoch != null && epoch != _ownerEpoch);
     if (changed) {
       _ownerLifecycle = Object();
-      _refreshErrors.clear();
     }
     _ownerStale = source.stale;
     _ownerEpoch = epoch ?? _ownerEpoch;
@@ -500,12 +635,7 @@ class AccountsViewModel extends _$AccountsViewModel {
         _retireAttempt(attempt);
       }
     }
-    _refreshErrors.removeWhere(
-      (key, value) =>
-          source.loaded &&
-          source.account(domainIdentity(key))?.usageQueryRevision !=
-              value.query,
-    );
+    _syncCards();
     _publish();
   }
 
@@ -519,6 +649,16 @@ class AccountsViewModel extends _$AccountsViewModel {
     });
     return AccountsViewState(
       actions: {
+        for (final entry in _errors.entries)
+          if (!_attempts.containsKey(entry.key) && source.stamp != null)
+            entry.key: AccountActionPresentation(
+              ownerEpoch: source.stamp!.ownerEpoch,
+              removing: false,
+              acpConnectionRevision: source
+                  .account(domainIdentity(entry.key))
+                  ?.acpConnectionRevision,
+              message: entry.value,
+            ),
         for (final attempt in _attempts.values)
           if (_owns(attempt))
             attempt.key: AccountActionPresentation(
@@ -541,55 +681,29 @@ class AccountsViewModel extends _$AccountsViewModel {
         canAdd: source.loaded,
         canRefresh: source.loaded,
         error: source.stale ? _strings['stale'] : source.failure?.message,
-        rows: [
-          for (final account in filtered)
-            AccountRowPresentation(
-              key: displayIdentity(account.identity),
-              name: account.name,
-              iconKey: account.brandKey,
-              isDefault: account.isDefault,
-              content: account.identity is NativeAccountIdentity
-                  ? AccountRowContent.native(
-                      billing: displayBilling(account.billingKind),
-                      displayEndpoint: account.displayEndpoint,
-                      accountLabel:
-                          account.chatgptAccount?.email ??
-                          account.chatgptAccount?.codex?.accountId,
-                      usage: projectUsage(
-                        account,
-                        _usage.state.value,
-                        _usage.queryFailures.value,
-                        _strings,
-                      ),
-                    )
-                  : AccountRowContent.acp(
-                      status: _strings['acp'],
-                      usage: _projectRowAcpUsage(account),
-                    ),
-              operationError:
-                  _errors[displayIdentity(account.identity)] ??
-                  _refreshErrors[displayIdentity(account.identity)]?.message,
-              actions:
-                  _pending.contains(displayIdentity(account.identity)) ||
-                      !source.loaded ||
-                      (account.identity is AcpAccountIdentity &&
-                          account.acpConnectionRevision == null)
-                  ? const []
-                  : [
-                      if (account.capabilities.queryUsage)
-                        AccountRowAction.refresh,
-                      if (account.capabilities.setDefault && !account.isDefault)
-                        AccountRowAction.setDefault,
-                      if (account.capabilities.edit) AccountRowAction.edit,
-                      if (account.capabilities.remove) AccountRowAction.delete,
-                    ],
-            ),
+        members: [
+          for (final account in filtered) displayIdentity(account.identity),
         ],
       ),
     );
   }
 
   void _publish() {
-    if (ref.mounted) state = AsyncData(_derive());
+    if (!ref.mounted) return;
+    final previous = state.asData?.value;
+    final next = _derive();
+    _deliverActionChanges(previous?.actions, next.actions);
+    if (previous != next) state = AsyncData(next);
+  }
+
+  void _deliverActionChanges(
+    Map<AccountDisplayKey, AccountActionPresentation>? previous,
+    Map<AccountDisplayKey, AccountActionPresentation> next,
+  ) {
+    final keys = {...?previous?.keys, ...next.keys};
+    for (final key in keys) {
+      if (previous?[key] == next[key]) continue;
+      _cards[key]?.push(next[key]);
+    }
   }
 }

@@ -3,7 +3,6 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../widgets/account_sections.dart';
-import '../widgets/account_list_item.dart';
 
 /// Main settings content only. Search and scroll restoration are caller-owned.
 class AccountsListView extends StatelessWidget {
@@ -15,6 +14,7 @@ class AccountsListView extends StatelessWidget {
     required this.onOpen,
     required this.onRowAction,
     required this.onRetry,
+    required this.cardBuilder,
     this.scrollController,
     super.key,
   });
@@ -26,6 +26,14 @@ class AccountsListView extends StatelessWidget {
   final void Function(AccountDisplayKey, AccountRowAction) onRowAction;
   final VoidCallback onRetry;
   final ScrollController? scrollController;
+  final Widget Function(
+    BuildContext context,
+    AccountDisplayKey account,
+    AccountItemLayout layout,
+    VoidCallback onOpen,
+    ValueChanged<AccountRowAction> onAction,
+  )
+  cardBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -108,7 +116,7 @@ class AccountsListView extends StatelessWidget {
               ),
               if (value.phase == AccountListPhase.ready)
                 Text(
-                  l10n.accountsVisibleCount(value.rows.length),
+                  l10n.accountsVisibleCount(value.members.length),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -126,7 +134,7 @@ class AccountsListView extends StatelessWidget {
             message: value.error ?? l10n.settingsAccountCatalogUnavailable,
             onRetry: onRetry,
           ),
-        if (value.rows.isEmpty && value.phase != AccountListPhase.failed)
+        if (value.members.isEmpty && value.phase != AccountListPhase.failed)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 48),
             child: Column(
@@ -163,7 +171,7 @@ class AccountsListView extends StatelessWidget {
               ],
             ),
           ),
-        if (value.rows.isNotEmpty)
+        if (value.members.isNotEmpty)
           LayoutBuilder(
             builder: (context, constraints) {
               // Main-area width, not window width: the settings sidebar is external.
@@ -203,16 +211,16 @@ class AccountsListView extends StatelessWidget {
                           ),
                         ),
                       ),
-                    for (var i = 0; i < value.rows.length; i++) ...[
+                    for (var i = 0; i < value.members.length; i++) ...[
                       if (i > 0 || wide) const Divider(height: 1),
-                      AccountListItem(
-                        value: value.rows[i],
-                        layout: wide
+                      cardBuilder(
+                        context,
+                        value.members[i],
+                        wide
                             ? AccountItemLayout.columns
                             : AccountItemLayout.stacked,
-                        onOpen: () => onOpen(value.rows[i].key),
-                        onAction: (action) =>
-                            onRowAction(value.rows[i].key, action),
+                        () => onOpen(value.members[i]),
+                        (action) => onRowAction(value.members[i], action),
                       ),
                     ],
                   ],

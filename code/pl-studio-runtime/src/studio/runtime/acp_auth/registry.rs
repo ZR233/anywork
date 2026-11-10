@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use pl_protocol::studio::{
-    AcpAuthAccount, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState, AcpUsageObservation,
+    AcpAuthAccount, AcpAuthActiveOperation, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState,
+    AcpUsageObservation,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +33,16 @@ pub(super) struct Slot {
 }
 
 impl Slot {
+    /// 从操作槽位里真正 operation 的冻结身份投影进行中操作。
+    ///
+    /// 与 state 在同一把 registry 锁内读取：连接已替换但旧操作仍在收束时，保留旧操作
+    /// 的真实修订与动作，不按当前 state、时间或 usage 推测（design/28 §28.9）。
+    fn active_operation(&self) -> Option<AcpAuthActiveOperation> {
+        self.operation
+            .as_ref()
+            .map(|operation| operation.active_operation_view())
+    }
+
     /// 在 slot 内裁决匹配操作并释放占用；返回该记录是否已退役。
     fn finish_operation(
         &mut self,
@@ -102,12 +113,25 @@ pub(super) struct Operation {
     pub(super) account_id: String,
     pub(super) connection_revision: u64,
     pub(super) generation: u64,
+    /// 受理时冻结的启动意图；快照投影与收尾裁决都消费它，不重新读取 state。
+    pub(super) action: pl_protocol::studio::AcpAuthAction,
     pub(super) cancel: CancellationToken,
     pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
     /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
     pub(super) cleanup_retry: tokio::sync::Notify,
     /// supervisor 的真实 join 出口。借用等待，关闭 future 被取消也不会取走句柄。
     pub(super) join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Operation {
+    /// 该操作冻结身份的活动操作投影；快照投影与 `Busy` 拒绝切面共用同一来源。
+    pub(super) fn active_operation_view(&self) -> AcpAuthActiveOperation {
+        AcpAuthActiveOperation {
+            operation_id: self.operation_id.clone(),
+            connection_revision: self.connection_revision,
+            action: self.action.clone(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Operation {
@@ -178,6 +202,7 @@ impl Registry {
                     connection_revision: slot.revision,
                     state: slot.state.clone(),
                     usage: slot.usage.clone(),
+                    active_operation: slot.active_operation(),
                 })
                 .collect(),
         }
@@ -469,12 +494,17 @@ mod tests {
     use super::*;
     use pl_protocol::studio::{AcpUsageFailureCode, AcpUsageState};
 
-    fn operation(generation: u64, revision: u64) -> Arc<Operation> {
+    fn operation(
+        generation: u64,
+        revision: u64,
+        action: pl_protocol::studio::AcpAuthAction,
+    ) -> Arc<Operation> {
         Arc::new(Operation {
             operation_id: "op".into(),
             account_id: "account".into(),
             connection_revision: revision,
             generation,
+            action,
             cancel: CancellationToken::new(),
             authentication: tokio::sync::mpsc::channel(1).0,
             cleanup_retry: tokio::sync::Notify::new(),
@@ -497,8 +527,116 @@ mod tests {
             state,
             usage,
             retired: false,
-            operation: Some(operation(3, 7)),
+            operation: Some(operation(
+                3,
+                7,
+                pl_protocol::studio::AcpAuthAction::QueryUsage,
+            )),
         }
+    }
+
+    #[test]
+    fn snapshot_projects_the_real_operation_identity_for_both_actions() {
+        for action in [
+            pl_protocol::studio::AcpAuthAction::Check,
+            pl_protocol::studio::AcpAuthAction::QueryUsage,
+        ] {
+            let mut registry = Registry::default();
+            registry.slots.insert(
+                "account".into(),
+                Slot {
+                    identity: ConnectionIdentity {
+                        provider: AcpProvider::Antigravity,
+                        release: None,
+                    },
+                    revision: 7,
+                    state: AcpAuthState::Checking {
+                        operation_id: "op".into(),
+                    },
+                    usage: None,
+                    retired: false,
+                    operation: Some(operation(3, 7, action.clone())),
+                },
+            );
+            let snapshot = registry.snapshot();
+            let account = &snapshot.accounts[0];
+            // 忙碌状态的 operationId 与活动操作身份一致；类型来自准入冻结的意图。
+            assert_eq!(account.state.operation_id(), Some("op"));
+            assert_eq!(
+                account.active_operation,
+                Some(AcpAuthActiveOperation {
+                    operation_id: "op".into(),
+                    connection_revision: 7,
+                    action: action.clone(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn replaced_connection_keeps_the_old_operation_revision_and_action() {
+        let mut registry = Registry::default();
+        registry.slots.insert(
+            "account".into(),
+            Slot {
+                identity: ConnectionIdentity {
+                    provider: AcpProvider::Antigravity,
+                    release: None,
+                },
+                // observe_committed 的身份变化分支：新修订 + 旧操作仍在收束（Closing）。
+                revision: 8,
+                state: AcpAuthState::Closing {
+                    operation_id: "op".into(),
+                    failure: None,
+                },
+                usage: None,
+                retired: false,
+                operation: Some(operation(
+                    3,
+                    7,
+                    pl_protocol::studio::AcpAuthAction::QueryUsage,
+                )),
+            },
+        );
+        let snapshot = registry.snapshot();
+        let account = &snapshot.accounts[0];
+        assert_eq!(account.connection_revision, 8);
+        // 当前修订与活动操作修订可以不同：保留旧操作的真实类型与修订，不误写新连接。
+        assert_eq!(
+            account.active_operation,
+            Some(AcpAuthActiveOperation {
+                operation_id: "op".into(),
+                connection_revision: 7,
+                action: pl_protocol::studio::AcpAuthAction::QueryUsage,
+            })
+        );
+    }
+
+    #[test]
+    fn finishing_or_lacking_an_operation_clears_the_projection() {
+        let mut finishing = slot(
+            AcpAuthState::Verifying {
+                operation_id: "op".into(),
+            },
+            None,
+        );
+        finishing.finish_operation(
+            3,
+            7,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            None,
+        );
+        assert_eq!(finishing.active_operation(), None);
+
+        let mut registry = Registry::default();
+        let mut idle = slot(AcpAuthState::Unchecked, None);
+        idle.operation = None;
+        registry.slots.insert("account".into(), idle);
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.accounts[0].active_operation, None);
     }
 
     #[test]

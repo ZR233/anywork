@@ -6,6 +6,7 @@ import 'package:anywork/src/features/settings/accounts/state/account_view_state.
 import 'package:anywork/src/features/settings/accounts/view_models/account_editor_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_editor_session_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_card_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
@@ -558,15 +559,39 @@ class VmUsage implements AccountUsageRepository {
   final LatestValue<Map<NativeAccountIdentity, StudioFailure>> queryFailures =
       LatestValue<Map<NativeAccountIdentity, StudioFailure>>({});
   final demands = <VmDemand>[];
+  final observed = <NativeAccountIdentity>[];
+  final refreshes = <NativeAccountIdentity>[];
+  Future<void> Function(NativeAccountIdentity)? onRefresh;
   @override
-  AccountDemand observeVisible() {
+  AccountDemand observeAccount(NativeAccountIdentity identity) {
     final demand = VmDemand();
     demands.add(demand);
+    observed.add(identity);
     return demand;
   }
 
   @override
-  Future<void> refresh(NativeAccountIdentity identity) async {}
+  Future<void> refresh(NativeAccountIdentity identity) async {
+    refreshes.add(identity);
+    await onRefresh?.call(identity);
+  }
+}
+
+/// A controllable service outcome, not an implementation of its Busy algorithm.
+class VmAcpUsageRefreshRequest implements AcpUsageRefreshRequest {
+  VmAcpUsageRefreshRequest(this.identity, this.connectionRevision);
+  final AcpAccountIdentity identity;
+  final int connectionRevision;
+  final completion = Completer<AcpUsageRefreshDisposition>();
+  int pendingCancels = 0;
+  void Function()? onPendingCancel;
+  @override
+  Future<AcpUsageRefreshDisposition> get result => completion.future;
+  @override
+  void cancelPending() {
+    pendingCancels++;
+    onPendingCancel?.call();
+  }
 }
 
 class VmAcp implements AcpService {
@@ -648,6 +673,9 @@ class VmAcp implements AcpService {
   final authStarts = <Completer<AcpAuthSnapshotView>>[];
   final authCancels = <Completer<AcpAuthSnapshotView>>[];
   final usageQueries = <Completer<AcpAuthSnapshotView>>[];
+  final usageRefreshRequests = <VmAcpUsageRefreshRequest>[];
+  bool holdUsageRefreshRequests = false;
+  void Function(VmAcpUsageRefreshRequest)? onUsageRefreshRequest;
   final saves = <AcpAccountUpdateView>[];
   final removals = <AcpAccountIdentity>[];
   Future<OperationState> Function()? removeWrite;
@@ -715,6 +743,20 @@ class VmAcp implements AcpService {
   }
 
   @override
+  AcpUsageRefreshRequest requestUsageRefresh(
+    AcpAccountIdentity identity, {
+    required int connectionRevision,
+  }) {
+    final request = VmAcpUsageRefreshRequest(identity, connectionRevision);
+    usageRefreshRequests.add(request);
+    onUsageRefreshRequest?.call(request);
+    if (!holdUsageRefreshRequests) {
+      request.completion.complete(AcpUsageRefreshDisposition.started);
+    }
+    return request;
+  }
+
+  @override
   Future<AcpAuthSnapshotView> login(
     AcpAccountIdentity identity, {
     required String methodId,
@@ -773,12 +815,20 @@ class AccountsVmHarness {
   final List<void Function()> _listeners = [];
   final _sessionSlots =
       Map<AccountEditorSessionOwner, AccountEditorSessionViewModel>.identity();
-  Future<AccountsViewModel> listOwner() async {
+  List<AccountRowPresentation> get rows => [
+    for (final key
+        in container.read(accountsViewModelProvider).requireValue.list.members)
+      ?container.read(accountCardViewModelProvider(key)).asData?.value,
+  ];
+
+  Future<AccountsViewModel> listOwner({bool visible = true}) async {
     _listeners.add(
       container.listen(accountsViewModelProvider, (_, _) {}).close,
     );
     await container.read(accountsViewModelProvider.future);
-    return container.read(accountsViewModelProvider.notifier);
+    final owner = container.read(accountsViewModelProvider.notifier);
+    owner.setVisible(visible);
+    return owner;
   }
 
   AccountEditorSessionOwner claimSession(AccountEditorEntryKey entry) {
@@ -1772,7 +1822,7 @@ void main() {
     expect(h.accounts.defaultCalls, [const NativeAccountIdentity('native')]);
     expect(h.accounts.removals, [const NativeAccountIdentity('native')]);
     expect(
-      h.container.read(accountsViewModelProvider).requireValue.list.rows,
+      h.container.read(accountsViewModelProvider).requireValue.list.members,
       isEmpty,
     );
   });
@@ -1908,7 +1958,7 @@ void main() {
           'acpUsage.unknown': 'unknown',
         }),
       );
-      final row = owner.state.requireValue.list.rows.singleWhere(
+      final row = h.rows.singleWhere(
         (row) =>
             row.key ==
             const AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
@@ -1939,7 +1989,7 @@ void main() {
           ),
         ),
       );
-      final staleRow = owner.state.requireValue.list.rows.singleWhere(
+      final staleRow = h.rows.singleWhere(
         (row) =>
             row.key ==
             const AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
@@ -2176,7 +2226,7 @@ void main() {
     accountsOwner.setStrings(vmOperationStrings);
     accountsOwner.search('not-a-visible-row');
     expect(
-      h.container.read(accountsViewModelProvider).requireValue.list.rows,
+      h.container.read(accountsViewModelProvider).requireValue.list.members,
       isEmpty,
     );
     await h.details(acp);
@@ -2580,11 +2630,7 @@ void main() {
       ),
     );
     expect(await owner.setDefault(native), isFalse);
-    var rows = {
-      for (final row
-          in h.container.read(accountsViewModelProvider).requireValue.list.rows)
-        row.key: row,
-    };
+    var rows = {for (final row in h.rows) row.key: row};
     expect(rows[native]!.operationError, 'Outcome unknown');
     expect(rows[native]!.actions, isEmpty);
     expect(
@@ -2607,11 +2653,7 @@ void main() {
       ),
     );
     await removal;
-    rows = {
-      for (final row
-          in h.container.read(accountsViewModelProvider).requireValue.list.rows)
-        row.key: row,
-    };
+    rows = {for (final row in h.rows) row.key: row};
     expect(rows[native]!.operationError, 'Outcome unknown');
     expect(rows[acp]!.operationError, 'Save failed');
     expect(rows[acp]!.actions, isEmpty);
@@ -2632,11 +2674,7 @@ void main() {
         ],
       ),
     );
-    rows = {
-      for (final row
-          in h.container.read(accountsViewModelProvider).requireValue.list.rows)
-        row.key: row,
-    };
+    rows = {for (final row in h.rows) row.key: row};
     expect(rows[native]!.name, accountName);
     expect(
       (rows[native]!.content as NativeAccountRowContent).displayEndpoint,
@@ -2755,12 +2793,7 @@ void main() {
               stale: stale,
             ),
           );
-      AccountRowPresentation row() => h.container
-          .read(accountsViewModelProvider)
-          .requireValue
-          .list
-          .rows
-          .single;
+      AccountRowPresentation row() => h.rows.single;
       publish(1);
       final accountsOwner = await h.listOwner();
       accountsOwner.setStrings(vmOperationStrings);
@@ -2861,16 +2894,7 @@ void main() {
     expect(h.acp.removals, hasLength(2));
     old.complete(savedVmOperation('old'));
     expect(await first, isFalse);
-    expect(
-      h.container
-          .read(accountsViewModelProvider)
-          .requireValue
-          .list
-          .rows
-          .single
-          .actions,
-      isEmpty,
-    );
+    expect(h.rows.single.actions, isEmpty);
     current.complete(
       failedVmOperation(
         OperationPhase.unknownOutcome,
@@ -2884,16 +2908,7 @@ void main() {
       ),
     );
     await second;
-    expect(
-      h.container
-          .read(accountsViewModelProvider)
-          .requireValue
-          .list
-          .rows
-          .single
-          .operationError,
-      'Outcome unknown',
-    );
+    expect(h.rows.single.operationError, 'Outcome unknown');
     expect(
       await accountsOwner.remove(key, isCompactClean: () => true),
       isFalse,
@@ -2919,12 +2934,7 @@ void main() {
         ),
       );
       expect(await accountsOwner.setDefault(nativeKey), isFalse);
-      final row = h.container
-          .read(accountsViewModelProvider)
-          .requireValue
-          .list
-          .rows
-          .single;
+      final row = h.rows.single;
       expect(row.operationError, 'Outcome unknown');
       expect(row.actions, isEmpty);
       expect(await accountsOwner.setDefault(nativeKey), isFalse);
@@ -3270,12 +3280,7 @@ void main() {
         correlationId: 'test',
       ),
     });
-    final row = h.container
-        .read(accountsViewModelProvider)
-        .requireValue
-        .list
-        .rows
-        .single;
+    final row = h.rows.single;
     expect(
       (row.content as NativeAccountRowContent).billing,
       AccountBilling.metered,

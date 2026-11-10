@@ -184,6 +184,18 @@ pub struct BridgeAcpAuthAccount {
     pub connection_revision: u64,
     pub state: BridgeAcpAuthState,
     pub usage: Option<BridgeAcpUsageObservation>,
+    /// 当前操作槽位上的进行中操作；由 owner 与 state 同一提交边界投影。
+    pub active_operation: Option<BridgeAcpAuthActiveOperation>,
+}
+
+/// 进行中认证操作在 FRB 镜像中的身份：ID、启动时冻结的连接修订与真实动作。
+///
+/// 连接已替换但旧操作仍在收束时，这里的修订可以小于账号当前修订。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeAcpAuthActiveOperation {
+    pub operation_id: String,
+    pub connection_revision: u64,
+    pub action: BridgeAcpAuthAction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,7 +251,7 @@ pub struct BridgeAcpAuthSnapshot {
 }
 
 /// 认证命令输入动作。
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BridgeAcpAuthAction {
     Check,
     QueryUsage,
