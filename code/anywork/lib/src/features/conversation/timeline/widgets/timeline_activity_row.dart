@@ -1,10 +1,10 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
-import 'timeline_cat_tail.dart';
+import 'timeline_resting_cat.dart';
 import 'timeline_writing_indicator.dart';
 
-enum TimelineActivityIndicatorStyle { catTail, writing }
+enum TimelineActivityIndicatorStyle { restingCat, writing }
 
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
 ///
@@ -25,7 +25,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.iconColor,
     this.isIssue = false,
     this.active = false,
-    this.indicatorStyle = TimelineActivityIndicatorStyle.catTail,
+    this.indicatorStyle = TimelineActivityIndicatorStyle.restingCat,
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
@@ -253,7 +253,7 @@ class TimelineActivityIndicator extends StatefulWidget {
     required this.icon,
     required this.color,
     this.active = false,
-    this.style = TimelineActivityIndicatorStyle.catTail,
+    this.style = TimelineActivityIndicatorStyle.restingCat,
     super.key,
   });
 
@@ -277,7 +277,7 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   Duration get _duration =>
       widget.style == TimelineActivityIndicatorStyle.writing
       ? const Duration(milliseconds: 900)
-      : TimelineCatTail.duration;
+      : TimelineRestingCat.duration;
 
   static final _writingStroke = TweenSequence<Offset>([
     for (final (from, to) in const [
@@ -342,10 +342,18 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
           color: widget.color,
         );
       }
-      return TimelineCatTail(
-        progress: _motion,
-        color: widget.color,
-        size: TimelineActivityRow.iconSize,
+      // 横向收窄，使完整轮廓落在标题的 14px 图标槽内；保留尾巴高度。
+      return SizedBox.square(
+        dimension: TimelineActivityRow.iconSize,
+        child: OverflowBox(
+          maxWidth: 17,
+          maxHeight: 24,
+          child: TimelineRestingCat(
+            progress: _motion,
+            color: widget.color,
+            size: 24,
+          ),
+        ),
       );
     }
     return Icon(

@@ -10,7 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cat_tail.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -251,7 +251,7 @@ void main() {
         reason: '文本活动沿用普通正文样式，工具和思考窗口仍由原样式呈现',
       );
       final tail = tester
-          .widget<TimelineCatTail>(find.byType(TimelineCatTail))
+          .widget<TimelineRestingCat>(find.byType(TimelineRestingCat))
           .progress;
       final pen = tester
           .widget<TimelineWritingIndicator>(
@@ -293,10 +293,10 @@ void main() {
       expect(find.byType(TimelineWritingIndicator), findsNothing);
       expect(find.text('实际活动正文'), findsNothing);
       expect(scope.closed, isTrue);
-      expect(find.byType(TimelineCatTail), findsOneWidget);
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
       h.accept([]);
       await tester.pump();
-      expect(find.byType(TimelineCatTail), findsNothing);
+      expect(find.byType(TimelineRestingCat), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(tester.binding.transientCallbackCount, 0);
