@@ -685,7 +685,7 @@
       if (isSubagent) {
         const subAgent = this.controller.currentAgent();
         if (subAgent.status === 'running') {
-          this.liveHost.innerHTML = `<section class="cv-live" aria-label="子智能体当前状态"><div class="cv-thinking-header">${activityIndicator()}<span>${escape(subAgent.role)} 正在核查运行期选择器锁定规则…</span><span class="cv-tabular">4s</span></div></section>`;
+          this.liveHost.innerHTML = `<section class="cv-live" aria-label="子智能体当前状态"><div class="cv-thinking-header">${activityIndicator('restingCat')}<span class="cv-live-title">${escape(subAgent.role)} 正在核查运行期选择器锁定规则…</span><span class="cv-tabular">执行了 4 秒</span></div></section>`;
           icons(this.liveHost);
         } else {
           this.liveHost.replaceChildren();
@@ -707,12 +707,12 @@
         this.liveHost.append(surface);
         this.liveView = { id: live.id, kind, surface };
         if (kind === 'waiting') {
-          surface.append(node(`<div class="cv-thinking-header">${activityIndicator()}<span role="status">思考中</span><span class="cv-tabular" aria-hidden="true"></span></div>`));
+          surface.append(node(`<div class="cv-thinking-header">${activityIndicator('restingCat')}<span class="cv-live-title" role="status">思考中</span><span class="cv-tabular" aria-hidden="true"></span></div>`));
         } else if (kind === 'workGroup') {
           this.liveView.group = new WorkGroupView(live, 'live', this.actions);
           surface.append(this.liveView.group.node);
         } else if (kind === 'textOutput') {
-          surface.append(node(`<div class="cv-response-header">${activityIndicator()}<span>正在输出</span><span class="cv-tabular"></span></div>`));
+          surface.append(node(`<div class="cv-response-header">${activityIndicator('writing')}<span class="cv-live-title">正在输出</span><span class="cv-tabular"></span></div>`));
           const scroll = node('<div class="cv-response-scroll" tabindex="0" role="region" aria-label="实时文本输出"></div>');
           surface.append(scroll);
           this.liveView.scroll = scroll;
@@ -731,7 +731,7 @@
             this.updateTextFollow();
           }, { passive: true });
         } else {
-          surface.append(node(`<div class="cv-compressing-header">${activityIndicator()}<span>正在压缩上下文</span><span class="cv-tabular"></span></div>`));
+          surface.append(node(`<div class="cv-compressing-header">${activityIndicator('compactingZip')}<span class="cv-live-title">正在压缩上下文</span><span class="cv-tabular"></span></div>`));
         }
         icons(surface);
       }

@@ -2,13 +2,15 @@ import 'dart:typed_data';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
@@ -427,7 +429,7 @@ void main() {
           ),
         ];
         h.notices = [
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'thinking',
               turnId: 'turn',
@@ -435,28 +437,28 @@ void main() {
               summary: '普通提示不另起一行',
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'stopping',
               turnId: 'turn',
               kind: ConversationActivityKind.stopping,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'approval',
               turnId: 'turn',
               kind: ConversationActivityKind.awaitingApproval,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'storage',
               turnId: 'turn',
               kind: ConversationActivityKind.storageBlocked,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'error',
               turnId: 'turn',
@@ -535,7 +537,7 @@ void main() {
       final summary = _summary(total: 2, thought: '已结束成员的旧思考概要');
       h.blocks = [_work('work', summary: summary)];
       h.notices = [
-        const ExecutionRealtimeNotice(
+        const ExecutionLiveNotice(
           ConversationActivityView(
             identity: 'thinking',
             turnId: 'turn',
@@ -553,7 +555,7 @@ void main() {
       final work = tester.widget<CompletionRunView>(workFinder);
       expect(
         work.activity,
-        same((h.notices.single as ExecutionRealtimeNotice).view),
+        same((h.notices.single as ExecutionLiveNotice).view),
       );
       final header = find.byKey(const ValueKey('completion-run-header:work'));
       expect(
@@ -597,7 +599,7 @@ void main() {
           );
           h.blocks = [_work('work', summary: summary)];
           h.notices = [
-            const ExecutionRealtimeNotice(
+            const ExecutionLiveNotice(
               ConversationActivityView(
                 identity: 'thinking',
                 turnId: 'turn',
@@ -615,7 +617,7 @@ void main() {
                   find.byType(ConversationActivityStatus),
                 )
                 .view,
-            same((h.notices.single as ExecutionRealtimeNotice).view),
+            same((h.notices.single as ExecutionLiveNotice).view),
           );
           expect(find.text('有界思考概要'), findsNothing);
           expect(find.text('状态概要'), findsOneWidget);
@@ -673,7 +675,7 @@ void main() {
 
           expectStaticResult();
           h.notices = [
-            const ExecutionRealtimeNotice(
+            const ExecutionLiveNotice(
               ConversationActivityView(
                 identity: 'thinking',
                 turnId: 'turn',
@@ -702,7 +704,7 @@ void main() {
       addTearDown(h.dispose);
       h.blocks = [_work('work', thought: '独立概要')];
       h.notices = [
-        const ExecutionRealtimeNotice(
+        const ExecutionLiveNotice(
           ConversationActivityView(
             identity: 'different',
             turnId: 'other-turn',
@@ -714,7 +716,7 @@ void main() {
       await tester.pumpWidget(h.host());
       expect(find.text('另一来源提示'), findsOneWidget);
       h.executionPresent = false;
-      h.notices = [const UnrestoredRealtimeNotice()];
+      h.notices = [const UnrestoredLiveNotice()];
       await tester.pumpWidget(h.host());
       expect(find.text('上次执行未收束，尚未恢复'), findsOneWidget);
       expect(h.content.reads, 0);
@@ -723,6 +725,78 @@ void main() {
             .widget<TimelineActivityClock>(find.byType(TimelineActivityClock))
             .running,
         isFalse,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'open Work switches header indicator to circular progress while exec runs and returns to resting cat when exec completes',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+      h.blocks = [
+        _work('work-exec', summary: _summary(running: 1, thought: '运行单元测试命令')),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'exec-active',
+            turnId: 'turn',
+            kind: ConversationActivityKind.runningTool,
+            activeTools: [
+              ThreadActivityToolEntry(
+                callId: 'call-exec',
+                name: 'exec',
+                summary: 'cargo flutter test',
+                arguments: ThreadActivityArgumentsKind.commandLine,
+                state: ThreadActivityToolState.running,
+                startedAt: 1000,
+              ),
+            ],
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      final header = find.byKey(
+        const ValueKey('completion-run-header:work-exec'),
+      );
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsNothing,
+      );
+
+      // exec 结束、工作组转入等待交接思考时立即恢复趴卧摇尾猫。
+      h.blocks = [
+        _work('work-exec', summary: _summary(running: 0, thought: '运行单元测试命令')),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'thinking-after-exec',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
       );
       await tester.pumpWidget(const SizedBox());
     },
@@ -780,7 +854,7 @@ class _LiveHarness {
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = [];
-  List<RealtimeNotice> notices = [];
+  List<LiveStatusNotice> notices = [];
   bool executionPresent = true;
   int revision = 0;
   Widget host() {
@@ -790,13 +864,37 @@ class _LiveHarness {
       executionPresent: executionPresent,
       blocks: blocks,
     );
+    final projected = LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+      effectiveOutputWindow: live.value,
+      effectiveTimelineWindow: live.value,
+      activeTurnId: 'turn',
+      confirmingPlan: false,
+      outputPaging: const LatestLiveWindow(),
+      rawNotices: notices,
+    );
+    final presenting = projected.surface == null
+        ? null
+        : LiveStatusPresenting(
+            surface: projected.surface!,
+            effectiveWindow: live.value,
+            paging: const LatestLiveWindow(),
+            showInteractionDetails: false,
+          );
+    final workSlice = LiveStatusTimelineWorkSlice(
+      workBlocks: projected.timelineWorkBlocks,
+      effectiveWindow: live.value,
+    );
     Widget section(ConversationLiveSection section) =>
         ConversationCurrentConnector(
           section: section,
+          managedByViewModel: true,
           session: _Session(),
           content: content,
           live: live,
-          region: ContentRealtimeRegion(live: live.value, notices: notices),
+          presenting: section == ConversationLiveSection.output
+              ? presenting
+              : null,
+          workSlice: section == ConversationLiveSection.work ? workSlice : null,
           images: images,
           readAttachment: (_) async => Uint8List(0),
           isDisplayActive: () => true,

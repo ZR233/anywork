@@ -12,11 +12,74 @@
   }
 
   const icon = name => `<i data-lucide="${escape(name)}" aria-hidden="true"></i>`;
-  const hasMduiSpinner = () => Boolean(window.customElements?.get('mdui-circular-progress'));
-  const spinner = (className = '') => hasMduiSpinner()
-    ? `<mdui-circular-progress class="cv-m3-spinner ${escape(className)}" aria-hidden="true"></mdui-circular-progress>`
-    : `<span class="cv-spin ${escape(className)}" aria-hidden="true">${icon('loader-circle')}</span>`;
-  const activityIndicator = () => `<span class="cv-activity-indicator" aria-hidden="true">${spinner()}</span>`;
+  const circularRingSvg = (className = '') => `
+    <svg class="cv-exec-ring ${escape(className)}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle class="cv-exec-ring-track" cx="12" cy="12" r="9.2"></circle>
+      <circle class="cv-exec-ring-arc" cx="12" cy="12" r="9.2"></circle>
+    </svg>`;
+  const spinner = (className = '') => circularRingSvg(className);
+
+  const restingCatSvg = () => `
+    <svg class="cv-live-icon cv-resting-cat-svg" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <path class="cv-cat-body" d="M 7.6 28.63 C 6.3 26.19 6.4 23.75 8.4 20.09 C 7.9 17.53 8.5 12.65 9.7 11.06 C 12.1 11.19 14.1 13.50 15.7 15.70 Q 17.5 15.21 18.9 15.70 C 20.7 12.89 22.4 10.82 23.9 10.45 C 25.3 13.02 25.8 16.07 25.9 18.75 C 31.6 12.41 38.1 11.67 43.1 15.21 C 48.6 18.87 50.6 25.46 50.6 36.20 M 4.3 34.0 L 43.4 34.0 Q 45.8 34.0 45.8 36.2 M 50.6 34.0 L 54.2 34.0 M 6.1 33.76 C 5.6 27.41 13.2 27.05 13.6 33.76 M 12.1 26.19 Q 13.9 27.90 15.5 26.19 M 19.1 26.19 Q 21.0 27.90 22.6 26.19 M 21.5 33.76 C 21.3 28.51 27.1 26.92 28.8 30.83 M 36.5 33.76 C 33.7 32.41 34.9 27.66 39.0 25.95"></path>
+      <g class="cv-cat-tail">
+        <path class="cv-cat-tail-path" d="M 45.8 37.2 C 45.5 43.6 43.2 50.8 38.8 55.4 C 37.6 56.7 39.6 58.6 41.2 57.2 C 46.8 52.2 49.8 44.2 50.6 37.2"></path>
+      </g>
+    </svg>`;
+
+  const writingSvg = () => `
+    <svg class="cv-live-icon cv-writing-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <g class="cv-writing-paper">
+        <line x1="3" y1="6.5" x2="11" y2="6.5"></line>
+        <line x1="3" y1="12.5" x2="8" y2="12.5"></line>
+        <line x1="3" y1="20.5" x2="19" y2="20.5"></line>
+      </g>
+      <g class="cv-writing-pen">
+        <g transform="translate(10 18) rotate(-45)">
+          <path d="M 0 0 L 3.3 -1.55 L 3.3 1.55 Z" fill="currentColor"></path>
+          <rect x="4.1" y="-1.55" width="8.8" height="3.1" rx="0.6" fill="currentColor"></rect>
+          <rect x="13.6" y="-1.55" width="1.4" height="3.1" rx="0.6" fill="currentColor"></rect>
+        </g>
+      </g>
+    </svg>`;
+
+  const compactingZipSvg = () => `
+    <svg class="cv-live-icon cv-compacting-zip-svg" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <g class="cv-zip-pack">
+        <rect class="cv-zip-box-fill" x="10.5" y="7.5" width="43" height="49" rx="9.5"></rect>
+        <rect class="cv-zip-box-stroke" x="10.5" y="7.5" width="43" height="49" rx="9.5"></rect>
+        <line class="cv-zip-clamp" x1="17.5" y1="12.2" x2="24.0" y2="12.2"></line>
+        <line class="cv-zip-clamp" x1="40.0" y1="12.2" x2="46.5" y2="12.2"></line>
+        <line class="cv-zip-clamp" x1="18.5" y1="51.8" x2="45.5" y2="51.8"></line>
+        <line class="cv-zip-seam" x1="32" y1="9" x2="32" y2="33"></line>
+        <line class="cv-zip-seam" x1="32" y1="33" x2="28.8" y2="43"></line>
+        <line class="cv-zip-seam" x1="32" y1="33" x2="35.2" y2="43"></line>
+        <rect class="cv-zip-tooth" x="26.9" y="13.0" width="6.2" height="3.0" rx="1.1"></rect>
+        <rect class="cv-zip-tooth" x="30.9" y="17.5" width="6.2" height="3.0" rx="1.1"></rect>
+        <rect class="cv-zip-tooth" x="26.9" y="22.0" width="6.2" height="3.0" rx="1.1"></rect>
+        <rect class="cv-zip-tooth" x="30.9" y="26.5" width="6.2" height="3.0" rx="1.1"></rect>
+        <rect class="cv-zip-tooth is-lower-left" x="25.9" y="31.0" width="6.2" height="3.0" rx="1.1"></rect>
+        <rect class="cv-zip-tooth is-lower-right" x="32.2" y="35.5" width="6.2" height="3.0" rx="1.1"></rect>
+        <g class="cv-zip-slider">
+          <rect class="cv-zip-slider-body" x="27.2" y="30.0" width="9.6" height="7.4" rx="2.4"></rect>
+          <rect class="cv-zip-pull-ring" x="29.1" y="37.3" width="5.8" height="6.4" rx="2.6"></rect>
+        </g>
+      </g>
+    </svg>`;
+
+  const activityIndicator = (style = 'restingCat') => {
+    const resolved = ['restingCat', 'circularProgress', 'writing', 'compactingZip'].includes(style)
+      ? style
+      : 'restingCat';
+    const body = resolved === 'circularProgress'
+      ? circularRingSvg('is-header-exec')
+      : resolved === 'writing'
+        ? writingSvg()
+        : resolved === 'compactingZip'
+          ? compactingZipSvg()
+          : restingCatSvg();
+    return `<span class="cv-activity-indicator" data-style="${escape(resolved)}" aria-hidden="true">${body}</span>`;
+  };
 
   function icons(root) {
     if (window.lucide) {
@@ -315,10 +378,10 @@
     flush() { this.logContent?.flush(); this.markdown?.flush(); }
   }
 
-  function groupHeading(mode = 'history') {
+  function groupHeading(mode = 'history', indicatorStyle = 'restingCat') {
     return node(`<summary class="cv-group-heading">
-      ${mode === 'live' ? activityIndicator() : ''}<span class="cv-group-title"></span>
-      ${mode === 'live' ? '<span class="cv-group-current"></span>' : ''}
+      ${mode === 'live' ? activityIndicator(indicatorStyle) : ''}<span class="cv-group-title"></span>
+      ${mode === 'live' ? '<span class="cv-group-current" hidden></span>' : ''}
       <span class="cv-group-meta cv-tabular"></span><span class="cv-chevron">${icon('chevron-right')}</span>
     </summary>`);
   }
@@ -353,6 +416,7 @@
       this.node = node(`<details class="cv-work-group cv-group-${escape(mode)}" data-history-kind="workGroup"><div class="cv-group-rail"></div></details>`);
       this.node.prepend(groupHeading(mode));
       this.node.open = expanded;
+      this.indicator = this.node.querySelector('.cv-activity-indicator');
       this.title = this.node.querySelector('.cv-group-title');
       this.currentStep = this.node.querySelector('.cv-group-current');
       this.meta = this.node.querySelector('.cv-group-meta');
@@ -378,13 +442,23 @@
       this.node.dataset.status = group.status;
       if (this.mode !== 'live') return;
       const running = group.members.filter(member => member.status === 'running');
+      const runningExec = running.some(member => member.kind === 'command');
+      const indicatorStyle = runningExec ? 'circularProgress' : 'restingCat';
+      if (this.indicator && this.indicator.dataset.style !== indicatorStyle) {
+        const nextIndicator = node(activityIndicator(indicatorStyle));
+        this.indicator.replaceWith(nextIndicator);
+        this.indicator = nextIndicator;
+      }
       const thinking = group.members.filter(member => member.kind === 'thinking').at(-1);
       this.node.dataset.phase = running.length ? 'working' : 'thinking';
       this.title.textContent = running.length
-        ? (thinking ? describe(thinking) : describe(running[0]))
+        ? (runningExec ? describe(running.find(member => member.kind === 'command')) : (thinking ? describe(thinking) : describe(running[0])))
         : '思考中';
       this.title.title = this.title.textContent;
-      this.currentStep.textContent = '';
+      if (this.currentStep) {
+        this.currentStep.textContent = '';
+        this.currentStep.hidden = true;
+      }
       this.meta.textContent = groupElapsedLabel(group.elapsed, '执行了');
     }
     flush() { this.members.forEach(member => member.flush()); }

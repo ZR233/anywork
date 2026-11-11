@@ -21,8 +21,7 @@ import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
 import 'conversation_current_connector.dart';
-import '../view_models/conversation_activity_view_model.dart';
-import '../state/conversation_realtime_presentation.dart';
+import '../live_status/live_status_view_model.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -284,29 +283,27 @@ class _TimelineConnectorBodyState
       controls: lease,
       currentWork: Consumer(
         builder: (_, ref, _) {
-          final activity = ref.watch(
-            conversationActivityViewModelProvider(threadId),
+          final workSlice = ref.watch(
+            liveStatusViewModelProvider(threadId)
+                .select((aggregate) => aggregate?.timelineWork),
           );
-          // A question occupies the output dock, not Timeline's independently
-          // admitted Work. Keep the same Work lease and disclosure while asking.
-          final region = switch (activity?.region) {
-            ContentRealtimeRegion region => region,
-            DockRealtimeRegion() => ContentRealtimeRegion(
-              live: lease.live.value,
-              notices: const [],
-            ),
-            HiddenRealtimeRegion() || null => null,
-          };
-          if (region == null) return const SizedBox.shrink();
+          if (workSlice == null || !workSlice.hasVisibleContent) {
+            return const SizedBox.shrink();
+          }
+          final notifier = ref.read(
+            liveStatusViewModelProvider(threadId).notifier,
+          );
           return ConversationCurrentConnector(
             key: ValueKey(('work', lease.generation)),
             section: ConversationLiveSection.work,
+            managedByViewModel: true,
+            workSlice: workSlice,
+            onLoadOlder: notifier.loadOlderTimelineWork,
+            onReturnToLatest: notifier.returnToLatestTimelineWork,
             session: ref.watch(threadSessionStoreProvider(threadId)),
             content: lease.content,
-            region: region,
             live: lease.live,
             liveUnit: lease.liveUnit,
-            loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
             registerDisplay: lease.registerCurrentDisplay,
             images: lease.imageResources,
             readAttachment: readAttachment,

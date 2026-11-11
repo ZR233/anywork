@@ -4,8 +4,8 @@
 /// Provider, AppGraph or native bridge.
 library;
 
+export 'live_status/live_status_state.dart';
 export 'state/chat_item_presentation.dart';
-export 'state/conversation_activity_state.dart';
 export 'state/chat_payload_reading.dart'
     show
         DecodedToolCard,
@@ -23,6 +23,7 @@ export 'widgets/conversation_current_views.dart';
 export 'widgets/timeline_activity_row.dart';
 export 'widgets/timeline_attachments_view.dart';
 export 'widgets/timeline_children_view.dart';
+export 'widgets/timeline_compacting_zip_icon.dart';
 export 'widgets/timeline_content_range_view.dart';
 export 'widgets/timeline_image_view.dart';
 export 'widgets/timeline_markdown.dart';

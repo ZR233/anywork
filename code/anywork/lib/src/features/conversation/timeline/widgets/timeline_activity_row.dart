@@ -1,10 +1,16 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import 'timeline_compacting_zip_icon.dart';
 import 'timeline_resting_cat.dart';
 import 'timeline_writing_indicator.dart';
 
-enum TimelineActivityIndicatorStyle { restingCat, writing }
+enum TimelineActivityIndicatorStyle {
+  restingCat,
+  writing,
+  circularProgress,
+  compactingZip,
+}
 
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
 ///
@@ -61,6 +67,9 @@ class TimelineActivityRow extends StatelessWidget {
   static const double headerMetaFontSize = 12.5;
   static const double headerChevronSize = 19;
   static const double headerWritingSize = 23;
+  static const double headerZipSize = 24;
+  static const double headerSpinnerSize = 20;
+  static const double memberSpinnerSize = 14;
   static const double headerStaticIconSize = 20;
   static const StrutStyle headerStrutStyle = StrutStyle(
     fontSize: headerFontSize,
@@ -178,6 +187,9 @@ class TimelineActivityRow extends StatelessWidget {
                     style: indicatorStyle,
                     catSize: header ? headerLogoSlotSize : iconColumnWidth,
                     writingSize: header ? headerWritingSize : iconSize,
+                    zipSize: header ? headerZipSize : iconColumnWidth,
+                    spinnerSize: header ? headerSpinnerSize : memberSpinnerSize,
+                    spinnerStrokeWidth: header ? 2.2 : 1.8,
                     staticIconSize: header ? headerStaticIconSize : iconSize,
                     color:
                         iconColor ??
@@ -391,6 +403,38 @@ class _LiveStatusMotionScope extends InheritedWidget {
       !identical(controller, oldWidget.controller);
 }
 
+/// `exec` 命令运行期专用定宽槽位圆形进度指示器（复用官方 Material 3 `CircularProgressIndicator`）。
+///
+/// 禁用动画或离开 Ticker 树时固定渲染 ¾ 圆弧（`value: 0.72`），保证无障碍减少动态效果且不挂起测试帧。
+class TimelineExecProgressIndicator extends StatelessWidget {
+  const TimelineExecProgressIndicator({
+    required this.color,
+    required this.size,
+    this.strokeWidth = 2.0,
+    this.animate = true,
+    super.key,
+  });
+
+  final Color color;
+  final double size;
+  final double strokeWidth;
+  final bool animate;
+
+  @override
+  Widget build(BuildContext context) => RepaintBoundary(
+    child: SizedBox.square(
+      dimension: size,
+      child: CircularProgressIndicator(
+        value: animate ? null : 0.72,
+        strokeWidth: strokeWidth,
+        strokeCap: StrokeCap.round,
+        color: color,
+        backgroundColor: color.withValues(alpha: 0.15),
+      ),
+    ),
+  );
+}
+
 /// Shared running semantics, using Flutter's standard animation lifecycle.
 class TimelineActivityIndicator extends StatefulWidget {
   const TimelineActivityIndicator({
@@ -400,6 +444,9 @@ class TimelineActivityIndicator extends StatefulWidget {
     this.style = TimelineActivityIndicatorStyle.restingCat,
     this.catSize = TimelineActivityRow.iconColumnWidth,
     this.writingSize = TimelineActivityRow.iconSize,
+    this.zipSize = TimelineActivityRow.headerZipSize,
+    this.spinnerSize = TimelineActivityRow.memberSpinnerSize,
+    this.spinnerStrokeWidth = 1.8,
     this.staticIconSize = TimelineActivityRow.iconSize,
     super.key,
   });
@@ -410,6 +457,9 @@ class TimelineActivityIndicator extends StatefulWidget {
   final TimelineActivityIndicatorStyle style;
   final double catSize;
   final double writingSize;
+  final double zipSize;
+  final double spinnerSize;
+  final double spinnerStrokeWidth;
   final double staticIconSize;
 
   @override
@@ -426,10 +476,13 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   LiveStatusMotionController? _sharedCat;
   bool _attachedToShared = false;
 
-  Duration get _duration =>
-      widget.style == TimelineActivityIndicatorStyle.writing
-      ? const Duration(milliseconds: 900)
-      : TimelineRestingCat.duration;
+  Duration get _duration => switch (widget.style) {
+    TimelineActivityIndicatorStyle.writing => const Duration(milliseconds: 900),
+    TimelineActivityIndicatorStyle.compactingZip =>
+      TimelineCompactingZipIcon.duration,
+    TimelineActivityIndicatorStyle.circularProgress ||
+    TimelineActivityIndicatorStyle.restingCat => TimelineRestingCat.duration,
+  };
 
   static final _writingStroke = TweenSequence<Offset>([
     for (final (from, to) in const [
@@ -451,6 +504,12 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
       _sharedCat != null &&
       widget.active &&
       widget.style == TimelineActivityIndicatorStyle.restingCat;
+
+  bool get _usesLocalTicker =>
+      widget.style == TimelineActivityIndicatorStyle.writing ||
+      widget.style == TimelineActivityIndicatorStyle.compactingZip ||
+      (widget.style == TimelineActivityIndicatorStyle.restingCat &&
+          _sharedCat == null);
 
   bool get _animate =>
       widget.active &&
@@ -500,7 +559,7 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
       return;
     }
     _detachShared();
-    if (_animate) {
+    if (_animate && _usesLocalTicker) {
       if (!_motion.isAnimating) _motion.repeat();
     } else {
       _motion.stop();
@@ -518,18 +577,31 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   @override
   Widget build(BuildContext context) {
     if (widget.active) {
-      if (widget.style == TimelineActivityIndicatorStyle.writing) {
-        return TimelineWritingIndicator(
+      return switch (widget.style) {
+        TimelineActivityIndicatorStyle.writing => TimelineWritingIndicator(
           position: _writingStroke.animate(_motion),
           size: widget.writingSize,
           color: widget.color,
-        );
-      }
-      return TimelineRestingCat(
-        progress: _usesSharedCat ? _sharedCat!.progress : _motion,
-        color: widget.color,
-        size: widget.catSize,
-      );
+        ),
+        TimelineActivityIndicatorStyle.circularProgress =>
+          TimelineExecProgressIndicator(
+            color: widget.color,
+            size: widget.spinnerSize,
+            strokeWidth: widget.spinnerStrokeWidth,
+            animate: _animate,
+          ),
+        TimelineActivityIndicatorStyle.compactingZip =>
+          TimelineCompactingZipIcon(
+            progress: _motion,
+            color: widget.color,
+            size: widget.zipSize,
+          ),
+        TimelineActivityIndicatorStyle.restingCat => TimelineRestingCat(
+          progress: _usesSharedCat ? _sharedCat!.progress : _motion,
+          color: widget.color,
+          size: widget.catSize,
+        ),
+      };
     }
     return Icon(widget.icon, size: widget.staticIconSize, color: widget.color);
   }

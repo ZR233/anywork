@@ -276,9 +276,17 @@ class _WorkHeader extends StatelessWidget {
                             child: TimelineActivityIndicator(
                               icon: icon,
                               active: active,
+                              style: activity?.isRunningExecTool == true
+                                  ? TimelineActivityIndicatorStyle
+                                        .circularProgress
+                                  : TimelineActivityIndicatorStyle.restingCat,
                               catSize: TimelineActivityRow.headerLogoSlotSize,
                               writingSize:
                                   TimelineActivityRow.headerWritingSize,
+                              zipSize: TimelineActivityRow.headerZipSize,
+                              spinnerSize:
+                                  TimelineActivityRow.headerSpinnerSize,
+                              spinnerStrokeWidth: 2.2,
                               staticIconSize:
                                   TimelineActivityRow.headerStaticIconSize,
                               color: indicatorColor,

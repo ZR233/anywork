@@ -4,7 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
@@ -18,6 +19,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
@@ -249,7 +251,9 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('输出阶段显示书写图标，其余活动显示趴卧猫，故障保留错误图标', (tester) async {
+    testWidgets('输出显示书写图标、压缩显示动态拉链图标、exec 运行显示圆形进度，其余等待显示趴卧猫，故障保留错误图标', (
+      tester,
+    ) async {
       for (final kind in [
         ConversationActivityKind.preparing,
         ConversationActivityKind.compacting,
@@ -271,6 +275,9 @@ void main() {
         if (kind == ConversationActivityKind.responding) {
           expect(find.byType(TimelineRestingCat), findsNothing);
           expect(find.byType(TimelineWritingIndicator), findsOneWidget);
+        } else if (kind == ConversationActivityKind.compacting) {
+          expect(find.byType(TimelineRestingCat), findsNothing);
+          expect(find.byType(TimelineCompactingZipIcon), findsOneWidget);
         } else {
           expect(
             find.byType(TimelineRestingCat),
@@ -285,6 +292,80 @@ void main() {
       final before = progress.value;
       await tester.pump(const Duration(milliseconds: 700));
       expect(progress.value, isNot(before));
+
+      // 前台正在执行 exec 命令时，顶栏切换为圆形进度，不再显示趴卧猫。
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'running-exec',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: const [
+                ThreadActivityToolEntry(
+                  callId: 'exec-call-1',
+                  name: 'exec',
+                  summary: 'cargo flutter test',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 100,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(TimelineRestingCat), findsNothing);
+      expect(find.byType(TimelineExecProgressIndicator), findsOneWidget);
+
+      // 减少动态效果时，圆形进度与动态拉链图标均保持确定性静止帧，不挂载循环帧回调。
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'running-exec-static',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: const [
+                ThreadActivityToolEntry(
+                  callId: 'exec-call-1',
+                  name: 'exec',
+                  summary: 'cargo flutter test',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 100,
+                ),
+              ],
+            ),
+          ),
+          disableAnimations: true,
+        ),
+      );
+      expect(
+        tester
+            .widget<CircularProgressIndicator>(
+              find.byType(CircularProgressIndicator),
+            )
+            .value,
+        0.72,
+      );
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'compacting-static',
+              kind: ConversationActivityKind.compacting,
+            ),
+          ),
+          disableAnimations: true,
+        ),
+      );
+      final zipStatic = tester
+          .widget<TimelineCompactingZipIcon>(
+            find.byType(TimelineCompactingZipIcon),
+          )
+          .progress;
+      expect(zipStatic.value, 0.0);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(zipStatic.value, 0.0);
 
       await tester.pumpWidget(
         _wrapWithApp(
@@ -334,6 +415,8 @@ void main() {
     testWidgets('官方预览直接装配生产组件且各工况可渲染', (tester) async {
       for (final preview in [
         conversationRestingCatPreview,
+        conversationCompactingZipPreview,
+        conversationFourStatesComparisonPreview,
         conversationLiveStatusWaitingPreview,
         conversationLiveStatusCompactingPreview,
         conversationLiveStatusToolsPreview,
@@ -615,6 +698,31 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.byType(TimelineToolDetails), findsNWidgets(2));
       expect(find.byType(ExpansionTile), findsNWidgets(2));
+      // _tools[0] 为 exec 命令，展开行使用圆形进度；_tools[1] 为 write_file，保持趴卧猫。
+      final toolRows = tester
+          .widgetList<TimelineToolDetails>(find.byType(TimelineToolDetails))
+          .toList();
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[0]),
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[0]),
+          matching: find.byType(TimelineRestingCat),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[1]),
+          matching: find.byType(TimelineRestingCat),
+        ),
+        findsOneWidget,
+      );
       await tester.pumpWidget(conversationLiveStatusWaitPreview());
       await tester.pump(const Duration(milliseconds: 300));
       final group = tester.widget<CompletionRunView>(
@@ -839,7 +947,7 @@ void main() {
             ({
               String name,
               bool collapsedSingleRow,
-              bool usesCat,
+              TimelineActivityIndicatorStyle expectedStyle,
               String expectedTitle,
               List<LiveDisplayBlock> blocks,
               ThreadActivityView? status,
@@ -848,7 +956,7 @@ void main() {
             (
               name: 'preparing',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '准备中',
               blocks: const [],
               status: const ThreadActivityView(
@@ -863,7 +971,7 @@ void main() {
             (
               name: 'thinking',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
               blocks: const [],
               status: const ThreadActivityView(
@@ -879,24 +987,38 @@ void main() {
             (
               name: 'workgroup',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
               expectedTitle: longThought,
               blocks: [
                 workBlock('work-1', order: 1, running: 2, thought: longThought),
               ],
-              status: const ThreadActivityView(
+              status: ThreadActivityView(
                 threadId: 'thread',
                 identity: 'act-3',
                 revision: 3,
                 turnId: 'turn-1',
                 kind: ThreadActivityKind.runningTool,
                 summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-1',
+                      name: 'exec',
+                      summary: 'cargo flutter analyze',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 100,
+                    ),
+                  ],
+                ),
               ),
             ),
             (
               name: 'group-idle',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
               blocks: [
                 workBlock('work-1', order: 1, running: 0, thought: longThought),
@@ -913,7 +1035,7 @@ void main() {
             (
               name: 'text',
               collapsedSingleRow: false,
-              usesCat: false,
+              expectedStyle: TimelineActivityIndicatorStyle.writing,
               expectedTitle: '正在输出',
               blocks: [
                 workBlock(
@@ -980,7 +1102,7 @@ void main() {
             (
               name: 'after-text',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
               blocks: [
                 workBlock(
@@ -1003,7 +1125,7 @@ void main() {
             (
               name: 'next-group',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
               expectedTitle: '运行测试并核对布局',
               blocks: [
                 workBlock(
@@ -1014,19 +1136,33 @@ void main() {
                 ),
                 workBlock('work-2', order: 3, running: 1, thought: '运行测试并核对布局'),
               ],
-              status: const ThreadActivityView(
+              status: ThreadActivityView(
                 threadId: 'thread',
                 identity: 'act-7',
                 revision: 7,
                 turnId: 'turn-1',
                 kind: ThreadActivityKind.runningTool,
                 summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-2',
+                      name: 'exec',
+                      summary: 'cargo flutter test',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 150,
+                    ),
+                  ],
+                ),
               ),
             ),
             (
               name: 'compacting',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
               expectedTitle: '正在压缩上下文',
               blocks: [
                 LiveDisplayBlock(
@@ -1061,7 +1197,7 @@ void main() {
             (
               name: 'stopping',
               collapsedSingleRow: true,
-              usesCat: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '停止中',
               blocks: const [],
               status: const ThreadActivityView(
@@ -1156,26 +1292,71 @@ void main() {
           );
         }
 
-        if (stage.usesCat) {
-          final cat = tester.widget<TimelineRestingCat>(
-            find.descendant(
-              of: barFinder,
-              matching: find.byType(TimelineRestingCat),
-            ),
-          );
-          if (previousCatPhase != null) {
-            expect(
-              cat.progress.value,
-              closeTo(previousCatPhase, 0.001),
-              reason: '${stage.name} 切换时趴卧猫相位不得跳回 0',
+        switch (stage.expectedStyle) {
+          case TimelineActivityIndicatorStyle.restingCat:
+            final cat = tester.widget<TimelineRestingCat>(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
             );
-          }
-          await tester.pump(const Duration(milliseconds: 260));
-          expect(cat.progress.value, isNot(previousCatPhase ?? -1));
-          previousCatPhase = cat.progress.value;
-        } else {
-          previousCatPhase = null;
-          await tester.pump(const Duration(milliseconds: 120));
+            if (previousCatPhase != null) {
+              expect(
+                cat.progress.value,
+                closeTo(previousCatPhase, 0.001),
+                reason: '${stage.name} 连续猫态切换时趴卧猫相位不得跳回 0',
+              );
+            }
+            await tester.pump(const Duration(milliseconds: 260));
+            expect(cat.progress.value, isNot(previousCatPhase ?? -1));
+            previousCatPhase = cat.progress.value;
+          case TimelineActivityIndicatorStyle.circularProgress:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineExecProgressIndicator),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} exec 运行时顶栏必须显示圆形进度',
+            );
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
+              findsNothing,
+            );
+            await tester.pump(const Duration(milliseconds: 120));
+          case TimelineActivityIndicatorStyle.writing:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineWritingIndicator),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} 输出阶段顶栏必须显示书写图标',
+            );
+            await tester.pump(const Duration(milliseconds: 120));
+          case TimelineActivityIndicatorStyle.compactingZip:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineCompactingZipIcon),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} 压缩阶段顶栏必须显示动态拉链图标',
+            );
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
+              findsNothing,
+            );
+            await tester.pump(const Duration(milliseconds: 120));
         }
       }
       await tester.pumpWidget(const SizedBox.shrink());
@@ -1230,18 +1411,34 @@ class _ZeroJitterHarness {
       blocks: blocks,
     );
     live.value = window;
-    final region = projectConversationRealtime(
-      storage: null,
-      interaction: null,
-      live: window,
-      status: status,
-    ) as ContentRealtimeRegion;
+    final aggregate = LiveStatusStateMachine.transition(
+      LiveStatusAggregate.initial('thread'),
+      LiveStatusObserved(
+        LiveStatusObservation(
+          cut: LiveWindowCut(
+            revision: window.revision,
+            historyThrough: window.historyThrough,
+            executionPresent: window.executionPresent,
+            attemptId: 1,
+            isDisplayActive: true,
+          ),
+          activeTurnId: 'turn-1',
+          activity: status,
+          latestLive: window,
+        ),
+      ),
+    ).state;
+    final presenting = aggregate.barState as LiveStatusPresenting;
     Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
       section: s,
+      managedByViewModel: true,
       session: _ZeroJitterSession(),
       content: content,
       live: live,
-      region: region,
+      presenting: s == ConversationLiveSection.output ? presenting : null,
+      workSlice: s == ConversationLiveSection.work
+          ? aggregate.timelineWork
+          : null,
       images: images,
       readAttachment: (_) async => Uint8List(0),
       isDisplayActive: () => true,

@@ -10,8 +10,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_view_model.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 
 import '../support/completion_fixtures.dart';
 import '../support/display_fixtures.dart';
@@ -36,10 +36,11 @@ void main() {
         ),
       ],
     );
-    final provider = conversationActivityViewModelProvider('a');
+    final provider = liveStatusViewModelProvider('a');
     final observation = container.listen(provider, (_, _) {});
     await container.pump();
-    expect(container.read(provider)!.region, isA<HiddenRealtimeRegion>());
+    expect(container.read(provider)!.barState, isA<LiveStatusHidden>());
+    expect(container.read(provider)!.hasAnyRealtimeRegion, isFalse);
     final global = h.owner.source.value;
     final appends = lease.appliedAppends;
     final next = LiveDisplayWindow(
@@ -66,10 +67,8 @@ void main() {
     );
     await container.pump();
     expect(h.owner.source.value, same(global));
-    expect(
-      (container.read(provider)!.region as ContentRealtimeRegion).live,
-      same(next),
-    );
+    expect(container.read(provider)!.timelineWork.effectiveWindow, same(next));
+    expect(container.read(provider)!.hasAnyRealtimeRegion, isTrue);
     await h.a.deliver(
       displayBatch(
         [],
@@ -80,7 +79,8 @@ void main() {
       ),
     );
     await container.pump();
-    expect(container.read(provider)!.region, isA<HiddenRealtimeRegion>());
+    expect(container.read(provider)!.barState, isA<LiveStatusHidden>());
+    expect(container.read(provider)!.hasAnyRealtimeRegion, isFalse);
     expect(lease.appliedAppends, appends);
     expect(lease.loadedCount, 0);
     observation.close();
@@ -824,6 +824,8 @@ final class _Content extends Fake implements TimelineContent {
   _Content(this.threadId) : state = LatestValue(ChatReady(threadId, true));
   @override
   final String threadId;
+  @override
+  AttemptId get currentAttemptId => const AttemptId(1);
   @override
   final LatestValue<ChatUiState<bool>> state;
   TimelineBatchConsumer? consumer;

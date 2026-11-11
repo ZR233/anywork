@@ -439,7 +439,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。原 TimelineMessageController 持唯一已加载消息集合：Set 一次、Prepend/Append 批量插入冻结块，不更新历史尾组。历史插入与相同 ID live 退役共同完成才公开视图更新及 ACK，live=None 的分帧中间态保留其余实时块；纯 live 帧不枚举历史。原内容 owner 保留窗口/订阅，View 按布局补旧块，无总页数上限，ACK 不等布局。
 
-正文输出区的类型化纯呈现投影仅承载真实正文及必要特殊提示；Work 在 Timeline 工作区呈现，不再与正文包在同一输出面板。已有同源正文 renderer 时不叠加普通“正在输出”，旧正文结束后不复用其摘要；当前阶段来自权威 owner，不以有界窗口缺正文推断无活动。保存/停止/审批/错误和冷读提示独立保留。展开、滚动、跟随输出属于原 display lease；冻结观察明确“封存时尚未结束”，不画运行计时或未恢复异常。
+底部实时状态栏以自包含模块 `features/conversation/timeline/live_status/` 封装：外壳只向 `LiveStatusBar(threadId: threadId)` 传入会话标识；专属生成式 `LiveStatusViewModel` 在组件内部统一观察 FRB 驱动的会话状态流（`ThreadSessionStore`）与时间线实时窗口流（`TimelineDisplayLease.live`），驱动无 I/O 纯领域状态机 `LiveStatusStateMachine` 一次归约封闭生命周期态（`LiveStatusHidden` / `LiveStatusDockMasked` / `LiveStatusPresenting`）、封闭主表面（`LiveStatusWorkSurface` / `LiveStatusStreamingSurface` / `LiveStatusNoticeOnlySurface`）、独立的更早窗口分页子状态机（`LiveWindowPagingState`）与上方 `Timeline` 实时工作切片（`LiveStatusTimelineWorkSlice`），并以显式副作用同步驱动诊断状态，不在外围外壳或 Widget `build()` 重复拼装阶段合并、工作组归属与切面失效判断。已有同源正文 renderer 时不叠加普通“正在输出”，旧正文结束后不复用其摘要；当前阶段来自权威 owner，不以有界窗口缺正文推断无活动。保存/停止/审批/错误和冷读提示独立保留。展开、滚动、跟随输出属于原 display lease；冻结观察明确“封存时尚未结束”，不画运行计时或未恢复异常。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 

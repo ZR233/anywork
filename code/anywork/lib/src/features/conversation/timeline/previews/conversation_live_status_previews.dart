@@ -12,6 +12,7 @@ import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_compacting_zip_icon.dart';
 import '../widgets/timeline_resting_cat.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
@@ -114,6 +115,25 @@ Widget liveStatusGroupPreview({
     );
   }
   return _ActivityPreview(
+    activity: thinkingOnly
+        ? const ConversationActivityView(
+            identity: 'preview-thinking-only',
+            kind: ConversationActivityKind.thinking,
+          )
+        : const ConversationActivityView(
+            identity: 'preview-exec-work',
+            kind: ConversationActivityKind.runningTool,
+            activeTools: [
+              ThreadActivityToolEntry(
+                callId: 'preview-command',
+                name: 'exec',
+                summary: 'cargo flutter analyze',
+                arguments: ThreadActivityArgumentsKind.commandLine,
+                state: ThreadActivityToolState.running,
+                startedAt: 100,
+              ),
+            ],
+          ),
     summary: WorkSummary(
       unavailable: 0,
       total: thinkingOnly ? 1 : 2,
@@ -207,6 +227,105 @@ Widget conversationRestingCatPreview() => liveStatusPreviewHost(
       ),
       ConversationActivityBar(
         children: [_status(ConversationActivityKind.thinking)],
+      ),
+    ],
+  ),
+);
+
+@Preview(name: '压缩图标 · 动态拉链关键帧', group: '实时状态栏', size: Size(760, 340))
+Widget conversationCompactingZipPreview() => liveStatusPreviewHost(
+  Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox.square(
+            dimension: 168,
+            child: Center(
+              child: TimelineActivityIndicator(
+                icon: null,
+                color: Color(0xFF55798C),
+                active: true,
+                style: TimelineActivityIndicatorStyle.compactingZip,
+                zipSize: 136,
+              ),
+            ),
+          ),
+          SizedBox(width: 20),
+          TimelineCompactingZipIcon(
+            progress: AlwaysStoppedAnimation(0.00),
+            color: Color(0xFF55798C),
+            size: 80,
+          ),
+          SizedBox(width: 12),
+          TimelineCompactingZipIcon(
+            progress: AlwaysStoppedAnimation(0.28),
+            color: Color(0xFF55798C),
+            size: 80,
+          ),
+          SizedBox(width: 12),
+          TimelineCompactingZipIcon(
+            progress: AlwaysStoppedAnimation(0.50),
+            color: Color(0xFF55798C),
+            size: 80,
+          ),
+          SizedBox(width: 12),
+          TimelineCompactingZipIcon(
+            progress: AlwaysStoppedAnimation(0.76),
+            color: Color(0xFF55798C),
+            size: 80,
+          ),
+        ],
+      ),
+      ConversationActivityBar(
+        children: [_status(ConversationActivityKind.compacting)],
+      ),
+    ],
+  ),
+);
+
+@Preview(name: '四态顶栏指示器零抖动对比', group: '实时状态栏', size: Size(760, 360))
+Widget conversationFourStatesComparisonPreview() => liveStatusPreviewHost(
+  Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      ConversationActivityBar(
+        children: [_status(ConversationActivityKind.thinking)],
+      ),
+      ConversationActivityBar(
+        children: [
+          ConversationActivityStatus(
+            view: const ConversationActivityView(
+              identity: 'preview-running-exec',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: [
+                ThreadActivityToolEntry(
+                  callId: 'preview-exec-call',
+                  name: 'exec',
+                  summary: 'cargo flutter test --no-pub test/ui',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 100,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      const ConversationActivityBar(
+        children: [
+          ConversationResponseView(
+            child: ConversationCurrentWindowView(
+              id: 'preview-four-states-writing',
+              text: '四态顶栏共享同一 32×32 引导槽位与 15px 标题字号，切换零位移。',
+            ),
+          ),
+        ],
+      ),
+      ConversationActivityBar(
+        children: [_status(ConversationActivityKind.compacting)],
       ),
     ],
   ),
@@ -446,6 +565,20 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
     children: [
       _ActivityPreview(
         initiallyExpanded: true,
+        activity: const ConversationActivityView(
+          identity: 'preview-long-tool-activity',
+          kind: ConversationActivityKind.runningTool,
+          activeTools: [
+            ThreadActivityToolEntry(
+              callId: 'long-tool-output',
+              name: 'exec',
+              summary: 'cargo flutter analyze',
+              arguments: ThreadActivityArgumentsKind.commandLine,
+              state: ThreadActivityToolState.running,
+              startedAt: 100,
+            ),
+          ],
+        ),
         childBuilder: (_) => TimelineToolDetails(
           initiallyExpanded: true,
           item: TimelineToolPresentation(
@@ -480,6 +613,20 @@ Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
       ConversationActivityBar(
         children: [
           _ActivityPreview(
+            activity: const ConversationActivityView(
+              identity: 'preview-next-group-activity',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: [
+                ThreadActivityToolEntry(
+                  callId: 'preview-next-group-cmd',
+                  name: 'exec',
+                  summary: 'cargo flutter test --no-pub test/ui',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 213,
+                ),
+              ],
+            ),
             summary: const WorkSummary(
               unavailable: 0,
               total: 1,

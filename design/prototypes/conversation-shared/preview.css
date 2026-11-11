@@ -1743,19 +1743,36 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
 .cv-group-history .cv-group-heading { justify-content: flex-start; }
 .cv-group-history .cv-group-title { flex: 0 1 auto; }
 .cv-group-history .cv-group-meta { color: var(--cv-muted); }
-.cv-group-live .cv-group-title { color: var(--cv-ink); font-weight: 500; flex: 0 0 auto; }
+.cv-group-live > .cv-group-heading {
+  gap: 10px;
+  min-height: 34px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+}
+.cv-group-live .cv-group-title {
+  color: var(--cv-ink);
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 500;
+  flex: 1 1 auto;
+}
 .cv-group-current {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--cv-muted);
 }
 .cv-group-live[open] > .cv-group-heading > .cv-group-current { display: none; }
-.cv-group-live .cv-group-title { flex: 1; }
-.cv-group-live .cv-group-meta { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+.cv-group-live .cv-group-meta {
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.25;
+}
 .cv-group-live[data-phase="thinking"] .cv-group-title { color: var(--cv-secondary); }
 
 .cv-group-digest {
@@ -1794,16 +1811,145 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   color: var(--cv-blue);
 }
-.cv-activity-indicator > svg {
-  width: 13px;
-  height: 13px;
-  transform-origin: center;
-  animation: cv-spin 1.5s linear infinite;
+
+.cv-activity-indicator .cv-resting-cat-svg {
+  width: 32px;
+  height: 32px;
+  overflow: visible;
+}
+
+.cv-resting-cat-svg .cv-cat-body,
+.cv-resting-cat-svg .cv-cat-tail-path {
+  stroke: currentColor;
+  stroke-width: 2.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cv-resting-cat-svg .cv-cat-tail {
+  transform-origin: 48.2px 37.2px;
+  animation: cv-cat-tail-swing 2.6s ease-in-out infinite;
+}
+
+.cv-exec-ring {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  animation: cv-exec-ring-spin 1.15s linear infinite;
+}
+
+.cv-activity-indicator .cv-exec-ring.is-header-exec {
+  width: 20px;
+  height: 20px;
+}
+
+.cv-exec-ring-track {
+  stroke: currentColor;
+  stroke-opacity: 0.16;
+  stroke-width: 2.4;
+}
+
+.cv-exec-ring-arc {
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-dasharray: 42 58;
+}
+
+.cv-activity-indicator .cv-exec-ring.is-header-exec .cv-exec-ring-track,
+.cv-activity-indicator .cv-exec-ring.is-header-exec .cv-exec-ring-arc {
+  stroke-width: 2.55;
+}
+
+.cv-activity-indicator .cv-writing-svg {
+  width: 22px;
+  height: 22px;
+  overflow: visible;
+}
+
+.cv-writing-svg .cv-writing-paper line {
+  stroke: currentColor;
+  stroke-opacity: 0.62;
+  stroke-width: 1.55;
+  stroke-linecap: round;
+}
+
+.cv-writing-svg .cv-writing-pen {
+  animation: cv-writing-pen 0.9s ease-in-out infinite;
+}
+
+.cv-activity-indicator .cv-compacting-zip-svg {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+}
+
+.cv-compacting-zip-svg .cv-zip-pack {
+  transform-origin: 32px 32px;
+  animation: cv-zip-squeeze 1.8s ease-in-out infinite;
+}
+
+.cv-compacting-zip-svg .cv-zip-box-fill {
+  fill: var(--cv-primary);
+  fill-opacity: 0.10;
+}
+
+.cv-compacting-zip-svg .cv-zip-box-stroke {
+  stroke: currentColor;
+  stroke-width: 2.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cv-compacting-zip-svg .cv-zip-clamp {
+  stroke: currentColor;
+  stroke-opacity: 0.58;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+}
+
+.cv-compacting-zip-svg .cv-zip-seam {
+  stroke: currentColor;
+  stroke-opacity: 0.42;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.cv-compacting-zip-svg .cv-zip-tooth {
+  fill: currentColor;
+}
+
+.cv-compacting-zip-svg .cv-zip-tooth.is-lower-left,
+.cv-compacting-zip-svg .cv-zip-tooth.is-lower-right {
+  fill-opacity: 0.78;
+}
+
+.cv-compacting-zip-svg .cv-zip-tooth.is-lower-left {
+  animation: cv-zip-tooth-left 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.cv-compacting-zip-svg .cv-zip-tooth.is-lower-right {
+  animation: cv-zip-tooth-right 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.cv-compacting-zip-svg .cv-zip-slider {
+  animation: cv-zip-slide 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.cv-compacting-zip-svg .cv-zip-slider-body {
+  fill: var(--cv-primary);
+  stroke: currentColor;
+  stroke-width: 2.0;
+}
+
+.cv-compacting-zip-svg .cv-zip-pull-ring {
+  stroke: currentColor;
+  stroke-width: 2.1;
 }
 
 .cv-member { min-width: 0; color: var(--cv-secondary); }
@@ -2122,6 +2268,7 @@ details.cv-member > summary.cv-member-heading:hover {
   max-height: 186px;
   overflow-y: auto;
   padding-right: 4px;
+  margin-left: 15px;
   margin-bottom: 2px;
 }
 
@@ -2130,25 +2277,40 @@ details.cv-member > summary.cv-member-heading:hover {
 .cv-compressing-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--cv-secondary);
-  font-size: 11.5px;
-  min-height: 24px;
+  gap: 10px;
+  color: var(--cv-ink);
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 500;
+  min-height: 34px;
+  padding: 2px 0;
 }
 
-.cv-thinking-header { min-height: 25px; font-size: 12px; }
+.cv-thinking-header { color: var(--cv-secondary); }
+
+.cv-live-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cv-thinking-header .cv-tabular,
 .cv-response-header .cv-tabular,
 .cv-compressing-header .cv-tabular {
   margin-left: auto;
+  flex-shrink: 0;
   color: var(--cv-muted);
-  font-size: 10.5px;
+  font-size: 12.5px;
+  line-height: 1.25;
+  font-weight: 400;
 }
 
 .cv-response-scroll {
   max-height: 196px;
   overflow-y: auto;
-  padding: 6px 5px 2px 20px;
+  padding: 6px 5px 2px 42px;
 }
 .cv-response-scroll .cv-markdown { font-size: 12.5px; }
 .cv-response-follow { margin: 4px 0 0 auto; display: flex; }
@@ -3456,6 +3618,48 @@ details.cv-member > summary.cv-member-heading:hover {
 
 @keyframes cv-spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes cv-exec-ring-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+@keyframes cv-cat-tail-swing {
+  0%, 100% { transform: rotate(0deg); }
+  24% { transform: rotate(31deg); }
+  50% { transform: rotate(-3deg); }
+  74% { transform: rotate(-18deg); }
+}
+
+@keyframes cv-writing-pen {
+  0%, 100% { transform: translate(-1.8px, 1.3px); }
+  25% { transform: translate(1.8px, -1.3px); }
+  50% { transform: translate(-0.9px, 1.3px); }
+  75% { transform: translate(2.6px, -0.9px); }
+}
+
+@keyframes cv-zip-slide {
+  0%, 100% { transform: translateY(0px); }
+  34%, 64% { transform: translateY(7.8px); }
+  82% { transform: translateY(-12.5px); }
+}
+
+@keyframes cv-zip-squeeze {
+  0%, 34%, 64%, 100% { transform: scale(1, 1); }
+  49% { transform: scale(1.035, 0.885); }
+}
+
+@keyframes cv-zip-tooth-left {
+  0%, 100% { transform: translateX(0px); }
+  34%, 64% { transform: translateX(1.0px); }
+  82% { transform: translateX(-2.2px); }
+}
+
+@keyframes cv-zip-tooth-right {
+  0%, 100% { transform: translateX(0px); }
+  34%, 64% { transform: translateX(-1.3px); }
+  82% { transform: translateX(2.4px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

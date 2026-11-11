@@ -16,7 +16,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -727,7 +727,8 @@ final class _ConceptScene {
             {
               'sameContent': identical(widget.content, target?.content),
               'displayActive': widget.isDisplayActive(),
-              'region': widget.region.runtimeType.toString(),
+              'section': widget.section.name,
+              'surface': widget.presenting?.surface.runtimeType.toString(),
               'stateActivityKind': widget.session.activity?.kind.name,
               'stateActiveTurnId': widget.session.activeTurn?.turnId,
             },
@@ -2819,7 +2820,7 @@ final class _ConceptScene {
     expect(
       notices
           .expand((widget) => widget.notices)
-          .whereType<ExecutionRealtimeNotice>()
+          .whereType<ExecutionLiveNotice>()
           .where(
             (notice) =>
                 notice.view.turnId == turnId &&
@@ -3150,6 +3151,7 @@ final class _ConceptScene {
       AppLocalizations.of(tester.element(rows)).conversationActivityCompacting,
     );
     expect(row.icon, Icons.compress_outlined);
+    expect(row.indicatorStyle, TimelineActivityIndicatorStyle.compactingZip);
     expect(row.active, isTrue);
     expect(row.expandable, isFalse);
     report['compactionCurrent'] = {

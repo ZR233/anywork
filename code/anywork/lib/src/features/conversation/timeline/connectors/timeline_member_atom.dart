@@ -412,6 +412,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         running: widget.executionPresent && atom.startedAt != null,
         builder: (context, seconds) => TimelineActivityRow(
           icon: Icons.compress_outlined,
+          indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
           label: context.l10n.conversationActivityCompacting,
           active: widget.executionPresent,
           header: true,
