@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_image_
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_lsp_tool_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
@@ -1393,6 +1394,287 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
       }
+    },
+  );
+
+  testWidgets(
+    'lsp tools render structured semantic cards without raw json parameter dumps across query, capabilities, status, and truncated previews',
+    (tester) async {
+      final referencesArgs = jsonEncode({
+        'languageId': 'rust',
+        'operation': 'findReferences',
+        'filePath': 'code/pl-lsp/src/client/mod.rs',
+        'line': 18,
+        'character': 16,
+      });
+      final referencesResult = jsonEncode({
+        'success': true,
+        'operation': 'findReferences',
+        'serverId': 'rust-analyzer',
+        'resultCount': 3,
+        'fileCount': 2,
+        'result':
+            'Found 3 references across 2 files:\n'
+            'code/pl-lsp/src/client/mod.rs:18:16\n'
+            'code/pl-lsp/src/client/mod.rs:94:22\n'
+            'code/pl-lsp/src/runtime/query.rs:42:12',
+      });
+      await _show(
+        tester,
+        _tool(
+          'builtin.lsp_query@1',
+          name: 'lsp_query',
+          arguments: referencesArgs,
+          bodies: [
+            _body('tool.arguments', referencesArgs),
+            _body('tool.result', referencesResult),
+          ],
+        ),
+      );
+      expect(find.text('已查找引用 mod.rs:18'), findsOneWidget);
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(find.byType(TimelineLspToolView), findsOneWidget);
+      expect(find.text('查找引用'), findsOneWidget);
+      expect(find.text('3 处结果 · 2 个文件'), findsOneWidget);
+      expect(find.text('L94:22'), findsOneWidget);
+      expect(find.text('L42:12'), findsOneWidget);
+      // 不直接暴露原始 JSON 字段或英文样板头。
+      expect(find.textContaining('"languageId"'), findsNothing);
+      expect(find.textContaining('Found 3 references'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      // 12 KiB 预览截断时提取已完成行并明确提示省略字节数。
+      final truncatedJson =
+          '{"success":true,"operation":"workspaceSymbol","serverId":"rust-analyzer",'
+          '"result":"LspClient kind=23 code/pl-lsp/src/client.rs\\nincomplete_tail'
+          '\n[LSP preview omitted 2048 bytes; full result retained in history.]';
+      final wsArgs = jsonEncode({
+        'languageId': 'rust',
+        'operation': 'workspaceSymbol',
+        'query': 'LspClient',
+      });
+      await _show(
+        tester,
+        _tool(
+          'builtin.lsp_query@1',
+          name: 'lsp_query',
+          arguments: wsArgs,
+          bodies: [
+            _body('tool.arguments', wsArgs),
+            _body('tool.result', truncatedJson),
+          ],
+        ),
+      );
+      expect(find.text('已搜索符号 LspClient'), findsOneWidget);
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(find.text('struct'), findsOneWidget);
+      expect(find.text('code/pl-lsp/src/client.rs'), findsOneWidget);
+      expect(find.textContaining('incomplete_tail'), findsNothing);
+      expect(find.text('结果预览已截断（省略 2.0 KB）'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // lsp_capabilities 与 lsp_status（含窄窗大字号无溢出验证）。
+      final capabilitiesResult = jsonEncode({
+        'servers': [
+          {
+            'id': 'rust-analyzer',
+            'displayName': 'Rust Analyzer',
+            'languageIds': ['rust'],
+            'operations': ['goToDefinition', 'findReferences', 'hover'],
+            'availability': 'available',
+            'ready': true,
+          },
+        ],
+      });
+      final statusResult = jsonEncode({
+        'workspaceRoot': '/workspace/project',
+        'configurationDirectory': '/workspace/project/.anywork/lsp',
+        'servers': [
+          {
+            'id': 'rust-analyzer',
+            'displayName': 'Rust Analyzer',
+            'languageIds': ['rust'],
+            'configurationPath':
+                '/workspace/project/.anywork/lsp/rust-analyzer.toml',
+            'phase': 'ready',
+            'availability': 'available',
+            'activity': 'indexing',
+            'activityTitle': 'Indexing',
+            'activityPercentage': 68,
+          },
+          {
+            'id': 'pyright',
+            'displayName': 'Pyright',
+            'languageIds': ['python'],
+            'phase': 'failed',
+            'availability': 'missingCommand',
+            'activity': 'idle',
+            'lastError': 'pyright-langserver not found',
+          },
+        ],
+      });
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(
+            size: Size(340, 800),
+            textScaler: TextScaler.linear(1.6),
+          ),
+          child: _host(
+            SingleChildScrollView(
+              child: SizedBox(
+                width: 340,
+                child: Column(
+                  children: [
+                    ChatItemView(
+                      item: _tool(
+                        'builtin.lsp_capabilities@1',
+                        name: 'lsp_capabilities',
+                        arguments: '{}',
+                        bodies: [
+                          _body('tool.arguments', '{}'),
+                          _body('tool.result', capabilitiesResult),
+                        ],
+                      ),
+                      initiallyExpanded: true,
+                    ),
+                    ChatItemView(
+                      item: _tool(
+                        'builtin.lsp_status@1',
+                        name: 'lsp_status',
+                        arguments: '{}',
+                        bodies: [
+                          _body('tool.arguments', '{}'),
+                          _body('tool.result', statusResult),
+                        ],
+                      ),
+                      initiallyExpanded: true,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('已读取语言服务能力'), findsOneWidget);
+      expect(find.text('已检查语言服务状态'), findsOneWidget);
+      expect(find.text('跳转定义'), findsOneWidget);
+      expect(find.text('正在索引 · 68%'), findsOneWidget);
+      expect(find.text('.anywork/lsp/rust-analyzer.toml'), findsOneWidget);
+      expect(find.text('缺少命令'), findsOneWidget);
+      expect(find.text('pyright-langserver not found'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'lsp declared ranges suppress toolArguments window and render structured toolOutput window',
+    (tester) async {
+      final args = jsonEncode({
+        'languageId': 'dart',
+        'operation': 'diagnostics',
+        'filePath': 'code/anywork/lib/main.dart',
+      });
+      final result = jsonEncode({
+        'success': true,
+        'operation': 'diagnostics',
+        'serverId': 'dart',
+        'resultCount': 0,
+        'fileCount': 0,
+        'result': 'No diagnostics.',
+      });
+      final tool = _tool(
+        'builtin.lsp_query@1',
+        name: 'lsp_query',
+        arguments: args,
+        bodies: [_body('tool.arguments', args), _body('tool.result', result)],
+      );
+      final bytes = utf8.encode(result);
+      const owner = ItemContentOwner(itemId: 'lsp-declared');
+      final atom = ChatAtom(
+        id: 'lsp-declared',
+        completionItemId: 'lsp-declared',
+        completionSeq: 1,
+        source: const BackgroundResultChatSource(messageId: 'lsp-msg'),
+        sourceOrder: null,
+        kind: ChatAtomKind.toolCall,
+        delivery: ChatDeliveryKind.independent,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        turnId: 'lsp-turn',
+        payload: InlinePayload(bytes: utf8.encode(tool.raw!)),
+        contents: const [
+          ChatAtomContent(
+            role: ChatContentRole.toolArguments,
+            reference: ContentRef(
+              databaseId: 'lsp-db',
+              target: BodyContentTarget(owner: owner, key: 'tool.arguments'),
+            ),
+          ),
+          ChatAtomContent(
+            role: ChatContentRole.toolOutput,
+            reference: ContentRef(
+              databaseId: 'lsp-db',
+              target: BodyContentTarget(owner: owner, key: 'tool.result'),
+            ),
+          ),
+        ],
+      );
+      final unit = TimelineDisplayUnit(
+        block: DisplayBlock(
+          id: 'lsp-declared',
+          historyPos: 1,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: atom,
+              contentSource: CompletedOriginal(completionId: 'lsp-declared'),
+            ),
+          ),
+        ),
+      );
+      addTearDown(unit.expansion.dispose);
+      final requested = <String>[];
+      await tester.pumpWidget(
+        _host(
+          ChatItemView(
+            item: ChatItemPresentation.forUnit(unit),
+            contentRangeBuilder: (id, key, label, reference, witness) {
+              requested.add(key);
+              return TimelineContentRangeConnector(
+                itemId: id,
+                contentKey: key,
+                label: label,
+                reference: reference,
+                witness: witness,
+                readContent: (_, range) async => ContentWindow(
+                  offset: range.offset,
+                  bytes: bytes.sublist(range.offset),
+                  generation: 'g',
+                  availableThrough: bytes.length,
+                  sealed: true,
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('已检查代码诊断 main.dart'), findsOneWidget);
+      await tester.tap(_rowTap);
+      await tester.pumpAndSettle();
+      expect(requested, [ChatContentRole.toolOutput.name]);
+      expect(find.byType(TimelineLspToolView), findsOneWidget);
+      expect(find.text('未发现代码诊断问题'), findsOneWidget);
+      expect(find.text('工具参数'), findsNothing);
+      expect(find.text('复制当前段'), findsNothing);
+      expect(tester.takeException(), isNull);
     },
   );
 }

@@ -8,9 +8,11 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/typed_json.dart';
+import '../state/lsp_presentation.dart';
 import '../state/tool_presentation.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_clock.dart';
+import 'timeline_lsp_tool_view.dart';
 import 'timeline_patch_diff_view.dart';
 
 /// 默认显示的工具摘要来源：命令首行 / 路径 / 查询词。
@@ -283,6 +285,7 @@ class TimelineToolDetails extends StatelessWidget {
     this.onExpansionChanged,
     this.declaredContents,
     this.additionalContentBuilder,
+    this.markdownBuilder,
     super.key,
   });
 
@@ -291,6 +294,7 @@ class TimelineToolDetails extends StatelessWidget {
   final ValueChanged<bool>? onExpansionChanged;
   final List<Widget>? declaredContents;
   final WidgetBuilder? additionalContentBuilder;
+  final TimelineLspMarkdownBuilder? markdownBuilder;
 
   /// 外层已经提供折叠身份（例如接管该行可见性的技能行）时只渲染详情主体，
   /// 不再重复一行工具标题；参数、结果、诊断与错误仍来自同一实现。
@@ -307,15 +311,19 @@ class TimelineToolDetails extends StatelessWidget {
           'builtin.workflow_restart@1',
         }.contains(item.presentationContract);
     final applyPatch = item.presentationContract == 'builtin.apply_patch@1';
+    final lspContract = timelineIsLspContract(item.presentationContract);
     // apply_patch 成功的权威结果（changedFiles）已由行标题与诊断呈现，
     // 展开区不再重复原始成功输出；失败/拒绝仍照旧保留错误事实。
     final hideOutput =
         hidePayload || (applyPatch && item.statusString == 'succeeded');
     final arguments = hidePayload ? null : tool.arguments;
     final output = hideOutput ? null : tool.output;
-    // 直接参数路径与声明正文路径使用同一片段语义（design/26 §26.9.1）。
+    // 直接参数路径与声明正文路径使用同一片段语义（design/26 §26.8）。
     final patchBody = applyPatch
         ? timelineApplyPatchBody(tool.arguments)
+        : null;
+    final lspBody = !hidePayload && lspContract && declaredContents == null
+        ? timelineLspInlineBody(tool, markdownBuilder: markdownBuilder)
         : null;
     final error = item.error;
     final showError =
@@ -336,23 +344,27 @@ class TimelineToolDetails extends StatelessWidget {
         ),
       if (!hidePayload && declaredContents != null) ...declaredContents!,
       if (declaredContents == null) ...[
-        ?patchBody,
-        if (patchBody == null &&
-            arguments != null &&
-            arguments.trim().isNotEmpty)
-          StudioCodeBlock(
-            text: _prettyToolPayload(arguments),
-            language: context.l10n.timelineToolArguments,
-            horizontalScroll: false,
-            margin: const EdgeInsets.only(top: 8),
-          ),
-        if (output != null && output.trim().isNotEmpty)
-          StudioCodeBlock(
-            text: _prettyToolPayload(output),
-            language: context.l10n.timelineToolOutput,
-            horizontalScroll: false,
-            margin: const EdgeInsets.only(top: 8),
-          ),
+        if (lspContract)
+          ?lspBody
+        else ...[
+          ?patchBody,
+          if (patchBody == null &&
+              arguments != null &&
+              arguments.trim().isNotEmpty)
+            StudioCodeBlock(
+              text: _prettyToolPayload(arguments),
+              language: context.l10n.timelineToolArguments,
+              horizontalScroll: false,
+              margin: const EdgeInsets.only(top: 8),
+            ),
+          if (output != null && output.trim().isNotEmpty)
+            StudioCodeBlock(
+              text: _prettyToolPayload(output),
+              language: context.l10n.timelineToolOutput,
+              horizontalScroll: false,
+              margin: const EdgeInsets.only(top: 8),
+            ),
+        ],
       ],
       if (showError)
         Padding(
@@ -471,12 +483,51 @@ class TimelineToolDetails extends StatelessWidget {
       );
     }
   }
+  if (item.presentationContract == 'builtin.lsp_query@1') {
+    return _lspQueryRowTargets(item);
+  }
   final target = timelineToolTarget(item);
   if (target == null) return (label: null, tooltip: null);
   return (
     label: _showsFileName(category) ? _lastPathSegment(target) : target,
     tooltip: target,
   );
+}
+
+({String? label, String? tooltip}) _lspQueryRowTargets(
+  TimelineToolPresentation item,
+) {
+  final args = _toolArguments(item);
+  final filePath = _firstLine(jsonStringValue(args['filePath']));
+  final line = switch (args['line']) {
+    final int n => n,
+    final num n => n.toInt(),
+    final String s => int.tryParse(s.trim()),
+    _ => null,
+  };
+  final character = switch (args['character']) {
+    final int n => n,
+    final num n => n.toInt(),
+    final String s => int.tryParse(s.trim()),
+    _ => null,
+  };
+  if (filePath != null) {
+    final shortName = _lastPathSegment(filePath) ?? filePath;
+    final lineSuffix = (line != null && line > 0) ? ':$line' : '';
+    final fullCoord = (line != null && line > 0)
+        ? (character != null && character > 0 ? ':$line:$character' : ':$line')
+        : '';
+    return (label: '$shortName$lineSuffix', tooltip: '$filePath$fullCoord');
+  }
+  final query = _firstLine(jsonStringValue(args['query']));
+  if (query != null) {
+    return (label: query, tooltip: query);
+  }
+  final languageId = _firstLine(jsonStringValue(args['languageId']));
+  if (languageId != null) {
+    return (label: languageId, tooltip: languageId);
+  }
+  return (label: null, tooltip: null);
 }
 
 /// 文件对象类目的行只显示文件名；命令、搜索等保留原始摘要。
@@ -507,7 +558,9 @@ List<String> _toolDiagnostics(
 ) {
   return [
         // 与行内文案同一来源：完整路径／文件列表在展开区仍可读。
-        _toolRowTargets(context, item, _toolCategory(item)).tooltip,
+        // LSP 系列工具的上下文头部已呈现完整目标坐标，不再重复裸文本行。
+        if (!timelineIsLspContract(item.presentationContract))
+          _toolRowTargets(context, item, _toolCategory(item)).tooltip,
         tool?.taskId,
         if (item.presentationContract == 'builtin.exec@2')
           (_commandSummary(item.arguments) ?? ''),
@@ -646,41 +699,43 @@ const timelineIssueStatuses = {'failed', 'denied', 'budgetLimited'};
 ///
 /// 只读的计划/工作流查询保留语义图标但沿用“名称＋真实状态”文案，避免把查询说成
 /// 变更；删除、复制、移动与新建各自独立，不笼统归入“已修改”。
-_ToolCategory _toolCategory(
-  TimelineToolPresentation item,
-) => switch (item.presentationContract) {
-  'builtin.read_session_note@1' || 'builtin.stat_path@1' => _ToolCategory.read,
-  'builtin.apply_patch@1' ||
-  'builtin.apply_session_note_patch@1' ||
-  'builtin.write_file@1' ||
-  'builtin.write_session_note@1' => _ToolCategory.edit,
-  'builtin.create_directory@1' => _ToolCategory.create,
-  'builtin.delete_path@1' => _ToolCategory.delete,
-  'builtin.copy_path@1' => _ToolCategory.copy,
-  'builtin.move_path@1' => _ToolCategory.move,
-  'builtin.exec@2' => _ToolCategory.command,
-  'builtin.write_stdin@1' => _ToolCategory.stdin,
-  'builtin.web_search@1' ||
-  'builtin.deepseek_web_search@1' ||
-  'builtin.search_session_note@1' => _ToolCategory.search,
-  'builtin.deepseek_web_fetch@1' => _ToolCategory.fetch,
-  'builtin.spawn_agent@1' => _ToolCategory.agent,
-  'builtin.send_message@1' => _ToolCategory.message,
-  'builtin.wait@1' || 'builtin.sleep@1' => _ToolCategory.wait,
-  'builtin.view_image@1' => _ToolCategory.image,
-  'builtin.lsp_query@1' || 'builtin.lsp_capabilities@1' => _ToolCategory.lsp,
-  'builtin.plan_submit@1' || 'builtin.plan_restart@1' => _ToolCategory.plan,
-  'builtin.plan_current@1' ||
-  'builtin.plan_next@1' ||
-  'builtin.plan_history@1' => _ToolCategory.planRead,
-  'builtin.workflow_transition@1' ||
-  'builtin.workflow_restart@1' => _ToolCategory.workflow,
-  'builtin.workflow_current@1' ||
-  'builtin.workflow_next@1' ||
-  'builtin.workflow_graph@1' ||
-  'builtin.workflow_history@1' => _ToolCategory.workflowRead,
-  _ => _ToolCategory.generic,
-};
+_ToolCategory _toolCategory(TimelineToolPresentation item) =>
+    switch (item.presentationContract) {
+      'builtin.read_session_note@1' ||
+      'builtin.stat_path@1' => _ToolCategory.read,
+      'builtin.apply_patch@1' ||
+      'builtin.apply_session_note_patch@1' ||
+      'builtin.write_file@1' ||
+      'builtin.write_session_note@1' => _ToolCategory.edit,
+      'builtin.create_directory@1' => _ToolCategory.create,
+      'builtin.delete_path@1' => _ToolCategory.delete,
+      'builtin.copy_path@1' => _ToolCategory.copy,
+      'builtin.move_path@1' => _ToolCategory.move,
+      'builtin.exec@2' => _ToolCategory.command,
+      'builtin.write_stdin@1' => _ToolCategory.stdin,
+      'builtin.web_search@1' ||
+      'builtin.deepseek_web_search@1' ||
+      'builtin.search_session_note@1' => _ToolCategory.search,
+      'builtin.deepseek_web_fetch@1' => _ToolCategory.fetch,
+      'builtin.spawn_agent@1' => _ToolCategory.agent,
+      'builtin.send_message@1' => _ToolCategory.message,
+      'builtin.wait@1' || 'builtin.sleep@1' => _ToolCategory.wait,
+      'builtin.view_image@1' => _ToolCategory.image,
+      'builtin.lsp_query@1' ||
+      'builtin.lsp_capabilities@1' ||
+      'builtin.lsp_status@1' => _ToolCategory.lsp,
+      'builtin.plan_submit@1' || 'builtin.plan_restart@1' => _ToolCategory.plan,
+      'builtin.plan_current@1' ||
+      'builtin.plan_next@1' ||
+      'builtin.plan_history@1' => _ToolCategory.planRead,
+      'builtin.workflow_transition@1' ||
+      'builtin.workflow_restart@1' => _ToolCategory.workflow,
+      'builtin.workflow_current@1' ||
+      'builtin.workflow_next@1' ||
+      'builtin.workflow_graph@1' ||
+      'builtin.workflow_history@1' => _ToolCategory.workflowRead,
+      _ => _ToolCategory.generic,
+    };
 
 IconData _toolCategoryIcon(_ToolCategory category) => switch (category) {
   _ToolCategory.read => Icons.menu_book_outlined,
@@ -706,11 +761,19 @@ IconData _toolCategoryIcon(_ToolCategory category) => switch (category) {
 };
 
 /// 成功、失败与进行中的短动词；其它状态返回 null，由调用方保留真实状态文案。
-String? _toolVerb(BuildContext context, _ToolCategory category, String status) {
+String? _toolVerb(
+  BuildContext context,
+  TimelineToolPresentation item,
+  _ToolCategory category,
+  String status,
+) {
   final l10n = context.l10n;
   final running = _toolRunningStatuses.contains(status);
   final failed = status == 'failed';
   if (!running && !failed && status != 'succeeded') return null;
+  if (category == _ToolCategory.lsp) {
+    return _lspToolVerb(context, item, running: running, failed: failed);
+  }
   return switch (category) {
     _ToolCategory.read =>
       running
@@ -822,6 +885,87 @@ String? _toolVerb(BuildContext context, _ToolCategory category, String status) {
   };
 }
 
+String _lspToolVerb(
+  BuildContext context,
+  TimelineToolPresentation item, {
+  required bool running,
+  required bool failed,
+}) {
+  final l10n = context.l10n;
+  if (item.presentationContract == 'builtin.lsp_capabilities@1') {
+    return running
+        ? l10n.timelineLspCapabilitiesRunning
+        : failed
+        ? l10n.timelineLspCapabilitiesFailed
+        : l10n.timelineLspCapabilitiesSucceeded;
+  }
+  if (item.presentationContract == 'builtin.lsp_status@1') {
+    return running
+        ? l10n.timelineLspStatusRunning
+        : failed
+        ? l10n.timelineLspStatusFailed
+        : l10n.timelineLspStatusSucceeded;
+  }
+  return switch (timelineLspQueryOperation(item)) {
+    TimelineLspOperation.goToDefinition =>
+      running
+          ? l10n.timelineLspOpDefinitionRunning
+          : failed
+          ? l10n.timelineLspOpDefinitionFailed
+          : l10n.timelineLspOpDefinitionSucceeded,
+    TimelineLspOperation.goToImplementation =>
+      running
+          ? l10n.timelineLspOpImplementationRunning
+          : failed
+          ? l10n.timelineLspOpImplementationFailed
+          : l10n.timelineLspOpImplementationSucceeded,
+    TimelineLspOperation.findReferences =>
+      running
+          ? l10n.timelineLspOpReferencesRunning
+          : failed
+          ? l10n.timelineLspOpReferencesFailed
+          : l10n.timelineLspOpReferencesSucceeded,
+    TimelineLspOperation.hover =>
+      running
+          ? l10n.timelineLspOpHoverRunning
+          : failed
+          ? l10n.timelineLspOpHoverFailed
+          : l10n.timelineLspOpHoverSucceeded,
+    TimelineLspOperation.documentSymbol =>
+      running
+          ? l10n.timelineLspOpDocumentSymbolRunning
+          : failed
+          ? l10n.timelineLspOpDocumentSymbolFailed
+          : l10n.timelineLspOpDocumentSymbolSucceeded,
+    TimelineLspOperation.workspaceSymbol =>
+      running
+          ? l10n.timelineLspOpWorkspaceSymbolRunning
+          : failed
+          ? l10n.timelineLspOpWorkspaceSymbolFailed
+          : l10n.timelineLspOpWorkspaceSymbolSucceeded,
+    TimelineLspOperation.prepareCallHierarchy ||
+    TimelineLspOperation.incomingCalls ||
+    TimelineLspOperation.outgoingCalls =>
+      running
+          ? l10n.timelineLspOpCallHierarchyRunning
+          : failed
+          ? l10n.timelineLspOpCallHierarchyFailed
+          : l10n.timelineLspOpCallHierarchySucceeded,
+    TimelineLspOperation.diagnostics =>
+      running
+          ? l10n.timelineLspOpDiagnosticsRunning
+          : failed
+          ? l10n.timelineLspOpDiagnosticsFailed
+          : l10n.timelineLspOpDiagnosticsSucceeded,
+    TimelineLspOperation.unknown =>
+      running
+          ? l10n.timelineToolLspRunning
+          : failed
+          ? l10n.timelineToolLspFailed
+          : l10n.timelineToolLspSucceeded,
+  };
+}
+
 /// 行的简短文案：动词＋可选耗时＋目标；没有动词时保留工具名与真实状态。
 ///
 /// 耗时放在目标之前，长命令被行内省略时仍能读到本次调用耗时。
@@ -832,7 +976,7 @@ String _toolRowLabel(
   String? target, {
   String? meta,
 }) {
-  final verb = _toolVerb(context, category, item.statusString);
+  final verb = _toolVerb(context, item, category, item.statusString);
   if (verb == null) {
     // 排队、取消、拒绝、中断、查询与未知工具都保留工具名，目标只作后缀，
     // 不能用目标顶掉名称而丢掉工具身份与真实状态。
@@ -914,7 +1058,7 @@ String _unknownToolStatusLabel(
 String _toolDisplayName(BuildContext context, TimelineToolPresentation item) {
   final name = item.name;
   if (item.presentationContract == 'builtin.lsp_query@1') {
-    final detail = _lspQueryDetail(item.arguments);
+    final detail = _lspQueryDetail(context, item.arguments);
     return detail.isEmpty
         ? context.l10n.timelineLspQueryTitle
         : context.l10n.timelineLspQueryTitleWithDetail(detail);
@@ -922,18 +1066,26 @@ String _toolDisplayName(BuildContext context, TimelineToolPresentation item) {
   if (item.presentationContract == 'builtin.lsp_capabilities@1') {
     return context.l10n.timelineLspCapabilitiesTitle;
   }
+  if (item.presentationContract == 'builtin.lsp_status@1') {
+    return context.l10n.timelineLspStatusTitle;
+  }
   if (name.isEmpty || name == 'Tool') {
     return context.l10n.timelineToolFallback;
   }
   return name;
 }
 
-/// 从 `lsp_query` 参数中提取 languageId 与查询目标摘要（沿用命令摘要思路）。
-String _lspQueryDetail(String arguments) {
+/// 从 `lsp_query` 参数中提取本地化操作与查询目标摘要。
+String _lspQueryDetail(BuildContext context, String arguments) {
   final json = decodeJsonObject(arguments);
+  final rawOp = jsonStringValue(json['operation']);
+  final op = TimelineLspOperation.fromWire(rawOp);
+  final opLabel = rawOp == null
+      ? ''
+      : timelineLspOperationLabel(context.l10n, op, raw: rawOp);
   return [
+        opLabel,
         jsonStringValue(json['languageId']),
-        jsonStringValue(json['operation']),
         jsonStringValue(json['filePath']),
         jsonStringValue(json['query']),
       ]

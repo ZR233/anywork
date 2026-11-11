@@ -6402,4 +6402,238 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountsAcp => 'ACP';
+
+  @override
+  String get timelineLspStatusTitle => 'LSP status';
+
+  @override
+  String get timelineLspCapabilitiesRunning =>
+      'Checking language server capabilities';
+
+  @override
+  String get timelineLspCapabilitiesSucceeded =>
+      'Checked language server capabilities';
+
+  @override
+  String get timelineLspCapabilitiesFailed =>
+      'Language server capability check failed';
+
+  @override
+  String get timelineLspStatusRunning => 'Checking language server status';
+
+  @override
+  String get timelineLspStatusSucceeded => 'Checked language server status';
+
+  @override
+  String get timelineLspStatusFailed => 'Language server status check failed';
+
+  @override
+  String get timelineLspOpDefinition => 'Definition';
+
+  @override
+  String get timelineLspOpDefinitionRunning => 'Locating definition';
+
+  @override
+  String get timelineLspOpDefinitionSucceeded => 'Located definition';
+
+  @override
+  String get timelineLspOpDefinitionFailed => 'Failed to locate definition';
+
+  @override
+  String get timelineLspOpImplementation => 'Implementation';
+
+  @override
+  String get timelineLspOpImplementationRunning => 'Finding implementations';
+
+  @override
+  String get timelineLspOpImplementationSucceeded => 'Found implementations';
+
+  @override
+  String get timelineLspOpImplementationFailed =>
+      'Failed to find implementations';
+
+  @override
+  String get timelineLspOpReferences => 'References';
+
+  @override
+  String get timelineLspOpReferencesRunning => 'Finding references';
+
+  @override
+  String get timelineLspOpReferencesSucceeded => 'Found references';
+
+  @override
+  String get timelineLspOpReferencesFailed => 'Failed to find references';
+
+  @override
+  String get timelineLspOpHover => 'Hover';
+
+  @override
+  String get timelineLspOpHoverRunning => 'Reading hover info';
+
+  @override
+  String get timelineLspOpHoverSucceeded => 'Read hover info';
+
+  @override
+  String get timelineLspOpHoverFailed => 'Failed to read hover info';
+
+  @override
+  String get timelineLspOpDocumentSymbol => 'Document symbols';
+
+  @override
+  String get timelineLspOpDocumentSymbolRunning => 'Reading document symbols';
+
+  @override
+  String get timelineLspOpDocumentSymbolSucceeded => 'Read document symbols';
+
+  @override
+  String get timelineLspOpDocumentSymbolFailed =>
+      'Failed to read document symbols';
+
+  @override
+  String get timelineLspOpWorkspaceSymbol => 'Workspace symbols';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolRunning => 'Searching symbols';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolSucceeded => 'Searched symbols';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolFailed => 'Failed to search symbols';
+
+  @override
+  String get timelineLspOpPrepareCallHierarchy => 'Call hierarchy';
+
+  @override
+  String get timelineLspOpIncomingCalls => 'Incoming calls';
+
+  @override
+  String get timelineLspOpOutgoingCalls => 'Outgoing calls';
+
+  @override
+  String get timelineLspOpCallHierarchyRunning => 'Analyzing call hierarchy';
+
+  @override
+  String get timelineLspOpCallHierarchySucceeded => 'Analyzed call hierarchy';
+
+  @override
+  String get timelineLspOpCallHierarchyFailed =>
+      'Failed to analyze call hierarchy';
+
+  @override
+  String get timelineLspOpDiagnostics => 'Diagnostics';
+
+  @override
+  String get timelineLspOpDiagnosticsRunning => 'Checking diagnostics';
+
+  @override
+  String get timelineLspOpDiagnosticsSucceeded => 'Checked diagnostics';
+
+  @override
+  String get timelineLspOpDiagnosticsFailed => 'Failed to check diagnostics';
+
+  @override
+  String timelineLspResultCountFiles(int count, int files) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count matches',
+      one: '1 match',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      files,
+      locale: localeName,
+      other: '$files files',
+      one: '1 file',
+    );
+    return '$_temp0 · $_temp1';
+  }
+
+  @override
+  String timelineLspResultCountOnly(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count results',
+      one: '1 result',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String timelineLspMaxResultsLimit(int limit) {
+    return 'Limit $limit';
+  }
+
+  @override
+  String get timelineLspQueryKeywordLabel => 'Query';
+
+  @override
+  String get timelineLspNoDefinitions => 'No matching definitions found';
+
+  @override
+  String get timelineLspNoImplementations =>
+      'No matching implementations found';
+
+  @override
+  String get timelineLspNoReferences => 'No matching references found';
+
+  @override
+  String get timelineLspNoHover => 'No hover information at this position';
+
+  @override
+  String get timelineLspNoDocumentSymbols => 'No document symbols found';
+
+  @override
+  String get timelineLspNoWorkspaceSymbols =>
+      'No matching workspace symbols found';
+
+  @override
+  String get timelineLspNoCallHierarchy => 'No call hierarchy items found';
+
+  @override
+  String get timelineLspNoDiagnosticsClean => 'No diagnostics reported';
+
+  @override
+  String timelineLspOmittedItems(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count more items omitted',
+      one: '1 more item omitted',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String timelineLspPreviewTruncated(String size) {
+    return 'Result preview truncated ($size omitted)';
+  }
+
+  @override
+  String timelineLspCapabilitiesSummary(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count ready language servers',
+      one: '1 ready language server',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get timelineLspCapabilitiesEmpty =>
+      'No ready language servers in this workspace';
+
+  @override
+  String timelineLspStatusSummary(int ready, int total) {
+    return '$ready ready of $total';
+  }
+
+  @override
+  String get timelineLspStatusEmpty =>
+      'No language servers configured in this workspace';
+
+  @override
+  String get timelineLspStateMissingCommand => 'Missing command';
 }

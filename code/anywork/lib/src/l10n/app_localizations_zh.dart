@@ -6049,4 +6049,198 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountsAcp => 'ACP';
+
+  @override
+  String get timelineLspStatusTitle => 'LSP 状态';
+
+  @override
+  String get timelineLspCapabilitiesRunning => '正在读取语言服务能力';
+
+  @override
+  String get timelineLspCapabilitiesSucceeded => '已读取语言服务能力';
+
+  @override
+  String get timelineLspCapabilitiesFailed => '语言服务能力读取失败';
+
+  @override
+  String get timelineLspStatusRunning => '正在检查语言服务状态';
+
+  @override
+  String get timelineLspStatusSucceeded => '已检查语言服务状态';
+
+  @override
+  String get timelineLspStatusFailed => '语言服务状态检查失败';
+
+  @override
+  String get timelineLspOpDefinition => '跳转定义';
+
+  @override
+  String get timelineLspOpDefinitionRunning => '正在定位定义';
+
+  @override
+  String get timelineLspOpDefinitionSucceeded => '已定位定义';
+
+  @override
+  String get timelineLspOpDefinitionFailed => '定位定义失败';
+
+  @override
+  String get timelineLspOpImplementation => '查找实现';
+
+  @override
+  String get timelineLspOpImplementationRunning => '正在查找实现';
+
+  @override
+  String get timelineLspOpImplementationSucceeded => '已查找实现';
+
+  @override
+  String get timelineLspOpImplementationFailed => '查找实现失败';
+
+  @override
+  String get timelineLspOpReferences => '查找引用';
+
+  @override
+  String get timelineLspOpReferencesRunning => '正在查找引用';
+
+  @override
+  String get timelineLspOpReferencesSucceeded => '已查找引用';
+
+  @override
+  String get timelineLspOpReferencesFailed => '查找引用失败';
+
+  @override
+  String get timelineLspOpHover => '悬停说明';
+
+  @override
+  String get timelineLspOpHoverRunning => '正在读取悬停说明';
+
+  @override
+  String get timelineLspOpHoverSucceeded => '已读取悬停说明';
+
+  @override
+  String get timelineLspOpHoverFailed => '读取悬停说明失败';
+
+  @override
+  String get timelineLspOpDocumentSymbol => '文件符号';
+
+  @override
+  String get timelineLspOpDocumentSymbolRunning => '正在读取文件符号';
+
+  @override
+  String get timelineLspOpDocumentSymbolSucceeded => '已读取文件符号';
+
+  @override
+  String get timelineLspOpDocumentSymbolFailed => '读取文件符号失败';
+
+  @override
+  String get timelineLspOpWorkspaceSymbol => '工作区符号';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolRunning => '正在搜索符号';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolSucceeded => '已搜索符号';
+
+  @override
+  String get timelineLspOpWorkspaceSymbolFailed => '搜索符号失败';
+
+  @override
+  String get timelineLspOpPrepareCallHierarchy => '调用层级';
+
+  @override
+  String get timelineLspOpIncomingCalls => '传入调用';
+
+  @override
+  String get timelineLspOpOutgoingCalls => '传出调用';
+
+  @override
+  String get timelineLspOpCallHierarchyRunning => '正在分析调用层级';
+
+  @override
+  String get timelineLspOpCallHierarchySucceeded => '已分析调用层级';
+
+  @override
+  String get timelineLspOpCallHierarchyFailed => '分析调用层级失败';
+
+  @override
+  String get timelineLspOpDiagnostics => '代码诊断';
+
+  @override
+  String get timelineLspOpDiagnosticsRunning => '正在检查代码诊断';
+
+  @override
+  String get timelineLspOpDiagnosticsSucceeded => '已检查代码诊断';
+
+  @override
+  String get timelineLspOpDiagnosticsFailed => '检查代码诊断失败';
+
+  @override
+  String timelineLspResultCountFiles(int count, int files) {
+    return '$count 处结果 · $files 个文件';
+  }
+
+  @override
+  String timelineLspResultCountOnly(int count) {
+    return '$count 项结果';
+  }
+
+  @override
+  String timelineLspMaxResultsLimit(int limit) {
+    return '上限 $limit';
+  }
+
+  @override
+  String get timelineLspQueryKeywordLabel => '关键词';
+
+  @override
+  String get timelineLspNoDefinitions => '未找到匹配的定义位置';
+
+  @override
+  String get timelineLspNoImplementations => '未找到匹配的实现位置';
+
+  @override
+  String get timelineLspNoReferences => '未找到匹配的引用位置';
+
+  @override
+  String get timelineLspNoHover => '当前位置暂无悬停类型或文档说明';
+
+  @override
+  String get timelineLspNoDocumentSymbols => '当前文件未解析出符号大纲';
+
+  @override
+  String get timelineLspNoWorkspaceSymbols => '未搜索到匹配的工作区符号';
+
+  @override
+  String get timelineLspNoCallHierarchy => '当前位置未找到调用层级关系';
+
+  @override
+  String get timelineLspNoDiagnosticsClean => '未发现代码诊断问题';
+
+  @override
+  String timelineLspOmittedItems(int count) {
+    return '另有 $count 项结果已省略';
+  }
+
+  @override
+  String timelineLspPreviewTruncated(String size) {
+    return '结果预览已截断（省略 $size）';
+  }
+
+  @override
+  String timelineLspCapabilitiesSummary(int count) {
+    return '$count 个就绪语言服务';
+  }
+
+  @override
+  String get timelineLspCapabilitiesEmpty => '当前工作区暂无就绪的语言服务器';
+
+  @override
+  String timelineLspStatusSummary(int ready, int total) {
+    return '$ready 就绪 / 共 $total 个服务';
+  }
+
+  @override
+  String get timelineLspStatusEmpty => '当前工作区未配置语言服务器';
+
+  @override
+  String get timelineLspStateMissingCommand => '缺少命令';
 }

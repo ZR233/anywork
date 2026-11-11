@@ -3078,5 +3078,102 @@
   "acpInvalidEnvironment": "Environment keys must be unique, nonempty, and contain no equals sign.",
   "acpRemoveEntry": "Remove",
   "accountsApi": "API",
-  "accountsAcp": "ACP"
+  "accountsAcp": "ACP",
+  "timelineLspStatusTitle": "LSP status",
+  "timelineLspCapabilitiesRunning": "Checking language server capabilities",
+  "timelineLspCapabilitiesSucceeded": "Checked language server capabilities",
+  "timelineLspCapabilitiesFailed": "Language server capability check failed",
+  "timelineLspStatusRunning": "Checking language server status",
+  "timelineLspStatusSucceeded": "Checked language server status",
+  "timelineLspStatusFailed": "Language server status check failed",
+  "timelineLspOpDefinition": "Definition",
+  "timelineLspOpDefinitionRunning": "Locating definition",
+  "timelineLspOpDefinitionSucceeded": "Located definition",
+  "timelineLspOpDefinitionFailed": "Failed to locate definition",
+  "timelineLspOpImplementation": "Implementation",
+  "timelineLspOpImplementationRunning": "Finding implementations",
+  "timelineLspOpImplementationSucceeded": "Found implementations",
+  "timelineLspOpImplementationFailed": "Failed to find implementations",
+  "timelineLspOpReferences": "References",
+  "timelineLspOpReferencesRunning": "Finding references",
+  "timelineLspOpReferencesSucceeded": "Found references",
+  "timelineLspOpReferencesFailed": "Failed to find references",
+  "timelineLspOpHover": "Hover",
+  "timelineLspOpHoverRunning": "Reading hover info",
+  "timelineLspOpHoverSucceeded": "Read hover info",
+  "timelineLspOpHoverFailed": "Failed to read hover info",
+  "timelineLspOpDocumentSymbol": "Document symbols",
+  "timelineLspOpDocumentSymbolRunning": "Reading document symbols",
+  "timelineLspOpDocumentSymbolSucceeded": "Read document symbols",
+  "timelineLspOpDocumentSymbolFailed": "Failed to read document symbols",
+  "timelineLspOpWorkspaceSymbol": "Workspace symbols",
+  "timelineLspOpWorkspaceSymbolRunning": "Searching symbols",
+  "timelineLspOpWorkspaceSymbolSucceeded": "Searched symbols",
+  "timelineLspOpWorkspaceSymbolFailed": "Failed to search symbols",
+  "timelineLspOpPrepareCallHierarchy": "Call hierarchy",
+  "timelineLspOpIncomingCalls": "Incoming calls",
+  "timelineLspOpOutgoingCalls": "Outgoing calls",
+  "timelineLspOpCallHierarchyRunning": "Analyzing call hierarchy",
+  "timelineLspOpCallHierarchySucceeded": "Analyzed call hierarchy",
+  "timelineLspOpCallHierarchyFailed": "Failed to analyze call hierarchy",
+  "timelineLspOpDiagnostics": "Diagnostics",
+  "timelineLspOpDiagnosticsRunning": "Checking diagnostics",
+  "timelineLspOpDiagnosticsSucceeded": "Checked diagnostics",
+  "timelineLspOpDiagnosticsFailed": "Failed to check diagnostics",
+  "timelineLspResultCountFiles": "{count, plural, =1{1 match} other{{count} matches}} · {files, plural, =1{1 file} other{{files} files}}",
+  "@timelineLspResultCountFiles": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "files": {"type": "int"}
+    }
+  },
+  "timelineLspResultCountOnly": "{count, plural, =1{1 result} other{{count} results}}",
+  "@timelineLspResultCountOnly": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspMaxResultsLimit": "Limit {limit}",
+  "@timelineLspMaxResultsLimit": {
+    "placeholders": {
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineLspQueryKeywordLabel": "Query",
+  "timelineLspNoDefinitions": "No matching definitions found",
+  "timelineLspNoImplementations": "No matching implementations found",
+  "timelineLspNoReferences": "No matching references found",
+  "timelineLspNoHover": "No hover information at this position",
+  "timelineLspNoDocumentSymbols": "No document symbols found",
+  "timelineLspNoWorkspaceSymbols": "No matching workspace symbols found",
+  "timelineLspNoCallHierarchy": "No call hierarchy items found",
+  "timelineLspNoDiagnosticsClean": "No diagnostics reported",
+  "timelineLspOmittedItems": "{count, plural, =1{1 more item omitted} other{{count} more items omitted}}",
+  "@timelineLspOmittedItems": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspPreviewTruncated": "Result preview truncated ({size} omitted)",
+  "@timelineLspPreviewTruncated": {
+    "placeholders": {
+      "size": {"type": "String"}
+    }
+  },
+  "timelineLspCapabilitiesSummary": "{count, plural, =1{1 ready language server} other{{count} ready language servers}}",
+  "@timelineLspCapabilitiesSummary": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspCapabilitiesEmpty": "No ready language servers in this workspace",
+  "timelineLspStatusSummary": "{ready} ready of {total}",
+  "@timelineLspStatusSummary": {
+    "placeholders": {
+      "ready": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "timelineLspStatusEmpty": "No language servers configured in this workspace",
+  "timelineLspStateMissingCommand": "Missing command"
 }
