@@ -168,11 +168,8 @@ class _WorkHeader extends StatelessWidget {
     final live = state == DisplayBlockState.open;
     final cold = live && !executionPresent;
     final working = summary.running > 0 || summary.waiting > 0;
-    final cleanIdle =
-        !working &&
-        summary.failed == 0 &&
-        summary.cancelled == 0 &&
-        summary.transferred == 0;
+    final continuingIdle =
+        !working && summary.cancelled == 0 && summary.transferred == 0;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
@@ -183,7 +180,7 @@ class _WorkHeader extends StatelessWidget {
         : summary.running == 0
         ? l10n.timelineGroupWaitingForNext
         : l10n.timelineGroupWorking;
-    final activeThought = live && !cold && (working || cleanIdle)
+    final activeThought = live && !cold && (working || continuingIdle)
         ? [
                 if (activity != null) activity!.thinkingSummary,
                 summary.thinkingSummary,
@@ -225,12 +222,8 @@ class _WorkHeader extends StatelessWidget {
       l10n.timelineGroupMemberCount(summary.total),
       ...outcomes,
     ].join('，');
-    final issue = summary.failed > 0;
-    final active =
-        live && executionPresent && !issue && (working || activity != null);
-    final icon = issue
-        ? Icons.error_outline
-        : cold
+    final active = live && executionPresent && (working || activity != null);
+    final icon = cold
         ? Icons.history_outlined
         : summary.cancelled > 0
         ? Icons.stop_circle_outlined
@@ -238,9 +231,7 @@ class _WorkHeader extends StatelessWidget {
         ? Icons.call_made
         : activity?.kind.icon ?? Icons.work_outline;
     final secondaryColor = context.colors.onSurfaceVariant;
-    final indicatorColor = issue
-        ? context.colors.error
-        : active
+    final indicatorColor = active
         ? context.statusColors.activeIndicator
         : secondaryColor.withValues(alpha: .78);
     final titleStyle = context.text.bodySmall!.copyWith(

@@ -27,7 +27,10 @@ fn atom(id: &str, kind: ChatAtomKind, terminal: bool) -> ChatAtom {
         },
         turn_id: Some("turn".into()),
         attempt_id: None,
-        tool: None,
+        tool: (kind == ChatAtomKind::ToolCall).then(|| pl_protocol::ChatToolIdentity {
+            call_id: id.into(),
+            name: "exec".into(),
+        }),
         wait: None,
         text_channel: None,
         started_at: Some(10),
@@ -348,6 +351,106 @@ fn summary(h: &DisplayHeader) -> &WorkSummary {
     summary
 }
 
+fn source_ended(atom: &ChatAtom, effect_seq: u64) -> ChatSourceState {
+    ChatSourceState {
+        source: atom.source.clone(),
+        lifecycle: ChatSourceLifecycle::Ended {
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        started: None,
+        ended: Some(ChatFactPosition {
+            effect_seq,
+            suborder: 1,
+        }),
+    }
+}
+
+#[test]
+fn background_tools_seal_their_own_work_without_closing_foreground_or_rewriting_facts() -> Result<()>
+{
+    for name in ["exec", "search", pl_tool::file_display::TOOL_SHOW_FILES] {
+        for outcome in [ChatTerminalOutcome::Completed, ChatTerminalOutcome::Failed] {
+            let mut s = state();
+            s.prepare(
+                1,
+                10,
+                &[atom("foreground", ChatAtomKind::ToolCall, false)],
+                &[],
+                &[],
+            )?;
+            let foreground = s.blocks[&1].clone();
+            let mut result = atom("result", ChatAtomKind::ToolCall, true);
+            result.tool.as_mut().unwrap().name = name.into();
+            result.source = ChatSourceId::BackgroundResult {
+                message_id: "inbox-result".into(),
+            };
+            result.delivery = ChatDeliveryKind::Independent;
+            result.completion_item_id = Some("real-completion".into());
+            result.started_at = None;
+            result.lifecycle = ChatAtomLifecycle::Terminal {
+                started: None,
+                ended: Some(at(2)),
+                outcome,
+            };
+            let delta = s.prepare(
+                2,
+                20,
+                std::slice::from_ref(&result),
+                &[source_ended(&result, 2)],
+                &[],
+            )?;
+            assert_eq!(*s.blocks[&1], *foreground);
+            assert_eq!(delta.members.len(), 1);
+            assert_eq!(delta.members[0].head.record.atom, result);
+            assert_eq!(
+                crate::studio::runtime::chat_item::native_read_class_v1("conversation", &result)
+                    .main_presentation,
+                pl_protocol::MainPresentation::BackgroundResults
+            );
+            assert_eq!(delta.members[0].head.record.start_fact, None);
+            assert_eq!(delta.members[0].head.record.end_fact, Some(at(2)));
+            assert_eq!(s.published, 1);
+            let frozen = &s.pending[&1];
+            if name == pl_tool::file_display::TOOL_SHOW_FILES {
+                assert!(matches!(frozen.body, DisplayBlockBody::Single { .. }));
+            } else {
+                let DisplayBlockBody::Work { summary, members } = &frozen.body else {
+                    panic!("ordinary background tool must be Work");
+                };
+                assert_eq!(
+                    (summary.total, summary.terminal, summary.running),
+                    (1, 1, 0)
+                );
+                assert_eq!(
+                    summary.failed,
+                    u64::from(outcome == ChatTerminalOutcome::Failed)
+                );
+                assert_eq!(summary.duration_ms, None);
+                assert_eq!(summary.created_at, Some(20));
+                assert_eq!(summary.elapsed_ms, Some(0));
+                assert_eq!(members.block_id, frozen.id);
+                assert_eq!(members.database_id, "db");
+            }
+            let sealed = delta
+                .blocks
+                .iter()
+                .find(|write| write.header.id == frozen.id)
+                .unwrap();
+            assert!(sealed.header.sealed);
+            assert_eq!(
+                sealed.header.boundary,
+                if name == pl_tool::file_display::TOOL_SHOW_FILES {
+                    Some(at(2))
+                } else {
+                    source_ended(&result, 2).ended
+                }
+            );
+            assert_eq!(sealed.header.source, result.source);
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn completed_members_wait_for_a_real_boundary_and_text_start_needs_no_new_completion() -> Result<()>
 {
@@ -524,7 +627,8 @@ fn reverse_terminals_keep_source_prefix_while_background_and_input_advance() -> 
         input_id: "input".into(),
     };
     input.delivery = ChatDeliveryKind::Independent;
-    s.prepare(5, 50, &[background, input], &[], &[])?;
+    let ended = source_ended(&background, 5);
+    s.prepare(5, 50, &[background, input], &[ended], &[])?;
     assert_eq!(s.published, 4);
     assert_eq!(s.blocks.len(), 1);
     assert_eq!(summary(&s.blocks[&3]).created_at, Some(40));
@@ -575,7 +679,8 @@ fn transfer_and_background_result_have_distinct_keys_and_empty_text_is_removed()
         *outcome = ChatTerminalOutcome::Completed;
     }
     assert_ne!(member_key(&handoff)?, member_key(&result)?);
-    s.prepare(2, 20, &[result], &[], &[])?;
+    let ended = source_ended(&result, 2);
+    s.prepare(2, 20, &[result], &[ended], &[])?;
     s.prepare(3, 30, &[atom("empty", ChatAtomKind::Text, false)], &[], &[])?;
     let mut empty = atom("empty", ChatAtomKind::Text, true);
     empty.content_present = Some(false);

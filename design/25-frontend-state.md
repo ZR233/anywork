@@ -455,6 +455,10 @@ ChatGPT 账号的列表身份与套餐来自权威账号摘要的已验证元数
 
 ## 25.15 会话、草稿与呈现分域
 
+会话底栏与“已启动项”由 `features/status/` 自包含呈现，区别于时间线的实时工作状态条。外壳只传入会话标识及待办、Plan 等外层 UI 意图，不注入服务列表、处理领域事件或补偿刷新。专属生成式 ViewModel 观察现有 Client 的会话、线程 MCP 与 LSP 只读状态；FRB 基线和后续事件仍由 Client 原 owner 接纳，ViewModel 只派生呈现切片、承接操作及其真实错误，不另开原始事件订阅、定时轮询或保存第二份业务列表。上下文、吞吐与服务状态按实际消费者独立观察，服务进度变化不重建时间线或整页。
+
+底栏使用统一图标入口，名称、数值和诊断进入悬停提示或详情，并保留可访问性语义。“已启动项”按技能、MCP、LSP 分组，以单行名称、短状态或进度及必要图标操作呈现，不显示工具数、配置路径、重复说明或长错误等二级描述。LSP 列表取现有健康快照的全部服务成员，逐项表达初始化、忙碌／索引、就绪、不可用和禁用，而非仅使用轮次中记录的已启用 ID 或首个活动服务。弹层内部持续观察同一呈现 owner，打开期间仍能更新；配置与连接错误不得伪装为空列表或操作成功。组件释放自身观察，不关闭共享服务或取消已准入操作。
+
 conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 data 实现，领域消费者不依赖 Flutter、Riverpod 或 FRB。ConversationRepository 持有各域当前态、观察/操作资源与传输责任，DraftsRepository 持有冻结提交和附件归属；不经旧 AnyworkClient 转发，不建立历史镜像。
 
 五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。会话 Repository 是 State 的唯一 Dart writer，通过独立状态观察接纳首快照与连续通知；完成级内容观察交付 Chat 与 Activity，GUI 展示观察交付 Timeline，均不转发另一份 State。状态与内容按同一可见会话需求登记，但各自持有资源、确认及恢复代次，正文消费受阻时仍能接纳状态变化；状态断流只重建状态基线，不清空内容或草稿。Activity 是有完成前缀屏障的独立活动快照，GUI live 则是有展示前缀屏障的权威块窗口，State 保留真实业务状态，Children 不写全局活动。loadOlder/readCompleted/内容查询沿独立 read lease，在应用队列外执行，不竞争 recv/credit 锁；ACK 只归各自 feed owner，背压、关闭与迟到结果资格见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。

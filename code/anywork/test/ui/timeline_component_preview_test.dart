@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
+import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/plan_detail_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/interactions/views/plan_confirmation_view.dart';
@@ -20,6 +21,50 @@ import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 void main() {
+  testWidgets('已封存工具工作组只在展开后呈现成员，失败不改变工作组标题', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1067, 720);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(sealedToolWorkGroupCollapsedPreview());
+    await tester.pumpAndSettle();
+
+    final header = find.byKey(
+      const ValueKey('completion-run-header:sealed-tool-preview-group'),
+    );
+    expect(header, findsOneWidget);
+    expect(find.textContaining('历史正文保持文档式阅读'), findsOneWidget);
+    expect(find.text('搜索未成功，但已封存工作组仍保留在两段正文之间。'), findsOneWidget);
+    expect(find.text('exec 执行完成：测试命令成功退出。'), findsNothing);
+    expect(find.text('搜索服务暂时不可用'), findsNothing);
+
+    final title = find.byKey(const ValueKey('work-header-title'));
+    final collapsedTitleStyle = tester.widget<Text>(title).style;
+    final collapsedHeaderIcon = tester.widget<Icon>(
+      find.descendant(of: header, matching: find.byType(Icon)).first,
+    );
+    expect(collapsedHeaderIcon.icon, Icons.work_outline);
+
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+
+    expect(find.text('exec 执行完成：测试命令成功退出。'), findsOneWidget);
+    expect(find.text('搜索服务暂时不可用'), findsWidgets);
+    expect(tester.widget<Text>(title).style?.color, collapsedTitleStyle?.color);
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(of: header, matching: find.byType(Icon)).first,
+          )
+          .icon,
+      collapsedHeaderIcon.icon,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('正文与工作组间距不随作者和时间变化，成员没有重复缩进', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(() {

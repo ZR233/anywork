@@ -8,57 +8,107 @@ part of 'status_view.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
+/// A display observation only: Client remains the sole owner of topic streams.
 
-@ProviderFor(statusLspServers)
-final statusLspServersProvider = StatusLspServersProvider._();
+@ProviderFor(StartedItemsViewModel)
+final startedItemsViewModelProvider = StartedItemsViewModelFamily._();
 
-/// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
-
-final class StatusLspServersProvider
-    extends
-        $FunctionalProvider<
-          List<LspServerStateView>,
-          List<LspServerStateView>,
-          List<LspServerStateView>
-        >
-    with $Provider<List<LspServerStateView>> {
-  /// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
-  StatusLspServersProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusLspServersProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
+/// A display observation only: Client remains the sole owner of topic streams.
+final class StartedItemsViewModelProvider
+    extends $AsyncNotifierProvider<StartedItemsViewModel, StartedItemsState> {
+  /// A display observation only: Client remains the sole owner of topic streams.
+  StartedItemsViewModelProvider._({
+    required StartedItemsViewModelFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'startedItemsViewModelProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
 
   @override
-  String debugGetCreateSourceHash() => _$statusLspServersHash();
+  String debugGetCreateSourceHash() => _$startedItemsViewModelHash();
+
+  @override
+  String toString() {
+    return r'startedItemsViewModelProvider'
+        ''
+        '($argument)';
+  }
 
   @$internal
   @override
-  $ProviderElement<List<LspServerStateView>> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
+  StartedItemsViewModel create() => StartedItemsViewModel();
 
   @override
-  List<LspServerStateView> create(Ref ref) {
-    return statusLspServers(ref);
+  bool operator ==(Object other) {
+    return other is StartedItemsViewModelProvider && other.argument == argument;
   }
 
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(List<LspServerStateView> value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<List<LspServerStateView>>(value),
-    );
+  @override
+  int get hashCode {
+    return argument.hashCode;
   }
 }
 
-String _$statusLspServersHash() => r'd636fc36cb4cc890efe9f1427cbdb9554f75b235';
+String _$startedItemsViewModelHash() =>
+    r'8695210319140fdf67e20a2f4e475da04458e822';
+
+/// A display observation only: Client remains the sole owner of topic streams.
+
+final class StartedItemsViewModelFamily extends $Family
+    with
+        $ClassFamilyOverride<
+          StartedItemsViewModel,
+          AsyncValue<StartedItemsState>,
+          StartedItemsState,
+          FutureOr<StartedItemsState>,
+          String
+        > {
+  StartedItemsViewModelFamily._()
+    : super(
+        retry: null,
+        name: r'startedItemsViewModelProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// A display observation only: Client remains the sole owner of topic streams.
+
+  StartedItemsViewModelProvider call(String threadId) =>
+      StartedItemsViewModelProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'startedItemsViewModelProvider';
+}
+
+/// A display observation only: Client remains the sole owner of topic streams.
+
+abstract class _$StartedItemsViewModel
+    extends $AsyncNotifier<StartedItemsState> {
+  late final _$args = ref.$arg as String;
+  String get threadId => _$args;
+
+  FutureOr<StartedItemsState> build(String threadId);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref =
+        this.ref as $Ref<AsyncValue<StartedItemsState>, StartedItemsState>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<StartedItemsState>, StartedItemsState>,
+              AsyncValue<StartedItemsState>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
 /// part of this value, so response-timing updates cannot rebuild the chrome.
@@ -125,7 +175,7 @@ final class StatusBarViewProvider
   }
 }
 
-String _$statusBarViewHash() => r'663ac12597160c232804915f793ca22fe7e7a514';
+String _$statusBarViewHash() => r'1438595f1bc05edefedc53f46d1ec34ab63b1fed';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
 /// part of this value, so response-timing updates cannot rebuild the chrome.
@@ -149,85 +199,6 @@ final class StatusBarViewFamily extends $Family
 
   @override
   String toString() => r'statusBarViewProvider';
-}
-
-@ProviderFor(statusCompactionCommand)
-final statusCompactionCommandProvider = StatusCompactionCommandFamily._();
-
-final class StatusCompactionCommandProvider
-    extends $FunctionalProvider<CommandStatus?, CommandStatus?, CommandStatus?>
-    with $Provider<CommandStatus?> {
-  StatusCompactionCommandProvider._({
-    required StatusCompactionCommandFamily super.from,
-    required String super.argument,
-  }) : super(
-         retry: null,
-         name: r'statusCompactionCommandProvider',
-         isAutoDispose: true,
-         dependencies: null,
-         $allTransitiveDependencies: null,
-       );
-
-  @override
-  String debugGetCreateSourceHash() => _$statusCompactionCommandHash();
-
-  @override
-  String toString() {
-    return r'statusCompactionCommandProvider'
-        ''
-        '($argument)';
-  }
-
-  @$internal
-  @override
-  $ProviderElement<CommandStatus?> $createElement($ProviderPointer pointer) =>
-      $ProviderElement(pointer);
-
-  @override
-  CommandStatus? create(Ref ref) {
-    final argument = this.argument as String;
-    return statusCompactionCommand(ref, argument);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(CommandStatus? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<CommandStatus?>(value),
-    );
-  }
-
-  @override
-  bool operator ==(Object other) {
-    return other is StatusCompactionCommandProvider &&
-        other.argument == argument;
-  }
-
-  @override
-  int get hashCode {
-    return argument.hashCode;
-  }
-}
-
-String _$statusCompactionCommandHash() =>
-    r'fd660618710e688c794bee3b85281fc041014496';
-
-final class StatusCompactionCommandFamily extends $Family
-    with $FunctionalFamilyOverride<CommandStatus?, String> {
-  StatusCompactionCommandFamily._()
-    : super(
-        retry: null,
-        name: r'statusCompactionCommandProvider',
-        dependencies: null,
-        $allTransitiveDependencies: null,
-        isAutoDispose: true,
-      );
-
-  StatusCompactionCommandProvider call(String threadId) =>
-      StatusCompactionCommandProvider._(argument: threadId, from: this);
-
-  @override
-  String toString() => r'statusCompactionCommandProvider';
 }
 
 @ProviderFor(statusContextProjection)

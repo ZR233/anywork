@@ -27,6 +27,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .filter(|migration| {
@@ -67,6 +68,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .filter(|migration| {
@@ -112,6 +114,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .filter(|migration| {

@@ -37,6 +37,7 @@ impl MigratorTraitSelf for Published {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)

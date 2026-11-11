@@ -1412,7 +1412,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statusModelLabel => '模型';
 
   @override
-  String get statusCapabilitiesTitle => '当前启用项';
+  String get statusCapabilitiesTitle => '已启动项';
+
+  @override
+  String get statusServiceConnecting => '连接中';
+
+  @override
+  String get statusServiceStopping => '停止中';
+
+  @override
+  String get statusServiceUnsupported => '不支持';
 
   @override
   String get statusSessionMode => '会话模式';

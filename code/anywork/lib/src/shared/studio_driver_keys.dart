@@ -715,6 +715,11 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> statusActiveSkill(String name) =>
       ValueKey<String>('status-active-skill-$name');
 
+  static const statusStartedItems = ValueKey<String>('status-started-items');
+
+  static ValueKey<String> statusLspServer(String id) =>
+      ValueKey<String>('status-lsp-server-$id');
+
   static ValueKey<String> sessionModeOption(String mode) =>
       ValueKey<String>(StudioDriverKeyValues.sessionModeOption(mode));
 
@@ -853,15 +858,6 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> lspResetServer(String serverId) =>
       ValueKey<String>('lsp-reset-$serverId');
-
-  static ValueKey<String> lspActivity() =>
-      const ValueKey<String>('lsp-activity');
-
-  static ValueKey<String> lspActivityDetail() =>
-      const ValueKey<String>('lsp-activity-detail');
-
-  static ValueKey<String> lspActivityOverflow() =>
-      const ValueKey<String>('lsp-activity-overflow');
 
   static ValueKey<String> compactContext() =>
       const ValueKey<String>('studio-compact-context');
