@@ -3,6 +3,8 @@ import '../support/chat_fixtures.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -56,7 +58,9 @@ void main() {
 
     final session = graph.client.conversations.session('thread-main');
     final workspace = session.state.workspace!;
-    const markdown = '# Delivery Blueprint\n\nKeep the current draft readable.';
+    final markdown =
+        '# Delivery Blueprint\n\nKeep the current draft readable.\n\n'
+        '${List.generate(80, (index) => 'Reading paragraph $index.').join('\n\n')}';
     Future<void> publishPlan(PlanRuntimeView? plan, {bool cold = false}) async {
       final runtime = workspace.runtime.copyWith(plan: plan);
       transport.seedConversationState(
@@ -88,7 +92,7 @@ void main() {
         revision: 4,
         state: PlanRuntimePhase.revisionRequested,
         updatedAt: DateTime.utc(2026, 3, 18),
-        document: const PlanDocumentView(
+        document: PlanDocumentView(
           version: 7,
           markdown: markdown,
           contentHash: 'revision-document',
@@ -148,6 +152,48 @@ void main() {
       reason: '导航标题不再重复 Markdown 文档标题',
     );
 
+    final timelineElement = tester.element(find.byType(TimelineConnector));
+    final planState = tester.state(find.byType(PlanDetailView));
+    final scroll = tester
+        .widget<SingleChildScrollView>(
+          find.byKey(StudioDriverKeys.planDetailsScroll),
+        )
+        .controller!;
+    scroll.jumpTo(180);
+    await tester.pump();
+    final readingOffset = scroll.offset;
+    expect(readingOffset, greaterThan(0));
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(tester.state(find.byType(PlanDetailView)), same(planState));
+    expect(
+      tester.element(find.byType(TimelineConnector)),
+      same(timelineElement),
+    );
+    expect(scroll.offset, closeTo(readingOffset, 1));
+    tester.view.physicalSize = const Size(640, 900);
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(tester.state(find.byType(PlanDetailView)), same(planState));
+    expect(
+      tester.element(find.byType(TimelineConnector)),
+      same(timelineElement),
+    );
+    expect(scroll.offset, closeTo(readingOffset, 1));
+    tester.view.physicalSize = const Size(1200, 900);
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(scroll.offset, closeTo(readingOffset, 1));
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(tester.state(find.byType(PlanDetailView)), same(planState));
+    expect(
+      tester.element(find.byType(TimelineConnector)),
+      same(timelineElement),
+    );
+    expect(scroll.offset, closeTo(readingOffset, 1));
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
     await tester.pumpAndSettle();
     await publishPlan(
@@ -155,7 +201,7 @@ void main() {
         revision: 5,
         state: PlanRuntimePhase.approved,
         updatedAt: DateTime.utc(2026, 3, 19),
-        document: const PlanDocumentView(
+        document: PlanDocumentView(
           version: 8,
           markdown: markdown,
           contentHash: 'cold-approved-document',
@@ -239,7 +285,7 @@ void main() {
             kind: InteractionKind.userInput,
             title: 'Plan',
             body: markdown,
-            payload: const UserInputInteractionPayload(
+            payload: UserInputInteractionPayload(
               questions: [
                 UserQuestionView(
                   id: agentSessionPlanConfirmationQuestionId,
@@ -255,6 +301,52 @@ void main() {
         ],
       ),
     );
+    await pumpClientUntil(
+      tester,
+      () => find.byKey(StudioDriverKeys.planDetails).evaluate().isNotEmpty,
+      'new pending Plan opens',
+    );
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(
+      tester.getSize(find.byKey(StudioDriverKeys.planDetails)).width,
+      tester.getSize(find.byType(AgentWorkspacePane)).width,
+      reason: '新待确认交互默认铺满会话阅读区，而非默认并排',
+    );
+    final pendingTimeline = tester.element(find.byType(TimelineConnector));
+    final pendingPlanState = tester.state(find.byType(PlanDetailView));
+    final feedback = tester.element(find.byKey(StudioDriverKeys.planApprove));
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    tester.view.physicalSize = const Size(640, 900);
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    tester.view.physicalSize = const Size(1200, 900);
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(tester.state(find.byType(PlanDetailView)), same(pendingPlanState));
+    expect(
+      tester.element(find.byType(TimelineConnector)),
+      same(pendingTimeline),
+    );
+    expect(
+      tester.element(find.byKey(StudioDriverKeys.planApprove)),
+      same(feedback),
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
+    tester.view.physicalSize = const Size(1190, 900);
+    await tester.pump();
+    expect(
+      find.byKey(StudioDriverKeys.planDetails),
+      findsNothing,
+      reason: '同一待确认交互重建不会重新打开已手动关闭的计划',
+    );
+    // Reopen through the actual summary intent without changing interaction.
+    await tester.tap(find.byKey(StudioDriverKeys.planSummary));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
     tester.view.physicalSize = const Size(640, 480);
     // The real shell may keep activity animations alive. Wait for the Plan
     // outlet instead of requiring all unrelated animations to stop.
