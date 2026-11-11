@@ -99,6 +99,9 @@ Future<void> _runPhase(AppGraph graph, String? phase, String? fault) async {
     return;
   }
   await _waitReady(graph);
+  // Bootstrap readiness precedes the shell's first usable frame. Let its
+  // initial navigation intent start before submitting this scene's intent.
+  await SchedulerBinding.instance.endOfFrame;
   await _NativeLifecycleAssembly(graph).run(phase);
 }
 

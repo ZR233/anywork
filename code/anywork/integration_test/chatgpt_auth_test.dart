@@ -7,6 +7,7 @@ import 'package:anywork/src/features/settings/accounts/state/account_presentatio
 import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
 import 'package:anywork/src/features/settings/accounts/views/account_details_view.dart';
 import 'package:anywork/src/features/settings/accounts/views/native_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/widgets/account_template_selector.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/demo/statistics/demo_statistics_feed.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -146,9 +147,7 @@ void main() {
           (value) => value.templates.isUsable,
         );
         await tester.pumpAndSettle();
-        final selector = find.byKey(
-          const ValueKey('account-template-selector'),
-        );
+        final selector = find.byType(AccountTemplateSelector);
         await tester.tap(
           find.descendant(of: selector, matching: find.byType(IconButton)),
         );
