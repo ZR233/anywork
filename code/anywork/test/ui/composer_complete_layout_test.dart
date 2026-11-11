@@ -226,11 +226,15 @@ Widget completeComposerFixture({
       additionalDiagnostics: const [],
     ),
   );
-  return ProviderScope(
+  // This fixture is a root test application, not a scoped production override.
+  final container = ProviderContainer.test(
     overrides: [
       interactionCommandViewModelProvider(threadId)
           .overrideWith(_EmptyInteractionCommands.new),
     ],
+  );
+  return UncontrolledProviderScope(
+    container: container,
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: pureStudioTheme(locale: const Locale('zh')),
