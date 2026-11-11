@@ -51,14 +51,21 @@ void main() {
         await File(p.join(projectPath, 'README.md')).readAsString(),
         'Disposable ACP live acceptance workspace. No private data.\n',
       );
-      final command = requiredEnvironment('ANYWORK_AGY_COMMAND');
-      expect(p.isAbsolute(command), isTrue);
-      expect(await File(command).exists(), isTrue);
-      // CLI uses `acp`; the official managed Windows server takes no arguments.
-      final arguments = jsonDecode(
-        Platform.environment['ANYWORK_AGY_ARGS'] ?? '["acp"]',
-      ) as List<dynamic>;
-      final commandArgs = arguments.cast<String>();
+      // Managed acceptance uses the product template and a verified installation
+      // prepared under this isolated home's studio directory, never a raw command.
+      final managed = Platform.environment['ANYWORK_AGY_MANAGED'] == '1';
+      final command = managed
+          ? null
+          : requiredEnvironment('ANYWORK_AGY_COMMAND');
+      List<String>? commandArgs;
+      if (command != null) {
+        expect(p.isAbsolute(command), isTrue);
+        expect(await File(command).exists(), isTrue);
+        final arguments = jsonDecode(
+          Platform.environment['ANYWORK_AGY_ARGS'] ?? '["acp"]',
+        ) as List<dynamic>;
+        commandArgs = arguments.cast<String>();
+      }
       final harness = await ProductionStudioHarness.start(
         binding: binding,
         artifactsEnvironmentVariable: 'ANYWORK_AGY_ARTIFACTS',
@@ -71,6 +78,7 @@ void main() {
       addTearDown(accounts.release);
       final evidence = <String, Object?>{
         'platform': Platform.operatingSystem,
+        'launchKind': managed ? 'managedAntigravityTemplate' : 'agyCli',
         'guiPid': pid,
         'promptCount': 0,
         'permission': 'not requested by the text-only prompt; not covered',
@@ -101,6 +109,7 @@ void main() {
         AcpAccountUpdateView(
           accountId: serviceId,
           name: serviceName,
+          template: managed ? AcpProviderView.antigravity : null,
           command: command,
           args: commandArgs,
         ),
