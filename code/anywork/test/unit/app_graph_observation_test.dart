@@ -127,6 +127,9 @@ void main() {
           .client
           .directoryCommands
           .selectThread('thread-main');
+      await graph.client.conversations.visibleThreadId.waitFor(
+        (id) => id == 'thread-main',
+      );
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;

@@ -202,6 +202,8 @@ Profile 播种的每批 `TurnCompleted` 只证明原轮次完成，不代替保�
 
 每个样本保留原 `selectionStartedMicros`、`layoutCompletedMicros`、selectionId、generation 和 itemId，严格在同一 owner 时钟内计算 elapsed。采集端观察到结果的时间不是布局完成时间；旧选择或旧代次不得成为新样本。两类样本独立报告样本数、失败/未执行数、p50、nearest-rank p95 和最大值，完整有效样本的 p95 目标保持 500 ms；缺失、模式错误或超时使采样失败，不丢弃失败样本或补零。关闭请求受理、Driver 连接释放、原生进程真实退出和所属后代收束分别确认，原有 20k 库存人工入口的 notMeasured 结果不因此自动升级为性能通过。
 
+可见会话选择被接纳时即登记首内容计时起点，早于异步目录中的后端识别；后端查询的等待时间不能被排除。后端尚未识别时不创建 Native 会话或正文读取，确定为 ACP 后清除 Native 布局计时资格。单元测试等待实际可见会话发布后再借用既有资源，目录选择命令完成不等于后端查询和会话装配已经完成。
+
 FRB credit 沿官方原生集成直接观察真实 transport feed，不恢复旧 Driver 命令或 `requestData` 协议。
 按 [07](./07-streaming.md) 的单未确认普通批次契约持有首帧，在不 ACK 时用原 reader 查询已真实完成、
 不在首 Set 中的新 item，并验证未发送序号 ACK 被拒绝；合法 ACK 后观察后继帧，再验证原 handle 的
