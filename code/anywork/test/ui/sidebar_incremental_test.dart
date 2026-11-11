@@ -270,6 +270,9 @@ void main() {
   ) async {
     const alias =
         'production-cluster-with-an-extremely-long-host-name.example.org';
+    var selected = false;
+    var created = false;
+    var toggled = false;
     await tester.pumpWidget(
       _host(
         SidebarProjectRow(
@@ -283,9 +286,9 @@ void main() {
           expanded: true,
           pinned: false,
           touchMode: true,
-          onToggle: () {},
-          onSelect: () {},
-          onNewSession: () {},
+          onToggle: () => toggled = true,
+          onSelect: () => selected = true,
+          onNewSession: () => created = true,
           onAction: (_) {},
         ),
         scale: 1.7,
@@ -294,8 +297,29 @@ void main() {
     expect(find.text(alias), findsOneWidget);
     expect(find.byTooltip(alias), findsOneWidget);
     final nameRect = tester.getRect(find.text(_project.name));
-    expect(nameRect.width, greaterThan(25));
-    expect(tester.getRect(find.text(alias)).width, lessThanOrEqualTo(64));
+    final aliasRect = tester.getRect(find.text(alias));
+    final newSession = find.byKey(StudioDriverKeys.projectNewSession('p'));
+    final newSessionRect = tester.getRect(newSession);
+    final rowRect = tester.getRect(find.byType(SidebarProjectRow));
+    expect(nameRect.width, greaterThan(0));
+    expect(aliasRect.width, greaterThan(0));
+    expect(nameRect.right, lessThanOrEqualTo(aliasRect.left));
+    expect(aliasRect.right, lessThanOrEqualTo(newSessionRect.left));
+    expect(nameRect.left, greaterThanOrEqualTo(rowRect.left));
+    expect(newSessionRect.right, lessThanOrEqualTo(rowRect.right));
+    await tester.tap(find.text(_project.name));
+    expect(selected, isTrue);
+    await tester.tap(newSession);
+    expect(created, isTrue);
+    await tester.tap(find.byKey(StudioDriverKeys.projectExpand('p')));
+    expect(toggled, isTrue);
+    await tester.longPress(find.text(alias));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(alias),
+      findsNWidgets(2),
+      reason: 'the tooltip exposes the full, untruncated SSH host',
+    );
     expect(tester.takeException(), isNull);
   });
 

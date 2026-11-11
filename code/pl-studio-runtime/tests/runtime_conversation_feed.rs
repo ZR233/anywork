@@ -453,15 +453,20 @@ async fn history(
 
 #[tokio::test]
 async fn websocket_burst_keeps_reliable_members_and_bodies_through_restart() -> Result<()> {
-    observe_reliable_websocket_output(false).await
+    observe_reliable_websocket_output(false, false).await
 }
 
 #[tokio::test]
 async fn websocket_reconnect_keeps_admitted_members_and_bodies_through_restart() -> Result<()> {
-    observe_reliable_websocket_output(true).await
+    observe_reliable_websocket_output(true, false).await
 }
 
-async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
+#[tokio::test]
+async fn websocket_reconnect_terminal_before_content_keeps_members_and_bodies() -> Result<()> {
+    observe_reliable_websocket_output(true, true).await
+}
+
+async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -> Result<()> {
     use pl_model::model::ModelTransportProfile;
     use pl_provider_fixture::{Protocol, Reply, Step, WebSocketAction};
     use tokio_util::sync::CancellationToken;
@@ -542,10 +547,40 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
                 through = batch.through_seq;
                 appended.extend(items(batch.entries)?);
             }
+            let mut retired_through = None;
+            if state_first {
+                // Retain a real idle content cut while the provider is still held.
+                // State may complete before this subscriber consumes any newer content.
+                while retired_through.is_none() {
+                    match next(&mut feed).await? {
+                        Observation::Chat { batch } => {
+                            batch.validate_for(&ChatScope::Main)?;
+                            ensure!(batch.placement == ChatPlacement::Append);
+                            ensure!(batch.from_seq == Some(through));
+                            through = batch.through_seq;
+                            appended.extend(items(batch.entries)?);
+                        }
+                        Observation::Activity { snapshot } => {
+                            ensure!(snapshot.completed_through == through);
+                            retired_through = snapshot.entries.is_empty().then_some(through);
+                        }
+                        Observation::State { .. } => {}
+                    }
+                }
+            }
             release.cancel();
-            let mut terminal = None;
-            let mut retired = false;
-            while terminal.is_none() || !retired {
+            if state_first {
+                // A separate State observer is only a scheduling barrier: none of
+                // its content is used to repair the original subscriber's inventory.
+                completed_prompt(&env.runtime, &id, "burst").await?;
+            }
+            let mut terminal_through = None;
+            // State and content are independent. An earlier empty Activity is not
+            // a fence for a later TurnCompleted. The original Turn receipt supplies
+            // that fence even though successful Turn receipts are hidden from Main.
+            while terminal_through
+                .is_none_or(|terminal| retired_through.is_none_or(|retired| retired < terminal))
+            {
                 match next(&mut feed).await? {
                     Observation::Chat { batch } => {
                         batch.validate_for(&ChatScope::Main)?;
@@ -556,7 +591,7 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
                     }
                     Observation::Activity { snapshot } => {
                         ensure!(snapshot.completed_through == through);
-                        retired = snapshot.entries.is_empty();
+                        retired_through = snapshot.entries.is_empty().then_some(through);
                     }
                     Observation::State { update } => {
                         if let ThreadSubscriptionUpdate::Notification { notification } = *update
@@ -568,14 +603,43 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
                                 "burst Turn failed: {:?}",
                                 turn.state
                             );
-                            terminal = Some(turn.id);
+                            ensure!(
+                                turn.thread_id == id
+                                    && turn.input_id.as_deref() == Some("input-burst")
+                            );
+                            let receipt = feed
+                                .reader()
+                                .read_completed(
+                                    &format!("turn:{}:{}", turn.id.len(), turn.id),
+                                    demand(1),
+                                )
+                                .await
+                                .context("completed Turn receipt")?;
+                            ensure!(
+                                receipt.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt
+                                    && receipt.atom.turn_id.as_deref() == Some(turn.id.as_str())
+                                    && matches!(
+                                        receipt.atom.lifecycle,
+                                        ChatAtomLifecycle::Terminal {
+                                            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+                                            ..
+                                        }
+                                    )
+                            );
+                            terminal_through = Some(receipt.completion_seq);
                         }
                     }
                 }
             }
             let mut published = history(&env, &id, feed.reader(), first, demand(7)).await?;
             published.extend(appended);
-            let (members, bytes) = websocket_output(feed.reader(), &published, reconnect).await?;
+            let (members, bytes) = websocket_output(feed.reader(), &published, reconnect)
+                .await
+                .with_context(|| {
+                    format!(
+                        "live websocket output: delivered={through}, terminal={terminal_through:?}, retired={retired_through:?}"
+                    )
+                })?;
             ensure!(
                 members == expected_members && bytes == expected_bytes,
                 "burst lost or duplicated original output: {members} members, {bytes} bytes"
@@ -613,8 +677,9 @@ async fn observe_reliable_websocket_output(reconnect: bool) -> Result<()> {
                     .eq(identities.iter()),
                 "restart changed completion identities/order"
             );
-            let (members, bytes) =
-                websocket_output(reopened.reader(), &published, reconnect).await?;
+            let (members, bytes) = websocket_output(reopened.reader(), &published, reconnect)
+                .await
+                .context("restarted websocket output")?;
             ensure!(members == expected_members && bytes == expected_bytes);
             Ok(())
         }
@@ -661,7 +726,20 @@ async fn websocket_output(
             output.push(message.clone());
         }
     }
-    ensure!(notices.len() == if reconnect { 2 } else { 0 });
+    ensure!(
+        notices.len() == if reconnect { 2 } else { 0 },
+        "recovery notices missing: found {notices:?}; completions={:?}",
+        messages
+            .iter()
+            .map(|entry| (
+                &entry.record_id,
+                entry.completion_seq,
+                entry.atom.kind,
+                entry.atom.content_present,
+                entry.run,
+            ))
+            .collect::<Vec<_>>()
+    );
     count_output(
         reader,
         &output,

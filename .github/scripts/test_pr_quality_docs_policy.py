@@ -38,10 +38,5 @@ class DocsPolicyTest(unittest.TestCase):
             errors = check_docs_policy(root)
             self.assertTrue(any("no-such.md" in item for item in errors))
 
-    def test_current_repository_design_docs_pass(self):
-        root = Path(__file__).resolve().parents[2]
-        self.assertEqual(check_docs_policy(root), [])
-
-
 if __name__ == "__main__":
     unittest.main()

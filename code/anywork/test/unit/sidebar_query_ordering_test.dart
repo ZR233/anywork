@@ -4,13 +4,12 @@ import 'package:anywork/src/features/shell/sidebar/sidebar_directory_owner.dart'
 import 'package:anywork/src/features/shell/sidebar/sidebar_models.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
 
 // Production SidebarDirectoryOwner + production ThreadDirectoryStore. The fake
 // below controls only native open/next/close timing; it owns no row projection,
 // query membership, ordering, or merge behavior.
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('query A-B-A isolates stale next, open error, and close finally', (
     tester,
