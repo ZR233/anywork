@@ -53,7 +53,7 @@
 
 ### 主配置与 Profile 的类型迁移和恢复
 
-文件级 schema 规则统一见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。主配置的当前整数版本以配置代码为准，完整保留从 18 开始的连续类型迁移链；用户 Profile 使用独立整数 `schema_version=2`，不依赖主配置版本判断。Profile 1→2 把原 Native 账号、模型、effort 与指令完整迁入封闭 `binding`，保留显示信息、启用状态、工作区模式和凭据关联；ACP 分支只引用已有账号与连接修订，不制造 Native 占位值。主配置已经是当前版本时，后来导入的无版本或 schema 1 Profile 仍须在启动/显式导入边界独立升级。普通查询与订阅只读取已发布的 definition/binding 描述，不执行迁移写回；Native 历史的冻结 Profile 格式不受本配置迁移影响。
+文件级 schema 规则统一见 [17.11](./17-studio-storage.md#现役-toml-文档的独立格式迁移)。主配置与用户 Profile 各有独立整数版本，以对应代码为准，不以主配置版本判断 Profile 是否需升级。Profile 1→2 把原 Native 账号、模型、effort 与指令完整迁入封闭 `binding`，保留显示信息、启用状态、工作区模式和凭据关联；后续 ACP 绑定迁移移除旧进程内连接修订，只引用用户级接入 ID，不制造 Native 占位值。主配置已经是当前版本时，后来导入的旧 Profile 仍在启动/显式导入边界独立升级。普通查询与订阅只读取已发布的 definition/binding 描述，不执行迁移写回；Native 历史的冻结 Profile 格式不受本配置迁移影响。
 
 Profile 的专属无版本 DTO 分别接收 `provider` / `account_id` 与 `model` / `model_id`：单旧键、单新键、同值双键或能确定唯一完整身份的混合可导入；冲突、缺身份、类型错误及未知结构均拒绝。已有根版本绝不回退无版本导入。格式升级保留 `enabled=false` 等用户选择；主配置 26→27 仅将原禁用模型转换为 `model_enabled_overrides=false`，不为其他模型补造显式 true。
 
@@ -67,7 +67,17 @@ Profile 的专属无版本 DTO 分别接收 `provider` / `account_id` 与 `model
 
 ### ACP 接入配置与模型阈值覆盖
 
-账号设置以 `Native` 与 `Acp` 类型化分支汇集两类接入。Studio 独立持有 `acp.accounts`，每个稳定 ID 仅保存名称与接入类型，不使用空 `base_url` 或空模型目录伪装成原生账号。Antigravity 仅运行产品固定 `1.4.5` 版本的受管安装，启动程序与参数由安装与认证边界生成，不属于用户配置字段；ACP 账号不进入原生默认账号或模型路由候选列表。固定发行升级不改变账号身份，不删除旧安装或官方凭据；下一次显式准备安装新描述符。Google 凭据由官方程序管理，不经由原生 API 密钥凭据接口，也不复制到 `anywork` 的 TOML、数据库或系统凭据库（详见 [28](./28-acp.md)）。
+账号设置以 `Native` 与 `Acp` 类型化分支汇集两类接入，不使用空 `base_url` 或空模型目录伪装 ACP。ACP 定义唯一位于 `<StudioHome>/acp/<id>.toml`，所有项目与会话消费 ConfigRuntime 发布的同一用户级资源快照；不扫描项目、checkout、worktree、会话或父目录，不继承 LSP 的覆盖规则。文件不复制进会话目录，workspace 只决定本次真实 cwd。普通查询/订阅不扫描、不联网、不安装或启动服务；启动及显式重载读取目录，无配置是正常空目录。
+
+一文件一接入，根 `schema_version=1` 与 `id` 必填，ID 与文件名一致，仅接受 ASCII 字母、数字、`-`、`_`、`.`，拒绝空值、`.`、`..`。`display_name` 可省略并显示 ID，`enabled` 缺省 true，`args`/`env` 缺省为空。启动来源互斥：`command`（宿主 PATH 程序名或绝对路径，附独立 args）或 `template`（当前为 `antigravity`）；模板不能另填 command/args。显式 env 在宿主白名单后覆盖，不做 Shell 拼接、`~`、命令替换或隐式变量展开，不配置 cwd、Native API key、模型名单、effort、mode 或控件 schema。ID 沿用 account_id，不增加映射键。不同登录环境用不同 ID/显式 env，新增通用 ACP v1/stdio 程序无需修改供应商枚举。
+
+ConfigRuntime 的目录快照包含健康定义及逐文件诊断；坏文件或冲突仅使该项不可选，不重置健康项，不存在同名优先级覆盖。诊断只含路径、ID、阶段与可修复原因，不回显 env 值或文档原文。设置保存/删除单文件沿文档修订 CAS 和原子写入，只改变该目标；目录资源修订独立于单文档修订和进程内连接修订。外部编辑仅在显式重载后生效，不引入 watcher、轮询或第二服务清单。
+
+主配置旧 `[acp.accounts.<id>]` 只在正式迁移边界解码，转为同 ID 的 Antigravity 模板文件后删除旧段及运行期双读。沿既有受保护备份、可恢复联合提交和引用校验推进，不搬运凭据或启动程序。已存在语义等价文件保留其字节并允许幂等接续；非等价冲突不覆盖。旧 ID 不适合文件名或联合引用不成立时中止该迁移并保原件、给明确诊断，不能悄悄改 ID 或发布半迁移状态；这与当前格式普通坏文件的局部诊断分开处理。
+
+活动业务成员持有创建时冻结的启动定义；文件重载、删除、禁用影响后续创建，不隐式停止、换程序或重发 prompt。连接修订仅属于运行期准入：command/args/env/模板解析身份变化才更新，名称及协议 configOptions 不改变它，不写入 Profile/会话目录，也不保存解析后的 command/env 副本。认证中的陈旧操作仍按原认证 owner 取消并收束，不反向撤销活动业务实例。
+
+Antigravity 是普通定义的内置启动模板，其受管安装、固定发行、登录帮助和显式 `/usage` 仍沿原 owner；通用 command 不受模板版本、agentInfo 或 `/usage` 门槛限制。模板未安装也可发现，真正启动时明确 InstallRequired，不在查询/迁移中下载。固定发行升级不改接入 ID，不删除旧安装或官方凭据。官方凭据不经 Native API 密钥接口，也不复制进 Anywork 的 TOML、数据库或系统凭据库，业务和认证边界见 [28](./28-acp.md)。
 
 每个原生账号的模型目录独立保存按 `model_id` 索引的自动压缩阈值覆盖值（正整数词元数），内置（`bundled`）、附加（`additional`）与显式（`explicit`）模型共用同一解析规则。缺省值表示使用解析后的模型默认阈值（目录预设值或安全输入容量推导值）；恢复默认操作仅删除对应模型的覆盖项，显式设置的数值若与非空默认值相等亦自动归一化为缺省（最终上下文解析规则见 [06](./06-model.md)）。
 

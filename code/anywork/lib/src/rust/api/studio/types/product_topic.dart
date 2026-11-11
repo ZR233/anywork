@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
+import 'acp_detection.dart';
 import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
@@ -144,6 +145,9 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.acpInstall(
     BridgeAcpInstallSnapshot field0,
   ) = BridgeProductBaseline_AcpInstall;
+  const factory BridgeProductBaseline.acpLocalDetection(
+    BridgeAcpLocalDetectionSnapshot field0,
+  ) = BridgeProductBaseline_AcpLocalDetection;
   const factory BridgeProductBaseline.sessionCosts(
     BridgeSessionCostsState field0,
   ) = BridgeProductBaseline_SessionCosts;
@@ -194,6 +198,8 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_AccountUsage;
   const factory BridgeProductTopic.acpAuth() = BridgeProductTopic_AcpAuth;
   const factory BridgeProductTopic.acpInstall() = BridgeProductTopic_AcpInstall;
+  const factory BridgeProductTopic.acpLocalDetection() =
+      BridgeProductTopic_AcpLocalDetection;
   const factory BridgeProductTopic.sessionCosts({
     required String rootThreadId,
   }) = BridgeProductTopic_SessionCosts;

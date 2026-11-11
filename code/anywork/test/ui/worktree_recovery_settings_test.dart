@@ -210,7 +210,7 @@ class _WorkspaceLookupTransport extends RecordingDemoTransport {
   int restores = 0;
 
   @override
-  Future<StudioThread> restoreThread(String threadId) {
+  Future<SessionDirectoryRow> restoreThread(String threadId) {
     restores++;
     return super.restoreThread(threadId);
   }

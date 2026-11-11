@@ -526,14 +526,20 @@ void main() {
       };
       addTearDown(() => debugOnRebuildDirtyWidget = previousRebuild);
       transport.emitThread(
-        root.copyWith(status: ThreadStatusView.running),
+        root.copyWith(
+          backend: (root.backend as NativeAgentBackendView).copyWith(
+            status: ThreadStatusView.running,
+          ),
+        ),
         root.threadId,
         revision: transport.directoryRevision + 1,
       );
       await pumpClientUntil(
         tester,
         () =>
-            metadataDemand.state.value.frame?.row?.status ==
+            (metadataDemand.state.value.frame?.row?.backend
+                    as NativeAgentBackendView?)
+                ?.status ==
             ThreadStatusView.running,
         'running root frame is accepted',
       );

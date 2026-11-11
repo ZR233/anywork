@@ -149,7 +149,7 @@ async fn durable_first_commit_keeps_old_slice_readable_then_publishes_one_new_sl
         .unwrap();
     let hot = events.read_thread_metadata(&original.thread_id, "owner-test")?;
     assert_eq!(
-        hot.row.as_ref().unwrap().status,
+        hot.row.as_ref().unwrap().native_status().unwrap(),
         pl_protocol::ThreadStatus::Running
     );
     assert!(
@@ -194,7 +194,10 @@ async fn durable_first_commit_keeps_old_slice_readable_then_publishes_one_new_sl
         .row
         .unwrap();
     assert_eq!(rebased.title, "Durable command title");
-    assert_eq!(rebased.status, pl_protocol::ThreadStatus::Running);
+    assert_eq!(
+        rebased.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Running
+    );
     assert!(after.stamp.revision > hot.stamp.revision);
     assert_eq!(
         query(
@@ -222,7 +225,10 @@ async fn durable_first_commit_keeps_old_slice_readable_then_publishes_one_new_sl
         .catalog()
         .get_agent(&original.agent_id)
         .expect("rebased agent is durable");
-    assert_eq!(durable_agent.status, pl_protocol::ThreadStatus::Running);
+    assert_eq!(
+        durable_agent.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Running
+    );
     events.writer.shutdown().await?;
     Ok(())
 }

@@ -42,7 +42,7 @@ async fn hot_patch_and_query_do_not_wait_for_the_catalog_write_lock() -> Result<
     worker.join().unwrap();
     let frame = result.expect("metadata must not wait for the Catalog I/O lock")?;
     assert_eq!(
-        frame.row.unwrap().status,
+        frame.row.unwrap().native_status().unwrap(),
         pl_protocol::ThreadStatus::Running
     );
     events.writer.shutdown().await?;
@@ -81,14 +81,17 @@ async fn update_uses_the_request_baseline_not_a_later_runtime_row() -> Result<()
         .row
         .unwrap();
     assert_eq!(row.title, "Manual title");
-    assert_eq!(row.status, pl_protocol::ThreadStatus::Running);
-    assert_eq!(row.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        row.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Running
+    );
+    assert_eq!(row.mode, Some(pl_protocol::ThreadModeId::task()));
     events.writer.flush().await?;
     let session = events.store.catalog().get_session("root").unwrap();
     let agent = events.store.catalog().get_agent("root").unwrap();
     assert_eq!(session.title, row.title);
-    assert_eq!(agent.status, row.status);
-    assert_eq!(session.mode, row.mode);
+    assert_eq!(agent.native_status(), row.native_status());
+    assert_eq!(session.native_mode, row.mode);
     events.writer.shutdown().await?;
     Ok(())
 }
@@ -97,6 +100,7 @@ async fn update_uses_the_request_baseline_not_a_later_runtime_row() -> Result<()
 async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() -> Result<()> {
     let root = row("root", "p1", 1);
     let mut child = row("child", "p1", 2);
+    child.agent_id = "child-agent".into();
     child.session_id = root.session_id.clone();
     child.parent_agent_id = Some(root.agent_id.clone());
     child.last_user_message_at = None;
@@ -130,9 +134,12 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         &pl_core::thread::ThreadSnapshot::default(),
     )?;
     let (_, baseline_agent) = events.directory_facts("child").expect("facts");
-    assert_eq!(baseline_agent.status, pl_protocol::ThreadStatus::Closing);
+    assert_eq!(
+        baseline_agent.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Closing
+    );
     let mut closed_agent = baseline_agent.clone();
-    closed_agent.status = pl_protocol::ThreadStatus::Closed;
+    closed_agent.set_native_status(pl_protocol::ThreadStatus::Closed);
     let (saving, release_save) = install_pause(&events.directory_test_pauses.commit_before_persist);
     let mut bases = DirectoryBaselines::default();
     bases
@@ -149,8 +156,14 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
     assert!(poll!(commit.as_mut()).is_pending());
     saving.await?;
     events.record_user_message("child", 4);
+    assert!(
+        events
+            .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+            .await
+            .is_err()
+    );
     events
-        .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+        .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 5)
         .await?;
     release_save.send(()).unwrap();
     commit.await?;
@@ -159,12 +172,12 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         .row
         .unwrap();
     assert_eq!(
-        projected.status,
+        projected.native_status().unwrap(),
         pl_protocol::ThreadStatus::Closing,
         "a generic raw Closed candidate cannot acknowledge permanent execution closure"
     );
-    assert_eq!(projected.updated_at, 5);
-    assert_eq!(projected.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(projected.updated_at, 3);
+    assert_eq!(projected.mode, None);
     // 已受理用户消息的水位是会话级事实：成员行不携带，主成员行保留并发提交期间的值。
     let root_row = events
         .read_thread_metadata("root", "close-projection")?
@@ -196,12 +209,20 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         .read_thread_metadata("child", "close-ack")?
         .row
         .unwrap();
-    assert_eq!(acknowledged.status, pl_protocol::ThreadStatus::Closed);
-    assert_eq!(acknowledged.updated_at, 5);
-    assert_eq!(acknowledged.mode, pl_protocol::ThreadModeId::task());
     assert_eq!(
-        events.store.catalog().get_agent("child").unwrap().status,
-        pl_protocol::ThreadStatus::Closed,
+        acknowledged.native_status(),
+        Some(pl_protocol::ThreadStatus::Closed)
+    );
+    assert_eq!(acknowledged.updated_at, 3);
+    assert_eq!(acknowledged.mode, None);
+    assert_eq!(
+        events
+            .store
+            .catalog()
+            .get_agent("child-agent")
+            .unwrap()
+            .native_status(),
+        Some(pl_protocol::ThreadStatus::Closed),
         "the queued publication must read the new true ACK, not its old false observation"
     );
     events.commit_explicit_close("child").await?;
@@ -210,8 +231,8 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
             .read_thread_metadata("child", "repeat-close-restore")?
             .row
             .unwrap()
-            .status,
-        pl_protocol::ThreadStatus::Closed,
+            .native_status(),
+        Some(pl_protocol::ThreadStatus::Closed),
         "repeated close restoration must not regress the acknowledged stage"
     );
     events.patch_thread_runtime(
@@ -225,16 +246,98 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
             .read_thread_metadata("child", "close-test")?
             .row
             .unwrap()
-            .status,
+            .native_status()
+            .unwrap(),
         pl_protocol::ThreadStatus::Closed
     );
     events.writer.shutdown().await?;
-    let saved_agent = events.store.catalog().get_agent("child").unwrap();
+    let saved_agent = events.store.catalog().get_agent("child-agent").unwrap();
     assert!(saved_agent.explicitly_closed);
-    assert_eq!(saved_agent.status, pl_protocol::ThreadStatus::Closed);
+    assert_eq!(
+        saved_agent.native_status().unwrap(),
+        pl_protocol::ThreadStatus::Closed
+    );
     assert_eq!(saved_agent.updated_at, 6);
     let saved_session = events.store.catalog().get_session("root").unwrap();
     assert_eq!(saved_session.last_user_message_at, Some(4));
-    assert_eq!(saved_session.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        saved_session.native_mode,
+        Some(pl_protocol::ThreadModeId::task())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn acp_explicit_close_preserves_external_backend_and_distinct_member_identity() -> Result<()>
+{
+    let root = row("root-thread", "p1", 1);
+    let mut child = row("acp-thread", "p1", 2);
+    child.session_id = root.session_id.clone();
+    child.agent_id = "acp-agent".into();
+    child.parent_agent_id = Some(root.agent_id.clone());
+    child.mode = None;
+    child.last_user_message_at = None;
+    child.backend = pl_protocol::session::AgentBackend::Acp {
+        reference: pl_protocol::session::AcpSessionReference {
+            account_id: "account".into(),
+            acp_session_id: "external-session".into(),
+            cwd: "/workspace/project".into(),
+        },
+    };
+    let (_temp, events) = fixture(
+        vec![root, child.clone()],
+        vec![project("p1", "Project", "/workspace/project")],
+    )
+    .await?;
+    let (_, stale_agent) = events.directory_facts("acp-thread").unwrap();
+    let mut close = AgentCloseRecord {
+        agent_id: child.thread_id.clone(),
+        parent_id: "root-thread".into(),
+        root_id: child.session_id.clone(),
+        workspace_id: child.workspace_id.clone(),
+        revision: 1,
+        force: false,
+        worktree: None,
+        git: None,
+        execution_closed: false,
+        worktree_cleanup: AgentWorktreeCleanup::Pending,
+        error: None,
+    };
+    for execution_closed in [false, true] {
+        close.execution_closed = execution_closed;
+        close.changed()?;
+        events.store.save_agent_close(&close).await?;
+        events.commit_explicit_close(&child.thread_id).await?;
+        let mut updated = stale_agent.clone();
+        updated.title = Some(format!(
+            "late title after execution_closed={execution_closed}"
+        ));
+        events
+            .commit_agent_update(stale_agent.clone(), updated)
+            .await?;
+        let (_, agent) = events.directory_facts(&child.thread_id).unwrap();
+        assert!(agent.explicitly_closed);
+        assert_eq!(agent.backend, child.backend);
+        let row = events
+            .read_thread_metadata(&child.thread_id, "acp-close")?
+            .row
+            .unwrap();
+        assert_eq!(row.native_status(), None);
+        assert_eq!(row.mode, None);
+        assert_eq!(row.backend, child.backend);
+        let error = events.thread_snapshot(&child.thread_id).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::thread_assembler::ThreadAssemblyError>(),
+            Some(
+                crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                    backend: pl_protocol::AgentBackendKind::Acp
+                }
+            )
+        ));
+    }
+    events.writer.shutdown().await?;
+    let saved = events.store.catalog().get_agent("acp-agent").unwrap();
+    assert!(saved.explicitly_closed);
+    assert_eq!(saved.backend, child.backend);
     Ok(())
 }

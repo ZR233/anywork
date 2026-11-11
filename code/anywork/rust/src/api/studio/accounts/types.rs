@@ -1,8 +1,8 @@
 use crate::api::studio::types::{
     AccountModelInput, AccountSecretInput, BridgeAccountAuthenticationIntent,
     BridgeAccountSettingsDto, BridgeAcpAccountSettings, BridgeAcpAuthSnapshot,
-    BridgeAcpInstallSnapshot, BridgeBillingKind, BridgeChatGptLoginSnapshot,
-    BridgeModelCatalogAccountDto, BridgeResourceStamp,
+    BridgeAcpInstallSnapshot, BridgeAcpLocalDetectionSnapshot, BridgeBillingKind,
+    BridgeChatGptLoginSnapshot, BridgeModelCatalogAccountDto, BridgeResourceStamp,
 };
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub enum BridgeAccountObservationTarget {
     Usage,
     AcpAuth,
     AcpInstall,
+    AcpLocalDetection,
     ChatGptLogin { login_id: String },
 }
 
@@ -83,6 +84,10 @@ pub enum BridgeAccountDomainFrame {
     AcpInstall {
         stamp: BridgeResourceStamp,
         snapshot: BridgeAcpInstallSnapshot,
+    },
+    AcpLocalDetection {
+        stamp: BridgeResourceStamp,
+        snapshot: BridgeAcpLocalDetectionSnapshot,
     },
     ChatGptLogin {
         stamp: BridgeResourceStamp,

@@ -79,6 +79,19 @@ enum ManualModelField { id, name, contextWindow, maxOutputTokens }
 
 enum AccountWireApi { chatCompletions, responses }
 
+enum AcpAccountSource { local, command, managed }
+
+enum AcpDetectionPhase {
+  idle,
+  checking,
+  available,
+  missing,
+  unsupported,
+  failed,
+  cancelling,
+  cancelled,
+}
+
 enum AcpAccountAction {
   prepare,
   cancelPreparation,
@@ -626,6 +639,15 @@ abstract class AcpAccountEditorPresentation
     String? iconKey,
     required AccountTextPresentation name,
     required AcpAccountPresentation preparation,
+    @Default(AcpAccountSource.local) AcpAccountSource source,
+    @Default('agy') String command,
+    @Default(['acp']) List<String> args,
+    @Default([]) List<AcpEnvironmentEntry> environment,
+    @Default(true) bool enabled,
+    @Default(AcpDetectionPhase.idle) AcpDetectionPhase detectionPhase,
+    String? detectedProgram,
+    String? detectedVersion,
+    String? detectionError,
     @Default(false) bool prepared,
     @Default(false) bool dirty,
     @Default(false) bool saving,
@@ -633,4 +655,12 @@ abstract class AcpAccountEditorPresentation
     @Default(false) bool saveAndConnect,
     String? error,
   }) = _AcpAccountEditorPresentation;
+}
+
+@freezed
+abstract class AcpEnvironmentEntry with _$AcpEnvironmentEntry {
+  const factory AcpEnvironmentEntry({
+    required String key,
+    required String value,
+  }) = _AcpEnvironmentEntry;
 }

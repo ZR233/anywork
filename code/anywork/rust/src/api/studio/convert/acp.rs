@@ -24,7 +24,12 @@ pub(crate) fn bridge_acp_account_settings(
     BridgeAcpAccountSettings {
         account_id: account.account_id,
         name: account.name,
-        provider: bridge_acp_provider(account.provider),
+        template: account.template.map(bridge_acp_provider),
+        enabled: account.enabled,
+        command: account.command,
+        args: account.args,
+        env: account.env.into_iter().collect(),
+        document_revision: account.document_revision,
         connection_revision: account.connection_revision,
     }
 }
@@ -56,15 +61,21 @@ pub(crate) fn bridge_acp_account_catalog(
 pub(crate) fn update_acp_account_request(
     operation_id: String,
     expected_revision: u64,
+    expected_document_revision: Option<u64>,
     account: BridgeAcpAccountUpdate,
 ) -> pl_protocol::studio::UpdateAcpAccountRequest {
     pl_protocol::studio::UpdateAcpAccountRequest {
         operation_id,
         expected_revision,
+        expected_document_revision,
         account: pl_protocol::studio::AcpAccountUpdate {
             account_id: account.account_id,
             name: account.name,
-            provider: protocol_provider(account.provider),
+            template: account.template.map(protocol_provider),
+            command: account.command,
+            args: account.args,
+            env: account.env.into_iter().collect(),
+            enabled: account.enabled,
         },
     }
 }
@@ -211,7 +222,9 @@ fn bridge_acp_auth_failure(failure: pl_protocol::studio::AcpAuthFailure) -> Brid
     }
 }
 
-fn bridge_acp_auth_method(method: pl_protocol::studio::AcpAuthMethod) -> BridgeAcpAuthMethod {
+pub(crate) fn bridge_acp_auth_method(
+    method: pl_protocol::studio::AcpAuthMethod,
+) -> BridgeAcpAuthMethod {
     BridgeAcpAuthMethod {
         id: method.id,
         name: method.name,
@@ -295,5 +308,110 @@ fn bridge_acp_failure_stage(stage: pl_protocol::studio::AcpAuthStage) -> BridgeA
         pl_protocol::studio::AcpAuthStage::Probe => BridgeAcpAuthStage::Probe,
         pl_protocol::studio::AcpAuthStage::Close => BridgeAcpAuthStage::Close,
         pl_protocol::studio::AcpAuthStage::Cleanup => BridgeAcpAuthStage::Cleanup,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_protocol::studio::{AcpAccountSettings, AcpProvider};
+
+    #[test]
+    fn acp_generic_settings_preserve_launch_fields_and_independent_revisions() {
+        let args = vec!["--stdio".into(), "two words".into(), "$(literal)".into()];
+        let env: [(String, String); 1] = [("KEY".into(), " value with spaces ".into())];
+        let mapped = bridge_acp_account_settings(AcpAccountSettings {
+            account_id: "custom-agent".into(),
+            name: "Custom".into(),
+            template: None,
+            enabled: false,
+            command: Some("/path with spaces/agent".into()),
+            args: args.clone(),
+            env: env.clone().into(),
+            document_revision: 17,
+            connection_revision: 4,
+        });
+        assert_eq!(mapped.account_id, "custom-agent");
+        assert_eq!(mapped.template, None);
+        assert!(!mapped.enabled);
+        assert_eq!(mapped.command.as_deref(), Some("/path with spaces/agent"));
+        assert_eq!(mapped.args, args);
+        assert_eq!(mapped.env, env.into());
+        assert_eq!(mapped.document_revision, 17);
+        assert_eq!(mapped.connection_revision, 4);
+    }
+
+    #[test]
+    fn acp_updates_preserve_source_args_and_document_cas_without_validation() {
+        for expected_document_revision in [None, Some(19)] {
+            for template in [None, Some(BridgeAcpProvider::Antigravity)] {
+                for args in [None, Some(vec![]), Some(vec![" literal arg ".into()])] {
+                    // Even conflicting sources/explicit empty args must reach the runtime
+                    // unchanged: validation is not a second bridge state machine.
+                    let request = update_acp_account_request(
+                        "save-op".into(),
+                        8,
+                        expected_document_revision,
+                        BridgeAcpAccountUpdate {
+                            account_id: "agent-id".into(),
+                            name: "Agent".into(),
+                            template,
+                            command: Some("literal-command".into()),
+                            args: args.clone(),
+                            env: [("A".into(), " raw value ".into())].into(),
+                            enabled: true,
+                        },
+                    );
+                    assert_eq!(request.operation_id, "save-op");
+                    assert_eq!(request.expected_revision, 8);
+                    assert_eq!(
+                        request.expected_document_revision,
+                        expected_document_revision
+                    );
+                    assert_eq!(request.account.account_id, "agent-id");
+                    assert_eq!(request.account.name, "Agent");
+                    assert_eq!(request.account.template, template.map(protocol_provider));
+                    assert_eq!(request.account.command.as_deref(), Some("literal-command"));
+                    assert_eq!(request.account.args, args);
+                    assert_eq!(request.account.env["A"], " raw value ");
+                    assert!(request.account.enabled);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn acp_managed_settings_do_not_invent_command_or_args() {
+        let mapped = bridge_acp_account_settings(AcpAccountSettings {
+            account_id: "managed".into(),
+            name: "Managed".into(),
+            template: Some(AcpProvider::Antigravity),
+            enabled: true,
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            document_revision: 3,
+            connection_revision: 2,
+        });
+        assert_eq!(mapped.template, Some(BridgeAcpProvider::Antigravity));
+        assert_eq!(mapped.command, None);
+        assert!(mapped.args.is_empty());
+        let request = update_acp_account_request(
+            "managed-create".into(),
+            9,
+            None,
+            BridgeAcpAccountUpdate {
+                account_id: "managed".into(),
+                name: "Managed".into(),
+                template: mapped.template,
+                command: None,
+                args: None,
+                env: mapped.env,
+                enabled: true,
+            },
+        );
+        assert_eq!(request.account.template, Some(AcpProvider::Antigravity));
+        assert_eq!(request.account.command, None);
+        assert_eq!(request.account.args, None);
     }
 }

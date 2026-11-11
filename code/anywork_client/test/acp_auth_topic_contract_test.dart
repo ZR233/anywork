@@ -46,11 +46,12 @@ AccountsTestRuntime _client(_ContractTransport transport) {
   runtime.seed(
     SettingsStateSnapshot(
       revision: 1,
-      acpAccounts: const [
+      acpAccounts: [
         AcpAccountSettingsView(
           accountId: 'acp-1',
+          documentRevision: BigInt.one,
           name: 'A',
-          provider: AcpProviderView.antigravity,
+          template: AcpProviderView.antigravity,
           connectionRevision: 7,
         ),
       ],

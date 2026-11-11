@@ -1,6 +1,7 @@
 use super::types::*;
 use crate::api::studio::convert::{
     acp::{bridge_acp_account_settings, bridge_acp_auth_snapshot},
+    acp_detection::bridge_acp_local_detection_snapshot,
     acp_install::bridge_acp_install_snapshot,
     chatgpt_auth::bridge_chatgpt_login_snapshot,
     settings::{bridge_account_settings, bridge_model_catalog_account},
@@ -37,6 +38,7 @@ impl From<BridgeAccountObservationTarget> for p::AccountObservationTarget {
             BridgeAccountObservationTarget::Usage => Self::Usage,
             BridgeAccountObservationTarget::AcpAuth => Self::AcpAuth,
             BridgeAccountObservationTarget::AcpInstall => Self::AcpInstall,
+            BridgeAccountObservationTarget::AcpLocalDetection => Self::AcpLocalDetection,
             BridgeAccountObservationTarget::ChatGptLogin { login_id } => {
                 Self::ChatGptLogin { login_id }
             }
@@ -130,6 +132,13 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
         } => BridgeAccountDomainFrame::AcpInstall {
             stamp: stamp(source),
             snapshot: bridge_acp_install_snapshot(snapshot),
+        },
+        p::AccountDomainFrame::AcpLocalDetection {
+            stamp: source,
+            snapshot,
+        } => BridgeAccountDomainFrame::AcpLocalDetection {
+            stamp: stamp(source),
+            snapshot: bridge_acp_local_detection_snapshot(snapshot),
         },
         p::AccountDomainFrame::ChatGptLogin {
             stamp: source,
@@ -226,5 +235,49 @@ fn usage(value: p::AccountUsageObservation) -> BridgeAccountUsageObservation {
                 }
             },
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::studio::types::BridgeAcpLocalDetectionState;
+
+    #[test]
+    fn acp_local_detection_account_observation_preserves_stamp_and_snapshot() {
+        let target: p::AccountObservationTarget =
+            BridgeAccountObservationTarget::AcpLocalDetection.into();
+        assert_eq!(target, p::AccountObservationTarget::AcpLocalDetection);
+
+        let value = frame(p::AccountDomainFrame::AcpLocalDetection {
+            stamp: p::ResourceStamp {
+                resource_key: "acp-local-detection".into(),
+                owner_epoch: "detection-owner".into(),
+                revision: 17,
+            },
+            snapshot: p::AcpLocalDetectionSnapshot {
+                revision: 17,
+                operation_id: Some("current-op".into()),
+                state: p::AcpLocalDetectionState::Available {
+                    program: "/a path/agent".into(),
+                    version: "1.2.3".into(),
+                },
+            },
+        });
+        let BridgeAccountDomainFrame::AcpLocalDetection { stamp, snapshot } = value else {
+            panic!("wrong account domain frame");
+        };
+        assert_eq!(stamp.resource_key, "acp-local-detection");
+        assert_eq!(stamp.owner_epoch, "detection-owner");
+        assert_eq!(stamp.revision, 17);
+        assert_eq!(snapshot.revision, stamp.revision);
+        assert_eq!(snapshot.operation_id.as_deref(), Some("current-op"));
+        assert_eq!(
+            snapshot.state,
+            BridgeAcpLocalDetectionState::Available {
+                program: "/a path/agent".into(),
+                version: "1.2.3".into(),
+            }
+        );
     }
 }

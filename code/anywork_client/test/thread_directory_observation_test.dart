@@ -81,6 +81,24 @@ final class _Handle implements ThreadsObservationHandle {
   }
 }
 
+SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
+    SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
+      sessionId: 'session-$id',
+      agentId: 'agent-$id',
+      threadId: id,
+      workspaceId: 'workspace',
+      title: title,
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(2026),
+      workspacePath: '/workspace',
+    );
+
 ThreadDirectoryFrame _frame(
   DirectoryQuery query,
   DirectoryWindow window,
@@ -100,6 +118,84 @@ ThreadDirectoryFrame _frame(
 );
 
 void main() {
+  test('directory identities and metadata retain ACP references and nullable mode without Native status', () async {
+    final transport = TestConversationTransport();
+    final store = ThreadDirectoryStore(feed: transport);
+    addTearDown(store.close);
+    const query = DirectoryQuery(archived: true);
+    final window = DirectoryWindow();
+    final native = _thread('native')
+        .copyWith(mode: ThreadModeId.task, archived: true);
+    const reference = AcpSessionReferenceView(
+      accountId: 'definition',
+      acpSessionId: 'remote-session',
+      cwd: '/synthetic/work',
+    );
+    final acp = _thread('external').copyWith(
+      mode: null,
+      backend: const AcpAgentBackendView(reference: reference),
+      archived: true,
+    );
+    final child = native.copyWith(
+      threadId: 'child',
+      agentId: 'child-agent',
+      parentAgentId: native.agentId,
+      mode: null,
+    );
+    for (final row in [native, acp, child]) {
+      transport.seedThread(row);
+    }
+    final lease = store.observeThreads(query, window);
+    await lease.state.waitFor((state) => state.frame != null);
+    final structure = lease.state.value.frame!;
+    expect(structure.threadIds, [native.threadId, acp.threadId]);
+    expect(transport.openedMetadataThreadIds, isEmpty);
+
+    final nativeMetadata = store.observeThread(native.threadId);
+    final acpMetadata = store.observeThread(acp.threadId);
+    final childMetadata = store.observeThread(child.threadId);
+    for (final observation in [nativeMetadata, acpMetadata, childMetadata]) {
+      await observation.state.waitFor((state) => state.frame != null);
+    }
+    final observedNative = nativeMetadata.state.value.frame!.row!;
+    final observedAcp = acpMetadata.state.value.frame!.row!;
+    final observedChild = childMetadata.state.value.frame!.row!;
+    expect(observedNative.mode, ThreadModeId.task);
+    expect(observedAcp.mode, isNull);
+    expect(
+      observedAcp.backend,
+      const AcpAgentBackendView(reference: reference),
+    );
+    expect(observedAcp.sessionId, acp.sessionId);
+    expect(observedAcp.agentId, acp.agentId);
+    expect(observedAcp.threadId, acp.threadId);
+    expect(observedAcp.frozenModel, isNull);
+    expect(observedAcp.isRootRow, isTrue);
+    expect(observedAcp.archived, isTrue);
+    expect(observedChild.mode, isNull);
+    expect(observedChild.isChildRow, isTrue);
+    expect(observedChild.sessionId, native.sessionId);
+
+    transport.emitThread(
+      acp.copyWith(title: 'Updated external session'),
+      acp.threadId,
+      revision: transport.directoryRevision + 1,
+    );
+    await acpMetadata.state.waitFor(
+      (state) => state.frame?.row?.title == 'Updated external session',
+    );
+    expect(acpMetadata.state.value.frame!.row!.mode, isNull);
+    expect(acpMetadata.state.value.frame!.row!.backend, observedAcp.backend);
+    expect(lease.state.value.frame, same(structure));
+    expect(nativeMetadata.state.value.frame!.row, same(observedNative));
+    await Future.wait([
+      nativeMetadata.release(),
+      acpMetadata.release(),
+      childMetadata.release(),
+      lease.release(),
+    ]);
+  });
+
   test('directory frames freeze and validate ordered thread identities', () {
     final ids = ['first', 'second'];
     final frame = _frame(

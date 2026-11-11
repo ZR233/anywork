@@ -2673,7 +2673,7 @@ async fn product_association(
     services: &ObservationServices,
     id: &str,
 ) -> Result<pl_protocol::Thread> {
-    if let Some(thread) = services.events.thread_snapshot(id) {
+    if let Some(thread) = services.events.thread_snapshot(id)? {
         return Ok(thread);
     }
     let target = services.writer.admitted_ticket();
@@ -4766,7 +4766,8 @@ mod storage_fault_tests {
                         .services
                         .events
                         .thread_snapshot(&thread.id)
-                        .unwrap()
+                        .expect("valid Native directory")
+                        .expect("registered Native member")
                         .status,
                     expected
                 );
@@ -4789,7 +4790,8 @@ mod storage_fault_tests {
                             .services
                             .events
                             .thread_snapshot(&thread.id)
-                            .unwrap()
+                            .expect("valid Native directory")
+                            .expect("registered Native member")
                             .status,
                         ThreadStatus::Closed
                     );
@@ -5038,7 +5040,8 @@ mod storage_fault_tests {
                     .services
                     .events
                     .thread_snapshot(&thread.id)
-                    .unwrap()
+                    .expect("valid Native directory")
+                    .expect("registered Native member")
                     .status,
                 pl_protocol::ThreadStatus::Running
             );

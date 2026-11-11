@@ -308,14 +308,14 @@ impl SessionRuntime {
         let (source_incarnation, parent_incarnation) = {
             let state = self.0.state();
             (
-                state
-                    .entries
-                    .get(&terminal.thread.id)
-                    .map(|entry| entry.native.incarnation.clone()),
-                state
-                    .entries
-                    .get(parent)
-                    .map(|entry| entry.native.incarnation.clone()),
+                state.entries.get(&terminal.thread.id).and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.incarnation.clone())
+                }),
+                state.entries.get(parent).and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.incarnation.clone())
+                }),
             )
         };
         TerminalResources {

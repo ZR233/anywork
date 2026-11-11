@@ -139,6 +139,12 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         reason: StudioFailureReason.childThreadRequiresParentScheduling,
       );
     }
+    if (session.directoryRow?.backend is! NativeAgentBackendView ||
+        session.workspace!.thread.mode == null) {
+      throw StateError(
+        'Native root submission requires a Native backend and mode',
+      );
+    }
     final recoveryIssue = recoveryIssueBlockingExecution(
       _dependencies.recovery.value.value?.values ?? const [],
       workspaceId: session.workspace!.thread.workspaceId,
@@ -185,7 +191,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       input: input,
       attachments: frozenAttachmentViews,
       workspaceId: session.workspace!.thread.workspaceId,
-      mode: session.workspace!.thread.mode,
+      mode: session.workspace!.thread.mode!,
       route: route,
     );
   }

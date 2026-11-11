@@ -7,7 +7,9 @@ use pl_model::model::{
 };
 use pl_protocol::{AgentBinding, BillingKind, DelegationSettings, NativeAgentConfig};
 use pl_provider_fixture::delegation::{OTHER_MODEL, SHARED_MODEL};
-use pl_studio_runtime::config::{ConfigPaths, UserAgentProfile, save_user_agent_profile};
+use pl_studio_runtime::config::{
+    AcpDefinitionsSnapshot, ConfigPaths, UserAgentProfile, save_user_agent_profile,
+};
 
 pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
@@ -112,6 +114,8 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         "obsolete_route",
         &profile,
         &config,
+        // This synthetic inventory contains Native accounts and Profiles only.
+        &AcpDefinitionsSnapshot::default(),
     )?;
     config
         .models

@@ -479,10 +479,13 @@ abstract final class AccountPreviewFixtures {
       iconKey: 'mimo',
     ),
   ];
-  // Native entries intentionally precede ACP in input; the production picker
-  // must still place Antigravity first at a realistic catalog size.
   static const templates = [
     ...nativeTemplates,
+    AccountTemplatePresentation(
+      key: AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
+      name: 'ACP',
+      content: AccountTemplateContent.acp(),
+    ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
       name: 'Antigravity',
@@ -524,6 +527,7 @@ abstract final class AccountPreviewFixtures {
     ],
   );
   static const acpEditor = AcpAccountEditorPresentation(
+    source: AcpAccountSource.managed,
     editorId: 'synthetic-acp-editor',
     templateName: '官方 ACP 接入',
     name: AccountTextPresentation(raw: '我的 ACP'),

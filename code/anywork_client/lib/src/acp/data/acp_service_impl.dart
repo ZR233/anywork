@@ -11,6 +11,7 @@ import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
 import '../../models/acp_models.dart';
 import '../../models/acp_install_models.dart';
+import '../../models/acp_local_detection_models.dart';
 import '../../models/command_receipts.dart';
 import '../../models/failure_models.dart';
 import '../../observation/latest_value.dart';
@@ -41,6 +42,62 @@ final class AcpServiceImpl implements AcpService {
   final LatestValue<AccountResource<AcpInstallSnapshotView>> _install =
       LatestValue(const AccountResource());
   final CommandLane _starts = CommandLane();
+  final CommandLane _detectionStarts = CommandLane();
+  final CommandLane _detectionCancels = CommandLane();
+  final LatestValue<AccountResource<AcpLocalDetectionSnapshotView>>
+  _localDetection = LatestValue(const AccountResource());
+  @override
+  ValueObservation<AccountResource<AcpLocalDetectionSnapshotView>>
+  get localDetection => _localDetection;
+  @override
+  AccountDemand observeLocalDetection() =>
+      observations.acquire(const AcpLocalDetectionTarget());
+
+  @override
+  Future<AcpLocalDetectionCommandReply> startLocalDetection(
+    OperationId operationId,
+  ) => _detectionCommand(
+    _detectionStarts,
+    operationId,
+    () => port.startAcpLocalDetection(operationId: operationId),
+  );
+  @override
+  Future<AcpLocalDetectionCommandReply> cancelLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  }) => _detectionCommand(
+    _detectionCancels,
+    operationId,
+    () => port.cancelAcpLocalDetection(
+      operationId: operationId,
+      targetOperationId: targetOperationId,
+    ),
+  );
+
+  Future<AcpLocalDetectionCommandReply> _detectionCommand(
+    CommandLane lane,
+    OperationId operationId,
+    Future<AcpLocalDetectionCommandReply> Function() request,
+  ) {
+    if (_closed) return Future.error(StateError('ACP owner closed'));
+    final owner = mutations.coordinator.captureOwner();
+    final generation = observations.generation;
+    return lane.run(() async {
+      _requireOwner(owner, generation);
+      final reply = await request();
+      _requireOwner(owner, generation);
+      if (reply.receipt.operationId != operationId)
+        throw StateError('Detection receipt identity mismatch');
+      final stamp = reply.receipt.targets.single;
+      if (stamp.resourceKey != 'acp-local-detection' ||
+          stamp.revision != reply.snapshot.revision) {
+        throw StateError('Detection receipt resource mismatch');
+      }
+      observations.apply(AcpLocalDetectionFrame(stamp, reply.snapshot));
+      return reply;
+    });
+  }
+
   final CommandLane _cancels = CommandLane();
   final CommandLane _continuations = CommandLane();
   final Map<Object, OperationId> _active = {};
@@ -77,6 +134,7 @@ final class AcpServiceImpl implements AcpService {
   void Function() prepareOwnerChange(bool Function() isCurrent) {
     final auth = _auth.value;
     final install = _install.value;
+    final detection = _localDetection.value;
     // Operation notifications can admit a new lifecycle synchronously. Detach
     // only the retiring responsibilities before publishing any such outcome.
     final authBusiness = _authBusiness.values.toList();
@@ -87,6 +145,16 @@ final class AcpServiceImpl implements AcpService {
     _active.clear();
     _savedWaiters.clear();
     return () {
+      if (isCurrent() && identical(detection, _localDetection.value)) {
+        _localDetection.publish(
+          AccountResource(
+            stamp: detection.stamp,
+            value: detection.value,
+            stale: true,
+            loading: true,
+          ),
+        );
+      }
       for (final business in authBusiness) {
         _invalidateOperation(business.operation, business.issued);
         _releaseDemand(business.demand);
@@ -141,6 +209,8 @@ final class AcpServiceImpl implements AcpService {
   void apply(AccountDomainFrame frame) {
     final generation = observations.generation;
     switch (frame) {
+      case AcpLocalDetectionFrame(:final stamp, :final snapshot):
+        _localDetection.publish(AccountResource(stamp: stamp, value: snapshot));
       case AcpAuthFrame(:final stamp, :final snapshot):
         _auth.publish(
           AccountResource(stamp: stamp, value: _immutableAuth(snapshot)),
@@ -159,6 +229,18 @@ final class AcpServiceImpl implements AcpService {
   }
 
   void fail(AccountObservationTarget target, StudioFailure failure) {
+    if (target is AcpLocalDetectionTarget) {
+      final value = _localDetection.value;
+      _localDetection.publish(
+        AccountResource(
+          stamp: value.stamp,
+          value: value.value,
+          failure: failure,
+          stale: value.stale,
+        ),
+      );
+      return;
+    }
     if (target is AcpAuthTarget) {
       final value = _auth.value;
       _auth.publish(
@@ -311,37 +393,68 @@ final class AcpServiceImpl implements AcpService {
   @override
   Future<OperationState> save(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
-  }) => _save(account, draft: draft);
+  }) => _save(
+    account,
+    expectedDocumentRevision: expectedDocumentRevision,
+    draft: draft,
+  );
 
   Future<OperationState> _save(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
     void Function(OperationHandle operation)? onAdmitted,
-  }) => mutations.run(
-    key: 'account:acp:${account.accountId}',
-    draft: draft,
-    targets: {
-      'settings': AccountDetailTarget(AcpAccountIdentity(account.accountId)),
-    },
-    request: (revision, operation) =>
-        port.saveAcpAccount(revision, account, operationId: operation),
-    onAdmitted: onAdmitted,
-  );
+  }) {
+    final frozen = AcpAccountUpdateView(
+      accountId: account.accountId,
+      name: account.name,
+      template: account.template,
+      command: account.command,
+      args: account.args == null ? null : List.unmodifiable(account.args!),
+      env: Map.unmodifiable(account.env),
+      enabled: account.enabled,
+    );
+    return mutations.run(
+      key: 'account:acp:${account.accountId}',
+      draft: draft,
+      targets: {
+        'settings': AccountDetailTarget(AcpAccountIdentity(account.accountId)),
+      },
+      request: (revision, operation) => port.saveAcpAccount(
+        revision,
+        frozen,
+        operationId: operation,
+        expectedDocumentRevision: expectedDocumentRevision,
+      ),
+      onAdmitted: onAdmitted,
+    );
+  }
+
   @override
-  Future<OperationState> remove(AcpAccountIdentity identity) => mutations.run(
-    key: 'account:acp:${identity.accountId}',
-    targets: {'settings': AccountDetailTarget(identity)},
-    request: (revision, operation) => port.removeAcpAccount(
-      revision,
-      identity.accountId,
-      operationId: operation,
-    ),
-  );
+  Future<OperationState> remove(AcpAccountIdentity identity) async {
+    final owner = mutations.coordinator.captureOwner();
+    final generation = observations.generation;
+    final baseline = await _details(identity);
+    _requireOwner(owner, generation);
+    final documentRevision = baseline.account.documentRevision;
+    return mutations.run(
+      key: 'account:acp:${identity.accountId}',
+      targets: {'settings': AccountDetailTarget(identity)},
+      request: (revision, operation) => port.removeAcpAccount(
+        revision,
+        identity.accountId,
+        operationId: operation,
+        expectedDocumentRevision: documentRevision,
+      ),
+    );
+  }
 
   @override
   Future<AcpSaveAndConnectResult> saveAndConnect(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
   }) => _starts.run(() async {
     final identity = AcpAccountIdentity(account.accountId);
@@ -352,6 +465,7 @@ final class AcpServiceImpl implements AcpService {
     try {
       final saved = await _save(
         account,
+        expectedDocumentRevision: expectedDocumentRevision,
         draft: draft,
         onAdmitted: (operation) {
           admitted = operation;
@@ -920,6 +1034,8 @@ final class AcpServiceImpl implements AcpService {
     _starts.seal();
     _cancels.seal();
     _continuations.seal();
+    _detectionStarts.seal();
+    _detectionCancels.seal();
     for (final entry in _savedWaiters.entries.toList()) {
       for (final observation in entry.value) {
         observation.cancel();
@@ -931,6 +1047,8 @@ final class AcpServiceImpl implements AcpService {
       _starts.join(),
       _cancels.join(),
       _continuations.join(),
+      _detectionStarts.join(),
+      _detectionCancels.join(),
     ]);
   }
 }

@@ -11,17 +11,19 @@ use std::sync::Arc;
 use pl_protocol::studio::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAuthState};
 use tokio::sync::watch;
 
+use super::super::acp_worker::{
+    AcpSpawnError, AcpSpawnRequest, AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim,
+};
 use super::mapping::{
     AcpFailure, map_auth_error, map_auth_server, map_progress, prepare_failure, prepare_probe_dir,
     protocol_action,
 };
 use super::registry::{AcpAuthInner, Operation};
-use super::worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim};
 
 /// 一次操作的启动意图；全部字段来自受理时的 canonical 配置快照与请求本身。
 pub(super) struct OperationPlan {
-    /// 已受理接入的 provider；固定发行身份由产品清单决定，配置与客户端都不能提交。
-    pub provider: crate::config::AcpProvider,
+    /// 受理时冻结的用户定义；模板与通用 command 共用后续监督及认证通路。
+    pub definition: crate::config::AcpServiceDefinition,
     pub action: AcpAuthAction,
     pub commands: pl_acp::auth::mpsc::Receiver<pl_acp::auth::AuthCommand>,
 }
@@ -51,44 +53,9 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         return;
     }
 
-    // 1. 前置：只读验证产品固定发行的受管安装。缺失/损坏/不支持的平台都在这里给出 typed 失败，
-    //    绝不隐式下载或修复；验证本身不派生进程，因此失败路径没有额外的物理收尾责任。
-    let verified = match super::super::acp_install::verified_install(
-        &inner.store,
-        plan.provider,
-        &operation.cancel,
-    )
-    .await
-    {
-        Ok(verified) => verified,
-        Err(failure) => {
-            let state = if operation.cancel.is_cancelled() {
-                AcpAuthState::Cancelled
-            } else {
-                prepare_failure(failure).into_state()
-            };
-            inner.complete_operation(
-                &account_id,
-                operation.generation,
-                operation.connection_revision,
-                state,
-                None,
-            );
-            return;
-        }
-    };
-    // 只记录非密钥的安装事实，便于诊断"本次认证用的是哪一个受管安装"。
-    tracing::debug!(
-        installation = %verified.installation_id,
-        version = %verified.release.version,
-        target = %verified.release.target,
-        "ACP auth uses a verified managed installation"
-    );
-
-    // 2. 探测目录与官方进程：探测目录在接入专属空目录内，进程只用已验证的冻结启动资格；
-    //    spawn 自身在异步解析受监督 worker 之后、真正启动之前再次检查取消。
-    let spawned = spawn_process(&inner, &account_id, &verified, &operation).await;
-    let (mut worker, probe_dir) = match spawned {
+    // Probe directories are owned here, never created by the generic worker.
+    let spawned = spawn_process(&inner, &account_id, &plan.definition, &operation).await;
+    let (mut worker, probe_dir, expected_server_version) = match spawned {
         Ok(value) => value,
         Err(failure) => {
             let state = if operation.cancel.is_cancelled() {
@@ -148,9 +115,8 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         cleanup: cleanup.clone(),
         cancellation: operation.cancel.clone(),
         progress: progress_sender,
-        // 产品固定发行版本：由协议客户端在 initialize 之后、任何 Session/check/authenticate 之前
-        // 与原字符串精确比较，版本不符时不会发出 `session/new` 或 `authenticate`。
-        expected_server_version: super::super::acp_install::SERVER_VERSION.to_string(),
+        // 只有托管模板要求固定发行版本；通用服务不要求 agentInfo 或版本。
+        expected_server_version,
     };
     let mut authentication = Box::pin(pl_acp::auth::run_connection(writer, reader, request));
     let mut progress_open = true;
@@ -375,9 +341,9 @@ fn terminal_result(
 async fn spawn_process(
     inner: &Arc<AcpAuthInner>,
     account_id: &str,
-    verified: &super::super::acp_install::VerifiedInstall,
+    definition: &crate::config::AcpServiceDefinition,
     operation: &Operation,
-) -> Result<(AcpWorker, PathBuf), AcpFailure> {
+) -> Result<(AcpWorker, PathBuf, Option<String>), AcpFailure> {
     let probe_dir = prepare_probe_dir(inner, account_id)
         .await
         .map_err(|_error| AcpFailure {
@@ -385,13 +351,48 @@ async fn spawn_process(
             stage: AcpAuthStage::Config,
             retryable: true,
         })?;
+    let resolved = super::super::acp_launch::resolve_launch(
+        &inner.store,
+        definition,
+        &probe_dir,
+        &operation.cancel,
+    )
+    .await
+    .map_err(|error| {
+        use super::super::acp_launch::AcpLaunchError;
+        match error {
+            AcpLaunchError::Template(error) => prepare_failure(error),
+            AcpLaunchError::Cancelled => AcpFailure {
+                code: AcpAuthFailureCode::Cancelled,
+                stage: AcpAuthStage::Config,
+                retryable: false,
+            },
+            AcpLaunchError::MissingExecutable => AcpFailure {
+                code: AcpAuthFailureCode::MissingExecutable,
+                stage: AcpAuthStage::Process,
+                retryable: false,
+            },
+            AcpLaunchError::InvalidWorkingDirectory | AcpLaunchError::InvalidDefinition => {
+                AcpFailure {
+                    code: AcpAuthFailureCode::Io,
+                    stage: AcpAuthStage::Config,
+                    retryable: false,
+                }
+            }
+        }
+    })?;
+    tracing::debug!(
+        managed_template = resolved.template.is_some(),
+        "ACP launch prepared"
+    );
     let request = AcpSpawnRequest {
-        program: verified.program.clone(),
-        args: verified.args.clone(),
+        program: resolved.program,
+        args: resolved.args,
+        env: resolved.env,
         cwd: probe_dir.clone(),
     };
     match AcpWorker::spawn(request, &inner.workers, &operation.cancel).await {
-        Ok(worker) => Ok((worker, probe_dir)),
+        Ok(worker) => Ok((worker, probe_dir, resolved.expected_server_version)),
         Err(error) => Err(spawn_failure(error)),
     }
 }

@@ -29,6 +29,7 @@ async fn product_resync_preserves_topic_and_encoded_scope() {
     let identity = " 宿主 /?&=+#% ";
     for topic in [
         StudioProductTopic::ProjectDirectory,
+        StudioProductTopic::AcpLocalDetection,
         StudioProductTopic::Skills {
             workspace_id: identity.into(),
         },

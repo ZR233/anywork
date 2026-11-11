@@ -176,6 +176,26 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     }
     if let Some(error) = error.downcast_ref::<ConfigRuntimeError>() {
         return match error {
+            ConfigRuntimeError::AcpDefinition(error) => {
+                use crate::config::AcpDefinitionError;
+                match error {
+                    AcpDefinitionError::StaleDocument | AcpDefinitionError::StaleConnection => {
+                        StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), true)
+                    }
+                    AcpDefinitionError::Unavailable => {
+                        StudioError::new(StudioErrorCode::NotFound, error.to_string(), false)
+                    }
+                    AcpDefinitionError::Invalid(_) => {
+                        StudioError::invalid_argument(error.to_string())
+                    }
+                    AcpDefinitionError::Io(source) => {
+                        StudioError::storage().with_details(serde_json::json!({
+                            "ioKind": format!("{:?}", source.kind()),
+                            "rawOsError": source.raw_os_error(),
+                        }))
+                    }
+                }
+            }
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 StudioError::invalid_argument("Model discovery is unsupported").with_reason(
                     pl_protocol::studio::StudioErrorReason::AccountModelDiscoveryUnsupported,

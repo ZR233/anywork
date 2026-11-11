@@ -7,10 +7,10 @@ Thread's workflow. They are separate file types, not interchangeable role settin
 
 Store each UTF-8 TOML file at `<studio-home>/agents/<profile-id>.toml`.
 The filename supplies the ID; use 1–64 lowercase ASCII letters, digits, `-` or `_`.
-Built-in child IDs and root IDs are reserved. Current schema is `2`.
+Built-in child IDs and root IDs are reserved. Current schema is `3`.
 
 ```toml
-schema_version = 2
+schema_version = 3
 enabled = true
 display_name = "Code reviewer"
 description = "Review a bounded code change."
@@ -42,12 +42,11 @@ An ACP binding instead contains exactly the backend reference:
 [binding]
 kind = "acp"
 account_id = "antigravity"
-connection_revision = 1
 ```
 
-This replaces the whole Native binding, including its route. Obtain the actual
-connection revision from the product, not the illustrative `1`. It references an
-existing ACP account and has no Native model or instruction placeholders. ACP
+This replaces the whole Native binding, including its route. It references an
+existing user-level ACP definition; do not persist a runtime connection revision
+in the Profile. It has no Native model or instruction placeholders. ACP
 Profiles are visible in management but are currently excluded from child dispatch.
 
 Use the Agents settings save/reload operation after editing and inspect its

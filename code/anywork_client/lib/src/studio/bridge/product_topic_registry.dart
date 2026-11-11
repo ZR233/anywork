@@ -560,6 +560,7 @@ String describeBridgeProductTopic(ProductTopic topic) {
     AcpAuthTopic() => 'acpAuth',
     BotsTopic() => 'bots',
     AcpInstallTopic() => 'acpInstall',
+    AcpLocalDetectionTopic() => 'acpLocalDetection',
     ChildInteractionsTopic(:final hostThreadId) =>
       'childInteractions:$hostThreadId',
   };

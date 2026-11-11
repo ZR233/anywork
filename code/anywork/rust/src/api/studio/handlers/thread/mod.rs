@@ -1,4 +1,7 @@
-use crate::api::studio::convert::commands::command_receipt;
+use crate::api::studio::convert::commands::{
+    archive_thread_command_reply, command_receipt, delete_thread_command_reply,
+    rename_thread_command_reply,
+};
 use crate::frb_generated::StreamSink;
 use anyhow::Context;
 use std::sync::Arc;
@@ -7,14 +10,13 @@ use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::records::thread_from_record;
 use crate::api::studio::convert::{
     settings::bridge_settings_snapshot,
-    thread_stream::{bridge_thread, runtime_snapshot},
+    thread_stream::{bridge_session_row, bridge_thread, runtime_snapshot},
 };
 use crate::api::studio::types::{
-    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeDeleteThreadCommandReply,
-    BridgeError, BridgeNewThreadStartEvent, BridgeRenameThreadCommandReply,
-    BridgeStartNewThreadRequest, BridgeThread, BridgeThreadModeCommandReply,
-    BridgeThreadModelRouteCommandReply, DeleteThreadResult, StartNewThreadResponse,
-    SubmitPromptResponse,
+    BridgeArchiveThreadCommandReply, BridgeDeleteThreadCommandReply, BridgeError,
+    BridgeNewThreadStartEvent, BridgeRenameThreadCommandReply, BridgeSessionDirectoryRow,
+    BridgeStartNewThreadRequest, BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply,
+    StartNewThreadResponse, SubmitPromptResponse,
 };
 use pl_studio_runtime::ThreadModeId;
 
@@ -98,7 +100,7 @@ pub async fn start_new_thread(
     Ok(())
 }
 
-/// Renames a root Thread and returns its canonical directory record.
+/// Renames a root member and returns its canonical directory row.
 pub async fn rename_thread(
     operation_id: String,
     thread_id: String,
@@ -109,10 +111,10 @@ pub async fn rename_thread(
         .studio
         .rename_thread(operation_id, thread_id, title)
         .await?;
-    Ok(BridgeRenameThreadCommandReply {
-        thread: bridge_thread(thread_from_record(response.thread)),
-        receipt: command_receipt(response.receipt),
-    })
+    Ok(rename_thread_command_reply(
+        response.thread,
+        response.receipt,
+    ))
 }
 
 /// Archives a root Thread and selects the next available Thread.
@@ -130,18 +132,12 @@ pub async fn archive_thread(
         .archive_thread(operation_id, thread_id)
         .await?
         .context("selected Thread not found")?;
-    Ok(BridgeArchiveThreadCommandReply {
-        result: ArchiveThreadResult {
-            archived_root_id: archived.result.archived_root_id,
-            removed_thread_ids: archived.result.removed_thread_ids,
-            next_root: archived
-                .result
-                .next_root
-                .map(thread_from_record)
-                .map(bridge_thread),
-        },
-        receipt: command_receipt(archived.receipt),
-    })
+    Ok(archive_thread_command_reply(
+        archived.result.archived_root_id,
+        archived.result.removed_thread_ids,
+        archived.result.next_root,
+        archived.receipt,
+    ))
 }
 
 /// Permanently deletes a root Thread and its descendants.
@@ -154,17 +150,13 @@ pub async fn delete_thread(
 ) -> Result<Option<BridgeDeleteThreadCommandReply>, BridgeError> {
     let bridge = active_bridge().await?;
     let deleted = bridge.studio.delete_thread(operation_id, thread_id).await?;
-    Ok(deleted.map(|deleted| BridgeDeleteThreadCommandReply {
-        result: DeleteThreadResult {
-            deleted_root_id: deleted.result.deleted_root_id,
-            deleted_thread_ids: deleted.result.deleted_thread_ids,
-            next_root: deleted
-                .result
-                .next_root
-                .map(thread_from_record)
-                .map(bridge_thread),
-        },
-        receipt: command_receipt(deleted.receipt),
+    Ok(deleted.map(|deleted| {
+        delete_thread_command_reply(
+            deleted.result.deleted_root_id,
+            deleted.result.deleted_thread_ids,
+            deleted.result.next_root,
+            deleted.receipt,
+        )
     }))
 }
 
@@ -233,9 +225,9 @@ pub async fn set_thread_model_route(
 }
 
 /// Restores an archived session tree with its original identity and history.
-pub async fn restore_thread(thread_id: String) -> Result<BridgeThread, BridgeError> {
+pub async fn restore_thread(thread_id: String) -> Result<BridgeSessionDirectoryRow, BridgeError> {
     let bridge = active_bridge().await?;
-    Ok(bridge_thread(thread_from_record(
+    Ok(bridge_session_row(
         bridge.studio.restore_thread(thread_id).await?,
-    )))
+    ))
 }

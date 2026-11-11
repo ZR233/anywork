@@ -38,9 +38,11 @@ pub(super) async fn publish(
         role: row.role.clone(),
         delegation_mode: row.delegation_mode,
         delegation_preference: row.delegation_preference,
-        frozen_model: match &row.binding {
-            pl_protocol::AgentBinding::Native(config) => config.route.clone(),
-            pl_protocol::AgentBinding::Acp(_) => None,
+        frozen_model: match &row.backend {
+            pl_protocol::session::AgentBackend::Native { config, .. } => config.route.clone(),
+            pl_protocol::session::AgentBackend::Acp { .. } => {
+                anyhow::bail!("ACP has no Native observation")
+            }
         },
         task: row.title.clone(),
         summary,
@@ -94,14 +96,15 @@ pub(super) async fn publish_cold_scheduling_state(
     let awaiting_scheduling = awaiting_scheduling(snapshot)?;
     // Everything except the interruption fact stays the directory's own cold status: a crashed Turn
     // is never presented as running, and no current execution nor stop qualification is invented.
-    let state = match agent_record.projected_status() {
-        pl_protocol::ThreadStatus::Closed => {
+    let state = match agent_record.projected_backend().native_status() {
+        Some(pl_protocol::ThreadStatus::Closed) => {
             pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
         }
-        pl_protocol::ThreadStatus::Closing => {
+        Some(pl_protocol::ThreadStatus::Closing) => {
             pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
         }
-        _ => pl_protocol::AgentState::idle(),
+        Some(_) => pl_protocol::AgentState::idle(),
+        None => anyhow::bail!("ACP has no Native scheduling state"),
     };
     let entry = crate::StudioAgentDirectoryEntry {
         agent_id: agent_record.agent_id.clone(),

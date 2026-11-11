@@ -26,7 +26,7 @@ impl ProductEventBus {
             .filter_map(|agent| {
                 let session = catalog.get_session(&agent.session_id)?;
                 let id = agent.agent_id.clone();
-                let state = match agent.projected_status() {
+                let state = match agent.projected_backend().native_status()? {
                     pl_protocol::ThreadStatus::Closed => {
                         pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
                     }
@@ -64,7 +64,9 @@ impl ProductEventBus {
             if let Some(agent) = catalog.get_agent(&id)
                 && agent.explicitly_closed
             {
-                if agent.projected_status() == pl_protocol::ThreadStatus::Closed {
+                if agent.projected_backend().native_status()
+                    == Some(pl_protocol::ThreadStatus::Closed)
+                {
                     observed.state =
                         pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new());
                 } else if !matches!(observed.state, pl_protocol::AgentState::Closed(_)) {

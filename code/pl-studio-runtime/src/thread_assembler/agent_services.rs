@@ -156,8 +156,9 @@ impl QueryTool {
             let state = registry.state();
             if state.closing
                 || !state.entries.get(&context.thread_id).is_some_and(|entry| {
-                    entry.native.ready
-                        && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    entry.native().is_ok_and(|native| {
+                        native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    })
                 })
             {
                 bail!("agent query caller is not active");
@@ -180,7 +181,7 @@ impl QueryTool {
                     "delegation tools are root-only"
                 );
             }
-            crate::studio::delegation::saved(&caller.native.thread.snapshot())?
+            crate::studio::delegation::saved(&caller.native()?.thread.snapshot())?
                 .context("agent caller has no frozen delegation selection")?
         };
         if matches!(self.kind, Kind::Models | Kind::Model) {
@@ -394,7 +395,7 @@ impl AgentServices {
     }
 
     pub(super) async fn record(&self, id: &str) -> Result<pl_protocol::Thread> {
-        match self.events.thread_snapshot(id) {
+        match self.events.thread_snapshot(id)? {
             Some(thread) => Ok(thread),
             None => self
                 .store

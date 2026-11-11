@@ -186,7 +186,7 @@ async fn catalog_636_v2_stale_child_mode_migrates_through_runtime_and_reopens() 
     assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
     let root = runtime.read_thread(THREAD).await?;
     assert_eq!(root.workspace_id, OWNER);
-    assert_eq!(root.mode, pl_protocol::ThreadModeId::simple());
+    assert_eq!(root.mode, Some(pl_protocol::ThreadModeId::simple()));
     let child = runtime.read_thread("synthetic-child").await?;
     assert_eq!(child.root_thread_id, THREAD);
     assert_eq!(child.parent_thread_id.as_deref(), Some(THREAD));

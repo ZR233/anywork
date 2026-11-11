@@ -991,21 +991,26 @@ effort = "high"
             migrate_fixture_from(&with_acp, 24, &atomic_write).expect("schema 24 migrates");
 
         // ACP 接入保留稳定 ID、名称与 provider；执行字段退出当前结构。
-        assert_eq!(migrated_acp.acp.accounts.len(), 1);
-        let account = migrated_acp
-            .acp
-            .accounts
+        let definitions = crate::config::acp_resource::scan(&with_acp.paths);
+        assert_eq!(definitions.definitions.len(), 1);
+        let account = definitions
+            .definitions
             .get("antigravity-1")
             .expect("ACP account keeps its id");
-        assert_eq!(account.name, "Antigravity 主账号");
-        assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
-        assert!(migrated_plain.acp.accounts.is_empty());
+        assert_eq!(account.definition.display_name, "Antigravity 主账号");
+        assert_eq!(
+            account.definition.template_kind(),
+            Some(crate::config::AcpProvider::Antigravity)
+        );
+        assert!(
+            crate::config::acp_resource::scan(&plain.paths)
+                .definitions
+                .is_empty()
+        );
 
         // 全部其它事实逐项相同：Native 账号（含 endpoint/模板/覆盖）、全部路由、模式路由、
         // Skills/UI 等设置；退役 ACP 执行字段不改变其中任何一项。
-        let mut without_acp = migrated_acp.clone();
-        without_acp.acp = Default::default();
-        assert_eq!(without_acp, migrated_plain);
+        assert_eq!(migrated_acp, migrated_plain);
         assert_eq!(migrated_acp.models, bases.baseline.models);
         assert_eq!(
             migrated_acp.mode_model_routes,
@@ -1059,7 +1064,12 @@ effort = "high"
 
         let persisted = fs::read_to_string(with_acp.paths.config_file()).unwrap();
         assert!(persisted.contains(&format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")));
-        assert!(persisted.contains("[acp.accounts.antigravity-1]"));
+        assert!(!persisted.contains("[acp"));
+        assert!(
+            crate::config::acp_resource::scan(&with_acp.paths)
+                .definitions
+                .contains_key("antigravity-1")
+        );
         assert!(!persisted.contains("program ="));
         assert!(!persisted.contains("--uid="));
         assert!(!operation_dir(&with_acp.paths).exists());
@@ -1080,13 +1090,16 @@ effort = "high"
         assert_eq!(migrated.models, bases.baseline.models);
         assert_eq!(migrated.mode_model_routes, bases.baseline.mode_model_routes);
         // ACP 接入保留 ID/名称/provider，执行字段退役。
-        let account = migrated
-            .acp
-            .accounts
+        let definitions = crate::config::acp_resource::scan(&fixture.paths);
+        let account = definitions
+            .definitions
             .get("antigravity-1")
             .expect("ACP account keeps its id");
-        assert_eq!(account.name, "Antigravity 主账号");
-        assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
+        assert_eq!(account.definition.display_name, "Antigravity 主账号");
+        assert_eq!(
+            account.definition.template_kind(),
+            Some(crate::config::AcpProvider::Antigravity)
+        );
         // Profile 原字节保留。
         assert_eq!(
             fs::read(fixture.paths.agents_dir().join("verify.toml")).unwrap(),
@@ -1825,6 +1838,7 @@ catalog = "deepseek"
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
         assert!(!persisted.contains("pricing_mode"));
         let mut expected: toml::Value = toml::from_str(&original).unwrap();
+        expected.as_table_mut().unwrap().remove("acp");
         expected["schema_version"] = i64::from(STUDIO_CONFIG_SCHEMA_VERSION).into();
         for (_, account) in expected["models"]["accounts"]
             .as_table_mut()
@@ -1912,6 +1926,7 @@ catalog = "deepseek"
         assert_main_fields_preserved(&loaded);
         assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         let mut expected: toml::Value = toml::from_str(&original).unwrap();
+        expected.as_table_mut().unwrap().remove("acp");
         expected["schema_version"] = STUDIO_CONFIG_SCHEMA_VERSION.into();
         let account = expected["models"]["accounts"]["deepseek"]
             .as_table_mut()
@@ -2017,7 +2032,11 @@ catalog = "deepseek"
         assert_eq!(migrated.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         // 分发设置、模型禁用与计费覆盖都是显式意图：不能被字段级缺省覆盖回默认。
         assert_main_fields_preserved(&migrated);
-        assert!(migrated.acp.accounts.is_empty());
+        assert!(
+            crate::config::acp_resource::scan(&fixture.paths)
+                .definitions
+                .is_empty()
+        );
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
         assert!(persisted.contains("[delegation]"));
         assert!(persisted.contains("mode = \"automatic\""));
@@ -2031,17 +2050,25 @@ catalog = "deepseek"
         let migrated =
             migrate_fixture_from(&fixture, 24, &atomic_write).expect("mixed schema 24 migrates");
         // ACP：保留 ID/名称/provider，执行字段退役。
-        let account = migrated
-            .acp
-            .accounts
+        let definitions = crate::config::acp_resource::scan(&fixture.paths);
+        let account = definitions
+            .definitions
             .get("antigravity-1")
             .expect("ACP account keeps its id");
-        assert_eq!(account.name, "Antigravity 主账号");
-        assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
+        assert_eq!(account.definition.display_name, "Antigravity 主账号");
+        assert_eq!(
+            account.definition.template_kind(),
+            Some(crate::config::AcpProvider::Antigravity)
+        );
         // 同一份文档里的 main 显式字段同样保留（两组字段互不覆盖）。
         assert_main_fields_preserved(&migrated);
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("[acp.accounts.antigravity-1]"));
+        assert!(!persisted.contains("[acp"));
+        assert!(
+            crate::config::acp_resource::scan(&fixture.paths)
+                .definitions
+                .contains_key("antigravity-1")
+        );
         assert!(!persisted.contains("program ="));
         assert!(!persisted.contains("--uid="));
         assert!(persisted.contains("mode = \"automatic\""));

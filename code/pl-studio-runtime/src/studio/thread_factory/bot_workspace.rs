@@ -10,18 +10,18 @@ impl StudioThreadFactory {
         &self,
         request: &ChildThreadRequest,
         profile: &crate::config::ResolvedAgentProfile,
-        root: &crate::studio::ThreadRecord,
+        root: &crate::studio::records::DirectoryMember,
     ) -> Result<(), ThreadAssemblyError> {
         let Some(bot) = self
             .services
             .bots
-            .config_for_thread(&root.id)
+            .config_for_thread(&root.agent.thread_id)
             .await
             .map_err(|error| resource_error("read bot workspace admission", error))?
         else {
             return Ok(());
         };
-        if root.workspace_mode != ThreadWorkspaceMode::Local
+        if root.session.workspace_mode != ThreadWorkspaceMode::Local
             || profile.profile.workspace_mode == AgentWorkspaceMode::Worktree
         {
             return Err(bot_workspace_refusal(
@@ -29,14 +29,17 @@ impl StudioThreadFactory {
                 "bot children must use the bot-managed execution root; worktree Profiles are not permitted",
             ));
         }
-        self.ensure_bot_execution_workspace(&root.clone().into(), None)
-            .await?;
+        self.ensure_bot_execution_workspace(
+            &self.thread_record(&root.agent.thread_id).await?.into(),
+            None,
+        )
+        .await?;
         if profile.profile.workspace_mode == AgentWorkspaceMode::Review {
             let target = request.review_target_agent_id.as_deref().ok_or_else(|| {
                 bot_workspace_refusal(&request.id, "bot review requires a frozen review target")
             })?;
             let expected = local_identity(&self.services.bots.workspace_root(&bot)).await?;
-            self.check_bot_review_target(&request.id, &root.id, target, &expected)
+            self.check_bot_review_target(&request.id, &root.agent.thread_id, target, &expected)
                 .await?;
         }
         Ok(())
@@ -435,11 +438,7 @@ mod migration_tests {
         request.id = "allowed-review".into();
         request.review_target_agent_id = Some(target.id.clone());
         factory
-            .check_bot_spawn_workspace(
-                &request,
-                &profile,
-                &crate::studio::ThreadRecord::from_directory_thread(root.clone()),
-            )
+            .check_bot_spawn_workspace(&request, &profile, &factory.directory_member(&root.id)?)
             .await?;
         assert!(
             !tokio::fs::try_exists(managed.join(SessionFiles::new(&request.id).root())).await?,
@@ -631,7 +630,7 @@ mod migration_tests {
             let registered = factory
                 .services
                 .product_events
-                .thread_snapshot(id)
+                .thread_snapshot(id)?
                 .context("factory registered child")?;
             assert_eq!(registered.workspace_path, root.workspace_path);
             let assignment = spec

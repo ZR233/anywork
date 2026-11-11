@@ -13,6 +13,304 @@ part of 'session_directory.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$BridgeAgentBackend {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBackend);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAgentBackend()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAgentBackendCopyWith<$Res>  {
+$BridgeAgentBackendCopyWith(BridgeAgentBackend _, $Res Function(BridgeAgentBackend) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAgentBackend].
+extension BridgeAgentBackendPatterns on BridgeAgentBackend {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAgentBackend_Native value)?  native,TResult Function( BridgeAgentBackend_Acp value)?  acp,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native() when native != null:
+return native(_that);case BridgeAgentBackend_Acp() when acp != null:
+return acp(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAgentBackend_Native value)  native,required TResult Function( BridgeAgentBackend_Acp value)  acp,}){
+final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native():
+return native(_that);case BridgeAgentBackend_Acp():
+return acp(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAgentBackend_Native value)?  native,TResult? Function( BridgeAgentBackend_Acp value)?  acp,}){
+final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native() when native != null:
+return native(_that);case BridgeAgentBackend_Acp() when acp != null:
+return acp(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeNativeAgentConfig config,  BridgeThreadStatus status)?  native,TResult Function( BridgeAcpSessionReference reference)?  acp,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native() when native != null:
+return native(_that.config,_that.status);case BridgeAgentBackend_Acp() when acp != null:
+return acp(_that.reference);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeNativeAgentConfig config,  BridgeThreadStatus status)  native,required TResult Function( BridgeAcpSessionReference reference)  acp,}) {final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native():
+return native(_that.config,_that.status);case BridgeAgentBackend_Acp():
+return acp(_that.reference);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeNativeAgentConfig config,  BridgeThreadStatus status)?  native,TResult? Function( BridgeAcpSessionReference reference)?  acp,}) {final _that = this;
+switch (_that) {
+case BridgeAgentBackend_Native() when native != null:
+return native(_that.config,_that.status);case BridgeAgentBackend_Acp() when acp != null:
+return acp(_that.reference);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAgentBackend_Native extends BridgeAgentBackend {
+  const BridgeAgentBackend_Native({required this.config, required this.status}): super._();
+
+
+ final  BridgeNativeAgentConfig config;
+ final  BridgeThreadStatus status;
+
+/// Create a copy of BridgeAgentBackend
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAgentBackend_NativeCopyWith<BridgeAgentBackend_Native> get copyWith => _$BridgeAgentBackend_NativeCopyWithImpl<BridgeAgentBackend_Native>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBackend_Native&&(identical(other.config, config) || other.config == config)&&(identical(other.status, status) || other.status == status));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,config,status);
+}
+
+@override
+String toString() {
+    return 'BridgeAgentBackend.native(config: $config, status: $status)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAgentBackend_NativeCopyWith<$Res> implements $BridgeAgentBackendCopyWith<$Res> {
+  factory $BridgeAgentBackend_NativeCopyWith(BridgeAgentBackend_Native value, $Res Function(BridgeAgentBackend_Native) _then) = _$BridgeAgentBackend_NativeCopyWithImpl;
+@useResult
+$Res call({
+ BridgeNativeAgentConfig config, BridgeThreadStatus status
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAgentBackend_NativeCopyWithImpl<$Res>
+    implements $BridgeAgentBackend_NativeCopyWith<$Res> {
+  _$BridgeAgentBackend_NativeCopyWithImpl(this._self, this._then);
+
+  final BridgeAgentBackend_Native _self;
+  final $Res Function(BridgeAgentBackend_Native) _then;
+
+/// Create a copy of BridgeAgentBackend
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? config = null,Object? status = null,}) {
+  return _then(BridgeAgentBackend_Native(
+config: null == config ? _self.config : config // ignore: cast_nullable_to_non_nullable
+as BridgeNativeAgentConfig,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
+as BridgeThreadStatus,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAgentBackend_Acp extends BridgeAgentBackend {
+  const BridgeAgentBackend_Acp({required this.reference}): super._();
+
+
+ final  BridgeAcpSessionReference reference;
+
+/// Create a copy of BridgeAgentBackend
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAgentBackend_AcpCopyWith<BridgeAgentBackend_Acp> get copyWith => _$BridgeAgentBackend_AcpCopyWithImpl<BridgeAgentBackend_Acp>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBackend_Acp&&(identical(other.reference, reference) || other.reference == reference));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,reference);
+}
+
+@override
+String toString() {
+    return 'BridgeAgentBackend.acp(reference: $reference)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAgentBackend_AcpCopyWith<$Res> implements $BridgeAgentBackendCopyWith<$Res> {
+  factory $BridgeAgentBackend_AcpCopyWith(BridgeAgentBackend_Acp value, $Res Function(BridgeAgentBackend_Acp) _then) = _$BridgeAgentBackend_AcpCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAcpSessionReference reference
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAgentBackend_AcpCopyWithImpl<$Res>
+    implements $BridgeAgentBackend_AcpCopyWith<$Res> {
+  _$BridgeAgentBackend_AcpCopyWithImpl(this._self, this._then);
+
+  final BridgeAgentBackend_Acp _self;
+  final $Res Function(BridgeAgentBackend_Acp) _then;
+
+/// Create a copy of BridgeAgentBackend
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? reference = null,}) {
+  return _then(BridgeAgentBackend_Acp(
+reference: null == reference ? _self.reference : reference // ignore: cast_nullable_to_non_nullable
+as BridgeAcpSessionReference,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeAgentBinding {
 
 
@@ -120,11 +418,11 @@ return acp(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult Function( String accountId,  BigInt connectionRevision)?  acp,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult Function( String accountId)?  acp,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native() when native != null:
 return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp() when acp != null:
-return acp(_that.accountId,_that.connectionRevision);case _:
+return acp(_that.accountId);case _:
   return orElse();
 
 }
@@ -142,11 +440,11 @@ return acp(_that.accountId,_that.connectionRevision);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)  native,required TResult Function( String accountId,  BigInt connectionRevision)  acp,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)  native,required TResult Function( String accountId)  acp,}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native():
 return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp():
-return acp(_that.accountId,_that.connectionRevision);}
+return acp(_that.accountId);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -160,11 +458,11 @@ return acp(_that.accountId,_that.connectionRevision);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult? Function( String accountId,  BigInt connectionRevision)?  acp,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeNewThreadModelRoute? route,  String? systemInstructions)?  native,TResult? Function( String accountId)?  acp,}) {final _that = this;
 switch (_that) {
 case BridgeAgentBinding_Native() when native != null:
 return native(_that.route,_that.systemInstructions);case BridgeAgentBinding_Acp() when acp != null:
-return acp(_that.accountId,_that.connectionRevision);case _:
+return acp(_that.accountId);case _:
   return null;
 
 }
@@ -246,11 +544,10 @@ as String?,
 
 
 class BridgeAgentBinding_Acp extends BridgeAgentBinding {
-  const BridgeAgentBinding_Acp({required this.accountId, required this.connectionRevision}): super._();
+  const BridgeAgentBinding_Acp({required this.accountId}): super._();
 
 
  final  String accountId;
- final  BigInt connectionRevision;
 
 /// Create a copy of BridgeAgentBinding
 /// with the given fields replaced by the non-null parameter values.
@@ -262,18 +559,18 @@ $BridgeAgentBinding_AcpCopyWith<BridgeAgentBinding_Acp> get copyWith => _$Bridge
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBinding_Acp&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.connectionRevision, connectionRevision) || other.connectionRevision == connectionRevision));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentBinding_Acp&&(identical(other.accountId, accountId) || other.accountId == accountId));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,accountId,connectionRevision);
+    return Object.hash(runtimeType,accountId);
 }
 
 @override
 String toString() {
-    return 'BridgeAgentBinding.acp(accountId: $accountId, connectionRevision: $connectionRevision)';
+    return 'BridgeAgentBinding.acp(accountId: $accountId)';
 }
 
 
@@ -284,7 +581,7 @@ abstract mixin class $BridgeAgentBinding_AcpCopyWith<$Res> implements $BridgeAge
   factory $BridgeAgentBinding_AcpCopyWith(BridgeAgentBinding_Acp value, $Res Function(BridgeAgentBinding_Acp) _then) = _$BridgeAgentBinding_AcpCopyWithImpl;
 @useResult
 $Res call({
- String accountId, BigInt connectionRevision
+ String accountId
 });
 
 
@@ -301,11 +598,10 @@ class _$BridgeAgentBinding_AcpCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAgentBinding
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? accountId = null,Object? connectionRevision = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? accountId = null,}) {
   return _then(BridgeAgentBinding_Acp(
 accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
-as String,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
-as BigInt,
+as String,
   ));
 }
 

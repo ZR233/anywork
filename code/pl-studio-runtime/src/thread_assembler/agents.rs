@@ -62,20 +62,19 @@ impl AgentHost {
             .entries
             .get(id)
             .ok_or_else(|| ControlError::Missing(id.into()))?;
+        let native = entry.native().map_err(|_| ControlError::Closed)?;
         if state.closing
             || state.sealed_agents.contains_key(id)
             || entry.identity != self.identity
-            || !self
-                .resources
-                .ptr_eq(&Arc::downgrade(&entry.native.resources))
-            || !entry.native.ready
-            || entry.native.purpose != super::EntryPurpose::Execution
-            || entry.native.workspace_disposition.is_some()
-            || entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Open
+            || !self.resources.ptr_eq(&Arc::downgrade(&native.resources))
+            || !native.ready
+            || native.purpose != super::EntryPurpose::Execution
+            || native.workspace_disposition.is_some()
+            || native.thread.snapshot().lifecycle != ThreadLifecycle::Open
         {
             return Err(ControlError::Closed);
         }
-        if crate::studio::agent_close::is_explicitly_closed(&entry.native.thread.snapshot())
+        if crate::studio::agent_close::is_explicitly_closed(&native.thread.snapshot())
             .map_err(|source| ControlError::service(super::agent_services::ServiceError(source)))?
         {
             return Err(ControlError::Closed);
@@ -169,7 +168,9 @@ fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
 
 fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlError> {
     if !state.entries.get(caller).is_some_and(|entry| {
-        entry.native.ready && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+        entry.native().is_ok_and(|native| {
+            native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+        })
     }) {
         return Err(ControlError::Missing(caller.into()));
     }
@@ -333,9 +334,15 @@ impl AgentHost {
                 .entries
                 .get(&caller)
                 .ok_or_else(|| ControlError::Missing(caller.clone()))?;
-            crate::studio::delegation::saved(&caller.native.thread.snapshot())
-                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
-                .ok_or_else(|| ControlError::Missing("saved delegation selection".into()))?
+            crate::studio::delegation::saved(
+                &caller
+                    .native()
+                    .map_err(|_| ControlError::Closed)?
+                    .thread
+                    .snapshot(),
+            )
+            .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
+            .ok_or_else(|| ControlError::Missing("saved delegation selection".into()))?
         };
         let factory = owner
             .child_factory(&context)
@@ -763,14 +770,23 @@ impl AgentControlHost for AgentHost {
                 .entries
                 .get(&message.target)
                 .filter(|entry| {
-                    entry.native.ready
-                        && State::membership_parent(&state.by_agent, entry) == Some(caller)
+                    entry.native().is_ok_and(|native| {
+                        native.ready
+                            && State::membership_parent(&state.by_agent, entry) == Some(caller)
+                    })
                 })
                 .ok_or_else(|| ControlError::Relationship {
                     caller: caller.into(),
                     target: message.target.clone(),
                 })?;
-            (entry.native.thread.clone(), entry.native.execution)
+            (
+                entry
+                    .native()
+                    .map_err(|_| ControlError::Closed)?
+                    .thread
+                    .clone(),
+                entry.native().map_err(|_| ControlError::Closed)?.execution,
+            )
         };
         let delivery = pl_core::thread::inbox::ThreadMessage {
             kind: pl_core::context::AgentMessageKind::Report,
@@ -834,7 +850,7 @@ impl AgentControlHost for AgentHost {
             if !state
                 .entries
                 .get(caller)
-                .is_some_and(|entry| entry.native.ready)
+                .is_some_and(|entry| entry.native().is_ok_and(|native| native.ready))
             {
                 return Err(ControlError::Missing(caller.into()));
             }
@@ -857,11 +873,17 @@ impl AgentControlHost for AgentHost {
                 )?;
             }
             for (id, entry) in &state.entries {
-                let snapshot = entry.native.thread.snapshot();
+                let snapshot = entry
+                    .native()
+                    .map_err(|_| ControlError::Closed)?
+                    .thread
+                    .snapshot();
                 if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
-                if !entry.native.ready && snapshot.lifecycle == ThreadLifecycle::Open {
+                if !entry.native().map_err(|_| ControlError::Closed)?.ready
+                    && snapshot.lifecycle == ThreadLifecycle::Open
+                {
                     if !rows.contains_key(id) {
                         push_preparing_row(
                             &state,
@@ -938,8 +960,17 @@ impl AgentControlHost for AgentHost {
                 .get(target)
                 .ok_or_else(|| ControlError::Missing(target.into()))?;
             (
-                entry.native.thread.clone(),
-                entry.native.thread.snapshot().execution,
+                entry
+                    .native()
+                    .map_err(|_| ControlError::Closed)?
+                    .thread
+                    .clone(),
+                entry
+                    .native()
+                    .map_err(|_| ControlError::Closed)?
+                    .thread
+                    .snapshot()
+                    .execution,
             )
         };
         let Some(execution) = execution else {
@@ -1025,9 +1056,13 @@ impl SessionRuntime {
             let entry = state
                 .entries
                 .get(id)
-                .filter(|entry| entry.native.thread.same_instance(thread))
+                .filter(|entry| {
+                    entry
+                        .native()
+                        .is_ok_and(|native| native.thread.same_instance(thread))
+                })
                 .ok_or(ThreadAssemblyError::Closed)?;
-            (entry.identity.clone(), entry.native.resources.clone())
+            (entry.identity.clone(), entry.native()?.resources.clone())
         };
         self.agent_control_tools(&identity, &resources, profiles, selection)
     }

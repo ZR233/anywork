@@ -1,10 +1,11 @@
 //! ACP 接入与认证的 Bridge DTO。
 //!
-//! 这里是 FRB 侧的镜像类型，字段与 `pl_protocol::studio::acp` 一一对应；不含任何凭据、原始进程
-//! 输出或 SDK 类型。Dart 只消费这些 canonical 快照与命令回执（见 design/25）。
+//! 这里是 FRB 侧的镜像类型，字段与 `pl_protocol::studio::acp` 一一对应；不含认证凭据、原始进程
+//! 输出或 SDK 类型。编辑投影保留调用方配置的 env，不能作为诊断输出。
 //!
-//! 与 wire 一致，这里没有 program/argv：官方 server 的版本与启动命令属于产品固定清单与受管安装
-//! 事实，客户端不能提交，也不会从任何桥接口恢复自定义执行能力。
+//! 通用接入保留独立的 command、args 与 env；受管接入通过可选 template 标识。
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -17,12 +18,17 @@ pub enum BridgeAcpProvider {
     Antigravity,
 }
 
-/// canonical 设置中的一条 ACP 接入（不含 secret）。
+/// canonical 设置中的一条 ACP 接入编辑投影。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeAcpAccountSettings {
     pub account_id: String,
     pub name: String,
-    pub provider: BridgeAcpProvider,
+    pub template: Option<BridgeAcpProvider>,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub document_revision: u64,
     /// runtime 拥有的非密钥连接身份；名称编辑不改变它。
     pub connection_revision: u64,
 }
@@ -53,7 +59,11 @@ pub struct BridgeAcpAccountCatalog {
 pub struct BridgeAcpAccountUpdate {
     pub account_id: String,
     pub name: String,
-    pub provider: BridgeAcpProvider,
+    pub template: Option<BridgeAcpProvider>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: HashMap<String, String>,
+    pub enabled: bool,
 }
 
 // ── 认证观察 ──

@@ -4968,7 +4968,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'No API key needed — the official program handles sign-in.';
 
   @override
-  String get acpAccountSaveAndConnect => 'Save and connect';
+  String get acpAccountSaveAndConnect => 'Add and connect';
 
   @override
   String acpAccountSavedConnectIncomplete(String reason) {
@@ -6306,4 +6306,86 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get composerEffortUnsupported =>
       'The current model does not support reasoning effort';
+
+  @override
+  String get acpAccountSource => 'Connection';
+
+  @override
+  String get acpSourceLocal => 'Local agy';
+
+  @override
+  String get acpSourceCommand => 'Custom command';
+
+  @override
+  String get acpSourceManaged => 'Managed installation';
+
+  @override
+  String get acpCommandLabel => 'Program';
+
+  @override
+  String get acpArgsLabel => 'Arguments';
+
+  @override
+  String get acpArgumentLabel => 'Argument';
+
+  @override
+  String get acpAddArgument => 'Add argument';
+
+  @override
+  String get acpEnvironmentLabel => 'Environment';
+
+  @override
+  String get acpEnvironmentKey => 'Key';
+
+  @override
+  String get acpEnvironmentValue => 'Value';
+
+  @override
+  String get acpAddEnvironment => 'Add environment variable';
+
+  @override
+  String get acpAccountEnabled => 'Enable account';
+
+  @override
+  String get acpDetectionIdle => 'Not checked';
+
+  @override
+  String get acpDetectionChecking => 'Checking local agy';
+
+  @override
+  String get acpDetectionMissing =>
+      'agy not found. Enter its path or choose another connection.';
+
+  @override
+  String get acpDetectionUnsupported =>
+      'This agy does not support ACP. Update it or choose another connection.';
+
+  @override
+  String get acpDetectionFailed => 'Detection failed. Check again.';
+
+  @override
+  String get acpDetectionCancelling => 'Cancelling detection';
+
+  @override
+  String get acpDetectionCancelled => 'Detection cancelled';
+
+  @override
+  String get acpDetectionRefresh => 'Check again';
+
+  @override
+  String get acpInvalidCommand =>
+      'Enter a PATH program name or absolute path; enter arguments separately.';
+
+  @override
+  String get acpInvalidEnvironment =>
+      'Environment keys must be unique, nonempty, and contain no equals sign.';
+
+  @override
+  String get acpRemoveEntry => 'Remove';
+
+  @override
+  String get accountsApi => 'API';
+
+  @override
+  String get accountsAcp => 'ACP';
 }

@@ -269,11 +269,13 @@ pub(crate) enum EntryPurpose {
 }
 
 use crate::session::AgentInstance;
+mod acp;
 
 type ActivationOutcome = Result<ThreadHandle, Arc<ThreadAssemblyError>>;
 #[derive(Debug)]
 struct Preparation {
-    resources: Arc<crate::session::NativeResources>,
+    resources: crate::session::PreparedResources,
+    identity: Option<pl_protocol::AgentThreadIdentity>,
     /// The factory has stopped; its original preparation still owns settlement until ACK.
     settlement: Option<WorkspacePreparationOwner>,
     purpose: Option<activation::ActivationPurpose>,
@@ -284,7 +286,8 @@ struct Preparation {
 
 #[derive(Debug)]
 struct FailedPreparation {
-    resources: Arc<crate::session::NativeResources>,
+    resources: crate::session::PreparedResources,
+    identity: Option<pl_protocol::AgentThreadIdentity>,
     settlement: Option<WorkspacePreparationOwner>,
     gate: tokio::sync::Mutex<()>,
 }
@@ -411,7 +414,7 @@ impl Drop for Registry {
             child.cancellation.cancel();
         }
         for entry in state.entries.values() {
-            entry.native.thread.request_shutdown();
+            entry.cancel();
         }
     }
 }
@@ -435,6 +438,7 @@ impl Drop for Reservation {
                 self.id.clone(),
                 Arc::new(FailedPreparation {
                     resources: preparation.resources,
+                    identity: preparation.identity,
                     settlement: preparation.settlement,
                     gate: Default::default(),
                 }),
@@ -447,6 +451,34 @@ impl Drop for Reservation {
 }
 
 impl SessionRuntime {
+    /// Retains the canonical default Thread address of a cold directory member,
+    /// without materializing any execution resources for that member.
+    pub(crate) fn retain_directory_identity(
+        &self,
+        identity: &pl_protocol::AgentThreadIdentity,
+    ) -> Result<(), ThreadAssemblyError> {
+        if &identity.session_id != self.id() {
+            return Err(ThreadAssemblyError::Identity(
+                identity.thread_id.to_string(),
+            ));
+        }
+        let mut state = self.0.state();
+        if state.closing {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        if let Some(current) = state.by_agent.get(&identity.agent_id)
+            && current != identity.thread_id.as_str()
+        {
+            return Err(ThreadAssemblyError::Identity(
+                identity.thread_id.to_string(),
+            ));
+        }
+        state
+            .by_agent
+            .insert(identity.agent_id.clone(), identity.thread_id.to_string());
+        Ok(())
+    }
+
     pub(crate) fn native_resources(
         &self,
         thread: &ThreadHandle,
@@ -455,8 +487,15 @@ impl SessionRuntime {
             .state()
             .entries
             .values()
-            .find(|entry| entry.native.thread.same_instance(thread))
-            .map(|entry| entry.native.resources.clone())
+            .find(|entry| {
+                entry
+                    .native()
+                    .is_ok_and(|native| native.thread.same_instance(thread))
+            })
+            .and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some(native.resources.clone())
+            })
             .ok_or(ThreadAssemblyError::Closed)
     }
 
@@ -501,8 +540,36 @@ impl SessionRuntime {
     async fn close_prepared_resources(
         &self,
         id: &str,
-        scope: &Arc<crate::session::NativeResources>,
+        resources: &crate::session::PreparedResources,
     ) -> Result<(), ThreadAssemblyError> {
+        let scope = match resources {
+            crate::session::PreparedResources::Native(native) => native,
+            crate::session::PreparedResources::Acp(acp) => {
+                let events = self
+                    .0
+                    .state()
+                    .agent_services
+                    .as_ref()
+                    .map(|services| services.events.clone());
+                let settlement = if let Some(events) = events {
+                    acp.settle_association(&events).await.map_err(|source| {
+                        ThreadAssemblyError::Resource {
+                            operation: "settle successful ACP session association",
+                            source: source.into_boxed_dyn_error(),
+                        }
+                    })
+                } else {
+                    Ok(())
+                };
+                let outcome = acp.close().await;
+                settlement?;
+                return if outcome.local_complete {
+                    Ok(())
+                } else {
+                    Err(ThreadAssemblyError::Unpublished(id.into()))
+                };
+            }
+        };
         scope
             .candidates
             .retry(None)
@@ -533,12 +600,15 @@ impl SessionRuntime {
         state
             .entries
             .values()
-            .map(|entry| entry.native.resources.clone())
+            .filter_map(|entry| {
+                let native = entry.native().ok()?;
+                Some(native.resources.clone())
+            })
             .chain(
                 state
                     .creating
                     .values()
-                    .map(|preparing| preparing.resources.clone()),
+                    .filter_map(|preparing| preparing.resources.native().cloned()),
             )
             .chain(
                 state
@@ -550,7 +620,7 @@ impl SessionRuntime {
                 state
                     .failed_preparations
                     .values()
-                    .map(|failed| failed.resources.clone()),
+                    .filter_map(|failed| failed.resources.native().cloned()),
             )
             .collect()
     }
@@ -628,7 +698,7 @@ impl SessionRuntime {
     pub(crate) fn ensure_agent_admission_open(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let state = self.0.state();
         if let Some(entry) = state.entries.get(id)
-            && crate::studio::agent_close::is_explicitly_closed(&entry.native.thread.snapshot())
+            && crate::studio::agent_close::is_explicitly_closed(&entry.native()?.thread.snapshot())
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "read child close intent",
                     source: source.into(),
@@ -639,8 +709,9 @@ impl SessionRuntime {
         if state.closing
             || state.sealed_agents.contains_key(id)
             || !state.entries.get(id).is_some_and(|entry| {
-                entry.native.ready
-                    && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                entry.native().is_ok_and(|native| {
+                    native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                })
             })
         {
             return Err(ThreadAssemblyError::Closed);
@@ -769,26 +840,29 @@ impl SessionRuntime {
             .get(&spec.id)
             .expect("reserved preparation")
             .resources
+            .require_native()?
             .clone();
         self.0.state().insert_entry(
             spec.id.clone(),
             crate::session::AgentInstance {
                 identity,
                 binding,
-                native: crate::session::NativeThreadRuntime {
-                    resources,
-                    purpose: EntryPurpose::Execution,
-                    workspace_usage: spec.workspace_usage.take(),
-                    close_storage: None,
-                    published_resources_closed: false,
-                    workspace_disposition: None,
-                    cleanup: Arc::new(child_resources::CleanupGate::default()),
-                    execution: spec.execution,
-                    incarnation: Arc::new(()),
-                    parent_id: spec.parent_id,
-                    ready: false,
-                    thread: thread.clone(),
-                },
+                runtime: crate::session::AgentRuntime::Native(Box::new(
+                    crate::session::NativeThreadRuntime {
+                        resources,
+                        purpose: EntryPurpose::Execution,
+                        workspace_usage: spec.workspace_usage.take(),
+                        close_storage: None,
+                        published_resources_closed: false,
+                        workspace_disposition: None,
+                        cleanup: Arc::new(child_resources::CleanupGate::default()),
+                        execution: spec.execution,
+                        incarnation: Arc::new(()),
+                        parent_id: spec.parent_id,
+                        ready: false,
+                        thread: thread.clone(),
+                    },
+                )),
             },
         );
         let mut preparation_guard = spec.preparation_guard.take();
@@ -861,7 +935,7 @@ impl SessionRuntime {
             }
             let ready = !state.unpublished_children.contains_key(&spec.id);
             let entry = state.entries.get_mut(&spec.id).ok_or(ThreadError::Closed)?;
-            entry.native.ready = ready;
+            entry.native_mut()?.ready = ready;
             Ok::<_, ThreadAssemblyError>(())
         }
         .await;
@@ -952,6 +1026,15 @@ impl SessionRuntime {
     }
 
     fn reserve(&self, id: &str, parent: Option<&str>) -> Result<Reservation, ThreadAssemblyError> {
+        self.reserve_resources(id, parent, None)
+    }
+
+    fn reserve_resources(
+        &self,
+        id: &str,
+        parent: Option<&str>,
+        resources: Option<crate::session::PreparedResources>,
+    ) -> Result<Reservation, ThreadAssemblyError> {
         if id.is_empty() || parent.is_some_and(|parent| parent.is_empty() || parent == id) {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
@@ -969,14 +1052,18 @@ impl SessionRuntime {
             return Err(ThreadAssemblyError::Identity(id.to_owned()));
         }
         if let Some(parent) = parent {
-            state
-                .entries
-                .get(parent)
-                .filter(|entry| {
-                    entry.native.ready
-                        && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
-                })
-                .ok_or_else(|| ThreadAssemblyError::Identity(parent.to_owned()))?;
+            let admitted = match state.entries.get(parent) {
+                Some(entry) => match &entry.runtime {
+                    crate::session::AgentRuntime::Native(native) => {
+                        native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    }
+                    crate::session::AgentRuntime::Acp(acp) => !acp.cancellation.is_cancelled(),
+                },
+                None => state.by_agent.values().any(|thread| thread == parent),
+            };
+            if !admitted {
+                return Err(ThreadAssemblyError::Identity(parent.to_owned()));
+            }
         }
         let mut cursor = parent;
         let mut visited = BTreeSet::new();
@@ -995,19 +1082,28 @@ impl SessionRuntime {
                         .and_then(|preparation| preparation.parent_id.as_deref())
                 });
         }
-        let resources = state
-            .unpublished_children
-            .get(id)
-            .map(|child| child.workspace.native_resources())
-            .unwrap_or_default();
+        let resources = resources.unwrap_or_else(|| {
+            crate::session::PreparedResources::Native(
+                state
+                    .unpublished_children
+                    .get(id)
+                    .map(|child| child.workspace.native_resources())
+                    .unwrap_or_default(),
+            )
+        });
+        let cancellation = match &resources {
+            crate::session::PreparedResources::Native(_) => Default::default(),
+            crate::session::PreparedResources::Acp(acp) => acp.cancellation.clone(),
+        };
         state.creating.insert(
             id.to_owned(),
             Preparation {
                 resources,
+                identity: None,
                 settlement: None,
                 purpose: None,
                 parent_id: parent.map(str::to_owned),
-                cancellation: Default::default(),
+                cancellation,
                 result: None,
             },
         );
@@ -1027,20 +1123,23 @@ impl SessionRuntime {
             .entries
             .get(id)
             .filter(|entry| {
-                entry.native.ready
-                    && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                entry.native().is_ok_and(|native| {
+                    native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                })
             })
-            .map(|entry| entry.native.thread.clone())
+            .and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some(native.thread.clone())
+            })
     }
 
     /// A resident owner's real state, including an unpublished or retryable closing owner.
     /// Reading this never activates a cold Thread or opens its history.
     pub(crate) fn observed_thread(&self, id: &str) -> Option<ThreadHandle> {
-        self.0
-            .state()
-            .entries
-            .get(id)
-            .map(|entry| entry.native.thread.clone())
+        self.0.state().entries.get(id).and_then(|entry| {
+            let native = entry.native().ok()?;
+            Some(native.thread.clone())
+        })
     }
 
     /// Returns read-only handles for all published or closing owners, including failed shutdowns.
@@ -1049,7 +1148,10 @@ impl SessionRuntime {
             .state()
             .entries
             .iter()
-            .map(|(id, entry)| (id.clone(), entry.native.thread.clone()))
+            .filter_map(|(id, entry)| {
+                let native = entry.native().ok()?;
+                Some((id.clone(), native.thread.clone()))
+            })
             .collect()
     }
 
@@ -1061,40 +1163,48 @@ impl SessionRuntime {
         if self.phase() != crate::session::SessionPhase::Open {
             return Ok(false);
         }
-        let candidate = {
-            let mut state = self.0.state();
-            if state.creating.contains_key(id)
-                || state.entries.get(id).is_some_and(|entry| {
-                    entry.identity.parent_agent_id.is_some()
-                        && entry.native.thread.snapshot().lifecycle != ThreadLifecycle::Closed
-                })
-                || state
-                    .entries
-                    .values()
-                    .any(|entry| State::membership_parent(&state.by_agent, entry) == Some(id))
-                || state
-                    .creating
-                    .values()
-                    .any(|entry| entry.parent_id.as_deref() == Some(id))
-                || state
-                    .preparing_children
-                    .values()
-                    .any(|entry| entry.parent == id)
-                || state
-                    .unpublished_children
-                    .values()
-                    .any(|entry| entry.parent == id)
+        let candidate =
             {
-                return Ok(false);
-            }
-            state.entries.get_mut(id).map(|entry| {
-                entry.native.ready = false;
-                (
-                    entry.native.incarnation.clone(),
-                    entry.native.thread.clone(),
-                )
-            })
-        };
+                let mut state = self.0.state();
+                if state.entries.get(id).is_some_and(|entry| {
+                    matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
+                }) {
+                    return Ok(false);
+                }
+                if state.creating.contains_key(id)
+                    || state.entries.get(id).is_some_and(|entry| {
+                        entry.native().is_ok_and(|native| {
+                            entry.identity.parent_agent_id.is_some()
+                                && native.thread.snapshot().lifecycle != ThreadLifecycle::Closed
+                        })
+                    })
+                    || state
+                        .entries
+                        .values()
+                        .any(|entry| State::membership_parent(&state.by_agent, entry) == Some(id))
+                    || state
+                        .creating
+                        .values()
+                        .any(|entry| entry.parent_id.as_deref() == Some(id))
+                    || state
+                        .preparing_children
+                        .values()
+                        .any(|entry| entry.parent == id)
+                    || state
+                        .unpublished_children
+                        .values()
+                        .any(|entry| entry.parent == id)
+                {
+                    return Ok(false);
+                }
+                state.entries.get_mut(id).and_then(|entry| {
+                    let native = entry.native_mut().ok()?;
+                    Some({
+                        native.ready = false;
+                        (native.incarnation.clone(), native.thread.clone())
+                    })
+                })
+            };
         let Some((incarnation, thread)) = candidate else {
             return Ok(true);
         };
@@ -1102,9 +1212,9 @@ impl SessionRuntime {
             let mut state = self.0.state();
             if !state.closing
                 && let Some(entry) = state.entries.get_mut(id)
-                && Arc::ptr_eq(&entry.native.incarnation, &incarnation)
+                && Arc::ptr_eq(&entry.native()?.incarnation, &incarnation)
             {
-                entry.native.ready = true;
+                entry.native_mut()?.ready = true;
             }
             return Ok(false);
         }
@@ -1116,8 +1226,12 @@ impl SessionRuntime {
     ///
     /// # Errors
     /// Propagates resource cleanup or concurrent preparation failures without removing the owner.
-    pub async fn close_tree(&self, root: &str) -> Result<(), ThreadAssemblyError> {
-        self.close_tree_with_purpose(root, &[], ClosePurpose::Preserve)
+    pub(crate) async fn close_tree(
+        &self,
+        root: &str,
+        members: &[crate::studio::store::thread_preparation::PreparationIdentity],
+    ) -> Result<(), ThreadAssemblyError> {
+        self.close_tree_with_purpose(root, members, ClosePurpose::Preserve)
             .await
     }
 
@@ -1197,9 +1311,12 @@ impl SessionRuntime {
             targets
                 .iter()
                 .filter_map(|(_, id)| {
-                    state.entries.get_mut(id).map(|entry| {
-                        entry.native.ready = false;
-                        (id.clone(), entry.native.thread.clone())
+                    state.entries.get_mut(id).and_then(|entry| {
+                        let native = entry.native_mut().ok()?;
+                        Some({
+                            native.ready = false;
+                            (id.clone(), native.thread.clone())
+                        })
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1364,6 +1481,15 @@ impl SessionRuntime {
         if let Some((_, thread)) = self.admit_thread_close(id)? {
             drop(self.prepare_close_for_purpose(id, &thread, purpose));
         }
+        let acp = self
+            .0
+            .state()
+            .entries
+            .get(id)
+            .is_some_and(|entry| matches!(entry.runtime, crate::session::AgentRuntime::Acp(_)));
+        if acp {
+            return self.close_thread_for_purpose(id, operation, purpose).await;
+        }
         drop(operation);
         if purpose == ClosePurpose::Preserve {
             self.retry_failed_review_deliveries(id)
@@ -1394,6 +1520,11 @@ impl SessionRuntime {
         let mut state = self.0.state();
         if let Some(preparation) = state.creating.get(id) {
             preparation.cancellation.cancel();
+        }
+        if let Some(entry) = state.entries.get(id)
+            && let crate::session::AgentRuntime::Acp(acp) = &entry.runtime
+        {
+            acp.cancel();
         }
         if state.preparing_children.contains_key(id) {
             return Err(ThreadAssemblyError::Preparing(id.into()));
@@ -1435,12 +1566,12 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Preparing(child.clone()));
         }
-        Ok(state.entries.get_mut(id).map(|entry| {
-            entry.native.ready = false;
-            (
-                entry.native.incarnation.clone(),
-                entry.native.thread.clone(),
-            )
+        Ok(state.entries.get_mut(id).and_then(|entry| {
+            let native = entry.native_mut().ok()?;
+            Some({
+                native.ready = false;
+                (native.incarnation.clone(), native.thread.clone())
+            })
         }))
     }
 
@@ -1458,7 +1589,10 @@ impl SessionRuntime {
             let preparing = {
                 let mut state = self.0.state();
                 if let Some(entry) = state.entries.get_mut(id) {
-                    entry.native.ready = false;
+                    match &mut entry.runtime {
+                        crate::session::AgentRuntime::Native(native) => native.ready = false,
+                        crate::session::AgentRuntime::Acp(acp) => acp.cancel(),
+                    }
                 }
                 state
                     .preparing_children
@@ -1485,7 +1619,37 @@ impl SessionRuntime {
                 return Err(ThreadAssemblyError::Preparing(child.clone()));
             }
         }
-        let thread = Self::close_entry(&mut self.0.state(), id)?;
+        let (thread, acp) = {
+            let mut state = self.0.state();
+            let thread = Self::close_entry(&mut state, id)?;
+            let acp = state
+                .entries
+                .get(id)
+                .and_then(|entry| match &entry.runtime {
+                    crate::session::AgentRuntime::Acp(acp) => Some(acp.clone()),
+                    crate::session::AgentRuntime::Native(_) => None,
+                });
+            (thread, acp)
+        };
+        if let Some(acp) = acp {
+            let outcome = acp.close().await;
+            if outcome.local_complete {
+                let mut state = self.0.state();
+                if state
+                    .entries
+                    .get(id)
+                    .is_some_and(|entry| match &entry.runtime {
+                        crate::session::AgentRuntime::Acp(current) => Arc::ptr_eq(current, &acp),
+                        crate::session::AgentRuntime::Native(_) => false,
+                    })
+                {
+                    state.remove_entry(id);
+                }
+            } else {
+                return Err(ThreadAssemblyError::Unpublished(id.into()));
+            }
+            return Ok(());
+        }
         let Some((incarnation, thread)) = thread else {
             return Ok(());
         };
@@ -1515,13 +1679,11 @@ impl SessionRuntime {
                 source: source.into(),
             })?;
         let operation = self.agent_operation(id).await;
-        if self
-            .0
-            .state()
-            .entries
-            .get(id)
-            .is_some_and(|entry| !Arc::ptr_eq(&entry.native.incarnation, &incarnation))
-        {
+        if self.0.state().entries.get(id).is_some_and(|entry| {
+            entry
+                .native()
+                .is_ok_and(|native| !Arc::ptr_eq(&native.incarnation, &incarnation))
+        }) {
             return Box::pin(self.close_thread_for_purpose(id, operation, purpose)).await;
         }
         if purpose == ClosePurpose::Delete {
@@ -1557,13 +1719,11 @@ impl SessionRuntime {
                 source: source.into(),
             })?;
         let operation = self.agent_operation(id).await;
-        if self
-            .0
-            .state()
-            .entries
-            .get(id)
-            .is_some_and(|entry| !Arc::ptr_eq(&entry.native.incarnation, &incarnation))
-        {
+        if self.0.state().entries.get(id).is_some_and(|entry| {
+            entry
+                .native()
+                .is_ok_and(|native| !Arc::ptr_eq(&native.incarnation, &incarnation))
+        }) {
             return Box::pin(self.close_thread_for_purpose(id, operation, purpose)).await;
         }
         let resources = self.native_resources(&thread)?;
@@ -1589,11 +1749,11 @@ impl SessionRuntime {
         }
         let removed = {
             let mut state = self.0.state();
-            if state
-                .entries
-                .get(id)
-                .is_some_and(|entry| Arc::ptr_eq(&entry.native.incarnation, &incarnation))
-            {
+            if state.entries.get(id).is_some_and(|entry| {
+                entry
+                    .native()
+                    .is_ok_and(|native| Arc::ptr_eq(&native.incarnation, &incarnation))
+            }) {
                 state.remove_entry(id)
             } else {
                 None
@@ -1689,6 +1849,12 @@ impl SessionRuntime {
         let (preparing, executing, resources) = {
             let mut state = self.0.state();
             state.closing = true;
+            for preparation in state.creating.values() {
+                preparation.resources.cancel();
+            }
+            for failed in state.failed_preparations.values() {
+                failed.resources.cancel();
+            }
             let preparing = state
                 .preparing_children
                 .values()
@@ -1700,23 +1866,34 @@ impl SessionRuntime {
                         .map(|preparation| preparation.cancellation.clone()),
                 )
                 .collect::<Vec<_>>();
+            for entry in state.entries.values() {
+                if let crate::session::AgentRuntime::Acp(acp) = &entry.runtime {
+                    acp.cancel();
+                }
+            }
             let executing = state
                 .entries
                 .values_mut()
-                .map(|entry| {
-                    entry.native.ready = false;
-                    entry.native.thread.clone()
+                .filter_map(|entry| {
+                    let native = entry.native_mut().ok()?;
+                    Some({
+                        native.ready = false;
+                        native.thread.clone()
+                    })
                 })
                 .collect::<Vec<_>>();
             let resources = state
                 .entries
                 .values()
-                .map(|entry| entry.native.resources.clone())
+                .filter_map(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.resources.clone())
+                })
                 .chain(
                     state
                         .creating
                         .values()
-                        .map(|preparation| preparation.resources.clone()),
+                        .filter_map(|preparation| preparation.resources.native().cloned()),
                 )
                 .chain(
                     state
@@ -1728,7 +1905,7 @@ impl SessionRuntime {
                     state
                         .failed_preparations
                         .values()
-                        .map(|failed| failed.resources.clone()),
+                        .filter_map(|failed| failed.resources.native().cloned()),
                 )
                 .collect::<Vec<_>>();
             (preparing, executing, resources)
@@ -2025,7 +2202,7 @@ impl SessionRuntime {
     /// 覆盖两类真实依赖：节点**自身**的创建准备（`creating`/`preparing_children` 含该 id），以及
     /// 节点**子项**的创建准备（`creating` 的 parent/`preparing_children` 的 parent 指向该 id）。
     /// 取消已由 `close_session` 会话内广播；这里只在该节点确有对应准备过程时等待其真实离开注册表，不等待
-    /// 任何其他分支或全局集合。`closing`/`entry.native.ready=false` 保证等待期间不会产生新的子过程。
+    /// 任何其他分支或全局集合。`closing`/`entry.native_mut()?.ready =false` 保证等待期间不会产生新的子过程。
     async fn await_own_preparations_drained(&self, id: &str) {
         loop {
             let changed = self.0.changed.notified();

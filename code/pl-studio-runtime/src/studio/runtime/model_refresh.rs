@@ -83,8 +83,9 @@ impl StudioRuntime {
             ThreadModel::new(ModelRuntime::from_route(&route)?, route.reasoning_config())
                 .validate_context_origin(&state.context)?;
             if !is_child {
+                let directory_mode = record.mode.context("Native root has no saved Mode")?;
                 let mode_id =
-                    crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(record.mode);
+                    crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(directory_mode);
                 crate::mode::saved_registered_mode(&state)?
                     .or_else(|| self.thread_modes.snapshot().mode(&mode_id))
                     .context("current Thread Mode is unavailable")?;

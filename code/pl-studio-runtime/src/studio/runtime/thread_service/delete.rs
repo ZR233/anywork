@@ -58,7 +58,11 @@ impl StudioRuntime {
         {
             return Ok(None);
         }
-        let root = self.store.read_thread(&root_id).await?;
+        let root = self
+            .agent_facility
+            .product_events
+            .directory_member(&root_id)?
+            .or(self.store.directory_member(&root_id)?);
         if let Some(root) = &root {
             ensure!(
                 root.parent_thread_id.is_none() && root.root_thread_id == root_id,
@@ -81,7 +85,7 @@ impl StudioRuntime {
         };
         let workspace_id = root
             .as_ref()
-            .map(|root| root.workspace_id.as_str())
+            .map(|root| root.session.workspace_id.as_str())
             .or_else(|| {
                 previous
                     .as_ref()
@@ -147,7 +151,8 @@ impl StudioRuntime {
             .context("delete preparations did not join")??;
             let tree = self.store.read_directory_tree(&root_id).await?;
             ensure!(
-                tree.iter().all(|thread| ids.contains(&thread.id)),
+                tree.iter()
+                    .all(|thread| ids.contains(&thread.agent.thread_id)),
                 "delete scope gained an unfrozen member"
             );
             let archive = self
@@ -165,6 +170,10 @@ impl StudioRuntime {
                     .iter_mut()
                     .find(|original| original.identity == member.identity)
                     .context("delete member changed its original identity")?;
+                ensure!(
+                    original.association_only == member.association_only,
+                    "delete backend changed"
+                );
                 if original.execution == PreparationBinding::Unbound {
                     original.execution = member.execution;
                 } else {
@@ -204,7 +213,10 @@ impl StudioRuntime {
             for member in &mut operation.members {
                 member.execution_removal_started = false;
                 member.host_removal_started = false;
-                if let PreparationBinding::Bound { identity } = &member.execution {
+                if member.association_only {
+                    member.execution_deleted = true;
+                    member.host_deleted = true;
+                } else if let PreparationBinding::Bound { identity } = &member.execution {
                     member.execution_deleted = archive
                         .worktrees
                         .iter()
@@ -221,11 +233,20 @@ impl StudioRuntime {
             // remain registered until their actual pools have released in-flight SQL.
             let histories = {
                 let _admission = self.store.deletion_storage_admission().await;
-                ids.iter()
+                operation
+                    .members
+                    .iter()
+                    .filter(|member| !member.association_only)
+                    .map(|member| &member.identity.thread_id)
                     .filter_map(|id| self.store.thread_persistence().shared_history(id))
                     .collect::<Vec<_>>()
             };
-            for id in &ids {
+            for id in operation
+                .members
+                .iter()
+                .filter(|member| !member.association_only)
+                .map(|member| &member.identity.thread_id)
+            {
                 self.thread_observations
                     .observation_slot(id)
                     .close_readers()
@@ -357,14 +378,20 @@ impl StudioRuntime {
             self.store.save_thread_delete(&operation).await?;
         }
         let next_root = {
-            let mut roots = self.store.list_root_threads(&workspace_id).await?;
-            roots.retain(|thread| !ids.contains(&thread.id));
+            let mut roots = self
+                .store
+                .directory_members_for_project(&workspace_id)?
+                .into_iter()
+                .filter(|member| member.agent.is_root_agent() && !member.session.archived)
+                .map(|member| member.row())
+                .collect::<Vec<_>>();
+            roots.retain(|thread| !ids.contains(&thread.thread_id));
             roots.sort_by(|left, right| {
                 right
                     .last_user_message_at
                     .unwrap_or(right.created_at)
                     .cmp(&left.last_user_message_at.unwrap_or(left.created_at))
-                    .then_with(|| right.id.cmp(&left.id))
+                    .then_with(|| right.session_id.cmp(&left.session_id))
             });
             roots.into_iter().next()
         };
@@ -799,6 +826,7 @@ fn delete_members(archive: &ThreadArchiveOperation) -> Vec<DeleteMember> {
         .members
         .iter()
         .map(|member| DeleteMember {
+            association_only: member.association_only,
             identity: PreparationIdentity {
                 thread_id: member.thread_id.clone(),
                 workspace_id: member.workspace_id.clone(),
@@ -815,6 +843,7 @@ fn delete_members(archive: &ThreadArchiveOperation) -> Vec<DeleteMember> {
             host_removal_started: false,
         })
         .chain(archive.private_members.iter().map(|member| DeleteMember {
+            association_only: false,
             identity: member.identity.clone(),
             host_session: member.host_session.clone(),
             execution: member.binding.clone(),

@@ -15,7 +15,8 @@ Map<String, dynamic> _snapshot({
       {
         'accountId': accountId,
         'name': 'Fixture',
-        'provider': 'antigravity',
+        'template': 'antigravity',
+        'command': null,
         'connectionRevision': connectionRevision,
       },
     ],

@@ -39,6 +39,7 @@ pub enum BridgeProductEventPayload {
     AccountUsageStateChanged(BridgeAccountUsageStateSnapshot),
     AcpAuthStateChanged(Box<BridgeAcpAuthSnapshot>),
     AcpInstallStateChanged(Box<BridgeAcpInstallSnapshot>),
+    AcpLocalDetectionStateChanged(Box<super::BridgeAcpLocalDetectionSnapshot>),
     SessionCostsChanged(Box<super::response::BridgeSessionCostsState>),
     ChildInteractionsChanged(Box<super::product_topic::BridgeChildInteractionsState>),
     UpdaterStateChanged(BridgeUpdaterStateSnapshot),

@@ -52,6 +52,7 @@ pub(super) fn open(
         AccountObservationTarget::Usage => StudioProductTopic::AccountUsage,
         AccountObservationTarget::AcpAuth => StudioProductTopic::AcpAuth,
         AccountObservationTarget::AcpInstall => StudioProductTopic::AcpInstall,
+        AccountObservationTarget::AcpLocalDetection => StudioProductTopic::AcpLocalDetection,
     };
     let signal = if matches!(&target, AccountObservationTarget::ChatGptLogin { .. }) {
         runtime.chatgpt_auth.subscribe()
@@ -156,6 +157,7 @@ fn stamp(frame: &AccountDomainFrame) -> &ResourceStamp {
         | AccountDomainFrame::Models { stamp, .. }
         | AccountDomainFrame::Usage { stamp, .. }
         | AccountDomainFrame::AcpAuth { stamp, .. }
-        | AccountDomainFrame::AcpInstall { stamp, .. } => stamp,
+        | AccountDomainFrame::AcpInstall { stamp, .. }
+        | AccountDomainFrame::AcpLocalDetection { stamp, .. } => stamp,
     }
 }

@@ -194,7 +194,8 @@ async fn closing_execution_accepts_only_the_original_storage_report_without_resu
             .entries
             .get_mut("parent")
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .ready = false;
         let services = fixture
             .owner
@@ -254,11 +255,11 @@ async fn closing_execution_accepts_only_the_original_storage_report_without_resu
             let state = fixture.owner.0.state();
             let entry = &state.entries["parent"];
             assert_eq!(
-                entry.native.purpose,
+                entry.native().unwrap().purpose,
                 super::super::super::EntryPurpose::Execution
             );
-            assert!(!entry.native.ready);
-            assert!(entry.native.thread.same_instance(&active));
+            assert!(!entry.native().unwrap().ready);
+            assert!(entry.native().unwrap().thread.same_instance(&active));
         }
         let after = active.snapshot();
         assert_eq!(after.execution_sequence, before.execution_sequence);
@@ -378,9 +379,16 @@ async fn cold_parent_close_recovery_releases_receiver_and_preserves_original_ack
                     .state()
                     .entries
                     .get("parent")
-                    .is_some_and(|entry| entry.native.purpose == EntryPurpose::ReportReceiver)
+                    .is_some_and(|entry| entry
+                        .native()
+                        .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
             );
-            assert!(!fixture.owner.0.state().entries["parent"].native.ready);
+            assert!(
+                !fixture.owner.0.state().entries["parent"]
+                    .native()
+                    .unwrap()
+                    .ready
+            );
             fixture.fail_sync.store(false, Ordering::SeqCst);
             fixture.fail_drain.store(false, Ordering::SeqCst);
             if matches!(path, RecoveryPath::ActivateParent) {
@@ -445,7 +453,10 @@ async fn cold_parent_close_recovery_releases_receiver_and_preserves_original_ack
         };
         assert!(fixture.owner.thread("parent").is_some());
         assert_eq!(
-            fixture.owner.0.state().entries["parent"].native.purpose,
+            fixture.owner.0.state().entries["parent"]
+                .native()
+                .unwrap()
+                .purpose,
             EntryPurpose::Execution
         );
         let mut followup = message.clone();
@@ -625,7 +636,9 @@ async fn detached_receiver_writer_retry_joins_only_the_original_binding() -> Res
             .state()
             .entries
             .get("parent")
-            .is_some_and(|entry| entry.native.purpose == EntryPurpose::ReportReceiver)
+            .is_some_and(|entry| entry
+                .native()
+                .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
     );
     let first_receipt = store
         .history("parent")
@@ -704,7 +717,8 @@ async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Resu
     }
     assert!(matches!(
         fixture.owner.0.state().entries["parent"]
-            .native
+            .native()
+            .unwrap()
             .close_storage,
         Some(CloseStorage::Pending { .. })
     ));
@@ -727,12 +741,20 @@ async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Resu
     let binding = {
         let state = fixture.owner.0.state();
         let entry = &state.entries["parent"];
-        assert!(!entry.native.ready);
-        assert!(entry.native.thread.snapshot().persistence.attached);
+        assert!(!entry.native().unwrap().ready);
+        assert!(
+            entry
+                .native()
+                .unwrap()
+                .thread
+                .snapshot()
+                .persistence
+                .attached
+        );
         let Some(CloseStorage::Attaching {
             binding,
             completion,
-        }) = &entry.native.close_storage
+        }) = &entry.native().unwrap().close_storage
         else {
             anyhow::bail!("effective attachment must retain its original shared completion");
         };
@@ -743,7 +765,8 @@ async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Resu
     assert!(activating.await.unwrap_err().is_cancelled());
     assert!(matches!(
         fixture.owner.0.state().entries["parent"]
-            .native
+            .native()
+            .unwrap()
             .close_storage,
         Some(CloseStorage::Attaching { .. })
     ));

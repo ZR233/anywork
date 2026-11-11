@@ -1479,10 +1479,39 @@ class FrbStudioTransport
   }
 
   @override
+  Future<AcpLocalDetectionCommandReply> startAcpLocalDetection({
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _acpLocalDetectionReplyFromFrb(
+      await _bridgeCall(
+        () => frb.startAcpLocalDetection(operationId: operationId.value),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpLocalDetectionCommandReply> cancelAcpLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  }) async {
+    await _ensureReady();
+    return _acpLocalDetectionReplyFromFrb(
+      await _bridgeCall(
+        () => frb.cancelAcpLocalDetection(
+          operationId: operationId.value,
+          targetOperationId: targetOperationId.value,
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<SettingsCommandReply> saveAcpAccount(
     int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
+    required BigInt? expectedDocumentRevision,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
@@ -1490,6 +1519,7 @@ class FrbStudioTransport
         () => frb.saveAcpAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          expectedDocumentRevision: expectedDocumentRevision,
           account: _acpAccountUpdateToFrb(account),
         ),
       ),
@@ -1501,6 +1531,7 @@ class FrbStudioTransport
     int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
+    required BigInt expectedDocumentRevision,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
@@ -1508,6 +1539,7 @@ class FrbStudioTransport
         () => frb.removeAcpAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          expectedDocumentRevision: expectedDocumentRevision,
           accountId: accountId,
         ),
       ),
@@ -1748,9 +1780,9 @@ class FrbStudioTransport
   }
 
   @override
-  Future<StudioThread> restoreThread(String threadId) async {
+  Future<SessionDirectoryRow> restoreThread(String threadId) async {
     await _ensureReady();
-    return _threadFromFrb(
+    return _sessionDirectoryRowFromFrb(
       await _bridgeCall(() => frb.restoreThread(threadId: threadId)),
     );
   }
@@ -1981,7 +2013,7 @@ class FrbStudioTransport
       ),
     );
     return RenameThreadCommandReply(
-      thread: _threadFromFrb(response.thread),
+      thread: _sessionDirectoryRowFromFrb(response.thread),
       receipt: _commandReceiptFromFrb(response.receipt),
     );
   }
@@ -2002,7 +2034,7 @@ class FrbStudioTransport
         removedThreadIds: response.result.removedThreadIds,
         nextRoot: response.result.nextRoot == null
             ? null
-            : _threadFromFrb(response.result.nextRoot!),
+            : _sessionDirectoryRowFromFrb(response.result.nextRoot!),
       ),
       receipt: _commandReceiptFromFrb(response.receipt),
     );
@@ -2025,7 +2057,7 @@ class FrbStudioTransport
         deletedThreadIds: response.result.deletedThreadIds,
         nextRoot: response.result.nextRoot == null
             ? null
-            : _threadFromFrb(response.result.nextRoot!),
+            : _sessionDirectoryRowFromFrb(response.result.nextRoot!),
       ),
       receipt: _commandReceiptFromFrb(response.receipt),
     );

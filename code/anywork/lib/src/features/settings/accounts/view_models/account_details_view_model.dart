@@ -182,7 +182,7 @@ class AccountDetailsViewModel extends _$AccountDetailsViewModel {
           ? null
           : AccountAcpKey(
               target: _key,
-              providerId: acp.account.provider.wire,
+              templateId: acp.account.template?.wire,
               connectionRevision: acp.account.connectionRevision,
             ),
       details: AccountDetailsPresentation(

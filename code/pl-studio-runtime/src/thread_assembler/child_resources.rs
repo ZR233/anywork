@@ -187,10 +187,10 @@ impl super::SessionRuntime {
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
-        if entry.native.thread.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Open {
+        if entry.native()?.thread.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Open {
             return Err(ThreadAssemblyError::Closed);
         }
-        entry.native.ready = true;
+        entry.native_mut()?.ready = true;
         let unpublished = state.unpublished_children.remove(id);
         drop(state);
         drop(unpublished);
@@ -253,9 +253,10 @@ impl super::SessionRuntime {
         } else {
             super::ClosePurpose::Preserve
         };
-        let closing = self.0.state().entries.get_mut(id).map(|entry| {
-            entry.native.ready = false;
-            entry.native.thread.clone()
+        let closing = self.0.state().entries.get_mut(id).and_then(|entry| {
+            let native = entry.native_mut().ok()?;
+            native.ready = false;
+            Some(native.thread.clone())
         });
         if let Some(thread) = closing {
             drop(self.prepare_close_for_purpose(id, &thread, purpose));
@@ -265,8 +266,11 @@ impl super::SessionRuntime {
         let operation = self.agent_operation(id).await;
         self.close_thread_for_purpose(id, operation, purpose)
             .await?;
-        self.close_prepared_resources(id, &pending.workspace.native_resources())
-            .await?;
+        self.close_prepared_resources(
+            id,
+            &crate::session::PreparedResources::Native(pending.workspace.native_resources()),
+        )
+        .await?;
         let services = { self.0.state().agent_services.clone() };
         let has_preparation = if let Some(services) = &services {
             if purpose == super::ClosePurpose::Delete {

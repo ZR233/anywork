@@ -49,10 +49,18 @@ impl StudioStore {
         let catalog = self.catalog();
         let deletions = Self::thread_deletes_on(db).await?;
         let mut delta = delta.clone();
+        let agents = &delta.agent_upserts;
         delta.session_upserts.retain(|session| {
+            let root = agents
+                .iter()
+                .find(|agent| agent.agent_id == session.root_agent_id)
+                .cloned()
+                .or_else(|| catalog.get_agent(&session.root_agent_id));
             !deletions.iter().any(|operation| {
                 operation.phase != super::thread_delete::DeletePhase::Sealed
-                    && operation.root_id == session.session_id
+                    && root
+                        .as_ref()
+                        .is_some_and(|root| operation.root_id == root.thread_id)
             })
         });
         delta.agent_upserts.retain(|agent| {
@@ -62,11 +70,30 @@ impl StudioStore {
             })
         });
         for session in &delta.session_upserts {
-            if let Some(root) = catalog.get_agent(&session.root_agent_id) {
-                self.prepare_session_manifest(session, &root).await?;
+            if let Some(root) = catalog.get_agent(&session.root_agent_id)
+                && matches!(
+                    root.backend,
+                    pl_protocol::session::AgentBackend::Native { .. }
+                )
+            {
+                self.prepare_session_manifest(session, &root, |id| {
+                    delta
+                        .agent_upserts
+                        .iter()
+                        .find(|agent| agent.agent_id == id)
+                        .cloned()
+                        .or_else(|| catalog.get_agent(id))
+                })
+                .await?;
             }
         }
         for agent in &delta.agent_upserts {
+            if matches!(
+                agent.backend,
+                pl_protocol::session::AgentBackend::Acp { .. }
+            ) {
+                continue;
+            }
             let session = delta
                 .session_upserts
                 .iter()
@@ -76,7 +103,15 @@ impl StudioStore {
                 .ok_or_else(|| {
                     anyhow::anyhow!("agent session is not registered: {}", agent.session_id)
                 })?;
-            self.prepare_session_manifest(&session, agent).await?;
+            self.prepare_session_manifest(&session, agent, |id| {
+                delta
+                    .agent_upserts
+                    .iter()
+                    .find(|agent| agent.agent_id == id)
+                    .cloned()
+                    .or_else(|| catalog.get_agent(id))
+            })
+            .await?;
         }
         catalog.apply_delta(delta).await
     }

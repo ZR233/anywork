@@ -20,6 +20,10 @@ const _project = StudioProject(
 );
 
 SessionDirectoryRow _thread({required String id}) => SessionDirectoryRow(
+  backend: NativeAgentBackendView(
+    config: const NativeAgentConfigView(),
+    status: ThreadStatusView.idle,
+  ),
   sessionId: 'session-$id',
   agentId: 'agent-$id',
   threadId: id,

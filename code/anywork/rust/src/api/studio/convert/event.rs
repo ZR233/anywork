@@ -86,6 +86,11 @@ pub(crate) fn bridge_product_event(
                     super::acp_install::bridge_acp_install_snapshot(*state),
                 ))
             }
+            StudioProductEventKind::AcpLocalDetectionStateChanged(state) => {
+                BridgeProductEventPayload::AcpLocalDetectionStateChanged(Box::new(
+                    super::acp_detection::bridge_acp_local_detection_snapshot(*state),
+                ))
+            }
             StudioProductEventKind::ModelPerformanceStateChanged(_) => {
                 anyhow::bail!("model performance events use the dedicated statistics feed")
             }
@@ -174,6 +179,11 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::AcpInstall(state) => BridgeProductBaseline::AcpInstall(
             Box::new(super::acp_install::bridge_acp_install_snapshot(*state)),
         ),
+        StudioProductBaselineState::AcpLocalDetection(state) => {
+            BridgeProductBaseline::AcpLocalDetection(Box::new(
+                super::acp_detection::bridge_acp_local_detection_snapshot(*state),
+            ))
+        }
         StudioProductBaselineState::ModelPerformance(_) => {
             anyhow::bail!("model performance baselines use the dedicated statistics feed")
         }

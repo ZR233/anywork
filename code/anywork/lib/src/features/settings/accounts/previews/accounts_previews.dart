@@ -702,3 +702,57 @@ AccountRowPresentation _withEnglishQuotaLabels(AccountRowPresentation row) {
     ),
   );
 }
+
+@Preview(
+  name: 'Editor / ACP / local agy available / 800',
+  group: 'Accounts · Editor',
+  size: Size(800, 900),
+)
+Widget accountAcpLocalAvailablePreview() => accountAcpEditorPreviewHost(
+  AccountPreviewFixtures.acpEditor.copyWith(
+    source: AcpAccountSource.local,
+    name: const AccountTextPresentation(raw: '本机 agy'),
+    command: 'agy',
+    args: const ['acp'],
+    environment: const [],
+    detectionPhase: AcpDetectionPhase.available,
+    detectedProgram: '/usr/local/bin/agy',
+    detectedVersion: '1.2.3',
+    canSave: true,
+    saveAndConnect: true,
+  ),
+);
+
+@Preview(
+  name: 'Editor / ACP / custom command / 408',
+  group: 'Accounts · Editor',
+  size: Size(408, 844),
+)
+Widget accountAcpCustomCommandPreview() => accountAcpEditorPreviewHost(
+  AccountPreviewFixtures.acpEditor.copyWith(
+    source: AcpAccountSource.command,
+    name: const AccountTextPresentation(raw: '工作目录代理'),
+    command: '/opt/agent/bin/agent',
+    args: const ['--label', 'work tree'],
+    environment: const [
+      AcpEnvironmentEntry(key: 'PROJECT', value: 'work tree'),
+    ],
+    canSave: true,
+    saveAndConnect: true,
+  ),
+);
+
+@Preview(
+  name: 'Editor / ACP / local agy missing / 800',
+  group: 'Accounts · Editor',
+  size: Size(800, 900),
+)
+Widget accountAcpLocalMissingPreview() => accountAcpEditorPreviewHost(
+  AccountPreviewFixtures.acpEditor.copyWith(
+    source: AcpAccountSource.local,
+    detectionPhase: AcpDetectionPhase.missing,
+    name: const AccountTextPresentation(raw: '本机 agy'),
+    canSave: true,
+    saveAndConnect: true,
+  ),
+);

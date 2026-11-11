@@ -1,6 +1,7 @@
 //! Standalone acceptance at the real runtime boundary, without touching platform Documents.
 use super::*;
 use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+use crate::studio::ThreadVisibility;
 use crate::{StudioHostKind, StudioRuntimeOptions};
 use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
 use pl_model::model::ModelInfo;
@@ -115,7 +116,7 @@ async fn archive_private_preparation_failed_retirement_survives_restart_and_pres
     runtime
         .freeze_thread_archive(
             ArchiveScope::Thread(root.id.clone()),
-            std::slice::from_ref(&root),
+            std::slice::from_ref(&runtime.store.directory_member(&root.id)?.unwrap()),
             std::slice::from_ref(&identity),
         )
         .await?;
@@ -315,7 +316,7 @@ async fn archive_temp_removes_only_bound_disposable_directories_and_restores_laz
         b"keep business"
     );
     let restored = runtime.restore_thread(thread.id.clone()).await?;
-    assert_eq!(restored.visibility, crate::studio::ThreadVisibility::Active);
+    assert!(!restored.archived);
     assert!(
         !workspace.join(files.temp()).exists(),
         "catalog restoration is not execution"

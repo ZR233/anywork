@@ -1,6 +1,7 @@
 import '../contracts/stamps.dart';
 import '../models/acp_models.dart';
 import '../models/acp_install_models.dart';
+import '../models/acp_local_detection_models.dart';
 import '../models_domain/domain/model_directory.dart';
 import '../usage/domain/account_usage.dart';
 import 'domain/account_identity.dart';
@@ -54,6 +55,12 @@ final class AcpInstallTarget extends AccountObservationTarget {
   const AcpInstallTarget();
   @override
   String get key => 'acp-install';
+}
+
+final class AcpLocalDetectionTarget extends AccountObservationTarget {
+  const AcpLocalDetectionTarget();
+  @override
+  String get key => 'acp-local-detection';
 }
 
 final class ChatGptLoginTarget extends AccountObservationTarget {
@@ -119,6 +126,13 @@ final class AcpInstallFrame extends AccountDomainFrame {
   final AcpInstallSnapshotView snapshot;
   @override
   AccountObservationTarget get target => const AcpInstallTarget();
+}
+
+final class AcpLocalDetectionFrame extends AccountDomainFrame {
+  const AcpLocalDetectionFrame(super.stamp, this.snapshot);
+  final AcpLocalDetectionSnapshotView snapshot;
+  @override
+  AccountObservationTarget get target => const AcpLocalDetectionTarget();
 }
 
 final class ChatGptLoginFrame extends AccountDomainFrame {

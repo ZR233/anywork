@@ -145,7 +145,7 @@ impl SessionRuntime {
             }) = state
                 .entries
                 .get_mut(id)
-                .and_then(|entry| entry.native.close_storage.as_mut())
+                .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
             {
                 *observation_installed = true;
             }
@@ -202,7 +202,7 @@ impl SessionRuntime {
             state
                 .entries
                 .get(id)
-                .and_then(|entry| entry.native.close_storage.as_ref()),
+                .and_then(|entry| entry.native().ok()?.close_storage.as_ref()),
             Some(super::CloseStorage::Execution {
                 observation_installed: false,
                 ..
@@ -461,10 +461,14 @@ impl SessionRuntime {
                     .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?,
             )
             .filter(|entry| {
-                entry.native.ready
-                    && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                entry.native().is_ok_and(|native| {
+                    native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                })
             })
-            .map(|entry| (entry.native.thread.clone(), entry.native.execution))
+            .and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some((native.thread.clone(), native.execution))
+            })
         };
         let Some((thread, execution)) = target else {
             return Ok(ParentMessageDelivery::Skipped(
@@ -831,24 +835,26 @@ mod storage_fault_tests {
                 crate::session::AgentInstance {
                     identity: activation.agent,
                     binding: activation.binding,
-                    native: crate::session::NativeThreadRuntime {
-                        resources: Arc::new(crate::session::NativeResources::default()),
-                        purpose: super::super::EntryPurpose::Execution,
-                        workspace_usage: None,
-                        thread: thread.clone(),
-                        parent_id: parent.map(str::to_owned),
-                        ready: true,
-                        incarnation: Arc::new(()),
-                        execution: pl_core::thread::input::InputDriverOptions {
-                            max_model_steps: pl_core::thread::ModelStepLimit::Limited(
-                                std::num::NonZeroU32::new(1).unwrap(),
-                            ),
+                    runtime: crate::session::AgentRuntime::Native(Box::new(
+                        crate::session::NativeThreadRuntime {
+                            resources: Arc::new(crate::session::NativeResources::default()),
+                            purpose: super::super::EntryPurpose::Execution,
+                            workspace_usage: None,
+                            thread: thread.clone(),
+                            parent_id: parent.map(str::to_owned),
+                            ready: true,
+                            incarnation: Arc::new(()),
+                            execution: pl_core::thread::input::InputDriverOptions {
+                                max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                                    std::num::NonZeroU32::new(1).unwrap(),
+                                ),
+                            },
+                            cleanup: Default::default(),
+                            close_storage: None,
+                            published_resources_closed: false,
+                            workspace_disposition: None,
                         },
-                        cleanup: Default::default(),
-                        close_storage: None,
-                        published_resources_closed: false,
-                        workspace_disposition: None,
-                    },
+                    )),
                 },
             );
             self.owner.publish_observation(id, &thread);

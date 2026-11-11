@@ -183,15 +183,15 @@ impl StudioThreadFactory {
         // Resolve the actual root once. Existing child worktrees keep their original receipt;
         // this boundary neither selects a new HEAD nor rebuilds the session checkout.
         let workspace_mode = thread.workspace_mode;
-        let root_thread = self.thread_record(&thread.root_thread_id).await?;
-        if root_thread.workspace_mode != workspace_mode {
+        let root_thread = self.directory_member(&thread.root_thread_id)?;
+        if root_thread.session.workspace_mode != workspace_mode {
             return Err(ThreadAssemblyError::Identity(
                 "saved child root workspace mode changed".into(),
             ));
         }
         let local_root = bot_root
             .clone()
-            .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
+            .unwrap_or_else(|| PathBuf::from(&root_thread.session.workspace_path));
         let project_copy = project.clone();
         let root = if verified.is_some() {
             PathBuf::from(&assignment.project_root)

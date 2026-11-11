@@ -62,6 +62,22 @@ pub(crate) struct StudioThreadFactory {
     >,
 }
 impl StudioThreadFactory {
+    fn directory_member(
+        &self,
+        id: &str,
+    ) -> Result<crate::studio::records::DirectoryMember, crate::thread_assembler::ThreadAssemblyError>
+    {
+        self.services
+            .product_events
+            .directory_member(id)
+            .and_then(|member| match member {
+                Some(member) => Ok(Some(member)),
+                None => self.services.store.directory_member(id),
+            })
+            .map_err(|error| errors::resource_error("read directory association", error))?
+            .ok_or_else(|| crate::thread_assembler::ThreadAssemblyError::Identity(id.into()))
+    }
+
     pub(crate) fn resource_scope(&self, id: &str) -> Option<Arc<crate::session::NativeResources>> {
         self.scopes
             .lock()
@@ -208,7 +224,12 @@ impl StudioThreadFactory {
         &self,
         id: &str,
     ) -> Result<crate::studio::ThreadRecord, crate::thread_assembler::ThreadAssemblyError> {
-        if let Some(record) = self.services.product_events.thread_snapshot(id) {
+        if let Some(record) = self
+            .services
+            .product_events
+            .thread_snapshot(id)
+            .map_err(|error| errors::resource_error("read Native association", error))?
+        {
             return Ok(crate::studio::ThreadRecord::from_directory_thread(record));
         }
         self.services

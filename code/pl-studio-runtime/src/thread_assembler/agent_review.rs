@@ -383,13 +383,18 @@ impl SessionRuntime {
         let options = {
             let state = self.0.state();
             let Some(entry) = state.entries.get(target_id).filter(|entry| {
-                entry.native.ready
-                    && super::State::membership_parent(&state.by_agent, entry)
-                        == Some(parent.as_str())
+                entry.native().is_ok_and(|native| {
+                    native.ready
+                        && super::State::membership_parent(&state.by_agent, entry)
+                            == Some(parent.as_str())
+                })
             }) else {
                 return reject(ReviewForwardReason::TargetUnavailable);
             };
-            entry.native.execution
+            let Ok(native) = entry.native() else {
+                return reject(ReviewForwardReason::TargetUnavailable);
+            };
+            native.execution
         };
         // Prove the original capability before logical/model preparation. The restricted branch
         // never invokes ordinary Execute/Prepare resolvers or refreshes a missing tool binding.

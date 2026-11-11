@@ -23,10 +23,12 @@ Future<BridgeAcpAccountCatalog> loadAcpAccountCatalog() =>
 Future<BridgeSettingsCommandReply> saveAcpAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
+  BigInt? expectedDocumentRevision,
   required BridgeAcpAccountUpdate account,
 }) => RustLib.instance.api.crateApiStudioHandlersAcpSaveAcpAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
+  expectedDocumentRevision: expectedDocumentRevision,
   account: account,
 );
 
@@ -35,10 +37,12 @@ Future<BridgeSettingsCommandReply> removeAcpAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
   required String accountId,
+  required BigInt expectedDocumentRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersAcpRemoveAcpAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   accountId: accountId,
+  expectedDocumentRevision: expectedDocumentRevision,
 );
 
 /// 当前 canonical ACP 认证快照；纯读取，不启动程序。

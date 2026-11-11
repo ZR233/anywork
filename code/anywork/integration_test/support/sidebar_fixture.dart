@@ -205,7 +205,12 @@ final class SidebarFixture {
         result.thread.id,
         title,
       );
-      return renamed ?? result.thread;
+      return renamed == null
+          ? result.thread
+          : result.thread.copyWith(
+              title: renamed.title,
+              updatedAt: renamed.updatedAt,
+            );
     } catch (error, stack) {
       try {
         record({

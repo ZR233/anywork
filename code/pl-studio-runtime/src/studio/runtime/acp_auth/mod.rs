@@ -22,7 +22,6 @@ mod operation;
 mod projection;
 mod registry;
 mod usage;
-mod worker;
 
 pub(crate) use admission::AcpAuthRuntime;
 pub(crate) use projection::acp_account_catalog;

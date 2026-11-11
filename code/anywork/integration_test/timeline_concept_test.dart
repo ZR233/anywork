@@ -511,7 +511,12 @@ final class _ConceptScene {
         'hasSnapshot': state?.hasSnapshot,
         'directoryThreadStatus': selected == null
             ? null
-            : client.threadDirectory.observedThread(selected)?.status.name,
+            : switch (client.threadDirectory
+                  .observedThread(selected)
+                  ?.backend) {
+                NativeAgentBackendView(:final status) => status.name,
+                AcpAgentBackendView() || null => null,
+              },
         'workspaceThreadStatus': state?.workspace?.thread.status.name,
         'agentStatus': client.project.state.agents?.values
             .where((agent) => agent.threadId == selected)

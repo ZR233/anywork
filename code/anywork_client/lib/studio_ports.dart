@@ -136,7 +136,7 @@ abstract class StudioTransport
     required int expectedLeaseRevision,
   });
   Future<StudioBootstrap> readBootstrap();
-  Future<StudioThread> restoreThread(String threadId);
+  Future<SessionDirectoryRow> restoreThread(String threadId);
 
   Future<void> activateProject(String workspaceId);
   Future<StudioProject> openProject(String path);

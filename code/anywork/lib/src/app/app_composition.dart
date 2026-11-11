@@ -15,6 +15,7 @@ AppGraph createProductionAppGraph({
 }) {
   return AppGraph(
     transport: FrbStudioTransport(),
+    acpBusinessPort: const FrbAcpBusinessPort(),
     statisticsFeed: const FrbStatisticsFeedPort(),
     updateApi: const FrbStudioUpdateApi(),
     updatesEnabled:

@@ -58,12 +58,9 @@ pub(super) async fn negotiate(
     if initialize.protocol_version != ProtocolVersion::V1 {
         return Err(AuthError::unsupported_version());
     }
-    if initialize
-        .agent_info
-        .as_ref()
-        .map(|info| info.version.as_str())
-        != Some(expected_server_version.as_str())
-    {
+    if expected_server_version.as_ref().is_some_and(|expected| {
+        initialize.agent_info.as_ref().map(|info| &info.version) != Some(expected)
+    }) {
         return Err(AuthError::server_version_mismatch());
     }
 
@@ -483,9 +480,10 @@ fn server_info(agent_info: Option<&Implementation>) -> Option<ServerInfo> {
 }
 
 /// 把服务端声明的方法投影为公开类型。
-fn declared_methods(declared: &[SdkAuthMethod]) -> Vec<AuthMethod> {
+pub(crate) fn declared_methods(declared: &[SdkAuthMethod]) -> Vec<AuthMethod> {
     declared
         .iter()
+        .filter(|method| matches!(method, SdkAuthMethod::Agent(_)))
         .map(|method| AuthMethod {
             id: method.id().to_string(),
             name: method.name().to_owned(),

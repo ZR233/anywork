@@ -159,6 +159,7 @@ async fn check_sealed_factory_binding(durable: bool) -> anyhow::Result<()> {
                 revision: 1,
                 worktrees: Vec::new(),
                 members: vec![ArchiveMember {
+                    association_only: false,
                     parent_id: None,
                     thread_id: "root".into(),
                     workspace_id: protocol.workspace_id.clone(),
@@ -422,6 +423,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
     for id in seal.thread_ids() {
         let paths = store.registered_session_paths(&id)?;
         members.push(ArchiveMember {
+            association_only: false,
             parent_id: (id != "root").then(|| "root".into()),
             thread_id: id,
             workspace_id: "review-workspace".into(),
@@ -496,7 +498,7 @@ async fn archive_sealed_review_feedback_remains_rejected_after_volatile_seal_dro
             .content(),
         original_body
     );
-    owner.close_tree("root").await?;
+    owner.close_tree("root", &[]).await?;
     target_projection.await?;
     reviewer_projection.await?;
     physical.shutdown().await?;

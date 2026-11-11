@@ -1,6 +1,6 @@
 # Main configuration
 
-`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 32`. A missing
+`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 33`. A missing
 file uses in-memory defaults; an invalid existing file is an error. Use Settings
 to create accounts from templates and preserve their provider-specific metadata.
 External edits require explicit settings reload; Settings saves validate and write
@@ -12,7 +12,7 @@ This minimal API-account example requires a real credential supplied through the
 environment. Do not replace an existing file wholesale with this example:
 
 ```toml
-schema_version = 32
+schema_version = 33
 
 [models.accounts.deepseek]
 template = "deepseek"
@@ -150,13 +150,32 @@ still determine whether their tools can be registered.
 ## ACP accounts
 
 ```toml
-[acp.accounts.antigravity]
-name = "Antigravity"
-provider = "antigravity"
+# <studio-home>/acp/local-agy.toml
+schema_version = 1
+id = "local-agy"
+display_name = "Local agy"
+command = "agy"
+args = ["acp"]
 ```
 
-These are separate from Native `[models.accounts]`. Both fields are required;
-`name` is nonblank, at most 200 bytes, with no control characters. Current ACP
-provider is `antigravity`. Server executable versions and argv are managed by the
-product; `program` and `args` are not accepted here. ACP accounts are not Native
-model-route candidates. Use Settings for login and availability.
+ACP definitions are separate from `config.toml` and Native `[models.accounts]`.
+Only first-level files in this user directory are read. The required `id` equals
+the filename stem and uses ASCII letters, digits, `-`, `_` or `.`, excluding empty,
+`.` and `..`. `display_name` defaults to the ID, `enabled` to true, and args/env
+to empty. A name is at most 200 bytes and contains no control characters.
+
+Choose either a PATH program name/absolute `command` plus independent `args`, or
+`template = "antigravity"` with no command/args. Both may use an explicit `[env]`
+table; do not expose values in diagnostics. There is no shell, variable or `~`
+expansion, configured cwd, model list or UI schema. Only the managed template
+requires the verified fixed `1.4.5` installation; local `agy acp` is an ordinary
+command and does not inherit that brand/version requirement.
+
+Use Settings for atomic document-CAS save/delete and explicit reload after
+external edits. Startup/reload scans this directory; ordinary reads are cache-only,
+and one bad file does not replace healthy definitions. Changing command/args/env or
+template advances the runtime connection identity; renaming does not. Existing
+business sessions retain their frozen definition after reload, disable or delete.
+Local detection only checks help/version; it neither downloads nor logs in and
+does not prove authentication. ACP accounts are not Native model-route candidates.
+Never repair a conflict by deleting migration records, definitions or credentials.

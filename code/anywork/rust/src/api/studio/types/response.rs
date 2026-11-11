@@ -582,7 +582,7 @@ pub struct StartNewThreadResponse {
 pub struct ArchiveThreadResult {
     pub archived_root_id: String,
     pub removed_thread_ids: Vec<String>,
-    pub next_root: Option<BridgeThread>,
+    pub next_root: Option<super::BridgeSessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -590,7 +590,7 @@ pub struct ArchiveThreadResult {
 pub struct DeleteThreadResult {
     pub deleted_root_id: String,
     pub deleted_thread_ids: Vec<String>,
-    pub next_root: Option<BridgeThread>,
+    pub next_root: Option<super::BridgeSessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

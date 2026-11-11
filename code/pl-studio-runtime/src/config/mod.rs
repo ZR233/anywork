@@ -4,6 +4,7 @@
 //! instructions、skills、MCP 与 UI 配置，并独占文件格式、schema 版本和默认角色。
 
 pub mod acp;
+pub mod acp_resource;
 mod agent_profile;
 mod instruction;
 mod profiles_resource;
@@ -65,7 +66,10 @@ pub use pl_tool::mcp::config::McpServerTransport;
 pub use pl_tool::mcp::config::validate_mcp_identifier;
 pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
-pub use acp::{AcpAccountConfig, AcpConfig, AcpProvider};
+pub use acp::{AcpLaunch, AcpProvider, AcpServiceDefinition};
+pub use acp_resource::{
+    AcpDefinitionEntry, AcpDefinitionError, AcpDefinitionsResource, AcpDefinitionsSnapshot,
+};
 pub(crate) use bot_credentials::{
     BotCredentialCapability, BotCredentialRef, BotCredentialRefKind, BotProtectedPayload,
     BotSecretVersion, SelectedBotCredential, try_decode_current_payload,
@@ -84,7 +88,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 32;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 33;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -159,6 +163,7 @@ impl Default for DeepSeekWebSearchConfig {
 
 /// anywork 的完整配置文档。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct StudioConfig {
     pub schema_version: u32,
     pub models: AgentModelConfig,
@@ -181,9 +186,6 @@ pub struct StudioConfig {
     pub skills: SkillsConfig,
     #[serde(default, skip_serializing_if = "StudioUiConfig::is_default")]
     pub ui: StudioUiConfig,
-    /// ACP 接入的 desired 配置；与 `models.accounts` 是两套语义，互不进入对方的候选。
-    #[serde(default, skip_serializing_if = "acp::AcpConfig::is_empty")]
-    pub acp: acp::AcpConfig,
 }
 
 impl StudioConfig {
@@ -215,7 +217,6 @@ impl StudioConfig {
             instructions: InstructionsConfig::default(),
             skills: SkillsConfig::default(),
             ui: StudioUiConfig::default(),
-            acp: acp::AcpConfig::default(),
         })
     }
 
@@ -266,7 +267,6 @@ impl StudioConfig {
             self.models.route_availability(route)?;
         }
         pl_tool::skill::validate_skills_config(&self.skills)?;
-        acp::validate_acp_config(&self.acp)?;
         Ok(())
     }
 

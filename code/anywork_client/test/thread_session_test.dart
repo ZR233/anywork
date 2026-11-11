@@ -541,6 +541,10 @@ void main() {
     );
     final snapshotThread = session.state.workspace!.thread;
     final changed = SessionDirectoryRow(
+      backend: NativeAgentBackendView(
+        config: const NativeAgentConfigView(),
+        status: ThreadStatusView.idle,
+      ),
       sessionId: 'thread',
       agentId: 'thread',
       threadId: 'thread',

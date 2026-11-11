@@ -621,7 +621,10 @@ async fn build(
                     "legacy layout journal says moved but only source exists"
                 );
             }
-            let original_manifest = SessionManifest::from_directory_facts(&session, &agent);
+            let original_manifest =
+                SessionManifest::from_directory_facts(&session, &agent, |id| {
+                    catalog.get_agent(id)
+                })?;
             if let Some(mapping) = journal.bot_roots.iter().find(|mapping| {
                 mapping
                     .threads
@@ -630,7 +633,9 @@ async fn build(
             }) {
                 session.workspace_path = mapping.new_root.clone();
             }
-            let expected = SessionManifest::from_directory_facts(&session, &agent);
+            let expected = SessionManifest::from_directory_facts(&session, &agent, |id| {
+                catalog.get_agent(id)
+            })?;
             let target = stage.session_paths(&session.workspace_id, &agent.thread_id)?;
             {
                 let source = &candidates[0];

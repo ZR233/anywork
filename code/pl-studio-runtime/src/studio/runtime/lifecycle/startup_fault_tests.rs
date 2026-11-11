@@ -443,7 +443,10 @@ async fn catalog_after_636_stale_child_modes_start_without_reset() -> Result<()>
     assert_eq!(catalog.agents().len(), 2);
     let session = catalog.get_session("cold").expect("original root");
     assert_eq!(session.root_agent_id, "cold");
-    assert_eq!(session.mode, pl_protocol::ThreadModeId::simple());
+    assert_eq!(
+        session.native_mode,
+        Some(pl_protocol::ThreadModeId::simple())
+    );
     let child = catalog
         .get_agent("synthetic-child")
         .expect("original child");

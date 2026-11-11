@@ -486,7 +486,13 @@ async fn permanent_delete_cold_missing_or_unreadable_history_skips_storage_and_t
             .commit_directory(delta)
             .await?;
         let root = crate::studio::ThreadRecord::from_directory_thread(
-            crate::studio::records::thread_projection(&session, &agent),
+            crate::studio::records::thread_projection(&session, &agent, |id| {
+                runtime
+                    .store
+                    .catalog()
+                    .get_agent(id)
+                    .map(|agent| agent.thread_id)
+            })?,
         );
         let neighbor = runtime
             .create_thread_with_id("keep-cold", &project.id, "neighbor")
@@ -727,7 +733,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
                 .result
                 .next_root
                 .as_ref()
-                .map(|root| root.id.as_str()),
+                .map(|root| root.thread_id.as_str()),
             Some(neighbor.id.as_str())
         );
         assert!(
@@ -784,7 +790,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             runtime
                 .agent_facility
                 .product_events
-                .thread_snapshot(&root.id)
+                .thread_snapshot(&root.id)?
                 .is_none()
         );
         assert_eq!(
@@ -1189,7 +1195,13 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
                 .commit_directory(delta)
                 .await?;
             let root = crate::studio::ThreadRecord::from_directory_thread(
-                crate::studio::records::thread_projection(&session, &agent),
+                crate::studio::records::thread_projection(&session, &agent, |id| {
+                    runtime
+                        .store
+                        .catalog()
+                        .get_agent(id)
+                        .map(|agent| agent.thread_id)
+                })?,
             );
             runtime.register_new_thread(root.clone()).await?;
             root

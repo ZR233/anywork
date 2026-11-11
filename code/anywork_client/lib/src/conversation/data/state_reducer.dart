@@ -9,6 +9,9 @@ ThreadSessionState applyThreadSnapshotState(
   ThreadWorkspace snapshot, {
   SessionDirectoryRow? directoryRow,
 }) {
+  if ((directoryRow ?? current.directoryRow)?.backend is AcpAgentBackendView) {
+    throw StateError('Native Thread snapshots cannot project an ACP session');
+  }
   if (snapshot.thread.id.isEmpty || snapshot.thread.id != current.threadId) {
     return current;
   }
@@ -46,6 +49,11 @@ ThreadSessionState applyThreadNotificationState(
   ThreadSessionState current,
   ThreadNotificationFrame frame,
 ) {
+  if (current.directoryRow?.backend is AcpAgentBackendView) {
+    throw StateError(
+      'Native Thread notifications cannot project an ACP session',
+    );
+  }
   if (frame.threadId != current.threadId) return current;
   if (classifyThreadFrame(current.watermark, frame) !=
       ThreadFrameDecision.apply) {

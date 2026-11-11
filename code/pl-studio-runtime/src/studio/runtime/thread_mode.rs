@@ -328,7 +328,7 @@ impl StudioRuntime {
         }
         let operation = format!("reconfigure Mode {mode_id} for Thread {thread_id}");
         let mut directory = pl_protocol::Thread::from(record);
-        directory.mode = mode_id;
+        directory.mode = Some(mode_id);
         directory.updated_at = now;
         let completion = ModeCompletion {
             operation_id,
@@ -396,7 +396,11 @@ impl StudioRuntime {
         let directory_commit = self
             .agent_facility
             .product_events
-            .commit_observed_thread_mode(&thread_id, directory.mode, directory.updated_at)
+            .commit_observed_thread_mode(
+                &thread_id,
+                directory.mode.context("Native root has no Mode")?,
+                directory.updated_at,
+            )
             .await;
         let result = match (binding_error, directory_commit) {
             (None, Ok(directory_commit)) => self

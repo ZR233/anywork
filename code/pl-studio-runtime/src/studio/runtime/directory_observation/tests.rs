@@ -18,17 +18,19 @@ fn row(id: &str, time: i64) -> pl_protocol::SessionDirectoryRow {
         thread_id: id.into(),
         workspace_id: "directory-pull-fixture".into(),
         title: id.into(),
-        mode: pl_protocol::ThreadModeId::simple(),
+        mode: Some(pl_protocol::ThreadModeId::simple()),
         workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
         delegation_mode: Default::default(),
         delegation_preference: Default::default(),
         workspace_path: format!("/tmp/{id}"),
         role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
-        binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-            route: None,
-            system_instructions: None,
-        }),
-        status: pl_protocol::ThreadStatus::Idle,
+        backend: pl_protocol::session::AgentBackend::Native {
+            config: pl_protocol::NativeAgentConfig {
+                route: None,
+                system_instructions: None,
+            },
+            status: pl_protocol::ThreadStatus::Idle,
+        },
         created_at: time,
         updated_at: time,
         last_user_message_at: None,
@@ -202,8 +204,8 @@ async fn content_only_changes_do_not_deliver_structure_or_wake_unrelated_metadat
         &pl_core::thread::ThreadSnapshot::default(),
     )?;
     assert_eq!(
-        a.next().await?.unwrap().row.unwrap().status,
-        pl_protocol::ThreadStatus::Running
+        a.next().await?.unwrap().row.unwrap().native_status(),
+        Some(pl_protocol::ThreadStatus::Running)
     );
     assert!(!metadata_has_pending(&b).await);
     assert!(futures::poll!(next_structure.as_mut()).is_pending());
@@ -306,17 +308,23 @@ async fn session_facts_notify_actual_members_with_distinct_identities() -> Resul
     child_observation.next().await?;
     unrelated.next().await?;
 
-    // A session-level Mode change affects both members, not an ID guessed from session/agent.
+    // Native mode belongs only to the root; it cannot wake or fabricate mode for a child.
     events
         .commit_observed_thread_mode(&root.thread_id, pl_protocol::ThreadModeId::task(), 2)
         .await?;
-    for observation in [&root_observation, &child_observation] {
-        assert!(metadata_has_pending(observation).await);
-        assert_eq!(
-            observation.next().await?.unwrap().row.unwrap().mode,
-            pl_protocol::ThreadModeId::task()
-        );
-    }
+    assert_eq!(
+        root_observation.next().await?.unwrap().row.unwrap().mode,
+        Some(pl_protocol::ThreadModeId::task())
+    );
+    assert!(!metadata_has_pending(&child_observation).await);
+    assert_eq!(
+        events
+            .read_thread_metadata("child-thread", "epoch")?
+            .row
+            .unwrap()
+            .mode,
+        None
+    );
     assert!(!metadata_has_pending(&unrelated).await);
     // A recent-user-message watermark is projected on the root only.
     events.record_user_message("child-thread", 3);
@@ -452,13 +460,10 @@ async fn metadata_notifications_do_not_infer_thread_from_session_or_agent() -> R
     let observed =
         ThreadMetadataObservation::open(events.clone(), "epoch".into(), "child-thread".into())?;
     observed.next().await?;
-    root.mode = pl_protocol::ThreadModeId::task();
+    root.archived = true;
     events.apply_thread_delta(vec![root], vec![]).await?;
     assert!(metadata_has_pending(&observed).await);
-    assert_eq!(
-        observed.next().await?.unwrap().row.unwrap().mode,
-        pl_protocol::ThreadModeId::task()
-    );
+    assert!(observed.next().await?.unwrap().row.unwrap().archived);
     // Removal references Thread IDs, not Agent IDs.
     events
         .apply_thread_delta(vec![], vec!["child-thread".into()])

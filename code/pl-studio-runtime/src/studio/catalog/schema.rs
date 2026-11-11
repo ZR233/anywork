@@ -1,7 +1,7 @@
-//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6 类型迁移链。
+//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6→7 类型迁移链。
 //!
 //! 历史条目的嵌套 enum / 冻结路由使用本模块的 wire 形状，不借用会演进的
-//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV6`]；owner 再
+//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV7`]；owner 再
 //! `TryFrom` 为运行期 [`super::CatalogDocument`]。V5→V6 把逐 Thread 复合身份
 //! 重组为会话/成员两级记录，缺失根、跨会话 parent 与循环都给出明确诊断。
 
@@ -21,7 +21,7 @@ pub(super) const ENTITY: &str = "catalog";
 pub(super) const SCHEMA_KEY: &str = "schemaVersion";
 
 pub(super) fn current_version() -> Result<u32> {
-    toml_schema::integer_version(CatalogV6::VERSION)
+    toml_schema::integer_version(CatalogV7::VERSION)
         .map_err(|error| toml_schema::chain_error(ENTITY, error))
 }
 
@@ -41,21 +41,46 @@ fn migrator() -> Result<&'static Migrator> {
                 .step::<CatalogV4>()
                 .step::<CatalogV5>()
                 .step::<CatalogV6>()
-                .into::<CatalogV6>(),
+                .step::<CatalogV7>()
+                .into::<CatalogV7>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(MIGRATOR.get_or_init(|| migrator))
 }
 
 pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument<CatalogDocument>> {
-    let loaded = toml_schema::load::<CatalogDocumentV1, CatalogV6>(
+    let target = current_version()?;
+    let value = toml_schema::parse(path, content, ENTITY, target)?;
+    if value.get(SCHEMA_KEY).and_then(toml::Value::as_integer) == Some(6) {
+        let mut legacy = value.clone();
+        legacy.remove(SCHEMA_KEY);
+        let legacy: CatalogV6 = legacy.try_into().map_err(|error| {
+            toml_schema::migration_error(path, ENTITY, Some(6), target, "decode", error)
+        })?;
+        if legacy
+            .agents
+            .iter()
+            .any(|agent| matches!(agent.binding, FrozenAgentBinding::Acp { .. }))
+        {
+            return Err(toml_schema::migration_error(
+                path,
+                ENTITY,
+                Some(6),
+                target,
+                "validate",
+                anyhow::anyhow!(
+                    "legacy ACP member has no real remote session reference; original catalog must be retained"
+                ),
+            ));
+        }
+    }
+    let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV7>(
         path,
-        content,
+        value,
         migrator()?,
         ENTITY,
         SCHEMA_KEY,
     )?;
-    let target = current_version()?;
     if loaded.source_version == 5 {
         validate_v5_inheritance(path, content).map_err(|error| {
             toml_schema::migration_error(path, ENTITY, Some(5), target, "validate", error)
@@ -145,10 +170,18 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
             !agent.agent_id.trim().is_empty() && !agent.thread_id.trim().is_empty(),
             "Studio catalog member identity is incomplete"
         );
-        if let pl_protocol::AgentBinding::Native(native) = &agent.binding {
+        if let pl_protocol::session::AgentBackend::Native { config: native, .. } = &agent.backend {
             ensure!(
                 native.system_instructions.is_none(),
                 "Studio catalog cannot contain Native instruction bodies"
+            );
+        }
+        if let pl_protocol::session::AgentBackend::Acp { reference } = &agent.backend {
+            ensure!(
+                !reference.account_id.trim().is_empty()
+                    && !reference.acp_session_id.trim().is_empty()
+                    && !reference.cwd.trim().is_empty(),
+                "Studio catalog ACP reference is incomplete"
             );
         }
         ensure!(
@@ -185,6 +218,20 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
     }
     // 会话的主成员必须存在且确为主成员（parent 为空并属于该会话）。
     for session in &document.sessions {
+        let root = document
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == session.root_agent_id);
+        if let Some(root) = root {
+            ensure!(
+                session.native_mode.is_some()
+                    == matches!(
+                        root.backend,
+                        pl_protocol::session::AgentBackend::Native { .. }
+                    ),
+                "Studio catalog root Native mode does not match its backend"
+            );
+        }
         ensure!(
             document.agents.iter().any(|agent| {
                 agent.agent_id == session.root_agent_id
@@ -444,6 +491,143 @@ pub(super) struct CatalogV6 {
     revision: u64,
     sessions: Vec<CatalogSessionV6>,
     agents: Vec<CatalogAgentV6>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
+#[versioned(version = "7.0.0")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CatalogV7 {
+    revision: u64,
+    sessions: Vec<CatalogSessionV7>,
+    agents: Vec<CatalogAgentV7>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogSessionV7 {
+    session_id: String,
+    root_agent_id: String,
+    workspace_id: String,
+    title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_mode: Option<FrozenModeId>,
+    workspace_mode: FrozenWorkspaceMode,
+    delegation_mode: FrozenDelegationMode,
+    delegation_preference: FrozenDelegationPreference,
+    workspace_path: String,
+    created_at: i64,
+    updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_user_message_at: Option<i64>,
+    archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogAgentV7 {
+    agent_id: String,
+    session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<String>,
+    thread_id: String,
+    role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    backend: FrozenBackendV7,
+    explicitly_closed: bool,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum FrozenBackendV7 {
+    Native {
+        config: FrozenNativeConfigV7,
+        status: FrozenThreadStatus,
+    },
+    Acp {
+        reference: FrozenAcpReferenceV7,
+    },
+    // The migration library's step is infallible. Carry the original invalid fact
+    // to the fallible owner conversion; never serialize or admit it as current wire.
+    #[serde(skip)]
+    LegacyAcpWithoutReference {
+        account_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenNativeConfigV7 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<FrozenModelRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenAcpReferenceV7 {
+    account_id: String,
+    acp_session_id: String,
+    cwd: String,
+}
+
+impl MigratesTo<CatalogV7> for CatalogV6 {
+    fn migrate(self) -> CatalogV7 {
+        let sessions = self
+            .sessions
+            .into_iter()
+            .map(|session| {
+                let native = self.agents.iter().any(|agent| {
+                    agent.agent_id == session.root_agent_id
+                        && matches!(agent.binding, FrozenAgentBinding::Native { .. })
+                });
+                CatalogSessionV7 {
+                    session_id: session.session_id,
+                    root_agent_id: session.root_agent_id,
+                    workspace_id: session.workspace_id,
+                    title: session.title,
+                    native_mode: native.then_some(session.mode),
+                    workspace_mode: session.workspace_mode,
+                    delegation_mode: session.delegation_mode,
+                    delegation_preference: session.delegation_preference,
+                    workspace_path: session.workspace_path,
+                    created_at: session.created_at,
+                    updated_at: session.updated_at,
+                    last_user_message_at: session.last_user_message_at,
+                    archived: session.archived,
+                }
+            })
+            .collect();
+        CatalogV7 {
+            revision: self.revision,
+            sessions,
+            agents: self
+                .agents
+                .into_iter()
+                .map(|agent| CatalogAgentV7 {
+                    agent_id: agent.agent_id,
+                    session_id: agent.session_id,
+                    parent_agent_id: agent.parent_agent_id,
+                    thread_id: agent.thread_id,
+                    role: agent.role,
+                    title: agent.title,
+                    backend: match agent.binding {
+                        FrozenAgentBinding::Native { route } => FrozenBackendV7::Native {
+                            config: FrozenNativeConfigV7 { route },
+                            status: agent.status,
+                        },
+                        FrozenAgentBinding::Acp { account_id, .. } => {
+                            FrozenBackendV7::LegacyAcpWithoutReference { account_id }
+                        }
+                    },
+                    explicitly_closed: agent.explicitly_closed,
+                    created_at: agent.created_at,
+                    updated_at: agent.updated_at,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -772,16 +956,16 @@ fn migrate_v5_to_v6(document: CatalogV5) -> CatalogV6 {
     }
 }
 
-impl IntoDomain<CatalogV6> for CatalogV6 {
-    fn into_domain(self) -> CatalogV6 {
+impl IntoDomain<CatalogV7> for CatalogV7 {
+    fn into_domain(self) -> CatalogV7 {
         self
     }
 }
 
-impl TryFrom<CatalogV6> for CatalogDocument {
+impl TryFrom<CatalogV7> for CatalogDocument {
     type Error = anyhow::Error;
 
-    fn try_from(document: CatalogV6) -> Result<Self> {
+    fn try_from(document: CatalogV7) -> Result<Self> {
         Ok(Self {
             revision: document.revision,
             sessions: document
@@ -798,16 +982,19 @@ impl TryFrom<CatalogV6> for CatalogDocument {
     }
 }
 
-impl TryFrom<CatalogSessionV6> for SessionDirectoryRecord {
+impl TryFrom<CatalogSessionV7> for SessionDirectoryRecord {
     type Error = anyhow::Error;
 
-    fn try_from(session: CatalogSessionV6) -> Result<Self> {
+    fn try_from(session: CatalogSessionV7) -> Result<Self> {
         Ok(Self {
             session_id: session.session_id,
             root_agent_id: session.root_agent_id,
             workspace_id: session.workspace_id,
             title: session.title,
-            mode: ThreadModeId::new(session.mode.0)?,
+            native_mode: session
+                .native_mode
+                .map(|mode| ThreadModeId::new(mode.0))
+                .transpose()?,
             workspace_mode: session.workspace_mode.current(),
             delegation_mode: session.delegation_mode.current(),
             delegation_preference: session.delegation_preference.current(),
@@ -820,10 +1007,10 @@ impl TryFrom<CatalogSessionV6> for SessionDirectoryRecord {
     }
 }
 
-impl TryFrom<CatalogAgentV6> for AgentDirectoryRecord {
+impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
     type Error = anyhow::Error;
 
-    fn try_from(agent: CatalogAgentV6) -> Result<Self> {
+    fn try_from(agent: CatalogAgentV7) -> Result<Self> {
         Ok(Self {
             agent_id: agent.agent_id,
             session_id: agent.session_id,
@@ -831,22 +1018,35 @@ impl TryFrom<CatalogAgentV6> for AgentDirectoryRecord {
             thread_id: agent.thread_id,
             role: agent.role,
             title: agent.title,
-            binding: match agent.binding {
-                FrozenAgentBinding::Native { route } => {
-                    pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                        route: route.map(FrozenModelRoute::current),
-                        system_instructions: None,
-                    })
+            backend: match agent.backend {
+                FrozenBackendV7::Native { config, status } => {
+                    pl_protocol::session::AgentBackend::Native {
+                        config: pl_protocol::NativeAgentConfig {
+                            route: config.route.map(FrozenModelRoute::current),
+                            system_instructions: None,
+                        },
+                        status: status.current(),
+                    }
                 }
-                FrozenAgentBinding::Acp {
-                    account_id,
-                    connection_revision,
-                } => pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
-                    account_id,
-                    connection_revision,
-                }),
+                FrozenBackendV7::Acp { reference } => {
+                    ensure!(
+                        !reference.account_id.trim().is_empty()
+                            && !reference.acp_session_id.trim().is_empty()
+                            && !reference.cwd.trim().is_empty(),
+                        "Studio catalog ACP reference is incomplete"
+                    );
+                    pl_protocol::session::AgentBackend::Acp {
+                        reference: pl_protocol::session::AcpSessionReference {
+                            account_id: reference.account_id,
+                            acp_session_id: reference.acp_session_id,
+                            cwd: reference.cwd,
+                        },
+                    }
+                }
+                FrozenBackendV7::LegacyAcpWithoutReference { .. } => anyhow::bail!(
+                    "Studio catalog legacy ACP member has no real remote session reference; original catalog must be retained"
+                ),
             },
-            status: agent.status.current(),
             explicitly_closed: agent.explicitly_closed,
             created_at: agent.created_at,
             updated_at: agent.updated_at,
@@ -938,7 +1138,8 @@ mod tests {
         );
         assert_eq!(roundtrip_toml(&v4), v4);
 
-        let current = CatalogDocument::try_from(v4.migrate().migrate()).expect("construct current");
+        let current =
+            CatalogDocument::try_from(v4.migrate().migrate().migrate()).expect("construct current");
         assert_eq!(current.sessions.len(), 1);
         assert_eq!(current.sessions[0].session_id, "thread-a");
         assert_eq!(
@@ -947,7 +1148,10 @@ mod tests {
         );
         assert_eq!(current.agents.len(), 1);
         assert!(!current.agents[0].explicitly_closed);
-        assert_eq!(current.agents[0].status, ThreadStatus::Closed);
+        assert_eq!(
+            current.agents[0].native_status(),
+            Some(ThreadStatus::Closed)
+        );
         assert_eq!(
             current.agents[0].frozen_model(),
             Some(pl_protocol::studio::NewThreadModelRoute {
@@ -958,9 +1162,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn v6_dto_roundtrips_session_and_agent_records() {
-        let v6 = CatalogV6 {
+    fn v6_document() -> CatalogV6 {
+        CatalogV6 {
             revision: 5,
             sessions: vec![CatalogSessionV6 {
                 session_id: "thread-a".into(),
@@ -1011,8 +1214,149 @@ mod tests {
                     updated_at: 5,
                 },
             ],
-        };
+        }
+    }
+
+    #[test]
+    fn v6_dto_roundtrips_session_and_agent_records() {
+        let v6 = v6_document();
         assert_eq!(roundtrip_toml(&v6), v6);
+    }
+
+    #[test]
+    fn v6_to_v7_keeps_all_native_directory_facts() {
+        let legacy = v6_document();
+        let migrated = legacy.clone().migrate();
+        assert_eq!(roundtrip_toml(&migrated), migrated);
+        let current = CatalogDocument::try_from(migrated).expect("current V7");
+        validate(&current).expect("valid topology");
+        let session = &current.sessions[0];
+        assert_eq!(session.session_id, legacy.sessions[0].session_id);
+        assert_eq!(session.root_agent_id, legacy.sessions[0].root_agent_id);
+        assert_eq!(session.native_mode, Some(ThreadModeId::simple()));
+        assert_eq!(session.last_user_message_at, Some(3));
+        assert_eq!(session.created_at, legacy.sessions[0].created_at);
+        assert_eq!(session.updated_at, legacy.sessions[0].updated_at);
+        assert_eq!(session.workspace_path, legacy.sessions[0].workspace_path);
+        for (agent, old) in current.agents.iter().zip(&legacy.agents) {
+            assert_eq!(agent.agent_id, old.agent_id);
+            assert_eq!(agent.session_id, old.session_id);
+            assert_eq!(agent.parent_agent_id, old.parent_agent_id);
+            assert_eq!(agent.thread_id, old.thread_id);
+            assert_eq!(agent.title, old.title);
+            assert_eq!(agent.explicitly_closed, old.explicitly_closed);
+            assert_eq!(agent.native_status(), Some(old.status.current()));
+        }
+        let root = crate::studio::records::thread_projection(session, &current.agents[0], |id| {
+            current
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == id)
+                .map(|agent| agent.thread_id.clone())
+        })
+        .expect("Native root projection");
+        let child = crate::studio::records::thread_projection(session, &current.agents[1], |id| {
+            current
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == id)
+                .map(|agent| agent.thread_id.clone())
+        })
+        .expect("Native child projection");
+        assert_eq!(root.mode, Some(ThreadModeId::simple()));
+        assert_eq!(child.mode, None);
+    }
+
+    #[test]
+    fn v7_acp_reference_roundtrips_without_native_facts() {
+        let mut v7 = v6_document().migrate();
+        v7.agents.truncate(1);
+        v7.sessions[0].native_mode = None;
+        v7.agents[0].backend = FrozenBackendV7::Acp {
+            reference: FrozenAcpReferenceV7 {
+                account_id: "generic".into(),
+                acp_session_id: "remote-session".into(),
+                cwd: "/project".into(),
+            },
+        };
+        assert_eq!(roundtrip_toml(&v7), v7);
+        let current = CatalogDocument::try_from(v7).expect("ACP reference");
+        validate(&current).expect("valid ACP root");
+        let bytes = toml_schema::encode(&current, SCHEMA_KEY).expect("encode V7");
+        assert!(!bytes.contains("nativeMode"));
+        assert!(!bytes.contains("connectionRevision"));
+        assert!(!bytes.contains("status"));
+        assert!(
+            crate::studio::records::thread_projection(
+                &current.sessions[0],
+                &current.agents[0],
+                |_| None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_projection_resolves_real_thread_addresses_and_requires_root_mode() {
+        let mut document = CatalogDocument::try_from(v6_document().migrate()).expect("V7");
+        document.sessions[0].session_id = "product-session".into();
+        document.sessions[0].root_agent_id = "root-agent".into();
+        document.agents[0].agent_id = "root-agent".into();
+        document.agents[0].session_id = "product-session".into();
+        document.agents[0].thread_id = "root-thread".into();
+        document.agents[1].session_id = "product-session".into();
+        document.agents[1].parent_agent_id = Some("root-agent".into());
+        validate(&document).expect("separate identities are valid");
+        let resolve = |id: &str| {
+            document
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == id)
+                .map(|agent| agent.thread_id.clone())
+        };
+        let child = crate::studio::records::thread_projection(
+            &document.sessions[0],
+            &document.agents[1],
+            resolve,
+        )
+        .expect("Native child");
+        assert_eq!(child.root_thread_id, "root-thread");
+        assert_eq!(child.parent_thread_id.as_deref(), Some("root-thread"));
+        assert_eq!(child.mode, None);
+        document.sessions[0].native_mode = None;
+        assert!(validate(&document).is_err());
+        assert!(
+            crate::studio::records::thread_projection(
+                &document.sessions[0],
+                &document.agents[0],
+                |_| Some("root-thread".into()),
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_acp_without_remote_reference_retains_original_file() {
+        let mut legacy = v6_document();
+        legacy.agents[0].binding = FrozenAgentBinding::Acp {
+            account_id: "generic".into(),
+            connection_revision: 8,
+        };
+        let bytes = toml_schema::encode(&legacy, SCHEMA_KEY).expect("legacy bytes");
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("catalog.toml");
+        tokio::fs::write(&path, &bytes).await.expect("write legacy");
+        assert!(
+            super::super::CatalogStore::load(path.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(path)
+                .await
+                .expect("original remains"),
+            bytes
+        );
     }
 
     #[test]
@@ -1132,7 +1476,7 @@ mod tests {
                 archived: false,
             }],
         };
-        let current: CatalogV6 = current.migrate().migrate();
+        let current: CatalogV7 = current.migrate().migrate().migrate();
         let encoded = toml_schema::encode(&current, SCHEMA_KEY).expect("current bytes");
         let future = encoded.replacen(
             &format!(

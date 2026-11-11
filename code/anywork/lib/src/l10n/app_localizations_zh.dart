@@ -2346,7 +2346,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsRefreshUsage => '刷新用量';
 
   @override
-  String get settingsAddAccount => '添加账号';
+  String get settingsAddAccount => '添加账户';
 
   @override
   String get settingsSearchAccounts => '搜索账号';
@@ -4704,7 +4704,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpAccountNoApiKeyHint => '无需 API key，登录由官方程序完成。';
 
   @override
-  String get acpAccountSaveAndConnect => '保存并连接';
+  String get acpAccountSaveAndConnect => '添加并连接';
 
   @override
   String acpAccountSavedConnectIncomplete(String reason) {
@@ -5956,4 +5956,82 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get composerEffortUnsupported => '当前模型不支持思考强度';
+
+  @override
+  String get acpAccountSource => '接入方式';
+
+  @override
+  String get acpSourceLocal => '本机 agy';
+
+  @override
+  String get acpSourceCommand => '自定义命令';
+
+  @override
+  String get acpSourceManaged => '受管安装';
+
+  @override
+  String get acpCommandLabel => '程序';
+
+  @override
+  String get acpArgsLabel => '参数';
+
+  @override
+  String get acpArgumentLabel => '参数';
+
+  @override
+  String get acpAddArgument => '添加参数';
+
+  @override
+  String get acpEnvironmentLabel => '环境变量';
+
+  @override
+  String get acpEnvironmentKey => '键';
+
+  @override
+  String get acpEnvironmentValue => '值';
+
+  @override
+  String get acpAddEnvironment => '添加环境变量';
+
+  @override
+  String get acpAccountEnabled => '启用账户';
+
+  @override
+  String get acpDetectionIdle => '尚未检测';
+
+  @override
+  String get acpDetectionChecking => '正在检测本机 agy';
+
+  @override
+  String get acpDetectionMissing => '未找到 agy，请填写程序路径或选择其他接入方式';
+
+  @override
+  String get acpDetectionUnsupported => '当前 agy 不支持 ACP，请更新或选择其他接入方式';
+
+  @override
+  String get acpDetectionFailed => '检测失败，请重新检测';
+
+  @override
+  String get acpDetectionCancelling => '正在取消检测';
+
+  @override
+  String get acpDetectionCancelled => '检测已取消';
+
+  @override
+  String get acpDetectionRefresh => '重新检测';
+
+  @override
+  String get acpInvalidCommand => '请输入 PATH 程序名或绝对路径，参数请逐项填写';
+
+  @override
+  String get acpInvalidEnvironment => '环境变量键不能为空或重复，且不能含等号';
+
+  @override
+  String get acpRemoveEntry => '移除';
+
+  @override
+  String get accountsApi => 'API';
+
+  @override
+  String get accountsAcp => 'ACP';
 }

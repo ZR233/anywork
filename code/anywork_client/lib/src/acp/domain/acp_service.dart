@@ -5,6 +5,7 @@ import '../../contracts/stamps.dart';
 import '../../commands/mutation_board.dart';
 import '../../models/acp_models.dart';
 import '../../models/acp_install_models.dart';
+import '../../models/acp_local_detection_models.dart';
 import '../../observation/latest_value.dart';
 
 abstract interface class AcpService {
@@ -14,11 +15,22 @@ abstract interface class AcpService {
   Future<void> loadTemplates();
   AccountDemand observeAuth();
   AccountDemand observeInstall();
+  ValueObservation<AccountResource<AcpLocalDetectionSnapshotView>>
+  get localDetection;
+  AccountDemand observeLocalDetection();
+  Future<AcpLocalDetectionCommandReply> startLocalDetection(
+    OperationId operationId,
+  );
+  Future<AcpLocalDetectionCommandReply> cancelLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  });
 
   /// Save and remove return this operation's frozen failure after admission;
   /// errors before admission still throw. A normal return may still be pending.
   Future<OperationState> save(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
   });
   Future<OperationState> remove(AcpAccountIdentity identity);
@@ -27,6 +39,7 @@ abstract interface class AcpService {
   /// 尚未准入的错误仍抛出，不自动重发未知结果的保存。
   Future<AcpSaveAndConnectResult> saveAndConnect(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
   });
   Future<AcpAuthSnapshotView> check(AcpAccountIdentity identity);

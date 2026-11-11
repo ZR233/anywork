@@ -344,8 +344,10 @@ as ComposerTargetDiagnostic?,
 mixin _$ComposerDockViewState {
 
  SessionDirectoryRow? get row; bool get hasSnapshot; int get revision; ComposerThreadState get composer; PendingInteraction? get activeInteraction; StudioTurnView? get turn; AgentExecutionView? get execution; ContinuationView? get continuation; CommandStatus? get stopCommand; CommandStatus? get continueCommand; int? get queuedStopStartedAtMs; bool get saveBlocked;/// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
- StudioRecoveryIssue? get recoveryIssue;/// 目录行或已加载 canonical workspace.thread 已 closing/closed：
-/// 不显示执行入口，历史仍展示、草稿不清。
+ StudioRecoveryIssue? get recoveryIssue;/// 当前 Native 目录身份是否已永久封闭执行。
+///
+/// Closing/closed 时不显示执行入口，历史仍展示、草稿不清；
+/// 独立会话快照中的 Core 资源关闭状态不参与此判定。
  bool get executionClosed; List<ChildInteractionSummary> get childInteractions; DomainSyncStatus? get childInteractionSync; Map<String, String> get childInteractionSources; ThreadModelRouteView? get modelRoute; ModelRouteDisplay? get routeDisplay; bool get routePending; String? get routeFailure; WorkflowRuntimeView? get workflow; List<ModelSelectionAccount> get accounts; bool get settingsLoaded; ComposerTargetDiagnostic? get targetDiagnostic; List<ComposerTargetDiagnostic> get additionalDiagnostics;
 /// Create a copy of ComposerDockViewState
 /// with the given fields replaced by the non-null parameter values.
@@ -585,8 +587,10 @@ class _ComposerDockViewState extends ComposerDockViewState {
 @override final  bool saveBlocked;
 /// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
 @override final  StudioRecoveryIssue? recoveryIssue;
-/// 目录行或已加载 canonical workspace.thread 已 closing/closed：
-/// 不显示执行入口，历史仍展示、草稿不清。
+/// 当前 Native 目录身份是否已永久封闭执行。
+///
+/// Closing/closed 时不显示执行入口，历史仍展示、草稿不清；
+/// 独立会话快照中的 Core 资源关闭状态不参与此判定。
 @override final  bool executionClosed;
  final  List<ChildInteractionSummary> _childInteractions;
 @override List<ChildInteractionSummary> get childInteractions {

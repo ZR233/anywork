@@ -324,13 +324,17 @@ impl StudioThreadFactory {
             )
             .await?;
         }
+        let directory_mode = thread
+            .mode
+            .clone()
+            .ok_or_else(|| ThreadAssemblyError::Identity("Native root has no Mode".into()))?;
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
-            .unwrap_or_else(|| thread.mode.clone());
+            .unwrap_or(directory_mode);
         let mode = crate::mode::saved_registered_mode(&saved)
             .map_err(|error| resource_error("restore Mode snapshot", error))?
             .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
-            .ok_or_else(|| ThreadAssemblyError::Identity(thread.mode.to_string()))?;
+            .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)
             .map_err(|error| resource_error("decode saved model route", error))?;
         let has_saved_route = saved_route.is_some();
@@ -399,7 +403,7 @@ impl StudioThreadFactory {
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
-                &thread,
+                &self.directory_member(&thread.id)?,
                 &project,
                 local_root,
             )

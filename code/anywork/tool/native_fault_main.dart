@@ -1053,7 +1053,10 @@ final class _NativeLifecycleAssembly {
       'snapshotThreadId': state?.workspace?.thread.id,
       'directoryThreadStatus': threadId == null
           ? null
-          : client.threadDirectory.observedThread(threadId)?.status.name,
+          : switch (client.threadDirectory.observedThread(threadId)?.backend) {
+              NativeAgentBackendView(:final status) => status.name,
+              AcpAgentBackendView() || null => null,
+            },
       'workspaceThreadStatus': state?.workspace?.thread.status.name,
       'agentStatus': client.project.state.agents?.values
           .where((agent) => agent.threadId == threadId)

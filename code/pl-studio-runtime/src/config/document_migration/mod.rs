@@ -4,11 +4,11 @@ mod profile;
 pub(super) mod wire;
 
 pub(super) use main::{
-    MainV32, extract_legacy_lsp_from_main, extract_legacy_mcp_from_main, load_current_main,
-    load_main,
+    MainV33, extract_historical_acp_accounts, extract_legacy_acp_from_main,
+    extract_legacy_lsp_from_main, extract_legacy_mcp_from_main, load_current_main, load_main,
 };
 pub(super) use profile::load_current as load_current_profile;
-pub(super) use profile::{ProfileV2, load_profile};
+pub(super) use profile::{ProfileV3, load_profile};
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};

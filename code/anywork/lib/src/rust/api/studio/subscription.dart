@@ -8,6 +8,7 @@ import '../../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types/acp.dart';
+import 'types/acp_detection.dart';
 import 'types/acp_install.dart';
 import 'types/agent_profile.dart';
 import 'types/bots.dart';

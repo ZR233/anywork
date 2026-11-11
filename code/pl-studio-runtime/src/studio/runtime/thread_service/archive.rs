@@ -6,8 +6,8 @@ use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
 
 use super::super::StudioRuntime;
 use crate::studio::{
-    ThreadRecord,
     agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
+    records::DirectoryMember,
     store::thread_archive::{
         ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
     },
@@ -41,6 +41,7 @@ fn merge_removal_root(
                 original.workspace_id == member.workspace_id
                     && original.parent_id == member.parent_id
                     && original.root_id == member.root_id
+                    && original.association_only == member.association_only
                     && original.host_session == member.host_session
                     && original.execution == member.execution,
                 "归档与删除的原会话绑定不一致"
@@ -112,7 +113,7 @@ impl StudioRuntime {
     pub(super) async fn freeze_thread_archive(
         &self,
         scope: ArchiveScope,
-        threads: &[ThreadRecord],
+        threads: &[DirectoryMember],
         admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
         let operation = self
@@ -125,7 +126,7 @@ impl StudioRuntime {
     pub(super) async fn freeze_thread_removal(
         &self,
         scope: ArchiveScope,
-        threads: &[ThreadRecord],
+        threads: &[DirectoryMember],
         admitted: &[PreparationIdentity],
     ) -> Result<ThreadArchiveOperation> {
         self.freeze_archive_scope(scope, threads, admitted, ArchivePurpose::Delete)
@@ -135,7 +136,7 @@ impl StudioRuntime {
     async fn freeze_archive_scope(
         &self,
         scope: ArchiveScope,
-        threads: &[ThreadRecord],
+        threads: &[DirectoryMember],
         admitted: &[PreparationIdentity],
         purpose: ArchivePurpose,
     ) -> Result<ThreadArchiveOperation> {
@@ -211,8 +212,10 @@ impl StudioRuntime {
                         .map(|member| &member.thread_id),
                 )
             {
-                if !catalog_projection.iter().any(|thread| thread.id == *id)
-                    && let Some(canonical) = self.store.read_thread(id).await?
+                if !catalog_projection
+                    .iter()
+                    .any(|thread| thread.agent.thread_id == *id)
+                    && let Some(canonical) = self.store.directory_member(id)?
                 {
                     // Missing from a filtered tree is not proof of never having a catalog row.
                     // Validate its original identity below even if its current ancestry changed.
@@ -223,7 +226,7 @@ impl StudioRuntime {
                 for member in &operation.members {
                     if catalog_projection
                         .iter()
-                        .any(|thread| thread.id == member.thread_id)
+                        .any(|thread| thread.agent.thread_id == member.thread_id)
                     {
                         continue;
                     }
@@ -285,7 +288,7 @@ impl StudioRuntime {
             ensure!(
                 threads
                     .iter()
-                    .all(|thread| deletion.thread_ids.contains(&thread.id))
+                    .all(|thread| deletion.thread_ids.contains(&thread.agent.thread_id))
                     && admitted
                         .iter()
                         .all(|identity| deletion.thread_ids.contains(&identity.thread_id))
@@ -319,7 +322,7 @@ impl StudioRuntime {
                 .collect::<std::collections::BTreeSet<_>>();
             let actual = threads
                 .iter()
-                .map(|thread| &thread.id)
+                .map(|thread| &thread.agent.thread_id)
                 .collect::<std::collections::BTreeSet<_>>();
             ensure!(
                 purpose == ArchivePurpose::Delete || required_catalog.is_subset(&actual),
@@ -342,11 +345,10 @@ impl StudioRuntime {
                     continue; // Responsibility moves atomically with the deletion seal below.
                 }
                 ensure!(
-                    !pending
-                        .thread_ids()
+                    !pending.thread_ids().iter().any(|id| threads
                         .iter()
-                        .any(|id| threads.iter().any(|thread| thread.id == *id)
-                            || admitted.iter().any(|member| member.thread_id == *id)),
+                        .any(|thread| thread.agent.thread_id == *id)
+                        || admitted.iter().any(|member| member.thread_id == *id)),
                     "overlapping archive operation must be retried first"
                 );
             }
@@ -364,7 +366,9 @@ impl StudioRuntime {
                     self.store
                         .begin_deletion_preparation(
                             identity.clone(),
-                            threads.iter().any(|thread| thread.id == identity.thread_id),
+                            threads
+                                .iter()
+                                .any(|thread| thread.agent.thread_id == identity.thread_id),
                         )
                         .await?;
                 }
@@ -377,12 +381,16 @@ impl StudioRuntime {
         for thread in threads {
             let preparation = if purpose == ArchivePurpose::Delete {
                 load_deletion_aux::<crate::studio::store::thread_preparation::ThreadPreparationRecord>(
-                    self.store.database(), &thread.id,
+                    self.store.database(), &thread.agent.thread_id,
                 ).await?
             } else {
-                self.store.thread_preparation(&thread.id).await?
+                self.store
+                    .thread_preparation(&thread.agent.thread_id)
+                    .await?
             };
-            let public = members.iter().find(|member| member.thread_id == thread.id);
+            let public = members
+                .iter()
+                .find(|member| member.thread_id == thread.agent.thread_id);
             let private = previous
                 .as_ref()
                 .filter(|operation| operation.phase != ArchivePhase::Published)
@@ -390,13 +398,14 @@ impl StudioRuntime {
                     operation
                         .private_members
                         .iter()
-                        .find(|member| member.identity.thread_id == thread.id)
+                        .find(|member| member.identity.thread_id == thread.agent.thread_id)
                 });
             if let Some(member) = public {
                 ensure!(
-                    member.workspace_id == thread.workspace_id
+                    member.workspace_id == thread.session.workspace_id
                         && member.parent_id == thread.parent_thread_id
-                        && member.root_id == thread.root_thread_id,
+                        && member.root_id == thread.root_thread_id
+                        && member.association_only == !thread.is_native(),
                     "archive canonical member changed identity"
                 );
                 if let Some(PreparationBinding::Bound { identity }) =
@@ -410,7 +419,7 @@ impl StudioRuntime {
             }
             if let Some(member) = private {
                 ensure!(
-                    member.identity.workspace_id == thread.workspace_id
+                    member.identity.workspace_id == thread.session.workspace_id
                         && member.identity.parent_id == thread.parent_thread_id
                         && member.identity.root_id == thread.root_thread_id,
                     "archive private catalog projection changed identity"
@@ -423,7 +432,10 @@ impl StudioRuntime {
                 })
             });
             if let Some(original) = frozen_execution
-                && let Some(current) = self.store.workspace_identity(&thread.id).await?
+                && let Some(current) = self
+                    .store
+                    .workspace_identity(&thread.agent.thread_id)
+                    .await?
             {
                 ensure!(
                     *original == current,
@@ -431,19 +443,23 @@ impl StudioRuntime {
                 );
             }
             if preparation.as_ref().is_some_and(|record| !record.published) {
-                members.retain(|member| member.thread_id != thread.id);
+                members.retain(|member| member.thread_id != thread.agent.thread_id);
                 continue;
             }
             if public.is_some() {
                 continue;
             }
-            let execution = match self.store.workspace_identity(&thread.id).await? {
+            let execution = match self
+                .store
+                .workspace_identity(&thread.agent.thread_id)
+                .await?
+            {
                 Some(identity) => identity,
                 None => {
                     let project = self
                         .store
                         .workspaces()
-                        .get(&thread.workspace_id)
+                        .get(&thread.session.workspace_id)
                         .context("archive workspace is not registered")?
                         .project();
                     if let Some(bot) = self.bots.config_for_thread(&thread.root_thread_id).await? {
@@ -456,20 +472,26 @@ impl StudioRuntime {
                         )?
                     } else if project.ssh_alias.is_some() {
                         self.thread_factory
-                            .resolve_workspace_identity(&project, Path::new(&thread.workspace_path))
+                            .resolve_workspace_identity(
+                                &project,
+                                Path::new(&thread.session.workspace_path),
+                            )
                             .await?
                     } else {
                         WorkspaceIdentity::canonical(
                             WorkspaceEndpoint::Local,
-                            thread.workspace_path.clone(),
+                            thread.session.workspace_path.clone(),
                         )?
                     }
                 }
             };
-            let session = self.store.session_paths(&thread.workspace_id, &thread.id)?;
+            let session = self
+                .store
+                .session_paths(&thread.session.workspace_id, &thread.agent.thread_id)?;
             members.push(ArchiveMember {
-                thread_id: thread.id.clone(),
-                workspace_id: thread.workspace_id.clone(),
+                association_only: !thread.is_native(),
+                thread_id: thread.agent.thread_id.clone(),
+                workspace_id: thread.session.workspace_id.clone(),
                 parent_id: thread.parent_thread_id.clone(),
                 root_id: thread.root_thread_id.clone(),
                 host_session: session.root().to_owned(),
@@ -771,6 +793,7 @@ impl StudioRuntime {
                 && record.as_ref().is_none_or(|record| record.published)
             {
                 archive.members.push(ArchiveMember {
+                    association_only: frozen.association_only,
                     thread_id: frozen.identity.thread_id.clone(),
                     workspace_id: frozen.identity.workspace_id.clone(),
                     root_id: frozen.identity.root_id.clone(),
@@ -890,6 +913,10 @@ impl StudioRuntime {
         );
         for index in 0..operation.members.len() {
             let member = operation.members[index].clone();
+            if member.association_only {
+                // ACP has only a product association, never Native SessionFiles or history.
+                continue;
+            }
             if !member.execution_cleaned {
                 if !execution_removed_with_worktree(operation, &member.execution) {
                     clean_execution_temp(&self.ssh_manager, &member).await?;
@@ -928,6 +955,7 @@ impl StudioRuntime {
                     clean_execution_temp(
                         &self.ssh_manager,
                         &ArchiveMember {
+                            association_only: false,
                             thread_id: member.identity.thread_id.clone(),
                             workspace_id: member.identity.workspace_id.clone(),
                             parent_id: member.identity.parent_id.clone(),
@@ -1073,6 +1101,7 @@ mod ssh_tests {
         tokio::fs::create_dir_all(host_session.join("temp")).await?;
         tokio::fs::write(host_session.join("temp/transfer"), b"owned").await?;
         let member = ArchiveMember {
+            association_only: false,
             thread_id: "ssh-thread".into(),
             workspace_id: "workspace".into(),
             parent_id: None,

@@ -11,13 +11,13 @@ use pl_protocol::studio::{
     AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest, StudioErrorCode,
 };
 
+use super::super::acp_worker::{PROCESS_CLEANUP_LIMIT, WorkerSource};
 use super::mapping::{acp_error, ensure_operation_id};
 use super::operation::{self, OperationPlan};
 use super::registry::{
     AcceptedAction, AcceptedIntent, AcpAuthInner, ConnectionIdentity, Operation,
 };
-use super::worker::{PROCESS_CLEANUP_LIMIT, WorkerSource};
-use crate::config::{ConfigRuntime, SettingsCommitObserver, StudioConfig};
+use crate::config::{AcpDefinitionsSnapshot, ConfigRuntime, SettingsCommitObserver};
 use crate::studio::{ProductEventBus, StudioStore};
 
 /// 本 runtime 生命周期内保留的已受理操作身份上限。
@@ -80,7 +80,7 @@ impl AcpAuthRuntime {
         // Settings command 边界：canonical 提交、身份撤代与本次准入共用同一串行序列。
         self.inner
             .config
-            .with_canonical_snapshot(move |revision, config| {
+            .with_acp_snapshot(move |revision, config| {
                 AcpAuthInner::admit(inner, revision, config, requested)
             })?
     }
@@ -253,7 +253,7 @@ struct AcpSettingsObserver {
 impl SettingsCommitObserver for AcpSettingsObserver {
     fn settings_committed(&self, snapshot: &crate::ConfigRuntimeSnapshot) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.observe_committed(snapshot.revision, snapshot.canonical_config());
+            inner.observe_committed(snapshot.revision, &snapshot.acp);
         }
     }
 }
@@ -266,16 +266,34 @@ impl AcpAuthInner {
     pub(super) fn admit(
         inner: Arc<Self>,
         settings_revision: u64,
-        config: &StudioConfig,
+        config: &AcpDefinitionsSnapshot,
         request: StartAcpAuthRequest,
     ) -> Result<AcpAuthAcceptance> {
-        let Some(account) = config.acp.accounts.get(&request.account_id).cloned() else {
+        let Some(account) = config.definitions.get(&request.account_id).cloned() else {
             return Err(acp_error(
                 StudioErrorCode::NotFound,
                 "ACP 接入不存在",
                 false,
             ));
         };
+        if !account.definition.enabled {
+            return Err(acp_error(
+                StudioErrorCode::Conflict,
+                "ACP definition is disabled",
+                false,
+            ));
+        }
+        if matches!(
+            request.action,
+            pl_protocol::studio::AcpAuthAction::QueryUsage
+        ) && account.definition.template_kind().is_none()
+        {
+            return Err(acp_error(
+                StudioErrorCode::InvalidArgument,
+                "usage is only available for the managed template",
+                false,
+            ));
+        }
         let intent = AcceptedIntent {
             account_id: request.account_id.clone(),
             connection_revision: request.expected_connection_revision,
@@ -284,7 +302,7 @@ impl AcpAuthInner {
         let identity = ConnectionIdentity::of(&account);
         let (authentication, commands) = tokio::sync::mpsc::channel(1);
         let plan = OperationPlan {
-            provider: account.provider,
+            definition: account.definition.clone(),
             action: request.action.clone(),
             commands,
         };

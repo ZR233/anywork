@@ -2,22 +2,18 @@
 //!
 //! 这些类型是 Studio 与外围 adapter（FRB/HTTP）之间的唯一公共契约：接入 desired 配置出现在
 //! Settings 快照，认证进展是独立版本域的资源快照。ACP 不是 HTTP 模型协议，因此这里既不复用
-//! Native account 的 endpoint/secret 结构，也不携带任何凭据、token、原始进程输出或 SDK 内部
-//! 类型；官方程序自行管理登录凭据（见 design/28）。
+//! Native account 的 endpoint/secret 结构，也不携带原始进程输出或 SDK 内部类型；ACP 程序自行
+//! 管理登录凭据。用户显式设置的 env 只作为配置编辑值传递，不得写入诊断或日志。
 //!
-//! 本阶段只支持产品内置的官方 server 发行（Antigravity 1.4.5）。因此这里**不存在** program 或
-//! argv 字段：启动命令只来自产品固定清单与经完整验证的受管安装，客户端、HTTP 与配置文件都不能
-//! 提交或恢复任意执行路径（design/28 §28.1、§28.8）。
+//! command 与字面 argv 支持通用 ACP 程序；托管模板是可选启动来源，不是供应商准入枚举。
+//! 设置消费同一用户级资源，文档修订用于单文件 CAS，连接修订仅用于运行期准入。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::StudioCommandReceipt;
 
-/// 支持的 ACP 接入类型。
-///
-/// 本阶段只有官方 Antigravity server；新增厂商必须同时提供真实模板与验收证据，不能用显示名
-/// 或 template id 猜测执行协议。
+/// 受管启动模板类别。通用 command 不需要、也不增加此枚举的分支。
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
 )]
@@ -35,19 +31,21 @@ impl AcpProvider {
     }
 }
 
-/// canonical 设置中的一条 ACP 接入（不含 secret）。
+/// canonical 设置中的一条 ACP 定义编辑投影。
 ///
-/// `connection_revision` 是 runtime 拥有的**非密钥**连接身份：只有 provider 或产品固定发行身份
-/// 真正变化才改变，名称编辑不改变它。它既不是 Settings revision，也不是认证 topic 的 revision。
-///
-/// 这里刻意不携带 program/argv：账号只持久化稳定 ID、接入类型与名称，官方 server 属于固定发行的
-/// 共享资产事实（design/28 §28.8）。
+/// `connection_revision` 是配置资源拥有的运行期连接身份；command/args/env/模板改变时推进，
+/// 名称编辑不改变它。它不是文档修订、Settings 修订或认证 topic 修订，也不持久化到 Profile。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpAccountSettings {
     pub account_id: String,
     pub name: String,
-    pub provider: AcpProvider,
+    pub template: Option<AcpProvider>,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub document_revision: u64,
     pub connection_revision: u64,
 }
 
@@ -82,7 +80,20 @@ pub struct AcpAccountCatalog {
 pub struct AcpAccountUpdate {
     pub account_id: String,
     pub name: String,
-    pub provider: AcpProvider,
+    #[serde(default)]
+    pub template: Option<AcpProvider>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// 保存/新增一条 ACP 接入。
@@ -91,6 +102,8 @@ pub struct AcpAccountUpdate {
 pub struct UpdateAcpAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
+    /// Absent for creation; exact document revision for an update.
+    pub expected_document_revision: Option<u64>,
     pub account: AcpAccountUpdate,
 }
 
@@ -101,6 +114,7 @@ pub struct RemoveAcpAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
     pub account_id: String,
+    pub expected_document_revision: u64,
 }
 
 /// 一个显式认证动作。

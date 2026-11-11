@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
+import '../types/acp_detection.dart';
 import '../types/acp_install.dart';
 import '../types/chatgpt_auth.dart';
 import '../types/command.dart';

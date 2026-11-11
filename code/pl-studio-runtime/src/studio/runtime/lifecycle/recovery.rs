@@ -522,18 +522,17 @@ impl StudioRuntime {
         if let Some(thread) = self
             .agent_facility
             .product_events
-            .thread_snapshot(thread_id)
+            .directory_member(thread_id)?
         {
             return Ok(WorktreeOwnerFacts {
                 exists: true,
-                retained: !thread.archived,
+                retained: !thread.session.archived,
             });
         }
-        let record = self.store.read_thread_association(thread_id).await?;
+        let record = self.store.directory_member(thread_id)?;
         Ok(WorktreeOwnerFacts {
             exists: record.is_some(),
-            retained: record
-                .is_some_and(|record| record.visibility == crate::studio::ThreadVisibility::Active),
+            retained: record.is_some_and(|record| !record.session.archived),
         })
     }
 
@@ -668,7 +667,15 @@ impl StudioRuntime {
             let Some(session) = sessions.get(&entry.session_id) else {
                 continue;
             };
-            let thread = crate::studio::records::thread_projection(session, &entry);
+            if matches!(
+                entry.backend,
+                pl_protocol::session::AgentBackend::Acp { .. }
+            ) {
+                continue;
+            }
+            let thread = crate::studio::records::thread_projection(session, &entry, |id| {
+                catalog.get_agent(id).map(|agent| agent.thread_id)
+            })?;
             if thread.archived || entry.explicitly_closed {
                 continue;
             }

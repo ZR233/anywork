@@ -95,6 +95,7 @@ final class AccountObservations {
       AccountUsageTarget() => 'account-usage',
       AcpAuthTarget() => 'acp-auth',
       AcpInstallTarget() => 'acp-install',
+      AcpLocalDetectionTarget() => 'acp-local-detection',
       ChatGptLoginTarget(:final key) => key,
     };
     if (frame.stamp.resourceKey != resource)

@@ -1,5 +1,6 @@
+use super::BridgeSessionDirectoryRow;
 use super::response::{ArchiveThreadResult, BridgeSettingsStateResponse, DeleteThreadResult};
-use super::thread_stream::{BridgeInteractionRequest, BridgeThread, BridgeThreadRuntimeSnapshot};
+use super::thread_stream::{BridgeInteractionRequest, BridgeThreadRuntimeSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeResourceStamp {
@@ -54,7 +55,7 @@ pub struct BridgeThreadModelRouteCommandReply {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeRenameThreadCommandReply {
-    pub thread: BridgeThread,
+    pub thread: BridgeSessionDirectoryRow,
     pub receipt: BridgeStudioCommandReceipt,
 }
 

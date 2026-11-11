@@ -380,7 +380,7 @@ impl StudioThreadFactory {
             .map_err(|error| {
                 super::errors::resource_error("review target execution seal", error)
             })?;
-        let root = self.thread_record(&target.root_thread_id).await?;
+        let root = self.directory_member(&target.root_thread_id)?;
         let project = match &check.binding {
             Some(binding) => {
                 let remote = binding.project.ssh_alias.is_some();
@@ -579,11 +579,11 @@ impl StudioThreadFactory {
                             "shared workspace cannot claim a child worktree receipt",
                         ));
                     }
-                    if root.workspace_mode == ThreadWorkspaceMode::Worktree {
-                        let lease = self.services.worktrees.get(&root.id).ok_or(
+                    if root.session.workspace_mode == ThreadWorkspaceMode::Worktree {
+                        let lease = self.services.worktrees.get(&root.agent.thread_id).ok_or(
                             ReviewWorkspaceError::Invalid("shared root Session lease is missing"),
                         )?;
-                        crate::studio::agent_host::workspace_preparation::validate_root_session_lease(&lease, &project, &root.id)?;
+                        crate::studio::agent_host::workspace_preparation::validate_root_session_lease(&lease, &project, &root.agent.thread_id)?;
                         let (repository_root, repository) = self
                             .review_repository_manager(
                                 &project,
@@ -608,9 +608,9 @@ impl StudioThreadFactory {
                     } else {
                         check.root_binding = self
                             .binding_snapshots()
-                            .get(&root.id)
+                            .get(&root.agent.thread_id)
                             .cloned()
-                            .map(|binding| (root.id.clone(), binding));
+                            .map(|binding| (root.agent.thread_id.clone(), binding));
                         let expected = check
                             .root_binding
                             .as_ref()

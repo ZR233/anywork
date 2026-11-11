@@ -358,9 +358,11 @@ impl super::SessionRuntime {
             .entries
             .get(&caller)
             .filter(|entry| {
-                entry.native.ready
-                    && entry.native.thread.snapshot().lifecycle
-                        == pl_core::thread::ThreadLifecycle::Open
+                entry.native().is_ok_and(|native| {
+                    native.ready
+                        && native.thread.snapshot().lifecycle
+                            == pl_core::thread::ThreadLifecycle::Open
+                })
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
         if parent.identity.parent_agent_id.is_some() {
@@ -393,9 +395,11 @@ impl super::SessionRuntime {
             .entries
             .get(&caller)
             .filter(|entry| {
-                entry.native.ready
-                    && entry.native.thread.snapshot().lifecycle
-                        == pl_core::thread::ThreadLifecycle::Open
+                entry.native().is_ok_and(|native| {
+                    native.ready
+                        && native.thread.snapshot().lifecycle
+                            == pl_core::thread::ThreadLifecycle::Open
+                })
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
         // Studio's current product policy permits only root agents to create children.

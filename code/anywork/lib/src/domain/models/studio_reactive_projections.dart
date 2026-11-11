@@ -278,6 +278,12 @@ class StudioComposerProjection {
     final row = state.selectedRow;
     final root = state.selectedRootRow;
     if (row == null || root == null) return null;
+    if (row.backend is! NativeAgentBackendView ||
+        root.backend is! NativeAgentBackendView) {
+      throw StateError(
+        'Native composer projection cannot consume an ACP session',
+      );
+    }
     final runtime = state.runtime;
     return StudioComposerProjection(
       row: row,
@@ -462,8 +468,7 @@ bool _rowEquals(SessionDirectoryRow? left, SessionDirectoryRow? right) {
       left.workspaceMode == right.workspaceMode &&
       left.workspacePath == right.workspacePath &&
       left.role == right.role &&
-      left.binding == right.binding &&
-      left.status == right.status &&
+      left.backend == right.backend &&
       left.createdAt == right.createdAt &&
       left.updatedAt == right.updatedAt &&
       left.lastUserMessageAt == right.lastUserMessageAt &&
@@ -485,8 +490,7 @@ int? _rowHash(SessionDirectoryRow? row) {
     row.workspaceMode,
     row.workspacePath,
     row.role,
-    row.binding,
-    row.status,
+    row.backend,
     row.createdAt,
     row.updatedAt,
     row.lastUserMessageAt,

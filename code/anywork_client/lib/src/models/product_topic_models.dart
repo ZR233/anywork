@@ -2,6 +2,7 @@ import 'collection_equality.dart';
 
 import 'acp_models.dart';
 import 'acp_install_models.dart';
+import 'acp_local_detection_models.dart';
 import 'agent_profile_models.dart';
 import 'bot_models.dart';
 import 'command_receipts.dart' show ChildInteractionSummary;
@@ -228,6 +229,14 @@ final class BotsTopic extends ProductTopic {
 /// ACP 官方 server 准备观察：独立版本域，与认证、配置和目录修订互不替代。
 ///
 /// 只读查询与订阅都不联网；开始、取消是显式命令。
+final class AcpLocalDetectionTopic extends ProductTopic {
+  const AcpLocalDetectionTopic();
+  @override
+  bool operator ==(Object other) => other is AcpLocalDetectionTopic;
+  @override
+  int get hashCode => 0x011d;
+}
+
 final class AcpInstallTopic extends ProductTopic {
   const AcpInstallTopic();
 
@@ -376,6 +385,11 @@ final class BotsBaseline extends ProductTopicBaselineState {
   final BotsStateSnapshot state;
 }
 
+final class AcpLocalDetectionBaseline extends ProductTopicBaselineState {
+  const AcpLocalDetectionBaseline(this.state);
+  final AcpLocalDetectionSnapshotView state;
+}
+
 final class AcpInstallBaseline extends ProductTopicBaselineState {
   const AcpInstallBaseline(this.state);
 
@@ -520,6 +534,7 @@ sealed class ProductTopicEventPayload {
     AcpAuthStateChangedPayload() => const AcpAuthTopic(),
     BotsStateChangedPayload() => const BotsTopic(),
     AcpInstallStateChangedPayload() => const AcpInstallTopic(),
+    AcpLocalDetectionStateChangedPayload() => const AcpLocalDetectionTopic(),
     ChildInteractionsChangedPayload(:final state) => ChildInteractionsTopic(
       hostThreadId: state.hostThreadId,
     ),
@@ -648,6 +663,12 @@ final class BotsStateChangedPayload extends ProductTopicEventPayload {
   const BotsStateChangedPayload(this.state);
 
   final BotsStateSnapshot state;
+}
+
+final class AcpLocalDetectionStateChangedPayload
+    extends ProductTopicEventPayload {
+  const AcpLocalDetectionStateChangedPayload(this.state);
+  final AcpLocalDetectionSnapshotView state;
 }
 
 final class AcpInstallStateChangedPayload extends ProductTopicEventPayload {

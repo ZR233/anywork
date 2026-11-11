@@ -17,9 +17,49 @@ pub(in crate::studio) struct SessionDirectorySnapshot {
 }
 
 impl StudioStore {
+    pub(in crate::studio) fn directory_member(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::studio::records::DirectoryMember>> {
+        let catalog = self.catalog();
+        catalog
+            .agent_by_thread(thread_id)
+            .map(|agent| {
+                let session = catalog
+                    .get_session(&agent.session_id)
+                    .ok_or_else(|| anyhow::anyhow!("directory Session is missing"))?;
+                crate::studio::records::DirectoryMember::resolve(session, agent, |id| {
+                    catalog.get_agent(id)
+                })
+            })
+            .transpose()
+    }
+
+    pub(in crate::studio) fn directory_members_for_project(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<crate::studio::records::DirectoryMember>> {
+        let catalog = self.catalog();
+        catalog
+            .sessions()
+            .into_iter()
+            .filter(|session| session.workspace_id == workspace_id)
+            .flat_map(|session| {
+                catalog
+                    .agents_for_session(&session.session_id)
+                    .into_iter()
+                    .map(move |agent| (session.clone(), agent))
+            })
+            .map(|(session, agent)| {
+                crate::studio::records::DirectoryMember::resolve(session, agent, |id| {
+                    catalog.get_agent(id)
+                })
+            })
+            .collect()
+    }
+
     pub async fn list_root_threads(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
-        Ok(self
-            .catalog()
+        self.catalog()
             .sessions()
             .into_iter()
             .filter(|session| {
@@ -31,7 +71,7 @@ impl StudioStore {
                         .is_some_and(|root| root.is_root_agent())
             })
             .filter_map(|session| root_thread_record(self.catalog(), &session))
-            .collect())
+            .collect()
     }
 
     /// Archive selection reads only directory facts, not historical journals.
@@ -39,17 +79,25 @@ impl StudioStore {
         &self,
         root_thread_id: &str,
     ) -> Result<Vec<ThreadRecord>> {
-        let Some(root) = self.catalog().get_session(root_thread_id) else {
+        let Some(root) = self
+            .catalog()
+            .agent_by_thread(root_thread_id)
+            .filter(|agent| agent.is_root_agent())
+            .and_then(|agent| {
+                self.catalog()
+                    .get_session(&agent.session_id)
+                    .filter(|session| session.root_agent_id == agent.agent_id)
+            })
+        else {
             return Ok(Vec::new());
         };
         let workspace_id = root.workspace_id;
-        Ok(self
-            .catalog()
+        self.catalog()
             .sessions()
             .into_iter()
             .filter(|session| session.workspace_id == workspace_id && !session.archived)
             .filter_map(|session| root_thread_record(self.catalog(), &session))
-            .collect())
+            .collect()
     }
 
     /// Cleanup includes archived descendants without replaying their journals.
@@ -57,17 +105,17 @@ impl StudioStore {
         &self,
         root_thread_id: &str,
     ) -> Result<Vec<ThreadRecord>> {
-        Ok(session_tree(self.catalog(), root_thread_id, true)
+        session_tree(self.catalog(), root_thread_id, true)
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot.agents.into_iter().map(move |agent| {
-                    ThreadRecord::from_directory_thread(thread_projection(
-                        &snapshot.session,
-                        &agent,
-                    ))
+                    thread_projection(&snapshot.session, &agent, |id| {
+                        self.catalog().get_agent(id).map(|agent| agent.thread_id)
+                    })
+                    .map(ThreadRecord::from_directory_thread)
                 })
             })
-            .collect())
+            .collect()
     }
 
     /// Active descendants of one root. The catalog already carries the persisted status summary.
@@ -79,18 +127,19 @@ impl StudioStore {
     pub(in crate::studio) async fn read_directory_tree(
         &self,
         root_id: &str,
-    ) -> Result<Vec<ThreadRecord>> {
-        Ok(session_tree(self.catalog(), root_id, true)
+    ) -> Result<Vec<crate::studio::records::DirectoryMember>> {
+        session_tree(self.catalog(), root_id, true)
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot.agents.into_iter().map(move |agent| {
-                    ThreadRecord::from_directory_thread(thread_projection(
-                        &snapshot.session,
-                        &agent,
-                    ))
+                    crate::studio::records::DirectoryMember::resolve(
+                        snapshot.session.clone(),
+                        agent,
+                        |id| self.catalog().get_agent(id),
+                    )
                 })
             })
-            .collect())
+            .collect()
     }
 
     /// Project 归档 activation 一次性装载其完整 Thread 目录。
@@ -111,7 +160,7 @@ impl StudioStore {
                 .cmp(&right.session.created_at)
                 .then_with(|| left.session.session_id.cmp(&right.session.session_id))
         });
-        Ok(snapshots
+        snapshots
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot
@@ -120,9 +169,12 @@ impl StudioStore {
                     .map(move |agent| (snapshot.session.clone(), agent))
             })
             .map(|(session, agent)| {
-                ThreadRecord::from_directory_thread(thread_projection(&session, &agent))
+                thread_projection(&session, &agent, |id| {
+                    catalog.get_agent(id).map(|agent| agent.thread_id)
+                })
+                .map(ThreadRecord::from_directory_thread)
             })
-            .collect())
+            .collect()
     }
 
     pub async fn list_project_thread_ids(&self, workspace_id: &str) -> Result<Vec<String>> {
@@ -142,7 +194,7 @@ impl StudioStore {
 
     pub async fn read_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
         let catalog = self.catalog();
-        Ok(catalog
+        catalog
             .agent_by_thread(thread_id)
             .and_then(|agent| {
                 catalog
@@ -150,8 +202,12 @@ impl StudioStore {
                     .map(|session| (session, agent))
             })
             .map(|(session, agent)| {
-                ThreadRecord::from_directory_thread(thread_projection(&session, &agent))
-            }))
+                thread_projection(&session, &agent, |id| {
+                    catalog.get_agent(id).map(|agent| agent.thread_id)
+                })
+                .map(ThreadRecord::from_directory_thread)
+            })
+            .transpose()
     }
 
     pub(in crate::studio) async fn read_thread_association(
@@ -165,11 +221,16 @@ impl StudioStore {
 fn root_thread_record(
     catalog: &CatalogStore,
     session: &crate::studio::records::SessionDirectoryRecord,
-) -> Option<ThreadRecord> {
+) -> Option<Result<ThreadRecord>> {
     catalog
         .get_agent(&session.root_agent_id)
         .filter(|root| root.is_root_agent() && root.session_id == session.session_id)
-        .map(|root| ThreadRecord::from_directory_thread(thread_projection(session, &root)))
+        .map(|root| {
+            thread_projection(session, &root, |id| {
+                catalog.get_agent(id).map(|agent| agent.thread_id)
+            })
+            .map(ThreadRecord::from_directory_thread)
+        })
 }
 
 fn session_tree(
@@ -177,7 +238,15 @@ fn session_tree(
     root_id: &str,
     include_archived: bool,
 ) -> Vec<SessionDirectorySnapshot> {
-    let Some(session) = catalog.get_session(root_id) else {
+    let Some(session) = catalog
+        .agent_by_thread(root_id)
+        .filter(|agent| agent.is_root_agent())
+        .and_then(|agent| {
+            catalog
+                .get_session(&agent.session_id)
+                .filter(|session| session.root_agent_id == agent.agent_id)
+        })
+    else {
         return Vec::new();
     };
     if !include_archived && session.archived {

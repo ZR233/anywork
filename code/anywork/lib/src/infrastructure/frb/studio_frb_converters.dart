@@ -48,6 +48,12 @@ ProductTopicEventPayload _productPayloadFromFrb(
       AgentProfilesStateChangedPayload(_agentProfilesStateFromFrb(field0)),
     frb.BridgeProductEventPayload_AcpAuthStateChanged(:final field0) =>
       AcpAuthStateChangedPayload(_acpAuthSnapshotFromFrb(field0)),
+    frb.BridgeProductEventPayload_AcpLocalDetectionStateChanged(
+      :final field0,
+    ) =>
+      AcpLocalDetectionStateChangedPayload(
+        _acpLocalDetectionSnapshotFromFrb(field0),
+      ),
     frb.BridgeProductEventPayload_AcpInstallStateChanged(:final field0) =>
       AcpInstallStateChangedPayload(_acpInstallSnapshotFromFrb(field0)),
     frb.BridgeProductEventPayload_BotsStateChanged(:final field0) =>
@@ -137,6 +143,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
     frb_topic_types.BridgeProductTopic_AgentProfiles() =>
       const AgentProfilesTopic(),
     frb_topic_types.BridgeProductTopic_AcpAuth() => const AcpAuthTopic(),
+    frb_topic_types.BridgeProductTopic_AcpLocalDetection() =>
+      const AcpLocalDetectionTopic(),
     frb_topic_types.BridgeProductTopic_AcpInstall() => const AcpInstallTopic(),
     frb_topic_types.BridgeProductTopic_Bots() => const BotsTopic(),
   };
@@ -181,6 +189,8 @@ ProductTopic _productPayloadTopicFromBridge(
     frb.BridgeProductEventPayload_AgentProfilesStateChanged() =>
       const AgentProfilesTopic(),
     frb.BridgeProductEventPayload_AcpAuthStateChanged() => const AcpAuthTopic(),
+    frb.BridgeProductEventPayload_AcpLocalDetectionStateChanged() =>
+      const AcpLocalDetectionTopic(),
     frb.BridgeProductEventPayload_AcpInstallStateChanged() =>
       const AcpInstallTopic(),
     frb.BridgeProductEventPayload_BotsStateChanged() => const BotsTopic(),
@@ -229,6 +239,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
     AgentProfilesTopic() =>
       const frb_topic_types.BridgeProductTopic.agentProfiles(),
     AcpAuthTopic() => const frb_topic_types.BridgeProductTopic.acpAuth(),
+    AcpLocalDetectionTopic() =>
+      const frb_topic_types.BridgeProductTopic.acpLocalDetection(),
     AcpInstallTopic() => const frb_topic_types.BridgeProductTopic.acpInstall(),
     BotsTopic() => const frb_topic_types.BridgeProductTopic.bots(),
   };
@@ -277,6 +289,8 @@ ProductTopicBaselineState _productBaselineFromFrb(
       AgentProfilesBaseline(_agentProfilesStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AcpAuth(:final field0) =>
       AcpAuthBaseline(_acpAuthSnapshotFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_AcpLocalDetection(:final field0) =>
+      AcpLocalDetectionBaseline(_acpLocalDetectionSnapshotFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AcpInstall(:final field0) =>
       AcpInstallBaseline(_acpInstallSnapshotFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Bots(:final field0) => BotsBaseline(
@@ -324,7 +338,7 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
     threadId: value.threadId,
     workspaceId: value.workspaceId,
     title: value.title,
-    mode: ThreadModeId.fromId(value.mode),
+    mode: value.mode == null ? null : ThreadModeId.fromId(value.mode!),
     delegationMode: _delegationModeFromFrb(value.delegationMode),
     delegationPreference: _delegationPreferenceFromFrb(
       value.delegationPreference,
@@ -332,8 +346,7 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
     workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
     workspacePath: value.workspacePath,
     role: value.role,
-    binding: agentBindingFromFrb(value.binding),
-    status: _threadStatusFromFrb(value.status),
+    backend: _agentBackendFromFrb(value.backend),
     createdAt: _dateFromUnix(value.createdAt),
     updatedAt: _dateFromUnix(value.updatedAt),
     lastUserMessageAt: value.lastUserMessageAt == null
@@ -343,6 +356,27 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
   );
 }
 
+AgentBackendView _agentBackendFromFrb(frb.BridgeAgentBackend value) =>
+    switch (value) {
+      frb.BridgeAgentBackend_Native(:final config, :final status) =>
+        NativeAgentBackendView(
+          config: NativeAgentConfigView(
+            route: config.route == null
+                ? null
+                : _savedRouteFromFrb(config.route!),
+            systemInstructions: config.systemInstructions,
+          ),
+          status: _threadStatusFromFrb(status),
+        ),
+      frb.BridgeAgentBackend_Acp(:final reference) => AcpAgentBackendView(
+        reference: AcpSessionReferenceView(
+          accountId: reference.accountId,
+          acpSessionId: reference.acpSessionId,
+          cwd: reference.cwd,
+        ),
+      ),
+    };
+
 AgentBindingView agentBindingFromFrb(frb.BridgeAgentBinding value) {
   return switch (value) {
     frb.BridgeAgentBinding_Native(:final route, :final systemInstructions) =>
@@ -350,11 +384,9 @@ AgentBindingView agentBindingFromFrb(frb.BridgeAgentBinding value) {
         route: route == null ? null : _savedRouteFromFrb(route),
         systemInstructions: systemInstructions,
       ),
-    frb.BridgeAgentBinding_Acp(:final accountId, :final connectionRevision) =>
-      AcpAgentBindingView(
-        accountId: accountId,
-        connectionRevision: connectionRevision.toInt(),
-      ),
+    frb.BridgeAgentBinding_Acp(:final accountId) => AcpAgentBindingView(
+      accountId: accountId,
+    ),
   };
 }
 
@@ -371,11 +403,9 @@ frb.BridgeAgentBinding agentBindingToFrb(AgentBindingView value) =>
                 ),
           systemInstructions: systemInstructions,
         ),
-      AcpAgentBindingView(:final accountId, :final connectionRevision) =>
-        frb.BridgeAgentBinding.acp(
-          accountId: accountId,
-          connectionRevision: BigInt.from(connectionRevision),
-        ),
+      AcpAgentBindingView(:final accountId) => frb.BridgeAgentBinding.acp(
+        accountId: accountId,
+      ),
     };
 
 ThreadStatusView _threadStatusFromFrb(frb.BridgeThreadStatus value) {

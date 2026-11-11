@@ -157,19 +157,19 @@ impl SessionRuntime {
                     if is_restricted {
                         return Err(ThreadAssemblyError::Preparing(identity.id().to_owned()));
                     }
-                    if entry.native.parent_id.as_deref() != identity.parent_id()
+                    if entry.native()?.parent_id.as_deref() != identity.parent_id()
                         || entry.identity != identity.agent
                         || entry.binding != identity.binding
                     {
                         return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
                     }
-                    if entry.native.purpose != super::EntryPurpose::ReportReceiver
-                        && entry.native.ready
-                        && entry.native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    if entry.native()?.purpose != super::EntryPurpose::ReportReceiver
+                        && entry.native()?.ready
+                        && entry.native()?.thread.snapshot().lifecycle == ThreadLifecycle::Open
                     {
-                        return Ok(entry.native.thread.clone());
+                        return Ok(entry.native()?.thread.clone());
                     }
-                    if entry.native.purpose != super::EntryPurpose::ReportReceiver
+                    if entry.native()?.purpose != super::EntryPurpose::ReportReceiver
                         && !state.creating.contains_key(identity.id())
                     {
                         return Err(ThreadAssemblyError::Unpublished(identity.id().to_owned()));
@@ -192,7 +192,9 @@ impl SessionRuntime {
                 };
                 (
                     state.entries.get(identity.id()).is_some_and(|entry| {
-                        entry.native.purpose == super::EntryPurpose::ReportReceiver
+                        entry.native().is_ok_and(|native| {
+                            native.purpose == super::EntryPurpose::ReportReceiver
+                        })
                     }),
                     preparation,
                 )
@@ -263,6 +265,7 @@ impl SessionRuntime {
                                 .get(identity.id())
                                 .ok_or(ThreadAssemblyError::Closed)?
                                 .resources
+                                .require_native()?
                                 .clone();
                             owner.agent_control_tools(
                                 &identity.agent,
@@ -280,6 +283,7 @@ impl SessionRuntime {
                         .get(identity.id())
                         .expect("reserved preparation")
                         .resources
+                        .require_native()?
                         .clone();
                     workspace_owner.bind_native_resources(resources);
                     workspace_owner.bind_admission(&owner, identity.id(), &cancellation)?;
@@ -424,7 +428,6 @@ mod backend_tests {
         let mut identity = ThreadActivation::native_test("acp-root", None);
         identity.binding = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
             account_id: "acp-account".into(),
-            connection_revision: 1,
         });
 
         assert!(matches!(
@@ -457,7 +460,6 @@ mod backend_tests {
         let mut child = ThreadActivation::native_test("acp-child", Some("native-parent"));
         child.binding = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
             account_id: "acp-account".into(),
-            connection_revision: 1,
         });
         assert!(matches!(
             child_owner.activate(child, child_factory.clone()).await,

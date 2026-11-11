@@ -1882,7 +1882,7 @@ $AccountAcpKeyCopyWith<$Res>? get acpKey {
 /// @nodoc
 mixin _$AccountAcpKey {
 
- AccountDisplayKey get target; String get providerId; int get connectionRevision; String? get editorId; bool get creating;
+ AccountDisplayKey get target; String? get templateId; int get connectionRevision; String? get editorId; bool get creating;
 /// Create a copy of AccountAcpKey
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -1894,20 +1894,20 @@ $AccountAcpKeyCopyWith<AccountAcpKey> get copyWith => _$AccountAcpKeyCopyWithImp
 @override
 bool operator ==(Object other) {
   final _this = this as AccountAcpKey;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountAcpKey&&(identical(other.target, _this.target) || other.target == _this.target)&&(identical(other.providerId, _this.providerId) || other.providerId == _this.providerId)&&(identical(other.connectionRevision, _this.connectionRevision) || other.connectionRevision == _this.connectionRevision)&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.creating, _this.creating) || other.creating == _this.creating));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountAcpKey&&(identical(other.target, _this.target) || other.target == _this.target)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.connectionRevision, _this.connectionRevision) || other.connectionRevision == _this.connectionRevision)&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.creating, _this.creating) || other.creating == _this.creating));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountAcpKey;
-  return Object.hash(runtimeType,_this.target,_this.providerId,_this.connectionRevision,_this.editorId,_this.creating);
+  return Object.hash(runtimeType,_this.target,_this.templateId,_this.connectionRevision,_this.editorId,_this.creating);
 }
 
 @override
 String toString() {
   final _this = this as AccountAcpKey;
-  return 'AccountAcpKey(target: ${_this.target}, providerId: ${_this.providerId}, connectionRevision: ${_this.connectionRevision}, editorId: ${_this.editorId}, creating: ${_this.creating})';
+  return 'AccountAcpKey(target: ${_this.target}, templateId: ${_this.templateId}, connectionRevision: ${_this.connectionRevision}, editorId: ${_this.editorId}, creating: ${_this.creating})';
 }
 
 
@@ -1918,7 +1918,7 @@ abstract mixin class $AccountAcpKeyCopyWith<$Res>  {
   factory $AccountAcpKeyCopyWith(AccountAcpKey value, $Res Function(AccountAcpKey) _then) = _$AccountAcpKeyCopyWithImpl;
 @useResult
 $Res call({
- AccountDisplayKey target, String providerId, int connectionRevision, String? editorId, bool creating
+ AccountDisplayKey target, String? templateId, int connectionRevision, String? editorId, bool creating
 });
 
 
@@ -1935,11 +1935,11 @@ class _$AccountAcpKeyCopyWithImpl<$Res>
 
 /// Create a copy of AccountAcpKey
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? target = null,Object? providerId = null,Object? connectionRevision = null,Object? editorId = freezed,Object? creating = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? target = null,Object? templateId = freezed,Object? connectionRevision = null,Object? editorId = freezed,Object? creating = null,}) {
   return _then(AccountAcpKey(
 target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey,providerId: null == providerId ? _self.providerId : providerId // ignore: cast_nullable_to_non_nullable
-as String,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
+as AccountDisplayKey,templateId: freezed == templateId ? _self.templateId : templateId // ignore: cast_nullable_to_non_nullable
+as String?,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
 as int,editorId: freezed == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String?,creating: null == creating ? _self.creating : creating // ignore: cast_nullable_to_non_nullable
 as bool,
@@ -2036,10 +2036,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountDisplayKey target,  String providerId,  int connectionRevision,  String? editorId,  bool creating)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountDisplayKey target,  String? templateId,  int connectionRevision,  String? editorId,  bool creating)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountAcpKey() when $default != null:
-return $default(_that.target,_that.providerId,_that.connectionRevision,_that.editorId,_that.creating);case _:
+return $default(_that.target,_that.templateId,_that.connectionRevision,_that.editorId,_that.creating);case _:
   return orElse();
 
 }
@@ -2057,10 +2057,10 @@ return $default(_that.target,_that.providerId,_that.connectionRevision,_that.edi
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountDisplayKey target,  String providerId,  int connectionRevision,  String? editorId,  bool creating)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountDisplayKey target,  String? templateId,  int connectionRevision,  String? editorId,  bool creating)  $default,) {final _that = this;
 switch (_that) {
 case _AccountAcpKey():
-return $default(_that.target,_that.providerId,_that.connectionRevision,_that.editorId,_that.creating);case _:
+return $default(_that.target,_that.templateId,_that.connectionRevision,_that.editorId,_that.creating);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -2077,10 +2077,10 @@ return $default(_that.target,_that.providerId,_that.connectionRevision,_that.edi
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountDisplayKey target,  String providerId,  int connectionRevision,  String? editorId,  bool creating)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountDisplayKey target,  String? templateId,  int connectionRevision,  String? editorId,  bool creating)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountAcpKey() when $default != null:
-return $default(_that.target,_that.providerId,_that.connectionRevision,_that.editorId,_that.creating);case _:
+return $default(_that.target,_that.templateId,_that.connectionRevision,_that.editorId,_that.creating);case _:
   return null;
 
 }
@@ -2092,11 +2092,11 @@ return $default(_that.target,_that.providerId,_that.connectionRevision,_that.edi
 
 
 class _AccountAcpKey implements AccountAcpKey {
-  const _AccountAcpKey({required this.target, required this.providerId, required this.connectionRevision, this.editorId, this.creating = false});
+  const _AccountAcpKey({required this.target, this.templateId, required this.connectionRevision, this.editorId, this.creating = false});
 
 
 @override final  AccountDisplayKey target;
-@override final  String providerId;
+@override final  String? templateId;
 @override final  int connectionRevision;
 @override final  String? editorId;
 @override@JsonKey() final  bool creating;
@@ -2111,18 +2111,18 @@ _$AccountAcpKeyCopyWith<_AccountAcpKey> get copyWith => __$AccountAcpKeyCopyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountAcpKey&&(identical(other.target, target) || other.target == target)&&(identical(other.providerId, providerId) || other.providerId == providerId)&&(identical(other.connectionRevision, connectionRevision) || other.connectionRevision == connectionRevision)&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.creating, creating) || other.creating == creating));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountAcpKey&&(identical(other.target, target) || other.target == target)&&(identical(other.templateId, templateId) || other.templateId == templateId)&&(identical(other.connectionRevision, connectionRevision) || other.connectionRevision == connectionRevision)&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.creating, creating) || other.creating == creating));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,target,providerId,connectionRevision,editorId,creating);
+    return Object.hash(runtimeType,target,templateId,connectionRevision,editorId,creating);
 }
 
 @override
 String toString() {
-    return 'AccountAcpKey(target: $target, providerId: $providerId, connectionRevision: $connectionRevision, editorId: $editorId, creating: $creating)';
+    return 'AccountAcpKey(target: $target, templateId: $templateId, connectionRevision: $connectionRevision, editorId: $editorId, creating: $creating)';
 }
 
 
@@ -2133,7 +2133,7 @@ abstract mixin class _$AccountAcpKeyCopyWith<$Res> implements $AccountAcpKeyCopy
   factory _$AccountAcpKeyCopyWith(_AccountAcpKey value, $Res Function(_AccountAcpKey) _then) = __$AccountAcpKeyCopyWithImpl;
 @override @useResult
 $Res call({
- AccountDisplayKey target, String providerId, int connectionRevision, String? editorId, bool creating
+ AccountDisplayKey target, String? templateId, int connectionRevision, String? editorId, bool creating
 });
 
 
@@ -2150,11 +2150,11 @@ class __$AccountAcpKeyCopyWithImpl<$Res>
 
 /// Create a copy of AccountAcpKey
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? target = null,Object? providerId = null,Object? connectionRevision = null,Object? editorId = freezed,Object? creating = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? target = null,Object? templateId = freezed,Object? connectionRevision = null,Object? editorId = freezed,Object? creating = null,}) {
   return _then(_AccountAcpKey(
 target: null == target ? _self.target : target // ignore: cast_nullable_to_non_nullable
-as AccountDisplayKey,providerId: null == providerId ? _self.providerId : providerId // ignore: cast_nullable_to_non_nullable
-as String,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
+as AccountDisplayKey,templateId: freezed == templateId ? _self.templateId : templateId // ignore: cast_nullable_to_non_nullable
+as String?,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
 as int,editorId: freezed == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String?,creating: null == creating ? _self.creating : creating // ignore: cast_nullable_to_non_nullable
 as bool,

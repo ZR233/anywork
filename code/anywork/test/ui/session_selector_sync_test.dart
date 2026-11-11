@@ -1187,7 +1187,10 @@ void main() {
           .read(composerDockViewModelProvider(threadId))
           .requireValue;
       expect(view.hasActiveWorkflow, isTrue, reason: '场景前提：workflow active');
-      expect(view.row?.status, ThreadStatusView.running);
+      expect(
+        (view.row!.backend as NativeAgentBackendView).status,
+        ThreadStatusView.running,
+      );
       final revisionBefore = routeRevision();
 
       await tester.tap(find.byKey(StudioDriverKeys.model));
@@ -1215,7 +1218,10 @@ void main() {
           .read(composerDockViewModelProvider(threadId))
           .requireValue;
       expect(initial.hasActiveWorkflow, isTrue);
-      expect(initial.row?.status, ThreadStatusView.idle);
+      expect(
+        (initial.row!.backend as NativeAgentBackendView).status,
+        ThreadStatusView.idle,
+      );
       final workflowRunBefore = initial.workflow?.currentRun?.runId;
       expect(workflowRunBefore, isNotNull);
 
@@ -1537,8 +1543,13 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
   );
 
   SessionDirectoryRow _thread(SessionDirectoryRow row) =>
-      row.threadId == 'thread-main' && row.status != threadStatus
-      ? row.copyWith(status: threadStatus)
+      row.threadId == 'thread-main' &&
+          (row.backend as NativeAgentBackendView).status != threadStatus
+      ? row.copyWith(
+          backend: (row.backend as NativeAgentBackendView).copyWith(
+            status: threadStatus,
+          ),
+        )
       : row;
 
   /// Bootstrap remains a protocol fixture; typed metadata observations receive

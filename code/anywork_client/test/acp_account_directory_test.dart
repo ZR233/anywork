@@ -96,8 +96,9 @@ AcpAccountSettingsView _acpAccount(
   AcpProviderView provider = AcpProviderView.antigravity,
 }) => AcpAccountSettingsView(
   accountId: id,
+  documentRevision: BigInt.one,
   name: 'Antigravity',
-  provider: provider,
+  template: provider,
   connectionRevision: connectionRevision,
 );
 

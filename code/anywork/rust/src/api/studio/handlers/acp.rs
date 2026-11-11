@@ -29,11 +29,17 @@ pub fn load_acp_account_catalog() -> Result<BridgeAcpAccountCatalog, BridgeError
 pub async fn save_acp_account(
     operation_id: String,
     expected_settings_revision: u64,
+    expected_document_revision: Option<u64>,
     account: BridgeAcpAccountUpdate,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.save_acp_account(
-        update_acp_account_request(operation_id, expected_settings_revision, account),
+        update_acp_account_request(
+            operation_id,
+            expected_settings_revision,
+            expected_document_revision,
+            account,
+        ),
     )?))
 }
 
@@ -42,6 +48,7 @@ pub async fn remove_acp_account(
     operation_id: String,
     expected_settings_revision: u64,
     account_id: String,
+    expected_document_revision: u64,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.remove_acp_account(
@@ -49,6 +56,7 @@ pub async fn remove_acp_account(
             operation_id,
             expected_revision: expected_settings_revision,
             account_id,
+            expected_document_revision,
         },
     )?))
 }

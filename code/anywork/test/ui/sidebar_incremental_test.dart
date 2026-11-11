@@ -22,6 +22,10 @@ const _project = StudioProject(id: 'p', name: 'Project', path: '/project');
 const _apps = SidebarHostApps(terminalUnavailableReason: 'Unavailable');
 
 SessionDirectoryRow _row(String id) => SessionDirectoryRow(
+  backend: const NativeAgentBackendView(
+    config: NativeAgentConfigView(),
+    status: ThreadStatusView.idle,
+  ),
   sessionId: 'session-$id',
   agentId: 'agent-$id',
   threadId: id,
@@ -31,7 +35,6 @@ SessionDirectoryRow _row(String id) => SessionDirectoryRow(
   delegationMode: DelegationMode.automatic,
   delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),
-  status: ThreadStatusView.idle,
   workspacePath: '/project',
 );
 

@@ -256,11 +256,11 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
       if (!_ownsNavigation(intent)) return;
       _throwIfAccessBlocked(
         workspaceId: thread.workspaceId,
-        threadId: thread.id,
+        threadId: thread.threadId,
       );
       _client.selection.selectThread(
         workspaceId: thread.workspaceId,
-        threadId: thread.id,
+        threadId: thread.threadId,
       );
     });
   }

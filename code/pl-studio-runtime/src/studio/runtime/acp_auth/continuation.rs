@@ -19,7 +19,7 @@ impl AcpAuthRuntime {
         let inner = self.inner.clone();
         self.inner
             .config
-            .with_canonical_snapshot(move |revision, config| {
+            .with_acp_snapshot(move |revision, config| {
                 let mut registry = inner.lock();
                 if registry.closed {
                     return Err(acp_error(
@@ -35,7 +35,7 @@ impl AcpAuthRuntime {
                         false,
                     ));
                 }
-                if !config.acp.accounts.contains_key(&request.account_id) {
+                if !config.definitions.contains_key(&request.account_id) {
                     return Err(acp_error(
                         StudioErrorCode::NotFound,
                         "ACP 接入不存在",
@@ -154,24 +154,150 @@ impl AcpAuthRuntime {
 mod tests {
     use super::super::registry::Operation;
     use super::*;
-    use crate::config::{AcpAccountConfig, AcpProvider, ConfigPaths, ConfigStore, StudioConfig};
+    use crate::config::{
+        AcpProvider, AcpServiceDefinition, ConfigPaths, ConfigStore, StudioConfig,
+    };
     use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn generic_auth_accepts_missing_agent_info_without_template_version_or_usage()
+    -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let requests = home.path().join("requests.jsonl");
+        let script = home.path().join("synthetic_acp.py");
+        std::fs::write(
+            &script,
+            r#"import json, sys
+with open(sys.argv[1], 'a', buffering=1) as log:
+    for line in sys.stdin:
+        request = json.loads(line)
+        log.write(json.dumps(request) + '\n')
+        method = request.get('method')
+        if method == 'initialize':
+            result = {'protocolVersion': 1, 'agentCapabilities': {}, 'authMethods': []}
+        elif method == 'session/new':
+            result = {'sessionId': 'synthetic-auth-session'}
+        else:
+            raise RuntimeError('unexpected method')
+        print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+"#,
+        )?;
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            studio_home: Some(home.path().join("isolated-home")),
+            host: StudioHostKind::Test,
+            ..StudioRuntimeOptions::desktop()
+        })
+        .await?;
+        let definition = crate::config::AcpServiceDefinition {
+            id: "generic".into(),
+            display_name: "Generic".into(),
+            enabled: true,
+            launch: crate::config::AcpLaunch::Command {
+                command: "/usr/bin/python3".into(),
+                args: vec![
+                    script.to_string_lossy().into_owned(),
+                    requests.to_string_lossy().into_owned(),
+                ],
+            },
+            env: Default::default(),
+        };
+        let crate::config::AcpLaunch::Command { command, args } = definition.launch else {
+            unreachable!("generic fixture")
+        };
+        runtime.save_acp_account(pl_protocol::studio::UpdateAcpAccountRequest {
+            operation_id: "save-generic".into(),
+            expected_revision: runtime.config_runtime.read()?.revision,
+            expected_document_revision: None,
+            account: pl_protocol::studio::AcpAccountUpdate {
+                account_id: definition.id,
+                name: definition.display_name,
+                template: None,
+                command: Some(command),
+                args: Some(args),
+                env: definition.env,
+                enabled: true,
+            },
+        })?;
+        let saved = runtime.config_runtime.read()?;
+        let revision = saved.acp.definitions["generic"].connection_revision;
+        let error = runtime
+            .acp_auth
+            .start(pl_protocol::studio::StartAcpAuthRequest {
+                operation_id: "no-generic-usage".into(),
+                account_id: "generic".into(),
+                expected_connection_revision: revision,
+                action: pl_protocol::studio::AcpAuthAction::QueryUsage,
+            })
+            .err()
+            .expect("generic usage is not inferred");
+        assert_eq!(
+            crate::error_mapping::studio_error_from_anyhow(error).code,
+            StudioErrorCode::InvalidArgument
+        );
+        assert!(!requests.exists(), "rejected usage must not spawn");
+        runtime
+            .acp_auth
+            .start(pl_protocol::studio::StartAcpAuthRequest {
+                operation_id: "generic-check".into(),
+                account_id: "generic".into(),
+                expected_connection_revision: revision,
+                action: pl_protocol::studio::AcpAuthAction::Check,
+            })?;
+        let operation = runtime.acp_auth.inner.lock().slots["generic"]
+            .operation
+            .clone()
+            .expect("admitted operation");
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let mut join = operation.join.lock().await;
+            join.as_mut().expect("supervisor").await
+        })
+        .await;
+        let state = runtime.acp_auth.read_state();
+        let verified = matches!(
+            state.accounts[0].state,
+            pl_protocol::studio::AcpAuthState::Verified { server: None, .. }
+        );
+        let shutdown = runtime.shutdown_runtime().await;
+        joined??;
+        shutdown?;
+        assert!(
+            verified,
+            "generic server without agentInfo must verify: {state:?}"
+        );
+        let logged: Vec<serde_json::Value> = std::fs::read_to_string(requests)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(
+            logged
+                .iter()
+                .map(|entry| entry["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["initialize", "session/new"]
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn continuation_is_bound_to_live_connection_and_idempotent_command_identity() -> Result<()>
     {
         let home = tempfile::tempdir()?;
-        let mut config = StudioConfig::default_config()?;
-        config.acp.accounts.insert(
-            "account".into(),
-            AcpAccountConfig {
-                name: "Antigravity".into(),
-                provider: AcpProvider::Antigravity,
-            },
-        );
-        ConfigStore::new(ConfigPaths::from_config_dir(home.path())).save(&config)?;
+        let config = StudioConfig::default_config()?;
+        let paths = ConfigPaths::from_config_dir(home.path());
+        ConfigStore::new(paths.clone()).save(&config)?;
+        std::fs::create_dir_all(paths.acp_dir())?;
+        std::fs::write(
+            paths.acp_dir().join("account.toml"),
+            AcpServiceDefinition::template(
+                "account".into(),
+                "Antigravity".into(),
+                AcpProvider::Antigravity,
+            )
+            .encode()?,
+        )?;
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
             studio_home: Some(home.path().to_owned()),
             host: StudioHostKind::Test,
@@ -281,15 +407,19 @@ mod tests {
     #[tokio::test]
     async fn interrupted_shutdown_retains_the_task_and_rejects_late_success() -> Result<()> {
         let home = tempfile::tempdir()?;
-        let mut config = StudioConfig::default_config()?;
-        config.acp.accounts.insert(
-            "account".into(),
-            AcpAccountConfig {
-                name: "Antigravity".into(),
-                provider: AcpProvider::Antigravity,
-            },
-        );
-        ConfigStore::new(ConfigPaths::from_config_dir(home.path())).save(&config)?;
+        let config = StudioConfig::default_config()?;
+        let paths = ConfigPaths::from_config_dir(home.path());
+        ConfigStore::new(paths.clone()).save(&config)?;
+        std::fs::create_dir_all(paths.acp_dir())?;
+        std::fs::write(
+            paths.acp_dir().join("account.toml"),
+            AcpServiceDefinition::template(
+                "account".into(),
+                "Antigravity".into(),
+                AcpProvider::Antigravity,
+            )
+            .encode()?,
+        )?;
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
             studio_home: Some(home.path().to_owned()),
             host: StudioHostKind::Test,

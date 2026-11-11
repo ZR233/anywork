@@ -176,14 +176,21 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
 
   @override
   FutureOr<ComposerDockViewState> build(String threadId) {
+    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
+    final row = metadata.frame?.row;
+    final backend = switch (row?.backend) {
+      NativeAgentBackendView native => native,
+      AcpAgentBackendView() => throw StateError(
+        'Native prompt composer cannot consume an ACP session',
+      ),
+      null => null,
+    };
     final session = ref.watch(threadSessionStoreProvider(threadId));
     final draft = ref.watch(composerDraftControllerProvider(threadId));
     final settings = ref.watch(settingsStoreProvider);
     final accounts = ref.watch(modelSelectionAccountsProvider);
-    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
     final attachments = ref.watch(attachmentDraftsProvider);
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final row = metadata.frame?.row;
     final workspaceId = row?.workspaceId;
     // 已有线程只使用自己的项目身份，不借用主工作区选择。
     final recoveryBlocker = recoveryIssueBlockingExecution(
@@ -245,7 +252,7 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       recoveryIssue: recoveryBlocker,
       // 永久关闭由当前目录身份判定；会话快照属于另一版本域，
       // 不能用其旧的 Core 资源关闭状态否决目录中仍可执行的会话。
-      executionClosed: row?.status.blocksNewExecution ?? false,
+      executionClosed: backend?.status.blocksNewExecution ?? false,
       // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
       // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
       // 仍由在途操作持有的观察可借当前 canonical 作为本地基线。

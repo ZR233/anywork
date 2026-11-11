@@ -35,8 +35,12 @@ pub struct AgentProfilesResource {
 
 impl AgentProfilesResource {
     /// 启动装载：执行一次目录扫描并发布首帧事实（revision 从 0 前进到 1）。
-    pub fn new(paths: &ConfigPaths, config: &StudioConfig) -> Self {
-        let catalog = AgentProfileCatalog::discover_for_settings(paths, config);
+    pub fn new(
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+    ) -> Self {
+        let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
         let (updates, _) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(AgentProfilesSnapshot {
@@ -62,8 +66,13 @@ impl AgentProfilesResource {
     }
 
     /// 采用一次新的目录扫描；目录未变化时不提升 revision、不通知观察者。
-    pub fn adopt_scan(&self, paths: &ConfigPaths, config: &StudioConfig) {
-        let catalog = AgentProfileCatalog::discover_for_settings(paths, config);
+    pub fn adopt_scan(
+        &self,
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+    ) {
+        let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
         let mut state = self
             .state
             .lock()

@@ -571,6 +571,57 @@ class VmUsage implements AccountUsageRepository {
 
 class VmAcp implements AcpService {
   @override
+  final LatestValue<AccountResource<AcpLocalDetectionSnapshotView>>
+  localDetection = LatestValue(
+    const AccountResource(value: AcpLocalDetectionSnapshotView.idle()),
+  );
+  final detectionStarts = <OperationId>[];
+  final detectionCancels = <OperationId>[];
+  Future<AcpLocalDetectionCommandReply> Function(OperationId)? detect;
+  @override
+  AccountDemand observeLocalDetection() => VmDemand();
+  @override
+  Future<AcpLocalDetectionCommandReply> startLocalDetection(
+    OperationId operationId,
+  ) async {
+    detectionStarts.add(operationId);
+    if (detect case final run?) return run(operationId);
+    return detectionReply(operationId, AcpLocalDetectionPhaseView.checking);
+  }
+
+  @override
+  Future<AcpLocalDetectionCommandReply> cancelLocalDetection({
+    required OperationId operationId,
+    required OperationId targetOperationId,
+  }) async {
+    detectionCancels.add(targetOperationId);
+    return detectionReply(
+      operationId,
+      AcpLocalDetectionPhaseView.cancelling,
+      targetOperationId: targetOperationId.value,
+    );
+  }
+
+  AcpLocalDetectionCommandReply detectionReply(
+    OperationId operationId,
+    AcpLocalDetectionPhaseView phase, {
+    String? targetOperationId,
+  }) => AcpLocalDetectionCommandReply(
+    receipt: StudioCommandReceipt(
+      operationId: operationId,
+      disposition: CommitDisposition.applied,
+      targets: const [],
+      effect: EffectPoint.immediate,
+      effective: true,
+      durable: false,
+    ),
+    snapshot: AcpLocalDetectionSnapshotView(
+      revision: 1,
+      operationId: targetOperationId ?? operationId.value,
+      state: phase,
+    ),
+  );
+  @override
   final LatestValue<AcpAccountCatalogView> templates = LatestValue(
     const AcpAccountCatalogView(templates: [vmAcpTemplate]),
   );
@@ -678,6 +729,7 @@ class VmAcp implements AcpService {
   @override
   Future<OperationState> save(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
   }) {
     saves.add(account);
@@ -687,6 +739,7 @@ class VmAcp implements AcpService {
   @override
   Future<AcpSaveAndConnectResult> saveAndConnect(
     AcpAccountUpdateView account, {
+    required BigInt? expectedDocumentRevision,
     DraftStamp? draft,
   }) {
     saves.add(account);
@@ -793,23 +846,25 @@ class AccountsVmHarness {
 AccountEditorKey editKey([String editorId = 'edit']) =>
     AccountEditorKey(editorId: editorId, target: nativeKey, creating: false);
 
-const vmAcpAccount = AcpAccountSettingsView(
+final vmAcpAccount = AcpAccountSettingsView(
   accountId: 'acp',
   name: 'Acp',
-  provider: AcpProviderView.antigravity,
+  documentRevision: BigInt.one,
+  template: AcpProviderView.antigravity,
   connectionRevision: 1,
 );
 const vmAcpKey = AccountAcpKey(
   target: AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
-  providerId: 'antigravity',
+  templateId: 'antigravity',
   connectionRevision: 1,
 );
 void publishVmAcp(
   AccountsVmHarness h,
   AcpAuthStateView auth, {
-  AcpAccountSettingsView account = vmAcpAccount,
+  AcpAccountSettingsView? account,
   AcpUsageObservationView? usage,
 }) {
+  account ??= vmAcpAccount;
   h.accounts.state.publish(
     AccountsState(
       stamp: vmStamp,
@@ -2107,8 +2162,9 @@ void main() {
       AcpAccountDetails(
         AcpAccountSettingsView(
           accountId: 'shared',
+          documentRevision: BigInt.one,
           name: 'Acp',
-          provider: AcpProviderView.antigravity,
+          template: AcpProviderView.antigravity,
           connectionRevision: revision,
         ),
       ),

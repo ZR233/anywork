@@ -154,32 +154,29 @@ pub(crate) fn bridge_session_row(
         thread_id: value.thread_id,
         workspace_id: value.workspace_id,
         title: value.title,
-        mode: value.mode.as_str().to_string(),
+        mode: value.mode.map(|mode| mode.to_string()),
         delegation_mode: value.delegation_mode.into(),
         delegation_preference: value.delegation_preference.into(),
         workspace_mode: value.workspace_mode.label().to_string(),
         workspace_path: value.workspace_path,
         role: value.role,
-        binding: match value.binding {
-            pl_protocol::AgentBinding::Native(config) => BridgeAgentBinding::Native {
-                route: config.route.map(Into::into),
-                system_instructions: None,
+        backend: match value.backend {
+            pl_protocol::session::AgentBackend::Native { config, status } => {
+                BridgeAgentBackend::Native {
+                    config: BridgeNativeAgentConfig {
+                        route: config.route.map(Into::into),
+                        system_instructions: config.system_instructions,
+                    },
+                    status: bridge_thread_status(status),
+                }
+            }
+            pl_protocol::session::AgentBackend::Acp { reference } => BridgeAgentBackend::Acp {
+                reference: BridgeAcpSessionReference {
+                    account_id: reference.account_id,
+                    acp_session_id: reference.acp_session_id,
+                    cwd: reference.cwd,
+                },
             },
-            pl_protocol::AgentBinding::Acp(config) => BridgeAgentBinding::Acp {
-                account_id: config.account_id,
-                connection_revision: config.connection_revision,
-            },
-        },
-        status: match value.status {
-            ThreadStatus::Idle => BridgeThreadStatus::Idle,
-            ThreadStatus::Queued => BridgeThreadStatus::Queued,
-            ThreadStatus::Running => BridgeThreadStatus::Running,
-            ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
-            ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
-            ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
-            ThreadStatus::Closing => BridgeThreadStatus::Closing,
-            ThreadStatus::Closed => BridgeThreadStatus::Closed,
-            ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
         },
         created_at: value.created_at,
         updated_at: value.updated_at,
@@ -193,7 +190,7 @@ pub(crate) fn bridge_thread(value: Thread) -> BridgeThread {
         id: value.id,
         workspace_id: value.workspace_id,
         title: value.title,
-        mode: value.mode.as_str().to_string(),
+        mode: value.mode.map(|mode| mode.to_string()),
         delegation_mode: value.delegation_mode.into(),
         delegation_preference: value.delegation_preference.into(),
         frozen_model: value.frozen_model.map(Into::into),
@@ -203,21 +200,25 @@ pub(crate) fn bridge_thread(value: Thread) -> BridgeThread {
         parent_thread_id: value.parent_thread_id,
         role: value.role,
         agent_path: value.agent_path,
-        status: match value.status {
-            ThreadStatus::Idle => BridgeThreadStatus::Idle,
-            ThreadStatus::Queued => BridgeThreadStatus::Queued,
-            ThreadStatus::Running => BridgeThreadStatus::Running,
-            ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
-            ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
-            ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
-            ThreadStatus::Closing => BridgeThreadStatus::Closing,
-            ThreadStatus::Closed => BridgeThreadStatus::Closed,
-            ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
-        },
+        status: bridge_thread_status(value.status),
         created_at: value.created_at,
         updated_at: value.updated_at,
         last_user_message_at: value.last_user_message_at,
         archived: value.archived,
+    }
+}
+
+fn bridge_thread_status(status: ThreadStatus) -> BridgeThreadStatus {
+    match status {
+        ThreadStatus::Idle => BridgeThreadStatus::Idle,
+        ThreadStatus::Queued => BridgeThreadStatus::Queued,
+        ThreadStatus::Running => BridgeThreadStatus::Running,
+        ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
+        ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
+        ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
+        ThreadStatus::Closing => BridgeThreadStatus::Closing,
+        ThreadStatus::Closed => BridgeThreadStatus::Closed,
+        ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
     }
 }
 
@@ -682,6 +683,140 @@ fn mcp_server(value: McpServerDescriptor) -> BridgeThreadMcpServerDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn directory_row(
+        backend: pl_protocol::session::AgentBackend,
+        mode: Option<pl_protocol::ThreadModeId>,
+        parent_agent_id: Option<String>,
+    ) -> pl_protocol::SessionDirectoryRow {
+        pl_protocol::SessionDirectoryRow {
+            session_id: "session-id".into(),
+            agent_id: "agent-id".into(),
+            parent_agent_id,
+            thread_id: "thread-id".into(),
+            workspace_id: "workspace-id".into(),
+            title: "Directory title".into(),
+            mode,
+            workspace_mode: pl_protocol::ThreadWorkspaceMode::Worktree,
+            delegation_mode: pl_protocol::DelegationMode::Automatic,
+            delegation_preference: pl_protocol::DelegationPreference::Economy,
+            workspace_path: "/workspace path".into(),
+            role: "profile-id".into(),
+            backend,
+            created_at: 11,
+            updated_at: 22,
+            last_user_message_at: Some(17),
+            archived: true,
+        }
+    }
+
+    #[test]
+    fn directory_backend_and_optional_mode_preserve_native_and_acp_facts() {
+        use pl_protocol::session::{AcpSessionReference, AgentBackend};
+        let native = pl_protocol::NativeAgentConfig {
+            route: Some(pl_protocol::studio::NewThreadModelRoute {
+                account_id: "native-account".into(),
+                model_id: "native-model".into(),
+                effort: Some("high".into()),
+            }),
+            system_instructions: None,
+        };
+        let cases = [
+            directory_row(
+                AgentBackend::Native {
+                    config: pl_protocol::NativeAgentConfig {
+                        route: None,
+                        system_instructions: None,
+                    },
+                    status: ThreadStatus::Running,
+                },
+                Some(pl_protocol::ThreadModeId::task()),
+                None,
+            ),
+            directory_row(
+                AgentBackend::Native {
+                    config: native,
+                    status: ThreadStatus::WaitingInteraction,
+                },
+                None,
+                Some("parent-agent".into()),
+            ),
+            directory_row(
+                AgentBackend::Acp {
+                    reference: AcpSessionReference {
+                        account_id: "acp-account".into(),
+                        acp_session_id: "peer-session".into(),
+                        cwd: "/peer working directory".into(),
+                    },
+                },
+                None,
+                None,
+            ),
+        ];
+        for source in cases {
+            let mapped = bridge_session_row(source.clone());
+            assert_eq!(mapped.session_id, source.session_id);
+            assert_eq!(mapped.agent_id, source.agent_id);
+            assert_eq!(mapped.thread_id, source.thread_id);
+            assert_eq!(mapped.parent_agent_id, source.parent_agent_id);
+            assert_eq!(mapped.is_root_row(), source.is_root_row());
+            assert_eq!(mapped.mode, source.mode.as_ref().map(ToString::to_string));
+            assert_eq!(mapped.workspace_id, source.workspace_id);
+            assert_eq!(mapped.workspace_path, source.workspace_path);
+            assert_eq!(mapped.workspace_mode, "worktree");
+            assert_eq!(mapped.title, source.title);
+            assert_eq!(mapped.role, source.role);
+            assert_eq!(mapped.delegation_mode, BridgeDelegationMode::Automatic);
+            assert_eq!(
+                mapped.delegation_preference,
+                BridgeDelegationPreference::Economy
+            );
+            assert_eq!(mapped.created_at, 11);
+            assert_eq!(mapped.updated_at, 22);
+            assert_eq!(mapped.last_user_message_at, Some(17));
+            assert!(mapped.archived);
+            assert_eq!(
+                serde_json::to_value(&mapped.backend).unwrap(),
+                serde_json::to_value(&source.backend).unwrap(),
+            );
+            let value = serde_json::to_value(mapped).unwrap();
+            assert!(value.get("binding").is_none());
+            assert!(value.get("status").is_none());
+        }
+    }
+
+    #[test]
+    fn native_thread_optional_mode_keeps_root_and_parent_identity() {
+        for (id, mode, parent) in [
+            ("native-root", Some(pl_protocol::ThreadModeId::task()), None),
+            ("native-child", None, Some("native-root".to_owned())),
+        ] {
+            let mut source = Thread::placeholder(id);
+            source.mode = mode;
+            source.root_thread_id = "native-root".into();
+            source.parent_thread_id = parent;
+            source.status = ThreadStatus::Closing;
+            let mapped = bridge_thread(source.clone());
+            assert_eq!(mapped.id, id);
+            assert_eq!(mapped.root_thread_id, "native-root");
+            assert_eq!(mapped.parent_thread_id, source.parent_thread_id);
+            assert_eq!(mapped.mode, source.mode.map(|mode| mode.to_string()));
+            assert_eq!(mapped.status, BridgeThreadStatus::Closing);
+        }
+    }
+
+    #[test]
+    fn acp_profile_binding_round_trip_has_no_connection_revision() {
+        let source = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+            account_id: "profile-account".into(),
+        });
+        let mapped = BridgeAgentBinding::from(source.clone());
+        assert_eq!(
+            serde_json::to_value(&mapped).unwrap(),
+            serde_json::json!({ "kind": "acp", "account_id": "profile-account" }),
+        );
+        assert_eq!(pl_protocol::AgentBinding::from(mapped), source);
+    }
 
     fn business_refs() -> pl_protocol::ThreadBusinessRefs {
         pl_protocol::ThreadBusinessRefs {

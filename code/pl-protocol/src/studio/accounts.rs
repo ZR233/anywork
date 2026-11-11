@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::{
-    AcpAccountSettings, AcpAuthSnapshot, AcpInstallSnapshot, ResourceStamp,
-    StudioAccountModelCatalog, StudioAccountSettings,
+    AcpAccountSettings, AcpAuthSnapshot, AcpInstallSnapshot, AcpLocalDetectionSnapshot,
+    ResourceStamp, StudioAccountModelCatalog, StudioAccountSettings,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
@@ -76,6 +76,7 @@ pub enum AccountObservationTarget {
     Usage,
     AcpAuth,
     AcpInstall,
+    AcpLocalDetection,
     ChatGptLogin { login_id: String },
 }
 
@@ -112,6 +113,10 @@ pub enum AccountDomainFrame {
     AcpInstall {
         stamp: ResourceStamp,
         snapshot: AcpInstallSnapshot,
+    },
+    AcpLocalDetection {
+        stamp: ResourceStamp,
+        snapshot: AcpLocalDetectionSnapshot,
     },
     ChatGptLogin {
         stamp: ResourceStamp,

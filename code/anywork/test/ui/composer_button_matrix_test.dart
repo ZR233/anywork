@@ -147,7 +147,11 @@ final class _StatusObservation implements ThreadObservationHandle {
         ownerEpoch: frame.stamp.ownerEpoch,
         revision: frame.stamp.revision + 1,
       ),
-      row: frame.row?.copyWith(status: status),
+      row: frame.row?.copyWith(
+        backend: (frame.row!.backend as NativeAgentBackendView).copyWith(
+          status: status,
+        ),
+      ),
     );
   }
 
@@ -363,7 +367,11 @@ void main() {
         restoredPlan: pending,
       );
       await _pump(tester, composer);
-      expect(composer.owner.state.directoryRow?.status, status);
+      expect(
+        (composer.owner.state.directoryRow!.backend as NativeAgentBackendView)
+            .status,
+        status,
+      );
       expect(
         composer.owner.state.workspace?.thread.status,
         ThreadStatusView.closed,

@@ -1,21 +1,15 @@
-//! ACP 接入的 desired 配置段（`[acp.accounts.<id>]`）。
-//!
-//! 每个稳定 ID 只保存名称与接入类型：官方 server 的版本、下载地址与启动 argv 属于产品固定清单
-//! 与受管安装事实，不能通过配置提交。接入不使用空 base URL、空模型目录或假 API key 伪装 Native
-//! account，也不进入 Native 默认账号/模型路由候选（见 design/20 §20.2、design/28 §28.8）。
-//!
-//! schema 24 及更早版本里的 `program`/`args` 只由迁移边界读取并退役；当前结构
-//! `deny_unknown_fields`，旧执行字段不会静默正常加载。
-
+//! User-level ACP definitions. Only this document boundary decodes launch settings.
 use std::collections::BTreeMap;
+use std::path::Path;
 
-use crate::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
-/// 显示名称的最大字节数。
+use crate::{PureError, Result};
+
+pub const ACP_DOCUMENT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_ACP_NAME_BYTES: usize = 200;
 
-/// 支持的 ACP 接入类型。
+/// A managed launch template, not a whitelist of ACP protocol implementations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AcpProvider {
@@ -23,7 +17,6 @@ pub enum AcpProvider {
 }
 
 impl AcpProvider {
-    /// 稳定的配置/wire 标签。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Antigravity => "antigravity",
@@ -31,83 +24,188 @@ impl AcpProvider {
     }
 }
 
-/// 一条 ACP 接入的 desired 配置。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct AcpAccountConfig {
-    pub name: String,
-    pub provider: AcpProvider,
+#[derive(Clone, PartialEq, Eq)]
+pub enum AcpLaunch {
+    Command { command: String, args: Vec<String> },
+    Template(AcpProvider),
 }
 
-/// Studio 自有的 ACP 配置段。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Immutable desired launch values. Resolved executable paths never enter this document.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AcpServiceDefinition {
+    pub id: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub launch: AcpLaunch,
+    pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for AcpServiceDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpServiceDefinition")
+            .field("id", &self.id)
+            .field("enabled", &self.enabled)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AcpConfig {
+struct Document {
+    schema_version: u32,
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(default = "enabled")]
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    // Option distinguishes an explicitly supplied empty args from an absent field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    template: Option<AcpProvider>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub accounts: BTreeMap<String, AcpAccountConfig>,
+    env: BTreeMap<String, String>,
 }
 
-impl AcpConfig {
-    pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
-    }
+const fn enabled() -> bool {
+    true
 }
 
-/// 校验接入 ID：与既有账号一致的非空标识，另拒绝控制字符以保持日志/DTO 可读。
-pub fn validate_acp_account_id(account_id: &str) -> Result<()> {
-    if account_id.trim().is_empty() {
-        return Err(PureError::ConfigError(
-            "ACP account id cannot be empty".to_string(),
-        ));
-    }
-    if account_id.chars().any(char::is_control) {
-        return Err(PureError::ConfigError(
-            "ACP account id must not contain control characters".to_string(),
+pub fn validate_acp_account_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || matches!(id, "." | "..")
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(invalid(
+            "ACP id must contain only ASCII letters, digits, '-', '_' or '.', and cannot be empty, '.' or '..'",
         ));
     }
     Ok(())
 }
 
-/// 校验显示名称：非空、有限长度、无控制字符。
 pub fn validate_acp_name(name: &str) -> Result<()> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err(PureError::ConfigError(
-            "ACP account name is required".to_string(),
-        ));
-    }
-    if trimmed.len() > MAX_ACP_NAME_BYTES {
-        return Err(PureError::ConfigError(format!(
-            "ACP account name must not exceed {MAX_ACP_NAME_BYTES} bytes"
-        )));
-    }
-    if trimmed.chars().any(char::is_control) {
-        return Err(PureError::ConfigError(
-            "ACP account name must not contain control characters".to_string(),
+    if name.trim().is_empty()
+        || name.len() > MAX_ACP_NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        return Err(invalid(
+            "ACP display name must be nonempty, bounded and contain no control characters",
         ));
     }
     Ok(())
 }
 
-/// 校验一个完整接入（保存命令与配置文件启动校验共用同一规则）。
-pub fn validate_acp_account(account: &AcpAccountConfig) -> Result<()> {
-    validate_acp_name(&account.name)?;
-    Ok(())
+fn invalid(message: &str) -> PureError {
+    PureError::ConfigError(message.into())
 }
 
-/// 校验整个 ACP 配置段；ID 与其内容一起校验，非法声明 fail-loud。
-pub fn validate_acp_config(config: &AcpConfig) -> Result<()> {
-    for (account_id, account) in &config.accounts {
-        validate_acp_account_id(account_id)?;
-        validate_acp_account(account)?;
+impl AcpServiceDefinition {
+    pub fn template(id: String, display_name: String, template: AcpProvider) -> Self {
+        Self {
+            id,
+            display_name,
+            enabled: true,
+            launch: AcpLaunch::Template(template),
+            env: BTreeMap::new(),
+        }
     }
-    Ok(())
-}
 
-/// 归一化一次保存意图：只裁剪名称两端的空白。
-pub fn normalize_acp_account(account: AcpAccountConfig) -> AcpAccountConfig {
-    AcpAccountConfig {
-        name: account.name.trim().to_string(),
-        provider: account.provider,
+    pub fn template_kind(&self) -> Option<AcpProvider> {
+        match self.launch {
+            AcpLaunch::Template(template) => Some(template),
+            AcpLaunch::Command { .. } => None,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_acp_account_id(&self.id)?;
+        validate_acp_name(&self.display_name)?;
+        if let AcpLaunch::Command { command, args } = &self.launch {
+            let path = Path::new(command);
+            if command.is_empty()
+                || command.contains('\0')
+                || (!path.is_absolute()
+                    && (command.contains('/')
+                        || command.contains('\\')
+                        || matches!(command.as_str(), "." | "..")))
+                || args.iter().any(|arg| arg.contains('\0'))
+            {
+                return Err(invalid(
+                    "ACP command must be a PATH program name or absolute path, with NUL-free arguments",
+                ));
+            }
+        }
+        if self
+            .env
+            .iter()
+            .any(|(key, value)| key.is_empty() || key.contains(['=', '\0']) || value.contains('\0'))
+        {
+            return Err(invalid(
+                "ACP environment contains an invalid key or NUL value",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Safe decoding: never expose TOML parser snippets or environment values.
+    pub fn decode(content: &str, filename_id: &str) -> Result<Self> {
+        let document: Document = toml::from_str(content)
+            .map_err(|_| invalid("invalid ACP TOML structure, field type or unknown field"))?;
+        if document.schema_version != ACP_DOCUMENT_SCHEMA_VERSION {
+            return Err(invalid("unsupported ACP document schema_version"));
+        }
+        if document.id != filename_id {
+            return Err(invalid("ACP document id does not match its filename"));
+        }
+        let launch = match (document.command, document.args, document.template) {
+            (Some(command), args, None) => AcpLaunch::Command {
+                command,
+                args: args.unwrap_or_default(),
+            },
+            (None, None, Some(template)) => AcpLaunch::Template(template),
+            _ => {
+                return Err(invalid(
+                    "ACP requires command or template exclusively; template cannot specify args",
+                ));
+            }
+        };
+        let definition = Self {
+            display_name: document.display_name.unwrap_or_else(|| document.id.clone()),
+            id: document.id,
+            enabled: document.enabled,
+            launch,
+            env: document.env,
+        };
+        definition.validate()?;
+        Ok(definition)
+    }
+
+    pub fn encode(&self) -> Result<String> {
+        self.validate()?;
+        let (command, args, template) = match &self.launch {
+            AcpLaunch::Command { command, args } => {
+                (Some(command.clone()), Some(args.clone()), None)
+            }
+            AcpLaunch::Template(template) => (None, None, Some(*template)),
+        };
+        toml::to_string_pretty(&Document {
+            schema_version: ACP_DOCUMENT_SCHEMA_VERSION,
+            id: self.id.clone(),
+            display_name: (self.display_name != self.id).then(|| self.display_name.clone()),
+            enabled: self.enabled,
+            command,
+            args,
+            template,
+            env: self.env.clone(),
+        })
+        .map_err(|_| invalid("could not encode ACP definition"))
+    }
+
+    pub(crate) fn same_connection(&self, other: &Self) -> bool {
+        self.launch == other.launch && self.env == other.env
     }
 }

@@ -15,6 +15,9 @@ final class _AcpTransport extends AccountsTestTransport {
   final cancelEntered = <String, Completer<void>>{};
   int settingsRevision = 4;
   int saveCalls = 0;
+  BigInt createdDocumentRevision = BigInt.one;
+  final documentRevisions = <BigInt?>[];
+  final removedDocumentRevisions = <BigInt>[];
   int startCalls = 0;
   int cancelCalls = 0;
   Object? saveFailure;
@@ -95,8 +98,10 @@ final class _AcpTransport extends AccountsTestTransport {
     int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
+    required BigInt? expectedDocumentRevision,
   }) async {
     saveCalls += 1;
+    documentRevisions.add(expectedDocumentRevision);
     saveOperations.add(operationId);
     if (!saveEntered.isCompleted) saveEntered.complete();
     lastSaved = account;
@@ -107,7 +112,14 @@ final class _AcpTransport extends AccountsTestTransport {
       AcpAccountSettingsView(
         accountId: account.accountId,
         name: account.name,
-        provider: account.provider,
+        template: account.template,
+        command: account.command,
+        args: account.args ?? const [],
+        env: account.env,
+        enabled: account.enabled,
+        documentRevision: expectedDocumentRevision == null
+            ? createdDocumentRevision
+            : expectedDocumentRevision + BigInt.one,
         connectionRevision: 7,
       ),
     ];
@@ -125,7 +137,9 @@ final class _AcpTransport extends AccountsTestTransport {
     int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
+    required BigInt expectedDocumentRevision,
   }) async {
+    removedDocumentRevisions.add(expectedDocumentRevision);
     accounts = [
       for (final account in accounts)
         if (account.accountId != accountId) account,
@@ -306,10 +320,42 @@ AcpAccountSettingsView? _saved(AccountsTestRuntime runtime, String id) =>
 const _update = AcpAccountUpdateView(
   accountId: 'acp-1',
   name: 'Antigravity',
-  provider: AcpProviderView.antigravity,
+  template: AcpProviderView.antigravity,
 );
 
 void main() {
+  test('generic command saves exact argv/env and document CAS without managed install or implicit check', () async {
+    final transport = _AcpTransport()
+      ..createdDocumentRevision = BigInt.parse('18446744073709551614');
+    final client = _client(transport);
+    const command = AcpAccountUpdateView(
+      accountId: 'acp-1',
+      name: 'Local command',
+      command: '/tools/agy',
+      args: ['acp', '--label', 'a b', ''],
+      env: {'PROJECT': 'work tree'},
+      enabled: false,
+    );
+    final created = await client.domains.acp.save(
+      command,
+      expectedDocumentRevision: null,
+    );
+    expect(created.failurePhase, isNull);
+    expect(_saved(client, 'acp-1')!.command, '/tools/agy');
+    expect(_saved(client, 'acp-1')!.args, ['acp', '--label', 'a b', '']);
+    expect(_saved(client, 'acp-1')!.env, {'PROJECT': 'work tree'});
+    expect(_saved(client, 'acp-1')!.template, isNull);
+    expect(_saved(client, 'acp-1')!.enabled, isFalse);
+    expect(transport.startCalls, 0);
+    final observed = _saved(client, 'acp-1')!.documentRevision;
+    expect(observed, transport.createdDocumentRevision);
+    await client.domains.acp.save(command, expectedDocumentRevision: observed);
+    expect(transport.documentRevisions, [null, observed]);
+    expect(_saved(client, 'acp-1')!.documentRevision, observed + BigInt.one);
+    expect(transport.saveCalls, 2);
+    expect(transport.startCalls, 0);
+  });
+
   test(
     'admitted unknown save returns settlement without checking or resending',
     () async {
@@ -320,7 +366,10 @@ void main() {
       final client = _client(transport);
 
       // A dispatched loss must settle, not throw or replay the save intent.
-      final pending = client.domains.acp.saveAndConnect(_update);
+      final pending = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       await transport.saveEntered.future;
       final handle = client.board.lookup(transport.saveOperations.single)!;
       OperationState? publishedFailure;
@@ -341,11 +390,12 @@ void main() {
           AccountDetailFrame(
             testStamp('settings', 5, epoch: 'test'),
             const AcpAccountIdentity('acp-1'),
-            const AcpAccountDetails(
+            AcpAccountDetails(
               AcpAccountSettingsView(
                 accountId: 'acp-1',
+                documentRevision: BigInt.one,
                 name: 'Antigravity',
-                provider: AcpProviderView.antigravity,
+                template: AcpProviderView.antigravity,
                 connectionRevision: 7,
               ),
             ),
@@ -380,6 +430,7 @@ void main() {
     final client = _client(transport);
     const draft = DraftStamp(draftId: 'editor', revision: 3);
     final result = await client.domains.acp.saveAndConnect(
+      expectedDocumentRevision: null,
       _update,
       draft: draft,
     );
@@ -392,7 +443,10 @@ void main() {
     expect(transport.startCalls, 0);
     expect(client.board.lookup(result.operation.id)!.state.observerCount, 0);
     // Independent save returns its own failure snapshot for a distinct intent.
-    final independent = await client.domains.acp.save(_update);
+    final independent = await client.domains.acp.save(
+      _update,
+      expectedDocumentRevision: null,
+    );
     expect(transport.saveOperations, hasLength(2));
     expect(independent.id, transport.saveOperations.last);
     expect(independent.id, isNot(result.operation.id));
@@ -408,7 +462,10 @@ void main() {
       final client = _client(transport);
       final failure = StateError('canonical settings apply failed');
       client.domains.onSettings = (_) => throw failure;
-      final pending = client.domains.acp.saveAndConnect(_update);
+      final pending = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       await transport.saveEntered.future;
       final handle = client.board.lookup(transport.saveOperations.single)!;
       OperationState? publishedFailure;
@@ -451,7 +508,10 @@ void main() {
         ..saveDurable = false
         ..includeSaveFrames = false;
       final client = _client(transport);
-      final pending = client.domains.acp.saveAndConnect(_update);
+      final pending = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       await transport.saveEntered.future;
       final operation = client.board.lookup(transport.saveOperations.single)!;
       expect(operation.state.value.receipt, isNull);
@@ -491,7 +551,11 @@ void main() {
       final transport = _AcpTransport()..saveDurable = false;
       final client = _client(transport);
       const draft = DraftStamp(draftId: 'first-editor', revision: 8);
-      final pending = client.domains.acp.saveAndConnect(_update, draft: draft);
+      final pending = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+        draft: draft,
+      );
       await transport.saveEntered.future;
       await _saveConfirmationReady(client);
       final first = client.board.lookup(transport.saveOperations.single)!;
@@ -502,6 +566,7 @@ void main() {
         reason: 'retention and confirmation wait',
       );
       final newer = await client.domains.acp.save(
+        expectedDocumentRevision: null,
         _update,
         draft: const DraftStamp(draftId: 'newer-editor', revision: 1),
       );
@@ -523,7 +588,10 @@ void main() {
     () async {
       final transport = _AcpTransport()..saveDurable = false;
       final client = _client(transport);
-      final pending = client.domains.acp.saveAndConnect(_update);
+      final pending = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       await transport.saveEntered.future;
       await _saveConfirmationReady(client);
       final operation = client.board.lookup(transport.saveOperations.single)!;
@@ -558,7 +626,10 @@ void main() {
   test('detail observation failure settles save but leaves SDK target observation owned', () async {
     final transport = _AcpTransport()..includeSaveFrames = false;
     final client = _client(transport);
-    final pending = client.domains.acp.saveAndConnect(_update);
+    final pending = client.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
     await transport.saveEntered.future;
     await _saveConfirmationReady(client);
     final operation = client.board.lookup(transport.saveOperations.single)!;
@@ -622,7 +693,10 @@ void main() {
       () async {
         final transport = _AcpTransport()..saveDurable = false;
         final client = _client(transport);
-        final pending = client.domains.acp.saveAndConnect(_update);
+        final pending = client.domains.acp.saveAndConnect(
+          _update,
+          expectedDocumentRevision: null,
+        );
         await transport.saveEntered.future;
         await _saveConfirmationReady(client);
         final operation = client.board.lookup(transport.saveOperations.single)!;
@@ -779,7 +853,10 @@ void main() {
         );
       final client = _client(transport);
 
-      final result = await client.domains.acp.saveAndConnect(_update);
+      final result = await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
 
       expect(result.saved, isNotNull);
       final saved = result.saved!;
@@ -806,7 +883,10 @@ void main() {
     () async {
       final transport = _AcpTransport();
       final client = _client(transport);
-      await client.domains.acp.saveAndConnect(_update);
+      await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
 
       // 保存意图只带身份与显示名：受管 program/argv 由产品固定发行决定。
       expect(transport.lastSaved?.accountId, 'acp-1');
@@ -825,7 +905,10 @@ void main() {
     () async {
       final transport = _AcpTransport();
       final client = _client(transport);
-      await client.domains.acp.saveAndConnect(_update);
+      await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
 
       _apply(
         client,
@@ -878,7 +961,10 @@ void main() {
     () async {
       final transport = _AcpTransport()..holdStart = true;
       final client = _client(transport);
-      final connecting = client.domains.acp.saveAndConnect(_update);
+      final connecting = client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       // 保存完成、check 已登记并挂在 transport 上。
       await transport.startEntered.future;
       expect(transport.startCalls, 1);
@@ -927,7 +1013,10 @@ void main() {
     () async {
       final transport = _AcpTransport();
       final client = _client(transport);
-      await client.domains.acp.saveAndConnect(_update);
+      await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       // 同一账号 ID 但连接身份已前进：旧 operation 不得被当作当前操作取消。
       _apply(
         client,
@@ -968,7 +1057,10 @@ void main() {
     () async {
       final transport = _AcpTransport();
       final client = _client(transport);
-      await client.domains.acp.saveAndConnect(_update);
+      await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       _apply(
         client,
         const AcpAuthSnapshotView(
@@ -1037,7 +1129,10 @@ void main() {
     () async {
       final transport = _AcpTransport();
       final client = _client(transport);
-      await client.domains.acp.saveAndConnect(_update);
+      await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
 
       _apply(
         client,
@@ -1113,16 +1208,18 @@ void main() {
         SettingsStateSnapshot(
           revision: 1,
           acpAccounts: [
-            const AcpAccountSettingsView(
+            AcpAccountSettingsView(
               accountId: 'acp-1',
+              documentRevision: BigInt.one,
               name: 'A',
-              provider: AcpProviderView.antigravity,
+              template: AcpProviderView.antigravity,
               connectionRevision: 5,
             ),
             AcpAccountSettingsView(
               accountId: 'acp-2',
+              documentRevision: BigInt.one,
               name: 'B',
-              provider: AcpProviderView.antigravity,
+              template: AcpProviderView.antigravity,
               connectionRevision: 9,
             ),
           ],
@@ -1199,7 +1296,10 @@ void main() {
         );
       final client = _client(transport);
 
-      final result = await client.domains.acp.saveAndConnect(_update);
+      final result = await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
       // 保存是已成立事实：Busy 只是“连接未完成”。
       expect(result.saved, isNotNull);
       final saved = result.saved!;
@@ -1262,10 +1362,19 @@ void main() {
   );
 
   test('removing the account drops it from canonical settings', () async {
-    final transport = _AcpTransport();
+    final transport = _AcpTransport()
+      ..createdDocumentRevision = BigInt.parse('18446744073709551615');
     final client = _client(transport);
-    await client.domains.acp.saveAndConnect(_update);
+    await client.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
     await client.domains.acp.remove(const AcpAccountIdentity('acp-1'));
+    expect(transport.documentRevisions, [null]);
+    expect(transport.removedDocumentRevisions, [
+      transport.createdDocumentRevision,
+    ]);
+    expect(transport.saveCalls, 1);
     expect(client.domains.accounts.state.value.accounts, isEmpty);
   });
 }

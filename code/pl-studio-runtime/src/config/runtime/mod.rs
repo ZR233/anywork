@@ -1,3 +1,4 @@
+mod acp;
 mod catalog;
 mod mode_definitions;
 pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
@@ -38,6 +39,7 @@ pub struct ConfigRuntime {
     settings_observer: Arc<Mutex<Vec<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
+    acp: super::AcpDefinitionsResource,
     /// 配置 owner 持有的按环境作用域组织的单文件 MCP 配置目录资源。
     mcp_catalog: McpCatalogResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -82,6 +84,8 @@ pub struct ConfigRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
     pub config: StudioConfig,
+    /// Read-only ACP resource snapshot from the same command publication boundary.
+    pub acp: super::AcpDefinitionsSnapshot,
     canonical_config: StudioConfig,
     usage_query_revisions: BTreeMap<AccountId, u64>,
 }
@@ -132,6 +136,8 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error(transparent)]
+    AcpDefinition(#[from] super::AcpDefinitionError),
     #[error("model discovery is unsupported for this account")]
     ModelDiscoveryUnsupported,
     #[error(
@@ -153,6 +159,7 @@ type ConfigRuntimeResult<T> = std::result::Result<T, ConfigRuntimeError>;
 impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
+            ConfigRuntimeError::AcpDefinition(error) => PureError::ConfigError(error.to_string()),
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 PureError::ConfigError("model discovery is unsupported".into())
             }
@@ -185,7 +192,9 @@ impl ConfigRuntime {
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
-        let profiles = AgentProfilesResource::new(store.paths(), &config);
+        let acp = super::AcpDefinitionsResource::new(store.paths());
+        let acp_snapshot = acp.read();
+        let profiles = AgentProfilesResource::new(store.paths(), &config, &acp_snapshot);
         let mcp_catalog = McpCatalogResource::new(store.paths(), &config.models);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
@@ -196,13 +205,17 @@ impl ConfigRuntime {
             catalog_updates,
             settings_observer: Arc::new(Mutex::new(Vec::new())),
             state: Arc::new(RwLock::new(RuntimeState {
-                account_projection_revisions: initial_account_projection_revisions(&desired),
+                account_projection_revisions: initial_account_projection_revisions(
+                    &desired,
+                    &acp_snapshot,
+                ),
                 desired: desired.clone(),
                 closing: false,
                 snapshot: ConfigRuntimeSnapshot {
                     revision: 1,
                     updated_at: unix_seconds(),
                     config: config.clone(),
+                    acp: acp_snapshot,
                     usage_query_revisions: config
                         .models
                         .accounts
@@ -220,6 +233,7 @@ impl ConfigRuntime {
                 observations,
             })),
             profiles,
+            acp,
             mcp_catalog,
             modes,
             mode_documents: Arc::new(RwLock::new(mode_documents)),
@@ -301,25 +315,6 @@ impl ConfigRuntime {
             .push(Arc::clone(&observer));
         observer.settings_committed(&snapshot);
         Ok(())
-    }
-
-    /// 在 Settings command 串行边界内取得 canonical 快照并执行同步 closure。
-    ///
-    /// closure 内可以安全地把该 revision 与其它 owner 的准入/身份绑定：其间没有其它配置提交能
-    /// 插入。closure 不得 await、做 IO，也不得再次进入本配置 owner。
-    pub(crate) fn with_canonical_snapshot<T>(
-        &self,
-        run: impl FnOnce(u64, &StudioConfig) -> T,
-    ) -> ConfigRuntimeResult<T> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let (revision, desired) = {
-            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            (state.snapshot.revision, state.desired.clone())
-        };
-        Ok(run(revision, &desired))
     }
 
     /// 同一 command 边界内取得一致的 Settings 与目录快照；供只读投影使用。
@@ -777,11 +772,13 @@ impl ConfigRuntime {
             profile_id,
             profile,
             &current.config,
+            &current.acp,
         )?;
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
             config: current.config,
+            acp: current.acp,
             canonical_config: current.canonical_config,
             usage_query_revisions: current.usage_query_revisions,
         };
@@ -789,7 +786,8 @@ impl ConfigRuntime {
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.profiles
+            .adopt_scan(self.store.paths(), &next.config, &next.acp);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok((next, changed))
@@ -880,6 +878,7 @@ impl ConfigRuntime {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
             config: effective.clone(),
+            acp: current.acp.clone(),
             canonical_config: next_config.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
@@ -901,7 +900,8 @@ impl ConfigRuntime {
         state.catalog = catalog;
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.profiles
+            .adopt_scan(self.store.paths(), &next.config, &next.acp);
         self.mcp_catalog
             .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
@@ -940,6 +940,7 @@ impl ConfigRuntime {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
             config: config.clone(),
+            acp: self.acp.reload(self.store.paths()),
             canonical_config: desired.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &config),
         };
@@ -957,7 +958,8 @@ impl ConfigRuntime {
         state.catalog = catalog;
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
+        self.profiles
+            .adopt_scan(self.store.paths(), &next.config, &next.acp);
         self.mcp_catalog
             .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
@@ -968,6 +970,7 @@ impl ConfigRuntime {
 
 fn initial_account_projection_revisions(
     config: &StudioConfig,
+    acp: &super::AcpDefinitionsSnapshot,
 ) -> BTreeMap<pl_protocol::studio::AccountIdentity, (u64, u64)> {
     use pl_protocol::studio::AccountIdentity;
     config
@@ -977,7 +980,7 @@ fn initial_account_projection_revisions(
         .map(|id| AccountIdentity::Native {
             account_id: id.to_string(),
         })
-        .chain(config.acp.accounts.keys().map(|id| AccountIdentity::Acp {
+        .chain(acp.definitions.keys().map(|id| AccountIdentity::Acp {
             account_id: id.clone(),
         }))
         .map(|identity| (identity, (1, 1)))
@@ -1013,14 +1016,14 @@ fn update_account_projection_revisions(
             ),
         );
     }
-    for (id, account) in &next.canonical_config.acp.accounts {
+    for (id, account) in &next.acp.definitions {
         let identity = AccountIdentity::Acp {
             account_id: id.clone(),
         };
         let revision = state
             .account_projection_revisions
             .get(&identity)
-            .filter(|_| state.desired.acp.accounts.get(id) == Some(account))
+            .filter(|_| state.snapshot.acp.definitions.get(id) == Some(account))
             .map_or(next.revision, |value| value.0);
         revisions.insert(identity, (revision, 0));
     }
@@ -1440,18 +1443,16 @@ mod tests {
         let (_directory, runtime) = runtime();
         let before = runtime.read().expect("read config");
         let configured = runtime
-            .update(before.revision, |config| {
-                let mut next = config.clone();
-                next.acp.accounts.insert(
+            .save_acp_definition(
+                before.revision,
+                &crate::config::AcpServiceDefinition::template(
                     "acp-fixture".into(),
-                    crate::config::AcpAccountConfig {
-                        name: "ACP fixture".into(),
-                        provider: crate::config::AcpProvider::Antigravity,
-                    },
-                );
-                Ok(next)
-            })
-            .expect("configure ACP account");
+                    "ACP fixture".into(),
+                    crate::config::AcpProvider::Antigravity,
+                ),
+                None,
+            )
+            .expect("configure ACP definition");
         let profile = super::super::UserAgentProfile {
             enabled: true,
             display_name: "ACP child".into(),
@@ -1459,7 +1460,6 @@ mod tests {
             when_to_use: "ACP rejection fixture".into(),
             binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
                 account_id: "acp-fixture".into(),
-                connection_revision: 7,
             }),
             workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
         };

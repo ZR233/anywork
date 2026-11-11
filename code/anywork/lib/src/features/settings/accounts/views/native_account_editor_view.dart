@@ -136,28 +136,18 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
       _rowKeys.putIfAbsent(id, GlobalKey.new);
     }
     _scheduleFocus();
-    final templateSection = AccountSection(
-      title: l10n.settingsAccountTemplate,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(l10n.accountsTemplatesHint),
-          const SizedBox(height: 16),
-          widget.templateSelector ??
-              AccountTemplateSelector(
-                templates: value.templates,
-                selected: value.templateKey,
-                enabled: value.canChangeTemplate && !value.saving,
-                onSelected: widget.onTemplateChanged,
-              ),
-        ],
-      ),
-    );
+    final templateSection =
+        widget.templateSelector ??
+        AccountTemplateSelector(
+          templates: value.templates,
+          selected: value.templateKey,
+          enabled: value.canChangeTemplate && !value.saving,
+          onSelected: widget.onTemplateChanged,
+        );
     return AccountEditorScaffold(
       title: value.accountKey == null
-          ? l10n.settingsNewAccount
+          ? l10n.settingsAddAccount
           : l10n.settingsEditAccount,
-      dirty: value.dirty,
       scrollKey: PageStorageKey<String>(
         AccountViewKeyValues.editorScroll(
           AccountKind.native.name,
@@ -166,7 +156,8 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
       ),
       scrollController: widget.scrollController,
       children: [
-        if (!value.isOpenAiTemplate) templateSection,
+        templateSection,
+        const SizedBox(height: 24),
         if (value.error != null) AccountInlineError(message: value.error!),
         AccountSection(
           title: l10n.accountsConnectionBillingTitle,
@@ -247,7 +238,6 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
             ],
           ),
         ),
-        if (value.isOpenAiTemplate) templateSection,
         if (value.declaredModels.isNotEmpty)
           AccountSection(
             title: l10n.settingsAccountModelsTitle,

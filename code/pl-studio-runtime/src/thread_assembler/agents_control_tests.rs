@@ -37,7 +37,7 @@ fn host(owner: &SessionRuntime, thread: &str) -> Arc<AgentHost> {
     Arc::new(AgentHost {
         registry: Arc::downgrade(&owner.0),
         identity: entry.identity.clone(),
-        resources: Arc::downgrade(&entry.native.resources),
+        resources: Arc::downgrade(&entry.native().unwrap().resources),
     })
 }
 
@@ -102,13 +102,15 @@ async fn product_tree_controls_native_members_with_distinct_typed_ids() {
             .entries
             .get_mut("native-root")
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .parent_id = Some("irrelevant".into());
         state
             .entries
             .get_mut("native-child")
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .parent_id = None;
     }
     let root = host(&owner, "native-root");
@@ -425,13 +427,15 @@ async fn preparing_capacity_and_root_policy_use_product_membership() {
             .entries
             .get_mut("native-root")
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .parent_id = Some("irrelevant".into());
         state
             .entries
             .get_mut("native-child")
             .unwrap()
-            .native
+            .native_mut()
+            .unwrap()
             .parent_id = None;
     }
     assert!(matches!(

@@ -292,17 +292,20 @@ void main() {
       expect(native.identity, isA<NativeAccountIdentity>());
       expect(native.acpConnectionRevision, isNull);
       var revision = initial.stamp.revision;
+      BigInt? documentRevision;
       for (final name in ['Original', 'Renamed only']) {
         final reply = await transport.saveAcpAccount(
           revision,
           AcpAccountUpdateView(
             accountId: native.identity.accountId,
             name: name,
-            provider: AcpProviderView.antigravity,
+            template: AcpProviderView.antigravity,
           ),
           operationId: OperationId('summary-save-$revision'),
+          expectedDocumentRevision: documentRevision,
         );
         revision = reply.snapshot.revision;
+        documentRevision = reply.snapshot.acpAccounts.single.documentRevision;
         final summary = await observation.next() as AccountSummariesFrame;
         final acp = summary.accounts.singleWhere(
           (account) =>

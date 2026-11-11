@@ -226,7 +226,9 @@ class AgentReadOnlyDockView extends StatelessWidget {
             children: [
               InfoChip(
                 icon: Icons.timeline_outlined,
-                label: context.threadStatusLabel(row.status),
+                label: context.threadStatusLabel(
+                  (row.backend as NativeAgentBackendView).status,
+                ),
               ),
               if (execution != null)
                 InfoChip(

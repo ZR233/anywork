@@ -62,7 +62,7 @@ pub struct Thread {
     pub id: String,
     pub workspace_id: String,
     pub title: String,
-    pub mode: ThreadModeId,
+    pub mode: Option<ThreadModeId>,
     /// 会话工作区模式；缺失的旧编码按默认 `local` 解码。
     #[serde(default)]
     pub workspace_mode: ThreadWorkspaceMode,
@@ -107,7 +107,7 @@ impl Thread {
         Self {
             workspace_id: String::new(),
             title: String::new(),
-            mode: ThreadModeId::simple(),
+            mode: Some(ThreadModeId::simple()),
             workspace_mode: ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),

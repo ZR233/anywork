@@ -42,8 +42,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   late AcpService _service;
   late AccountsRepository _accounts;
   late AccountAcpKey _key;
-  late AcpProviderView _provider;
-  late AcpPreparationIntent _intent;
+  AcpProviderView? _provider;
+  AcpPreparationIntent? _intent;
   AccountStrings _strings = const AccountStrings.empty();
   String? _selectedMethod;
   String? _error;
@@ -65,10 +65,15 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   @override
   FutureOr<AccountAcpViewState> build(AccountAcpKey key) {
     _key = key;
-    _provider =
-        AcpProviderView.fromWire(key.providerId) ??
-        (throw StateError('Unknown ACP provider: ${key.providerId}'));
-    _intent = AcpPreparationIntent(provider: _provider);
+    _provider = key.templateId == null
+        ? null
+        : AcpProviderView.fromWire(key.templateId!);
+    if (key.templateId != null && _provider == null) {
+      throw StateError('Unknown ACP template: ${key.templateId}');
+    }
+    _intent = _provider == null
+        ? null
+        : AcpPreparationIntent(provider: _provider!);
     _service = ref.read(acpServiceProvider);
     _accounts = ref.read(accountsRepositoryProvider);
     _authOwnerEpoch =
@@ -79,10 +84,10 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         _accounts.state.value.stamp?.ownerEpoch;
     _wasStale =
         _service.auth.value.stale ||
-        _service.install.value.stale ||
+        (_provider != null && _service.install.value.stale) ||
         _accounts.state.value.stale;
     final authDemand = _service.observeAuth();
-    final installDemand = _service.observeInstall();
+    final installDemand = _provider == null ? null : _service.observeInstall();
     final observations = [
       _service.auth.watch((_) => _sourceChanged()),
       _service.install.watch((_) => _sourceChanged()),
@@ -97,7 +102,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         observation.cancel();
       }
     });
-    if (_template == null) unawaited(_loadTemplates());
+    if (_provider != null && _template == null) unawaited(_loadTemplates());
     return _derive();
   }
 
@@ -135,13 +140,15 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       : authenticate();
 
   AcpAccountTemplateView? get _template =>
-      _service.templates.value.template(_provider);
+      _provider == null ? null : _service.templates.value.template(_provider!);
   String? documentationUrl(AcpAccountAction action) =>
       action == AcpAccountAction.openGuide
       ? _template?.installUrl
       : _template?.termsUrl;
   AcpInstallStateView get _install =>
-      _service.install.value.value?.stateOf(_provider) ??
+      (_provider == null
+          ? null
+          : _service.install.value.value?.stateOf(_provider!)) ??
       const AcpInstallIdleState();
   AcpAuthStateView get _auth {
     if (_key.creating || _service.auth.value.stale) {
@@ -156,7 +163,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
 
   bool get _preparedForEditor =>
       !_service.install.value.stale &&
-      _intent.resolve(_install, provider: _provider) != null;
+      _provider != null &&
+      _intent?.resolve(_install, provider: _provider!) != null;
 
   void setStrings(AccountStrings strings) {
     _strings = strings;
@@ -165,7 +173,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
 
   void finish() {
     _finished = true;
-    _intent = _intent.renewed();
+    _intent = _intent?.renewed();
     _cancelBaselineWait?.call();
   }
 
@@ -180,7 +188,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
 
   /// Only a user action (including explicitly selecting a template) calls this.
   Future<void> prepare() async {
-    if (_preparing != null || _finished) return;
+    if (_provider == null || _preparing != null || _finished) return;
     if (_template == null && _templateError == null) {
       await _loadTemplates();
       if (!ref.mounted || _finished || _preparing != null) return;
@@ -189,11 +197,11 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       return;
     }
     final known = _service.install.value;
-    if (known.loaded && known.value?.stateOf(_provider).server != null) return;
+    if (known.loaded && known.value?.stateOf(_provider!).server != null) return;
     final attempt = ++_sequence;
     _preparing = attempt;
-    _intent = _intent.renewed();
-    final generation = _intent.generation;
+    _intent = _intent?.renewed();
+    final generation = (_intent?.generation ?? 0);
     _error = null;
     _publish();
     try {
@@ -211,12 +219,12 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       }
       // Shared Ready is a real, unclaimed installation. Starting another
       // operation merely to obtain a receipt would bypass explicit usePrepared.
-      final installation = current.value!.stateOf(_provider);
+      final installation = current.value!.stateOf(_provider!);
       if (installation.server != null || installation.isBusy) return;
-      final snapshot = await _service.prepare(_provider);
+      final snapshot = await _service.prepare(_provider!);
       if (!_ownsPrepare(attempt, generation)) return;
-      final operation = snapshot.stateOf(_provider).operationId;
-      if (operation != null) _intent = _intent.claim(operation);
+      final operation = snapshot.stateOf(_provider!).operationId;
+      if (operation != null) _intent = _intent?.claim(operation);
     } catch (error) {
       if (_ownsPrepare(attempt, generation)) {
         _error = safeAccountError(error, _strings);
@@ -233,7 +241,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       ref.mounted &&
       !_finished &&
       _preparing == attempt &&
-      _intent.generation == generation;
+      (_intent?.generation ?? 0) == generation;
 
   Future<bool> _waitForInstallBaseline(int attempt, int generation) {
     final completion = Completer<bool>();
@@ -286,12 +294,15 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   }
 
   void usePrepared() {
-    if (_preparing != null || _finished || !_service.install.value.loaded) {
+    if (_provider == null ||
+        _preparing != null ||
+        _finished ||
+        !_service.install.value.loaded) {
       return;
     }
     final operation = _install.operationId;
     if (_install.server == null || operation == null) return;
-    _intent = _intent.renewed().claim(operation);
+    _intent = _intent?.renewed().claim(operation);
     _error = null;
     _publish();
   }
@@ -313,7 +324,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
           _install.operationId != operation) {
         return;
       }
-      await _service.cancelPreparation(_provider);
+      await _service.cancelPreparation(_provider!);
     } catch (error) {
       if (ref.mounted &&
           !_finished &&
@@ -491,9 +502,10 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         (auth.failure.code == AcpAuthFailureCodeView.preparationRequired ||
             auth.failure.code == AcpAuthFailureCodeView.installationInvalid);
     final showInstall =
-        _key.creating ||
-        preparing ||
-        (requiresPreparation && !_preparedForEditor);
+        _provider != null &&
+        (_key.creating ||
+            preparing ||
+            (requiresPreparation && !_preparedForEditor));
     final methods = auth is AcpRequiredState
         ? auth.agentMethods
         : const <AcpAuthMethodView>[];
@@ -588,13 +600,15 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             ? null
             : safeAccountError(templateError, _strings)) ??
         _service.auth.value.failure?.message ??
-        _service.install.value.failure?.message;
+        (_provider == null ? null : _service.install.value.failure?.message);
     final canonicalError = showInstall && install is AcpInstallFailedState
         ? install.failure.message
         : auth is AcpFailedState
         ? auth.failure.message
         : null;
-    final error = _service.install.value.stale || _service.auth.value.stale
+    final error =
+        (_provider != null && _service.install.value.stale) ||
+            _service.auth.value.stale
         ? _strings['stale']
         : localError ?? canonicalError;
     final usage = projectAcpUsage(
@@ -611,8 +625,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         : _strings['acp.subtitle.${phase.name}'];
     return AccountAcpViewState(
       preparedForEditor: _preparedForEditor,
-      claimedOperationId: _intent.operationId,
-      preparationGeneration: _intent.generation,
+      claimedOperationId: _intent?.operationId,
+      preparationGeneration: (_intent?.generation ?? 0),
       panel: AcpAccountPresentation(
         phase: phase,
         usage: usage,
@@ -714,16 +728,17 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     final installEpoch = _service.install.value.stamp?.ownerEpoch;
     final stale =
         _service.auth.value.stale ||
-        _service.install.value.stale ||
+        (_provider != null && _service.install.value.stale) ||
         _accounts.state.value.stale;
     if ((stale && !_wasStale) ||
         (authEpoch != null &&
             _authOwnerEpoch != null &&
             authEpoch != _authOwnerEpoch) ||
-        (installEpoch != null &&
+        (_provider != null &&
+            installEpoch != null &&
             _installOwnerEpoch != null &&
             installEpoch != _installOwnerEpoch)) {
-      _intent = _intent.renewed();
+      _intent = _intent?.renewed();
       _preparing = null;
       _cancelBaselineWait?.call();
       _authenticating = null;

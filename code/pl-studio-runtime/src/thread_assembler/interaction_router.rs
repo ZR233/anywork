@@ -88,13 +88,10 @@ impl SessionRuntime {
         wire_id: &str,
     ) -> Result<Option<InteractionRequest>, StudioInteractionError> {
         let (thread_id, local_id) = decode_interaction_key(wire_id)?;
-        let Some(thread) = self
-            .0
-            .state()
-            .entries
-            .get(thread_id)
-            .map(|entry| entry.native.thread.clone())
-        else {
+        let Some(thread) = self.0.state().entries.get(thread_id).and_then(|entry| {
+            let native = entry.native().ok()?;
+            Some(native.thread.clone())
+        }) else {
             return Ok(None);
         };
         let snapshot = thread.snapshot();

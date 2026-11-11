@@ -20,6 +20,15 @@ import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp_ports.dart';
+import 'package:anywork_client/acp_sessions.dart' as acp_business;
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
+    show PanicException, AnyhowException;
+
+import '../../rust/api/studio/handlers/acp_business.dart' as frb_acp_business;
+import '../../rust/api/studio/handlers/acp_business/feed.dart' as frb_acp_feed;
+import '../../rust/api/studio/types/acp_business.dart' as frb_acp_types;
+import 'studio_acp_business_mapper.dart' as acp_mapper;
+
 export 'package:anywork_client/studio_ports.dart';
 
 import '../../platform/error_log.dart';
@@ -67,6 +76,7 @@ part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';
 part 'studio_account_catalog_converters.dart';
 part 'studio_acp_converters.dart';
+part 'studio_acp_business_port.dart';
 part 'studio_delegation_converters.dart';
 part 'studio_bots_converters.dart';
 

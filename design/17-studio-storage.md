@@ -33,6 +33,14 @@
 ## 17.1 数据布局
 
 目录的会话/成员记录在同一 `CatalogStore` 原子 delta 中校验并提交，不能先保存会话再单独保存主成员。
+
+目录的后端事实采用单一 `AgentDirectoryBackend`：`Native { config, status }` 或 `Acp { reference }`。ACP 的 `reference` 只含 `account_id / acp_session_id / cwd`，必须来自实际成功的 `session/new`、`session/load` 或 `session/resume`；不另存可矛盾的 kind、binding 或账号副本。`AgentBinding` 继续属于 Profile 和创建配置，目录需要时由后端值只读派生。公共身份、父成员、role、标题、时间及本地显式关闭事实保持独立。ACP Profile 和目录不持久化进程内 `connection_revision`；旧字段在对应冻结格式迁移中移除，实际重开从当前用户定义取得当次准入修订，不用重启即失效的计数充当外部身份。
+
+会话记录的 `native_mode` 是可空的 Native 根成员事实；Native root 必须有值，ACP root 和所有 child 没有自己的 Native workflow mode。delegation 仍是共同产品策略。`SessionDirectoryRow` 沿相同后端联合值交付；Native `Thread` 及其记录的 mode 同步为 root-only 可选事实，Native-only 投影对 ACP 明确失败，不以 Idle、simple、模型路由或空检查点补齐。child 更新不得覆盖 session 的 root mode；恢复 Native root 缺 mode 是结构错误。
+
+目录后端形状在现有 Catalog 正式版本序列内迁移，保留原身份、父边、标题时间、归档、workspace、显式关闭及历史路径，丢弃旧 child 复制的 mode，不全量改写冻结历史。无法证明真实外部引用的旧 ACP 数据保留原件并给出迁移/恢复诊断，不伪造 session ID、自动 new 或清空目录。公共树、归档、删除、关闭及父工作区解析读取 Session/Agent 记录，核验实际根成员与会话身份，并通过 root 的真实 `thread_id` 查询原工作区/租约，不先投影 Native Thread。
+
+ACP 历史由对端协议能力提供，Anywork 不创建其 `history.sqlite`、Native checkpoint、transcript 或外部目录镜像。外部 `session/list` 直接消费对端结果，只有明确新建或打开的成员写入产品关联。本地归档/移除关联不删除对端历史、安装资产或凭据，物理清理按后端跳过 Native 历史与检查点文件；ACP 冷引用只表示本地未运行、远端状态未知，不推导 idle。业务流与关闭事实见 [28.11](./28-acp.md#2811-acp-业务会话与原生内容通路)。
 每个会话恰有一个属于本会话的无父成员，默认 Thread 引用唯一；跨会话根引用与额外无父成员均拒绝。
 永久删除最后一个会话后，带有效 revision 的空目录是合法状态，重启不得误判为数据丢失。
 
