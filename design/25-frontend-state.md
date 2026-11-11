@@ -49,7 +49,17 @@ ACP 会话以对端的结构化更新、配置、权限及真实 prompt 结果�
 
 open 操作的观察入口与 Ready/Failed 属于同一次操作，load 完成前的回放也走该入口。HTTP/FRB 仅做必要类型转换，传输断开、内容缺口与业务运行失败分别表达，不通过事后自动 load、重发 prompt 或重读 Native 聚合快照修补。观察端失效不撤销后台业务所有权。
 
-会话目录消费 [17](./17-studio-storage.md#171-数据布局) 的单一后端联合值与可空 Native root mode，不把 ACP 冷引用解释为 Native 空闲会话。workflow 控件仅适用于 Native root 且 mode 存在的对象；child 不继承父 workflow，ACP 协议配置也不映射为 Native 工作模式。Native TimelineDisplayMode 的 live/history 与此无关。S4 仅迁移必要目录和接口消费者，不提前实现 S5 的 ACP 创建页、消息渲染或 S6 的宿主协作界面。
+会话目录消费 [17](./17-studio-storage.md#171-数据布局) 的单一后端联合值与可空 Native root mode，在原会话装配边界分派 Native 与 ACP，不另建后端 binding 或全局内容 host。不能把 ACP 冷引用解释为 Native 空闲会话。workflow 控件仅适用于 Native root 且 mode 存在的对象；child 不继承父 workflow，ACP 协议配置也不映射为 Native 工作模式。Native TimelineDisplayMode 的 live/history 与此无关。
+
+每个 Client 按产品成员持有唯一 `AcpConversationSession`，持续消费同次 open 的原观察入口，将消息、思考、工具、Plan、权限及配置归约成不可变临时呈现值；工具按原 `toolCallId` 更新。打开相同成员复用原 owner，组件重建、隐藏和页面切换不重新 new/load，也不关闭成员。原 owner 丢失后仅按真实 load/resume 能力显式打开，不把观察终止、resume 或缺口解释为完整历史。协议运行资格、控制和有序配置规则见 [28.11](./28-acp.md#2811-acp-业务会话与原生内容通路)。
+
+外部会话列表从当前真实 owner 的 `listSessions` 能力与就绪状态派生入口，仅用户显式打开面板、刷新或翻页时请求；保留对端 ID、标题、工作目录、更新时间与不透明 cursor，不把列表导入产品目录。读取限定来源成员原工作目录；单项打开还须核对返回条目的工作目录，不能将异工作区会话关联到当前项目。用户明确选择 Load 或 Resume 后才建立产品关联，不回落 New；一次打开在途禁止重复，未知结果保留且不自动重试。组件退役不关闭来源成员，后台内容增量不驱动列表入口刷新。
+
+ACP 创建与发送沿原草稿、附件 owner 分支执行，不经过 Native route、mode 或历史 materialize。用户先选服务和真实本机业务 workspace，显式创建一个真实会话；创建后保留输入与附件，由用户按该会话的实际配置发送首条 prompt，不自动发送或重发。配置在途或失败不能悄悄以旧值发送；附件按实际能力验证，失败保留草稿，暂存资源至少保留到实际序列化和发送责任结束。
+
+涉及后端数据的 Flutter 区域遵循 adapter → Client owner → ViewModel → View。ViewModel 按成员身份观察相关 Client 状态，选择组件需要的不可变值、派生呈现并承接动作；不直接调用 FRB、不复制业务列表。服务选择、状态、正文、工具、Plan、权限、配置、输入与附件按交互及刷新职责组件化，使用现有 Riverpod 细粒度观察实现独立刷新，不要求每个叶子控件新增 ViewModel。外层页面只做布局、身份和 backend 装配，不外挂协议归并、提交校验、异步结果处理或整页刷新链；View 不解析 FRB 类型。组件退役释放显示需求，不退役 Client 业务 owner；焦点、滚动和展开仍由原局部 UI 持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
+
+服务选择复用用户级定义原发布 owner 的账户读模型，安全摘要包含 ACP 是否启用与连接修订；定义文件诊断和有效服务一起交付，坏文件不隐藏其他有效项。诊断仅交付可定位文件名与固定安全说明，不透传 TOML 输入片段、env 值或原始解析错误。列表读取不连接服务；启用状态也不证明当前认证、连接或模型已加载。
 
 ## 25.3 版本域与资源戳（Stamps）
 

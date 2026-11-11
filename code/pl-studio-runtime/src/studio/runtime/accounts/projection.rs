@@ -71,6 +71,7 @@ pub(super) fn read(
                                     || account.chatgpt_session.is_some(),
                             ),
                             usage_query_revision: config.usage_query_revision(id),
+                            acp_enabled: None,
                             acp_connection_revision: None,
                             capabilities: AccountCapabilities {
                                 set_default: true,
@@ -102,6 +103,7 @@ pub(super) fn read(
                             billing_kind_override: None,
                             credential_ready: None,
                             usage_query_revision: None,
+                            acp_enabled: Some(account.enabled),
                             acp_connection_revision: Some(account.connection_revision),
                             capabilities: AccountCapabilities {
                                 set_default: false,
@@ -117,6 +119,20 @@ pub(super) fn read(
                     Ok(AccountDomainFrame::Summaries {
                         stamp: runtime.resource_stamp("settings", config.revision),
                         accounts,
+                        acp_diagnostics: config
+                            .acp
+                            .diagnostics
+                            .iter()
+                            .map(|diagnostic| StudioAcpDefinitionDiagnostic {
+                                file_name: diagnostic
+                                    .path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                message: "ACP定义无法加载，请检查文件格式和必填字段。".into(),
+                            })
+                            .collect(),
                     })
                 })?
         }

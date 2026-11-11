@@ -48,10 +48,21 @@ pub struct AccountSummary {
     pub billing_kind_override: Option<crate::BillingKind>,
     pub credential_ready: Option<bool>,
     pub usage_query_revision: Option<u64>,
+    /// Configured ACP availability only; not evidence of connection or authentication.
+    /// Absent for Native accounts.
+    pub acp_enabled: Option<bool>,
     /// ACP connection identity from the authentication owner; absent for Native accounts.
     /// This is not a cross-domain freshness watermark.
     pub acp_connection_revision: Option<u64>,
     pub capabilities: AccountCapabilities,
+}
+
+/// Safe, display-only diagnostic from the published ACP definitions snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioAcpDefinitionDiagnostic {
+    pub file_name: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -91,6 +102,7 @@ pub enum AccountDomainFrame {
     Summaries {
         stamp: ResourceStamp,
         accounts: Vec<AccountSummary>,
+        acp_diagnostics: Vec<StudioAcpDefinitionDiagnostic>,
     },
     Detail {
         stamp: ResourceStamp,

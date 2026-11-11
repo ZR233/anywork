@@ -177,6 +177,7 @@ final class AccountsRepositoryImpl implements AccountsRepository {
           AccountsState(
             stamp: current.stamp,
             accounts: current.accounts,
+            acpDiagnostics: current.acpDiagnostics,
             templates: current.templates,
             stale: true,
             loading: true,
@@ -253,6 +254,7 @@ final class AccountsRepositoryImpl implements AccountsRepository {
       AccountsState(
         stamp: current.stamp,
         accounts: current.accounts,
+        acpDiagnostics: current.acpDiagnostics,
         templates: immutableCatalog,
         loading: current.loading,
         failure: current.failure,
@@ -275,13 +277,18 @@ final class AccountsRepositoryImpl implements AccountsRepository {
     switch (frame) {
       case ChatGptLoginFrame():
         _applyChatGptLoginFrame(frame);
-      case AccountSummariesFrame(:final stamp, :final accounts):
+      case AccountSummariesFrame(
+        :final stamp,
+        :final accounts,
+        :final acpDiagnostics,
+      ):
         _summaryGeneration = observations.generation;
         final current = _state.value;
         _state.publish(
           AccountsState(
             stamp: stamp,
             accounts: accounts,
+            acpDiagnostics: acpDiagnostics,
             templates: current.templates,
           ),
         );
@@ -325,6 +332,7 @@ final class AccountsRepositoryImpl implements AccountsRepository {
         AccountsState(
           stamp: current.stamp,
           accounts: current.accounts,
+          acpDiagnostics: current.acpDiagnostics,
           templates: current.templates,
           failure: failure,
           stale: current.stale,

@@ -10,6 +10,90 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get acpHistoryButton => '外部会话';
+
+  @override
+  String get acpHistoryOpenPanel => '查看外部会话';
+
+  @override
+  String get acpHistoryNoOwner => '没有活动的 ACP 会话';
+
+  @override
+  String get acpHistoryOwnerLoading => '正在打开 ACP 会话';
+
+  @override
+  String get acpHistoryUnknownCapability => 'ACP 服务能力尚未确认';
+
+  @override
+  String get acpHistoryUnsupported => '此 ACP 服务不支持列出会话';
+
+  @override
+  String get acpHistoryNotReady => 'ACP 会话尚未就绪';
+
+  @override
+  String get acpHistoryTitle => '外部 ACP 会话';
+
+  @override
+  String get acpHistoryClose => '关闭';
+
+  @override
+  String get acpHistoryRefresh => '刷新';
+
+  @override
+  String get acpHistoryLoadMore => '加载更多';
+
+  @override
+  String get acpHistoryLoading => '正在读取会话…';
+
+  @override
+  String get acpHistoryEmpty => '没有外部会话';
+
+  @override
+  String get acpHistoryActions => '打开方式';
+
+  @override
+  String get acpHistoryLoad => '加载历史';
+
+  @override
+  String get acpHistoryResume => '继续';
+
+  @override
+  String get acpHistoryResumeNote => '继续操作不会回放历史';
+
+  @override
+  String get acpHistoryLoadNote => '加载会在对端支持时回放历史';
+
+  @override
+  String get acpHistoryUnavailable => '当前能力不支持打开此会话';
+
+  @override
+  String get acpHistoryOpening => '正在打开…';
+
+  @override
+  String get acpHistoryOpened => '已打开';
+
+  @override
+  String get acpHistoryUnknown => '打开结果未知。请勿重试，请检查对话列表。';
+
+  @override
+  String get acpHistoryListFailed => '读取会话失败';
+
+  @override
+  String get acpHistoryCwd => 'cwd';
+
+  @override
+  String get acpHistoryUpdated => '更新时间';
+
+  @override
+  String get acpConversationNoServices => '尚未添加 ACP 服务';
+
+  @override
+  String get acpConversationServiceDisabled => '已禁用';
+
+  @override
+  String get acpConversationManageServices => '管理 ACP 服务';
+
+  @override
   String get accountsModelModalityCapabilities => '输入／输出模态与能力';
 
   @override

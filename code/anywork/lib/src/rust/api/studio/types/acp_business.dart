@@ -13,7 +13,62 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp_business.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+
+class BridgeAcpAgentCapabilities {
+  final bool image;
+  final bool audio;
+  final bool embeddedContext;
+  final bool loadSession;
+  final bool listSessions;
+  final bool resumeSession;
+  final bool closeSession;
+  final bool mcpHttp;
+  final bool mcpSse;
+  final Map<String, BridgeAcpJsonValue>? meta;
+
+  const BridgeAcpAgentCapabilities({
+    required this.image,
+    required this.audio,
+    required this.embeddedContext,
+    required this.loadSession,
+    required this.listSessions,
+    required this.resumeSession,
+    required this.closeSession,
+    required this.mcpHttp,
+    required this.mcpSse,
+    this.meta,
+  });
+
+  @override
+  int get hashCode =>
+      image.hashCode ^
+      audio.hashCode ^
+      embeddedContext.hashCode ^
+      loadSession.hashCode ^
+      listSessions.hashCode ^
+      resumeSession.hashCode ^
+      closeSession.hashCode ^
+      mcpHttp.hashCode ^
+      mcpSse.hashCode ^
+      meta.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpAgentCapabilities &&
+          runtimeType == other.runtimeType &&
+          image == other.image &&
+          audio == other.audio &&
+          embeddedContext == other.embeddedContext &&
+          loadSession == other.loadSession &&
+          listSessions == other.listSessions &&
+          resumeSession == other.resumeSession &&
+          closeSession == other.closeSession &&
+          mcpHttp == other.mcpHttp &&
+          mcpSse == other.mcpSse &&
+          meta == other.meta;
+}
 
 class BridgeAcpBusinessClose {
   final bool localComplete;
@@ -847,6 +902,9 @@ sealed class BridgeAcpSelectOptions with _$BridgeAcpSelectOptions {
 sealed class BridgeAcpSessionEvent with _$BridgeAcpSessionEvent {
   const BridgeAcpSessionEvent._();
 
+  const factory BridgeAcpSessionEvent.initialized({
+    required BridgeAcpAgentCapabilities capabilities,
+  }) = BridgeAcpSessionEvent_Initialized;
   const factory BridgeAcpSessionEvent.update({
     required BridgeAcpSessionNotification update,
   }) = BridgeAcpSessionEvent_Update;

@@ -475,10 +475,10 @@ return chatGptLogin(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)?  acpLocalDetection,TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts,  List<BridgeAcpDefinitionDiagnostic> acpDiagnostics)?  summaries,TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)?  acpLocalDetection,TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
-return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail() when detail != null:
+return summaries(_that.stamp,_that.accounts,_that.acpDiagnostics);case BridgeAccountDomainFrame_Detail() when detail != null:
 return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomainFrame_Models() when models != null:
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
@@ -503,10 +503,10 @@ return chatGptLogin(_that.stamp,_that.snapshot);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)  summaries,required TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)  detail,required TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)  models,required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)  usage,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)  acpAuth,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)  acpInstall,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)  acpLocalDetection,required TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)  chatGptLogin,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts,  List<BridgeAcpDefinitionDiagnostic> acpDiagnostics)  summaries,required TResult Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)  detail,required TResult Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)  models,required TResult Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)  usage,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)  acpAuth,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)  acpInstall,required TResult Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)  acpLocalDetection,required TResult Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries():
-return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail():
+return summaries(_that.stamp,_that.accounts,_that.acpDiagnostics);case BridgeAccountDomainFrame_Detail():
 return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomainFrame_Models():
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage():
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth():
@@ -527,10 +527,10 @@ return chatGptLogin(_that.stamp,_that.snapshot);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts)?  summaries,TResult? Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult? Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)?  acpLocalDetection,TResult? Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountSummary> accounts,  List<BridgeAcpDefinitionDiagnostic> acpDiagnostics)?  summaries,TResult? Function( BridgeResourceStamp stamp,  BridgeAccountIdentity identity,  BridgeAccountDetail? account)?  detail,TResult? Function( BridgeResourceStamp stamp,  String accountId,  BridgeModelCatalogAccountDto? catalog)?  models,TResult? Function( BridgeResourceStamp stamp,  List<BridgeAccountUsageObservation> accounts)?  usage,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpAuthSnapshot snapshot)?  acpAuth,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpInstallSnapshot snapshot)?  acpInstall,TResult? Function( BridgeResourceStamp stamp,  BridgeAcpLocalDetectionSnapshot snapshot)?  acpLocalDetection,TResult? Function( BridgeResourceStamp stamp,  BridgeChatGptLoginSnapshot snapshot)?  chatGptLogin,}) {final _that = this;
 switch (_that) {
 case BridgeAccountDomainFrame_Summaries() when summaries != null:
-return summaries(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_Detail() when detail != null:
+return summaries(_that.stamp,_that.accounts,_that.acpDiagnostics);case BridgeAccountDomainFrame_Detail() when detail != null:
 return detail(_that.stamp,_that.identity,_that.account);case BridgeAccountDomainFrame_Models() when models != null:
 return models(_that.stamp,_that.accountId,_that.catalog);case BridgeAccountDomainFrame_Usage() when usage != null:
 return usage(_that.stamp,_that.accounts);case BridgeAccountDomainFrame_AcpAuth() when acpAuth != null:
@@ -549,7 +549,7 @@ return chatGptLogin(_that.stamp,_that.snapshot);case _:
 
 
 class BridgeAccountDomainFrame_Summaries extends BridgeAccountDomainFrame {
-  const BridgeAccountDomainFrame_Summaries({required this.stamp, required  List<BridgeAccountSummary> accounts}): _accounts = accounts,super._();
+  const BridgeAccountDomainFrame_Summaries({required this.stamp, required  List<BridgeAccountSummary> accounts, required  List<BridgeAcpDefinitionDiagnostic> acpDiagnostics}): _accounts = accounts,_acpDiagnostics = acpDiagnostics,super._();
 
 
 @override final  BridgeResourceStamp stamp;
@@ -558,6 +558,13 @@ class BridgeAccountDomainFrame_Summaries extends BridgeAccountDomainFrame {
   if (_accounts is EqualUnmodifiableListView) return _accounts;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_accounts);
+}
+
+ final  List<BridgeAcpDefinitionDiagnostic> _acpDiagnostics;
+ List<BridgeAcpDefinitionDiagnostic> get acpDiagnostics {
+  if (_acpDiagnostics is EqualUnmodifiableListView) return _acpDiagnostics;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_acpDiagnostics);
 }
 
 
@@ -571,18 +578,18 @@ $BridgeAccountDomainFrame_SummariesCopyWith<BridgeAccountDomainFrame_Summaries> 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountDomainFrame_Summaries&&(identical(other.stamp, stamp) || other.stamp == stamp)&&const DeepCollectionEquality().equals(other.accounts, _accounts));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAccountDomainFrame_Summaries&&(identical(other.stamp, stamp) || other.stamp == stamp)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.acpDiagnostics, _acpDiagnostics));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,stamp,const DeepCollectionEquality().hash(_accounts));
+    return Object.hash(runtimeType,stamp,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_acpDiagnostics));
 }
 
 @override
 String toString() {
-    return 'BridgeAccountDomainFrame.summaries(stamp: $stamp, accounts: $accounts)';
+    return 'BridgeAccountDomainFrame.summaries(stamp: $stamp, accounts: $accounts, acpDiagnostics: $acpDiagnostics)';
 }
 
 
@@ -593,7 +600,7 @@ abstract mixin class $BridgeAccountDomainFrame_SummariesCopyWith<$Res> implement
   factory $BridgeAccountDomainFrame_SummariesCopyWith(BridgeAccountDomainFrame_Summaries value, $Res Function(BridgeAccountDomainFrame_Summaries) _then) = _$BridgeAccountDomainFrame_SummariesCopyWithImpl;
 @override @useResult
 $Res call({
- BridgeResourceStamp stamp, List<BridgeAccountSummary> accounts
+ BridgeResourceStamp stamp, List<BridgeAccountSummary> accounts, List<BridgeAcpDefinitionDiagnostic> acpDiagnostics
 });
 
 
@@ -610,11 +617,12 @@ class _$BridgeAccountDomainFrame_SummariesCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAccountDomainFrame
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? stamp = null,Object? accounts = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? stamp = null,Object? accounts = null,Object? acpDiagnostics = null,}) {
   return _then(BridgeAccountDomainFrame_Summaries(
 stamp: null == stamp ? _self.stamp : stamp // ignore: cast_nullable_to_non_nullable
 as BridgeResourceStamp,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
-as List<BridgeAccountSummary>,
+as List<BridgeAccountSummary>,acpDiagnostics: null == acpDiagnostics ? _self._acpDiagnostics : acpDiagnostics // ignore: cast_nullable_to_non_nullable
+as List<BridgeAcpDefinitionDiagnostic>,
   ));
 }
 

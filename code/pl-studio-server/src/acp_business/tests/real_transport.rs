@@ -215,6 +215,17 @@ async fn accepted(stream: &mut Sse, observed: bool) -> Result<AcpSessionTarget> 
     Ok(target)
 }
 
+async fn initialized(stream: &mut Sse) -> Result<()> {
+    let Some(AcpSessionFrame::Event { event }) = stream.next().await? else {
+        anyhow::bail!("missing initialization event");
+    };
+    let AcpSessionEvent::Initialized { capabilities } = *event else {
+        anyhow::bail!("initialize must precede replay and publication");
+    };
+    ensure!(capabilities.load_session);
+    Ok(())
+}
+
 async fn published(stream: &mut Sse) -> Result<()> {
     let (mut ready, mut settled) = (0, 0);
     while ready == 0 || settled == 0 {
@@ -284,6 +295,7 @@ async fn real_peer_http_load_resident_disconnect_prompt_and_owner_close() -> Res
         let stream_capacity = server.state.streams.available_permits();
         let mut stream = Sse::new(server.post("open", &request(&fixture, None)).await?)?;
         let target = accepted(&mut stream, true).await?;
+        initialized(&mut stream).await?;
         marker(&fixture, "opening").await?;
         let Some(AcpSessionFrame::Event { event }) = stream.next().await? else {
             anyhow::bail!("missing pre-release original update");
@@ -366,6 +378,7 @@ async fn real_peer_http_load_resident_disconnect_prompt_and_owner_close() -> Res
                 .await?,
         )?;
         let current = accepted(&mut reopened, true).await?;
+        initialized(&mut reopened).await?;
         published(&mut reopened).await?;
         ensure!(current.agent_id == target.agent_id && current.instance != target.instance);
         for (method, body) in [

@@ -59,6 +59,7 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
         p::AccountDomainFrame::Summaries {
             stamp: source,
             accounts,
+            acp_diagnostics,
         } => BridgeAccountDomainFrame::Summaries {
             stamp: stamp(source),
             accounts: accounts
@@ -74,6 +75,7 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
                     billing_kind_override: account.billing_kind_override.map(Into::into),
                     credential_ready: account.credential_ready,
                     usage_query_revision: account.usage_query_revision,
+                    acp_enabled: account.acp_enabled,
                     acp_connection_revision: account.acp_connection_revision,
                     capabilities: BridgeAccountCapabilities {
                         set_default: account.capabilities.set_default,
@@ -84,6 +86,13 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
                         edit_models: account.capabilities.edit_models,
                         acp_auth: account.capabilities.acp_auth,
                     },
+                })
+                .collect(),
+            acp_diagnostics: acp_diagnostics
+                .into_iter()
+                .map(|diagnostic| BridgeAcpDefinitionDiagnostic {
+                    file_name: diagnostic.file_name,
+                    message: diagnostic.message,
                 })
                 .collect(),
         },

@@ -29,6 +29,13 @@ abstract interface class DraftAttachmentOperations
   });
   ComposerDraftBinding newThreadBinding(String workspaceId);
   DraftStamp newThreadStamp(String workspaceId);
+  Future<void> transferNewThread({
+    required String workspaceId,
+    required String threadId,
+    required ComposerDraftBinding destination,
+    required String Function() text,
+    required bool Function() isCurrent,
+  });
   void retainFrozen({
     required OperationId operationId,
     required ComposerDraftBinding binding,

@@ -105,6 +105,7 @@ pub struct Completed {
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub session_id: Option<SessionId>,
+    pub capabilities: AgentCapabilities,
     pub ready: bool,
     pub closing: bool,
     pub config_pending: bool,
@@ -369,6 +370,7 @@ impl State {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             session_id: self.session_id.clone(),
+            capabilities: self.capabilities.clone(),
             ready: self.ready,
             closing: self.closing,
             config_pending: self.config_pending,
@@ -669,7 +671,16 @@ impl Driver {
         tokio::pin!(observation_lost);
         let mut observation_ended = false;
         connection
-            .prepare_request(InitializeRequest::new(ProtocolVersion::V1))
+            .prepare_request(
+                InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                    ClientCapabilities::new().session(
+                        ClientSessionCapabilities::new().config_options(
+                            SessionConfigOptionsCapabilities::new()
+                                .boolean(BooleanConfigOptionCapabilities::new()),
+                        ),
+                    ),
+                ),
+            )
             .on_receiving_result({
                 let state = state.clone();
                 async move |result| {
@@ -686,6 +697,12 @@ impl Driver {
                 if let Some(initialize) = owner.initialized.take() {
                     match initialize {
                         Ok(initialize) if initialize.protocol_version == ProtocolVersion::V1 => {
+                            // Conservatively charge the complete official initialize response,
+                            // including every capability and its metadata, to the original window.
+                            let size = initialize
+                                .clone()
+                                .into_json("initialize")
+                                .map(|value| value.to_string().len());
                             owner.auth_methods =
                                 crate::auth::declared_methods(&initialize.auth_methods);
                             owner.server_info = initialize.agent_info;
@@ -698,6 +715,8 @@ impl Driver {
                             ) {
                                 owner.fail_open(Error::ServerVersionMismatch);
                             } else if !owner.closing {
+                                let capabilities = owner.capabilities.clone();
+                                owner.emit(Event::Initialized(capabilities), size);
                                 self.open(&connection, &mut owner);
                             } else {
                                 owner.close_done = true;

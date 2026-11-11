@@ -491,6 +491,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAgentCapabilities
+  dco_decode_box_autoadd_bridge_acp_agent_capabilities(dynamic raw);
+
+  @protected
   BridgeAcpAnnotations dco_decode_box_autoadd_bridge_acp_annotations(
     dynamic raw,
   );
@@ -1747,6 +1751,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpAccountUpdate dco_decode_bridge_acp_account_update(dynamic raw);
 
   @protected
+  BridgeAcpAgentCapabilities dco_decode_bridge_acp_agent_capabilities(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAcpAnnotations dco_decode_bridge_acp_annotations(dynamic raw);
 
   @protected
@@ -1850,6 +1859,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpCost dco_decode_bridge_acp_cost(dynamic raw);
+
+  @protected
+  BridgeAcpDefinitionDiagnostic dco_decode_bridge_acp_definition_diagnostic(
+    dynamic raw,
+  );
 
   @protected
   BridgeAcpEmbeddedResource dco_decode_bridge_acp_embedded_resource(
@@ -3865,6 +3879,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpDefinitionDiagnostic>
+  dco_decode_list_bridge_acp_definition_diagnostic(dynamic raw);
+
+  @protected
   List<BridgeAcpInstallEntry> dco_decode_list_bridge_acp_install_entry(
     dynamic raw,
   );
@@ -5244,6 +5262,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpAccountUpdate sse_decode_box_autoadd_bridge_acp_account_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAgentCapabilities
+  sse_decode_box_autoadd_bridge_acp_agent_capabilities(
     SseDeserializer deserializer,
   );
 
@@ -6840,6 +6864,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAgentCapabilities sse_decode_bridge_acp_agent_capabilities(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpAnnotations sse_decode_bridge_acp_annotations(
     SseDeserializer deserializer,
   );
@@ -6991,6 +7020,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpCost sse_decode_bridge_acp_cost(SseDeserializer deserializer);
+
+  @protected
+  BridgeAcpDefinitionDiagnostic sse_decode_bridge_acp_definition_diagnostic(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAcpEmbeddedResource sse_decode_bridge_acp_embedded_resource(
@@ -9550,6 +9584,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpDefinitionDiagnostic>
+  sse_decode_list_bridge_acp_definition_diagnostic(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeAcpInstallEntry> sse_decode_list_bridge_acp_install_entry(
     SseDeserializer deserializer,
   );
@@ -11219,6 +11259,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_acp_account_update(
     BridgeAcpAccountUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_agent_capabilities(
+    BridgeAcpAgentCapabilities self,
     SseSerializer serializer,
   );
 
@@ -13029,6 +13075,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_acp_agent_capabilities(
+    BridgeAcpAgentCapabilities self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_acp_annotations(
     BridgeAcpAnnotations self,
     SseSerializer serializer,
@@ -13210,6 +13262,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bridge_acp_cost(BridgeAcpCost self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_bridge_acp_definition_diagnostic(
+    BridgeAcpDefinitionDiagnostic self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_bridge_acp_embedded_resource(
@@ -16328,6 +16386,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_acp_content_block(
     List<BridgeAcpContentBlock> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_definition_diagnostic(
+    List<BridgeAcpDefinitionDiagnostic> self,
     SseSerializer serializer,
   );
 

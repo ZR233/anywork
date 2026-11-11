@@ -77,9 +77,14 @@ sealed class AccountDomainFrame {
 }
 
 final class AccountSummariesFrame extends AccountDomainFrame {
-  AccountSummariesFrame(super.stamp, Iterable<AccountSummary> accounts)
-    : accounts = List.unmodifiable(accounts);
+  AccountSummariesFrame(
+    super.stamp,
+    Iterable<AccountSummary> accounts, {
+    Iterable<AcpDefinitionDiagnosticView> acpDiagnostics = const [],
+  }) : accounts = List.unmodifiable(accounts),
+       acpDiagnostics = List.unmodifiable(acpDiagnostics);
   final List<AccountSummary> accounts;
+  final List<AcpDefinitionDiagnosticView> acpDiagnostics;
   @override
   AccountObservationTarget get target => const AccountSummariesTarget();
 }

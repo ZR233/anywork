@@ -33,6 +33,9 @@ import '../../interactions/connectors/tool_approval_connector.dart';
 import '../../interactions/connectors/user_input_connector.dart';
 import '../views/prompt_composer_view.dart';
 import '../../../../app/routing/app_route.dart';
+import '../../acp/views/acp_start_composer.dart';
+import '../widgets/start_backend_selector.dart';
+import '../view_models/start_backend_view_model.dart';
 
 class ComposerDockConnector extends ConsumerWidget {
   const ComposerDockConnector({
@@ -120,8 +123,12 @@ class StartPageComposerDockConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 只按项目重建正文状态；键击不重建外层，避免切项目时把上一个正文带过去。
     final workspaceId = ref.watch(selectionStoreProvider).selectedProjectId;
+    final acpAccountId = ref.watch(
+      startBackendViewModelProvider(workspaceId)
+          .select((state) => state.accountId),
+    );
     return _StartPageComposerBody(
-      key: ValueKey<String>(workspaceId ?? ''),
+      key: ValueKey((workspaceId, acpAccountId)),
       workspaceId: workspaceId,
       onAddProject: onAddProject,
     );
@@ -165,6 +172,31 @@ class _StartPageComposerBodyState
 
   @override
   Widget build(BuildContext context) {
+    final backend = ref.watch(
+      startBackendViewModelProvider(widget.workspaceId)
+          .select((state) => state.accountId),
+    );
+    if (backend != null && widget.workspaceId != null) {
+      return StartPageComposerView(
+        environmentBar: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            StartEnvironmentConnector(
+              workspaceId: widget.workspaceId,
+              projectOnly: true,
+              enabled: !ref.watch(
+                startSessionControllerProvider.select(
+                  (state) => state.submitting,
+                ),
+              ),
+              onAddProject: widget.onAddProject,
+            ),
+            StartBackendSelector(workspaceId: widget.workspaceId),
+          ],
+        ),
+        composer: AcpStartComposer(workspaceId: widget.workspaceId!),
+      );
+    }
     final projectionAsync = ref.watch(startPageComposerViewModelProvider);
     if (projectionAsync.isLoading) {
       return const SafeArea(child: LinearProgressIndicator());
@@ -208,6 +240,7 @@ class _StartPageComposerBodyState
       spacing: 6,
       runSpacing: 4,
       children: [
+        StartBackendSelector(workspaceId: workspaceId),
         SessionModeSelector(
           mode: mode,
           enabled: selectorsEnabled && workspaceId != null,

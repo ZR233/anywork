@@ -2,6 +2,8 @@
 
 mod observation;
 mod projection;
+#[cfg(test)]
+mod tests;
 
 pub use observation::AccountObservation;
 pub use pl_protocol::studio::{

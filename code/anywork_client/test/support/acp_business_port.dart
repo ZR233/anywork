@@ -9,6 +9,11 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   final sources = Queue<ControlledAcpObservation>();
   Completer<AcpSessionObservationPort>? admission;
   Object? commandError;
+  Completer<AcpRunIdView>? promptResult;
+  Completer<void>? configureResult;
+  Completer<void>? modeResult;
+  Completer<void>? answerResult;
+  Completer<void>? interruptResult;
   late AcpRunIdView run;
   late AcpBusinessSnapshotView snapshotValue;
   late AcpBusinessCloseView closeValue;
@@ -29,8 +34,10 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   }
 
   @override
-  Future<AcpRunIdView> prompt(AcpPromptRequestView request) async =>
-      record('prompt', request, run);
+  Future<AcpRunIdView> prompt(AcpPromptRequestView request) async {
+    record('prompt', request, run);
+    return promptResult == null ? run : await promptResult!.future;
+  }
 
   @override
   Future<AcpRunIdView> replace(AcpReplaceRequestView request) async =>
@@ -39,21 +46,25 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   @override
   Future<void> interrupt(AcpInterruptRequestView request) async {
     record('interrupt', request, null);
+    await interruptResult?.future;
   }
 
   @override
   Future<void> configure(AcpConfigureRequestView request) async {
     record('configure', request, null);
+    await configureResult?.future;
   }
 
   @override
   Future<void> setMode(AcpSetModeRequestView request) async {
     record('setMode', request, null);
+    await modeResult?.future;
   }
 
   @override
   Future<void> answerPermission(AcpPermissionAnswerRequestView request) async {
     record('answerPermission', request, null);
+    await answerResult?.future;
   }
 
   @override

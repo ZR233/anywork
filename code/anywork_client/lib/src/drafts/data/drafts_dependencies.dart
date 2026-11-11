@@ -1,4 +1,7 @@
 import '../../../models.dart';
+import '../../../acp_sessions.dart';
+import '../../accounts/domain/account_values.dart';
+import '../../studio/stores/thread_directory_store.dart';
 import '../../../model_directory.dart';
 import '../../../conversation.dart';
 import '../../../drafts_ports.dart';
@@ -25,6 +28,11 @@ final class DraftsDependencies {
     required this.modelAccounts,
     required this.threadCommands,
     required this.transport,
+    this.acpSessions,
+    this.directory,
+    this.accountSummaries,
+    this.selectCreatedThread,
+    this.selectionNavigationGeneration,
   });
   final MutationBoard mutations;
   final ConversationRepository conversations;
@@ -36,7 +44,13 @@ final class DraftsDependencies {
   final List<ModelSelectionAccount> Function() modelAccounts;
   final DraftSubmissionCommands threadCommands;
   final AttachmentTransport transport;
+  final AcpSessionClient? acpSessions;
+  final ThreadDirectoryStore? directory;
+  final ValueObservation<AccountsState>? accountSummaries;
+  final void Function(String workspaceId, String threadId)? selectCreatedThread;
+  final int Function()? selectionNavigationGeneration;
   late final DraftAttachmentOperations attachments;
   late final StartSessionDraftOwner startDraft;
+  late final ComposerDraftOwner Function(String threadId) composer;
   bool isClosed = false;
 }

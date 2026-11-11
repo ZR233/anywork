@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../../../acp_sessions.dart';
+import '../../accounts/domain/account_identity.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
 import '../../observation/latest_value.dart';
@@ -9,6 +11,7 @@ import 'drafts_dependencies.dart';
 import '../domain/draft_owners.dart';
 import '../../studio/model_route_queries.dart';
 import 'submission_observation.dart';
+import 'composer_draft_impl.dart';
 
 /// Project drafts and mode-specific route intent survive route observers.
 final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
@@ -18,6 +21,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   final DraftsDependencies _dependencies;
   final List<Observation> _observations = [];
   final Map<String, (DraftStamp, DraftStamp)> _unknown = {};
+  final Set<String> _acpUnknown = {};
+  final Map<String, int> _acpGenerations = {};
+  Completer<void>? _acpReadyWait;
   Future<bool>? _pending;
   Future<void>? _closing;
   bool _closed = false;
@@ -32,6 +38,16 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     final project = state.forProject(workspaceId);
     if (project.mode == mode && state.projects.containsKey(workspaceId)) return;
     _editProject(workspaceId, project.copyWith(mode: mode));
+  }
+
+  void setAcpService(String workspaceId, String? accountId) {
+    if (accountId != null && accountId.trim().isEmpty) {
+      throw ArgumentError.value(accountId, 'accountId');
+    }
+    final project = state.forProject(workspaceId);
+    if (project.acpAccountId == accountId) return;
+    _acpGenerations[workspaceId] = (_acpGenerations[workspaceId] ?? 0) + 1;
+    _editProject(workspaceId, project.copyWith(acpAccountId: accountId));
   }
 
   void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode) {
@@ -217,6 +233,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   }
 
   Future<bool> _prepareAndSubmit(String workspaceId) async {
+    if (state.forProject(workspaceId).acpAccountId != null) {
+      return _createAcpSession(workspaceId);
+    }
     FrozenStartSessionSubmission? frozen;
     InputSubmissionObservation? evidence;
     try {
@@ -282,6 +301,141 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       ),
     );
     return _submit(frozen, evidence);
+  }
+
+  Future<bool> _createAcpSession(String workspaceId) async {
+    var dispatched = false;
+    var accepted = false;
+    try {
+      if (_closed || _dependencies.isClosed) {
+        throw StateError('The start draft is closed');
+      }
+      if (_acpUnknown.contains(workspaceId)) {
+        throw StateError('The previous ACP creation outcome is unresolved');
+      }
+      final selection = _dependencies.selection.value;
+      final navigation = _dependencies.selectionNavigationGeneration?.call();
+      if (selection.selectedProjectId != workspaceId ||
+          selection.selectedThreadId != null) {
+        throw StateError('New Thread submission target is no longer available');
+      }
+      final workspace = _dependencies.project.value.projects?.values
+          .where((value) => value.id == workspaceId)
+          .firstOrNull;
+      if (workspace == null || workspace.path.isEmpty) {
+        throw StateError('Project is no longer available');
+      }
+      if (workspace.sshAlias != null) {
+        throw StateError('ACP requires a local workspace');
+      }
+      final project = state.forProject(workspaceId);
+      final recoveryIssue = recoveryIssueBlockingExecution(
+        _dependencies.recovery.value.value?.values ?? const [],
+        workspaceId: workspaceId,
+      );
+      if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
+      final sessions = _dependencies.acpSessions;
+      final select = _dependencies.selectCreatedThread;
+      final accounts = _dependencies.accountSummaries?.value;
+      final account = accounts?.account(
+        AcpAccountIdentity(project.acpAccountId!),
+      );
+      final revision = account?.acpConnectionRevision;
+      if (sessions == null ||
+          select == null ||
+          accounts?.loaded != true ||
+          account?.acpEnabled != true ||
+          revision == null) {
+        throw StateError('The ACP service is not available');
+      }
+      final generation = _acpGenerations[workspaceId] ?? 0;
+      bool current() =>
+          !_closed &&
+          !_dependencies.isClosed &&
+          (_acpGenerations[workspaceId] ?? 0) == generation &&
+          (_dependencies.project.value.projects?.values.any(
+                (value) => value.id == workspaceId && value.sshAlias == null,
+              ) ??
+              false);
+      state = state.copyWith(submitting: true);
+      if (!current()) {
+        throw StateError('ACP creation cancelled before backend dispatch');
+      }
+      dispatched = true;
+      final owner = await sessions.openConversation(
+        OpenAcpSessionRequestView(
+          accountId: project.acpAccountId!,
+          expectedConnectionRevision: BigInt.from(revision),
+          workspaceId: workspaceId,
+          intent: const AcpNewIntentView(),
+        ),
+      );
+      accepted = true;
+      await _waitForAcpReady(owner);
+      if (!current()) return false;
+      final target = owner.state.target!;
+      final composer =
+          _dependencies.composer(target.threadId) as ComposerDraftImpl;
+      StartSessionProjectDraft? transferred;
+      await _dependencies.attachments.transferNewThread(
+        workspaceId: workspaceId,
+        threadId: target.threadId,
+        destination: composer.binding,
+        text: () {
+          transferred = state.forProject(workspaceId);
+          return transferred!.text;
+        },
+        isCurrent: current,
+      );
+      if (!current()) return false;
+      if (identical(state.forProject(workspaceId), transferred)) {
+        state = state.copyWith(
+          projects: {...state.projects}..remove(workspaceId),
+          revision: state.revision + 1,
+        );
+      }
+      if (identical(selection, _dependencies.selection.value) &&
+          navigation == _dependencies.selectionNavigationGeneration?.call()) {
+        select(workspaceId, target.threadId);
+      }
+      return true;
+    } catch (error) {
+      if (accepted || (dispatched && error is! AcpBusinessFailureView)) {
+        _acpUnknown.add(workspaceId);
+      }
+      if (!_closed) {
+        _dependencies.attachments.reportNewThreadFailure(workspaceId, error);
+      }
+      return false;
+    }
+  }
+
+  Future<void> _waitForAcpReady(AcpConversationSession owner) async {
+    final completion = Completer<void>();
+    _acpReadyWait = completion;
+    void check(AcpConversationState value) {
+      if (completion.isCompleted) return;
+      if (_closed ||
+          value.observationEnded ||
+          value.disconnected ||
+          value.error != null) {
+        completion.completeError(
+          value.error ??
+              StateError('ACP creation ended before the session was ready'),
+        );
+      } else if (value.ready && !value.openPending) {
+        completion.complete();
+      }
+    }
+
+    final observation = owner.source.watch(check);
+    check(owner.state);
+    try {
+      await completion.future;
+    } finally {
+      observation.cancel();
+      if (identical(_acpReadyWait, completion)) _acpReadyWait = null;
+    }
   }
 
   Future<bool> _submit(
@@ -536,6 +690,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   Future<void> discardProject(String workspaceId) async {
     if (_closed) return;
+    _acpGenerations[workspaceId] = (_acpGenerations[workspaceId] ?? 0) + 1;
     state = state.copyWith(
       projects: {...state.projects}..remove(workspaceId),
       preparations: {...state.preparations}..remove(workspaceId),
@@ -548,6 +703,10 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   Future<void> _close() async {
     _closed = true;
+    final waiting = _acpReadyWait;
+    if (waiting != null && !waiting.isCompleted) {
+      waiting.completeError(StateError('The start draft is closed'));
+    }
     await _pending;
     for (final observation in _observations) {
       observation.cancel();

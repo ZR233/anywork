@@ -26,6 +26,7 @@ abstract interface class StartSessionDraftOwner {
   StartSessionDraft get state;
   ValueObservation<StartSessionDraft> get source;
   void updateDraft(String workspaceId, String text);
+  void setAcpService(String workspaceId, String? accountId);
   void setMode(String workspaceId, ThreadModeId mode);
   void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode);
   void setDelegationModeOverride(String workspaceId, DelegationMode? mode);

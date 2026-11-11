@@ -504,6 +504,17 @@ AcpSessionFrameView acpFrameFromFrb(b.BridgeAcpSessionFrame v) => switch (v) {
   ),
   b.BridgeAcpSessionFrame_Event(:final event) => AcpEventFrameView(
     switch (event) {
+      b.BridgeAcpSessionEvent_Initialized(:final capabilities) =>
+        AcpInitializedEventView(
+          AcpAgentCapabilitiesView(
+            image: capabilities.image,
+            audio: capabilities.audio,
+            embeddedContext: capabilities.embeddedContext,
+            loadSession: capabilities.loadSession,
+            listSessions: capabilities.listSessions,
+            resumeSession: capabilities.resumeSession,
+          ),
+        ),
       b.BridgeAcpSessionEvent_Update(:final update) => AcpUpdateEventView(
         AcpSessionNotificationView(
           sessionId: AcpRemoteSessionId(update.sessionId.value),

@@ -1,26 +1,87 @@
 import 'dart:async';
 
+import '../../observation/latest_value.dart';
 import '../domain/acp_business_models.dart';
 import '../domain/acp_business_port.dart';
+import '../domain/acp_content.dart';
 import '../domain/acp_session_payloads.dart';
+import '../domain/acp_updates.dart';
+import '../domain/acp_values.dart';
+
+part 'acp_conversation_session.dart';
 
 /// Application-owned ACP commands and borrowed observation lifetimes.
 ///
-/// Frames and command results pass through unchanged. No update cache, replay,
-/// background producer, preparation state machine or business member is owned
-/// here. A page borrows the resource returned by [open]; application shutdown
-/// calls [dispose]. Neither releases the underlying business membership.
+/// Raw [open] preserves original frames. [openConversation] additionally owns
+/// the member's temporary display state and continuously consumes that open.
+/// Application shutdown releases observations, not business membership.
 final class AcpSessionClient {
   AcpSessionClient({required AcpBusinessPort port}) : _port = port;
 
   final AcpBusinessPort _port;
   final Set<AcpSessionObservation> _observations = {};
   final Set<Future<void>> _opening = {};
+  final Map<String, AcpConversationSession> _conversations = {};
+  final Map<String, Future<AcpConversationSession>> _conversationOpening = {};
+  final Set<AcpConversationSession> _owners = {};
   bool _disposed = false;
   Future<void>? _disposing;
 
   void _requireOpen() {
     if (_disposed) throw const AcpObservationDisposed();
+  }
+
+  AcpConversationSession? conversationForThread(String threadId) =>
+      _conversations[threadId];
+
+  /// Reuses a member's owner, sharing concurrent admission by existing thread.
+  ///
+  /// Returns after Accepted, without waiting for load replay or Settled.
+  /// Creation without a thread remains qualified by the caller's draft gate.
+  Future<AcpConversationSession> openConversation(
+    OpenAcpSessionRequestView request,
+  ) {
+    _requireOpen();
+    final threadId = request.threadId;
+    if (threadId != null) {
+      final owner = _conversations[threadId];
+      if (owner != null) return Future.value(owner);
+      final opening = _conversationOpening[threadId];
+      if (opening != null) return opening;
+    }
+    final future = _openConversation(request);
+    if (threadId != null) _conversationOpening[threadId] = future;
+    return future;
+  }
+
+  Future<AcpConversationSession> _openConversation(
+    OpenAcpSessionRequestView request,
+  ) async {
+    final admission = Completer<void>();
+    _opening.add(admission.future);
+    try {
+      final observation = await open(request);
+      _requireOpen();
+      final owner = AcpConversationSession._(this, observation, request.intent);
+      _owners.add(owner);
+      await owner._start();
+      _requireOpen();
+      final target = owner.state.target!;
+      final existing = _conversations[target.threadId];
+      if (existing != null && !identical(existing, owner)) {
+        await owner._dispose();
+        _owners.remove(owner);
+        return existing;
+      }
+      _conversations[target.threadId] = owner;
+      return owner;
+    } finally {
+      if (request.threadId != null) {
+        _conversationOpening.removeWhere((key, _) => key == request.threadId);
+      }
+      _opening.remove(admission.future);
+      admission.complete();
+    }
   }
 
   /// Returns the same open's pull resource without awaiting its Settled frame.
@@ -111,7 +172,11 @@ final class AcpSessionClient {
 
   Future<void> _dispose() async {
     final initial = _observations.toSet();
-    final releases = [for (final observation in initial) observation.close()];
+    final owners = _owners.toSet();
+    final releases = [
+      for (final owner in owners) _releaseOwner(owner),
+      for (final observation in initial) observation.close(),
+    ];
     try {
       // Admissions register late resources before their joins settle.
       await Future.wait<void>([...releases, ..._opening.toList()]);
@@ -122,6 +187,15 @@ final class AcpSessionClient {
         for (final observation in _observations.toList())
           if (!initial.contains(observation)) observation.close(),
       ]);
+    }
+  }
+
+  Future<void> _releaseOwner(AcpConversationSession owner) async {
+    await owner._dispose();
+    _owners.remove(owner);
+    final threadId = owner.state.target?.threadId;
+    if (identical(_conversations[threadId], owner)) {
+      _conversations.remove(threadId);
     }
   }
 }

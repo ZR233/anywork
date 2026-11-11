@@ -3,90 +3,60 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/observe_client.dart';
-import '../../../../presentation/providers/project_store.dart';
-import '../../../../presentation/providers/settings_store.dart';
-import '../../../../presentation/providers/start_session_controller.dart';
 import '../../../../shared/studio_menu_label.dart';
+import '../view_models/start_environment_view_model.dart';
 import '../views/start_environment_view.dart';
-
-final _standalonePreparingProvider = Provider.autoDispose<bool>((ref) {
-  final state = observeClient(
-    ref,
-    ref.read(anyworkClientProvider).directoryCommands.source,
-    (_) => ref.invalidateSelf(),
-  );
-  return state.standalonePreparationInProgress;
-});
 
 class StartEnvironmentConnector extends ConsumerWidget {
   const StartEnvironmentConnector({
     required this.workspaceId,
     required this.enabled,
+    this.projectOnly = false,
     this.onAddProject,
     super.key,
   });
 
   final String? workspaceId;
   final bool enabled;
+  final bool projectOnly;
   final VoidCallback? onAddProject;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final draft = ref.watch(startSessionControllerProvider);
-    final projects =
-        ref.watch(projectStoreProvider).projects?.values.toList() ??
-        <StudioProject>[];
-    final workspace = projects
-        .where((item) => item.id == workspaceId)
-        .firstOrNull;
-    final defaults = ref.watch(settingsStoreProvider).canonical?.delegation;
-    final editable =
-        enabled &&
-        !draft.submitting &&
-        !ref.watch(_standalonePreparingProvider);
+    final model = ref.watch(startEnvironmentViewModelProvider(workspaceId));
+    final actions = ref.read(
+      startEnvironmentActionsProvider(workspaceId).notifier,
+    );
+    ref.listen(startEnvironmentActionsProvider(workspaceId), (_, error) {
+      if (error != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    });
+    final defaults = model.defaults;
+    final editable = enabled && model.editable;
     final selector = _ProjectTargetSelector(
-      projects: projects,
-      selected: workspace,
+      projects: model.projects,
+      selected: model.workspace,
       enabled: editable,
       onAddProject: onAddProject,
-      onSelected: (project) async {
-        final commands = ref.read(anyworkClientProvider).directoryCommands;
-        try {
-          if (project == null || project.isStandalone) {
-            await commands.beginStandaloneThread();
-          } else {
-            await commands.beginNewThread(workspaceId: project.id);
-          }
-        } catch (error) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text('$error')));
-          }
-        }
-      },
+      onSelected: actions.selectProject,
     );
-    if (defaults == null || workspaceId == null) {
+    if (projectOnly || defaults == null || workspaceId == null) {
       return Align(alignment: Alignment.centerLeft, child: selector);
     }
-    final projectDraft = draft.forProject(workspaceId!);
-    final owner = ref.read(anyworkClientProvider).drafts.startDraft;
     return StartEnvironmentView(
       projectSelector: selector,
       defaultMode: defaults.mode,
       defaultPreference: defaults.preference,
-      modeOverride: projectDraft.delegationModeOverride,
-      preferenceOverride: projectDraft.delegationPreferenceOverride,
-      workspaceMode: projectDraft.workspaceMode,
-      isStandalone: workspace?.isStandalone ?? false,
+      modeOverride: model.modeOverride,
+      preferenceOverride: model.preferenceOverride,
+      workspaceMode: model.workspaceMode,
+      isStandalone: model.workspace?.isStandalone ?? false,
       enabled: editable,
-      onModeChanged: (mode) =>
-          owner.setDelegationModeOverride(workspaceId!, mode),
-      onPreferenceChanged: (preference) =>
-          owner.setDelegationPreferenceOverride(workspaceId!, preference),
-      onWorkspaceModeChanged: (mode) =>
-          owner.setWorkspaceMode(workspaceId!, mode),
+      onModeChanged: actions.setMode,
+      onPreferenceChanged: actions.setPreference,
+      onWorkspaceModeChanged: actions.setWorkspaceMode,
     );
   }
 }

@@ -98,6 +98,174 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @acpHistoryButton.
+  ///
+  /// In en, this message translates to:
+  /// **'External sessions'**
+  String get acpHistoryButton;
+
+  /// No description provided for @acpHistoryOpenPanel.
+  ///
+  /// In en, this message translates to:
+  /// **'View external sessions'**
+  String get acpHistoryOpenPanel;
+
+  /// No description provided for @acpHistoryNoOwner.
+  ///
+  /// In en, this message translates to:
+  /// **'No active ACP session'**
+  String get acpHistoryNoOwner;
+
+  /// No description provided for @acpHistoryOwnerLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening ACP session'**
+  String get acpHistoryOwnerLoading;
+
+  /// No description provided for @acpHistoryUnknownCapability.
+  ///
+  /// In en, this message translates to:
+  /// **'The ACP service capability is not known yet'**
+  String get acpHistoryUnknownCapability;
+
+  /// No description provided for @acpHistoryUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This ACP service cannot list sessions'**
+  String get acpHistoryUnsupported;
+
+  /// No description provided for @acpHistoryNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP session is not ready'**
+  String get acpHistoryNotReady;
+
+  /// No description provided for @acpHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'External ACP sessions'**
+  String get acpHistoryTitle;
+
+  /// No description provided for @acpHistoryClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get acpHistoryClose;
+
+  /// No description provided for @acpHistoryRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get acpHistoryRefresh;
+
+  /// No description provided for @acpHistoryLoadMore.
+  ///
+  /// In en, this message translates to:
+  /// **'Load more'**
+  String get acpHistoryLoadMore;
+
+  /// No description provided for @acpHistoryLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading sessions…'**
+  String get acpHistoryLoading;
+
+  /// No description provided for @acpHistoryEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No external sessions'**
+  String get acpHistoryEmpty;
+
+  /// No description provided for @acpHistoryActions.
+  ///
+  /// In en, this message translates to:
+  /// **'Open options'**
+  String get acpHistoryActions;
+
+  /// No description provided for @acpHistoryLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Load history'**
+  String get acpHistoryLoad;
+
+  /// No description provided for @acpHistoryResume.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume'**
+  String get acpHistoryResume;
+
+  /// No description provided for @acpHistoryResumeNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume does not replay history'**
+  String get acpHistoryResumeNote;
+
+  /// No description provided for @acpHistoryLoadNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Load replays history when supported by the peer'**
+  String get acpHistoryLoadNote;
+
+  /// No description provided for @acpHistoryUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This session cannot be opened with the available capabilities'**
+  String get acpHistoryUnavailable;
+
+  /// No description provided for @acpHistoryOpening.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening…'**
+  String get acpHistoryOpening;
+
+  /// No description provided for @acpHistoryOpened.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened'**
+  String get acpHistoryOpened;
+
+  /// No description provided for @acpHistoryUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The open result is unknown. Do not retry; check the conversation list.'**
+  String get acpHistoryUnknown;
+
+  /// No description provided for @acpHistoryListFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read sessions'**
+  String get acpHistoryListFailed;
+
+  /// No description provided for @acpHistoryCwd.
+  ///
+  /// In en, this message translates to:
+  /// **'cwd'**
+  String get acpHistoryCwd;
+
+  /// No description provided for @acpHistoryUpdated.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated'**
+  String get acpHistoryUpdated;
+
+  /// No description provided for @acpConversationNoServices.
+  ///
+  /// In en, this message translates to:
+  /// **'No ACP services added'**
+  String get acpConversationNoServices;
+
+  /// No description provided for @acpConversationServiceDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get acpConversationServiceDisabled;
+
+  /// No description provided for @acpConversationManageServices.
+  ///
+  /// In en, this message translates to:
+  /// **'Manage ACP services'**
+  String get acpConversationManageServices;
+
   /// No description provided for @accountsModelModalityCapabilities.
   ///
   /// In en, this message translates to:

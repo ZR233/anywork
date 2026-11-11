@@ -51,6 +51,7 @@ impl AcpSessionObservation {
         }
         let event = self.observer.recv().await;
         Some(match event {
+            Some(Event::Initialized(capabilities)) => AcpSessionEvent::Initialized { capabilities },
             Some(Event::Ready(response)) => match self.completion.wait().await {
                 Ok(()) => AcpSessionEvent::Ready { response },
                 Err(error) => {

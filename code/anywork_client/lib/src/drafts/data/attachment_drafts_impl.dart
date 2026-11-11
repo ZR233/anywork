@@ -62,6 +62,18 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String? workspaceId,
   }) {
     if (_admissionsSealed) return Future<void>.value();
+    if (_dependencies.directory?.observedThread(threadId)?.backend
+        is AcpAgentBackendView) {
+      final owner = _dependencies.acpSessions?.conversationForThread(threadId);
+      if (owner?.state.ready != true || owner?.state.capabilities == null) {
+        binding.write(
+          binding.read().reportFailure(
+            StateError('ACP attachment capabilities are not available'),
+          ),
+        );
+        return Future<void>.value();
+      }
+    }
     return _track(
       () => _admit(
         targetKey: attachmentLaneKeyForThread(threadId),
@@ -99,6 +111,18 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required String? workspaceId,
   }) {
     if (_admissionsSealed) return Future<void>.value();
+    if (_dependencies.directory?.observedThread(threadId)?.backend
+        is AcpAgentBackendView) {
+      final owner = _dependencies.acpSessions?.conversationForThread(threadId);
+      if (owner?.state.ready != true || owner?.state.capabilities == null) {
+        binding.write(
+          binding.read().reportFailure(
+            StateError('ACP attachment capabilities are not available'),
+          ),
+        );
+        return Future<void>.value();
+      }
+    }
     return _track(
       () => _addClipboard(
         targetKey: attachmentLaneKeyForThread(threadId),
@@ -217,6 +241,12 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     ThreadModeId mode,
   ) {
     try {
+      if (_dependencies.startDraft.state.forProject(workspaceId).acpAccountId !=
+          null) {
+        throw StateError(
+          'Create the ACP session before adding attachments; ACP attachment admission is unavailable',
+        );
+      }
       return AttachmentAdmissionContext.newThread(
         _dependencies.startDraft.resolveRoute(mode),
       );
@@ -628,6 +658,14 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
   }
 
   bool _threadTargetCurrent(String threadId) {
+    if (_dependencies.directory?.observedThread(threadId)?.backend
+        is AcpAgentBackendView) {
+      final row = _dependencies.directory!.observedThread(threadId)!;
+      final owner = _dependencies.acpSessions?.conversationForThread(threadId);
+      return !row.isChildRow &&
+          owner?.state.ready == true &&
+          owner?.state.capabilities != null;
+    }
     final row = _dependencies.conversations
         .session(threadId)
         .state
@@ -697,6 +735,47 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       );
     }
   }
+
+  Future<void> transferNewThread({
+    required String workspaceId,
+    required String threadId,
+    required ComposerDraftBinding destination,
+    required String Function() text,
+    required bool Function() isCurrent,
+  }) => runLocked(attachmentLaneKeyForNewThread(workspaceId), () async {
+    if (_closed || !destination.mounted() || !isCurrent()) return;
+    final incoming = state.newThread(workspaceId);
+    final current = destination.read();
+    if (current.draft.isNotEmpty || current.attachments.isNotEmpty) {
+      throw StateError('The created conversation already has a draft');
+    }
+    final incomingText = text();
+    final ids = incoming.attachments.map((item) => item.id).toList();
+    _ownership.adopt(destination.draftId, ids);
+    _ownership.detach('start:$workspaceId', ids);
+    for (final id in ids) {
+      final failure = _unresolvedCleanup[id];
+      if (failure?.binding?.draftId == 'start:$workspaceId') {
+        _unresolvedCleanup[id] = _CleanupFailure(
+          workspaceId,
+          threadId,
+          failure!.error,
+          binding: destination,
+        );
+      }
+    }
+    _newThreadGenerations[workspaceId] =
+        (_newThreadGenerations[workspaceId] ?? 0) + 1;
+    _clearNewThread(workspaceId);
+    destination.write(
+      ComposerThreadState.idle(
+        draft: incomingText,
+        attachments: incoming.attachments,
+        attachmentGeneration: incoming.attachmentGeneration,
+        cleanupFailureDraftIds: incoming.cleanupFailureDraftIds,
+      ),
+    );
+  });
 
   Future<void> discard({
     required ComposerDraftBinding binding,

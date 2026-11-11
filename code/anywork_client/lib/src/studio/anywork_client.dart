@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../../accounts_ports.dart';
+import '../../accounts.dart' show AcpAccountIdentity, AccountDemand;
 import '../../acp_sessions.dart';
 import '../../model_directory.dart';
 
@@ -95,6 +96,14 @@ class AnyworkClient {
         modelAccounts: () => modelAccounts,
         threadCommands: threadCommands,
         transport: transport,
+        acpSessions: _acpSessions,
+        directory: threadDirectory,
+        accountSummaries: _accountDomains?.accounts.state,
+        selectCreatedThread: (workspaceId, threadId) => selection.selectThread(
+          workspaceId: workspaceId,
+          threadId: threadId,
+        ),
+        selectionNavigationGeneration: () => selection.navigationGeneration,
       ),
       clipboardImageStager: clipboardImageStager,
       clipboardImageCleanup: clipboardImageCleanup,
@@ -137,6 +146,198 @@ class AnyworkClient {
   AcpSessionClient get acpSessions =>
       _acpSessions ??
       (throw UnsupportedError('ACP business port is not installed'));
+
+  /// Opens the directory's original ACP member, never a replacement session.
+  ///
+  /// A resident display owner is reused. Cold opens explicitly load history;
+  /// callers may instead request resume, which does not promise a transcript.
+  Future<AcpConversationSession> openAcpConversation(
+    String threadId, {
+    bool resume = false,
+  }) async {
+    _ensureOpen();
+    final sessions = acpSessions;
+    final resident = sessions.conversationForThread(threadId);
+    if (resident != null) return resident;
+    final association = await _acpAssociation(threadId);
+    return sessions.openConversation(
+      OpenAcpSessionRequestView(
+        accountId: association.reference.accountId,
+        expectedConnectionRevision: association.revision,
+        workspaceId: association.row.workspaceId,
+        threadId: threadId,
+        intent: resume
+            ? AcpResumeIntentView(
+                AcpRemoteSessionId(association.reference.acpSessionId),
+              )
+            : AcpLoadIntentView(
+                AcpRemoteSessionId(association.reference.acpSessionId),
+              ),
+      ),
+    );
+  }
+
+  /// Reads the peer's directory without importing its entries into the product.
+  Future<AcpListSessionsResponseView> listAcpConversations(
+    String threadId, {
+    String? cursor,
+  }) async {
+    _ensureOpen();
+    final owner = acpSessions.conversationForThread(threadId);
+    final target = owner?.state.target;
+    if (target == null ||
+        owner!.state.capabilities?.listSessions != true ||
+        !owner.state.ready) {
+      throw UnsupportedError('The active ACP service cannot list sessions');
+    }
+    final association = await _acpAssociation(threadId);
+    return acpSessions.list(
+      AcpListRequestView(
+        target: target,
+        request: AcpListSessionsRequestView(
+          cwd: association.reference.cwd,
+          cursor: cursor,
+        ),
+      ),
+    );
+  }
+
+  /// Explicitly opens one external session as a product association.
+  ///
+  /// Listing never calls this method. The operation is not retried and never
+  /// substitutes New for an unsupported Load or Resume.
+  Future<AcpConversationSession> openExternalAcpConversation(
+    String sourceThreadId,
+    AcpRemoteSessionId remoteSessionId, {
+    bool resume = false,
+    String? cwd,
+  }) async {
+    final source = acpSessions.conversationForThread(sourceThreadId);
+    final capabilities = source?.state.capabilities;
+    if (source == null ||
+        !source.state.ready ||
+        (resume
+            ? capabilities?.resumeSession != true
+            : capabilities?.loadSession != true)) {
+      throw UnsupportedError('The active ACP service cannot open this session');
+    }
+    final navigation = selection.navigationGeneration;
+    final association = await _acpAssociation(sourceThreadId);
+    if (cwd != null && cwd != association.reference.cwd) {
+      throw UnsupportedError(
+        'Open this ACP session from its original workspace',
+      );
+    }
+    final owner = await acpSessions.openConversation(
+      OpenAcpSessionRequestView(
+        accountId: association.reference.accountId,
+        expectedConnectionRevision: association.revision,
+        workspaceId: association.row.workspaceId,
+        intent: resume
+            ? AcpResumeIntentView(remoteSessionId)
+            : AcpLoadIntentView(remoteSessionId),
+      ),
+    );
+    final opened = await owner.source.waitFor(
+      (state) =>
+          (state.ready && !state.openPending) ||
+          state.error != null ||
+          state.disconnected ||
+          state.observationEnded,
+    );
+    if (!opened.ready || opened.openPending) {
+      throw opened.error ?? StateError('The ACP session did not open');
+    }
+    if (selection.isCurrentNavigation(navigation) &&
+        selection.state.selectedThreadId == sourceThreadId) {
+      selection.selectThread(
+        workspaceId: association.row.workspaceId,
+        threadId: opened.target!.threadId,
+      );
+    }
+    return owner;
+  }
+
+  Future<
+    ({
+      SessionDirectoryRow row,
+      AcpSessionReferenceView reference,
+      BigInt revision,
+    })
+  >
+  _acpAssociation(String threadId) =>
+      _queries.run(() => _readAcpAssociation(threadId));
+
+  Future<
+    ({
+      SessionDirectoryRow row,
+      AcpSessionReferenceView reference,
+      BigInt revision,
+    })
+  >
+  _readAcpAssociation(String threadId) async {
+    _ensureOpen();
+    final accounts = _accountDomains?.accounts;
+    if (accounts == null) {
+      throw UnsupportedError('ACP account directory is not installed');
+    }
+    final demand = threadDirectory.observeThread(threadId);
+    AccountDemand? accountDemand;
+    try {
+      accountDemand = accounts.observeSummaries();
+      final metadata = await _waitForAcpRead(
+        demand.state,
+        (state) => !state.isLoading || state.error != null || state.closed,
+      );
+      if (metadata.error case final error?) throw error;
+      final row = metadata.frame?.row;
+      if (row == null || row.backend is! AcpAgentBackendView) {
+        throw StateError('The ACP member is no longer available');
+      }
+      final reference = (row.backend as AcpAgentBackendView).reference;
+      final accountState = await _waitForAcpRead(
+        accounts.state,
+        (state) => state.loaded || state.failure != null,
+      );
+      if (accountState.failure case final error?) throw error;
+      final account = accountState.account(
+        AcpAccountIdentity(reference.accountId),
+      );
+      final revision = account?.acpConnectionRevision;
+      if (revision == null || account?.acpEnabled != true) {
+        throw StateError('The ACP service is missing or disabled');
+      }
+      return (row: row, reference: reference, revision: BigInt.from(revision));
+    } finally {
+      await Future.wait<void>([
+        demand.release(),
+        if (accountDemand != null) accountDemand.release(),
+      ]);
+    }
+  }
+
+  Future<T> _waitForAcpRead<T>(
+    ValueObservation<T> source,
+    bool Function(T) ready,
+  ) async {
+    _ensureOpen();
+    final completion = Completer<T>();
+    final observation = source.watch((value) {
+      if (ready(value) && !completion.isCompleted) completion.complete(value);
+    });
+    try {
+      if (ready(source.value)) completion.complete(source.value);
+      return await Future.any<T>([
+        completion.future,
+        _acpReadClosed.future.then<T>((_) {
+          throw StateError('The application client closed during ACP open');
+        }),
+      ]);
+    } finally {
+      observation.cancel();
+    }
+  }
+
   bool modelCatalogLoaded = false;
   int modelCatalogRevision = 0;
 
@@ -244,6 +445,7 @@ class AnyworkClient {
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
 
   final CommandLane _queries = CommandLane();
+  final Completer<void> _acpReadClosed = Completer<void>();
   final List<Observation> _canonicalObservations = [];
   String? _runtimeOwnerEpoch;
   late final Observation _selectionObservation;
@@ -711,6 +913,7 @@ class AnyworkClient {
 
   Future<CloseReport> _close(DateTime? deadline) async {
     _closed = true;
+    if (!_acpReadClosed.isCompleted) _acpReadClosed.complete();
     _selectionObservation.cancel();
     _childInteractionVisibleWatch.cancel();
     _releaseThreadMcpPageDemand();

@@ -17,6 +17,7 @@ pub enum Gap {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Initialized(AgentCapabilities),
     Update(SessionNotification),
     Ready(NewSessionResponse),
     Failed(Error),

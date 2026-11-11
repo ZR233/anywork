@@ -170,6 +170,8 @@ Flutter 原生回归使用官方 `integration_test` 与 `WidgetTester`，通过 
 
 Open 在发送 new/load/resume 前交付本次观察入口，同一流保留回放/实时更新及 Ready/Failed，不能先等待 load 完成再订阅。协议源保持原内容块、工具调用更新、配置和权限选项，不伪造 Native review 或重执行 ACP 私有工具。观察待交付窗口最多 64 项、累计 8 MiB；超限或断开明确终止该失效观察并交付内容缺口，不能等待容量阻塞协议驱动、权限、控制或关闭，也不因此取消后台 prompt。缺口不能用持久回放队列、自动 load 或重发补齐。已有活动产品成员取得原实例句柄，不重复启动进程或 new。
 
+同次初始化成功并通过版本门槛后，在业务打开请求前向这条原观察流发布 `Initialized`，携带本次对端声明的正式 `AgentCapabilities`；HTTP 保留官方能力形状，FRB 与 Client 只做显式类型映射，供会话 owner 判断实际 prompt 附件和 load/list/resume 能力。未知能力不推导为支持，未取得初始化值时不启用相应入口；不增加能力探测会话、静态供应商能力表、轮询或第二条显示通路。该事件不代表认证或业务打开成功，原 Ready 与 Settled 的含义保持不变。
+
 业务 `OpenRequest.expected_server_version: Option<String>` 消费准备阶段冻结的版本门槛：通用命令为 `None`，受管模板为已验证发行的精确版本。initialize 成功后、任何 new/load/resume 发送前核对；缺失或不匹配以 `ServerVersionMismatch` 明确失败，不发业务打开请求、不重启补探测，协议 V1 校验不受该可选值影响。
 
 准备 owner 通过 `Session::opened() -> Result<schema::SessionId, Error>` 取得同一次 open 的最终结算，结算只保留真实对端 ID 或真实失败，不复制内容更新或配置列表。它由原有序 setup/fail_open 写入口完成，观察窗口失效不丢结算，重复等待返回原结果，等待者取消不撤销 open；连接先断开或关闭等未成功路径也必须结束等待。观察入口仍在请求前交付，owner 不能消费或转发显示 Observer 来等待 Ready，显示缺口也不能驱动目录提交。这个结算只证明协议打开结果，不证明产品发布、进程或租约已收束。
@@ -194,6 +196,6 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 模型、思考强度和其他选项只来自当前 session 的正式 `configOptions`，保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。
 
-set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 bool；权限响应才使用 optionId。一次最多一个配置修改在途，prompt/权限/控制继续处理；失败只清本次 pending，保留等待期间已接纳的推送，不恢复发起前快照、不重发、不增加配置 revision、ACK 或回读事务。只有跨桥、请求与实际显示闭环完整时才广告 boolean 能力；S4 不因预留类型而广告尚未交付的 S5 显示能力。未知类别原样保留，未知类型沿 SDK 按项容错，不另写配置 schema parser。
+set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 bool；权限响应才使用 optionId。一次最多一个配置修改在途，prompt/权限/控制继续处理；失败只清本次 pending，保留等待期间已接纳的推送，不恢复发起前快照、不重发、不增加配置 revision、ACK 或回读事务。只有跨桥、请求与实际显示闭环完整时才广告 boolean 能力，不因预留类型而提前声明。未知类别原样保留，未知类型沿 SDK 按项容错，不另写配置 schema parser。
 
 仅在 configOptions 缺失时消费真实旧 modes；通过正式 session/set_mode 和 current_mode_update 处理，不把 modeId 填进 configId 冒用 set_config_option。没有配置选项时沿 Agent 默认，不建设静态 ACP 模型目录、专用 effort 接口或 Native workflow 映射。Client 呈现边界见 [25](./25-frontend-state.md#2521-acp-协议内容与目录消费)。

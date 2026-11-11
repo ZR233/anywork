@@ -269,6 +269,22 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
         },
         p::AcpSessionFrame::Event { event } => BridgeAcpSessionFrame::Event {
             event: Box::new(match *event {
+                p::AcpSessionEvent::Initialized { capabilities: v } => {
+                    BridgeAcpSessionEvent::Initialized {
+                        capabilities: BridgeAcpAgentCapabilities {
+                            image: v.prompt_capabilities.image,
+                            audio: v.prompt_capabilities.audio,
+                            embedded_context: v.prompt_capabilities.embedded_context,
+                            load_session: v.load_session,
+                            list_sessions: v.session_capabilities.list.is_some(),
+                            resume_session: v.session_capabilities.resume.is_some(),
+                            close_session: v.session_capabilities.close.is_some(),
+                            mcp_http: v.mcp_capabilities.http,
+                            mcp_sse: v.mcp_capabilities.sse,
+                            meta: json::opt_meta(v.meta)?,
+                        },
+                    }
+                }
                 p::AcpSessionEvent::Update { update } => BridgeAcpSessionEvent::Update {
                     update: notification::notification(update)?,
                 },

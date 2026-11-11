@@ -10,6 +10,94 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get acpHistoryButton => 'External sessions';
+
+  @override
+  String get acpHistoryOpenPanel => 'View external sessions';
+
+  @override
+  String get acpHistoryNoOwner => 'No active ACP session';
+
+  @override
+  String get acpHistoryOwnerLoading => 'Opening ACP session';
+
+  @override
+  String get acpHistoryUnknownCapability =>
+      'The ACP service capability is not known yet';
+
+  @override
+  String get acpHistoryUnsupported => 'This ACP service cannot list sessions';
+
+  @override
+  String get acpHistoryNotReady => 'ACP session is not ready';
+
+  @override
+  String get acpHistoryTitle => 'External ACP sessions';
+
+  @override
+  String get acpHistoryClose => 'Close';
+
+  @override
+  String get acpHistoryRefresh => 'Refresh';
+
+  @override
+  String get acpHistoryLoadMore => 'Load more';
+
+  @override
+  String get acpHistoryLoading => 'Loading sessions…';
+
+  @override
+  String get acpHistoryEmpty => 'No external sessions';
+
+  @override
+  String get acpHistoryActions => 'Open options';
+
+  @override
+  String get acpHistoryLoad => 'Load history';
+
+  @override
+  String get acpHistoryResume => 'Resume';
+
+  @override
+  String get acpHistoryResumeNote => 'Resume does not replay history';
+
+  @override
+  String get acpHistoryLoadNote =>
+      'Load replays history when supported by the peer';
+
+  @override
+  String get acpHistoryUnavailable =>
+      'This session cannot be opened with the available capabilities';
+
+  @override
+  String get acpHistoryOpening => 'Opening…';
+
+  @override
+  String get acpHistoryOpened => 'Opened';
+
+  @override
+  String get acpHistoryUnknown =>
+      'The open result is unknown. Do not retry; check the conversation list.';
+
+  @override
+  String get acpHistoryListFailed => 'Could not read sessions';
+
+  @override
+  String get acpHistoryCwd => 'cwd';
+
+  @override
+  String get acpHistoryUpdated => 'Updated';
+
+  @override
+  String get acpConversationNoServices => 'No ACP services added';
+
+  @override
+  String get acpConversationServiceDisabled => 'Disabled';
+
+  @override
+  String get acpConversationManageServices => 'Manage ACP services';
+
+  @override
   String get accountsModelModalityCapabilities =>
       'Input/output modalities and capabilities';
 
