@@ -54,6 +54,11 @@ void main() {
       final command = requiredEnvironment('ANYWORK_AGY_COMMAND');
       expect(p.isAbsolute(command), isTrue);
       expect(await File(command).exists(), isTrue);
+      // CLI uses `acp`; the official managed Windows server takes no arguments.
+      final arguments = jsonDecode(
+        Platform.environment['ANYWORK_AGY_ARGS'] ?? '["acp"]',
+      ) as List<dynamic>;
+      final commandArgs = arguments.cast<String>();
       final harness = await ProductionStudioHarness.start(
         binding: binding,
         artifactsEnvironmentVariable: 'ANYWORK_AGY_ARTIFACTS',
@@ -97,7 +102,7 @@ void main() {
           accountId: serviceId,
           name: serviceName,
           command: command,
-          args: const ['acp'],
+          args: commandArgs,
         ),
         expectedDocumentRevision: null,
       );
