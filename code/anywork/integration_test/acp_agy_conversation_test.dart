@@ -142,13 +142,9 @@ void main() {
       await scene.capture('agy-live-start-card');
       await tester.tap(find.widgetWithText(FilledButton, '创建 ACP 会话'));
       await scene.until(() {
-        final failure = graph
-            .client
-            .drafts
-            .startDraft
-            .state
-            .preparations[project.id]
-            ?.failure;
+        final failure = graph.client.drafts.attachments.state
+            .newThread(project.id)
+            .failure;
         if (failure != null) throw StateError('ACP create failed: $failure');
         return find.byType(AcpComposerConnector).evaluate().length == 1;
       }, 'explicit session/new completes without prompting');
