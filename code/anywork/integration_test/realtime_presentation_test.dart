@@ -747,26 +747,60 @@ final class _RealtimeScene {
     }
 
     final source = ForegroundTurnChatSource(turnId: prepared.turnId);
-    await until(
-      () =>
-          _expectPreparedToolObserver(prepared) &&
-          prepared.display.atoms.any(
-            (atom) =>
-                atom.source == source &&
-                atom.kind == ChatAtomKind.reasoning &&
-                atom.lifecycle is ActiveChatAtom,
-          ),
-      'new active foreground reasoning after A delivery',
-      timeout: remaining(),
+    try {
+      await until(
+        () =>
+            _expectPreparedToolObserver(prepared) &&
+            _preparedToolDisplay(prepared).atoms.any(
+              (atom) =>
+                  atom.source == source &&
+                  atom.kind == ChatAtomKind.reasoning &&
+                  atom.lifecycle is ActiveChatAtom,
+            ),
+        'new active foreground reasoning after A delivery',
+        timeout: remaining(),
+      );
+    } catch (error) {
+      final diagnostics = <String, Object?>{
+        'error': error.toString(),
+        'observer': _preparedToolObserverSnapshot(prepared),
+        'members': [
+          for (final atom in _preparedToolDisplay(prepared).atoms)
+            {
+              'id': atom.id,
+              'kind': atom.kind.name,
+              'source': atom.source.toString(),
+              'sameSource': atom.source == source,
+              'lifecycle': atom.lifecycle.runtimeType.toString(),
+              'callId': atom.tool?.callId,
+            },
+        ],
+        'memberWindow': prepared.memberController.window.runtimeType.toString(),
+        'memberPageRevision': prepared.memberController.page?.revision,
+        'memberPageSealed': prepared.memberController.page?.sealed,
+      };
+      debugPrintSynchronously(
+        'Realtime background observer failure: ${jsonEncode(diagnostics)}',
+      );
+      await File.fromUri(
+        Directory(Platform.environment['ANYWORK_REALTIME_OUTPUT']!).uri
+            .resolve('realtime-background-observer-failure.json'),
+      ).writeAsString(
+        '${const JsonEncoder.withIndent('  ').convert(diagnostics)}\n',
+      );
+      rethrow;
+    }
+    evidence['activeReasoningObserver'] = _preparedToolObserverSnapshot(
+      prepared,
     );
-    final reasoning = prepared.display.atoms.singleWhere(
+    final reasoning = _preparedToolDisplay(prepared).atoms.singleWhere(
       (atom) =>
           atom.source == source &&
           atom.kind == ChatAtomKind.reasoning &&
           atom.lifecycle is ActiveChatAtom,
     );
     expect(reasoning.id, isNot(prepared.prefixId));
-    final handoff = prepared.display.atoms.singleWhere(
+    final handoff = _preparedToolDisplay(prepared).atoms.singleWhere(
       (atom) =>
           atom.source == source &&
           atom.tool?.callId == 'realtime-parallel-call-a' &&
@@ -955,9 +989,8 @@ final class _RealtimeScene {
       expect(foreground.historyPos, isNull);
       expect(foreground.state, DisplayBlockState.open);
       expect(lease.live.value!.executionPresent, isTrue);
-      final currentReasoning = prepared.display.atoms.singleWhere(
-        (member) => member.id == reasoning.id,
-      );
+      final currentReasoning = _preparedToolDisplay(prepared).atoms
+          .singleWhere((member) => member.id == reasoning.id);
       expect(currentReasoning.source, source);
       expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
       expect(
@@ -1314,6 +1347,17 @@ final class _RealtimeScene {
     return prepared;
   }
 
+  // A virtualized Main row can remount its Widget State while the original
+  // display lease, block reference and member controller remain unchanged.
+  // Borrow the currently mounted renderer by that identity, never by an old
+  // Widget State or by whichever foreground block happens to be visible.
+  TimelineGroupDisplay _preparedToolDisplay(_PreparedToolObserver prepared) =>
+      lease.groupDisplays.singleWhere(
+        (display) =>
+            display.unitId == prepared.display.unitId &&
+            display.blockReference == prepared.reference,
+      );
+
   bool _expectPreparedToolObserver(_PreparedToolObserver prepared) {
     expect(_latestTurn()?.turnId, prepared.turnId);
     expect(lease, same(prepared.lease));
@@ -1334,11 +1378,7 @@ final class _RealtimeScene {
       expect(unit.expansion.bodyGeneration, same(prepared.bodyGeneration));
     }
     expect(unit.memberReference, prepared.reference);
-    final displays = lease.groupDisplays
-        .where((display) => display.unitId == prepared.display.unitId)
-        .toList();
-    expect(displays, hasLength(1));
-    final display = displays.single;
+    final display = _preparedToolDisplay(prepared);
     expect(display.isCurrent && display.expanded, isTrue);
     expect(display.error, isNull);
     expect(display.blockReference, prepared.reference);
@@ -1359,9 +1399,7 @@ final class _RealtimeScene {
     _PreparedToolObserver prepared, {
     Iterable<ChatAtom> handedOff = const [],
   }) {
-    final display = lease.groupDisplays.singleWhere(
-      (display) => display.unitId == prepared.display.unitId,
-    );
+    final display = _preparedToolDisplay(prepared);
     final loading = display.loading;
     return {
       'turnId': prepared.turnId,
