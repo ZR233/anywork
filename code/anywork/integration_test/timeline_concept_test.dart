@@ -862,7 +862,8 @@ final class _ConceptScene {
         final thought = summary.thinkingSummary?.trim();
         if (!unit.executionPresent) {
           expect(text.data, l10n.timelineGroupUnrestored);
-        } else if (thought?.isNotEmpty == true) {
+        } else if ((summary.running > 0 || summary.waiting > 0) &&
+            thought?.isNotEmpty == true) {
           expect(text.data, thought);
         }
         final runningClock = unit.executionPresent && summary.createdAt != null;
@@ -2412,6 +2413,7 @@ final class _ConceptScene {
     await observed.openWork(g1);
     final reopened = await reopenActiveWorkgroup();
     expect(reopened.id, active.id);
+    await capture('workgroup-expanded');
     await release('workgroup');
     await reach(
       'group-idle',
@@ -2493,11 +2495,14 @@ final class _ConceptScene {
       'after-text',
       () =>
           observed.liveBlocks.isEmpty &&
-          items.any((entry) => entry.atom!.id == a.id),
+          items.any((entry) => entry.atom!.id == a.id) &&
+          graph.client.conversations.session(threadId).state.activity?.kind !=
+              ThreadActivityKind.responding,
     );
     final aEntry = items.singleWhere((entry) => entry.atom!.id == a.id);
     expect(aEntry.body, isA<SingleDisplayBlock>());
     expect(find.byKey(const ValueKey('conversation-activity')), findsOneWidget);
+    _expectNoRespondingNotice(a.turnId!);
     await capture('after-text');
     await release('after-text');
     await reach(
@@ -2527,6 +2532,7 @@ final class _ConceptScene {
           .source,
       source,
     );
+    await capture('next-group-collapsed');
     await observed.openWork(g2);
     expect(observed.unit(g1).body, same(frozenFirst.body));
     await capture('next-group');
@@ -2539,6 +2545,10 @@ final class _ConceptScene {
       ),
     );
     expect(main.any((unit) => unit.id == g2), isFalse);
+    await observed.closeWork(
+      lease.groupDisplays.singleWhere((d) => d.unitId == g2),
+    );
+    await capture('group-idle-collapsed');
     final credit = await openCredit();
     await release('second-group-idle');
     await reach(
@@ -3156,6 +3166,12 @@ final class _ConceptScene {
       isTrue,
     );
     expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
+    await _until(
+      tester,
+      () =>
+          find.byKey(StudioDriverKeys.contextUsageDetail()).evaluate().isEmpty,
+      'context usage tooltip dismissed',
+    );
     await capture('compacting');
     await release('compacting');
     await _until(

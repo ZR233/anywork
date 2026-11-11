@@ -54,21 +54,23 @@ class ConversationActivityBar extends StatelessWidget {
               side: BorderSide(color: context.colors.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: LayoutBuilder(
-                builder: (context, constraints) => ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: constraints.hasBoundedHeight
-                        ? constraints.maxHeight
-                        : MediaQuery.sizeOf(context).height * .45,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final child in children)
-                        Flexible(fit: FlexFit.loose, child: child),
-                    ],
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              child: LiveStatusMotionHost(
+                child: LayoutBuilder(
+                  builder: (context, constraints) => ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: constraints.hasBoundedHeight
+                          ? constraints.maxHeight
+                          : MediaQuery.sizeOf(context).height * .45,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final child in children)
+                          Flexible(fit: FlexFit.loose, child: child),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -100,6 +102,10 @@ class ConversationActivityStatus extends StatelessWidget {
         active:
             view.waits ||
             view.kind == ConversationActivityKind.responding ||
+            view.kind == ConversationActivityKind.planning,
+        emphasized:
+            view.kind == ConversationActivityKind.responding ||
+            view.kind == ConversationActivityKind.runningTool ||
             view.kind == ConversationActivityKind.planning,
         expandable: false,
         header: true,
@@ -144,13 +150,18 @@ class ConversationResponseView extends StatelessWidget {
         icon: Icons.chat_bubble_outline,
         indicatorStyle: TimelineActivityIndicatorStyle.writing,
         active: active,
+        emphasized: active,
         header: true,
         expandable: false,
         meta: seconds == null ? null : activityDurationLabel(context, seconds),
       ),
     ),
     body: Padding(
-      padding: const EdgeInsetsDirectional.only(start: 22, top: 6, bottom: 2),
+      padding: const EdgeInsetsDirectional.only(
+        start: TimelineActivityRow.headerContentIndent,
+        top: 6,
+        bottom: 2,
+      ),
       child: child,
     ),
   );

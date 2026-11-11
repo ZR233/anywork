@@ -396,11 +396,26 @@ void main() {
             blocks: [
               work,
               LiveDisplayBlock(
-                id: 'newer-terminal-work',
+                id: 'newer-failed-work',
                 blockOrder: 2,
                 state: DisplayBlockState.open,
                 source: source,
-                body: displayWork('newer-terminal-work', 1).body,
+                body: WorkDisplayBlock(
+                  summary: const WorkSummary(
+                    total: 1,
+                    terminal: 1,
+                    running: 0,
+                    waiting: 0,
+                    failed: 1,
+                    cancelled: 0,
+                    transferred: 0,
+                    unavailable: 0,
+                  ),
+                  members: const DisplayBlockRef(
+                    databaseId: 'db',
+                    blockId: 'newer-failed-work',
+                  ),
+                ),
               ),
             ],
           ),
@@ -418,14 +433,27 @@ void main() {
     });
   }
 
-  for (final (label, running, waiting, unavailable, accepted) in [
-    ('terminal', 0, 0, 0, false),
-    ('running', 1, 0, 0, true),
-    ('waiting', 0, 1, 0, true),
-    ('unavailable running', 1, 0, 1, false),
-    ('unavailable waiting', 0, 1, 1, false),
-  ]) {
-    test('normal notice requires complete active Work: $label', () {
+  for (final (
+        label,
+        running,
+        waiting,
+        failed,
+        cancelled,
+        transferred,
+        unavailable,
+        accepted,
+      )
+      in [
+        ('clean idle (group-idle)', 0, 0, 0, 0, 0, 0, true),
+        ('running', 1, 0, 0, 0, 0, 0, true),
+        ('waiting', 0, 1, 0, 0, 0, 0, true),
+        ('failed terminal', 0, 0, 1, 0, 0, 0, false),
+        ('cancelled terminal', 0, 0, 0, 1, 0, 0, false),
+        ('transferred terminal', 0, 0, 0, 0, 1, 0, false),
+        ('unavailable running', 1, 0, 0, 0, 0, 1, false),
+        ('unavailable waiting', 0, 1, 0, 0, 0, 1, false),
+      ]) {
+    test('normal notice requires complete non-abnormal open Work: $label', () {
       final live = LiveDisplayWindow(
         revision: 4,
         historyThrough: 0,
@@ -442,9 +470,9 @@ void main() {
                 terminal: 2 - running - waiting,
                 running: running,
                 waiting: waiting,
-                failed: 0,
-                cancelled: 0,
-                transferred: 0,
+                failed: failed,
+                cancelled: cancelled,
+                transferred: transferred,
                 unavailable: unavailable,
               ),
               members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
@@ -453,6 +481,7 @@ void main() {
         ],
       );
       for (final kind in [
+        ThreadActivityKind.preparing,
         ThreadActivityKind.thinking,
         ThreadActivityKind.runningTool,
         ThreadActivityKind.planning,

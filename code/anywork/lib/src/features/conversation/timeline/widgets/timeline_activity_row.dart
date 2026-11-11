@@ -52,6 +52,22 @@ class TimelineActivityRow extends StatelessWidget {
 
   static const double iconSize = 15;
 
+  /// 实时状态栏顶行固定几何常量：保证跨工况切换时 Logo 槽与文案起点零偏移、行高零抖动。
+  static const double headerLogoSlotSize = 32;
+  static const double headerGap = 10;
+  static const double headerContentIndent = headerLogoSlotSize + headerGap;
+  static const double headerMinHeight = 34;
+  static const double headerFontSize = 15;
+  static const double headerMetaFontSize = 12.5;
+  static const double headerChevronSize = 19;
+  static const double headerWritingSize = 23;
+  static const double headerStaticIconSize = 20;
+  static const StrutStyle headerStrutStyle = StrutStyle(
+    fontSize: headerFontSize,
+    height: 1.36,
+    forceStrutHeight: true,
+  );
+
   /// 类目语义图标；为空且无 [leading] / [isIssue] 时不渲染前导图标列（例如活动组总折叠行）。
   final IconData? icon;
 
@@ -95,26 +111,34 @@ class TimelineActivityRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = context.colors.onSurfaceVariant;
     final textStyle = context.text.bodySmall!.copyWith(
-      color: header && active ? context.colors.onSurface : color,
-      fontSize: header ? 12 : null,
-      fontWeight: emphasized ? FontWeight.w500 : FontWeight.w400,
-      height: 1.5,
+      color: header
+          ? (active
+                ? (emphasized
+                      ? context.colors.onSurface
+                      : context.colors.onSurface.withValues(alpha: .92))
+                : color)
+          : color,
+      fontSize: header ? headerFontSize : null,
+      fontWeight: header || emphasized ? FontWeight.w500 : FontWeight.w400,
+      height: header ? 1.36 : 1.5,
     );
     final metaStyle = context.text.labelSmall!.copyWith(
-      color: color.withValues(alpha: .78),
-      fontSize: 10.5,
+      color: color.withValues(alpha: header ? .85 : .78),
+      fontSize: header ? headerMetaFontSize : 10.5,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
     final showLeading = leading != null || icon != null || isIssue || active;
-    final leadingWidth = header ? 14.0 : iconColumnWidth;
+    final leadingWidth = header ? headerLogoSlotSize : iconColumnWidth;
+    final rowGap = header ? headerGap : gap;
     final labelView =
         labelWidget ??
         Text(
           label,
           key: labelKey,
-          maxLines: header ? null : 1,
-          overflow: header ? TextOverflow.visible : TextOverflow.ellipsis,
-          softWrap: header,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          softWrap: false,
+          strutStyle: header ? headerStrutStyle : null,
           style: textStyle,
         );
     final detail =
@@ -124,10 +148,12 @@ class TimelineActivityRow extends StatelessWidget {
             : Text(
                 summary!,
                 maxLines: 1,
+                softWrap: false,
                 overflow: TextOverflow.ellipsis,
+                strutStyle: header ? headerStrutStyle : null,
                 style: textStyle.copyWith(
                   color: color,
-                  fontSize: 11.5,
+                  fontSize: header ? 13 : 11.5,
                   fontWeight: FontWeight.w400,
                 ),
               ));
@@ -135,12 +161,13 @@ class TimelineActivityRow extends StatelessWidget {
       expanded
           ? Icons.keyboard_arrow_down_rounded
           : Icons.chevron_right_rounded,
-      size: 15,
-      color: color.withValues(alpha: .72),
+      size: header ? headerChevronSize : 15,
+      color: color.withValues(alpha: header ? .8 : .72),
     );
     final symbol = showLeading
         ? SizedBox(
             width: leadingWidth,
+            height: header ? headerLogoSlotSize : null,
             child: Center(
               heightFactor: 1,
               child:
@@ -149,6 +176,9 @@ class TimelineActivityRow extends StatelessWidget {
                     icon: isIssue ? Icons.error_outline : icon,
                     active: active && !isIssue,
                     style: indicatorStyle,
+                    catSize: header ? headerLogoSlotSize : iconColumnWidth,
+                    writingSize: header ? headerWritingSize : iconSize,
+                    staticIconSize: header ? headerStaticIconSize : iconSize,
                     color:
                         iconColor ??
                         (isIssue
@@ -175,17 +205,19 @@ class TimelineActivityRow extends StatelessWidget {
           }
 
           final stacked =
+              !header &&
               meta != null &&
               measure(label, textStyle) +
                       measure(meta!, metaStyle) +
-                      (showLeading ? leadingWidth + gap : 0) +
+                      (showLeading ? leadingWidth + rowGap : 0) +
                       (expandable ? 19 : 0) +
                       16 >
                   constraints.maxWidth;
           final content = Row(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              if (symbol != null) ...[symbol, const SizedBox(width: gap)],
+              if (symbol != null) ...[symbol, SizedBox(width: rowGap)],
               Flexible(child: labelView),
               if (!stacked && detail != null) ...[
                 const SizedBox(width: 8),
@@ -196,11 +228,18 @@ class TimelineActivityRow extends StatelessWidget {
           );
           final title = (!stacked && meta != null) || (header && expandable)
               ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Expanded(child: content),
                     if (!stacked && meta != null) ...[
                       const SizedBox(width: 8),
-                      Text(meta!, key: metaKey, style: metaStyle),
+                      Text(
+                        meta!,
+                        key: metaKey,
+                        maxLines: 1,
+                        softWrap: false,
+                        style: metaStyle,
+                      ),
                     ],
                     if (header && expandable) ...[
                       const SizedBox(width: 4),
@@ -210,7 +249,9 @@ class TimelineActivityRow extends StatelessWidget {
                 )
               : content;
           return ConstrainedBox(
-            constraints: BoxConstraints(minHeight: header ? 25 : 28),
+            constraints: BoxConstraints(
+              minHeight: header ? headerMinHeight : 28,
+            ),
             child: Padding(
               padding: EdgeInsets.symmetric(vertical: header ? 2 : 4),
               child: stacked
@@ -221,7 +262,7 @@ class TimelineActivityRow extends StatelessWidget {
                         title,
                         Padding(
                           padding: EdgeInsetsDirectional.only(
-                            start: showLeading ? leadingWidth + gap : 0,
+                            start: showLeading ? leadingWidth + rowGap : 0,
                             top: 2,
                           ),
                           child: Wrap(
@@ -236,7 +277,11 @@ class TimelineActivityRow extends StatelessWidget {
                         ),
                       ],
                     )
-                  : title,
+                  : Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      heightFactor: 1,
+                      child: title,
+                    ),
             ),
           );
         },
@@ -247,6 +292,105 @@ class TimelineActivityRow extends StatelessWidget {
   }
 }
 
+/// 实时状态栏共享的趴卧猫摆尾时钟宿主：保持同一次实时展示跨状态切换时尾巴相位连续不归零，
+/// 并在无活跃订阅或禁用动画时立即停表，避免空闲占用与测试 `pumpAndSettle` 超时。
+class LiveStatusMotionHost extends StatefulWidget {
+  const LiveStatusMotionHost({required this.child, super.key});
+  final Widget child;
+
+  static LiveStatusMotionController? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<_LiveStatusMotionScope>()
+      ?.controller;
+
+  @override
+  State<LiveStatusMotionHost> createState() => _LiveStatusMotionHostState();
+}
+
+class LiveStatusMotionController {
+  LiveStatusMotionController(this._controller, this._onActiveChanged);
+  final AnimationController _controller;
+  final VoidCallback _onActiveChanged;
+  int _subscribers = 0;
+
+  Animation<double> get progress => _controller;
+  bool get hasSubscribers => _subscribers > 0;
+
+  void attach() {
+    _subscribers++;
+    _onActiveChanged();
+  }
+
+  void detach() {
+    if (_subscribers > 0) {
+      _subscribers--;
+      _onActiveChanged();
+    }
+  }
+}
+
+class _LiveStatusMotionHostState extends State<LiveStatusMotionHost>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _motion = AnimationController(
+    vsync: this,
+    duration: TimelineRestingCat.duration,
+  )..addStatusListener(_onStatus);
+  late final LiveStatusMotionController _shared = LiveStatusMotionController(
+    _motion,
+    _sync,
+  );
+  bool _canAnimate = false;
+
+  void _onStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed &&
+        _canAnimate &&
+        _shared.hasSubscribers) {
+      _motion.forward(from: 0);
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _canAnimate =
+        !MediaQuery.disableAnimationsOf(context) &&
+        TickerMode.valuesOf(context).enabled;
+    _sync();
+  }
+
+  void _sync() {
+    if (!mounted) return;
+    if (_canAnimate && _shared.hasSubscribers) {
+      if (!_motion.isAnimating) {
+        _motion.forward(from: _motion.value >= 1.0 ? 0.0 : _motion.value);
+      }
+    } else if (_motion.isAnimating) {
+      _motion.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _motion.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _LiveStatusMotionScope(controller: _shared, child: widget.child);
+}
+
+class _LiveStatusMotionScope extends InheritedWidget {
+  const _LiveStatusMotionScope({
+    required this.controller,
+    required super.child,
+  });
+  final LiveStatusMotionController controller;
+
+  @override
+  bool updateShouldNotify(_LiveStatusMotionScope oldWidget) =>
+      !identical(controller, oldWidget.controller);
+}
+
 /// Shared running semantics, using Flutter's standard animation lifecycle.
 class TimelineActivityIndicator extends StatefulWidget {
   const TimelineActivityIndicator({
@@ -254,6 +398,9 @@ class TimelineActivityIndicator extends StatefulWidget {
     required this.color,
     this.active = false,
     this.style = TimelineActivityIndicatorStyle.restingCat,
+    this.catSize = TimelineActivityRow.iconColumnWidth,
+    this.writingSize = TimelineActivityRow.iconSize,
+    this.staticIconSize = TimelineActivityRow.iconSize,
     super.key,
   });
 
@@ -261,6 +408,9 @@ class TimelineActivityIndicator extends StatefulWidget {
   final Color color;
   final bool active;
   final TimelineActivityIndicatorStyle style;
+  final double catSize;
+  final double writingSize;
+  final double staticIconSize;
 
   @override
   State<TimelineActivityIndicator> createState() =>
@@ -273,6 +423,8 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
     vsync: this,
     duration: _duration,
   );
+  LiveStatusMotionController? _sharedCat;
+  bool _attachedToShared = false;
 
   Duration get _duration =>
       widget.style == TimelineActivityIndicatorStyle.writing
@@ -295,6 +447,11 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
       ),
   ]);
 
+  bool get _usesSharedCat =>
+      _sharedCat != null &&
+      widget.active &&
+      widget.style == TimelineActivityIndicatorStyle.restingCat;
+
   bool get _animate =>
       widget.active &&
       !MediaQuery.disableAnimationsOf(context) &&
@@ -303,6 +460,11 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final nextShared = LiveStatusMotionHost.maybeOf(context);
+    if (!identical(_sharedCat, nextShared)) {
+      _detachShared();
+      _sharedCat = nextShared;
+    }
     _sync();
   }
 
@@ -317,7 +479,27 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
     _sync();
   }
 
+  void _detachShared() {
+    if (_attachedToShared) {
+      _attachedToShared = false;
+      _sharedCat?.detach();
+    }
+  }
+
   void _sync() {
+    if (_usesSharedCat) {
+      if (_motion.isAnimating) _motion.stop();
+      if (_animate) {
+        if (!_attachedToShared) {
+          _attachedToShared = true;
+          _sharedCat!.attach();
+        }
+      } else {
+        _detachShared();
+      }
+      return;
+    }
+    _detachShared();
     if (_animate) {
       if (!_motion.isAnimating) _motion.repeat();
     } else {
@@ -328,6 +510,7 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
 
   @override
   void dispose() {
+    _detachShared();
     _motion.dispose();
     super.dispose();
   }
@@ -338,29 +521,17 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
       if (widget.style == TimelineActivityIndicatorStyle.writing) {
         return TimelineWritingIndicator(
           position: _writingStroke.animate(_motion),
-          size: TimelineActivityRow.iconSize,
+          size: widget.writingSize,
           color: widget.color,
         );
       }
-      // 横向收窄，使完整轮廓落在标题的 14px 图标槽内；保留尾巴高度。
-      return SizedBox.square(
-        dimension: TimelineActivityRow.iconSize,
-        child: OverflowBox(
-          maxWidth: 17,
-          maxHeight: 24,
-          child: TimelineRestingCat(
-            progress: _motion,
-            color: widget.color,
-            size: 24,
-          ),
-        ),
+      return TimelineRestingCat(
+        progress: _usesSharedCat ? _sharedCat!.progress : _motion,
+        color: widget.color,
+        size: widget.catSize,
       );
     }
-    return Icon(
-      widget.icon,
-      size: TimelineActivityRow.iconSize,
-      color: widget.color,
-    );
+    return Icon(widget.icon, size: widget.staticIconSize, color: widget.color);
   }
 }
 

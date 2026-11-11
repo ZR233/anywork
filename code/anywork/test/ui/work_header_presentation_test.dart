@@ -466,7 +466,8 @@ void main() {
           ),
         ];
         await tester.pumpWidget(h.host());
-        // Sealed headers use the frozen worked-duration title, never a live summary.
+        // Sealed headers use the frozen worked-duration title in Timeline,
+        // while the active open Work renders inside ConversationActivityBar.
         expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
         expect(find.text('当前组概要'), findsOneWidget);
         expect(
@@ -474,14 +475,15 @@ void main() {
             of: find.byKey(const ValueKey('timeline-current-work')),
             matching: find.byType(CompletionRunView),
           ),
-          findsNWidgets(2),
+          findsOneWidget,
         );
+        expect(tester.getRect(find.byKey(const ValueKey('older'))).left, 24.0);
         expect(
-          find.ancestor(
-            of: find.byType(CompletionRunView),
-            matching: find.byType(ConversationActivityBar),
+          find.descendant(
+            of: find.byType(ConversationActivityBar),
+            matching: find.byType(CompletionRunView),
           ),
-          findsNothing,
+          findsOneWidget,
         );
         expect(find.text('普通提示不另起一行'), findsNothing);
         expect(find.byType(ConversationActivityStatus), findsNWidgets(4));
@@ -525,14 +527,63 @@ void main() {
     );
   }
 
+  testWidgets(
+    'completed open Work (group-idle) merges active Turn thinking notice in place without a duplicate bar',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+      final summary = _summary(total: 2, thought: '已结束成员的旧思考概要');
+      h.blocks = [_work('work', summary: summary)];
+      h.notices = [
+        const ExecutionRealtimeNotice(
+          ConversationActivityView(
+            identity: 'thinking',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      final workFinder = find.descendant(
+        of: find.byType(ConversationActivityBar),
+        matching: find.byType(CompletionRunView),
+      );
+      expect(workFinder, findsOneWidget);
+      final work = tester.widget<CompletionRunView>(workFinder);
+      expect(
+        work.activity,
+        same((h.notices.single as ExecutionRealtimeNotice).view),
+      );
+      final header = find.byKey(const ValueKey('completion-run-header:work'));
+      expect(
+        find.descendant(of: header, matching: find.text('思考中')),
+        findsOneWidget,
+      );
+      expect(find.text('已结束成员的旧思考概要'), findsNothing);
+      expect(
+        tester
+            .widget<TimelineActivityIndicator>(
+              find.descendant(
+                of: header,
+                matching: find.byType(TimelineActivityIndicator),
+              ),
+            )
+            .active,
+        isTrue,
+      );
+      expect(h.content.reads, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final (outcome, icon, result) in [
-    (ChatTerminalOutcome.completed, Icons.work_outline, null),
     (ChatTerminalOutcome.failed, Icons.error_outline, '1 项执行失败'),
     (ChatTerminalOutcome.cancelled, Icons.stop_circle_outlined, '1 项已停止'),
     (ChatTerminalOutcome.transferred, Icons.call_made, '已交接 1 项'),
   ]) {
     testWidgets(
-      'terminal ${outcome.name} Work keeps its result and independent Turn notice',
+      'abnormal terminal ${outcome.name} Work keeps its result and independent Turn notice',
       (tester) async {
         final h = _LiveHarness();
         addTearDown(h.dispose);
@@ -605,7 +656,7 @@ void main() {
               findsOneWidget,
             );
             final description = tester.getSemantics(header).label;
-            if (result != null) expect(description, contains(result));
+            expect(description, contains(result));
             expect(description, isNot(contains('思考中')));
             expect(
               tester

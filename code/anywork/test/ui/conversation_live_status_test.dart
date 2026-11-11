@@ -1,6 +1,12 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
@@ -333,6 +339,7 @@ void main() {
         conversationLiveStatusToolsPreview,
         conversationLiveStatusIdleGroupPreview,
         conversationLiveStatusCompletedGroupPreview,
+        conversationLiveStatusNextGroupPreview,
         conversationLiveStatusThinkingPreview,
         conversationLiveStatusLongToolPreview,
         conversationReasoningVariantsPreview,
@@ -791,5 +798,482 @@ void main() {
       expect(first, 1);
       expect(next, 1);
     });
+
+    testWidgets('跨全工况切换固定 Logo 槽与单行文案零抖动，且趴卧猫摆尾连续不归零', (tester) async {
+      final harness = _ZeroJitterHarness();
+      addTearDown(harness.dispose);
+      const longThought =
+          '这是一段超长的实时思考概要文案，用于验证从思考中切换到开启新工作组及待交接状态时绝不会折双行跳高或推动文案起点偏移';
+
+      LiveDisplayBlock workBlock(
+        String id, {
+        required int order,
+        DisplayBlockState state = DisplayBlockState.open,
+        int running = 1,
+        String? thought,
+      }) => LiveDisplayBlock(
+        id: id,
+        blockOrder: order,
+        state: state,
+        source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+        body: WorkDisplayBlock(
+          summary: WorkSummary(
+            unavailable: 0,
+            total: 2,
+            terminal: 2 - running,
+            running: running,
+            waiting: 0,
+            failed: 0,
+            cancelled: 0,
+            transferred: 0,
+            createdAt: 100,
+            elapsedMs: 125000,
+            thinkingSummary: thought,
+          ),
+          members: DisplayBlockRef(databaseId: 'db', blockId: id),
+        ),
+      );
+
+      final stages =
+          <
+            ({
+              String name,
+              bool collapsedSingleRow,
+              bool usesCat,
+              String expectedTitle,
+              List<LiveDisplayBlock> blocks,
+              ThreadActivityView? status,
+            })
+          >[
+            (
+              name: 'preparing',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '准备中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-1',
+                revision: 1,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.preparing,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'thinking',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '思考中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-2',
+                revision: 2,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+                thinkingSeconds: 17,
+              ),
+            ),
+            (
+              name: 'workgroup',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: longThought,
+              blocks: [
+                workBlock('work-1', order: 1, running: 2, thought: longThought),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-3',
+                revision: 3,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'group-idle',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '思考中',
+              blocks: [
+                workBlock('work-1', order: 1, running: 0, thought: longThought),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-4',
+                revision: 4,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'text',
+              collapsedSingleRow: false,
+              usesCat: false,
+              expectedTitle: '正在输出',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                  thought: longThought,
+                ),
+                LiveDisplayBlock(
+                  id: 'text-1',
+                  blockOrder: 2,
+                  state: DisplayBlockState.open,
+                  source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                  body: SingleDisplayBlock(
+                    record: DisplayRecord(
+                      atom: ChatAtom(
+                        id: 'text-1',
+                        source: const ForegroundTurnChatSource(
+                          turnId: 'turn-1',
+                        ),
+                        sourceOrder: null,
+                        kind: ChatAtomKind.text,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
+                          started: null,
+                          status: ChatActiveStatus.running,
+                        ),
+                        startedAt: 120,
+                        contents: const [],
+                        payload: InlinePayload(
+                          bytes: utf8.encode(
+                            jsonEncode({
+                              'contract': 'anywork.chat/1',
+                              'type': 'text',
+                              'data': {'channel': 'final', 'attachments': []},
+                              'bodies': [
+                                {
+                                  'key': 'body',
+                                  'byteLength': utf8
+                                      .encode('流式输出第一段正文。')
+                                      .length,
+                                  'inline': utf8.encode('流式输出第一段正文。'),
+                                },
+                              ],
+                            }),
+                          ),
+                        ),
+                      ),
+                      contentSource: const CurrentAtom(),
+                    ),
+                  ),
+                ),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-5',
+                revision: 5,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.responding,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'after-text',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '思考中',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-6',
+                revision: 6,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+                thinkingSeconds: 4,
+              ),
+            ),
+            (
+              name: 'next-group',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '运行测试并核对布局',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+                workBlock('work-2', order: 3, running: 1, thought: '运行测试并核对布局'),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-7',
+                revision: 7,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'compacting',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '正在压缩上下文',
+              blocks: [
+                LiveDisplayBlock(
+                  id: 'compact-1',
+                  blockOrder: 4,
+                  state: DisplayBlockState.open,
+                  source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                  body: SingleDisplayBlock(
+                    record: DisplayRecord(
+                      atom: ChatAtom(
+                        id: 'compact-1',
+                        source: const ForegroundTurnChatSource(
+                          turnId: 'turn-1',
+                        ),
+                        sourceOrder: null,
+                        kind: ChatAtomKind.compaction,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
+                          started: null,
+                          status: ChatActiveStatus.running,
+                        ),
+                        startedAt: 200,
+                        contents: const [],
+                      ),
+                      contentSource: const CurrentAtom(),
+                    ),
+                  ),
+                ),
+              ],
+              status: null,
+            ),
+            (
+              name: 'stopping',
+              collapsedSingleRow: true,
+              usesCat: true,
+              expectedTitle: '停止中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-9',
+                revision: 9,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.stopping,
+                summary: '',
+              ),
+            ),
+          ];
+
+      Size? baselineCardSize;
+      Offset? baselineLogoOffset;
+      Offset? baselineTitleOffset;
+      double? previousCatPhase;
+
+      for (final stage in stages) {
+        harness.blocks = stage.blocks;
+        harness.status = stage.status;
+        await tester.pumpWidget(harness.build());
+        await tester.pump();
+
+        final barFinder = find.byKey(const ValueKey('conversation-activity'));
+        expect(barFinder, findsOneWidget, reason: stage.name);
+        final barRect = tester.getRect(barFinder);
+
+        final indicatorFinder = find.descendant(
+          of: barFinder,
+          matching: find.byType(TimelineActivityIndicator),
+        );
+        expect(indicatorFinder, findsOneWidget, reason: stage.name);
+        final slotFinder = find
+            .ancestor(
+              of: indicatorFinder,
+              matching: find.byWidgetPredicate(
+                (w) =>
+                    w is SizedBox &&
+                    w.width == TimelineActivityRow.headerLogoSlotSize &&
+                    w.height == TimelineActivityRow.headerLogoSlotSize,
+              ),
+            )
+            .first;
+        final slotRect = tester.getRect(slotFinder);
+        expect(slotRect.size, const Size(32, 32), reason: stage.name);
+
+        final titleFinder = find.descendant(
+          of: barFinder,
+          matching: find.text(stage.expectedTitle),
+        );
+        expect(titleFinder, findsOneWidget, reason: stage.name);
+        final titleRect = tester.getRect(titleFinder);
+
+        final logoRelative = slotRect.topLeft - barRect.topLeft;
+        final titleRelative = titleRect.topLeft - barRect.topLeft;
+
+        baselineLogoOffset ??= logoRelative;
+        baselineTitleOffset ??= titleRelative;
+        expect(
+          logoRelative.dx,
+          closeTo(baselineLogoOffset.dx, 0.001),
+          reason: '${stage.name} Logo 槽水平位置不得偏移',
+        );
+        expect(
+          logoRelative.dy,
+          closeTo(baselineLogoOffset.dy, 0.001),
+          reason: '${stage.name} Logo 槽垂直位置不得偏移',
+        );
+        expect(
+          titleRelative.dx,
+          closeTo(baselineTitleOffset.dx, 0.001),
+          reason: '${stage.name} 文案起点水平位置不得偏移',
+        );
+        expect(
+          titleRelative.dy,
+          closeTo(baselineTitleOffset.dy, 0.001),
+          reason: '${stage.name} 文案起点垂直位置不得偏移',
+        );
+
+        if (stage.collapsedSingleRow) {
+          baselineCardSize ??= barRect.size;
+          expect(
+            barRect.size.height,
+            closeTo(baselineCardSize.height, 0.001),
+            reason: '${stage.name} 折叠单行外框高度不得跳变',
+          );
+          expect(
+            barRect.size.width,
+            closeTo(baselineCardSize.width, 0.001),
+            reason: '${stage.name} 折叠单行外框宽度不得跳变',
+          );
+        }
+
+        if (stage.usesCat) {
+          final cat = tester.widget<TimelineRestingCat>(
+            find.descendant(
+              of: barFinder,
+              matching: find.byType(TimelineRestingCat),
+            ),
+          );
+          if (previousCatPhase != null) {
+            expect(
+              cat.progress.value,
+              closeTo(previousCatPhase, 0.001),
+              reason: '${stage.name} 切换时趴卧猫相位不得跳回 0',
+            );
+          }
+          await tester.pump(const Duration(milliseconds: 260));
+          expect(cat.progress.value, isNot(previousCatPhase ?? -1));
+          previousCatPhase = cat.progress.value;
+        } else {
+          previousCatPhase = null;
+          await tester.pump(const Duration(milliseconds: 120));
+        }
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
   });
+}
+
+class _ZeroJitterSession extends Fake implements ThreadSessionState {
+  @override
+  String get threadId => 'thread';
+  @override
+  ThreadActivityView? get activity => null;
+  @override
+  StudioTurnView get activeTurn => StudioTurnView(
+    turnId: 'turn-1',
+    threadId: 'thread',
+    revision: 1,
+    state: const RunningStudioTurnState(
+      startedAt: 100,
+      activity: StudioTurnActivity.thinking,
+    ),
+    updatedAt: DateTime.fromMillisecondsSinceEpoch(225000),
+  );
+}
+
+class _ZeroJitterContent extends Fake implements ConversationContent {
+  final source = LatestValue<ChatUiState<bool>>(
+    const ChatReady('thread', true),
+  );
+  @override
+  bool get isClosed => false;
+  @override
+  ValueObservation<ChatUiState<bool>> get state => source;
+  @override
+  AttemptId get currentAttemptId => const AttemptId(1);
+}
+
+class _ZeroJitterHarness {
+  final content = _ZeroJitterContent();
+  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  final images = TimelineImageResources(threadId: 'thread');
+  final expansions = <String, TimelineExpansionIntent>{};
+  List<LiveDisplayBlock> blocks = const [];
+  ThreadActivityView? status;
+  int revision = 0;
+
+  Widget build() {
+    final window = LiveDisplayWindow(
+      revision: ++revision,
+      historyThrough: 0,
+      executionPresent: true,
+      blocks: blocks,
+    );
+    live.value = window;
+    final region = projectConversationRealtime(
+      storage: null,
+      interaction: null,
+      live: window,
+      status: status,
+    ) as ContentRealtimeRegion;
+    Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
+      section: s,
+      session: _ZeroJitterSession(),
+      content: content,
+      live: live,
+      region: region,
+      images: images,
+      readAttachment: (_) async => Uint8List(0),
+      isDisplayActive: () => true,
+      liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+        block: block,
+        executionPresent: executionPresent,
+        expansion: expansions.putIfAbsent(
+          block.id,
+          TimelineExpansionIntent.new,
+        ),
+      ),
+    );
+    return _wrapWithApp(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          section(ConversationLiveSection.work),
+          section(ConversationLiveSection.output),
+        ],
+      ),
+      width: 560,
+    );
+  }
+
+  void dispose() {
+    for (final intent in expansions.values) {
+      intent.retire();
+      intent.dispose();
+    }
+    images.release();
+    content.source.close();
+    live.dispose();
+  }
 }

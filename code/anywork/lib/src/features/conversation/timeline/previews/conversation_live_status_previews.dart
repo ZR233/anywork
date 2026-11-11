@@ -12,6 +12,7 @@ import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_resting_cat.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/completion_run_view.dart';
 
@@ -65,7 +66,53 @@ Widget liveStatusGroupPreview({
       ),
     );
   }
-  if (idle) return const SizedBox.shrink();
+  if (idle) {
+    return _ActivityPreview(
+      activity: const ConversationActivityView(
+        identity: 'preview-group-idle',
+        kind: ConversationActivityKind.thinking,
+      ),
+      summary: const WorkSummary(
+        unavailable: 0,
+        total: 2,
+        terminal: 2,
+        running: 0,
+        waiting: 0,
+        failed: 0,
+        cancelled: 0,
+        transferred: 0,
+        createdAt: 100,
+        elapsedMs: 125000,
+        thinkingSummary: '梳理会话共享组件与锁定边界',
+      ),
+      childBuilder: (_) => const Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TimelineReasoningView(
+            summary: '梳理会话共享组件与锁定边界',
+            startedAt: 100,
+            finishedAt: 140,
+            body: ConversationCurrentWindowView(
+              id: 'preview-idle-reasoning',
+              text: '核对现有调用链和组件边界，随后检查布局和状态。',
+            ),
+          ),
+          TimelineToolDetails(
+            item: TimelineToolPresentation(
+              id: 'preview-idle-command',
+              toolCallId: 'preview-idle-command',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'succeeded',
+              arguments: '{"command":"cargo flutter analyze"}',
+              output: 'No issues found!',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
   return _ActivityPreview(
     summary: WorkSummary(
       unavailable: 0,
@@ -119,23 +166,44 @@ Widget _status(ConversationActivityKind kind, {String? error}) =>
       ),
     );
 
-@Preview(name: '趴卧猫 · 尾巴摆动', group: '实时状态栏', size: Size(760, 300))
+@Preview(name: '趴卧猫 · 尾巴摆动', group: '实时状态栏', size: Size(760, 340))
 Widget conversationRestingCatPreview() => liveStatusPreviewHost(
   Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      SizedBox.square(
-        dimension: 180,
-        child: Center(
-          child: Transform.scale(
-            scale: 7,
-            child: const TimelineActivityIndicator(
-              icon: null,
-              color: Colors.black,
-              active: true,
+      const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox.square(
+            dimension: 168,
+            child: Center(
+              child: TimelineActivityIndicator(
+                icon: null,
+                color: Color(0xFF55798C),
+                active: true,
+                catSize: 152,
+              ),
             ),
           ),
-        ),
+          SizedBox(width: 24),
+          TimelineRestingCat(
+            progress: AlwaysStoppedAnimation(0.23),
+            color: Color(0xFF55798C),
+            size: 84,
+          ),
+          SizedBox(width: 12),
+          TimelineRestingCat(
+            progress: AlwaysStoppedAnimation(0.50),
+            color: Color(0xFF55798C),
+            size: 84,
+          ),
+          SizedBox(width: 12),
+          TimelineRestingCat(
+            progress: AlwaysStoppedAnimation(0.75),
+            color: Color(0xFF55798C),
+            size: 84,
+          ),
+        ],
       ),
       ConversationActivityBar(
         children: [_status(ConversationActivityKind.thinking)],
@@ -321,6 +389,11 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
     children: [
       _ActivityPreview(
         initiallyExpanded: true,
+        activity: const ConversationActivityView(
+          identity: 'preview-reasoning-variants',
+          kind: ConversationActivityKind.thinking,
+          thinkingSummary: '核对运行期选择器锁定规则',
+        ),
         summary: const WorkSummary(
           unavailable: 0,
           total: 3,
@@ -390,10 +463,59 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
   ),
 );
 
+@Preview(name: '正文后开启新工作组', group: '实时状态栏', size: Size(760, 340))
+Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
+  Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+        child: liveStatusGroupPreview(history: true),
+      ),
+      const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+        child: Text('前序分析已完成，下面继续执行自动化测试并汇总各工况验证结果。'),
+      ),
+      ConversationActivityBar(
+        children: [
+          _ActivityPreview(
+            summary: const WorkSummary(
+              unavailable: 0,
+              total: 1,
+              terminal: 0,
+              running: 1,
+              waiting: 0,
+              failed: 0,
+              cancelled: 0,
+              transferred: 0,
+              createdAt: 213,
+              elapsedMs: 12000,
+              thinkingSummary: '运行 UI 组件与集成测试套件',
+            ),
+            childBuilder: (_) => const TimelineToolDetails(
+              item: TimelineToolPresentation(
+                id: 'preview-next-group-cmd',
+                toolCallId: 'preview-next-group-cmd',
+                name: 'exec',
+                presentationContract: 'builtin.exec@2',
+                statusString: 'running',
+                arguments: '{"command":"cargo flutter test --no-pub test/ui"}',
+                output: '正在执行实时状态栏防抖动测试…',
+              ),
+            ),
+          ),
+        ],
+      ),
+    ],
+  ),
+);
+
 class _ActivityPreview extends StatelessWidget {
   const _ActivityPreview({
     required this.childBuilder,
     this.initiallyExpanded = false,
+    this.activity,
     this.summary = const WorkSummary(
       unavailable: 0,
       total: 1,
@@ -409,11 +531,13 @@ class _ActivityPreview extends StatelessWidget {
   });
   final WidgetBuilder childBuilder;
   final bool initiallyExpanded;
+  final ConversationActivityView? activity;
   final WorkSummary summary;
   @override
   Widget build(BuildContext context) => CompletionRunView(
     id: 'preview-live-work',
     summary: summary,
+    activity: activity,
     location: WorkDisplayLocation.live,
     executionPresent: true,
     initiallyExpanded: initiallyExpanded,

@@ -224,10 +224,20 @@ class _CurrentState extends State<ConversationCurrentConnector>
             !(coldWorkOnly && notice is UnrestoredRealtimeNotice))
           notice,
     ];
+    final activeTurnId = widget.session.activeTurn?.turnId;
+    bool inLiveBar(LiveDisplayBlock block) => switch (block.body) {
+      SingleDisplayBlock() => true,
+      WorkDisplayBlock() => isLiveBarWorkBlock(
+        region: widget.region,
+        live: live,
+        activeTurnId: activeTurnId,
+        block: block,
+      ),
+    };
     final blocks = [
       for (final block in live?.blocks ?? const <LiveDisplayBlock>[])
-        if ((block.body is WorkDisplayBlock) ==
-            (widget.section == ConversationLiveSection.work))
+        if (inLiveBar(block) ==
+            (widget.section == ConversationLiveSection.output))
           block,
     ];
     if (widget.section == ConversationLiveSection.output &&
@@ -235,31 +245,46 @@ class _CurrentState extends State<ConversationCurrentConnector>
         notices.isEmpty) {
       return const SizedBox.shrink();
     }
+    Widget timelinePad(Widget child) =>
+        widget.section == ConversationLiveSection.work
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            child: child,
+          )
+        : child;
     final children = <Widget>[
       if (widget.section == ConversationLiveSection.output &&
           notices.isNotEmpty)
         ConversationRealtimeNotices(notices: notices),
-      if (_olderError case final error?) Text(error.toString()),
-      if (_loadingOlder) const LinearProgressIndicator(),
+      if (_olderError case final error?) timelinePad(Text(error.toString())),
+      if (_loadingOlder) timelinePad(const LinearProgressIndicator()),
       if (live?.older case final before?)
-        TextButton(
-          onPressed: () => _loadOlder(before),
-          child: const Text('更早实时片段'),
+        timelinePad(
+          TextButton(
+            onPressed: () => _loadOlder(before),
+            child: const Text('更早实时片段'),
+          ),
         ),
       if (_older != null)
-        TextButton(
-          onPressed: () => setState(() {
-            _older = null;
-            _synchronize();
-          }),
-          child: const Text('最新实时片段'),
+        timelinePad(
+          TextButton(
+            onPressed: () => setState(() {
+              _older = null;
+              _synchronize();
+            }),
+            child: const Text('最新实时片段'),
+          ),
         ),
       for (final block in blocks)
         switch (block.body) {
-          WorkDisplayBlock() => _work(
-            block,
-            live!.executionPresent,
-            activity: merged?.blockId == block.id ? merged?.notice.view : null,
+          WorkDisplayBlock() => timelinePad(
+            _work(
+              block,
+              live!.executionPresent,
+              activity: merged?.blockId == block.id
+                  ? merged?.notice.view
+                  : null,
+            ),
           ),
           SingleDisplayBlock(:final record) => TimelineMemberAtom(
             key: ValueKey((block.id, _retirements[block.id])),
