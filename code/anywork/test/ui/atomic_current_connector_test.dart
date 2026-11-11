@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
@@ -288,6 +289,72 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  testWidgets(
+    'member preserves bounded response scrolling and unbounded parent layout',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      addTearDown(images.release);
+      Widget member() => TimelineMemberAtom(
+        record: DisplayRecord(
+          atom: _textItem(),
+          contentSource: const CurrentAtom(),
+        ),
+        displayId: 'bounded-response',
+        content: content,
+        isActive: () => true,
+        images: images,
+        readAttachment: null,
+      );
+      final body = List.generate(
+        50,
+        (i) => 'Response paragraph $i',
+      ).join('\n\n');
+      Future<void> loadBody() async {
+        content.scopes.last.watches.single.add(_window(body));
+        await tester.idle();
+        await tester.pump();
+      }
+
+      await tester.pumpWidget(
+        _host(
+          Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(width: 700, height: 162, child: member()),
+          ),
+        ),
+      );
+      await loadBody();
+      expect(tester.takeException(), isNull);
+      final section = tester.renderObject<RenderBox>(
+        find.byType(TimelineActivitySection),
+      );
+      expect(section.constraints.maxHeight, 162);
+      final scroll = tester.state<ScrollableState>(
+        find.byType(Scrollable).last,
+      );
+      expect(scroll.position.viewportDimension, lessThan(162));
+      expect(scroll.position.maxScrollExtent, greaterThan(0));
+      scroll.position.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pump();
+      expect(scroll.position.extentAfter, 0);
+      expect(tester.takeException(), isNull);
+
+      // The same member is also mounted in unbounded history/group parents.
+      // Loose flex must retain its natural height rather than require infinity.
+      await tester.pumpWidget(_host(SingleChildScrollView(child: member())));
+      await loadBody();
+      expect(tester.takeException(), isNull);
+      expect(
+        tester.getSize(find.byType(TimelineMemberAtom)).height,
+        greaterThan(162),
+      );
+      await tester.pumpWidget(const SizedBox());
+      await _flush(tester);
+      expect(content.scopes.every((scope) => scope.closed), isTrue);
+    },
+  );
+
   for (final pageFirst in [true, false]) {
     for (final available in [true, false]) {
       testWidgets(

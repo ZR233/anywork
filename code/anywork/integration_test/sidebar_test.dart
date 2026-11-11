@@ -596,9 +596,30 @@ void main() {
         'drag cannot cross the 440px upper boundary',
       );
 
-      await tester.tap(divider);
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(divider);
+      final doubleTapClock = Stopwatch()..start();
+      final pointerTrace = <String>[];
+      void recordPointer(PointerEvent event) {
+        if (event is PointerDownEvent || event is PointerUpEvent) {
+          pointerTrace.add(
+            '${doubleTapClock.elapsedMicroseconds}us '
+            '${event.runtimeType} pointer=${event.pointer} '
+            'kind=${event.kind} buttons=${event.buttons} at=${event.position}',
+          );
+        }
+      }
+
+      binding.pointerRouter.addGlobalRoute(recordPointer);
+      try {
+        await tester.tap(divider);
+        // Live pump also waits for a frame, which can exceed the double-tap
+        // window. Schedule the second real pointer gesture without that wait.
+        await binding.delayed(const Duration(milliseconds: 100));
+        await tester.tap(divider);
+      } finally {
+        binding.pointerRouter.removeGlobalRoute(recordPointer);
+        doubleTapClock.stop();
+        debugPrint('Sidebar double tap: ${pointerTrace.join('; ')}');
+      }
       await scene.until(
         () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
         'double tap restores and saves the canonical default',

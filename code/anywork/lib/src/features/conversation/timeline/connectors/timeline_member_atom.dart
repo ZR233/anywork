@@ -388,7 +388,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           widget.record.startFact != null &&
           widget.record.endFact == null)
         const Text('封存时尚未结束'),
-      _recordView(context),
+      Flexible(fit: FlexFit.loose, child: _recordView(context)),
     ],
   );
 
