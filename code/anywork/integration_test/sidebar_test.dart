@@ -44,7 +44,7 @@ void main() {
 
   setUpAll(() async {
     final project = Directory(
-      '$projectsRoot/sidebar-project-with-a-very-long-visible-name',
+      p.join(projectsRoot, 'sidebar-project-with-a-very-long-visible-name'),
     );
     await _prepareSyntheticGitProject(project);
     projectPath = await project.resolveSymbolicLinks();
@@ -612,21 +612,29 @@ void main() {
       );
       await expectSaved('repeated upper-boundary drag');
 
-      // DoubleTapGestureRecognizer uses zone timers, not pointer timestamps.
-      // Delay through the binding without waiting for an intervening rendered
-      // frame: live frame scheduling must not consume the double-tap window.
+      // Wait out the minimum interval while the first press is still down.
+      // Its release starts the double-tap timeout; keep the release and second
+      // click in one engine event packet so host scheduling cannot split them.
       final tapPosition = tester.getCenter(divider);
-      final tapClock = Stopwatch()..start();
-      await tester.tapAt(tapPosition, kind: ui.PointerDeviceKind.mouse);
-      await tester.binding.delayed(
-        kDoubleTapMinTime + const Duration(milliseconds: 50),
+      final pointer = TestPointer(
+        tester.nextPointer,
+        ui.PointerDeviceKind.mouse,
       );
-      expect(
-        tapClock.elapsed,
-        lessThan(kDoubleTapTimeout),
-        reason: 'second mouse down must arrive inside the double-tap window',
+      final secondPointer = TestPointer(
+        pointer.pointer + 1,
+        ui.PointerDeviceKind.mouse,
       );
-      await tester.tapAt(tapPosition, kind: ui.PointerDeviceKind.mouse);
+      await tester.handlePointerEventRecord([
+        PointerEventRecord(Duration.zero, [pointer.down(tapPosition)]),
+      ]);
+      await tester.binding.delayed(kDoubleTapMinTime);
+      await tester.handlePointerEventRecord([
+        PointerEventRecord(Duration.zero, [
+          pointer.up(),
+          secondPointer.down(tapPosition),
+          secondPointer.up(),
+        ]),
+      ]);
       await scene.until(
         () => (width() - defaultWidth).abs() <= 1,
         'double tap restores the initial default in the UI',

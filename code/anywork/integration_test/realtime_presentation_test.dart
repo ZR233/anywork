@@ -906,7 +906,7 @@ final class _RealtimeScene {
       matching: find.byWidgetPredicate(
         (widget) =>
             widget is TimelineContentRangeConnector &&
-            widget.itemId == block.id &&
+            widget.itemId == rendered.id &&
             widget.contentKey == ChatContentRole.toolOutput.name &&
             contentReferenceIdentity(widget.reference) == outputIdentity,
       ),
@@ -927,7 +927,7 @@ final class _RealtimeScene {
           )
           .evaluate()
           .isNotEmpty,
-      'A canonical Single output is actually rendered',
+      'A canonical result output is actually rendered',
       timeout: remaining(),
     );
     await observed.revealMember(reasoning, reference: prepared.reference);

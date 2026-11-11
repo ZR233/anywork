@@ -91,6 +91,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
+普通功能集成验证操作后的可观察结果，不给宿主调度增加性能门槛。双击等有输入时序要求的手势使用官方 [`PointerEventRecord`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/handlePointerEventRecord.html) 发送有效事件：首次按下满足最小间隔后，将首次释放与第二次点击放在同一事件包内，再核对真实界面与持久化结果，不要求 CI 两次异步调度之间的墙钟时间小于双击窗口。重新解码的不可变事实按完整业务字段比较；局部作用域、订阅等资源所有权仍按真实身份核对。测试层级遵循 Flutter 的[测试分层建议](https://docs.flutter.dev/testing/overview)，已有单元或组件测试能完整证明的规则不重复提升到原生桌面测试。
+
 ### 24.1.3 时间线呈现与官方集成测试
 
 日常设计对照按证据需要选择入口：纯布局使用官方 Widget Previewer（项目入口为
@@ -112,6 +114,8 @@ Linux 的合成用户 home 同时提供独立的标准 XDG Documents 配置，�
 时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
 
 迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除独立的人工诊断入口。
+
+工作组标题的阶段映射、失败成员不改变组状态、时长文案、图标、单行省略和窄窗布局由 `work_header_presentation_test.dart` 在受控生产组件上证明。`timeline-concept` 的原生检查点只核对实际工作组标题已挂载且非空，保留各场景的完整数据、正文读取、展开、保存与重开断言，不在每个检查点重算标题投影或重复逐像素比较。
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
