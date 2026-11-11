@@ -1,4 +1,8 @@
 import '../support/chat_fixtures.dart';
+
+import 'dart:async';
+import 'dart:convert';
+
 import '../support/mapped_conversation_feed.dart';
 
 import 'package:anywork_client/conversation_ports.dart';
@@ -6,21 +10,26 @@ import 'package:anywork_client/conversation_ports.dart';
 import '../support/test_statistics_feed.dart';
 
 import 'package:anywork/src/presentation/providers/client_provider.dart';
+import 'package:anywork/src/platform/clipboard_image_reader.dart';
+import 'package:anywork/src/platform/external_url_launcher.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/start_environment_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_environment_bar.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
+import 'package:anywork/src/features/conversation/composer/views/composer_submission_body.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
@@ -46,7 +55,7 @@ import 'package:anywork_client/studio_client.dart'
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
 ///
-/// 起始页事实是 Client 持有的逻辑草稿，经 [startPageComposerViewModelProvider] 组合显示：
+/// 起始页事实是 Client 持有的逻辑草稿，经 [_startProjectionProvider] 组合显示：
 /// 选中即所见，不依赖设置页往返，也不把草稿写回 settings canonical。真实 Rust
 /// bridge/native 的语义另由 `cargo xtask manual-gui` 验收，不能由这里的 Demo 代替。
 void main() {
@@ -54,22 +63,33 @@ void main() {
 
   late ProviderContainer container;
   late AppGraph graph;
-  late DemoStudioTransport transport;
+  late _ComposerStartTransport transport;
+  late List<String> openedLinks;
+  late _DelayedClipboardReader clipboardReader;
   late ProviderSubscription<Object?> modelsHold;
   var containerDisposed = false;
   var graphClosed = false;
 
   setUp(() async {
-    transport = DemoStudioTransport(lspActivityLoop: false);
+    transport = _ComposerStartTransport();
+    openedLinks = [];
+    clipboardReader = _DelayedClipboardReader();
     containerDisposed = false;
     graphClosed = false;
     graph = AppGraph(
+      clipboardImageStager: _TestImageStager(),
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'selector-test',
     );
     container = ProviderContainer(
-      overrides: [appGraphProvider.overrideWithValue(graph)],
+      overrides: [
+        appGraphProvider.overrideWithValue(graph),
+        clipboardImageReaderProvider.overrideWithValue(clipboardReader),
+        externalUrlLauncherProvider.overrideWithValue((url) async {
+          openedLinks.add(url);
+        }),
+      ],
     );
     await graph.client.bootstrap();
     await graph.client.directoryCommands.beginNewThread();
@@ -109,6 +129,7 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
+          theme: pureStudioTheme(locale: locale),
           locale: locale,
           localizationsDelegates: [
             AppLocalizations.delegate,
@@ -161,7 +182,7 @@ void main() {
           .read(selectionStoreProvider)
           .selectedProjectId!;
       await tester.pumpWidget(
-        harness(const StartPageComposerDockConnector(), locale: locale),
+        harness(const _SelectedComposerHost(), locale: locale),
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('start-project-selector')));
@@ -237,7 +258,7 @@ void main() {
 
       await tester.pumpWidget(
         harness(
-          StartEnvironmentConnector(
+          _EnvironmentHost(
             workspaceId: container
                 .read(selectionStoreProvider)
                 .selectedProjectId,
@@ -276,6 +297,310 @@ void main() {
     });
   }
 
+  testWidgets('公开 Composer 目标独立于全局选择，切换后迟到粘贴不污染新目标', (tester) async {
+    final firstId = container.read(selectionStoreProvider).selectedProjectId!;
+    await pumpClientFuture(
+      tester,
+      graph.client.directoryCommands.beginStandaloneThread(),
+      'prepare second target',
+    );
+    final secondId = container.read(selectionStoreProvider).selectedProjectId!;
+    expect(secondId, isNot(firstId));
+    final drafts = graph.client.drafts.startDraft;
+    drafts.updateDraft(firstId, 'first draft');
+    drafts.updateDraft(secondId, 'second draft');
+    final reader = clipboardReader;
+    Widget composerFor(String id) =>
+        harness(Composer(target: ComposerTarget.start(workspaceId: id)));
+    await tester.pumpWidget(composerFor(firstId));
+    await tester.pumpAndSettle();
+    final input = find.byKey(StudioDriverKeys.composerInput);
+    expect(
+      tester.widget<TextField>(input).controller!.text,
+      'first draft',
+      reason: '挂载目标与全局选中的第二个工作区不同',
+    );
+    await tester.enterText(input, 'first edited');
+    await tester.pump();
+    Actions.invoke(
+      tester
+          .state<EditableTextState>(find.byType(EditableText))
+          .widget
+          .focusNode
+          .context!,
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+    );
+    await tester.pump();
+    expect(reader.calls, 1);
+    await tester.pumpWidget(composerFor(secondId));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(input).controller!.text, 'second draft');
+    reader.result.complete(null);
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(input).controller!.text,
+      'second draft',
+      reason: '旧 editor 的官方 paste 委托已经失效',
+    );
+    expect(drafts.state.forProject(firstId).text, 'first edited');
+    expect(drafts.state.forProject(secondId).text, 'second draft');
+    await closeStartPageFixture(tester);
+  });
+
+  testWidgets('图片粘贴进入本目标附件，保留文本和编辑焦点', (tester) async {
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
+    final accounts = container.read(modelSelectionAccountsProvider);
+    final candidates = [
+      for (final account in accounts)
+        for (final model in account.models)
+          if (model.enabled &&
+              model.inputCapabilities.any(
+                (capability) =>
+                    capability.modality == ModelModalityView.image &&
+                    capability.supportsSource(ModelInputSourceView.local),
+              ))
+            (accountId: account.id, modelId: model.modelId),
+    ];
+    expect(candidates, isNotEmpty, reason: 'Demo 真实目录必须提供可用图像模型');
+    final candidate = candidates.first;
+    final drafts = graph.client.drafts.startDraft;
+    drafts.setModelIntent(
+      drafts.state.forProject(workspaceId).mode,
+      candidate.accountId,
+      candidate.modelId,
+    );
+    final reader = clipboardReader;
+    await tester.pumpWidget(
+      harness(Composer(target: ComposerTarget.start(workspaceId: workspaceId))),
+    );
+    await tester.pumpAndSettle();
+    final input = find.byKey(StudioDriverKeys.composerInput);
+    await tester.enterText(input, 'keep text');
+    await tester.pump();
+    Actions.invoke(
+      tester
+          .state<EditableTextState>(find.byType(EditableText))
+          .widget
+          .focusNode
+          .context!,
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+    );
+    reader.result.complete(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=',
+      ),
+    );
+    await pumpClientUntil(
+      tester,
+      () => graph.client.drafts.attachments.state
+          .newThread(workspaceId)
+          .attachments
+          .isNotEmpty,
+      'clipboard image admitted',
+    );
+    expect(
+      graph.client.drafts.attachments.state
+          .newThread(workspaceId)
+          .attachments
+          .single
+          .modality,
+      AttachmentModalityView.image,
+    );
+    expect(
+      tester.widget<TextField>(input).controller!.text,
+      'keep text',
+      reason: '图片路径不委托文本粘贴、不重写编辑区',
+    );
+    expect(
+      tester
+          .state<EditableTextState>(find.byType(EditableText))
+          .widget
+          .focusNode
+          .hasFocus,
+      isTrue,
+    );
+    await closeStartPageFixture(tester);
+  });
+
+  testWidgets('失败项操作呈现 owner 的真实资格错误，未知结果不提供重发', (tester) async {
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
+    final target = ComposerTarget.start(workspaceId: workspaceId);
+    graph.client.drafts.startDraft.updateDraft(
+      workspaceId,
+      'new editable draft',
+    );
+    final stale = ComposerSubmission(
+      inputId: 'removed-input',
+      text: 'old input',
+      attachments: const [],
+      phase: ComposerSubmissionPhase.failed,
+    );
+    final l10n = await AppLocalizations.delegate.load(const Locale('zh'));
+    await tester.pumpWidget(
+      harness(ComposerSubmissionControls(target: target, submission: stale)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(l10n.composerRetrySubmission));
+    await pumpClientUntil(
+      tester,
+      () => find.textContaining('not retryable').evaluate().isNotEmpty,
+      'owner rejects stale failed item',
+    );
+    expect(
+      graph.client.drafts.startDraft.state.forProject(workspaceId).text,
+      'new editable draft',
+      reason: '失败项动作不读取或清理当前编辑草稿',
+    );
+    await tester.pumpWidget(
+      harness(
+        ComposerSubmissionControls(
+          target: target,
+          submission: stale.withPhase(ComposerSubmissionPhase.unknownOutcome),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text(l10n.composerRetrySubmission), findsNothing);
+    expect(find.text(l10n.composerRemoveSubmission), findsNothing);
+    await closeStartPageFixture(tester);
+  });
+
+  testWidgets('新建失败保留可复制正文，恢复仅重试原冻结设置或移除本项', (tester) async {
+    transport.failPreparation = true;
+    final workspaceId = container
+        .read(selectionStoreProvider)
+        .selectedProjectId!;
+    final target = ComposerTarget.start(workspaceId: workspaceId);
+    final owner = graph.client.drafts.startDraft;
+    const code = '  final value = 1;';
+    const source =
+        '**冻结正文**\n\n```dart\n$code\n```\n\n'
+        '[安全链接](https://fixture.invalid/guide)\n\n'
+        '[危险链接](javascript:alert)\n\n'
+        '![预览](https://fixture.invalid/image.png)';
+    owner.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
+    owner.updateDraft(workspaceId, source);
+    expect(
+      await pumpClientFuture(
+        tester,
+        owner.submit(workspaceId),
+        'worktree preparation rejected',
+      ),
+      isFalse,
+    );
+    final firstInputId = owner.submissions.value[workspaceId]!.single.inputId;
+    final l10n = await AppLocalizations.delegate.load(const Locale('zh'));
+    await tester.pumpWidget(
+      harness(SingleChildScrollView(child: Composer(target: target))),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('preparation-use-local-directory')),
+      findsNothing,
+    );
+    expect(find.textContaining('worktree preparation failed'), findsWidgets);
+    expect(find.text(l10n.composerRetrySubmission), findsOneWidget);
+    expect(find.text(l10n.composerRemoveSubmission), findsOneWidget);
+    expect(find.text(l10n.preparationRetainedBody), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
+          .controller!
+          .text,
+      isEmpty,
+    );
+
+    final body = find.byType(ComposerSubmissionBody);
+    expect(
+      find.descendant(of: body, matching: find.byType(SelectionArea)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: body, matching: find.byType(Image)),
+      findsNothing,
+      reason: '未持内容资源资格的远程图不发起下载',
+    );
+    expect(openedLinks, isEmpty, reason: '显示回显不自动打开链接或图片');
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final selection = tester.state<SelectableRegionState>(
+      find.descendant(of: body, matching: find.byType(SelectableRegion)),
+    );
+    selection.selectAll(SelectionChangedCause.keyboard);
+    await tester.pump();
+    selection.contextMenuButtonItems
+        .firstWhere((item) => item.type == ContextMenuButtonType.copy)
+        .onPressed!();
+    await tester.pump();
+    expect(copied, contains('冻结正文'));
+    expect(copied, contains(code), reason: '复用共用正文的代码缩进复制能力');
+    expect(
+      copied,
+      isNot(contains(l10n.composerSubmissionFailed)),
+      reason: '状态和正文保持独立，不混入复制内容',
+    );
+    await tester.ensureVisible(find.text('危险链接', findRichText: true));
+    await tester.tap(find.text('危险链接', findRichText: true));
+    await tester.pump();
+    expect(openedLinks, isEmpty);
+    await tester.ensureVisible(find.text('安全链接', findRichText: true));
+    await tester.tap(find.text('安全链接', findRichText: true));
+    await tester.pump();
+    await tester.ensureVisible(find.text('https://fixture.invalid/image.png'));
+    await tester.tap(find.text('https://fixture.invalid/image.png'));
+    await tester.pump();
+    expect(openedLinks, [
+      'https://fixture.invalid/guide',
+      'https://fixture.invalid/image.png',
+    ], reason: '安全链接和图片仅显式交由 VM 打开，不在 Flutter 下载');
+
+    owner.updateDraft(workspaceId, 'new independent draft');
+    owner.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.local);
+    await tester.pump();
+    await tester.ensureVisible(find.text(l10n.composerRetrySubmission));
+    await tester.tap(find.text(l10n.composerRetrySubmission));
+    await pumpClientUntil(tester, () {
+      final item = owner.submissions.value[workspaceId]?.firstOrNull;
+      return transport.failedWorkspaceModes.length == 2 &&
+          item?.phase == ComposerSubmissionPhase.failed &&
+          item?.inputId != firstInputId;
+    }, 'retry retains frozen worktree');
+    expect(transport.failedWorkspaceModes, ['worktree', 'worktree']);
+    expect(transport.failedTexts, [source, source]);
+    expect(owner.state.forProject(workspaceId).text, 'new independent draft');
+    expect(
+      owner.state.forProject(workspaceId).workspaceMode,
+      ThreadWorkspaceMode.local,
+    );
+    await tester.ensureVisible(find.text(l10n.composerRemoveSubmission));
+    await tester.tap(find.text(l10n.composerRemoveSubmission));
+    await pumpClientUntil(
+      tester,
+      () => owner.submissions.value[workspaceId]?.isEmpty ?? true,
+      'remove frozen failed input',
+    );
+    expect(owner.state.forProject(workspaceId).text, 'new independent draft');
+    await closeStartPageFixture(tester);
+  });
+
   testWidgets('切换会话模式后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
     final simpleKey = StudioDriverKeys.sessionModeOption(
       ThreadModeId.simple.name,
@@ -310,7 +635,7 @@ void main() {
     expect(find.text('任务'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
     expect(find.text('简洁'), findsNothing, reason: '旧模式不得残留');
     expect(
-      container.read(startPageComposerViewModelProvider).requireValue.mode,
+      container.read(_startProjectionProvider).requireValue.mode,
       ThreadModeId.task,
       reason: '触发器与起始页草稿是同一事实，不能停在本地副本',
     );
@@ -379,9 +704,7 @@ void main() {
   });
 
   testWidgets('切换模型后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
-    final initial = container
-        .read(startPageComposerViewModelProvider)
-        .requireValue;
+    final initial = container.read(_startProjectionProvider).requireValue;
     final route = initial.displayRoute(initial.mode);
     expect(route, isNotNull);
     final options = modelOptions(initial.accounts);
@@ -415,7 +738,7 @@ void main() {
     expect(find.text(next.displayName), findsOneWidget);
     expect(find.text(before), findsNothing);
     final after = container
-        .read(startPageComposerViewModelProvider)
+        .read(_startProjectionProvider)
         .requireValue
         .displayRoute(initial.mode);
     expect(after?.accountId, next.accountId);
@@ -438,7 +761,8 @@ void main() {
     expect(selectedRow(nextKey), findsOneWidget, reason: '模型选中态必须随草稿事实移动');
   });
 
-  testWidgets('未打开项目时输入禁用，会话选择器仍可先定好草稿路由', (tester) async {
+  testWidgets('目标工作区尚未解析时输入禁用，路由选择仍可配置', (tester) async {
+    const target = ComposerTarget.start(workspaceId: 'unresolved-workspace');
     await tester.runAsync(() async {
       // This is fixture setup, not a widget action. Retire the project topics
       // on the same real queue on which bootstrap opened them.
@@ -450,7 +774,7 @@ void main() {
       await container.pump();
     });
 
-    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
+    await tester.pumpWidget(harness(const Composer(target: target)));
     await tester.pumpAndSettle();
 
     final input = tester.widget<TextField>(
@@ -460,8 +784,9 @@ void main() {
 
     final accounts = container.read(modelSelectionAccountsProvider);
     final before = container
-        .read(startPageComposerViewModelProvider)
-        .requireValue;
+        .read(composerViewModelProvider(target))
+        .requireValue
+        .start!;
     final routeBefore = before.displayRoute(before.mode)!;
     // 选一个与当前路由不同、且带有多个强度候选的模型：证明选择真的落到草稿上。
     final candidates = modelOptions(accounts)
@@ -491,8 +816,9 @@ void main() {
     await tester.pumpAndSettle();
 
     final afterModel = container
-        .read(startPageComposerViewModelProvider)
-        .requireValue;
+        .read(composerViewModelProvider(target))
+        .requireValue
+        .start!;
     final modelRoute = afterModel.displayRoute(afterModel.mode)!;
     expect(modelRoute.accountId, next.accountId, reason: '草稿路由真的换了账号');
     expect(modelRoute.modelId, next.modelId, reason: '草稿路由真的换了模型');
@@ -521,8 +847,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       final afterEffort = container
-          .read(startPageComposerViewModelProvider)
-          .requireValue;
+          .read(composerViewModelProvider(target))
+          .requireValue
+          .start!;
       expect(
         afterEffort.displayRoute(afterEffort.mode)!.effort,
         nextEffort,
@@ -610,7 +937,7 @@ void main() {
         .read(selectionStoreProvider)
         .selectedProjectId!;
 
-    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
+    await tester.pumpWidget(harness(const _SelectedComposerHost()));
     await tester.pumpAndSettle();
 
     final input = find.byKey(StudioDriverKeys.composerInput);
@@ -738,9 +1065,7 @@ void main() {
     );
     var addProjectCalls = 0;
     await tester.pumpWidget(
-      harness(
-        StartPageComposerDockConnector(onAddProject: () => addProjectCalls++),
-      ),
+      harness(_SelectedComposerHost(onAddProject: () => addProjectCalls++)),
     );
     await tester.pumpAndSettle();
     final input = find.byKey(StudioDriverKeys.composerInput);
@@ -846,6 +1171,7 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
+          theme: pureStudioTheme(locale: const Locale('zh')),
           locale: const Locale('zh'),
           localizationsDelegates: [
             AppLocalizations.delegate,
@@ -857,9 +1183,17 @@ void main() {
                 .copyWith(textScaler: TextScaler.linear(2)),
             child: child!,
           ),
-          home: const Scaffold(
+          home: Scaffold(
             body: SingleChildScrollView(
-              child: StartPageComposerDockConnector(),
+              child: Composer(
+                target: ComposerTarget.start(
+                  workspaceId:
+                      container
+                          .read(selectionStoreProvider)
+                          .selectedProjectId ??
+                      '',
+                ),
+              ),
             ),
           ),
         ),
@@ -901,7 +1235,7 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
+    await tester.pumpWidget(harness(const _SelectedComposerHost()));
     await tester.pumpAndSettle();
 
     final blocker = tester.widget<Text>(
@@ -942,7 +1276,7 @@ void main() {
   testWidgets(
     'composer keeps Shift+Enter editing and official Enter submission',
     (tester) async {
-      await tester.pumpWidget(harness(const StartPageComposerDockConnector()));
+      await tester.pumpWidget(harness(const _SelectedComposerHost()));
       await tester.pumpAndSettle();
 
       final input = find.byKey(StudioDriverKeys.composerInput);
@@ -1119,10 +1453,10 @@ void main() {
           .client
           .directoryCommands
           .selectThread(threadId);
-      // ComposerDockConnector 只在 Client 已持有该会话草稿时渲染输入区。
+      // Composer 只在 Client 已持有该会话草稿时渲染输入区。
       graph.client.drafts.composer(threadId);
       composerHold = workflowContainer.listen(
-        composerDockViewModelProvider(threadId),
+        _threadProjectionProvider(threadId),
         (_, _) {},
       );
       await graph.client.conversations
@@ -1156,6 +1490,7 @@ void main() {
         UncontrolledProviderScope(
           container: workflowContainer,
           child: MaterialApp(
+            theme: pureStudioTheme(locale: const Locale('zh')),
             locale: const Locale('zh'),
             localizationsDelegates: [
               AppLocalizations.delegate,
@@ -1163,7 +1498,11 @@ void main() {
             ],
             supportedLocales: AppLocalizations.supportedLocales,
             home: const Scaffold(
-              body: Center(child: ComposerDockConnector(threadId: threadId)),
+              body: Center(
+                child: Composer(
+                  target: ComposerTarget.thread(threadId: threadId),
+                ),
+              ),
             ),
           ),
         ),
@@ -1173,7 +1512,7 @@ void main() {
 
     int routeRevision() =>
         workflowContainer
-            .read(composerDockViewModelProvider(threadId))
+            .read(_threadProjectionProvider(threadId))
             .requireValue
             .modelRoute
             ?.revision ??
@@ -1184,7 +1523,7 @@ void main() {
       await pumpDock(tester);
 
       final view = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(view.hasActiveWorkflow, isTrue, reason: '场景前提：workflow active');
       expect(
@@ -1215,7 +1554,7 @@ void main() {
       await pumpDock(tester);
 
       final initial = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(initial.hasActiveWorkflow, isTrue);
       expect(
@@ -1267,7 +1606,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final settled = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(settled.modelRoute?.accountId, next.accountId);
       expect(settled.modelRoute?.modelId, next.modelId);
@@ -1302,7 +1641,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final afterEffort = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(afterEffort.modelRoute?.effort, targetEffort);
       expect(afterEffort.routePending, isFalse);
@@ -1327,7 +1666,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
 
       final running = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(running.isBusy, isTrue, reason: '提交受理后 Turn 进入运行态');
       final stopButton = find.byKey(StudioDriverKeys.composerStop);
@@ -1346,7 +1685,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final stopped = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(stopped.isBusy, isFalse, reason: '停止必须等到 canonical 终态，不是 ACK');
       for (final entry in lockedGeometry.entries) {
@@ -1361,7 +1700,7 @@ void main() {
       );
 
       final initial = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       final options = modelOptions(initial.accounts);
       final route = initial.displayRoute!;
@@ -1378,7 +1717,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final settled = workflowContainer
-          .read(composerDockViewModelProvider(threadId))
+          .read(_threadProjectionProvider(threadId))
           .requireValue;
       expect(settled.modelRoute?.modelId, next.modelId);
       expect(settled.routePending, isFalse);
@@ -1388,14 +1727,144 @@ void main() {
   });
 }
 
+// Test-only selectors retain assertions on the underlying immutable projection;
+// production pages mount Composer rather than composing these providers.
+class _DelayedClipboardReader implements ClipboardImageReader {
+  final result = Completer<Uint8List?>();
+  int calls = 0;
+  @override
+  Future<Uint8List?> readImage() {
+    calls++;
+    return result.future;
+  }
+}
+
+class _ComposerStartTransport extends DemoStudioTransport {
+  _ComposerStartTransport() : super(lspActivityLoop: false);
+  bool failPreparation = false;
+  final failedWorkspaceModes = <String?>[];
+  final failedTexts = <String>[];
+
+  @override
+  Stream<NewThreadStartEvent> startNewThread(
+    String workspaceId,
+    StudioPromptInput input,
+    ThreadModeId mode, {
+    required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
+    String? workspaceMode,
+  }) {
+    if (!failPreparation) {
+      return super.startNewThread(
+        workspaceId,
+        input,
+        mode,
+        route: route,
+        delegationMode: delegationMode,
+        delegationPreference: delegationPreference,
+        workspaceMode: workspaceMode,
+      );
+    }
+    failedWorkspaceModes.add(workspaceMode);
+    failedTexts.add(input.text);
+    return Stream.fromIterable([
+      NewThreadStartProgress(
+        ThreadPreparationProgress(
+          workspaceId: workspaceId,
+          inputId: input.inputId,
+          stage: ThreadPreparationStage.creatingWorktree,
+        ),
+      ),
+      const NewThreadStartFailed(
+        StudioFailure(
+          code: StudioFailureCode.invalidArgument,
+          message: 'worktree preparation failed',
+          retryable: false,
+          correlationId: 'composer-worktree-failure',
+        ),
+      ),
+    ]);
+  }
+}
+
+class _TestImageStager implements ClipboardImageStager {
+  int _next = 0;
+  @override
+  Future<StagedClipboardImage> stage(Uint8List pngBytes) async =>
+      StagedClipboardImage(
+        path: 'clipboard-${_next++}.png',
+        dispose: () async {},
+      );
+}
+
+final _startProjectionProvider =
+    Provider.autoDispose<AsyncValue<StartPageComposerViewState>>((ref) {
+      final workspaceId = ref.watch(selectionStoreProvider).selectedProjectId;
+      if (workspaceId == null) return const AsyncLoading();
+      return ref
+          .watch(
+            composerViewModelProvider(
+              ComposerTarget.start(workspaceId: workspaceId),
+            ),
+          )
+          .whenData((state) => state.start!);
+    });
+
+final _threadProjectionProvider = Provider.autoDispose
+    .family<AsyncValue<ComposerDockViewState>, String>((ref, threadId) {
+      return ref
+          .watch(
+            composerViewModelProvider(
+              ComposerTarget.thread(threadId: threadId),
+            ),
+          )
+          .whenData((state) => state.thread!);
+    });
+
+/// A page supplies the selected typed target; Composer never reads selection.
+class _SelectedComposerHost extends ConsumerWidget {
+  const _SelectedComposerHost({this.onAddProject});
+  final VoidCallback? onAddProject;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final id = ref.watch(selectionStoreProvider).selectedProjectId;
+    if (id == null) return const SizedBox.shrink();
+    return Composer(
+      target: ComposerTarget.start(workspaceId: id),
+      onAddProject: onAddProject,
+    );
+  }
+}
+
+class _EnvironmentHost extends ConsumerWidget {
+  const _EnvironmentHost({required this.workspaceId, required this.enabled});
+  final String? workspaceId;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final target = ComposerTarget.start(workspaceId: workspaceId!);
+    final provider = composerViewModelProvider(target);
+    final state = ref.watch(provider).value;
+    if (state == null) return const SizedBox.shrink();
+    return StartEnvironmentBar(
+      state: state,
+      actions: ref.read(provider.notifier),
+      enabled: enabled,
+    );
+  }
+}
+
 class _ModeSelectorHost extends ConsumerWidget {
   const _ModeSelectorHost();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
+    final page = ref.watch(_startProjectionProvider).requireValue;
     final workspaceId = page.project?.id;
     return SessionModeSelector(
+      catalog: page.modeCatalog ?? const ThreadModeCatalogView(),
       mode: page.mode,
       onSelected: (mode) {
         if (workspaceId == null) return;
@@ -1414,7 +1883,7 @@ class _EffortSelectorHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
+    final page = ref.watch(_startProjectionProvider).requireValue;
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return ReasoningEffortSelector(
@@ -1438,7 +1907,7 @@ class _ModelSelectorHost extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewModelProvider).requireValue;
+    final page = ref.watch(_startProjectionProvider).requireValue;
     final route = page.displayRoute(page.mode);
     if (route == null) return const SizedBox.shrink();
     return Wrap(
@@ -1475,13 +1944,13 @@ class _ModelSelectorHost extends ConsumerWidget {
 }
 
 String? _currentEffort(ProviderContainer container) {
-  final page = container.read(startPageComposerViewModelProvider).requireValue;
+  final page = container.read(_startProjectionProvider).requireValue;
   return page.displayRoute(page.mode)?.effort;
 }
 
 /// 当前显示路由模型声明的、与 [current] 不同的思考强度候选。
 String? _otherEffort(ProviderContainer container, String current) {
-  final page = container.read(startPageComposerViewModelProvider).requireValue;
+  final page = container.read(_startProjectionProvider).requireValue;
   final route = page.displayRoute(page.mode);
   if (route == null) return null;
   final model = modelForRoute(page.accounts, route.accountId, route.modelId);

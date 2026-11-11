@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
 import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -138,7 +139,9 @@ void main() {
       );
 
       final observer = container.listen(
-        startPageComposerViewModelProvider,
+        composerViewModelProvider(
+          ComposerTarget.start(workspaceId: workspaceId),
+        ),
         (_, _) {},
       );
       await graph.accounts.state
@@ -153,8 +156,13 @@ void main() {
           )
           .timeout(_waitLimit);
       final project = container
-          .read(startPageComposerViewModelProvider)
+          .read(
+            composerViewModelProvider(
+              ComposerTarget.start(workspaceId: workspaceId),
+            ),
+          )
           .requireValue
+          .start!
           .project!;
       expect(project.id, workspaceId);
       final submitted = submission = owner.submit(project.id);
@@ -200,8 +208,13 @@ void main() {
       );
       containerDisposed = false;
       final projection = container
-          .read(startPageComposerViewModelProvider)
-          .requireValue;
+          .read(
+            composerViewModelProvider(
+              ComposerTarget.start(workspaceId: workspaceId),
+            ),
+          )
+          .requireValue
+          .start!;
       expect(projection.preparation?.inputId, input.inputId);
       expect(projection.preparation?.workspaceId, project.id);
       expect(
@@ -233,15 +246,25 @@ void main() {
       );
       expect(await submitted.timeout(_waitLimit), isFalse);
       final terminal = container
-          .read(startPageComposerViewModelProvider)
-          .requireValue;
+          .read(
+            composerViewModelProvider(
+              ComposerTarget.start(workspaceId: workspaceId),
+            ),
+          )
+          .requireValue
+          .start!;
       expect(terminal.preparation?.phase, NewThreadPreparationPhase.failed);
       expect(terminal.preparation?.inputId, input.inputId);
       expect(
         terminal.preparation?.progress?.stage,
         ThreadPreparationStage.creatingWorktree,
       );
-      expect(terminal.draftText, 'prepare a workspace');
+      expect(terminal.draftText, isEmpty);
+      final failed =
+          graph.client.drafts.startDraft.submissions.value[workspaceId]!.single;
+      expect(failed.text, 'prepare a workspace');
+      expect(failed.inputId, input.inputId);
+      expect(failed.phase, ComposerSubmissionPhase.failed);
       expect(terminal.submitting, isFalse);
       expect(transport.cancelled, isTrue);
     },

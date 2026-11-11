@@ -2,7 +2,7 @@ import '../support/chat_fixtures.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -163,7 +163,7 @@ Future<void> _pump(WidgetTester tester, _Fixture fixture) async {
           body: SizedBox(
             width: 900,
             height: 500,
-            child: ComposerDockConnector(threadId: _childId),
+            child: Composer(target: ComposerTarget.thread(threadId: _childId)),
           ),
         ),
       ),

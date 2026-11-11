@@ -4,7 +4,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -73,6 +73,8 @@ final class _ScriptedTransport extends RecordingDemoTransport {
   Object? stopError;
   Object? continueError;
   int submitCalls = 0;
+  Completer<void>? submitGate;
+  final submittedInputs = <StudioPromptInput>[];
 
   /// 非空时挂起停止请求，用于在在途期间观察界面与草稿。
   Completer<void>? stopGate;
@@ -84,6 +86,16 @@ final class _ScriptedTransport extends RecordingDemoTransport {
     required int expectedModelRouteRevision,
   }) async {
     submitCalls++;
+    submittedInputs.add(input);
+    final gate = submitGate;
+    if (gate != null) {
+      await gate.future;
+      return SubmitPromptReceipt(
+        threadId: threadId,
+        inputId: input.inputId,
+        cursor: 1,
+      );
+    }
     throw StateError('The composer must not submit here');
   }
 
@@ -307,7 +319,7 @@ Future<void> _pumpSized(
           body: SizedBox(
             width: width,
             height: height,
-            child: ComposerDockConnector(threadId: threadId),
+            child: Composer(target: ComposerTarget.thread(threadId: threadId)),
           ),
         ),
       ),
@@ -626,6 +638,63 @@ void main() {
     await _close(tester, composer);
   });
 
+  testWidgets('有效提交立即清空，继续编辑时旧回执不改新文本、光标或组词', (tester) async {
+    final composer = await _composer(tester);
+    final gate = Completer<void>();
+    composer.transport.submitGate = gate;
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+    await _pump(tester, composer);
+    final input = find.byKey(StudioDriverKeys.composerInput);
+    await tester.enterText(input, 'first input');
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pump();
+    final field = tester.widget<TextField>(input);
+    expect(field.controller!.text, isEmpty, reason: '不等待 transport 回执清稿');
+    expect(field.enabled, isTrue);
+    final editable = tester.state<EditableTextState>(find.byType(EditableText));
+    expect(editable.widget.focusNode.hasFocus, isTrue, reason: '发送后保留编辑焦点');
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'second zhong',
+        selection: TextSelection.collapsed(offset: 12),
+        composing: TextRange(start: 7, end: 12),
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(StudioDriverKeys.composerSubmit),
+      findsOneWidget,
+      reason: '旧提交在途不锁定新的独立草稿',
+    );
+    await pumpClientUntil(
+      tester,
+      () => composer.transport.submitCalls == 1,
+      'first frozen input dispatched',
+    );
+    expect(composer.transport.submittedInputs.single.text, 'first input');
+    final owner = composer.graph.client.drafts.composer(_threadId);
+    gate.complete();
+    await pumpClientUntil(
+      tester,
+      () => owner.submissions.value.any(
+        (item) => item.phase == ComposerSubmissionPhase.accepted,
+      ),
+      'old submission accepted',
+    );
+    expect(
+      field.controller!.value,
+      const TextEditingValue(
+        text: 'second zhong',
+        selection: TextSelection.collapsed(offset: 12),
+        composing: TextRange(start: 7, end: 12),
+      ),
+    );
+    await _close(tester, composer);
+  });
+
   testWidgets('点击停止固定的执行编号不会在排队期间被重选', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
@@ -834,7 +903,7 @@ void main() {
     await _close(tester, composer);
   });
 
-  testWidgets('运行中有草稿时 Escape 仍能停止当前执行', (tester) async {
+  testWidgets('Escape 不触发业务，运行中有草稿仍保留唯一发送主按钮', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
     await composer.publish(execution: _running);
@@ -853,24 +922,25 @@ void main() {
     await tester.tap(find.byKey(StudioDriverKeys.composerInput));
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await pumpClientUntil(
-      tester,
-      () => composer.transport.stopTargets.isNotEmpty,
-      'escape stops the running execution',
+    await tester.pump();
+    expect(composer.transport.stopTargets, isEmpty, reason: '不再覆盖官方 Escape 行为');
+    expect(composer.transport.submitCalls, 0);
+    expect(find.byKey(StudioDriverKeys.composerSubmit), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.composerStop),
+      findsNothing,
+      reason: '有草稿时主按钮为发送，不新增次要停止按钮',
     );
-    expect(composer.transport.stopTargets, [
-      '$_threadId:exec-1',
-    ], reason: 'Escape 与主按钮共用同一停止目标');
     expect(
       tester
           .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
           .controller!
           .text,
       'draft while running',
-      reason: '停止不清草稿',
+      reason: 'Escape 不改写草稿',
     );
 
-    // 清理中再按 Escape 不重复发请求。
+    // 执行清理是只读事实，Escape 也不能制造任何停止命令。
     await composer.publish(
       execution: const AgentExecutionView(
         id: 'exec-1',
@@ -882,7 +952,7 @@ void main() {
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
-    expect(composer.transport.stopTargets, hasLength(1));
+    expect(composer.transport.stopTargets, isEmpty);
     await _close(tester, composer);
   });
 
@@ -902,16 +972,19 @@ void main() {
       reason: '运行中有草稿时主动作是发送并继续',
     );
 
-    // Escape 发出停止，回执被挂起：请求在途是线程级事实，与主动作种类无关。
+    // 从外部已有命令入口发出停止，回执被挂起；输入组件只观察该事实。
     final gate = Completer<void>();
     composer.transport.stopGate = gate;
     await tester.tap(find.byKey(StudioDriverKeys.composerInput));
     await tester.pump();
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    final stop = composer.graph.client.threadCommands.stop(
+      _threadId,
+      expectedExecutionId: 'exec-1',
+    );
     await pumpClientUntil(
       tester,
       () => composer.transport.stopTargets.isNotEmpty,
-      'escape stop in flight with draft',
+      'external stop in flight with draft',
     );
     await tester.pump();
     expect(composer.transport.stopTargets, ['$_threadId:exec-1']);
@@ -947,6 +1020,7 @@ void main() {
     // 受理回执到达后按既有清理态处理：正在停止且不可提交。
     await tester.runAsync(() async {
       gate.complete();
+      await stop;
       await Future<void>.delayed(Duration.zero);
     });
     await pumpClientUntil(

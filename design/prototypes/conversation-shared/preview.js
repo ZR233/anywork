@@ -180,6 +180,8 @@
       this.lightboxState = { images: [], index: 0, zoomActual: false, triggerEl: null };
       this.actions = {
         copy: text => this.copy(text),
+        retrySubmission: inputId => this.controller.retrySubmission(inputId),
+        removeSubmission: inputId => this.controller.removeSubmission(inputId),
         detail: (title, content, path) => this.detail(title, content, path),
         previewImage: (images, activeId, triggerEl) => this.openImagePreview(images, activeId, triggerEl)
       };
@@ -399,7 +401,7 @@
                 ${icon('maximize-2')}
                 <span class="cv-lightbox-zoom-label">1:1 原图</span>
               </button>
-              <button type="button" class="cv-button cv-quiet cv-icon-only" data-lightbox-cmd="close" title="关闭大图预览 (Esc)" aria-label="关闭大图预览">
+              <button type="button" class="cv-button cv-quiet cv-icon-only" data-lightbox-cmd="close" title="关闭大图预览" aria-label="关闭大图预览">
                 ${icon('x')}
               </button>
             </div>
@@ -604,16 +606,6 @@
         }
         if (event.target.classList.contains('cv-lightbox-img')) {
           this.toggleLightboxZoom();
-        }
-      });
-
-      this.imageDialog.addEventListener('keydown', event => {
-        if (event.key === 'ArrowLeft' && this.lightboxState.images.length > 1) {
-          event.preventDefault();
-          this.stepLightbox(-1);
-        } else if (event.key === 'ArrowRight' && this.lightboxState.images.length > 1) {
-          event.preventDefault();
-          this.stepLightbox(1);
         }
       });
 

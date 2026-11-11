@@ -1199,7 +1199,7 @@ abstract class AppLocalizations {
   /// No description provided for @preparationRetainedBody.
   ///
   /// In en, this message translates to:
-  /// **'Your prompt and attachments are saved. Adjust the settings and send again.'**
+  /// **'Your prompt and attachments are kept in this submission. Retrying uses its original settings and does not change your current draft.'**
   String get preparationRetainedBody;
 
   /// No description provided for @preparationUnknownTitle.
@@ -2509,6 +2509,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Stop'**
   String get composerStop;
+
+  /// No description provided for @composerSubmissionSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending'**
+  String get composerSubmissionSending;
+
+  /// No description provided for @composerSubmissionAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Received, waiting for sync'**
+  String get composerSubmissionAccepted;
+
+  /// No description provided for @composerSubmissionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Send failed'**
+  String get composerSubmissionFailed;
+
+  /// No description provided for @composerSubmissionUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Send outcome unconfirmed'**
+  String get composerSubmissionUnknown;
+
+  /// No description provided for @composerRetrySubmission.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get composerRetrySubmission;
+
+  /// No description provided for @composerRemoveSubmission.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove'**
+  String get composerRemoveSubmission;
 
   /// No description provided for @compileModeSimple.
   ///
@@ -4337,12 +4373,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Submit changes'**
   String get interactionPlanAdjustSubmit;
-
-  /// No description provided for @interactionPlanFeedbackHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Enter submits · Shift+Enter adds a line'**
-  String get interactionPlanFeedbackHint;
 
   /// No description provided for @planExpandReading.
   ///

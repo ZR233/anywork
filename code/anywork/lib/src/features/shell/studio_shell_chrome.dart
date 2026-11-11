@@ -513,7 +513,10 @@ class _Footer extends StatelessWidget {
             fit: FlexFit.loose,
             child: LiveStatusBar(threadId: threadId),
           ),
-          ComposerDockConnector(threadId: threadId, compact: compact),
+          Composer(
+            target: ComposerTarget.thread(threadId: threadId),
+            compact: compact,
+          ),
           ThreadStatusConnector(
             threadId: threadId,
             showTodo: showTodo,

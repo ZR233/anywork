@@ -349,6 +349,7 @@ void main() {
           final status = switch (phase) {
             ComposerSubmissionPhase.sending => '正在发送',
             ComposerSubmissionPhase.accepted => '已收到，等待同步',
+            ComposerSubmissionPhase.failed => '发送失败',
             ComposerSubmissionPhase.unknownOutcome => '发送结果待确认',
           };
           expect(find.text(status), findsOneWidget);

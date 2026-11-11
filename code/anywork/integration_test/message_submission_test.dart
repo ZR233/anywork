@@ -10,6 +10,8 @@ import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
+    show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -24,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/fixture_gate.dart';
+import 'support/composer_target_diagnostic.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
 
@@ -192,6 +195,43 @@ void main() {
       final elapsed = Stopwatch()..start();
       while (!predicate()) {
         if (elapsed.elapsed > const Duration(seconds: 35)) {
+          final selection = graph.client.selection.state;
+          report['readinessFailure'] = {
+            'reason': reason,
+            'expectedProjectPath': project,
+            'projectId': selection.selectedProjectId,
+            'threadId': selection.selectedThreadId,
+            'needsOpen': selection.needsOpen,
+            'route': router.routeInformationProvider.value.uri.toString(),
+            'projects': [
+              for (final item
+                  in graph.client.project.state.projects?.values ?? [])
+                {'id': item.id, 'path': item.path},
+            ],
+            'inputs': find
+                .byKey(const ValueKey('composer-input'))
+                .evaluate()
+                .length,
+            'composers': [
+              for (final composer in tester.widgetList<PromptComposerView>(
+                find.byType(PromptComposerView),
+              ))
+                {
+                  'target': composerTargetDiagnostic(composer.targetKey),
+                  'enabled': composer.state.enabled,
+                  'blocker': composer.state.blocker?.toString(),
+                  'failure': composer.state.failure?.toString(),
+                },
+            ],
+          };
+          try {
+            await capturePresentation(
+              tester,
+              'submission-readiness-failed.png',
+            );
+          } catch (error) {
+            report['readinessCaptureError'] = error.toString();
+          }
           fail('Timed out: $reason');
         }
         await tester.pump(const Duration(milliseconds: 16));
@@ -207,16 +247,24 @@ void main() {
             .where((item) => item.id == selection.selectedProjectId)
             .firstOrNull;
         final view = find.byType(PromptComposerView);
-        if (selected?.path != project ||
+        // The harness may use a Windows device path for the same local directory.
+        if (selected == null ||
+            !FileSystemEntity.identicalSync(selected.path, project) ||
             selection.needsOpen ||
             view.evaluate().length != 1 ||
             input.evaluate().length != 1) {
           return false;
         }
         final composer = tester.widget<PromptComposerView>(view);
-        return composer.enabled &&
-            composer.pasteTargetId ==
-                (selection.selectedThreadId ?? selection.selectedProjectId);
+        return composer.state.enabled &&
+            switch (composer.targetKey) {
+              ThreadComposerTarget(:final threadId) =>
+                threadId == selection.selectedThreadId,
+              StartComposerTarget(:final workspaceId) =>
+                selection.selectedThreadId == null &&
+                    workspaceId == selection.selectedProjectId,
+              _ => false,
+            };
       }, 'production composer ready for the selected project');
       await tester.enterText(input, text);
       await tester.pump();

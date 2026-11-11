@@ -2,14 +2,11 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pasteboard/pasteboard.dart';
 
 abstract interface class ClipboardImageReader {
   Future<Uint8List?> readImage();
-
-  Future<String?> readText();
 }
 
 final clipboardImageReaderProvider = Provider<ClipboardImageReader>(
@@ -84,11 +81,5 @@ final class SystemClipboardImageReader implements ClipboardImageReader {
     } finally {
       codec.dispose();
     }
-  }
-
-  @override
-  Future<String?> readText() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    return data?.text;
   }
 }

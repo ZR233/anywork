@@ -527,10 +527,10 @@ final class _TimelineScene {
         find.byType(PromptComposerView),
       );
       debugPrintSynchronously(
-        'Timeline submission failure: draft=${composer.composer.draft}, '
-        'pending=${composer.composer.isSubmissionPending}, '
-        'execution=${composer.execution?.id}/${composer.execution?.phase}, '
-        'blocker=${composer.blocker}, failure=${composer.failure}',
+        'Timeline submission failure: draft=${composer.state.composer.draft}, '
+        'pending=${composer.state.composer.isSubmissionPending}, '
+        'execution=${composer.state.execution?.id}/${composer.state.execution?.phase}, '
+        'blocker=${composer.state.blocker}, failure=${composer.state.failure}',
       );
       rethrow;
     }

@@ -10,6 +10,8 @@ import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
+    show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
@@ -41,6 +43,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/fixture_gate.dart';
+import 'support/composer_target_diagnostic.dart';
 import 'support/presentation_capture.dart';
 import 'support/realtime_background_observation.dart';
 import 'support/timeline_observation.dart';
@@ -1059,7 +1062,7 @@ final class _RealtimeScene {
         .singleOrNull;
     bool sameStoppingCut() {
       final current = graph.client.conversations.session(lease.threadId).state;
-      final command = composer()?.stopCommand;
+      final command = composer()?.state.stopCommand;
       return executionId != null &&
           current.runtime?.execution?.id == executionId &&
           current.lastTurn?.turnId == turnId &&
@@ -1077,7 +1080,7 @@ final class _RealtimeScene {
       'turnId': turnId,
       'executionId': executionId,
       'partialAtomId': partial.id,
-      'stopCommandStartedAtMs': composer()?.stopCommand?.startedAtMs,
+      'stopCommandStartedAtMs': composer()?.state.stopCommand?.startedAtMs,
       'sameNonterminalExecutionBeforeCapture': sameStoppingCut(),
       'coverage':
           'Opportunistic observation only; this story has no stop-cleanup gate. '
@@ -1094,7 +1097,7 @@ final class _RealtimeScene {
       'Stopping candidate; require sameNonterminalExecutionBeforeAndAfter.',
       identities: {
         'partialAtomId': partial.id,
-        'stopCommandStartedAtMs': composer()!.stopCommand!.startedAtMs,
+        'stopCommandStartedAtMs': composer()!.state.stopCommand!.startedAtMs,
       },
     );
     final preserved = sameStoppingCut();
@@ -2864,6 +2867,7 @@ final class _RealtimeScene {
         if (composerView.evaluate().length == 1)
           'composerEnabled': tester
               .widget<PromptComposerView>(composerView)
+              .state
               .enabled,
       });
       if (readiness != previousReadiness) {
@@ -2879,22 +2883,26 @@ final class _RealtimeScene {
       }
       final composer = tester.widget<PromptComposerView>(composerView);
       final field = tester.widget<TextField>(input);
-      return composer.pasteTargetId ==
-              (selection.selectedThreadId ?? selection.selectedProjectId) &&
-          composer.enabled &&
+      return composer.state.enabled &&
+          switch (composer.targetKey) {
+            ThreadComposerTarget(:final threadId) =>
+              threadId == selection.selectedThreadId,
+            StartComposerTarget(:final workspaceId) =>
+              selection.selectedThreadId == null &&
+                  workspaceId == selection.selectedProjectId,
+            _ => false,
+          } &&
           (field.enabled ?? true);
     }, 'editable composer bound to the selected project and conversation');
     final selection = graph.client.selection.state;
     final controller = tester.widget<TextField>(input).controller!;
-    final target = tester
-        .widget<PromptComposerView>(composerView)
-        .pasteTargetId;
+    final target = tester.widget<PromptComposerView>(composerView).targetKey;
     void recordInput(String phase) {
       final current = tester.widget<TextField>(input);
       final composer = tester.widget<PromptComposerView>(composerView);
       final selected = graph.client.selection.state;
       debugPrintSynchronously(
-        'Realtime composer input: ${jsonEncode({'phase': phase, 'projectId': selected.selectedProjectId, 'threadId': selected.selectedThreadId, 'needsOpen': selected.needsOpen, 'navigation': graph.client.selection.navigationGeneration, 'target': composer.pasteTargetId, 'element': identityHashCode(tester.element(input)), 'controller': identityHashCode(current.controller), 'enabled': current.enabled, 'draft': composer.composer.draft, 'text': current.controller?.text})}',
+        'Realtime composer input: ${jsonEncode({'phase': phase, 'projectId': selected.selectedProjectId, 'threadId': selected.selectedThreadId, 'needsOpen': selected.needsOpen, 'navigation': graph.client.selection.navigationGeneration, 'target': composerTargetDiagnostic(composer.targetKey), 'element': identityHashCode(tester.element(input)), 'controller': identityHashCode(current.controller), 'enabled': current.enabled, 'draft': composer.state.composer.draft, 'text': current.controller?.text})}',
       );
     }
 
@@ -2914,10 +2922,7 @@ final class _RealtimeScene {
         selection.selectedThreadId,
       );
       expect(tester.widget<TextField>(input).controller, same(controller));
-      expect(
-        tester.widget<PromptComposerView>(composerView).pasteTargetId,
-        target,
-      );
+      expect(tester.widget<PromptComposerView>(composerView).targetKey, target);
       expect(controller.text, prompt);
       _submittedThreadId = selection.selectedThreadId;
       _priorTurn = _submittedThreadId == null
@@ -2934,10 +2939,10 @@ final class _RealtimeScene {
         find.byType(PromptComposerView),
       );
       debugPrintSynchronously(
-        'Realtime submission failure: draft=${composer.composer.draft}, '
-        'pending=${composer.composer.isSubmissionPending}, '
-        'execution=${composer.execution?.id}/${composer.execution?.phase}, '
-        'blocker=${composer.blocker}, failure=${composer.failure}',
+        'Realtime submission failure: draft=${composer.state.composer.draft}, '
+        'pending=${composer.state.composer.isSubmissionPending}, '
+        'execution=${composer.state.execution?.id}/${composer.state.execution?.phase}, '
+        'blocker=${composer.state.blocker}, failure=${composer.state.failure}',
       );
       rethrow;
     }

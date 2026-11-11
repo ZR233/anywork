@@ -195,13 +195,6 @@
   background: var(--sb-blue-accent);
 }
 
-.sb-kbd {
-  margin-left: auto;
-  font: 500 10.5px/1 var(--sb-mono);
-  color: var(--sb-muted);
-  opacity: 0.85;
-}
-
 /* Search Input Box */
 .sb-search-wrap {
   position: relative;
@@ -247,15 +240,6 @@
   background: var(--sb-surface-lowest);
   border-color: var(--sb-blue);
   box-shadow: 0 0 0 2px rgba(85, 121, 140, 0.14);
-}
-
-.sb-search-hint {
-  position: absolute;
-  right: 9px;
-  font: 500 10px/1 var(--sb-mono);
-  color: var(--sb-muted);
-  opacity: 0.76;
-  pointer-events: none;
 }
 
 .sb-search-clear {

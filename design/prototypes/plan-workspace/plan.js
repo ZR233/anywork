@@ -95,7 +95,7 @@
       ${scene.confirm ? `
         <form class="pw-confirm">
           <label class="pw-field-label" for="plan-feedback">修改意见</label>
-          <textarea class="pw-feedback" id="plan-feedback" rows="2" placeholder="写下你希望调整的内容…" title="Enter 提交修改 · Shift+Enter 换行" ${scene.busy ? 'disabled' : ''}>${scene.feedback ? feedback : ''}</textarea>
+          <textarea class="pw-feedback" id="plan-feedback" rows="2" placeholder="写下你希望调整的内容…" ${scene.busy ? 'disabled' : ''}>${scene.feedback ? feedback : ''}</textarea>
           ${scene.error ? `<p class="pw-error" role="alert">${icon('alert')}<span>${error}</span></p>` : ''}
           <footer class="pw-confirm-footer">
             ${scene.busy ? '<p class="pw-hint" role="status"><span class="pw-spinner"></span>正在提交决定…</p>' : ''}
@@ -162,12 +162,6 @@
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       if (field.value.trim() && !scene.busy) render('revision');
-    });
-    field.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        if (!revise.disabled) form.requestSubmit();
-      }
     });
     form.querySelector('[data-approve]').addEventListener('click', () => { if (!scene.busy) render('approved'); });
   }

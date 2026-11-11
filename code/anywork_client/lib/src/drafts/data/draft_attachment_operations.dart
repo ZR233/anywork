@@ -34,12 +34,19 @@ abstract interface class DraftAttachmentOperations
     required ComposerDraftBinding binding,
     required Iterable<String> attachmentIds,
   });
+  void retainRetryFrozen({
+    required OperationId operationId,
+    required String draftId,
+    required Iterable<String> attachmentIds,
+  });
+  void detachFrozenDraft(OperationId operationId);
   Future<void> completeFrozen({
     required OperationId operationId,
     required bool accepted,
     required bool clearCurrent,
     required String? workspaceId,
     required String? threadId,
+    bool retainForRetry = false,
   });
   Future<void> discard({
     required ComposerDraftBinding binding,

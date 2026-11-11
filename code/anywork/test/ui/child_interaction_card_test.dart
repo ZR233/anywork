@@ -4,7 +4,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -444,7 +444,7 @@ Future<void> _pump(
           body: SizedBox(
             width: 1000,
             height: 2300,
-            child: ComposerDockConnector(threadId: host),
+            child: Composer(target: ComposerTarget.thread(threadId: host)),
           ),
         ),
       ),

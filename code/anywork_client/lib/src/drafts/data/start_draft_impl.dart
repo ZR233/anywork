@@ -7,6 +7,7 @@ import '../../observation/read_model.dart';
 import '../../../models.dart';
 import 'drafts_dependencies.dart';
 import '../domain/draft_owners.dart';
+import '../domain/draft_errors.dart';
 import '../../studio/model_route_queries.dart';
 import 'submission_observation.dart';
 
@@ -18,9 +19,100 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   final DraftsDependencies _dependencies;
   final List<Observation> _observations = [];
   final Map<String, (DraftStamp, DraftStamp)> _unknown = {};
-  Future<bool>? _pending;
+  final LatestValue<Map<String, List<ComposerSubmission>>> _submissions =
+      LatestValue<Map<String, List<ComposerSubmission>>>(
+        const <String, List<ComposerSubmission>>{},
+      );
+  final Map<String, Map<String, ComposerSubmission>> _submissionByWorkspace =
+      {};
+  final Map<String, FrozenStartSessionSubmission> _frozenByInput = {};
+  final Map<String, Future<bool>> _pendingByWorkspace = {};
+  final Map<String, Future<bool>> _retryByInput = {};
+  final Map<String, Future<void>> _removeTasks = {};
+  final Map<String, Future<void>> _presentationTasks = {};
+  final Set<String> _presentedInputIds = {};
   Future<void>? _closing;
   bool _closed = false;
+
+  @override
+  ValueObservation<Map<String, List<ComposerSubmission>>> get submissions =>
+      _submissions;
+
+  void _publishSubmissions() => _submissions.publish(
+    Map.unmodifiable({
+      for (final entry in _submissionByWorkspace.entries)
+        if (entry.value.isNotEmpty)
+          entry.key: List<ComposerSubmission>.unmodifiable(entry.value.values),
+    }),
+  );
+
+  @override
+  void markInputsPresented(Iterable<String> inputIds) {
+    var changed = false;
+    var preparationsChanged = false;
+    final preparations = {...state.preparations};
+    for (final inputId in inputIds) {
+      if (!_presentedInputIds.add(inputId)) continue;
+      for (final entry in _submissionByWorkspace.entries) {
+        final submission = entry.value[inputId];
+        changed = entry.value.remove(inputId) != null || changed;
+        if (submission?.phase == ComposerSubmissionPhase.unknownOutcome) {
+          for (final observation in _observations.where(
+            (item) =>
+                item is InputSubmissionObservation && item.inputId == inputId,
+          )) {
+            observation.cancel();
+          }
+        }
+      }
+      final frozen = _frozenByInput.remove(inputId);
+      if (frozen != null) {
+        if (_unknown[frozen.workspaceId] ==
+            (frozen.stamp, frozen.attachmentStamp)) {
+          _unknown.remove(frozen.workspaceId);
+        }
+        if (preparations[frozen.workspaceId]?.inputId == inputId) {
+          preparations.remove(frozen.workspaceId);
+          preparationsChanged = true;
+        }
+        _releasePresentedInput(inputId, frozen);
+      }
+    }
+    if (preparationsChanged) {
+      state = state.copyWith(preparations: preparations);
+    }
+    if (changed) _publishSubmissions();
+  }
+
+  void _releasePresentedInput(
+    String inputId,
+    FrozenStartSessionSubmission frozen,
+  ) {
+    final completion = Completer<void>();
+    final task = completion.future;
+    _presentationTasks[inputId] = task;
+    unawaited(task.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+    unawaited(
+      _releaseFrozen(frozen)
+          .then(completion.complete, onError: completion.completeError),
+    );
+  }
+
+  Future<void> _releaseFrozen(FrozenStartSessionSubmission frozen) async {
+    await _dependencies.attachments.completeFrozen(
+      operationId: frozen.operation.id,
+      accepted: false,
+      clearCurrent: false,
+      workspaceId: frozen.workspaceId,
+      threadId: null,
+    );
+    final unresolved = _dependencies.attachments.unresolvedAttachmentIds
+        .toSet();
+    final failedIds = frozen.input.attachmentDraftIds
+        .where(unresolved.contains)
+        .toList();
+    if (failedIds.isNotEmpty) throw AttachmentCleanupUnresolved(failedIds);
+  }
 
   void updateDraft(String workspaceId, String text) {
     final project = state.forProject(workspaceId);
@@ -175,6 +267,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         composer.attachments.map((item) => item.id),
       ),
     );
+    final attachmentViews = ComposerSubmission.freezeAttachments(
+      composer.attachments,
+    );
     try {
       _dependencies.attachments.retainFrozen(
         operationId: operation.id,
@@ -194,21 +289,27 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       route: route,
       delegation: delegation,
       input: input,
+      attachments: attachmentViews,
     );
   }
 
   Future<bool> submit(String workspaceId) {
-    if (_pending != null) return Future<bool>.value(false);
+    if (_closed || _dependencies.isClosed) return Future<bool>.value(false);
+    final existing = _pendingByWorkspace[workspaceId];
+    if (existing != null) return Future<bool>.value(false);
     final completion = Completer<bool>();
     late final Future<bool> pending;
     pending = completion.future.whenComplete(() {
-      if (identical(_pending, pending)) {
-        _pending = null;
-        if (!_closed) state = state.copyWith(submitting: false);
+      if (identical(_pendingByWorkspace[workspaceId], pending)) {
+        final removed = _pendingByWorkspace.remove(workspaceId);
+        if (removed == null) return;
+        if (!_closed) {
+          state = state.copyWith(submitting: _pendingByWorkspace.isNotEmpty);
+        }
       }
     });
     // Publish ownership before notifying synchronous observers or starting transport work.
-    _pending = pending;
+    _pendingByWorkspace[workspaceId] = pending;
     unawaited(
       _prepareAndSubmit(workspaceId)
           .then(completion.complete, onError: completion.completeError),
@@ -228,6 +329,21 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       );
       _observations.removeWhere((entry) => entry.isCancelled);
       _observations.add(evidence);
+      _frozenByInput[frozen.input.inputId] = frozen;
+      if (_presentedInputIds.contains(frozen.input.inputId)) {
+        _frozenByInput.remove(frozen.input.inputId);
+        _releasePresentedInput(frozen.input.inputId, frozen);
+      } else {
+        _submissionByWorkspace.putIfAbsent(
+          workspaceId,
+          () => <String, ComposerSubmission>{},
+        )[frozen.input.inputId] = ComposerSubmission(
+          inputId: frozen.input.inputId,
+          text: frozen.input.text,
+          attachments: frozen.attachments,
+          phase: ComposerSubmissionPhase.sending,
+        );
+      }
     } catch (error) {
       evidence?.cancel();
       if (frozen != null) {
@@ -244,19 +360,27 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         _dependencies.attachments.reportNewThreadFailure(workspaceId, error);
       return false;
     }
-    if (_closed || _dependencies.isClosed) {
-      evidence.cancel();
-      frozen.operation.reject(
-        StateError('Submission cancelled before backend dispatch'),
+    final binding = _dependencies.attachments.newThreadBinding(workspaceId);
+    final composer = binding.read();
+    _dependencies.attachments.detachFrozenDraft(frozen.operation.id);
+    binding.write(
+      ComposerThreadState.idle(
+        draft: '',
+        attachments: const [],
+        submissionRevision: composer.submissionRevision + 1,
+        attachmentGeneration: composer.attachmentGeneration,
+        cleanupFailureDraftIds: composer.cleanupFailureDraftIds,
+      ),
+    );
+    if (state.revision == frozen.stamp.revision) {
+      final currentProject = state.forProject(workspaceId);
+      state = state.copyWith(
+        projects: {
+          ...state.projects,
+          workspaceId: currentProject.copyWith(text: ''),
+        },
+        revision: state.revision + 1,
       );
-      await _dependencies.attachments.completeFrozen(
-        operationId: frozen.operation.id,
-        accepted: false,
-        clearCurrent: false,
-        workspaceId: workspaceId,
-        threadId: null,
-      );
-      return false;
     }
     state = state.copyWith(
       submitting: true,
@@ -269,18 +393,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         ),
       },
     );
-    final binding = _dependencies.attachments.newThreadBinding(workspaceId);
-    final composer = binding.read();
-    binding.write(
-      SubmittingComposerThreadState(
-        draft: composer.draft,
-        attachments: composer.attachments,
-        submissionRevision: composer.submissionRevision + 1,
-        attachmentGeneration: composer.attachmentGeneration,
-        inputId: frozen.input.inputId,
-        cleanupFailureDraftIds: composer.cleanupFailureDraftIds,
-      ),
-    );
+    _publishSubmissions();
     return _submit(frozen, evidence);
   }
 
@@ -289,16 +402,22 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     InputSubmissionObservation evidence,
   ) async {
     if (_closed || _dependencies.isClosed) {
+      final error = StateError('Submission cancelled before backend dispatch');
       evidence.cancel();
-      frozen.operation.reject(
-        StateError('Submission cancelled before backend dispatch'),
-      );
+      frozen.operation.reject(error);
       await _dependencies.attachments.completeFrozen(
         operationId: frozen.operation.id,
         accepted: false,
         clearCurrent: false,
         workspaceId: frozen.workspaceId,
         threadId: null,
+        retainForRetry: true,
+      );
+      _updateSubmission(
+        frozen.workspaceId,
+        frozen.input.inputId,
+        ComposerSubmissionPhase.failed,
+        error,
       );
       return false;
     }
@@ -327,9 +446,16 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           clearCurrent: false,
           workspaceId: frozen.workspaceId,
           threadId: null,
+          retainForRetry: true,
         );
         _failure(binding.read(), frozen, failure);
         _preparationFailure(frozen, failure, known: true);
+        _updateSubmission(
+          frozen.workspaceId,
+          frozen.input.inputId,
+          ComposerSubmissionPhase.failed,
+          failure,
+        );
         return false;
       }
       acceptedResult = result;
@@ -354,8 +480,12 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           ),
         );
         if (clear) {
+          final currentProject = state.forProject(frozen.workspaceId);
           state = state.copyWith(
-            projects: {...state.projects}..remove(frozen.workspaceId),
+            projects: {
+              ...state.projects,
+              frozen.workspaceId: currentProject.copyWith(text: ''),
+            },
             revision: state.revision + 1,
           );
         }
@@ -367,6 +497,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         workspaceId: frozen.workspaceId,
         threadId: result.thread.id,
       );
+      _frozenByInput.remove(frozen.input.inputId);
+      _submissionByWorkspace[frozen.workspaceId]?.remove(frozen.input.inputId);
+      _publishSubmissions();
       return true;
     } catch (cause) {
       final error = switch (cause) {
@@ -399,10 +532,27 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           clearCurrent: false,
           workspaceId: frozen.workspaceId,
           threadId: null,
+          retainForRetry: true,
+        );
+        _updateSubmission(
+          frozen.workspaceId,
+          frozen.input.inputId,
+          ComposerSubmissionPhase.failed,
+          error,
         );
       } else {
-        _unknown[frozen.workspaceId] = (frozen.stamp, frozen.attachmentStamp);
+        if (!_presentedInputIds.contains(frozen.input.inputId)) {
+          _unknown[frozen.workspaceId] = (frozen.stamp, frozen.attachmentStamp);
+        } else {
+          evidence.cancel();
+        }
         frozen.operation.unknownOutcome(error);
+        _updateSubmission(
+          frozen.workspaceId,
+          frozen.input.inputId,
+          ComposerSubmissionPhase.unknownOutcome,
+          error,
+        );
       }
       _failure(binding.read(), frozen, error);
       if (acceptedResult == null)
@@ -430,6 +580,184 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         frozen.workspaceId: current.withProgress(progress),
       },
     );
+  }
+
+  void _updateSubmission(
+    String workspaceId,
+    String inputId,
+    ComposerSubmissionPhase phase, [
+    Object? error,
+  ]) {
+    final existing = _submissionByWorkspace[workspaceId]?[inputId];
+    if (existing == null) return;
+    _submissionByWorkspace[workspaceId]![inputId] = existing.withPhase(
+      phase,
+      error: error,
+    );
+    _publishSubmissions();
+  }
+
+  @override
+  Future<bool> retrySubmission(String workspaceId, String inputId) {
+    final running = _retryByInput[inputId];
+    if (running != null) return running;
+    final submission = _submissionByWorkspace[workspaceId]?[inputId];
+    final frozen = _frozenByInput[inputId];
+    if (submission == null ||
+        submission.phase != ComposerSubmissionPhase.failed ||
+        frozen == null) {
+      return Future<bool>.error(
+        StateError('Submission is missing or is not retryable'),
+      );
+    }
+    if (_closed || _dependencies.isClosed) {
+      return Future<bool>.error(StateError('The start draft is closed'));
+    }
+    if (_pendingByWorkspace[workspaceId] != null) {
+      return Future<bool>.error(
+        StateError('A Thread creation is already in progress for this project'),
+      );
+    }
+    final completion = Completer<bool>();
+    late final Future<bool> retry;
+    retry = completion.future.whenComplete(() {
+      if (identical(_retryByInput[inputId], retry)) {
+        final removed = _retryByInput.remove(inputId);
+        if (removed == null) return;
+      }
+      if (identical(_pendingByWorkspace[workspaceId], retry)) {
+        final removed = _pendingByWorkspace.remove(workspaceId);
+        if (removed == null) return;
+        if (!_closed) {
+          state = state.copyWith(submitting: _pendingByWorkspace.isNotEmpty);
+        }
+      }
+    });
+    _retryByInput[inputId] = retry;
+    _pendingByWorkspace[workspaceId] = retry;
+    if (!_closed) state = state.copyWith(submitting: true);
+    unawaited(
+      _retryFrozen(
+        workspaceId,
+        inputId,
+        frozen,
+      ).then(completion.complete, onError: completion.completeError),
+    );
+    return retry;
+  }
+
+  Future<bool> _retryFrozen(
+    String workspaceId,
+    String previousInputId,
+    FrozenStartSessionSubmission previous,
+  ) async {
+    final operation = _dependencies.mutations.begin(
+      target: 'start:$workspaceId',
+      draft: previous.stamp,
+    );
+    final input = StudioPromptInput(
+      inputId: operation.id.value,
+      text: previous.input.text,
+      attachmentDraftIds: previous.input.attachmentDraftIds,
+    );
+    _dependencies.attachments.retainRetryFrozen(
+      operationId: operation.id,
+      draftId: previous.stamp.draftId,
+      attachmentIds: input.attachmentDraftIds,
+    );
+    final retry = FrozenStartSessionSubmission(
+      stamp: previous.stamp,
+      attachmentStamp: previous.attachmentStamp,
+      operation: operation,
+      workspaceId: workspaceId,
+      project: previous.project,
+      route: previous.route,
+      delegation: previous.delegation,
+      input: input,
+      attachments: previous.attachments,
+    );
+    InputSubmissionObservation? evidence;
+    try {
+      evidence = registerSubmittedInput(
+        dependencies: _dependencies,
+        operation: operation,
+        inputId: input.inputId,
+      );
+      _observations.removeWhere((entry) => entry.isCancelled);
+      _observations.add(evidence);
+    } catch (error) {
+      operation.reject(error);
+      await _dependencies.attachments.completeFrozen(
+        operationId: operation.id,
+        accepted: false,
+        clearCurrent: false,
+        workspaceId: workspaceId,
+        threadId: null,
+      );
+      rethrow;
+    }
+    final entries = _submissionByWorkspace[workspaceId]!;
+    entries.remove(previousInputId);
+    entries[input.inputId] = ComposerSubmission(
+      inputId: input.inputId,
+      text: input.text,
+      attachments: previous.attachments,
+      phase: ComposerSubmissionPhase.sending,
+    );
+    _frozenByInput.remove(previousInputId);
+    _frozenByInput[input.inputId] = retry;
+    _publishSubmissions();
+    await _dependencies.attachments.completeFrozen(
+      operationId: previous.operation.id,
+      accepted: false,
+      clearCurrent: false,
+      workspaceId: workspaceId,
+      threadId: null,
+    );
+    state = state.copyWith(
+      preparations: {
+        ...state.preparations,
+        workspaceId: NewThreadPreparation(
+          workspaceId: workspaceId,
+          inputId: input.inputId,
+          workspaceMode: retry.project.workspaceMode,
+        ),
+      },
+    );
+    return _submit(retry, evidence);
+  }
+
+  @override
+  Future<void> removeSubmission(String workspaceId, String inputId) {
+    final existing = _submissionByWorkspace[workspaceId]?[inputId];
+    if (existing == null) return Future<void>.value();
+    final active = _removeTasks[inputId];
+    if (active != null) return active;
+    if (_closed)
+      return Future<void>.error(StateError('The start draft is closed'));
+    if (existing.phase != ComposerSubmissionPhase.failed) {
+      return Future<void>.error(
+        StateError('Only failed submissions can be removed'),
+      );
+    }
+    final completion = Completer<void>();
+    final task = completion.future;
+    _removeTasks[inputId] = task;
+    final frozen = _frozenByInput.remove(inputId);
+    _submissionByWorkspace[workspaceId]!.remove(inputId);
+    if (state.preparations[workspaceId]?.inputId == inputId) {
+      state = state.copyWith(
+        preparations: {...state.preparations}..remove(workspaceId),
+      );
+    }
+    _publishSubmissions();
+    unawaited(
+      (frozen == null ? Future<void>.value() : _releaseFrozen(frozen)).then(
+        completion.complete,
+        onError: completion.completeError,
+      ),
+    );
+    return task;
   }
 
   void _preparationFailure(
@@ -548,11 +876,35 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   Future<void> _close() async {
     _closed = true;
-    await _pending;
+    Object? failure;
+    StackTrace? failureStack;
+    Future<void> waitFor(Iterable<Future<void>> tasks) async {
+      try {
+        await Future.wait(tasks);
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureStack ??= stackTrace;
+      }
+    }
+
+    await waitFor(_pendingByWorkspace.values);
+    await waitFor(_retryByInput.values);
+    await waitFor(_removeTasks.values);
+    await waitFor(_presentationTasks.values);
+    for (final frozen in _frozenByInput.values.toList()) {
+      try {
+        await _releaseFrozen(frozen);
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureStack ??= stackTrace;
+      }
+    }
+    _frozenByInput.clear();
     for (final observation in _observations) {
       observation.cancel();
     }
     _observations.clear();
+    if (failure != null) Error.throwWithStackTrace(failure!, failureStack!);
   }
 }
 
@@ -566,6 +918,7 @@ final class FrozenStartSessionSubmission {
     required this.route,
     required this.delegation,
     required this.input,
+    required this.attachments,
   });
   final DraftStamp stamp;
   final DraftStamp attachmentStamp;
@@ -575,4 +928,5 @@ final class FrozenStartSessionSubmission {
   final ModeModelRouteView route;
   final DelegationSettingsView delegation;
   final StudioPromptInput input;
+  final List<AttachmentDraftView> attachments;
 }

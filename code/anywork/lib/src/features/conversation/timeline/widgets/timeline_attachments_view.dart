@@ -1,6 +1,5 @@
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../state/timeline_file_presentation.dart';
@@ -189,82 +188,65 @@ class _FileCellState extends State<_FileCell> {
                 child: const Text('在文件管理器中显示'),
               ),
           ],
-          builder: (context, controller, child) => CallbackShortcuts(
-            bindings: {
-              const SingleActivator(LogicalKeyboardKey.f10, shift: true): () {
-                if (menuEnabled) controller.open();
-              },
-              const SingleActivator(LogicalKeyboardKey.contextMenu): () {
-                if (menuEnabled) controller.open();
-              },
-            },
-            child: Focus(
-              child: GestureDetector(
-                onSecondaryTapDown: menuEnabled
-                    ? (details) =>
-                          controller.open(position: details.localPosition)
-                    : null,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+          builder: (context, controller, child) => GestureDetector(
+            onSecondaryTapDown: menuEnabled
+                ? (details) => controller.open(position: details.localPosition)
+                : null,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Stack(
                   children: [
-                    Stack(
-                      children: [
-                        Center(
-                          child:
-                              attachment?.modality ==
-                                  AttachmentModalityView.image
-                              // Successful thumbnails bound themselves. Image
-                              // failures must keep their complete diagnosis and
-                              // retry reachable rather than clip to a square.
-                              ? SizedBox(width: 120, child: thumbnail)
-                              : SizedBox.square(
-                                  dimension: 120,
-                                  child: thumbnail,
-                                ),
-                        ),
-                        if (canSave || canReveal)
-                          Positioned(
-                            top: 0,
-                            right: 0,
-                            child: IconButton(
-                              tooltip: '文件操作',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: menuEnabled
-                                  ? () => controller.isOpen
-                                        ? controller.close()
-                                        : controller.open()
-                                  : null,
-                              icon: const Icon(Icons.more_horiz, size: 18),
-                            ),
-                          ),
-                      ],
+                    Center(
+                      child:
+                          attachment?.modality == AttachmentModalityView.image
+                          // Successful thumbnails bound themselves. Image
+                          // failures must keep their complete diagnosis and
+                          // retry reachable rather than clip to a square.
+                          ? SizedBox(width: 120, child: thumbnail)
+                          : SizedBox.square(dimension: 120, child: thumbnail),
                     ),
-                    const SizedBox(height: 6),
-                    Tooltip(
-                      message: file.filename,
-                      child: InkWell(
-                        onTap: widget.onOpen == null || attachment == null
-                            ? null
-                            : () => widget.onOpen!(file),
-                        child: Text(
-                          file.filename,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
-                    ),
-                    if (widget.busy) const LinearProgressIndicator(),
-                    if (widget.operationError case final message?)
-                      Text(
-                        message,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
+                    if (canSave || canReveal)
+                      Positioned(
+                        top: 0,
+                        right: 0,
+                        child: IconButton(
+                          tooltip: '文件操作',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: menuEnabled
+                              ? () => controller.isOpen
+                                    ? controller.close()
+                                    : controller.open()
+                              : null,
+                          icon: const Icon(Icons.more_horiz, size: 18),
                         ),
                       ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 6),
+                Tooltip(
+                  message: file.filename,
+                  child: InkWell(
+                    onTap: widget.onOpen == null || attachment == null
+                        ? null
+                        : () => widget.onOpen!(file),
+                    child: Text(
+                      file.filename,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ),
+                if (widget.busy) const LinearProgressIndicator(),
+                if (widget.operationError case final message?)
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+              ],
             ),
           ),
         ),

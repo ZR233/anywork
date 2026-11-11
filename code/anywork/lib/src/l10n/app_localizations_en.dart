@@ -643,7 +643,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get preparationRetainedBody =>
-      'Your prompt and attachments are saved. Adjust the settings and send again.';
+      'Your prompt and attachments are kept in this submission. Retrying uses its original settings and does not change your current draft.';
 
   @override
   String get preparationUnknownTitle => 'Creation outcome unconfirmed';
@@ -1369,6 +1369,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get composerStop => 'Stop';
+
+  @override
+  String get composerSubmissionSending => 'Sending';
+
+  @override
+  String get composerSubmissionAccepted => 'Received, waiting for sync';
+
+  @override
+  String get composerSubmissionFailed => 'Send failed';
+
+  @override
+  String get composerSubmissionUnknown => 'Send outcome unconfirmed';
+
+  @override
+  String get composerRetrySubmission => 'Retry';
+
+  @override
+  String get composerRemoveSubmission => 'Remove';
 
   @override
   String get compileModeSimple => 'Simple';
@@ -2433,10 +2451,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get interactionPlanAdjustSubmit => 'Submit changes';
-
-  @override
-  String get interactionPlanFeedbackHint =>
-      'Enter submits · Shift+Enter adds a line';
 
   @override
   String get planExpandReading => 'Read full width';

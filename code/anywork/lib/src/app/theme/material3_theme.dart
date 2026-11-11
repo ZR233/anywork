@@ -45,24 +45,7 @@ ThemeData _createStudioTheme({String? fontFamily}) {
         bodyColor: scheme.onSurface,
         displayColor: scheme.onSurface,
       );
-  Color? stateOverlay(Set<WidgetState> states) {
-    if (states.contains(WidgetState.disabled)) return Colors.transparent;
-    if (states.contains(WidgetState.pressed)) {
-      return scheme.primary.withValues(alpha: 0.12);
-    }
-    if (states.contains(WidgetState.focused)) {
-      return scheme.primary.withValues(alpha: 0.12);
-    }
-    if (states.contains(WidgetState.hovered)) {
-      return scheme.primary.withValues(alpha: 0.06);
-    }
-    return null;
-  }
-
-  final button = ButtonStyle(
-    shape: WidgetStatePropertyAll(shape),
-    overlayColor: WidgetStateProperty.resolveWith(stateOverlay),
-  );
+  final button = ButtonStyle(shape: WidgetStatePropertyAll(shape));
   final menuButton = button.copyWith(
     side: const WidgetStatePropertyAll(BorderSide.none),
   );
@@ -83,10 +66,6 @@ ThemeData _createStudioTheme({String? fontFamily}) {
     fontFamilyFallback: fontFamilyFallback,
     textTheme: text,
     iconTheme: IconThemeData(color: scheme.onSurfaceVariant),
-    hoverColor: scheme.primary.withValues(alpha: 0.06),
-    focusColor: scheme.primary.withValues(alpha: 0.12),
-    highlightColor: scheme.primary.withValues(alpha: 0.10),
-    splashColor: scheme.primary.withValues(alpha: 0.12),
     disabledColor: scheme.onSurface.withValues(alpha: 0.38),
     appBarTheme: AppBarTheme(
       elevation: 0,
@@ -170,21 +149,7 @@ ThemeData _createStudioTheme({String? fontFamily}) {
       selectionColor: scheme.primaryContainer,
       selectionHandleColor: scheme.primary,
     ),
-    filledButtonTheme: FilledButtonThemeData(
-      style: button.copyWith(
-        overlayColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.disabled)) return Colors.transparent;
-          if (states.contains(WidgetState.focused) ||
-              states.contains(WidgetState.pressed)) {
-            return scheme.onPrimary.withValues(alpha: 0.16);
-          }
-          if (states.contains(WidgetState.hovered)) {
-            return scheme.onPrimary.withValues(alpha: 0.08);
-          }
-          return null;
-        }),
-      ),
-    ),
+    filledButtonTheme: FilledButtonThemeData(style: button),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: button.copyWith(
         backgroundColor: WidgetStateProperty.resolveWith(
@@ -211,10 +176,7 @@ ThemeData _createStudioTheme({String? fontFamily}) {
           (states) => BorderSide(
             color: states.contains(WidgetState.disabled)
                 ? scheme.outlineVariant
-                : states.contains(WidgetState.focused)
-                ? scheme.primary
                 : scheme.outline,
-            width: states.contains(WidgetState.focused) ? 2 : 1,
           ),
         ),
       ),
@@ -223,12 +185,6 @@ ThemeData _createStudioTheme({String? fontFamily}) {
     iconButtonTheme: IconButtonThemeData(style: button),
     checkboxTheme: CheckboxThemeData(
       side: BorderSide(color: scheme.outline, width: 2),
-    ),
-    radioTheme: RadioThemeData(
-      overlayColor: WidgetStateProperty.resolveWith(stateOverlay),
-    ),
-    switchTheme: SwitchThemeData(
-      overlayColor: WidgetStateProperty.resolveWith(stateOverlay),
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
       color: scheme.primary,

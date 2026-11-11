@@ -6,6 +6,8 @@ import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
+    show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
@@ -395,10 +397,16 @@ final class _Scene {
     final composerTarget = find.byWidgetPredicate((widget) {
       if (widget is! PromptComposerView) return false;
       final selection = graph.client.selection.state;
-      return widget.pasteTargetId ==
-              (selection.selectedThreadId ?? selection.selectedProjectId) &&
-          widget.enabled &&
-          !widget.submissionLocked;
+      return widget.state.enabled &&
+          !widget.state.submissionLocked &&
+          switch (widget.targetKey) {
+            ThreadComposerTarget(:final threadId) =>
+              threadId == selection.selectedThreadId,
+            StartComposerTarget(:final workspaceId) =>
+              selection.selectedThreadId == null &&
+                  workspaceId == selection.selectedProjectId,
+            _ => false,
+          };
     });
     final input = find.descendant(
       of: composerTarget,
@@ -448,16 +456,16 @@ final class _Scene {
               .singleOrNull
               ?.controller
               ?.text,
-          'draft': composer?.composer.draft,
-          'pending': composer?.composer.isSubmissionPending,
+          'draft': composer?.state.composer.draft,
+          'pending': composer?.state.composer.isSubmissionPending,
           'sdkDraft': selected == null
               ? null
               : graph.client.drafts.existingComposer(selected)?.state.draft,
-          'execution': composer?.execution?.id,
-          'blocker': composer?.blocker?.runtimeType.toString(),
-          'failure': composer?.failure?.runtimeType.toString(),
-          'enabled': composer?.enabled,
-          'locked': composer?.submissionLocked,
+          'execution': composer?.state.execution?.id,
+          'blocker': composer?.state.blocker?.runtimeType.toString(),
+          'failure': composer?.state.failure?.runtimeType.toString(),
+          'enabled': composer?.state.enabled,
+          'locked': composer?.state.submissionLocked,
         };
         captureReport['submissionFailure:$name'] = diagnostic;
         debugPrintSynchronously(

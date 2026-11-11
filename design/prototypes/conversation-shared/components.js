@@ -615,6 +615,22 @@
       const authorLabel = item.kind === 'user' ? (item.author || '你') : (item.author || '糊来帮');
       footer.append(node(`<span>${escape(authorLabel)}${item.time ? ' · ' + escape(item.time) : ''}</span>`));
       footer.append(button('复制', 'copy', () => actions.copy(item.text), 'cv-quiet'));
+      if (item.submissionPhase) {
+        const label = {
+          sending: '正在发送',
+          accepted: '已收到，等待同步',
+          failed: '发送失败',
+          unknown: '发送结果待确认'
+        }[item.submissionPhase];
+        footer.append(node(`<span role="status">${escape(label || '')}</span>`));
+        if (item.submissionError) {
+          footer.append(node(`<span>${escape(item.submissionError)}</span>`));
+        }
+        if (item.submissionPhase === 'failed') {
+          footer.append(button('重试', 'rotate-cw', () => actions.retrySubmission(item.id), 'cv-quiet'));
+          footer.append(button('移除', 'x', () => actions.removeSubmission(item.id), 'cv-quiet'));
+        }
+      }
     }
     return element;
   }

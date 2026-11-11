@@ -196,11 +196,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     String threadId,
     StudioPromptInput input, {
     required int expectedModelRouteRevision,
+    Future<void> Function()? beforeDispatch,
   }) async {
     var transportInvoked = false;
     try {
       _ensureOpen();
       return await _lane.enqueue(() async {
+        if (beforeDispatch != null) await beforeDispatch();
         _throwIfExecutionClosed(threadId);
         if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
           throw ArgumentError('Prompt cannot be empty');
