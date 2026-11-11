@@ -2579,8 +2579,26 @@ abstract class AppLocalizations {
   /// No description provided for @statusCapabilitiesTitle.
   ///
   /// In en, this message translates to:
-  /// **'Active capabilities'**
+  /// **'Started items'**
   String get statusCapabilitiesTitle;
+
+  /// No description provided for @statusServiceConnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting'**
+  String get statusServiceConnecting;
+
+  /// No description provided for @statusServiceStopping.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping'**
+  String get statusServiceStopping;
+
+  /// No description provided for @statusServiceUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsupported'**
+  String get statusServiceUnsupported;
 
   /// No description provided for @statusSessionMode.
   ///

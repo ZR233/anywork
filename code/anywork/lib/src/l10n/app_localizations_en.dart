@@ -1404,7 +1404,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusModelLabel => 'Model';
 
   @override
-  String get statusCapabilitiesTitle => 'Active capabilities';
+  String get statusCapabilitiesTitle => 'Started items';
+
+  @override
+  String get statusServiceConnecting => 'Connecting';
+
+  @override
+  String get statusServiceStopping => 'Stopping';
+
+  @override
+  String get statusServiceUnsupported => 'Unsupported';
 
   @override
   String get statusSessionMode => 'Session mode';
