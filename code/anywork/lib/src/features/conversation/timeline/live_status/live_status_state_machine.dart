@@ -80,7 +80,7 @@ abstract final class LiveStatusStateMachine {
   }
 
   /// 常规轮次活动提示合并进当前活跃轮次最新且开放的 `Work` 卡片头部；
-  /// 成员调用失败不等于当前执行失败，不阻止合并。静止取消/交接、
+  /// 成员失败、取消或交接不代表当前轮次结束，不阻止当前活动合并。
   /// 更早实时窗口以及审批/存储故障等关键提示仍保持独立呈现。
   static ({String blockId, ExecutionLiveNotice notice})? mergeableWorkNotice({
     required LiveDisplayWindow? live,
@@ -97,10 +97,7 @@ abstract final class LiveStatusStateMachine {
       return null;
     }
     final summary = (latest.body as WorkDisplayBlock).summary;
-    final working = summary.running > 0 || summary.waiting > 0;
-    final continuingIdle =
-        !working && summary.cancelled == 0 && summary.transferred == 0;
-    if (summary.unavailable != 0 || (!working && !continuingIdle)) {
+    if (summary.unavailable != 0) {
       return null;
     }
     final source = latest.source;

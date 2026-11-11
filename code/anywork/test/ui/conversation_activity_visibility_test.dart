@@ -424,10 +424,10 @@ void main() {
             blocks: [
               work,
               LiveDisplayBlock(
-                id: 'newer-cancelled-work',
+                id: 'newer-other-turn-work',
                 blockOrder: 2,
                 state: DisplayBlockState.open,
-                source: source,
+                source: const ForegroundTurnChatSource(turnId: 'other-turn'),
                 body: WorkDisplayBlock(
                   summary: const WorkSummary(
                     total: 1,
@@ -441,7 +441,7 @@ void main() {
                   ),
                   members: const DisplayBlockRef(
                     databaseId: 'db',
-                    blockId: 'newer-cancelled-work',
+                    blockId: 'newer-other-turn-work',
                   ),
                 ),
               ),
@@ -482,8 +482,8 @@ void main() {
         ('waiting', 0, 1, 0, 0, 0, 0, true),
         ('failed call while thinking', 0, 0, 1, 0, 0, 0, true),
         ('failed call while running', 1, 0, 1, 0, 0, 0, true),
-        ('cancelled terminal', 0, 0, 0, 1, 0, 0, false),
-        ('transferred terminal', 0, 0, 0, 0, 1, 0, false),
+        ('cancelled terminal', 0, 0, 0, 1, 0, 0, true),
+        ('transferred terminal', 0, 0, 0, 0, 1, 0, true),
         ('unavailable running', 1, 0, 0, 0, 0, 1, false),
         ('unavailable waiting', 0, 1, 0, 0, 0, 1, false),
       ]) {
@@ -516,6 +516,7 @@ void main() {
       );
       for (final kind in [
         ThreadActivityKind.preparing,
+        ThreadActivityKind.waitingApi,
         ThreadActivityKind.thinking,
         ThreadActivityKind.runningTool,
         ThreadActivityKind.planning,

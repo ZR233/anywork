@@ -30,6 +30,7 @@ import '../widgets/timeline_plain_text.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
 import 'timeline_preview_fixtures.dart';
+import 'model_request_wait_preview.dart';
 
 Widget _timelinePreviewHost(
   Widget child, {
@@ -318,14 +319,13 @@ Widget timelineReceiptsPreview() => _timelinePreviewHost(
   ),
 );
 
-@Preview(name: '工作组 / 实时等待下一步', group: 'Timeline · 原子工作组', size: Size(760, 360))
-Widget timelineAtomicLiveGroupPreview() => _timelinePreviewHost(
-  const _AtomicGroupPreview(
-    key: ValueKey('atomic-live'),
-    live: true,
-    executionPresent: true,
-  ),
-);
+@Preview(
+  name: '工作组 / 模型请求等待（交接后单行）',
+  group: 'Timeline · 原子工作组',
+  size: Size(760, 360),
+)
+Widget timelineAtomicLiveGroupPreview() =>
+    _timelinePreviewHost(const ModelRequestWaitPreview());
 
 @Preview(name: '工作组 / 工作与正文交替', group: 'Timeline · 原子工作组', size: Size(760, 600))
 Widget timelineAtomicStoryPreview() => _timelinePreviewHost(

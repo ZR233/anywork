@@ -1843,9 +1843,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineGroupClosing => '正在收束';
 
   @override
-  String get timelineGroupWaitingForNext => '等待下一步';
-
-  @override
   String get timelineGroupUnrestored => '上次执行未收束，尚未恢复';
 
   @override

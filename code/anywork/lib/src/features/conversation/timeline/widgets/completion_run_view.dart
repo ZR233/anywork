@@ -168,8 +168,6 @@ class _WorkHeader extends StatelessWidget {
     final live = state == DisplayBlockState.open;
     final cold = live && !executionPresent;
     final working = summary.running > 0 || summary.waiting > 0;
-    final continuingIdle =
-        !working && summary.cancelled == 0 && summary.transferred == 0;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
@@ -177,10 +175,8 @@ class _WorkHeader extends StatelessWidget {
         ? context.conversationActivityLabel(activity!)
         : summary.waiting > 0
         ? l10n.conversationActivityWaitingTools
-        : summary.running == 0
-        ? l10n.timelineGroupWaitingForNext
         : l10n.timelineGroupWorking;
-    final activeThought = live && !cold && (working || continuingIdle)
+    final activeThought = live && !cold
         ? [
                 if (activity != null) activity!.thinkingSummary,
                 summary.thinkingSummary,
@@ -205,7 +201,11 @@ class _WorkHeader extends StatelessWidget {
                 ? ActivityDurationKind.executing
                 : ActivityDurationKind.worked,
           );
-    final label = live ? status : duration ?? l10n.timelineGroupRecord;
+    // A group summary is a fact in its own right, not an inferred model phase.
+    // Without that fact, current activity or active members, retain static Work.
+    final hasPhase = cold || working || activity != null;
+    final current = live && (hasPhase || activeThought != null);
+    final label = current ? status : duration ?? l10n.timelineGroupRecord;
     final outcomes = <String>[
       if (summary.failed > 0) l10n.timelineGroupFailedCount(summary.failed),
       if (summary.cancelled > 0)
@@ -217,14 +217,16 @@ class _WorkHeader extends StatelessWidget {
     ];
     final description = [
       label,
-      if (live && label != fallback) fallback,
-      if (live && duration != null) duration,
+      if (live && hasPhase && label != fallback) fallback,
+      if (live && duration != null && label != duration) duration,
       l10n.timelineGroupMemberCount(summary.total),
       ...outcomes,
     ].join('，');
     final active = live && executionPresent && (working || activity != null);
     final icon = cold
         ? Icons.history_outlined
+        : live && activity != null
+        ? activity!.kind.icon
         : summary.cancelled > 0
         ? Icons.stop_circle_outlined
         : summary.transferred > 0
@@ -324,7 +326,7 @@ class _WorkHeader extends StatelessWidget {
                                   style: titleStyle,
                                 ),
                         ),
-                        if (duration != null) ...[
+                        if (duration != null && label != duration) ...[
                           const SizedBox(width: 8),
                           Text(
                             duration,

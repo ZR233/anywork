@@ -1953,9 +1953,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineGroupClosing => 'Finishing work';
 
   @override
-  String get timelineGroupWaitingForNext => 'Waiting for the next step';
-
-  @override
   String get timelineGroupUnrestored =>
       'Previous work is unfinished and has not resumed';
 
