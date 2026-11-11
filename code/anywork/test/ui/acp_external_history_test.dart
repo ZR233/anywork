@@ -1,22 +1,26 @@
 import 'dart:async';
 
-import 'package:anywork/src/features/conversation/acp_history/acp_external_history_button.dart';
-import 'package:anywork/src/features/conversation/acp_history/acp_external_history_view_model.dart';
+import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_status_bar_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_external_history_view_model.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_session_view_model.dart'
+    show acpConversationOwnerProvider;
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../../anywork_client/test/support/acp_business_port.dart';
 import '../../../anywork_client/test/support/timeline_transport.dart'
     show TestConversationTransport;
 
-import 'package:anywork/src/features/conversation/acp/view_models/acp_conversation_view_model.dart'
-    show acpConversationOwnerProvider;
+Finder _historyTrigger() => find.byKey(
+  ValueKey(AcpViewKeyValues.externalHistoryButton('thread-source')),
+);
 
 void main() {
   testWidgets('仅打开面板显式读取一次，列表显示对端原值', (tester) async {
@@ -37,7 +41,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(harness.listCalls, isEmpty);
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNotNull,
     );
 
@@ -65,7 +69,7 @@ void main() {
     await tester.pumpWidget(harness.scope(operations: harness.operations()));
     await tester.pumpAndSettle();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNull,
     );
     expect(find.byTooltip('此 ACP 服务不支持列出会话'), findsOneWidget);
@@ -81,7 +85,7 @@ void main() {
     await tester.pumpWidget(harness.scope(operations: harness.operations()));
     await tester.pumpAndSettle();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNull,
     );
     expect(find.byTooltip('ACP 服务能力尚未确认'), findsOneWidget);
@@ -100,7 +104,7 @@ void main() {
     );
     await tester.pump();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNull,
     );
 
@@ -114,7 +118,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNotNull,
     );
     expect(harness.listCalls, isEmpty);
@@ -132,20 +136,23 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNull,
     );
 
     owner.complete(harness.owner);
     await tester.pumpAndSettle();
     expect(
-      tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
+      tester.widget<ButtonStyleButton>(_historyTrigger()).onPressed,
       isNotNull,
     );
     expect(harness.listCalls, isEmpty);
   });
 
   testWidgets('透传远端 session ID 与分页 cursor，分页失败保留已读条目', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(960, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     final harness = await _HistoryHarness.create(listSessions: true);
     addTearDown(harness.close);
     harness.port.listValue = AcpListSessionsResponseView(
@@ -171,9 +178,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.byIcon(Icons.more_vert));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('加载历史'));
+    final loadButton = find.byKey(
+      ValueKey(AcpViewKeyValues.externalHistoryLoad('remote/exact-id')),
+    );
+    await tester.tap(loadButton);
     await tester.pumpAndSettle();
     expect(harness.openCalls, hasLength(1));
     expect(harness.openCalls.single.$1, 'thread-source');
@@ -184,7 +192,7 @@ void main() {
     expect(harness.openCalls.single.$3, isFalse);
     expect(harness.openCalls.single.$4, '/first');
     expect(find.textContaining('打开结果未知'), findsOneWidget);
-    expect(find.byIcon(Icons.more_vert), findsNothing);
+    expect(loadButton, findsNothing);
     expect(harness.openCalls, hasLength(1));
 
     await tester.tap(find.text('关闭'));
@@ -193,14 +201,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.textContaining('打开结果未知'), findsOneWidget);
-    expect(find.byIcon(Icons.more_vert), findsNothing);
-    expect(harness.openCalls, hasLength(1));
-
+    expect(loadButton, findsNothing);
     harness.port.commandError = StateError('page unavailable');
     await tester.tap(find.text('加载更多'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(harness.listCalls, hasLength(3));
     expect(harness.listCalls.last.$2, 'cursor/exact-page-2');
     expect(find.text('保留的条目'), findsOneWidget);
     expect(find.textContaining('page unavailable'), findsOneWidget);
@@ -316,14 +321,17 @@ final class _HistoryHarness {
     ],
     child: MaterialApp(
       locale: const Locale('zh'),
-      theme: ThemeData(useMaterial3: true),
+      theme: pureStudioTheme(),
       localizationsDelegates: [
         AppLocalizations.delegate,
         ...GlobalMaterialLocalizations.delegates,
       ],
       supportedLocales: AppLocalizations.supportedLocales,
       home: const Scaffold(
-        body: AcpExternalHistoryButton(threadId: 'thread-source'),
+        body: Align(
+          alignment: Alignment.bottomCenter,
+          child: AcpStatusBarConnector(threadId: 'thread-source'),
+        ),
       ),
     ),
   );

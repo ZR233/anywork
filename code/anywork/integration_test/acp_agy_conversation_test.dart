@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
 import 'package:anywork/src/features/conversation/composer/widgets/start_backend_selector.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
@@ -38,8 +39,6 @@ void main() {
       ).resolveSymbolicLinks();
       expect(p.equals(home, p.join(sandbox, 'studio-home')), isTrue);
       expect(p.equals(projectPath, p.join(sandbox, 'project')), isTrue);
-      // The native runner acquires its instance lock and opens logs before
-      // Dart's test body. Those are not product configuration/history.
       final existing = await Directory(home).list().toList();
       expect(
         existing.map((entry) => p.basename(entry.path)),
@@ -93,7 +92,6 @@ void main() {
       );
       const serviceId = 'agy-live-acceptance';
       const serviceName = 'AGY live acceptance';
-      // Ordinary command definitions have no credential material or login step.
       final saved = await graph.acp.save(
         AcpAccountUpdateView(
           accountId: serviceId,
@@ -126,7 +124,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text(serviceName).last);
       await scene.until(
-        () => find.byType(AcpStartComposer).evaluate().length == 1,
+        () => find.byType(AcpStartComposerView).evaluate().length == 1,
         'ACP service selected through production start page',
       );
       final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
@@ -135,11 +133,13 @@ void main() {
           'run commands, use the network, or read or write any files.';
       await tester.enterText(
         find.descendant(
-          of: find.byType(AcpStartComposer),
+          of: find.byType(AcpStartComposerView),
           matching: find.byType(TextField),
         ),
         prompt,
       );
+      await tester.pumpAndSettle();
+      await scene.capture('agy-live-start-card');
       await tester.tap(find.widgetWithText(FilledButton, '创建 ACP 会话'));
       await scene.until(() {
         final failure = graph
@@ -150,10 +150,10 @@ void main() {
             .preparations[project.id]
             ?.failure;
         if (failure != null) throw StateError('ACP create failed: $failure');
-        return find.byType(AcpConversationComposer).evaluate().length == 1;
+        return find.byType(AcpComposerConnector).evaluate().length == 1;
       }, 'explicit session/new completes without prompting');
       final threadId = tester
-          .widget<AcpConversationComposer>(find.byType(AcpConversationComposer))
+          .widget<AcpComposerConnector>(find.byType(AcpComposerConnector))
           .threadId;
       final owner = graph.client.acpSessions.conversationForThread(threadId)!;
       await scene.until(
@@ -170,8 +170,6 @@ void main() {
       checkOwner();
       expect(owner.state.activeRun, isNull);
       expect(owner.state.lastCompleted, isNull);
-      // ACP may publish commands/session metadata immediately after session/new.
-      // Prove that creation did not prompt, rather than forbidding notifications.
       expect(
         owner.state.content.whereType<AcpConversationMessageItem>(),
         isEmpty,
@@ -207,21 +205,44 @@ void main() {
           return kind is AcpSelectConfigView &&
               _values(kind).any((value) => value.value != kind.currentValue);
         }).toList();
-        // Prefer effort/config over switching models or permission-related modes.
         selects.sort((a, b) => _priority(a).compareTo(_priority(b)));
         expect(selects, isNotEmpty, reason: 'No real alternate select config');
         final option = selects.first;
         final kind = option.kind as AcpSelectConfigView;
         final alternate = _values(kind)
             .firstWhere((value) => value.value != kind.currentValue);
+        final controlAnchor = find.byKey(
+          ValueKey(AcpViewKeyValues.configControl(option.id.value)),
+        );
+        if (controlAnchor.evaluate().isEmpty) {
+          // If placed in the overflow popover, open "More settings" first.
+          await tester.tap(
+            find.descendant(
+              of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
+              matching: find.byType(TextButton),
+            ),
+          );
+          await tester.pumpAndSettle();
+        }
         await tester.tap(
           find.descendant(
-            of: find.byKey(ValueKey(option.id)),
-            matching: find.byType(DropdownButton<AcpConfigValueId>),
+            of: find.byKey(
+              ValueKey(AcpViewKeyValues.configControl(option.id.value)),
+            ),
+            matching: find.byType(TextButton),
           ),
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.text(alternate.name).last);
+        await tester.tap(
+          find.byKey(
+            ValueKey(
+              AcpViewKeyValues.configChoice(
+                option.id.value,
+                alternate.value.value,
+              ),
+            ),
+          ),
+        );
         await scene.until(
           () => !owner.state.configPending && pendingObserved,
           'real configuration request leaves pending',
@@ -241,9 +262,23 @@ void main() {
         final alternate = modes.availableModes.firstWhere(
           (mode) => mode.id != modes.currentModeId,
         );
-        await tester.tap(find.byType(DropdownButton<AcpModeId>));
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const ValueKey(AcpViewKeyValues.configLegacyMode)),
+            matching: find.byType(TextButton),
+          ),
+        );
         await tester.pumpAndSettle();
-        await tester.tap(find.text(alternate.name).last);
+        await tester.tap(
+          find.byKey(
+            ValueKey(
+              AcpViewKeyValues.configChoice(
+                AcpViewKeyValues.configLegacyMode,
+                alternate.id.value,
+              ),
+            ),
+          ),
+        );
         await scene.until(
           () => !owner.state.configPending && pendingObserved,
           'real legacy mode request leaves pending',
@@ -260,11 +295,12 @@ void main() {
       await scene.capture('agy-live-configured-shell');
       await record('real-configuration-confirmed');
 
-      // A single real prompt. No retries, callback calls or synthetic ACP frames.
       evidence['promptCount'] = 1;
       evidence['marker'] = marker;
       await record('prompt-dispatch-once');
-      await tester.tap(find.widgetWithText(FilledButton, '发送'));
+      await tester.tap(
+        find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId))),
+      );
       await scene.until(
         () {
           checkOwner();
@@ -308,20 +344,20 @@ void main() {
       evidence['stopReason'] = stop.name;
       evidence['actualAssistantText'] = text;
       await record('actual-text-and-end-turn-confirmed');
-      // The production list is lazy. Scroll the exact assistant item into view,
-      // and scope the rendered-text assertion so the user prompt cannot pass it.
       final assistantIndex = owner.state.content.lastIndexWhere(
         (item) =>
             item is AcpConversationMessageItem &&
             item.kind == AcpConversationMessageKind.assistant,
       );
-      final assistantItem = find.byKey(ValueKey((threadId, assistantIndex)));
+      final assistantItem = find.byKey(
+        ValueKey(AcpViewKeyValues.timelineItem(threadId, assistantIndex)),
+      );
       await tester.scrollUntilVisible(
         assistantItem,
         250,
         scrollable: find
             .descendant(
-              of: find.byType(AcpConversationContent),
+              of: find.byType(AcpConversationContentView),
               matching: find.byType(Scrollable),
             )
             .first,

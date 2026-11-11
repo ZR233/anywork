@@ -59,7 +59,7 @@ open 操作的观察入口与 Ready/Failed 属于同一次操作，load 完成�
 
 ACP 创建与发送沿原草稿、附件 owner 分支执行，不经过 Native route、mode 或历史 materialize。用户先选服务和真实本机业务 workspace，显式创建一个真实会话；创建后保留输入与附件，由用户按该会话的实际配置发送首条 prompt，不自动发送或重发。配置在途或失败不能悄悄以旧值发送；附件按实际能力验证，失败保留草稿，暂存资源至少保留到实际序列化和发送责任结束。
 
-涉及后端数据的 Flutter 区域遵循 adapter → Client owner → ViewModel → View。ViewModel 按成员身份观察相关 Client 状态，选择组件需要的不可变值、派生呈现并承接动作；不直接调用 FRB、不复制业务列表。服务选择、状态、正文、工具、Plan、权限、配置、输入与附件按交互及刷新职责组件化，使用现有 Riverpod 细粒度观察实现独立刷新，不要求每个叶子控件新增 ViewModel。外层页面只做布局、身份和 backend 装配，不外挂协议归并、提交校验、异步结果处理或整页刷新链；View 不解析 FRB 类型。组件退役释放显示需求，不退役 Client 业务 owner；焦点、滚动和展开仍由原局部 UI 持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
+涉及后端数据的 Flutter 区域统一遵循 `adapter → Client owner → ViewModel → Connector → View/Widget` 分层，其中 `features/conversation/acp/` 按 `state/`、`view_models/`、`connectors/`、`views/`、`widgets/` 与 `previews/` 严格隔离（由 `client_boundary_check.dart` 的 `UI-02` 静态校验守卫）：`state/` 仅持有纯 Freezed 不可变呈现值，不含异步句柄或 Flutter 控件依赖；启动卡片、阅读流头部与按索引单行条目、Plan 卡片、权限停靠栏、服务端动态配置栏、输入框与附件、底部状态栏及外部会话对话框各自拥有独立的 `@riverpod` ViewModel／Notifier，按 `threadId` 或 `workspaceId` 细粒度 `.select` 观察 `anywork_client` 状态并内聚自身命令动作（外部会话 ViewModel 亦仅以 `threadId` 建键并在内部核验当前会话 owner 身份，不跨组件传递 `AcpConversationSession` 实例）；外层工作区与连接器只做布局与身份绑定，不外挂协议归并、提交校验、异步结果处理或整页刷新链；纯 `views/`、`widgets/` 与 `acp_views.dart` 仅接收不可变状态与回调，不导入 Riverpod、Client 仓储或 FRB 类型。组件退役仅释放显示观察，不关闭 Client 业务 owner；焦点、输入法组词区间、滚动与局部展开状态由对应纯视图组件自身持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
 
 服务选择复用用户级定义原发布 owner 的账户读模型，安全摘要包含 ACP 是否启用与连接修订；定义文件诊断和有效服务一起交付，坏文件不隐藏其他有效项。诊断仅交付可定位文件名与固定安全说明，不透传 TOML 输入片段、env 值或原始解析错误。列表读取不连接服务；启用状态也不证明当前认证、连接或模型已加载。
 

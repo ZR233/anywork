@@ -6476,4 +6476,316 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountsAcp => 'ACP';
+
+  @override
+  String get acpBackendNativeLabel => 'anywork';
+
+  @override
+  String get acpBackendNativeHint => 'Built-in model API runtime';
+
+  @override
+  String get acpBackendServicesHeader => 'ACP services';
+
+  @override
+  String get acpBackendReadyBadge => 'Enabled';
+
+  @override
+  String get acpStartDraftHint =>
+      'Optional initial draft (carried into the new ACP session without auto-sending)…';
+
+  @override
+  String get acpStartHandshakeNote =>
+      'Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.';
+
+  @override
+  String get acpStartCreateAction => 'Start ACP session';
+
+  @override
+  String get acpStartCreatingAction => 'Starting…';
+
+  @override
+  String get acpStartSshUnsupported =>
+      'ACP sessions do not support SSH remote projects yet. Select a local project.';
+
+  @override
+  String get acpStartExistingAttachmentsHint =>
+      'Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.';
+
+  @override
+  String get acpSessionConnectingTitle => 'Connecting to ACP service…';
+
+  @override
+  String get acpSessionConnectingSubtitle =>
+      'Initializing protocol handshake and negotiating capabilities.';
+
+  @override
+  String get acpSessionReadyEmptyTitle => 'ACP session is ready';
+
+  @override
+  String get acpSessionReadyEmptySubtitle =>
+      'Send a message below or adjust server options in the toolbar.';
+
+  @override
+  String get acpCapabilityImage => 'Image input';
+
+  @override
+  String get acpCapabilityAudio => 'Audio input';
+
+  @override
+  String get acpCapabilityEmbeddedContext => 'Embedded context';
+
+  @override
+  String get acpCapabilityLoadSession => 'Load history';
+
+  @override
+  String get acpCapabilityResumeSession => 'Resume session';
+
+  @override
+  String get acpCapabilityListSessions => 'External sessions';
+
+  @override
+  String get acpNoticeErrorTitle => 'ACP session error';
+
+  @override
+  String get acpNoticeDisconnected =>
+      'The ACP connection closed. Existing output remains readable.';
+
+  @override
+  String get acpNoticeObservationEnded => 'Session observation has ended.';
+
+  @override
+  String get acpNoticeGapWindowExceeded =>
+      'Streaming observation encountered a gap (buffer window exceeded); displayed content may be incomplete.';
+
+  @override
+  String get acpNoticeGapDisconnected =>
+      'Streaming observation encountered a gap (connection interrupted); displayed content may be incomplete.';
+
+  @override
+  String get acpNoticeGapEncoding =>
+      'Streaming observation encountered a gap (frame decoding issue); displayed content may be incomplete.';
+
+  @override
+  String get acpNoticeResumedWithoutHistory =>
+      'Resumed an external session without replaying prior messages; earlier history may exist on the peer.';
+
+  @override
+  String get acpNoticeResidentWithoutObservation =>
+      'Attached to a resident session without prior stream history; earlier content is not assumed complete.';
+
+  @override
+  String get acpNoticeIncompleteHistory =>
+      'Loaded history is incomplete; displayed messages cannot be assumed complete.';
+
+  @override
+  String get acpNoticeLoadReplay => 'Replayed history from external session';
+
+  @override
+  String get acpStatusConnecting => 'Connecting';
+
+  @override
+  String get acpStatusReady => 'Ready';
+
+  @override
+  String get acpStatusRunning => 'Running';
+
+  @override
+  String get acpStatusStopping => 'Stopping';
+
+  @override
+  String get acpStatusDisconnected => 'Disconnected';
+
+  @override
+  String get acpStatusObservationEnded => 'Ended';
+
+  @override
+  String acpStatusCompleted(String reason) {
+    return 'Completed · $reason';
+  }
+
+  @override
+  String get acpStopReasonEndTurn => 'Turn finished';
+
+  @override
+  String get acpStopReasonMaxTokens => 'Max tokens reached';
+
+  @override
+  String get acpStopReasonMaxTurnRequests => 'Request limit reached';
+
+  @override
+  String get acpStopReasonRefusal => 'Declined';
+
+  @override
+  String get acpStopReasonCancelled => 'Interrupted';
+
+  @override
+  String get acpProvenanceReplay => 'Loaded history';
+
+  @override
+  String get acpProvenanceResumed => 'Resumed';
+
+  @override
+  String acpUsageReadout(String used, String size) {
+    return 'Context $used / $size';
+  }
+
+  @override
+  String get acpPlanTitle => 'Execution plan';
+
+  @override
+  String acpPlanProgress(int completed, int total) {
+    return '$completed / $total done';
+  }
+
+  @override
+  String get acpPlanPriorityHigh => 'High';
+
+  @override
+  String get acpPlanPriorityMedium => 'Medium';
+
+  @override
+  String get acpPlanPriorityLow => 'Low';
+
+  @override
+  String get acpPlanStatusPending => 'Pending';
+
+  @override
+  String get acpPlanStatusInProgress => 'In progress';
+
+  @override
+  String get acpPlanStatusCompleted => 'Completed';
+
+  @override
+  String get acpPermissionTitle => 'Permission requested';
+
+  @override
+  String acpPermissionQueueBadge(int count) {
+    return '$count pending';
+  }
+
+  @override
+  String get acpPermissionCancel => 'Cancel';
+
+  @override
+  String get acpPermissionSubmitting => 'Submitting decision…';
+
+  @override
+  String get acpConfigModeFallbackLabel => 'Mode';
+
+  @override
+  String get acpConfigMoreLabel => 'More settings';
+
+  @override
+  String acpConfigMoreCountLabel(int count) {
+    return 'More ($count)';
+  }
+
+  @override
+  String get acpConfigApplying => 'Applying configuration…';
+
+  @override
+  String acpConfigFailed(String error) {
+    return 'Configuration failed: $error';
+  }
+
+  @override
+  String get acpConfigBooleanOn => 'On';
+
+  @override
+  String get acpConfigBooleanOff => 'Off';
+
+  @override
+  String get acpComposerHint =>
+      'Message ACP agent (Enter to send, Shift+Enter for newline)…';
+
+  @override
+  String get acpComposerSendTooltip => 'Send';
+
+  @override
+  String get acpComposerInterruptTooltip => 'Interrupt';
+
+  @override
+  String get acpComposerBlockerOpening => 'Opening ACP session…';
+
+  @override
+  String get acpComposerBlockerInitializing => 'Initializing ACP session…';
+
+  @override
+  String get acpComposerBlockerDisconnected => 'ACP connection is closed';
+
+  @override
+  String get acpComposerBlockerEnded => 'ACP observation has ended';
+
+  @override
+  String get acpComposerBlockerNotReady => 'ACP session is not ready';
+
+  @override
+  String get acpComposerBlockerConfigPending =>
+      'Applying configuration; wait before sending';
+
+  @override
+  String acpComposerBlockerConfigError(String error) {
+    return 'Configuration failed: $error';
+  }
+
+  @override
+  String get acpComposerBlockerSending => 'Sending message…';
+
+  @override
+  String get acpComposerBlockerRunning => 'Response in progress';
+
+  @override
+  String get acpContentThoughtLabel => 'Thinking';
+
+  @override
+  String get acpContentAudioLabel => 'Audio content';
+
+  @override
+  String get acpContentResourceLabel => 'Embedded resource';
+
+  @override
+  String acpContentBinarySummary(String mimeType, int byteCount) {
+    return '$mimeType · $byteCount bytes';
+  }
+
+  @override
+  String get acpContentCopyUri => 'Copy reference';
+
+  @override
+  String get acpContentOpenLink => 'Open link';
+
+  @override
+  String acpToolTerminalPrefix(String id) {
+    return 'Terminal $id';
+  }
+
+  @override
+  String acpUpdateCompaction(String status) {
+    return 'Context compaction · $status';
+  }
+
+  @override
+  String get acpUpdateSessionInfo => 'Session metadata updated';
+
+  @override
+  String get acpUpdateGeneric => 'Session status updated';
+
+  @override
+  String acpCommandsSummary(int count) {
+    return 'Available commands ($count)';
+  }
+
+  @override
+  String get acpHistorySubtitle =>
+      'Browse peer sessions on this ACP service to load history or resume execution.';
+
+  @override
+  String acpMediaOpenLinkFailed(String error) {
+    return 'Could not open link: $error';
+  }
+
+  @override
+  String acpMediaImageLoadFailed(String error) {
+    return 'Failed to decode image: $error';
+  }
 }

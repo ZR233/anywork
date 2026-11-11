@@ -22,6 +22,7 @@ const acpBooleanFixture = AcpSessionConfigOptionView(
 );
 
 Widget acpTestApp(Widget child) => MaterialApp(
+  locale: const Locale('zh'),
   theme: pureStudioTheme(),
   localizationsDelegates: [
     AppLocalizations.delegate,

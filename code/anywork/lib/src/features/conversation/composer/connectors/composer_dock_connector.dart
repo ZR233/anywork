@@ -33,7 +33,7 @@ import '../../interactions/connectors/tool_approval_connector.dart';
 import '../../interactions/connectors/user_input_connector.dart';
 import '../views/prompt_composer_view.dart';
 import '../../../../app/routing/app_route.dart';
-import '../../acp/views/acp_start_composer.dart';
+import '../../acp/connectors/acp_start_composer_connector.dart';
 import '../widgets/start_backend_selector.dart';
 import '../view_models/start_backend_view_model.dart';
 
@@ -121,14 +121,16 @@ class StartPageComposerDockConnector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 只按项目重建正文状态；键击不重建外层，避免切项目时把上一个正文带过去。
+    // 只按项目或 Native/ACP 大模式重建正文状态：
+    // - 切换 Native <-> ACP 时用最新 Client 草稿初始化输入框；
+    // - 在两个 ACP 服务之间切换时不销毁输入框与光标选区。
     final workspaceId = ref.watch(selectionStoreProvider).selectedProjectId;
-    final acpAccountId = ref.watch(
+    final isAcp = ref.watch(
       startBackendViewModelProvider(workspaceId)
-          .select((state) => state.accountId),
+          .select((state) => state.accountId != null),
     );
     return _StartPageComposerBody(
-      key: ValueKey((workspaceId, acpAccountId)),
+      key: ValueKey((workspaceId, isAcp)),
       workspaceId: workspaceId,
       onAddProject: onAddProject,
     );
@@ -177,24 +179,25 @@ class _StartPageComposerBodyState
           .select((state) => state.accountId),
     );
     if (backend != null && widget.workspaceId != null) {
-      return StartPageComposerView(
-        environmentBar: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            StartEnvironmentConnector(
-              workspaceId: widget.workspaceId,
-              projectOnly: true,
-              enabled: !ref.watch(
-                startSessionControllerProvider.select(
-                  (state) => state.submitting,
-                ),
-              ),
-              onAddProject: widget.onAddProject,
-            ),
-            StartBackendSelector(workspaceId: widget.workspaceId),
-          ],
+      final projectSelector = StartEnvironmentConnector(
+        workspaceId: widget.workspaceId,
+        projectOnly: true,
+        enabled: !ref.watch(
+          startSessionControllerProvider.select((state) => state.submitting),
         ),
-        composer: AcpStartComposer(workspaceId: widget.workspaceId!),
+        onAddProject: widget.onAddProject,
+      );
+      return StartPageComposerView(
+        environmentBar: _StartEnvironmentWithBackendBar(
+          leading: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: projectSelector,
+          ),
+          backendSelector: StartBackendSelector(
+            workspaceId: widget.workspaceId,
+          ),
+        ),
+        composer: AcpStartComposerConnector(workspaceId: widget.workspaceId!),
       );
     }
     final projectionAsync = ref.watch(startPageComposerViewModelProvider);
@@ -240,7 +243,6 @@ class _StartPageComposerBodyState
       spacing: 6,
       runSpacing: 4,
       children: [
-        StartBackendSelector(workspaceId: workspaceId),
         SessionModeSelector(
           mode: mode,
           enabled: selectorsEnabled && workspaceId != null,
@@ -267,10 +269,13 @@ class _StartPageComposerBodyState
       ],
     );
     return StartPageComposerView(
-      environmentBar: StartEnvironmentConnector(
-        workspaceId: workspaceId,
-        enabled: !projection.submitting,
-        onAddProject: widget.onAddProject,
+      environmentBar: _StartEnvironmentWithBackendBar(
+        leading: StartEnvironmentConnector(
+          workspaceId: workspaceId,
+          enabled: !projection.submitting,
+          onAddProject: widget.onAddProject,
+        ),
+        backendSelector: StartBackendSelector(workspaceId: workspaceId),
       ),
       composer: PromptComposerView(
         creationCard: true,
@@ -417,6 +422,42 @@ class _StartPageComposerBodyState
     return ref
         .read(startPageComposerViewModelProvider.notifier)
         .removeAttachment(workspaceId, draftId);
+  }
+}
+
+class _StartEnvironmentWithBackendBar extends StatelessWidget {
+  const _StartEnvironmentWithBackendBar({
+    required this.leading,
+    required this.backendSelector,
+  });
+
+  final Widget leading;
+  final Widget backendSelector;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 520) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              leading,
+              Align(alignment: Alignment.centerRight, child: backendSelector),
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(child: leading),
+            const SizedBox(width: 8),
+            backendSelector,
+          ],
+        );
+      },
+    );
   }
 }
 

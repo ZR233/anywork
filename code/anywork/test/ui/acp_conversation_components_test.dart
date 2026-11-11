@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_permission_connector.dart';
-import 'package:anywork/src/features/conversation/acp/view_models/acp_conversation_view_model.dart';
-import 'package:anywork/src/features/conversation/acp/widgets/acp_prompt_input.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_timeline_connector.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_plan_card_view_model.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,12 +14,21 @@ import 'package:material_ui/material_ui.dart';
 
 import 'acp_components_support.dart';
 
+IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
+  final primary = find.byKey(
+    ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId)),
+  );
+  return tester.widget<IconButton>(
+    find.descendant(of: primary, matching: find.byType(IconButton)),
+  );
+}
+
 void main() {
   testWidgets('仅音频能力不启用图片和文件附件入口', (tester) async {
     final harness = await AcpComponentHarness.create();
     addTearDown(() => harness.close(tester));
     await tester.pumpWidget(
-      harness.scope(const AcpConversationComposer(threadId: 'thread')),
+      harness.scope(const AcpComposerConnector(threadId: 'thread')),
     );
     harness.emit(
       const AcpInitializedEventView(
@@ -62,18 +74,18 @@ void main() {
     );
     addTearDown(() => harness.close(tester));
     await tester.pumpWidget(
-      harness.scope(const AcpConversationContent(threadId: 'thread')),
+      harness.scope(const AcpTimelineConnector(threadId: 'thread')),
     );
     await tester.pumpAndSettle();
     expect(find.text('第一段'), findsOneWidget);
     expect(find.text('读取项目'), findsOneWidget);
     final container = ProviderScope.containerOf(
-      tester.element(find.byType(AcpConversationContent)),
+      tester.element(find.byType(AcpTimelineConnector)),
     );
     var planChanges = 0;
     var configChanges = 0;
     final planWatch = container.listen(
-      acpPlanProvider('thread'),
+      acpPlanCardViewModelProvider('thread'),
       (_, _) => planChanges++,
     );
     final configWatch = container.listen(
@@ -170,20 +182,22 @@ void main() {
     await tester.pumpWidget(
       harness.scope(
         const SingleChildScrollView(
-          child: AcpConversationComposer(threadId: 'thread', compact: true),
+          child: AcpComposerConnector(threadId: 'thread', compact: true),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    // Default test viewport is wide enough to expand configuration.
     final field = tester.widget<TextField>(find.byType(TextField));
     field.controller!.selection = const TextSelection.collapsed(offset: 2);
     final configuration = Completer<void>();
     harness.port.configureResult = configuration;
-    await tester.tap(find.byType(Switch));
+    await tester.tap(
+      find.byKey(
+        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
+      ),
+    );
     await tester.pump();
-    final send = tester.widget<FilledButton>(find.byType(FilledButton));
-    expect(send.onPressed, isNull);
+    expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
     expect(find.text('正在应用配置，完成前不能发送消息'), findsOneWidget);
     harness.update(
       const AcpAgentMessageChunkView(
@@ -200,10 +214,7 @@ void main() {
     );
     configuration.complete();
     await tester.pumpAndSettle();
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNotNull,
-    );
+    expect(_sendButtonWidget(tester, 'thread').onPressed, isNotNull);
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 
@@ -211,10 +222,11 @@ void main() {
     final harness = await AcpComponentHarness.create(resume: true);
     addTearDown(() => harness.close(tester));
     await tester.pumpWidget(
-      harness.scope(const AcpConversationStatus(threadId: 'thread')),
+      harness.scope(const AcpWorkspaceConnector(threadId: 'thread')),
     );
     await tester.pumpAndSettle();
     expect(find.textContaining('不能据此认为历史完整'), findsOneWidget);
+    expect(find.text('外部继续'), findsOneWidget);
     harness.emit(const AcpGapEventView(AcpObservationGapView.windowExceeded));
     await tester.pumpAndSettle();
     expect(find.textContaining('观察出现缺口'), findsOneWidget);
@@ -232,11 +244,13 @@ void main() {
     draft.updateDraft('从草稿发送');
     await tester.pumpWidget(
       harness.scope(
-        const AcpConversationComposer(threadId: 'thread', compact: true),
+        const AcpComposerConnector(threadId: 'thread', compact: true),
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('发送'));
+    await tester.tap(
+      find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction('thread'))),
+    );
     await tester.pumpAndSettle();
     final prompts = harness.port.calls.where((call) => call.$1 == 'prompt');
     expect(prompts, hasLength(1));
@@ -257,26 +271,39 @@ void main() {
     await tester.pumpWidget(
       harness.scope(
         const SingleChildScrollView(
-          child: AcpConversationComposer(threadId: 'thread', compact: true),
+          child: AcpComposerConnector(threadId: 'thread', compact: true),
         ),
       ),
     );
     await tester.pumpAndSettle();
     harness.port.commandError = StateError('server rejected config');
-    await tester.tap(find.byType(Switch));
+    await tester.tap(
+      find.byKey(
+        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(find.textContaining('配置失败：'), findsWidgets);
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNull,
-    );
+    expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
     expect(harness.client.drafts.composer('thread').state.draft, '不能丢失的输入');
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 
   testWidgets('ACP 输入不因相同草稿刷新而重置选择和输入法组合', (tester) async {
     Widget input() => acpTestApp(
-      AcpPromptInput(text: '输入中的草稿', onChanged: (_) {}, enabled: true),
+      AcpConversationComposerView(
+        state: const AcpComposerViewState(
+          threadId: 'thread',
+          draftText: '输入中的草稿',
+          canSend: true,
+        ),
+        onDraftChanged: (_) {},
+        onSubmit: () {},
+        onInterrupt: () {},
+        onPickLocalAttachments: (_) async {},
+        onAddRemoteAttachment: (_) async {},
+        onRemoveAttachment: (_) {},
+      ),
     );
     await tester.pumpWidget(input());
     final controller = tester

@@ -3,7 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
-import 'package:anywork/src/features/conversation/acp/view_models/acp_conversation_view_model.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_session_view_model.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,7 +63,25 @@ void main() {
             acpBooleanFixture,
           ];
 
-      final harness = await AcpComponentHarness.create(options: options());
+      final harness = await AcpComponentHarness.create(
+        options: options(),
+        updates: [
+          AcpPlanView(
+            entries: const [
+              AcpPlanEntryView(
+                content: '核验服务端动态配置与权限停靠交互',
+                priority: AcpPlanPriorityView.high,
+                status: AcpPlanStatusView.inProgress,
+              ),
+              AcpPlanEntryView(
+                content: '验证切换线程时后台流式内容持续归约',
+                priority: AcpPlanPriorityView.medium,
+                status: AcpPlanStatusView.pending,
+              ),
+            ],
+          ),
+        ],
+      );
       final run = AcpRunIdView(
         instance: BigInt.from(19),
         sequence: BigInt.from(7),
@@ -87,26 +106,20 @@ void main() {
           expect(source.closes, 1);
         }
         expect(tester.takeException(), isNull);
-        // This is the real Client close report, not a synthetic port close ACK.
         debugPrint(
           'ACP native cleanup: Client complete; observations closed; '
           'Flutter production widgets unmounted',
         );
       });
 
-      // The fixture owns only layout. Both visible sections, their providers,
-      // subscriptions, commands and draft are the production implementations.
       Future<void> showPage(String threadId) async {
         await tester.pumpWidget(
           RepaintBoundary(
             key: presentationCaptureKey,
             child: harness.scope(
-              Column(
+              AcpWorkspaceConnector(
                 key: ValueKey(threadId),
-                children: [
-                  Expanded(child: AcpConversationContent(threadId: threadId)),
-                  AcpConversationComposer(threadId: threadId, compact: true),
-                ],
+                threadId: threadId,
               ),
             ),
           ),
@@ -129,10 +142,29 @@ void main() {
       final draft = harness.client.drafts.composer('thread');
       expect(draft.state.draft, '原生 ACP 消息');
 
-      Finder dropdown(bool grouped) =>
-          find.byType(DropdownButton<AcpConfigValueId>).at(grouped ? 1 : 0);
-      FilledButton sendButton() =>
-          tester.widget<FilledButton>(find.byType(FilledButton));
+      Finder selectAnchorButton(bool grouped) => find.descendant(
+        of: find.byKey(
+          ValueKey(
+            AcpViewKeyValues.configControl(
+              grouped ? 'vendor/grouped' : 'vendor/select',
+            ),
+          ),
+        ),
+        matching: find.byType(TextButton),
+      );
+      Finder booleanPill() => find.byKey(
+        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
+      );
+      Finder primaryAction() => find.byKey(
+        ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
+      );
+      IconButton sendButton() => tester.widget<IconButton>(
+        find.descendant(of: primaryAction(), matching: find.byType(IconButton)),
+      );
+      Future<void> flushUi() async {
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+      }
 
       Future<void> configure({
         bool? grouped,
@@ -142,19 +174,19 @@ void main() {
         gates.add(gate);
         harness.port.configureResult = gate;
         if (grouped == null) {
-          await tester.tap(find.byType(Switch));
+          await tester.tap(booleanPill());
         } else {
-          await tester.tap(dropdown(grouped));
+          await tester.tap(selectAnchorButton(grouped));
           await tester.pumpAndSettle();
           if (grouped) expect(find.text('服务端分组'), findsWidgets);
           await tester.tap(find.text(grouped ? '深入分析' : '请求高质量').last);
         }
-        await tester.pump();
+        await flushUi();
         expect(harness.owner.state.configPending, isTrue);
         expect(sendButton().onPressed, isNull);
         // Tapping a disabled production button must not reach the port.
-        await tester.tap(find.byType(FilledButton));
-        await tester.pump();
+        await tester.tap(primaryAction());
+        await flushUi();
         expect(
           harness.port.calls.where((call) => call.$1 == 'prompt'),
           isEmpty,
@@ -175,10 +207,8 @@ void main() {
             AcpConfigValueId(grouped ? 'group/raw:2' : 'flat/raw:2'),
           );
         }
-        // An ACK alone cannot invent a current value. The formal event below
-        // can normalize the selection back to its original server value.
         gate.complete();
-        await tester.pump();
+        await flushUi();
         expect(harness.owner.state.configPending, isTrue);
         expect(sendButton().onPressed, isNull);
         harness.emit(
@@ -193,17 +223,21 @@ void main() {
       }
 
       await configure(grouped: false, canonical: options());
-      expect(
-        tester.widget<DropdownButton<AcpConfigValueId>>(dropdown(false)).value,
-        const AcpConfigValueId('flat/raw:1'),
-      );
+      expect(find.textContaining('回答质量 · 标准质量'), findsOneWidget);
       await configure(grouped: true, canonical: options(groupedChanged: true));
-      expect(
-        tester.widget<DropdownButton<AcpConfigValueId>>(dropdown(true)).value,
-        const AcpConfigValueId('group/raw:2'),
-      );
+      expect(find.textContaining('分析深度 · 深入分析'), findsOneWidget);
       await configure(canonical: options(groupedChanged: true));
-      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      expect(
+        tester
+            .widget<InkWell>(
+              find.descendant(
+                of: booleanPill(),
+                matching: find.byType(InkWell),
+              ),
+            )
+            .onTap,
+        isNotNull,
+      );
       expect(
         harness.port.calls.where((call) => call.$1 == 'configure'),
         hasLength(3),
@@ -213,11 +247,11 @@ void main() {
       // Keep admission in flight across a second actual tap.
       final admission = Completer<AcpRunIdView>();
       harness.port.promptResult = admission;
-      await tester.tap(find.byType(FilledButton));
-      await tester.pump();
+      await tester.tap(primaryAction());
+      await flushUi();
       expect(sendButton().onPressed, isNull);
-      await tester.tap(find.byType(FilledButton));
-      await tester.pump();
+      await tester.tap(primaryAction());
+      await flushUi();
       final prompts = harness.port.calls.where((call) => call.$1 == 'prompt');
       expect(prompts, hasLength(1));
       final prompt = prompts.single.$2 as AcpPromptRequestView;
@@ -229,23 +263,39 @@ void main() {
       expect(draft.state.submissionRevision, greaterThan(0));
       expect(harness.owner.state.activeRun, run);
 
-      // Generation and configuration are independent controls. Exercise the
-      // production widget while the admitted run remains active, using a fresh
-      // command gate rather than the already-completed pre-send fixture gate.
+      // Generation and configuration are independent controls.
       final runningConfiguration = Completer<void>();
       gates.add(runningConfiguration);
       harness.port.configureResult = runningConfiguration;
-      expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNotNull);
-      await tester.tap(find.byType(Switch));
-      await tester.pump();
+      expect(
+        tester
+            .widget<InkWell>(
+              find.descendant(
+                of: booleanPill(),
+                matching: find.byType(InkWell),
+              ),
+            )
+            .onTap,
+        isNotNull,
+      );
+      await tester.tap(booleanPill());
+      await flushUi();
       expect(harness.owner.state.activeRun, run);
       expect(harness.owner.state.sendPending, isFalse);
       expect(harness.owner.state.configPending, isTrue);
-      expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNull);
       expect(
         tester
-            .widget<DropdownButton<AcpConfigValueId>>(dropdown(false))
-            .onChanged,
+            .widget<InkWell>(
+              find.descendant(
+                of: booleanPill(),
+                matching: find.byType(InkWell),
+              ),
+            )
+            .onTap,
+        isNull,
+      );
+      expect(
+        tester.widget<TextButton>(selectAnchorButton(false)).onPressed,
         isNull,
       );
       final runningRequest =
@@ -269,25 +319,30 @@ void main() {
           ),
         ),
       );
-      await tester.pump();
+      await flushUi();
       expect(harness.owner.state.activeRun, run);
       expect(harness.owner.state.configPending, isTrue);
       runningConfiguration.complete();
       await tester.pumpAndSettle();
       expect(harness.owner.state.activeRun, run);
       expect(harness.owner.state.configPending, isFalse);
-      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
-      expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNotNull);
       expect(
         tester
-            .widget<DropdownButton<AcpConfigValueId>>(dropdown(false))
-            .onChanged,
+            .widget<InkWell>(
+              find.descendant(
+                of: booleanPill(),
+                matching: find.byType(InkWell),
+              ),
+            )
+            .onTap,
         isNotNull,
       );
       expect(
-        tester
-            .widget<DropdownButton<AcpConfigValueId>>(dropdown(true))
-            .onChanged,
+        tester.widget<TextButton>(selectAnchorButton(false)).onPressed,
+        isNotNull,
+      );
+      expect(
+        tester.widget<TextButton>(selectAnchorButton(true)).onPressed,
         isNotNull,
       );
       expect(prompts, hasLength(1));
@@ -326,6 +381,7 @@ void main() {
           instance: run.instance,
           sequence: BigInt.from(index + 30),
         );
+        final idKey = '${id.instance}:${id.sequence}';
         harness.emit(
           AcpPermissionEventView(
             id: id,
@@ -333,7 +389,25 @@ void main() {
               sessionId: acpRemoteFixture,
               toolCall: AcpToolCallUpdateView(
                 toolCallId: const AcpToolCallId('native/read'),
-                fields: AcpToolCallUpdateFieldsView(title: '读取项目文件'),
+                fields: AcpToolCallUpdateFieldsView(
+                  title: '更新 src/features/conversation/acp/acp_views.dart',
+                  kind: AcpToolKindView.edit,
+                  locations: const [
+                    AcpToolCallLocationView(
+                      path: 'src/features/conversation/acp/acp_views.dart',
+                      line: 1,
+                    ),
+                  ],
+                  content: const [
+                    AcpToolDiffView(
+                      path: 'src/features/conversation/acp/acp_views.dart',
+                      oldText: "export 'views/acp_conversation_content.dart';",
+                      newText:
+                          "export 'state/acp_view_state.dart';\n"
+                          "export 'views/acp_conversation_content_view.dart';",
+                    ),
+                  ],
+                ),
               ),
               options: permissions,
             ),
@@ -347,7 +421,11 @@ void main() {
           await capturePresentation(tester, 'acp-native-permission.png');
         }
         final option = permissions[index];
-        final button = find.byKey(ValueKey((id, option.optionId)));
+        final button = find.byKey(
+          ValueKey(
+            AcpViewKeyValues.permissionOption(idKey, option.optionId.value),
+          ),
+        );
         await tester.ensureVisible(button);
         await tester.tap(button);
         await tester.pumpAndSettle();
@@ -363,6 +441,34 @@ void main() {
         hasLength(4),
       );
 
+      harness.update(
+        const AcpUserMessageChunkView(
+          AcpContentChunkView(content: AcpTextContentView(text: '原生 ACP 消息')),
+        ),
+      );
+      harness.update(
+        const AcpAgentThoughtChunkView(
+          AcpContentChunkView(
+            content: AcpTextContentView(text: '正在梳理会话生命周期与配置回执顺序…'),
+          ),
+        ),
+      );
+      harness.update(
+        AcpToolCallSessionUpdateView(
+          AcpToolCallView(
+            toolCallId: const AcpToolCallId('tool-read-1'),
+            title: '读取设计文档 19-studio-ui.md',
+            kind: AcpToolKindView.read,
+            status: AcpToolCallStatusView.completed,
+            locations: const [
+              AcpToolCallLocationView(
+                path: 'design/19-studio-ui.md',
+                line: 271,
+              ),
+            ],
+          ),
+        ),
+      );
       harness.update(
         const AcpAgentMessageChunkView(
           AcpContentChunkView(content: AcpTextContentView(text: '原生流式回复')),
@@ -417,7 +523,7 @@ void main() {
       expect(ownerB.state.activeRun, isNull);
       await showPage('thread');
       final container = ProviderScope.containerOf(
-        tester.element(find.byType(AcpConversationContent)),
+        tester.element(find.byType(AcpConversationContentView)),
       );
       expect(
         await container.read(acpConversationOwnerProvider('thread').future),
@@ -441,7 +547,6 @@ void main() {
       final interrupt = harness.port.calls.last.$2 as AcpInterruptRequestView;
       expect(interrupt.target, same(harness.owner.state.target));
       expect(interrupt.run, run);
-      // Control completion is not prompt completion; only the formal event ends it.
       expect(harness.owner.state.activeRun, run);
       harness.emit(
         AcpCompletedEventView(

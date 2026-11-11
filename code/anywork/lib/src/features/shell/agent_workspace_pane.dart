@@ -166,33 +166,18 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   Widget build(BuildContext context) {
     final threadId = widget.threadId;
     if (threadId == null) return const _StudioStartPage();
-    final backend = ref.watch(conversationBackendViewModelProvider(threadId));
-    if (backend is AcpAgentBackendView) {
-      return LayoutBuilder(
-        builder: (context, constraints) => StudioWorkspaceBody(
-          readingArea: AcpConversationContent(threadId: threadId),
-          footer: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: (constraints.maxHeight - _minimumTimelineHeight).clamp(
-                0.0,
-                constraints.maxHeight,
-              ),
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  AcpConversationComposer(
-                    threadId: threadId,
-                    compact: constraints.maxHeight < 600,
-                  ),
-                  AcpExternalHistoryButton(threadId: threadId),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
+    switch (ref.watch(conversationBackendViewModelProvider(threadId))) {
+      case ConversationBackendKind.acp:
+        return AcpWorkspaceConnector(threadId: threadId);
+      case ConversationBackendKind.loading:
+        return const Center(
+          key: ValueKey('agent-workspace-loading'),
+          child: CircularProgressIndicator(),
+        );
+      case ConversationBackendKind.unresolved:
+        return TimelineConnector(threadId: threadId);
+      case ConversationBackendKind.native:
+        break;
     }
     final workspaceProvider = conversationWorkspaceProvider(
       threadId,

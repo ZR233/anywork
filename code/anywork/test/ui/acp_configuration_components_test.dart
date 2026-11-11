@@ -1,7 +1,8 @@
 import 'dart:async';
 
+import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_configuration_connector.dart';
-import 'package:anywork/src/features/conversation/acp/widgets/acp_configuration_panel.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,10 +10,10 @@ import 'package:material_ui/material_ui.dart';
 import 'acp_components_support.dart';
 
 void main() {
-  testWidgets('配置保留未知 category、分组说明和原始 id/value', (tester) async {
+  testWidgets('窄窗配置栏收纳更多设置，保留未知 category、分组说明和原始 id/value', (tester) async {
     await tester.binding.setSurfaceSize(const Size(320, 640));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final selected = <(AcpConfigId, AcpSessionConfigValueView)>[];
+    final selected = <(String, Object)>[];
     final select = AcpSessionConfigOptionView(
       id: const AcpConfigId('vendor/quality'),
       name: '质量',
@@ -38,36 +39,57 @@ void main() {
         ]),
       ),
     );
+    final controls = mapAcpConfigControls(
+      options: [select, acpBooleanFixture],
+      modes: null,
+    );
     await tester.pumpWidget(
       acpTestApp(
         Padding(
           padding: const EdgeInsets.all(16),
-          child: AcpConfigurationPanel(
-            options: [select, acpBooleanFixture],
-            modes: null,
-            pending: false,
-            onConfigure: (id, value) => selected.add((id, value)),
-            onMode: (_) => fail('configOptions present must not setMode'),
+          child: AcpConfigurationBar(
+            state: AcpConfigurationViewState(controls: controls, enabled: true),
+            onSelectValue: (id, value) => selected.add((id, value)),
+            onBooleanChanged: (id, value) => selected.add((id, value)),
+            onSelectLegacyMode: (_) =>
+                fail('configOptions present must not setMode'),
           ),
         ),
       ),
     );
-    expect(find.text('服务端优先级说明'), findsOneWidget);
-    expect(find.text('保留服务器提供的来源'), findsOneWidget);
-    await tester.tap(find.byType(DropdownButton<AcpConfigValueId>));
-    await tester.pumpAndSettle();
-    expect(find.text('服务分组'), findsWidgets);
-    await tester.tap(find.text('深入').last);
-    await tester.pumpAndSettle();
-    expect(selected.single.$1, select.id);
-    expect(
-      (selected.single.$2 as AcpSelectConfigValueView).value,
-      const AcpConfigValueId('raw:value/2'),
+
+    final selectTrigger = find.descendant(
+      of: find.byKey(
+        ValueKey(AcpViewKeyValues.configControl('vendor/quality')),
+      ),
+      matching: find.byType(TextButton),
     );
+    await tester.tap(selectTrigger);
+    await tester.pumpAndSettle();
+    expect(find.text('服务端优先级说明'), findsOneWidget);
+    expect(find.text('服务分组'), findsWidgets);
+    expect(find.text('更深入地回答'), findsOneWidget);
+    await tester.tap(
+      find.byKey(
+        ValueKey(
+          AcpViewKeyValues.configChoice('vendor/quality', 'raw:value/2'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(selected.single, ('vendor/quality', 'raw:value/2'));
+
+    // At 320px width, the second option moves cleanly into the overflow menu.
+    final overflowTrigger = find.descendant(
+      of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
+      matching: find.byType(TextButton),
+    );
+    await tester.tap(overflowTrigger);
+    await tester.pumpAndSettle();
+    expect(find.text('保留服务器提供的来源'), findsOneWidget);
     await tester.tap(find.byType(Switch));
-    await tester.pump();
-    expect(selected.last.$1, acpBooleanFixture.id);
-    expect((selected.last.$2 as AcpBooleanConfigValueView).value, isTrue);
+    await tester.pumpAndSettle();
+    expect(selected.last, (acpBooleanFixture.id.value, true));
     expect(tester.takeException(), isNull);
   });
 
@@ -79,24 +101,43 @@ void main() {
         AcpSessionModeView(id: AcpModeId('mode-b'), name: '模式乙'),
       ],
     );
-    AcpModeId? selected;
-    Widget panel(List<AcpSessionConfigOptionView>? options) => acpTestApp(
-      AcpConfigurationPanel(
-        options: options,
-        modes: modes,
-        pending: false,
-        onConfigure: (_, _) => fail('legacy mode is not a config option'),
-        onMode: (mode) => selected = mode,
+    String? selectedMode;
+    Widget bar(List<AcpSessionConfigOptionView>? options) => acpTestApp(
+      AcpConfigurationBar(
+        state: AcpConfigurationViewState(
+          controls: mapAcpConfigControls(options: options, modes: modes),
+          enabled: true,
+        ),
+        onSelectValue: (_, _) => fail('legacy mode is not a config option'),
+        onBooleanChanged: (_, _) => fail('legacy mode is not a boolean option'),
+        onSelectLegacyMode: (mode) => selectedMode = mode,
       ),
     );
-    await tester.pumpWidget(panel([]));
-    expect(find.byType(DropdownButton<AcpModeId>), findsNothing);
-    await tester.pumpWidget(panel(null));
-    await tester.tap(find.byType(DropdownButton<AcpModeId>));
+    await tester.pumpWidget(bar([]));
+    expect(
+      find.byKey(const ValueKey(AcpViewKeyValues.configLegacyMode)),
+      findsNothing,
+    );
+    await tester.pumpWidget(bar(null));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey(AcpViewKeyValues.configLegacyMode)),
+        matching: find.byType(TextButton),
+      ),
+    );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('模式乙').last);
+    await tester.tap(
+      find.byKey(
+        ValueKey(
+          AcpViewKeyValues.configChoice(
+            AcpViewKeyValues.configLegacyMode,
+            'mode-b',
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(selected, const AcpModeId('mode-b'));
+    expect(selectedMode, 'mode-b');
   });
 
   for (final legacy in [false, true]) {
@@ -146,10 +187,15 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          final dropdown = legacy
-              ? find.byType(DropdownButton<AcpModeId>)
-              : find.byType(DropdownButton<AcpConfigValueId>);
-          await tester.tap(dropdown);
+          final Key anchorKey = legacy
+              ? const ValueKey(AcpViewKeyValues.configLegacyMode)
+              : ValueKey(AcpViewKeyValues.configControl('server-choice'));
+          await tester.tap(
+            find.descendant(
+              of: find.byKey(anchorKey),
+              matching: find.byType(TextButton),
+            ),
+          );
           await tester.pumpAndSettle();
           await tester.tap(find.text('请求新值').last);
           await tester.pump();
@@ -182,8 +228,8 @@ void main() {
             harness.owner.state.configError,
             rejected ? isNotNull : isNull,
           );
-          expect(find.text('权威旧值'), findsOneWidget);
-          expect(find.text('请求新值'), findsNothing);
+          expect(find.textContaining('权威旧值'), findsOneWidget);
+          expect(find.textContaining('请求新值'), findsNothing);
         },
       );
     }

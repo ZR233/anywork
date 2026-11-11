@@ -1,4 +1,4 @@
-import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/acp/connectors/acp_start_composer_connector.dart';
 import 'package:anywork/src/presentation/providers/attachment_drafts.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -35,7 +35,9 @@ void main() {
             ),
           ),
         ],
-        child: acpTestApp(const AcpStartComposer(workspaceId: 'workspace')),
+        child: acpTestApp(
+          const AcpStartComposerConnector(workspaceId: 'workspace'),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -80,7 +82,7 @@ void main() {
       ),
     );
     await tester.pumpWidget(
-      harness.scope(const AcpStartComposer(workspaceId: 'workspace')),
+      harness.scope(const AcpStartComposerConnector(workspaceId: 'workspace')),
     );
     await tester.pumpAndSettle();
     expect(find.textContaining('暂不支持 SSH 项目'), findsOneWidget);
