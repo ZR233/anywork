@@ -863,12 +863,24 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
     );
 
     // 2. Subsequent exec tool runs and finishes inside the same open Work: thinking_summary stays intact.
-    s.prepare(3, 25, &[atom("exec-1", ChatAtomKind::ToolCall, false)], &[], &[])?;
+    s.prepare(
+        3,
+        25,
+        &[atom("exec-1", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
     assert_eq!(
         summary(&s.blocks[&1]).thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
     );
-    s.prepare(4, 30, &[atom("exec-1", ChatAtomKind::ToolCall, true)], &[], &[])?;
+    s.prepare(
+        4,
+        30,
+        &[atom("exec-1", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
     assert_eq!(
         summary(&s.blocks[&1]).thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
@@ -899,11 +911,23 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
     );
 
     // 5. Text boundary seals the first Work; opening a new Work after Text starts fresh with None.
-    s.prepare(9, 50, &[atom("reply-1", ChatAtomKind::Text, false)], &[], &[])?;
+    s.prepare(
+        9,
+        50,
+        &[atom("reply-1", ChatAtomKind::Text, false)],
+        &[],
+        &[],
+    )?;
     let mut reply_done = atom("reply-1", ChatAtomKind::Text, true);
     reply_done.content_present = Some(true);
     s.prepare(10, 55, &[reply_done], &[], &[])?;
-    s.prepare(11, 60, &[atom("exec-2", ChatAtomKind::ToolCall, false)], &[], &[])?;
+    s.prepare(
+        11,
+        60,
+        &[atom("exec-2", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
     let next_work = s
         .blocks
         .values()
