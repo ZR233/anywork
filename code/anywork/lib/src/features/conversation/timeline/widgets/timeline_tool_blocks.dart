@@ -402,10 +402,15 @@ class TimelineToolDetails extends StatelessWidget {
     final elapsed = item.presentationContract == 'builtin.exec@2'
         ? _toolElapsed(item)
         : null;
+    final isExecCommand =
+        category == _ToolCategory.command || item.name == 'exec';
     return TimelineActivityRow(
       icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
           ? Icons.stop_circle_outlined
           : _toolCategoryIcon(category),
+      indicatorStyle: isExecCommand
+          ? TimelineActivityIndicatorStyle.circularProgress
+          : TimelineActivityIndicatorStyle.restingCat,
       label: item.frozenObservation
           ? '封存时尚未结束'
           : !item.executionPresent &&

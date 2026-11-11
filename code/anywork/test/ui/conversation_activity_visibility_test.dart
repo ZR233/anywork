@@ -1,13 +1,14 @@
 import 'dart:async';
 
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/conversation_activity_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_viewport.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -80,13 +81,36 @@ PendingInteraction _toolApproval({String threadId = 'thread'}) =>
       ),
     );
 
-ConversationRealtimeRegion _project(PendingInteraction? interaction) =>
-    projectConversationRealtime(
-      status: _status,
-      live: _live,
-      storage: null,
-      interaction: interaction,
-    );
+LiveStatusAggregate _observe({
+  ThreadActivityView? status = _status,
+  LiveDisplayWindow? live,
+  ThreadStorageStateView? storage,
+  PendingInteraction? interaction,
+  String? activeTurnId = 'turn',
+}) => LiveStatusStateMachine.transition(
+  LiveStatusAggregate.initial('thread'),
+  LiveStatusObserved(
+    LiveStatusObservation(
+      cut: live == null
+          ? const LiveWindowCut.inactive()
+          : LiveWindowCut(
+              revision: live.revision,
+              historyThrough: live.historyThrough,
+              executionPresent: live.executionPresent,
+              attemptId: 1,
+              isDisplayActive: true,
+            ),
+      storage: storage,
+      interactions: [?interaction],
+      activeTurnId: activeTurnId,
+      activity: status,
+      latestLive: live,
+    ),
+  ),
+).state;
+
+LiveStatusAggregate _project(PendingInteraction? interaction) =>
+    _observe(live: _live, interaction: interaction);
 
 // The scripted boundary supplies only a typed member page. The real SDK,
 // Timeline lease, connectors and renderers own admission and display lifecycle.
@@ -217,7 +241,7 @@ void main() {
         record: DisplayRecord(atom: atom, contentSource: const CurrentAtom()),
       ),
     );
-    const responding = ExecutionRealtimeNotice(
+    const responding = ExecutionLiveNotice(
       ConversationActivityView(
         identity: 'responding',
         kind: ConversationActivityKind.responding,
@@ -225,7 +249,7 @@ void main() {
         summary: 'TEXT_A',
       ),
     );
-    const thinkingB = ExecutionRealtimeNotice(
+    const thinkingB = ExecutionLiveNotice(
       ConversationActivityView(
         identity: 'thinking-b',
         kind: ConversationActivityKind.thinking,
@@ -233,7 +257,7 @@ void main() {
         summary: 'thinking-b',
       ),
     );
-    const failure = ExecutionRealtimeNotice(
+    const failure = ExecutionLiveNotice(
       ConversationActivityView(
         identity: 'failed',
         kind: ConversationActivityKind.responding,
@@ -242,20 +266,16 @@ void main() {
       ),
     );
     expect(
-      hasCurrentOutputRenderer(
+      LiveStatusStateMachine.hasCurrentOutputRenderer(
         live: window([output]),
         activeTurnId: 'turn',
         notice: responding,
       ),
       isTrue,
     );
-    for (final notice in [
-      thinkingB,
-      failure,
-      const UnrestoredRealtimeNotice(),
-    ]) {
+    for (final notice in [thinkingB, failure, const UnrestoredLiveNotice()]) {
       expect(
-        hasCurrentOutputRenderer(
+        LiveStatusStateMachine.hasCurrentOutputRenderer(
           live: window([output]),
           activeTurnId: 'turn',
           notice: notice,
@@ -265,7 +285,7 @@ void main() {
     }
     // An absent text in a bounded window does not revoke authoritative activity.
     expect(
-      hasCurrentOutputRenderer(
+      LiveStatusStateMachine.hasCurrentOutputRenderer(
         live: window([]),
         activeTurnId: 'turn',
         notice: responding,
@@ -273,7 +293,7 @@ void main() {
       isFalse,
     );
     expect(
-      hasCurrentOutputRenderer(
+      LiveStatusStateMachine.hasCurrentOutputRenderer(
         live: window([
           LiveDisplayBlock(
             id: output.id,
@@ -332,38 +352,45 @@ void main() {
           ),
         ],
       );
-      final region = projectConversationRealtime(
-        storage: null,
-        interaction: null,
-        live: live,
-        status: const ThreadActivityView(
-          threadId: 'thread',
-          identity: 'same-current-notice',
-          revision: 3,
-          turnId: 'turn',
-          kind: ThreadActivityKind.thinking,
-          summary: '可靠状态概要',
-          thinkingSummary: '有界思考概要',
-          thinkingSeconds: 17,
-        ),
-      ) as ContentRealtimeRegion;
-      final placement = currentWorkNotice(
-        live: region.live,
-        activeTurnId: 'turn',
-        notices: region.notices,
+      const status = ThreadActivityView(
+        threadId: 'thread',
+        identity: 'same-current-notice',
+        revision: 3,
+        turnId: 'turn',
+        kind: ThreadActivityKind.thinking,
+        summary: '可靠状态概要',
+        thinkingSummary: '有界思考概要',
+        thinkingSeconds: 17,
       );
+      final notice = ExecutionLiveNotice(
+        LiveStatusStateMachine.mapThreadActivity(status),
+      );
+      final placement = LiveStatusStateMachine.mergeableWorkNotice(
+        live: live,
+        activeTurnId: 'turn',
+        notices: [notice],
+      );
+      final aggregate = _observe(live: live, status: status);
       expect(placement != null, accepted);
       if (accepted) {
         final matched = placement!;
         expect(matched.blockId, 'opaque-block');
-        expect(matched.notice, same(region.notices.single));
+        expect(matched.notice, same(notice));
         expect(matched.notice.view.summary, '可靠状态概要');
         expect(matched.notice.view.thinkingSummary, '有界思考概要');
+        final presenting = aggregate.barState as LiveStatusPresenting;
+        expect(presenting.surface, isA<LiveStatusWorkSurface>());
         expect(
-          currentWorkNotice(
-            live: region.live,
+          (presenting.surface as LiveStatusWorkSurface).mergedActivity?.summary,
+          '可靠状态概要',
+        );
+        expect(presenting.surface.standaloneNotices, isEmpty);
+        expect(aggregate.timelineWork.workBlocks, isEmpty);
+        expect(
+          LiveStatusStateMachine.mergeableWorkNotice(
+            live: live,
             activeTurnId: 'another-turn',
-            notices: region.notices,
+            notices: [notice],
           ),
           isNull,
         );
@@ -396,36 +423,69 @@ void main() {
             blocks: [
               work,
               LiveDisplayBlock(
-                id: 'newer-terminal-work',
+                id: 'newer-failed-work',
                 blockOrder: 2,
                 state: DisplayBlockState.open,
                 source: source,
-                body: displayWork('newer-terminal-work', 1).body,
+                body: WorkDisplayBlock(
+                  summary: const WorkSummary(
+                    total: 1,
+                    terminal: 1,
+                    running: 0,
+                    waiting: 0,
+                    failed: 1,
+                    cancelled: 0,
+                    transferred: 0,
+                    unavailable: 0,
+                  ),
+                  members: const DisplayBlockRef(
+                    databaseId: 'db',
+                    blockId: 'newer-failed-work',
+                  ),
+                ),
               ),
             ],
           ),
         ]) {
           expect(
-            currentWorkNotice(
+            LiveStatusStateMachine.mergeableWorkNotice(
               live: blocked,
               activeTurnId: 'turn',
-              notices: region.notices,
+              notices: [notice],
             ),
             isNull,
           );
         }
+      } else {
+        expect(aggregate.timelineWork.workBlocks.single.id, 'opaque-block');
+        final presenting = aggregate.barState as LiveStatusPresenting;
+        expect(presenting.surface, isA<LiveStatusNoticeOnlySurface>());
+        expect(presenting.surface.standaloneNotices, hasLength(1));
       }
     });
   }
 
-  for (final (label, running, waiting, unavailable, accepted) in [
-    ('terminal', 0, 0, 0, false),
-    ('running', 1, 0, 0, true),
-    ('waiting', 0, 1, 0, true),
-    ('unavailable running', 1, 0, 1, false),
-    ('unavailable waiting', 0, 1, 1, false),
-  ]) {
-    test('normal notice requires complete active Work: $label', () {
+  for (final (
+        label,
+        running,
+        waiting,
+        failed,
+        cancelled,
+        transferred,
+        unavailable,
+        accepted,
+      )
+      in [
+        ('clean idle (group-idle)', 0, 0, 0, 0, 0, 0, true),
+        ('running', 1, 0, 0, 0, 0, 0, true),
+        ('waiting', 0, 1, 0, 0, 0, 0, true),
+        ('failed terminal', 0, 0, 1, 0, 0, 0, false),
+        ('cancelled terminal', 0, 0, 0, 1, 0, 0, false),
+        ('transferred terminal', 0, 0, 0, 0, 1, 0, false),
+        ('unavailable running', 1, 0, 0, 0, 0, 1, false),
+        ('unavailable waiting', 0, 1, 0, 0, 0, 1, false),
+      ]) {
+    test('normal notice requires complete non-abnormal open Work: $label', () {
       final live = LiveDisplayWindow(
         revision: 4,
         historyThrough: 0,
@@ -442,9 +502,9 @@ void main() {
                 terminal: 2 - running - waiting,
                 running: running,
                 waiting: waiting,
-                failed: 0,
-                cancelled: 0,
-                transferred: 0,
+                failed: failed,
+                cancelled: cancelled,
+                transferred: transferred,
                 unavailable: unavailable,
               ),
               members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
@@ -453,40 +513,44 @@ void main() {
         ],
       );
       for (final kind in [
+        ThreadActivityKind.preparing,
         ThreadActivityKind.thinking,
         ThreadActivityKind.runningTool,
         ThreadActivityKind.planning,
       ]) {
-        final region = projectConversationRealtime(
-          storage: null,
-          interaction: null,
-          live: live,
-          status: ThreadActivityView(
-            threadId: 'thread',
-            identity: 'notice',
-            revision: 1,
-            turnId: 'turn',
-            kind: kind,
-            summary: '真实 Turn 活动',
-          ),
-        ) as ContentRealtimeRegion;
-        final placement = currentWorkNotice(
-          live: region.live,
-          activeTurnId: 'turn',
-          notices: region.notices,
+        final status = ThreadActivityView(
+          threadId: 'thread',
+          identity: 'notice',
+          revision: 1,
+          turnId: 'turn',
+          kind: kind,
+          summary: '真实 Turn 活动',
         );
+        final notice = ExecutionLiveNotice(
+          LiveStatusStateMachine.mapThreadActivity(status),
+        );
+        final placement = LiveStatusStateMachine.mergeableWorkNotice(
+          live: live,
+          activeTurnId: 'turn',
+          notices: [notice],
+        );
+        final aggregate = _observe(live: live, status: status);
+        final presenting = aggregate.barState as LiveStatusPresenting;
         expect(placement != null, accepted, reason: kind.name);
-        expect(region.live, same(live));
-        expect(region.notices, hasLength(1));
+        expect(presenting.effectiveWindow, same(live));
+        expect(presenting.surface, isA<LiveStatusWorkSurface>());
         if (accepted) {
-          expect(placement!.notice, same(region.notices.single));
+          expect(placement!.notice, same(notice));
+          expect(presenting.surface.standaloneNotices, isEmpty);
+        } else {
+          expect(presenting.surface.standaloneNotices, hasLength(1));
         }
       }
     });
   }
 
   test('realtime projection preserves the actual thinking phase timing', () {
-    final region = projectConversationRealtime(
+    final aggregate = _observe(
       storage: null,
       interaction: null,
       live: _live,
@@ -500,9 +564,10 @@ void main() {
         thinkingSummary: '核对实时呈现与创建时间',
         thinkingSeconds: 17,
       ),
-    ) as ContentRealtimeRegion;
-    final view = region.notices
-        .whereType<ExecutionRealtimeNotice>()
+    );
+    final presenting = aggregate.barState as LiveStatusPresenting;
+    final view = presenting.surface.standaloneNotices
+        .whereType<ExecutionLiveNotice>()
         .single
         .view;
     expect(view.thinkingSummary, '核对实时呈现与创建时间');
@@ -534,7 +599,7 @@ void main() {
         ),
       ],
     );
-    final projected = projectConversationRealtime(
+    final projected = _observe(
       live: live,
       interaction: null,
       storage: const ThreadStorageStateView(
@@ -548,11 +613,15 @@ void main() {
         kind: ThreadActivityKind.stopping,
         summary: '停止中',
       ),
-    ) as ContentRealtimeRegion;
-    expect(projected.live, same(live));
-    expect(projected.live!.blocks.map((block) => block.id), ['work', 'text']);
+    );
+    expect(projected.timelineWork.effectiveWindow, same(live));
+    expect(projected.timelineWork.workBlocks.map((b) => b.id), ['work']);
+    final presenting = projected.barState as LiveStatusPresenting;
+    expect(presenting.effectiveWindow, same(live));
+    expect(presenting.surface, isA<LiveStatusStreamingSurface>());
+    expect(presenting.surface.blocks.map((block) => block.id), ['text']);
     expect(
-      projected.notices.whereType<ExecutionRealtimeNotice>().map(
+      presenting.surface.standaloneNotices.whereType<ExecutionLiveNotice>().map(
         (notice) => notice.view.kind,
       ),
       [
@@ -563,7 +632,7 @@ void main() {
   });
 
   test('cold open retains saved blocks but cannot project thinking or a running timer', () {
-    final live = LiveDisplayWindow(
+    final coldWorkWindow = LiveDisplayWindow(
       revision: 4,
       historyThrough: 3,
       executionPresent: false,
@@ -576,25 +645,58 @@ void main() {
         ),
       ],
     );
-    final projected = projectConversationRealtime(
-      live: live,
+    final coldWork = _observe(
+      live: coldWorkWindow,
       interaction: null,
       storage: null,
       status: _status,
-    ) as ContentRealtimeRegion;
-    expect(projected.live, same(live));
-    expect(projected.notices.single, isA<UnrestoredRealtimeNotice>());
+    );
+    expect(coldWork.primaryActivity, isNull);
+    expect(coldWork.timelineWork.workBlocks.single.id, 'work');
+    expect(coldWork.barState, isA<LiveStatusHidden>());
+
+    final coldSingleWindow = LiveDisplayWindow(
+      revision: 5,
+      historyThrough: 3,
+      executionPresent: false,
+      blocks: [
+        ...coldWorkWindow.blocks,
+        LiveDisplayBlock(
+          id: 'cold-text',
+          blockOrder: 2,
+          state: DisplayBlockState.open,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: completionEntry('cold-text', 5, text: '未收束正文').atom,
+              contentSource: const CurrentAtom(),
+            ),
+          ),
+        ),
+      ],
+    );
+    final coldSingle = _observe(
+      live: coldSingleWindow,
+      interaction: null,
+      storage: null,
+      status: _status,
+    );
+    final presenting = coldSingle.barState as LiveStatusPresenting;
+    expect(presenting.effectiveWindow, same(coldSingleWindow));
+    expect(
+      presenting.surface.standaloneNotices.single,
+      isA<UnrestoredLiveNotice>(),
+    );
   });
 
   test('idle history-only region hides without suppressing the final historical block', () {
     expect(
-      projectConversationRealtime(
+      _observe(
         live: null,
         interaction: null,
         storage: null,
         status: null,
-      ),
-      isA<HiddenRealtimeRegion>(),
+      ).barState,
+      isA<LiveStatusHidden>(),
     );
   });
   for (final olderSource in <DisplayContentSource?>[
@@ -759,7 +861,7 @@ void main() {
                 body: Column(
                   children: [
                     Expanded(child: TimelineConnector(threadId: threadId)),
-                    ConversationActivityConnector(threadId: threadId),
+                    LiveStatusBar(threadId: threadId),
                   ],
                 ),
               ),
@@ -790,7 +892,7 @@ void main() {
             .single;
         const olderText = '已打开的更早正文在同切面计划确认期间保留';
         final outputView = find.descendant(
-          of: find.byType(ConversationActivityConnector),
+          of: find.byType(LiveStatusBar),
           matching: find.byWidgetPredicate(
             (widget) =>
                 widget is ConversationCurrentConnector &&
@@ -859,7 +961,7 @@ void main() {
             ],
           );
           final olderButton = find.descendant(
-            of: find.byType(ConversationActivityConnector),
+            of: find.byType(LiveStatusBar),
             matching: find.widgetWithText(TextButton, '更早实时片段'),
           );
           expect(olderButton, findsOneWidget);
@@ -887,14 +989,8 @@ void main() {
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         if (olderSource == null) {
           expect(find.byType(ConversationActivityBar), findsNothing);
-          expect(
-            tester.getSize(find.byType(ConversationActivityConnector)).height,
-            0,
-          );
-          expect(
-            tester.getSize(find.byType(ConversationActivityViewport)).height,
-            0,
-          );
+          expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
+          expect(find.byType(ConversationActivityViewport), findsNothing);
         } else {
           expect(find.text(olderText, findRichText: true), findsOneWidget);
           expect(outputView.evaluate().single, same(outputElement));
@@ -1033,7 +1129,7 @@ void main() {
         await tester.pump();
         expect(
           find.descendant(
-            of: find.byType(ConversationActivityConnector),
+            of: find.byType(LiveStatusBar),
             matching: find.text('上次执行未收束，尚未恢复'),
           ),
           findsOneWidget,
@@ -1073,11 +1169,15 @@ void main() {
       ),
     );
 
-    expect(state, isA<ContentRealtimeRegion>());
-    final content = state as ContentRealtimeRegion;
-    expect(content.live, same(_live));
+    expect(state.barState, isA<LiveStatusPresenting>());
+    final content = state.barState as LiveStatusPresenting;
+    expect(content.effectiveWindow, same(_live));
     expect(
-      content.notices.whereType<ExecutionRealtimeNotice>().single.view.kind,
+      content.surface.standaloneNotices
+          .whereType<ExecutionLiveNotice>()
+          .single
+          .view
+          .kind,
       ConversationActivityKind.thinking,
     );
   });
@@ -1086,7 +1186,7 @@ void main() {
     test(
       'selected plan input-wait replacement retains source qualification: $turnId',
       () {
-        final region = projectConversationRealtime(
+        final aggregate = _observe(
           storage: null,
           interaction: _userInput(
             id: 'plan',
@@ -1103,12 +1203,13 @@ void main() {
           ),
         );
         if (replaced) {
-          expect(region, isA<HiddenRealtimeRegion>());
+          expect(aggregate.barState, isA<LiveStatusDockMasked>());
+          expect(aggregate.barState.showInteractionDetails, isFalse);
         } else {
-          final content = region as ContentRealtimeRegion;
+          final content = aggregate.barState as LiveStatusPresenting;
           expect(
-            content.notices
-                .whereType<ExecutionRealtimeNotice>()
+            content.surface.standaloneNotices
+                .whereType<ExecutionLiveNotice>()
                 .single
                 .view
                 .turnId,
@@ -1124,28 +1225,32 @@ void main() {
       _userInput(id: 'question', questionId: 'ordinary-question'),
     );
 
-    expect(state, isA<DockRealtimeRegion>());
-    expect((state as DockRealtimeRegion).interactionId, 'question');
+    expect(state.barState, isA<LiveStatusDockMasked>());
+    expect((state.barState as LiveStatusDockMasked).interactionId, 'question');
   });
 
   test('resolved interaction retains the real activity observation', () {
-    final state = _project(null) as ContentRealtimeRegion;
+    final state = _project(null);
+    final content = state.barState as LiveStatusPresenting;
 
-    expect(state, isNotNull);
-    expect(state.live, same(_live));
+    expect(content.effectiveWindow, same(_live));
     expect(
-      state.notices.whereType<ExecutionRealtimeNotice>().single.view.kind,
+      content.surface.standaloneNotices
+          .whereType<ExecutionLiveNotice>()
+          .single
+          .view
+          .kind,
       ConversationActivityKind.thinking,
     );
   });
 
   test('tool approval keeps the existing activity projection', () {
-    final state = _project(_toolApproval()) as ContentRealtimeRegion;
+    final state = _project(_toolApproval());
+    final content = state.barState as LiveStatusPresenting;
 
-    expect(state, isNotNull);
-    expect(state.live, same(_live));
+    expect(content.effectiveWindow, same(_live));
     expect(
-      state.notices.whereType<ExecutionRealtimeNotice>().map(
+      content.surface.standaloneNotices.whereType<ExecutionLiveNotice>().map(
         (notice) => notice.view.kind,
       ),
       [
@@ -1153,5 +1258,136 @@ void main() {
         ConversationActivityKind.awaitingApproval,
       ],
     );
+  });
+
+  test('state machine transitions older window paging, handles failure/return, and resets on cut change while deduplicating driver effects', () {
+    const cut1 = LiveWindowCut(
+      revision: 10,
+      historyThrough: 2,
+      executionPresent: true,
+      attemptId: 1,
+      isDisplayActive: true,
+    );
+    final latest = LiveDisplayWindow(
+      revision: 10,
+      historyThrough: 2,
+      executionPresent: true,
+      blocks: const [],
+      older: 'cursor-1',
+    );
+    final olderPage = LiveDisplayWindow(
+      revision: 10,
+      historyThrough: 2,
+      executionPresent: true,
+      blocks: [
+        LiveDisplayBlock(
+          id: 'older-single',
+          blockOrder: 1,
+          state: DisplayBlockState.open,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: completionEntry('older-single', 1, text: '更早正文').atom,
+              contentSource: const CurrentAtom(),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    final initial = LiveStatusAggregate.initial('thread');
+    final obs1 = LiveStatusObservation(
+      cut: cut1,
+      activeTurnId: 'turn',
+      activity: _status,
+      latestLive: latest,
+    );
+    final t1 = LiveStatusStateMachine.transition(
+      initial,
+      LiveStatusObserved(obs1),
+    );
+    expect(t1.effects, [
+      SyncStudioDriverActivityEffect(t1.state.primaryActivity),
+    ]);
+
+    // 同一活动重复观察时不重复发布 SyncStudioDriverActivityEffect。
+    final t1Repeat = LiveStatusStateMachine.transition(
+      t1.state,
+      LiveStatusObserved(obs1),
+    );
+    expect(t1Repeat.effects, isEmpty);
+
+    // 请求加载更早实时窗口 -> LoadingOlderLiveWindow + ReadOlderLiveWindowEffect。
+    final tLoad = LiveStatusStateMachine.transition(
+      t1Repeat.state,
+      const LiveStatusLoadOlderRequested(
+        target: LiveStatusSectionTarget.outputBar,
+        before: 'cursor-1',
+      ),
+    );
+    expect(tLoad.state.outputPaging, isA<LoadingOlderLiveWindow>());
+    expect(tLoad.effects, [
+      const ReadOlderLiveWindowEffect(
+        target: LiveStatusSectionTarget.outputBar,
+        before: 'cursor-1',
+        cut: cut1,
+      ),
+    ]);
+
+    // 加载失败 -> OlderLiveWindowFailed。
+    final tFail = LiveStatusStateMachine.transition(
+      tLoad.state,
+      const LiveStatusOlderFailed(
+        target: LiveStatusSectionTarget.outputBar,
+        before: 'cursor-1',
+        error: '读取超时',
+        cut: cut1,
+      ),
+    );
+    expect(tFail.state.outputPaging, isA<OlderLiveWindowFailed>());
+    expect(tFail.state.outputPaging.error, '读取超时');
+
+    // 重试并加载成功 -> ViewingOlderLiveWindow，表面切换为 olderPage。
+    final tLoaded = LiveStatusStateMachine.transition(
+      tFail.state,
+      LiveStatusOlderLoaded(
+        target: LiveStatusSectionTarget.outputBar,
+        before: 'cursor-1',
+        window: olderPage,
+        cut: cut1,
+      ),
+    );
+    expect(tLoaded.state.outputPaging, isA<ViewingOlderLiveWindow>());
+    final presentingOlder = tLoaded.state.barState as LiveStatusPresenting;
+    expect(presentingOlder.effectiveWindow, same(olderPage));
+    expect(presentingOlder.surface, isA<LiveStatusStreamingSurface>());
+
+    // 切面（revision）推进后自动归零分页，丢弃旧实时页。
+    const cut2 = LiveWindowCut(
+      revision: 11,
+      historyThrough: 2,
+      executionPresent: true,
+      attemptId: 1,
+      isDisplayActive: true,
+    );
+    final latest2 = LiveDisplayWindow(
+      revision: 11,
+      historyThrough: 2,
+      executionPresent: true,
+      blocks: const [],
+    );
+    final tCutReset = LiveStatusStateMachine.transition(
+      tLoaded.state,
+      LiveStatusObserved(
+        LiveStatusObservation(
+          cut: cut2,
+          activeTurnId: 'turn',
+          activity: null,
+          latestLive: latest2,
+        ),
+      ),
+    );
+    expect(tCutReset.state.outputPaging, isA<LatestLiveWindow>());
+    expect(tCutReset.state.barState, isA<LiveStatusHidden>());
+    expect(tCutReset.effects, const [SyncStudioDriverActivityEffect(null)]);
   });
 }

@@ -19,6 +19,7 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
+import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
@@ -406,11 +407,20 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (atom.kind == ChatAtomKind.compaction &&
         widget.record.contentSource is CurrentAtom &&
         atom.lifecycle is ActiveChatAtom) {
-      return TimelineActivityRow(
-        icon: Icons.compress_outlined,
-        label: context.l10n.conversationActivityCompacting,
-        active: widget.executionPresent,
-        expandable: false,
+      return TimelineActivityClock(
+        startedAt: widget.executionPresent ? atom.startedAt : null,
+        running: widget.executionPresent && atom.startedAt != null,
+        builder: (context, seconds) => TimelineActivityRow(
+          icon: Icons.compress_outlined,
+          indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
+          label: context.l10n.conversationActivityCompacting,
+          active: widget.executionPresent,
+          header: true,
+          expandable: false,
+          meta: seconds == null
+              ? null
+              : activityDurationLabel(context, seconds),
+        ),
       );
     }
     if (atom.payload != null) {

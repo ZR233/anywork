@@ -155,6 +155,15 @@ class ConversationActivityView {
 
   bool get hasDetails => expandable || details.isNotEmpty;
 
+  /// 当前前台工具执行阶段是否正在运行 `exec` 命令。
+  bool get isRunningExecTool =>
+      kind == ConversationActivityKind.runningTool &&
+      activeTools.any(
+        (tool) =>
+            tool.name == 'exec' &&
+            tool.state == ThreadActivityToolState.running,
+      );
+
   /// 是否以“等待”脉冲呈现：准备/压缩/等待模型/思考/执行/审批/输入/停止。
   bool get waits =>
       kind == ConversationActivityKind.preparing ||
@@ -315,9 +324,11 @@ ConversationActivityView? projectConversationActivity({
     identity: activity.identity,
     kind: kind,
     turnId: activity.turnId,
+    executionId: activity.executionId,
     summary: summary.isEmpty ? null : summary,
     thinkingSummary: activity.thinkingSummary,
     thinkingSeconds: activity.thinkingSeconds,
+    activeTools: activity.tools.active,
     activeToolCount: activity.tools.count,
     backgroundToolCount: activity.tools.background,
     expandable:

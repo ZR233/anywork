@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
@@ -242,7 +242,7 @@ void main() {
             ProviderScope.containerOf(
               tester.element(find.byType(AnyworkApp)),
               listen: false,
-            ).read(conversationActivityViewModelProvider('thread-main')),
+            ).read(liveStatusViewModelProvider('thread-main')),
             isNull,
             reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
           );

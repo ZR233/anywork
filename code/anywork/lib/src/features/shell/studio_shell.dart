@@ -39,7 +39,7 @@ import '../settings/settings_remote_directory_dialog.dart';
 import '../conversation/composer/connectors/composer_dock_connector.dart';
 import '../conversation/composer/view_models/composer_view_model.dart';
 import '../status/thread_status_bar.dart';
-import '../conversation/timeline/connectors/conversation_activity_connector.dart';
+import '../conversation/timeline/live_status/live_status_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/connectors/file_reading_panel.dart';

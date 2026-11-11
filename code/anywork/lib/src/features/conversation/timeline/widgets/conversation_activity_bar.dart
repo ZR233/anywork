@@ -3,14 +3,14 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../live_status/live_status_state.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
-import '../state/conversation_realtime_presentation.dart';
 
 class ConversationRealtimeNotices extends StatelessWidget {
   const ConversationRealtimeNotices({required this.notices, super.key});
-  final List<RealtimeNotice> notices;
+  final List<LiveStatusNotice> notices;
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
@@ -18,10 +18,10 @@ class ConversationRealtimeNotices extends StatelessWidget {
     children: [
       for (final notice in notices)
         switch (notice) {
-          ExecutionRealtimeNotice(:final view) => ConversationActivityStatus(
+          ExecutionLiveNotice(:final view) => ConversationActivityStatus(
             view: view,
           ),
-          UnrestoredRealtimeNotice() => const Text('上次执行未收束，尚未恢复'),
+          UnrestoredLiveNotice() => const Text('上次执行未收束，尚未恢复'),
         },
     ],
   );
@@ -54,21 +54,23 @@ class ConversationActivityBar extends StatelessWidget {
               side: BorderSide(color: context.colors.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: LayoutBuilder(
-                builder: (context, constraints) => ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: constraints.hasBoundedHeight
-                        ? constraints.maxHeight
-                        : MediaQuery.sizeOf(context).height * .45,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final child in children)
-                        Flexible(fit: FlexFit.loose, child: child),
-                    ],
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              child: LiveStatusMotionHost(
+                child: LayoutBuilder(
+                  builder: (context, constraints) => ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: constraints.hasBoundedHeight
+                          ? constraints.maxHeight
+                          : MediaQuery.sizeOf(context).height * .45,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final child in children)
+                          Flexible(fit: FlexFit.loose, child: child),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -93,13 +95,15 @@ class ConversationActivityStatus extends StatelessWidget {
       header: TimelineActivityRow(
         label: context.conversationActivityLabel(view),
         icon: view.kind.icon,
-        indicatorStyle: view.kind == ConversationActivityKind.responding
-            ? TimelineActivityIndicatorStyle.writing
-            : TimelineActivityIndicatorStyle.restingCat,
+        indicatorStyle: resolveLiveHeaderIndicatorStyle(view),
         isIssue: view.kind.isIssue,
         active:
             view.waits ||
             view.kind == ConversationActivityKind.responding ||
+            view.kind == ConversationActivityKind.planning,
+        emphasized:
+            view.kind == ConversationActivityKind.responding ||
+            view.kind == ConversationActivityKind.runningTool ||
             view.kind == ConversationActivityKind.planning,
         expandable: false,
         header: true,
@@ -144,13 +148,18 @@ class ConversationResponseView extends StatelessWidget {
         icon: Icons.chat_bubble_outline,
         indicatorStyle: TimelineActivityIndicatorStyle.writing,
         active: active,
+        emphasized: active,
         header: true,
         expandable: false,
         meta: seconds == null ? null : activityDurationLabel(context, seconds),
       ),
     ),
     body: Padding(
-      padding: const EdgeInsetsDirectional.only(start: 22, top: 6, bottom: 2),
+      padding: const EdgeInsetsDirectional.only(
+        start: TimelineActivityRow.headerContentIndent,
+        top: 6,
+        bottom: 2,
+      ),
       child: child,
     ),
   );

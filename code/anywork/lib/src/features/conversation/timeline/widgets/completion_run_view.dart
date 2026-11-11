@@ -109,8 +109,8 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           : Padding(
               padding: const EdgeInsets.only(top: 5, bottom: 3),
               child: TimelineActivityRail(
-                inset: 3,
-                contentInset: 14,
+                inset: live ? 15.5 : 9.5,
+                contentInset: live ? 25.5 : 17.5,
                 child: live
                     ? ConstrainedBox(
                         constraints: const BoxConstraints(maxHeight: 186),
@@ -164,6 +164,7 @@ class _WorkHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final live = state == DisplayBlockState.open;
     final cold = live && !executionPresent;
+    final working = summary.running > 0 || summary.waiting > 0;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
@@ -175,7 +176,13 @@ class _WorkHeader extends StatelessWidget {
         ? l10n.timelineGroupWaitingForNext
         : l10n.timelineGroupWorking;
     final thought =
-        [summary.thinkingSummary, activity?.thinkingSummary, activity?.summary]
+        (working || activity == null
+                ? [
+                    summary.thinkingSummary,
+                    activity?.thinkingSummary,
+                    activity?.summary,
+                  ]
+                : [activity?.thinkingSummary])
             .whereType<String>()
             .map((value) => value.trim())
             .where((value) => value.isNotEmpty)
@@ -211,10 +218,7 @@ class _WorkHeader extends StatelessWidget {
     ].join('，');
     final issue = summary.failed > 0;
     final active =
-        live &&
-        executionPresent &&
-        !issue &&
-        (summary.running > 0 || summary.waiting > 0 || activity != null);
+        live && executionPresent && !issue && (working || activity != null);
     final icon = issue
         ? Icons.error_outline
         : cold
@@ -224,54 +228,139 @@ class _WorkHeader extends StatelessWidget {
         : summary.transferred > 0
         ? Icons.call_made
         : activity?.kind.icon ?? Icons.work_outline;
-    final style = context.text.bodySmall?.copyWith(
-      color: context.colors.onSurfaceVariant,
+    final secondaryColor = context.colors.onSurfaceVariant;
+    final indicatorColor = issue
+        ? context.colors.error
+        : active
+        ? context.statusColors.activeIndicator
+        : secondaryColor.withValues(alpha: .78);
+    final titleStyle = context.text.bodySmall!.copyWith(
+      color: live
+          ? (active
+                ? (working
+                      ? context.colors.onSurface
+                      : context.colors.onSurface.withValues(alpha: .92))
+                : secondaryColor)
+          : secondaryColor,
+      fontSize: live ? TimelineActivityRow.headerFontSize : 13,
+      fontWeight: FontWeight.w500,
+      height: live ? 1.36 : 1.45,
+    );
+    final metaStyle = context.text.labelSmall!.copyWith(
+      color: secondaryColor.withValues(alpha: .85),
+      fontSize: TimelineActivityRow.headerMetaFontSize,
+      fontFeatures: const [FontFeature.tabularFigures()],
     );
     return Semantics(
       label: description,
       excludeSemantics: true,
       child: Tooltip(
         message: description,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            children: [
-              TimelineActivityIndicator(
-                icon: icon,
-                active: active,
-                color: issue
-                    ? context.colors.error
-                    : context.colors.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.ellipsis,
-                  style: style,
-                ),
-              ),
-              if (live && duration != null) ...[
-                const SizedBox(width: 8),
-                Text(
-                  duration,
-                  key: const ValueKey('work-header-elapsed'),
-                  maxLines: 1,
-                  softWrap: false,
-                  style: style,
-                ),
-              ],
-              const SizedBox(width: 4),
-              Icon(
-                expanded
-                    ? Icons.keyboard_arrow_down_rounded
-                    : Icons.chevron_right_rounded,
-                size: 18,
-                color: context.colors.onSurfaceVariant,
-              ),
-            ],
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: live ? TimelineActivityRow.headerMinHeight : 30,
+          ),
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: live ? 2 : 3),
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              heightFactor: 1,
+              child: live
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        SizedBox.square(
+                          dimension: TimelineActivityRow.headerLogoSlotSize,
+                          child: Center(
+                            heightFactor: 1,
+                            child: TimelineActivityIndicator(
+                              icon: icon,
+                              active: active,
+                              style: activity?.isRunningExecTool == true
+                                  ? TimelineActivityIndicatorStyle
+                                        .circularProgress
+                                  : TimelineActivityIndicatorStyle.restingCat,
+                              catSize: TimelineActivityRow.headerLogoSlotSize,
+                              writingSize:
+                                  TimelineActivityRow.headerWritingSize,
+                              zipSize: TimelineActivityRow.headerZipSize,
+                              spinnerSize:
+                                  TimelineActivityRow.headerSpinnerSize,
+                              spinnerStrokeWidth: 2.2,
+                              staticIconSize:
+                                  TimelineActivityRow.headerStaticIconSize,
+                              color: indicatorColor,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: TimelineActivityRow.headerGap),
+                        Expanded(
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            strutStyle: TimelineActivityRow.headerStrutStyle,
+                            style: titleStyle,
+                          ),
+                        ),
+                        if (duration != null) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            duration,
+                            key: const ValueKey('work-header-elapsed'),
+                            maxLines: 1,
+                            softWrap: false,
+                            style: metaStyle,
+                          ),
+                        ],
+                        const SizedBox(width: 4),
+                        Icon(
+                          expanded
+                              ? Icons.keyboard_arrow_down_rounded
+                              : Icons.chevron_right_rounded,
+                          size: TimelineActivityRow.headerChevronSize,
+                          color: secondaryColor.withValues(alpha: .8),
+                        ),
+                      ],
+                    )
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: TimelineActivityRow.iconColumnWidth,
+                          child: Center(
+                            heightFactor: 1,
+                            child: TimelineActivityIndicator(
+                              icon: icon,
+                              active: false,
+                              staticIconSize: 16,
+                              color: indicatorColor,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: TimelineActivityRow.gap),
+                        Flexible(
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            style: titleStyle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(
+                          expanded
+                              ? Icons.keyboard_arrow_down_rounded
+                              : Icons.chevron_right_rounded,
+                          size: 16,
+                          color: secondaryColor.withValues(alpha: .74),
+                        ),
+                      ],
+                    ),
+            ),
           ),
         ),
       ),
