@@ -153,6 +153,58 @@ async fn authorization_change_during_response(rejected: ModelToolCall, revoke: b
 }
 
 #[tokio::test]
+async fn parent_and_guard_revocation_reject_frozen_calls_without_registry_replacement() {
+    use pl_core::tool::opaque::ToolAuthorization;
+    for revoke_guard in [false, true] {
+        let parent = ToolAuthorization::unique();
+        let guard = ToolAuthorization::unique();
+        let authorization = parent.scoped(7).guarded_by(&guard);
+        let same_identity = authorization.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let thread = ThreadHandle::start(
+            "revoked-frozen".into(),
+            DynModelSession::new(GatedResponse {
+                calls: vec![call("never-executed", "record", None)],
+                started: started.clone(),
+                release: release.clone(),
+                requests: Arc::new(AtomicUsize::new(0)),
+                returned: Arc::new(Mutex::new(None)),
+            }),
+        )
+        .unwrap();
+        thread
+            .register_tools(vec![
+                tool_support::tool("record", &log).with_authorization(authorization.clone()),
+            ])
+            .await
+            .unwrap();
+        let runner = {
+            let thread = thread.clone();
+            tokio::spawn(async move { thread.run_turn(support::turn("revoked-frozen")).await })
+        };
+        started.notified().await;
+        if revoke_guard {
+            guard.revoke();
+        } else {
+            parent.revoke();
+        }
+        assert_eq!(authorization, same_identity);
+        assert!(!authorization.is_active());
+        release.notify_one();
+        assert!(matches!(
+            runner.await.unwrap(),
+            Err(ThreadError::ModelOutput(
+                ModelOutputViolation::ToolPermissionRevoked
+            ))
+        ));
+        assert!(log.lock().unwrap().is_empty());
+        thread.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn revoked_authorization_cannot_be_hidden_by_unknown_name() {
     authorization_change_during_response(unknown("unknown"), true).await;
 }

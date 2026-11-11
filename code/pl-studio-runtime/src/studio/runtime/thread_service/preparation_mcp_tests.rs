@@ -636,11 +636,8 @@ async fn pending_preparation_is_joined_on_configuration_reconnect_and_shutdown()
                     document("optional", &server, false, "enabled = false\n"),
                 )
                 .await?;
-                let updating = env.runtime.reload_mcp_catalog(&McpScope::Host);
-                tokio::pin!(updating);
-                assert!(futures::poll!(&mut updating).is_pending());
+                env.runtime.reload_mcp_catalog(&McpScope::Host).await?;
                 server.gate.release.cancel();
-                updating.await?;
                 assert_eq!(server.gate.handshakes.load(Ordering::SeqCst), 1);
                 let state = env.runtime.read_thread_mcp(&response.thread.id).await?;
                 assert!(

@@ -194,9 +194,10 @@ pub struct EventWriter {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberIdentity {
-    id: String,
+    agent_id: String,
+    session_id: String,
+    parent_agent_id: Option<String>,
     thread_id: String,
-    root_thread_id: String,
     role: String,
     delegation_mode: pl_protocol::DelegationMode,
     delegation_preference: pl_protocol::DelegationPreference,
@@ -210,9 +211,10 @@ pub struct MemberIdentity {
 impl From<&pl_studio_runtime::StudioAgentDirectoryEntry> for MemberIdentity {
     fn from(agent: &pl_studio_runtime::StudioAgentDirectoryEntry) -> Self {
         Self {
-            id: agent.id.clone(),
+            agent_id: agent.agent_id.clone(),
+            session_id: agent.session_id.clone(),
+            parent_agent_id: agent.parent_agent_id.clone(),
             thread_id: agent.thread_id.clone(),
-            root_thread_id: agent.root_thread_id.clone(),
             role: agent.role.clone(),
             delegation_mode: agent.delegation_mode,
             delegation_preference: agent.delegation_preference,
@@ -649,7 +651,9 @@ impl EventWriter {
                     {
                         let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
                         match event {
-                            pl_protocol::ThreadSubscriptionUpdate::Snapshot { snapshot } => {
+                            pl_protocol::ThreadSubscriptionUpdate::Snapshot { completed_history_version, snapshot } => {
+                                anyhow::ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                                    "unsupported completed-history protocol version");
                                 anyhow::ensure!(state.coverage.initial_snapshot_revision.is_none(), "unexpected second event baseline");
                                 state.coverage.initial_snapshot_revision = Some(snapshot.revision);
                             }

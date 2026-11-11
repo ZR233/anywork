@@ -391,6 +391,10 @@ impl ConnectedMcp {
 
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
         self.ensure_running("tools/list")?;
+        // Runtime discovery must observe the server, not a still-fresh SDK TTL entry.
+        // RMCP owns pagination and cache invalidation; clearing also prevents an older
+        // in-flight response from repopulating the cache across this discovery boundary.
+        self.peer.clear_response_cache().await;
         self.peer
             .list_all_tools()
             .await

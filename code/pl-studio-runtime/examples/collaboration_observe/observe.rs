@@ -202,12 +202,7 @@ impl Collection {
                 .state
                 .value()
                 .context("Ready directory has no value")?;
-            let members: Vec<_> = directory
-                .agents
-                .iter()
-                .filter(|agent| agent.root_thread_id == root.id)
-                .cloned()
-                .collect();
+            let members = members_of_root(&directory.agents, &root.id);
             self.evidence
                 .check_limit(members.len() <= MAX_THREADS, "thread budget exceeded")?;
             let directory_hash = super::evidence::sha256(&serde_json::to_vec(&members)?);
@@ -617,14 +612,25 @@ async fn current_members(
     ) {
         return Ok(None);
     }
-    Ok(state.agent_directory.state.value().map(|directory| {
-        directory
-            .agents
-            .iter()
-            .filter(|member| member.root_thread_id == root)
-            .cloned()
-            .collect()
-    }))
+    Ok(state
+        .agent_directory
+        .state
+        .value()
+        .map(|directory| members_of_root(&directory.agents, root)))
+}
+
+fn members_of_root(
+    agents: &[StudioAgentDirectoryEntry],
+    root: &str,
+) -> Vec<StudioAgentDirectoryEntry> {
+    let Some(root_member) = agents.iter().find(|agent| agent.thread_id == root) else {
+        return Vec::new();
+    };
+    agents
+        .iter()
+        .filter(|agent| agent.session_id == root_member.session_id)
+        .cloned()
+        .collect()
 }
 
 fn retired_child(member: &StudioAgentDirectoryEntry, root: &str) -> bool {
@@ -666,9 +672,7 @@ async fn sample_member(
         .await?;
     let id = &snapshot.thread.id;
     anyhow::ensure!(
-        id == &member.thread_id
-            && snapshot.thread.root_thread_id == root
-            && member.root_thread_id == root,
+        id == &member.thread_id && snapshot.thread.root_thread_id == root,
         "member snapshot identity/root mismatch"
     );
     let mut unfinished = Vec::new();
@@ -785,4 +789,47 @@ async fn wait_tick(scene: &Boundary) -> Result<()> {
             Ok(())
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(thread: &str, session: &str, parent: Option<&str>) -> StudioAgentDirectoryEntry {
+        StudioAgentDirectoryEntry {
+            agent_id: format!("agent-{thread}"),
+            session_id: session.into(),
+            parent_agent_id: parent.map(str::to_owned),
+            thread_id: thread.into(),
+            role: "executor".into(),
+            delegation_mode: Default::default(),
+            delegation_preference: Default::default(),
+            frozen_model: None,
+            task: String::new(),
+            summary: None,
+            state: pl_protocol::AgentState::idle(),
+            execution: None,
+            can_stop: false,
+            awaiting_scheduling: false,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn root_membership_uses_the_canonical_session_not_an_agent_or_thread_id() {
+        let agents = vec![
+            member("root", "session-a", None),
+            member("other-root", "session-b", None),
+            member("child", "session-a", Some("agent-root")),
+        ];
+        let members = members_of_root(&agents, "root");
+        assert_eq!(
+            members
+                .iter()
+                .map(|agent| agent.thread_id.as_str())
+                .collect::<Vec<_>>(),
+            ["root", "child"]
+        );
+        assert!(members_of_root(&agents, "missing-root").is_empty());
+    }
 }

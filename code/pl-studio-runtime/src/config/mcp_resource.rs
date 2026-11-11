@@ -78,6 +78,13 @@ pub struct ResolvedThreadMcpServer {
     pub server: EffectiveMcpServerConfig,
 }
 
+/// One configuration-owner snapshot. The authority is process-local and never serialized.
+pub(crate) struct ResolvedThreadMcpSnapshot {
+    pub servers: BTreeMap<String, ResolvedThreadMcpServer>,
+    pub authorization: pl_core::tool::opaque::ToolAuthorization,
+    pub catalog_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedMcpScan {
     pub entries: Vec<McpCatalogEntry>,
@@ -89,6 +96,7 @@ pub struct ScopedMcpScan {
 struct ScopeResourceState {
     revision: u64,
     scan: ScopedMcpScan,
+    authorization: pl_core::tool::opaque::ToolAuthorization,
     updates: Arc<watch::Sender<u64>>,
 }
 
@@ -96,9 +104,34 @@ struct ScopeResourceState {
 pub struct McpCatalogResource {
     scopes: Arc<Mutex<BTreeMap<McpScope, ScopeResourceState>>>,
     write_lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    scan_prepared: Arc<Mutex<Option<McpScanPreparedHook>>>,
 }
 
+#[cfg(test)]
+type McpScanPreparedHook = Arc<dyn Fn(&McpScope) + Send + Sync>;
+
 impl McpCatalogResource {
+    #[cfg(test)]
+    pub(crate) fn set_scan_prepared_hook(&self, hook: Option<McpScanPreparedHook>) {
+        *self
+            .scan_prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
+    }
+
+    #[cfg(test)]
+    fn notify_scan_prepared(&self, scope: &McpScope) {
+        let hook = self
+            .scan_prepared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook(scope);
+        }
+    }
+
     pub fn new(paths: &ConfigPaths, models: &pl_model::config::AgentModelConfig) -> Self {
         let resource = Self::default();
         let _ = resource.adopt_scan(paths, models, &McpScope::Host);
@@ -111,6 +144,8 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         scope: &McpScope,
     ) -> Result<McpCatalogSnapshot> {
+        #[cfg(test)]
+        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()
@@ -136,6 +171,7 @@ impl McpCatalogResource {
             ScopeResourceState {
                 revision: 1,
                 scan,
+                authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
                 updates: Arc::new(tx),
             },
         );
@@ -148,6 +184,8 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         scope: &McpScope,
     ) -> Result<(McpCatalogSnapshot, watch::Receiver<u64>)> {
+        #[cfg(test)]
+        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()
@@ -160,6 +198,7 @@ impl McpCatalogResource {
                 ScopeResourceState {
                     revision: 1,
                     scan,
+                    authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
                     updates: Arc::new(tx),
                 },
             );
@@ -183,11 +222,56 @@ impl McpCatalogResource {
         scope: &McpScope,
     ) -> Result<(McpCatalogSnapshot, bool)> {
         let scan = scan_scope_catalog(paths, models, scope)?;
+        // Compare inherited scopes before taking the publication lock. Only their validity
+        // is revoked here; their original scan/notification owner still publishes new data.
+        let inherited = if matches!(scope, McpScope::Host) {
+            let scopes = self
+                .scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .keys()
+                .filter(|candidate| !matches!(candidate, McpScope::Host))
+                .cloned()
+                .collect::<Vec<_>>();
+            scopes
+                .into_iter()
+                .map(|scope| {
+                    let effective = scan_scope_catalog(paths, models, &scope)
+                        .map(|scan| scan.effective_servers);
+                    (scope, effective)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        #[cfg(test)]
+        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let host_changed = matches!(scope, McpScope::Host)
+            && guard
+                .get(scope)
+                .is_some_and(|state| state.scan.effective_servers != scan.effective_servers);
+        if host_changed {
+            for (inherited_scope, effective) in inherited {
+                if let Some(state) = guard.get(&inherited_scope)
+                    && !effective
+                        .as_ref()
+                        .is_ok_and(|servers| servers == &state.scan.effective_servers)
+                {
+                    state.authorization.revoke();
+                }
+            }
+        }
         if let Some(state) = guard.get_mut(scope) {
+            if state.scan.effective_servers != scan.effective_servers
+                || !state.authorization.is_active()
+            {
+                state.authorization.revoke();
+                state.authorization = pl_core::tool::opaque::ToolAuthorization::unique();
+            }
             let changed = state.scan != scan;
             if changed {
                 state.revision = state.revision.saturating_add(1);
@@ -219,6 +303,7 @@ impl McpCatalogResource {
                 ScopeResourceState {
                     revision: 1,
                     scan,
+                    authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
                     updates: Arc::new(tx),
                 },
             );
@@ -272,6 +357,17 @@ impl McpCatalogResource {
             .unwrap_or_default())
     }
 
+    pub(crate) fn configuration_authorization(
+        &self,
+        scope: &McpScope,
+    ) -> Option<(pl_core::tool::opaque::ToolAuthorization, u64)> {
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(scope)
+            .map(|state| (state.authorization.clone(), state.revision))
+    }
+
     pub fn resolve_thread_mcp_configs(
         &self,
         paths: &ConfigPaths,
@@ -289,6 +385,42 @@ impl McpCatalogResource {
             host_base_cwd,
             remote_commands,
         )
+    }
+
+    pub(crate) fn resolve_thread_mcp_snapshot(
+        &self,
+        paths: &ConfigPaths,
+        models: &pl_model::config::AgentModelConfig,
+        scope: &McpScope,
+        workspace_root: &Path,
+        host_base_cwd: &Path,
+        remote_commands: Option<Arc<RemoteCommandBackend>>,
+    ) -> Result<ResolvedThreadMcpSnapshot> {
+        self.read_catalog(paths, models, scope)?;
+        let (scoped, authorization, catalog_revision) = {
+            let guard = self
+                .scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = guard.get(scope).expect("initialized MCP scope");
+            (
+                state.scan.effective_servers.clone(),
+                state.authorization.clone(),
+                state.revision,
+            )
+        };
+        let servers = resolve_scoped_servers_for_thread(
+            scoped,
+            scope,
+            workspace_root,
+            host_base_cwd,
+            remote_commands,
+        )?;
+        Ok(ResolvedThreadMcpSnapshot {
+            servers,
+            authorization,
+            catalog_revision,
+        })
     }
 
     pub fn read_document(
@@ -1830,6 +1962,99 @@ pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()
 mod tests {
     use super::*;
     use crate::config::StudioConfig;
+
+    #[test]
+    fn configuration_authority_tracks_effective_scopes_not_catalog_noise() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = ConfigPaths::from_config_dir(temp.path());
+        let config = StudioConfig::default_config()?;
+        let resource = McpCatalogResource::new(&paths, &config.models);
+        let document = |url: &str| {
+            format!(
+                "schema_version = 1\nid = \"shared\"\nkind = \"server\"\ntransport = \"streamableHttp\"\nurl = \"{url}\"\n"
+            )
+        };
+        let (receipt, _) = resource
+            .create_document(
+                &paths,
+                &config.models,
+                &CreateMcpDocumentRequest {
+                    scope: McpScope::Host,
+                    id: "shared".into(),
+                    raw_toml: document("https://original.example/mcp"),
+                },
+            )
+            .unwrap();
+        let inherited = McpScope::Ssh {
+            ssh_alias: "inherits".into(),
+        };
+        let overridden = McpScope::Ssh {
+            ssh_alias: "overrides".into(),
+        };
+        resource.read_catalog(&paths, &config.models, &inherited)?;
+        resource
+            .create_document(
+                &paths,
+                &config.models,
+                &CreateMcpDocumentRequest {
+                    scope: overridden.clone(),
+                    id: "shared".into(),
+                    raw_toml: document("https://independent.example/mcp"),
+                },
+            )
+            .unwrap();
+        let authority = |scope: &McpScope| resource.configuration_authorization(scope).unwrap().0;
+        let old_host = authority(&McpScope::Host);
+        let old_inherited = authority(&inherited);
+        let independent = authority(&overridden);
+        let path = resolve_document_path(&paths, receipt.document.as_ref().unwrap()).unwrap();
+
+        fs::write(
+            &path,
+            format!(
+                "{}# comment only\n",
+                document("https://original.example/mcp")
+            ),
+        )?;
+        resource.adopt_scan(&paths, &config.models, &McpScope::Host)?;
+        assert_eq!(authority(&McpScope::Host), old_host);
+        assert!(old_host.is_active() && old_inherited.is_active() && independent.is_active());
+
+        // Only adopt Host here: inherited authority must expire before its own later scan.
+        fs::write(&path, document("https://replacement.example/mcp"))?;
+        resource.adopt_scan(&paths, &config.models, &McpScope::Host)?;
+        assert!(!old_host.is_active() && !old_inherited.is_active());
+        assert!(independent.is_active());
+        assert_eq!(authority(&overridden), independent);
+
+        resource.adopt_scan(&paths, &config.models, &inherited)?;
+        let snapshot = resource.resolve_thread_mcp_snapshot(
+            &paths,
+            &config.models,
+            &inherited,
+            temp.path(),
+            temp.path(),
+            None,
+        )?;
+        assert!(snapshot.authorization.is_active());
+        assert_ne!(snapshot.authorization, old_inherited);
+        assert_eq!(
+            snapshot.servers["shared"].server.config.url.as_deref(),
+            Some("https://replacement.example/mcp")
+        );
+        assert_eq!(
+            snapshot.catalog_revision,
+            resource
+                .read_catalog(&paths, &config.models, &inherited)?
+                .revision
+        );
+
+        fs::remove_file(path)?;
+        resource.adopt_scan(&paths, &config.models, &McpScope::Host)?;
+        assert!(!snapshot.authorization.is_active());
+        assert!(independent.is_active());
+        Ok(())
+    }
 
     #[test]
     fn ssh_scope_inherits_overrides_disables_and_fails_closed_without_fallback() {

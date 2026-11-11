@@ -403,6 +403,10 @@ impl ConfigRuntime {
         &self,
         scope: &McpScope,
     ) -> ConfigRuntimeResult<McpCatalogSnapshot> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
         let snapshot = self.read()?;
         Ok(self
             .mcp_catalog
@@ -414,6 +418,10 @@ impl ConfigRuntime {
         &self,
         scope: &McpScope,
     ) -> ConfigRuntimeResult<(McpCatalogSnapshot, tokio::sync::watch::Receiver<u64>)> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
         let snapshot = self.read()?;
         Ok(self
             .mcp_catalog
@@ -425,6 +433,10 @@ impl ConfigRuntime {
         &self,
         scope: &McpScope,
     ) -> ConfigRuntimeResult<BTreeMap<String, ScopedEffectiveMcpServer>> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
         let snapshot = self.read()?;
         Ok(self.mcp_catalog.effective_servers_for_scope(
             self.store.paths(),
@@ -441,8 +453,45 @@ impl ConfigRuntime {
         host_base_cwd: &std::path::Path,
         remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
     ) -> ConfigRuntimeResult<BTreeMap<String, ResolvedThreadMcpServer>> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
         let snapshot = self.read()?;
         Ok(self.mcp_catalog.resolve_thread_mcp_configs(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+            workspace_root,
+            host_base_cwd,
+            remote_commands,
+        )?)
+    }
+
+    /// Reads effective servers and their validity under the same configuration command boundary.
+    pub(crate) fn resolve_thread_mcp_snapshot(
+        &self,
+        scope: &McpScope,
+        workspace_root: &std::path::Path,
+        host_base_cwd: &std::path::Path,
+        remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
+    ) -> ConfigRuntimeResult<super::mcp_resource::ResolvedThreadMcpSnapshot> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let snapshot = self.read()?;
+        if self
+            .mcp_catalog
+            .configuration_authorization(scope)
+            .is_some_and(|(authorization, _)| !authorization.is_active())
+        {
+            // A committed Host change can invalidate inherited scopes without commanding
+            // their runtimes. Resolve that known invalidation before issuing a fresh lease.
+            self.mcp_catalog
+                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
+        }
+        Ok(self.mcp_catalog.resolve_thread_mcp_snapshot(
             self.store.paths(),
             &snapshot.config.models,
             scope,
@@ -533,22 +582,57 @@ impl ConfigRuntime {
         Ok((catalog, changed_scopes))
     }
 
-    /// 当模型账号/凭据发生变化时，重新扫描已加载作用域的 MCP 配置目录（更新内置 MCP 前置条件状态）。
-    pub fn refresh_mcp_catalogs_for_models(
+    /// Reload only a calling owner's effective scope, including the Host inheritance source.
+    /// Product events may be shared, but this operation does not command other Thread runtimes.
+    pub(crate) fn reload_thread_mcp_catalog(
         &self,
-        models: &pl_model::config::AgentModelConfig,
-    ) -> Vec<McpCatalogSnapshot> {
+        scope: &McpScope,
+    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, Vec<McpCatalogSnapshot>)> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let snapshot = self.read()?;
+        let mut changed = Vec::new();
+        if !matches!(scope, McpScope::Host) {
+            let (host, updated) = self.mcp_catalog.adopt_scan(
+                self.store.paths(),
+                &snapshot.config.models,
+                &McpScope::Host,
+            )?;
+            if updated {
+                changed.push(host);
+            }
+        }
+        let (catalog, updated) =
+            self.mcp_catalog
+                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
+        if updated {
+            changed.push(catalog.clone());
+        }
+        Ok((catalog, changed))
+    }
+
+    /// 当模型账号/凭据发生变化时，重新扫描已加载作用域的 MCP 配置目录（更新内置 MCP 前置条件状态）。
+    pub fn refresh_mcp_catalogs_for_models(&self) -> ConfigRuntimeResult<Vec<McpCatalogSnapshot>> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        // Never republish a caller's earlier account/credential snapshot after a newer command.
+        let snapshot = self.read()?;
+        let models = &snapshot.config.models;
         let changed_scopes = self
             .mcp_catalog
             .refresh_all_scopes(self.store.paths(), models, &[]);
         changed_scopes
             .into_iter()
-            .filter_map(|scope| {
+            .map(|scope| {
                 self.mcp_catalog
                     .read_catalog(self.store.paths(), models, &scope)
-                    .ok()
             })
-            .collect()
+            .collect::<pl_protocol::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// 读取系统凭据库或当前进程租约中的 SSH 主机密码。
@@ -1081,6 +1165,204 @@ fn config_runtime_poisoned() -> ConfigRuntimeError {
 mod tests {
     use super::*;
     use crate::config::{ConfigPaths, ConfigStore};
+
+    #[test]
+    fn background_mcp_scan_cannot_regrant_deleted_or_disabled_configuration() {
+        use std::sync::{atomic, mpsc};
+        use std::time::Duration;
+
+        for disable in [false, true] {
+            let (directory, runtime) = runtime();
+            let raw = "schema_version = 1\nid = \"guarded\"\nkind = \"server\"\ntransport = \"streamableHttp\"\nurl = \"https://guarded.example/mcp\"\n";
+            let (receipt, _) = runtime
+                .create_mcp_document(&CreateMcpDocumentRequest {
+                    scope: McpScope::Host,
+                    id: "guarded".into(),
+                    raw_toml: raw.into(),
+                })
+                .unwrap();
+            let document = receipt.document.unwrap();
+            let content = runtime.read_mcp_document(&document).unwrap();
+            let original = runtime
+                .mcp_catalog
+                .configuration_authorization(&McpScope::Host)
+                .unwrap()
+                .0;
+            let (prepared, observed) = mpsc::channel();
+            let (release, proceed) = mpsc::channel();
+            let proceed = std::sync::Mutex::new(proceed);
+            let first = atomic::AtomicBool::new(true);
+            runtime
+                .mcp_catalog
+                .set_scan_prepared_hook(Some(Arc::new(move |scope| {
+                    if matches!(scope, McpScope::Host)
+                        && std::thread::current().name() == Some("mcp-model-scan")
+                        && first.swap(false, atomic::Ordering::AcqRel)
+                    {
+                        prepared.send(()).unwrap();
+                        proceed
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(10))
+                            .unwrap();
+                    }
+                })));
+            let background_runtime = runtime.clone();
+            let background = std::thread::Builder::new()
+                .name("mcp-model-scan".into())
+                .spawn(move || background_runtime.refresh_mcp_catalogs_for_models())
+                .unwrap();
+            let prepared = observed.recv_timeout(Duration::from_secs(10));
+            // The scan has captured old enabled data, but must still own the canonical
+            // command boundary. A deletion cannot commit then be overwritten by this scan.
+            let boundary_held = runtime.command_lock.try_lock().is_err();
+            let mutation_runtime = runtime.clone();
+            let mutation = std::thread::spawn(move || {
+                if disable {
+                    mutation_runtime
+                        .update_mcp_document(&UpdateMcpDocumentRequest {
+                            document,
+                            expected_revision: content.revision,
+                            raw_toml: format!("{raw}enabled = false\n"),
+                        })
+                        .map(|_| ())
+                } else {
+                    mutation_runtime
+                        .delete_mcp_document(&DeleteMcpDocumentRequest {
+                            document,
+                            expected_revision: content.revision,
+                        })
+                        .map(|_| ())
+                }
+            });
+            // Always release and join before assertions, including a missing hook or a
+            // broken boundary, so a failing regression does not strand either worker.
+            let _ = release.send(());
+            let background = background.join();
+            let mutation = mutation.join();
+            runtime.mcp_catalog.set_scan_prepared_hook(None);
+            prepared.unwrap();
+            background.unwrap().unwrap();
+            mutation.unwrap().unwrap();
+            assert!(
+                boundary_held,
+                "background scan escaped the MCP command boundary"
+            );
+            assert!(!original.is_active());
+            let current = runtime
+                .resolve_thread_mcp_snapshot(
+                    &McpScope::Host,
+                    directory.path(),
+                    directory.path(),
+                    None,
+                )
+                .unwrap();
+            assert!(current.authorization.is_active());
+            assert!(!current.servers.contains_key("guarded"));
+            if disable {
+                let catalog = runtime.mcp_catalog_snapshot(&McpScope::Host).unwrap();
+                assert!(catalog.entries.iter().any(|entry| {
+                    entry.id == "guarded"
+                        && entry.config_status == pl_protocol::McpConfigStatusKind::Disabled
+                }));
+            } else {
+                let catalog = runtime.mcp_catalog_snapshot(&McpScope::Host).unwrap();
+                assert!(!catalog.entries.iter().any(|entry| entry.id == "guarded"));
+            }
+        }
+    }
+
+    #[test]
+    fn cold_mcp_scope_entrypoints_hold_the_configuration_boundary() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for entrypoint in 0..4 {
+            let (directory, runtime) = runtime();
+            let (receipt, _) = runtime
+                .create_mcp_document(&CreateMcpDocumentRequest {
+                    scope: McpScope::Host,
+                    id: "cold-shared".into(),
+                    raw_toml: "schema_version = 1\nid = \"cold-shared\"\nkind = \"server\"\ntransport = \"streamableHttp\"\nurl = \"https://cold.example/mcp\"\n".into(),
+                })
+                .unwrap();
+            let document = receipt.document.unwrap();
+            let content = runtime.read_mcp_document(&document).unwrap();
+            let scope = McpScope::Ssh {
+                ssh_alias: format!("cold-{entrypoint}"),
+            };
+            assert!(
+                runtime
+                    .mcp_catalog
+                    .configuration_authorization(&scope)
+                    .is_none()
+            );
+            let (reached, observed) = mpsc::channel();
+            let (release, proceed) = mpsc::channel();
+            let proceed = std::sync::Mutex::new(proceed);
+            let selected = scope.clone();
+            runtime
+                .mcp_catalog
+                .set_scan_prepared_hook(Some(Arc::new(move |scope| {
+                    if scope == &selected && std::thread::current().name() == Some("mcp-cold-read")
+                    {
+                        // The caller has obtained its models argument, but has not acquired
+                        // the resource lock or initialized this scope yet.
+                        reached.send(()).unwrap();
+                        proceed
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(10))
+                            .unwrap();
+                    }
+                })));
+            let reader_runtime = runtime.clone();
+            let reader_scope = scope.clone();
+            let root = directory.path().to_path_buf();
+            let reader = std::thread::Builder::new()
+                .name("mcp-cold-read".into())
+                .spawn(move || match entrypoint {
+                    0 => reader_runtime
+                        .mcp_catalog_snapshot(&reader_scope)
+                        .map(|_| ()),
+                    1 => reader_runtime
+                        .subscribe_mcp_catalog(&reader_scope)
+                        .map(|_| ()),
+                    2 => reader_runtime
+                        .effective_mcp_servers_for_scope(&reader_scope)
+                        .map(|_| ()),
+                    _ => reader_runtime
+                        .resolve_thread_mcp_configs(&reader_scope, &root, &root, None)
+                        .map(|_| ()),
+                })
+                .unwrap();
+            let reached = observed.recv_timeout(Duration::from_secs(10));
+            let boundary_held = runtime.command_lock.try_lock().is_err();
+            let mutation_runtime = runtime.clone();
+            let mutation = std::thread::spawn(move || {
+                mutation_runtime.delete_mcp_document(&DeleteMcpDocumentRequest {
+                    document,
+                    expected_revision: content.revision,
+                })
+            });
+            let _ = release.send(());
+            let reader = reader.join();
+            let mutation = mutation.join();
+            runtime.mcp_catalog.set_scan_prepared_hook(None);
+            reached.unwrap();
+            reader.unwrap().unwrap();
+            mutation.unwrap().unwrap();
+            assert!(
+                boundary_held,
+                "cold MCP entrypoint {entrypoint} escaped configuration ordering"
+            );
+            let current = runtime
+                .resolve_thread_mcp_snapshot(&scope, directory.path(), directory.path(), None)
+                .unwrap();
+            assert!(current.authorization.is_active());
+            assert!(!current.servers.contains_key("cold-shared"));
+        }
+    }
 
     fn runtime() -> (tempfile::TempDir, ConfigRuntime) {
         let directory = tempfile::tempdir().expect("isolated config directory");

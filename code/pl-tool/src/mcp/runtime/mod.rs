@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::approval::ToolEffect;
+use crate::mcp::McpToolRefreshReport;
 use crate::mcp::config::EffectiveMcpServerConfig;
 
 use super::connector::McpConnector;
@@ -165,6 +166,29 @@ impl McpRuntimeHandle {
         response.await.map_err(runtime_stopped)?
     }
 
+    /// Applies a host configuration snapshot constrained by its revocable authority.
+    /// Expired snapshots cannot publish a generation or authorize new calls.
+    pub async fn reconcile_authorized(
+        &self,
+        servers: BTreeMap<String, EffectiveMcpServerConfig>,
+        authorization: pl_core::tool::opaque::ToolAuthorization,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.send(RuntimeCommand::ReconcileAuthorized {
+            servers,
+            authorization,
+            reply,
+        })?;
+        response.await.map_err(runtime_stopped)?
+    }
+
+    /// 在现有可用连接上重新发现工具，不重建 transport；返回实际完成的逐服务结果。
+    pub async fn refresh_tools(&self) -> Result<McpToolRefreshReport> {
+        let (reply, response) = oneshot::channel();
+        self.send(RuntimeCommand::RefreshTools { reply })?;
+        response.await.map_err(runtime_stopped)?
+    }
+
     /// 显式重置目标连接；范围外 server 继续复用。
     pub async fn reset(
         &self,
@@ -175,6 +199,23 @@ impl McpRuntimeHandle {
         self.send(RuntimeCommand::Reset {
             servers,
             scope,
+            reply,
+        })?;
+        response.await.map_err(runtime_stopped)?
+    }
+
+    /// Resets selected transports under the same host snapshot validity rules as reconciliation.
+    pub async fn reset_authorized(
+        &self,
+        scope: McpResetScope,
+        servers: BTreeMap<String, EffectiveMcpServerConfig>,
+        authorization: pl_core::tool::opaque::ToolAuthorization,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.send(RuntimeCommand::ResetAuthorized {
+            servers,
+            scope,
+            authorization,
             reply,
         })?;
         response.await.map_err(runtime_stopped)?
@@ -362,6 +403,9 @@ impl McpTurnLease {
         server_id: Option<String>,
         operation: ResourceOperation,
     ) -> Result<Value> {
+        if !self.authorization.is_active() {
+            return Err(worker::expired_authority_error());
+        }
         if let Some(server) = server_id {
             if !self.resource_server_ids.contains(&server) {
                 return Err(PureError::ToolExecutionFailed {
@@ -473,6 +517,17 @@ pub(super) struct LeaseSnapshot {
 }
 
 pub(super) enum RuntimeCommand {
+    ReconcileAuthorized {
+        servers: BTreeMap<String, EffectiveMcpServerConfig>,
+        authorization: pl_core::tool::opaque::ToolAuthorization,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    ResetAuthorized {
+        servers: BTreeMap<String, EffectiveMcpServerConfig>,
+        scope: McpResetScope,
+        authorization: pl_core::tool::opaque::ToolAuthorization,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Reconcile {
         servers: BTreeMap<String, EffectiveMcpServerConfig>,
         reply: oneshot::Sender<Result<()>>,
@@ -481,6 +536,9 @@ pub(super) enum RuntimeCommand {
         servers: BTreeMap<String, EffectiveMcpServerConfig>,
         scope: McpResetScope,
         reply: oneshot::Sender<Result<()>>,
+    },
+    RefreshTools {
+        reply: oneshot::Sender<Result<McpToolRefreshReport>>,
     },
     AcquireLease {
         reply: oneshot::Sender<Result<LeaseSnapshot>>,
@@ -536,4 +594,41 @@ fn replay_shutdown(result: std::result::Result<(), String>) -> Result<()> {
         tool: "mcp".to_string(),
         error: message,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refresh_tools_reports_dropped_worker_response_and_receiver() {
+        let (commands, mut receiver) = mpsc::unbounded_channel();
+        let (updates, _) = broadcast::channel(1);
+        let handle = McpRuntimeHandle {
+            commands,
+            updates,
+            shutdown_completion: ShutdownCompletion::default(),
+        };
+        let request_handle = handle.clone();
+        let request = tokio::spawn(async move { request_handle.refresh_tools().await });
+        let RuntimeCommand::RefreshTools { reply } = receiver.recv().await.unwrap() else {
+            panic!("expected explicit tool refresh");
+        };
+        drop(reply);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("response channel closed"));
+        drop(receiver);
+        assert!(
+            handle
+                .refresh_tools()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("runtime is stopped")
+        );
+    }
 }

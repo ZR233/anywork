@@ -16,7 +16,7 @@ impl StudioRuntime {
         Ok(self.config_runtime.mcp_catalog_snapshot(scope)?)
     }
 
-    /// 重新扫描指定环境作用域的 MCP 配置目录，发布事件并对受影响打开 Thread 执行增量 reconcile。
+    /// 重新扫描配置目录，发布事件并通知受影响的打开 Thread 增量协调；不等待连接握手。
     pub async fn reload_mcp_catalog(&self, scope: &McpScope) -> Result<McpCatalogSnapshot> {
         let (snapshot, changed_scopes) = self.config_runtime.reload_mcp_catalog(scope)?;
         self.notify_mcp_scopes_changed(&changed_scopes).await;
@@ -31,7 +31,7 @@ impl StudioRuntime {
         self.config_runtime.read_mcp_document(document)
     }
 
-    /// 创建单个 MCP 配置文件，发布事件并对受影响打开 Thread 执行增量 reconcile。
+    /// 创建配置文件，发布事件并通知受影响的打开 Thread 增量协调；不等待连接握手。
     pub async fn create_mcp_document(
         &self,
         request: &CreateMcpDocumentRequest,
@@ -41,7 +41,7 @@ impl StudioRuntime {
         Ok(receipt)
     }
 
-    /// 更新单个 MCP 配置文件，发布事件并对受影响打开 Thread 执行增量 reconcile。
+    /// 更新配置文件，发布事件并通知受影响的打开 Thread 增量协调；不等待连接握手。
     pub async fn update_mcp_document(
         &self,
         request: &UpdateMcpDocumentRequest,
@@ -51,7 +51,7 @@ impl StudioRuntime {
         Ok(receipt)
     }
 
-    /// 删除单个 MCP 配置文件，发布事件并对受影响打开 Thread 执行增量 reconcile。
+    /// 删除配置文件，发布事件并通知受影响的打开 Thread 增量协调；不等待连接握手。
     pub async fn delete_mcp_document(
         &self,
         request: &DeleteMcpDocumentRequest,
