@@ -1,6 +1,10 @@
 //! Studio wording for model-owned context compaction.
 pub(crate) const LATEST_RECEIPT: &str = "studio.compaction.latest";
 
+#[cfg(test)]
+#[path = "compaction/tests.rs"]
+mod tests;
+
 use pl_model::{
     completion::OpenAiCompactionMode,
     runtime::{ThreadCompactionOptions, ThreadCompactionStrategy},
@@ -41,6 +45,7 @@ pub(crate) fn preparer(
     model: ThreadModel,
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
+    models: &pl_model::config::AgentModelConfig,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
     let instruction_binding = instruction_binding(route, &model);
     Ok(Some(ContextPreparer::new(StudioCompaction {
@@ -51,10 +56,13 @@ pub(crate) fn preparer(
             .as_ref()
             .map(|effort| effort.as_str().to_owned()),
         context_window: route.context.context_window,
+        auto_compact_limit: route.context.auto_compact_limit,
         options: policy(mode),
         base_instructions: route.model.base_instructions.clone(),
         instruction_binding,
         supports_workflow: route.model.capabilities.supports_function_calling(),
+        models: models.clone(),
+        role: route.role.clone(),
     })))
 }
 
@@ -64,10 +72,13 @@ struct StudioCompaction {
     modes: crate::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
+    auto_compact_limit: Option<u64>,
     options: ThreadCompactionOptions,
     base_instructions: String,
     instruction_binding: InstructionBinding,
     supports_workflow: bool,
+    models: pl_model::config::AgentModelConfig,
+    role: pl_model::config::AgentRoleId,
 }
 impl ContextPreparationHook for StudioCompaction {
     async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
@@ -137,6 +148,29 @@ impl ContextPreparationHook for StudioCompaction {
                 pl_core::model::ToolCallMode::Parallel
             };
         }
+        // Source summarization must see the committed source instructions, not the target repair.
+        let source_context = request.committed_context.clone();
+        // This old source observation only triggers a handoff; it never measures target input.
+        let source_usage_route = request.previous_usage.as_ref().and_then(|usage| {
+            let route = usage.origin.binding.route_identity.as_ref()?;
+            let source_window = usage.origin.binding.context_window?;
+            let total = usage
+                .usage
+                .input_tokens?
+                .checked_add(usage.usage.output_tokens?)?;
+            (route != &self.model.route_identity()
+                && source_window > self.context_window?
+                && total >= self.auto_compact_limit?
+                && usage.origin.context_revision == source_context.revision)
+                .then(|| route.clone())
+        });
+        // Source provenance belongs to the published context revision, not the current tool plan.
+        // Token measurement reuse separately validates its prefix/tools through matches_input.
+        let same_route_continuation = request.previous_usage.as_ref().is_some_and(|usage| {
+            usage.origin.context_revision == request.committed_context.revision
+                && usage.origin.binding.route_identity.as_deref()
+                    == Some(self.model.route_identity().as_str())
+        });
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,
@@ -188,25 +222,7 @@ impl ContextPreparationHook for StudioCompaction {
         let mut preview = request.model.clone();
         let mut records = preview.context.records.to_vec();
         // Capacity includes freshly projected state, as well as this step's frozen input.
-        for fact in &facts {
-            let source = pl_core::context::ContextSource::RuntimeFact {
-                source_id: fact.source_id.clone(),
-            };
-            if !records
-                .iter()
-                .rev()
-                .find(|record| record.source == source)
-                .is_some_and(|record| record.content == fact.content)
-            {
-                records.push(pl_core::context::ContextRecord {
-                    id: format!("preview:{}:{}", request.extension_sequence, fact.source_id),
-                    turn_id: None,
-                    source,
-                    content: fact.content.clone(),
-                    tool_calls: Vec::new(),
-                });
-            }
-        }
+        append_preview_facts(&mut records, &facts, request.extension_sequence);
         preview.context.records = records.into();
         let estimate = match self
             .model
@@ -230,10 +246,51 @@ impl ContextPreparationHook for StudioCompaction {
             .records
             .iter()
             .all(|record| record.source == pl_core::context::ContextSource::Instruction)
-            || estimate == pl_model::runtime::ThreadCompactionDecision::Keep
+            || (estimate == pl_model::runtime::ThreadCompactionDecision::Keep
+                && source_usage_route.is_none())
         {
             return unchanged();
         }
+        let previous_summary = active_text_summary(&source_context.records, &request.extensions);
+        let handoff = match if same_route_continuation {
+            Ok(None)
+        } else {
+            self.handoff_source(
+                &source_context.records,
+                previous_summary.as_ref(),
+                if estimate == pl_model::runtime::ThreadCompactionDecision::Keep {
+                    source_usage_route.as_deref()
+                } else {
+                    None
+                },
+            )
+        } {
+            Ok(source) => source,
+            Err(error) => {
+                return ContextPreparation::Failed {
+                    error,
+                    mutations: vec![],
+                };
+            }
+        };
+        if estimate == pl_model::runtime::ThreadCompactionDecision::Keep && handoff.is_none() {
+            return unchanged();
+        }
+        let (compactor, reasoning_effort, context_window) = match &handoff {
+            Some((model, route)) => (
+                model,
+                route
+                    .effort
+                    .as_ref()
+                    .map(|effort| effort.as_str().to_owned()),
+                route.context.context_window,
+            ),
+            None => (
+                &self.model,
+                self.reasoning_effort.clone(),
+                self.context_window,
+            ),
+        };
         let turn_id = request.model.turn_id.clone();
         let id = format!(
             "studio.compaction:{}:{}",
@@ -267,20 +324,29 @@ impl ContextPreparationHook for StudioCompaction {
                 mutations: Vec::new(),
             };
         }
-        let mut model_request = request.model;
-        model_request.context = request.committed_context;
+        let mut model_request = request.model.clone();
+        model_request.context = if handoff.is_some() {
+            source_context
+        } else {
+            request.committed_context.clone()
+        };
         model_request.attempt_id = id.clone();
-        match self
-            .model
-            .compact(model_request, self.options.clone())
-            .await
-        {
-            Ok(result) => {
-                let receipt = CompactionReceipt {
+        let mut options = self.options.clone();
+        if handoff.is_some() {
+            options.strategy = ThreadCompactionStrategy::TextSummary;
+        }
+        match compactor.compact(model_request, options).await {
+            Ok(mut result) => {
+                let mut receipt = CompactionReceipt {
                     inference_id: id.clone(),
                     binding: result.binding,
-                    reasoning_effort: self.reasoning_effort.clone(),
-                    context_window: self.context_window,
+                    reasoning_effort,
+                    reasoning_effort_source: Some(if handoff.is_some() {
+                        CompactionEffortSource::CurrentModelDefault
+                    } else {
+                        CompactionEffortSource::FrozenRoute
+                    }),
+                    context_window,
                     turn_id: turn_id.clone(),
                     accounting: result.accounting,
                     model_observation: result.model_observation,
@@ -293,10 +359,41 @@ impl ContextPreparationHook for StudioCompaction {
                         .into(),
                     ),
                     error: None,
+                    retained_through_record_id: result
+                        .replacement
+                        .records
+                        .last()
+                        .map(|record| record.id.clone()),
+                    context_summary: previous_summary.clone(),
                 };
+                if handoff.is_some() {
+                    request.committed_context.records = result.replacement.records.clone().into();
+                    request.model.context.records = result.replacement.records.clone().into();
+                    if let Err(error) = restore_current_instructions(
+                        &mut request,
+                        &self.base_instructions,
+                        &self.instruction_binding,
+                        mode.as_deref(),
+                        Vec::new(),
+                    ) {
+                        receipt.error = Some(error.to_string());
+                        return failure_with_receipt(error, previous, receipt);
+                    }
+                    result.replacement.records = request.committed_context.records.to_vec();
+                }
                 let mut rejected = receipt.clone();
                 rejected.error =
                     Some("context preparation candidate was cancelled or rejected".into());
+                receipt.context_summary = match result.implementation {
+                    ThreadCompactionStrategy::TextSummary => {
+                        Some(pl_model::runtime::TextCompactionBinding {
+                            inference_id: id.clone(),
+                            binding: receipt.binding.clone(),
+                            retained_through_record_id: receipt.retained_through_record_id.clone(),
+                        })
+                    }
+                    ThreadCompactionStrategy::PreferNative => None,
+                };
                 let rejected_mutations = match receipt_mutation(previous, rejected) {
                     Ok(mutation) => vec![mutation],
                     Err(error) => {
@@ -328,28 +425,170 @@ impl ContextPreparationHook for StudioCompaction {
                 }
             }
             Err(error) => {
-                let receipt = pl_model::runtime::model_failure_receipt(&error)
-                    .ok()
-                    .flatten()
-                    .map(|receipt| CompactionReceipt {
-                        inference_id: id.clone(),
-                        binding: receipt.binding,
-                        reasoning_effort: self.reasoning_effort.clone(),
-                        context_window: self.context_window,
-                        turn_id: turn_id.clone(),
-                        accounting: receipt.accounting,
-                        model_observation: receipt.model_observation,
-                        timing: receipt.timing,
-                        implementation: None,
-                        error: Some(receipt.message),
-                    });
-                let mutations = receipt
-                    .and_then(|receipt| receipt_mutation(previous, receipt).ok())
-                    .into_iter()
-                    .collect();
-                ContextPreparation::Failed { error, mutations }
+                let receipt = match pl_model::runtime::model_failure_receipt(&error) {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        return ContextPreparation::Failed {
+                            error,
+                            mutations: vec![],
+                        };
+                    }
+                }
+                .map(|receipt| CompactionReceipt {
+                    inference_id: id.clone(),
+                    binding: receipt.binding,
+                    reasoning_effort: reasoning_effort.clone(),
+                    reasoning_effort_source: Some(if handoff.is_some() {
+                        CompactionEffortSource::CurrentModelDefault
+                    } else {
+                        CompactionEffortSource::FrozenRoute
+                    }),
+                    context_window,
+                    turn_id: turn_id.clone(),
+                    accounting: receipt.accounting,
+                    model_observation: receipt.model_observation,
+                    timing: receipt.timing,
+                    implementation: None,
+                    error: Some(receipt.message),
+                    retained_through_record_id: None,
+                    context_summary: previous_summary,
+                });
+                match receipt {
+                    Some(receipt) => failure_with_receipt(error, previous, receipt),
+                    None => ContextPreparation::Failed {
+                        error,
+                        mutations: vec![],
+                    },
+                }
             }
         }
+    }
+}
+
+impl StudioCompaction {
+    fn handoff_source(
+        &self,
+        records: &[pl_core::context::ContextRecord],
+        summary: Option<&pl_model::runtime::TextCompactionBinding>,
+        observed_route: Option<&str>,
+    ) -> Result<Option<(ThreadModel, ResolvedModelRoute)>, pl_core::model::ModelError> {
+        use pl_model::config::{AccountId, ModelRouteConfig, ReasoningEffort};
+        let Some(binding) = ThreadModel::latest_context_binding(records, summary)? else {
+            return Ok(None);
+        };
+        if observed_route.is_some_and(|route| route != binding.route_identity()) {
+            return Ok(None);
+        }
+        if binding.route_identity() == self.model.route_identity()
+            || !binding
+                .context_window
+                .zip(self.context_window)
+                .is_some_and(|(source, target)| source > target)
+        {
+            return Ok(None);
+        }
+        let resolve = || -> anyhow::Result<_> {
+            let account_id = AccountId::new(binding.account_id.clone())?;
+            let account = self
+                .models
+                .accounts
+                .get(&account_id)
+                .ok_or_else(|| anyhow::anyhow!("compaction source account is unavailable"))?;
+            let entry = account
+                .effective_catalog(None)?
+                .into_iter()
+                .find(|entry| entry.model.model_id == binding.model_id)
+                .ok_or_else(|| anyhow::anyhow!("compaction source model is unavailable"))?;
+            let route = self.models.resolve_route(
+                self.role.clone(),
+                &ModelRouteConfig {
+                    account_id,
+                    model_id: binding.model_id.clone(),
+                    effort: entry.model.default_effort().map(ReasoningEffort::new),
+                },
+            )?;
+            let model = ThreadModel::new(
+                pl_model::runtime::ModelRuntime::from_route(&route)?,
+                route.reasoning_config(),
+            );
+            Ok((model, route))
+        };
+        resolve()
+            .map(Some)
+            .map_err(|source| pl_core::model::ModelError {
+                kind: pl_core::model::ModelFailureKind::Unavailable,
+                details: None,
+                usage: Default::default(),
+                source: Some(source.into()),
+            })
+    }
+}
+
+fn active_text_summary(
+    records: &[pl_core::context::ContextRecord],
+    extensions: &BTreeMap<String, ExtensionRecord>,
+) -> Option<pl_model::runtime::TextCompactionBinding> {
+    let record = extensions.get(LATEST_RECEIPT)?;
+    // Historical text diagnostics are optional; their absence is not a native replay failure.
+    let receipt = decode_receipt(record.payload.version(), record.payload.content()).ok()?;
+    // A successful old envelope itself is sufficient provenance; failed old envelopes cannot
+    // establish the source of a different summary. Never infer that source from its selector.
+    let origin = receipt.context_summary.or_else(|| {
+        (receipt.error.is_none() && receipt.implementation.as_deref() == Some("textSummary"))
+            .then_some(pl_model::runtime::TextCompactionBinding {
+                inference_id: receipt.inference_id,
+                binding: receipt.binding,
+                retained_through_record_id: receipt.retained_through_record_id,
+            })
+    });
+    origin.filter(|origin| records.iter().any(|record| {
+        record.id == format!("compaction:{}", origin.inference_id)
+            && matches!(&record.source, pl_core::context::ContextSource::Runtime { source_id } if source_id == "model.compaction")
+            && record.content.iter().any(|content| matches!(content, pl_core::context::ContextContent::Text { .. }))
+    }))
+}
+
+fn append_preview_facts(
+    records: &mut Vec<pl_core::context::ContextRecord>,
+    facts: &[pl_core::thread::RuntimeFact],
+    sequence: u64,
+) {
+    use pl_core::context::{ContextRecord, ContextSource};
+    for fact in facts {
+        let source = ContextSource::RuntimeFact {
+            source_id: fact.source_id.clone(),
+        };
+        if !records
+            .iter()
+            .rev()
+            .find(|record| record.source == source)
+            .is_some_and(|record| record.content == fact.content)
+        {
+            records.push(ContextRecord {
+                id: format!("preview:{sequence}:{}", fact.source_id),
+                turn_id: None,
+                source,
+                content: fact.content.clone(),
+                tool_calls: vec![],
+            });
+        }
+    }
+}
+
+fn failure_with_receipt(
+    error: pl_core::model::ModelError,
+    previous: Option<u64>,
+    receipt: CompactionReceipt,
+) -> ContextPreparation {
+    match receipt_mutation(previous, receipt) {
+        Ok(mutation) => ContextPreparation::Failed {
+            error,
+            mutations: vec![mutation],
+        },
+        Err(error) => ContextPreparation::Failed {
+            error,
+            mutations: vec![],
+        },
     }
 }
 
@@ -813,6 +1052,14 @@ fn current_facts(
     Ok(facts.into_values().collect())
 }
 
+/// Distinguishes the current source-model default from the admitted target route's effort.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CompactionEffortSource {
+    FrozenRoute,
+    CurrentModelDefault,
+}
+
 /// Auxiliary model accounting is retained separately from normal turn-response receipts.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -820,6 +1067,8 @@ pub(crate) struct CompactionReceipt {
     pub inference_id: String,
     pub binding: pl_model::runtime::ModelCallBinding,
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort_source: Option<CompactionEffortSource>,
     pub context_window: Option<u64>,
     pub turn_id: String,
     pub accounting: pl_model::completion::InferenceAccounting,
@@ -828,6 +1077,13 @@ pub(crate) struct CompactionReceipt {
     pub model_observation: Option<pl_protocol::InferenceModelObservation>,
     pub implementation: Option<String>,
     pub error: Option<String>,
+    /// The replacement's retained tail predates this summary, despite appearing after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_through_record_id: Option<String>,
+    /// At most one successful text-summary origin still present in the committed context.
+    /// A later failed auxiliary call must not overwrite the provenance of unchanged history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_summary: Option<pl_model::runtime::TextCompactionBinding>,
 }
 
 impl CompactionReceipt {

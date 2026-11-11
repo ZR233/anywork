@@ -37,6 +37,12 @@ pub(crate) fn deferred_update(
     Ok(DeferredModelUpdate::new(
         key,
         ModelFactory::new(model.clone()),
-        crate::compaction::preparer(route, model, config.runtime.openai_compaction_mode, modes)?,
+        crate::compaction::preparer(
+            route,
+            model,
+            config.runtime.openai_compaction_mode,
+            modes,
+            &config.models,
+        )?,
     ))
 }

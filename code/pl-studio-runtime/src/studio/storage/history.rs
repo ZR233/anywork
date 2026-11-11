@@ -6358,6 +6358,9 @@ mod storage_fault_tests {
                 timing: None,
                 implementation: Some("textSummary".into()),
                 error: None,
+                retained_through_record_id: None,
+                reasoning_effort_source: None,
+                context_summary: None,
             };
             state.extension_sequence += 1;
             let compaction_payload = if id == "historical-disabled" {

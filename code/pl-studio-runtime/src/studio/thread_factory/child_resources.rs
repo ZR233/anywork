@@ -348,6 +348,7 @@ impl StudioChildResources for StudioThreadFactory {
                 model.clone(),
                 profile.config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
+                &profile.config.models,
             )?,
             agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {

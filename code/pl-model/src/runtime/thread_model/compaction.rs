@@ -68,7 +68,58 @@ pub struct ThreadCompaction {
     pub implementation: ThreadCompactionStrategy,
 }
 
+/// Existing text-summary receipt provenance supplied by the host that owns the receipt.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextCompactionBinding {
+    pub inference_id: String,
+    pub binding: receipt::ModelCallBinding,
+    /// Last retained record in the committed replacement, not a generation timestamp.
+    /// Older receipts may omit this; available assistant/checkpoint provenance remains usable.
+    pub retained_through_record_id: Option<String>,
+}
+
 impl ThreadModel {
+    /// Finds the latest actual generation in committed history, without consulting selectors.
+    ///
+    /// A summary precedes its retained execution proof in context order, although it was generated
+    /// later. The existing summary receipt supplies that retention boundary; newly appended
+    /// assistant records after the boundary take precedence over the summary.
+    ///
+    /// # Errors
+    /// Rejects malformed model frames and native checkpoints. Missing old text-summary metadata
+    /// leaves provenance unknown without blocking ordinary text processing.
+    pub fn latest_context_binding(
+        records: &[ContextRecord],
+        text_summary: Option<&TextCompactionBinding>,
+    ) -> Result<Option<receipt::ModelCallBinding>, ModelError> {
+        let summary = text_summary.and_then(|summary| {
+            records
+                .iter()
+                .position(|record| record.id == format!("compaction:{}", summary.inference_id))
+                .map(|index| (index, summary))
+        });
+        let boundary = summary
+            .and_then(|(_, summary)| summary.retained_through_record_id.as_ref())
+            .and_then(|id| records.iter().position(|record| &record.id == id));
+        for (index, record) in records.iter().enumerate().rev() {
+            if let Some((summary_index, summary)) = summary
+                && (index == summary_index || boundary.is_some_and(|boundary| index <= boundary))
+            {
+                return Ok(Some(summary.binding.clone()));
+            }
+            let binding = if record.source == ContextSource::Assistant {
+                super::codec::record_receipt(record)?.map(|receipt| receipt.binding)
+            } else {
+                checkpoint_record(record)?.map(|checkpoint| checkpoint.binding)
+            };
+            if let Some(binding) = binding {
+                return Ok(Some(binding));
+            }
+        }
+        Ok(None)
+    }
+
     /// Estimates a frozen model-owned encoding without opening or advancing a physical session.
     /// `previous` is accepted only when its origin matches the final prefix, tool plan and route.
     /// Native history retains measured input/output as a lower bound. Unmeasurable additions
@@ -351,6 +402,30 @@ pub(super) fn decode(
     record: &ContextRecord,
     runtime: &super::ModelRuntime,
 ) -> Result<Option<ModelContextItem>, ModelError> {
+    let Some(checkpoint) = checkpoint_record(record)? else {
+        return Ok(None);
+    };
+    let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
+    if !checkpoint.binding.native_context_compatible(
+        &target,
+        checkpoint.compatibility_family.as_deref(),
+        runtime
+            .model()
+            .capabilities
+            .native_context_family
+            .as_deref(),
+    ) {
+        return Err(failure(
+            ModelFailureKind::IncompatibleContext,
+            AdapterError::Content(
+                "native checkpoint origin is incompatible with this binding; original session preserved",
+            ),
+        ));
+    }
+    Ok(Some(checkpoint.item))
+}
+
+fn checkpoint_record(record: &ContextRecord) -> Result<Option<NativeCheckpoint>, ModelError> {
     let contains = record.content.iter().any(|content| matches!(content, ContextContent::Opaque { payload } if payload.format() == FORMAT));
     if !contains {
         return Ok(None);
@@ -373,32 +448,14 @@ pub(super) fn decode(
         ));
     }
     let checkpoint = decode_checkpoint(payload)?;
-    let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
-    if !checkpoint.binding.native_context_compatible(
-        &target,
-        checkpoint.compatibility_family.as_deref(),
-        runtime
-            .model()
-            .capabilities
-            .native_context_family
-            .as_deref(),
-    ) {
-        return Err(failure(
-            ModelFailureKind::IncompatibleContext,
-            AdapterError::Content(
-                "native checkpoint origin is incompatible with this binding; original session preserved",
-            ),
-        ));
-    }
-    let item = checkpoint.item;
-    if !matches!(&item, ModelContextItem::Compaction { encrypted_content } if !encrypted_content.trim().is_empty())
+    if !matches!(&checkpoint.item, ModelContextItem::Compaction { encrypted_content } if !encrypted_content.trim().is_empty())
     {
         return Err(failure(
             ModelFailureKind::IncompatibleContext,
             AdapterError::Content("compaction record contains no native checkpoint"),
         ));
     }
-    Ok(Some(item))
+    Ok(Some(checkpoint))
 }
 
 /// Explicit migration boundary: only an identity-matched native receipt can bind old material.

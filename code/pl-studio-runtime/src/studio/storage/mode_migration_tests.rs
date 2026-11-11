@@ -1239,6 +1239,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
             model,
             OpenAiCompactionMode::Local,
             manager,
+            &Default::default(),
         )?)
         .await?;
 
