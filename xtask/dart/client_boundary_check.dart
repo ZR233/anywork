@@ -528,6 +528,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
           resolved ==
               'code/anywork/lib/src/features/conversation/composer/widgets/multiline_enter_shortcuts.dart' ||
           resolved ==
+              'code/anywork/lib/src/features/conversation/composer/widgets/composer_paste_action.dart' ||
+          resolved ==
               'code/anywork/lib/src/features/status/status_bar_item.dart';
       final businessPackage =
           (uri.startsWith('package:anywork_client/') &&
