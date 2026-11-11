@@ -744,7 +744,9 @@ impl StudioThreadFactory {
                 let owner = match existing {
                     Some(owner) => {
                         owner.request_settings_reconcile(settings_revision);
-                        owner.update_resolved(resolved.servers.clone(), remote_commands.clone());
+                        // Desired inputs are adopted under command_lock in prepare_required.
+                        // Updating them here can make an in-flight reconnect mistake the
+                        // old worker generation for the newly committed configuration.
                         owner
                     }
                     None => {
