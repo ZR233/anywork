@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../live_status/live_status_state.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_markdown.dart';
@@ -284,10 +285,11 @@ class _WorkHeader extends StatelessWidget {
                             child: TimelineActivityIndicator(
                               icon: icon,
                               active: active,
-                              style: activity?.isRunningExecTool == true
-                                  ? TimelineActivityIndicatorStyle
-                                        .circularProgress
-                                  : TimelineActivityIndicatorStyle.restingCat,
+                              style: resolveLiveHeaderIndicatorStyle(
+                                activity,
+                                displayingThinkingSummary:
+                                    activeThought != null,
+                              ),
                               catSize: TimelineActivityRow.headerLogoSlotSize,
                               writingSize:
                                   TimelineActivityRow.headerWritingSize,

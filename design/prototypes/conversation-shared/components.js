@@ -468,15 +468,15 @@
       if (this.mode !== 'live') return;
       const running = group.members.filter(member => member.status === 'running');
       const runningExec = running.some(member => member.kind === 'command');
-      const indicatorStyle = runningExec ? 'circularProgress' : 'restingCat';
+      const latestThought = group.members
+        .filter(member => member.kind === 'thinking' && member.summary?.trim())
+        .at(-1)?.summary?.trim();
+      const indicatorStyle = (!latestThought && runningExec) ? 'circularProgress' : 'restingCat';
       if (this.indicator && this.indicator.dataset.style !== indicatorStyle) {
         const nextIndicator = node(activityIndicator(indicatorStyle));
         this.indicator.replaceWith(nextIndicator);
         this.indicator = nextIndicator;
       }
-      const latestThought = group.members
-        .filter(member => member.kind === 'thinking' && member.summary?.trim())
-        .at(-1)?.summary?.trim();
       this.node.dataset.phase = running.length ? 'working' : 'thinking';
       if (latestThought) {
         const rendered = renderInlineMarkdown(latestThought);

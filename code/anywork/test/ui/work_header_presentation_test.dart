@@ -667,7 +667,7 @@ void main() {
       expect(boldSpanStyle?.fontWeight, FontWeight.bold);
 
       // 3. Exec command running: summary.thinkingSummary retains mdThoughtA,
-      // replacing command line copy while leading icon switches to circularProgress.
+      // replacing command line copy while leading icon stays restingCat.
       h.blocks = [
         _work(
           'work-1',
@@ -704,11 +704,15 @@ void main() {
       );
       expect(find.text('cargo flutter test'), findsNothing);
       expect(
+        find.descendant(of: header1, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+      expect(
         find.descendant(
           of: header1,
           matching: find.byType(TimelineExecProgressIndicator),
         ),
-        findsOneWidget,
+        findsNothing,
       );
       expect(
         tester.getRect(barFinder).size.height,
@@ -1076,32 +1080,31 @@ void main() {
   );
 
   testWidgets(
-    'open Work switches header indicator to circular progress while exec runs and returns to resting cat when exec completes',
+    'open Work uses circular progress while exec runs without thinking summary and uses resting cat whenever thinking summary is displayed',
     (tester) async {
       final h = _LiveHarness();
       addTearDown(h.dispose);
-      h.blocks = [
-        _work('work-exec', summary: _summary(running: 1, thought: '运行单元测试命令')),
-      ];
-      h.notices = [
-        const ExecutionLiveNotice(
-          ConversationActivityView(
-            identity: 'exec-active',
-            turnId: 'turn',
-            kind: ConversationActivityKind.runningTool,
-            activeTools: [
-              ThreadActivityToolEntry(
-                callId: 'call-exec',
-                name: 'exec',
-                summary: 'cargo flutter test',
-                arguments: ThreadActivityArgumentsKind.commandLine,
-                state: ThreadActivityToolState.running,
-                startedAt: 1000,
-              ),
-            ],
-          ),
+      const runningExecNotice = ExecutionLiveNotice(
+        ConversationActivityView(
+          identity: 'exec-active',
+          turnId: 'turn',
+          kind: ConversationActivityKind.runningTool,
+          activeTools: [
+            ThreadActivityToolEntry(
+              callId: 'call-exec',
+              name: 'exec',
+              summary: 'cargo flutter test',
+              arguments: ThreadActivityArgumentsKind.commandLine,
+              state: ThreadActivityToolState.running,
+              startedAt: 1000,
+            ),
+          ],
         ),
-      ];
+      );
+
+      // 1. 尚无思考摘要且前台正在执行 exec 命令：顶栏显示圆形进度。
+      h.blocks = [_work('work-exec', summary: _summary(running: 1))];
+      h.notices = const [runningExecNotice];
       await tester.pumpWidget(h.host());
       final header = find.byKey(
         const ValueKey('completion-run-header:work-exec'),
@@ -1118,10 +1121,29 @@ void main() {
         findsNothing,
       );
 
-      // exec 结束、工作组转入等待交接思考时立即恢复趴卧摇尾猫。
+      // 2. 现工作组展示思考摘要时，即使 exec 仍在运行，顶栏也使用趴卧摇尾猫图标。
       h.blocks = [
-        _work('work-exec', summary: _summary(running: 0, thought: '运行单元测试命令')),
+        _work(
+          'work-exec',
+          summary: _summary(running: 1, thought: '运行 **单元测试** 命令'),
+        ),
       ];
+      h.notices = const [runningExecNotice];
+      await tester.pumpWidget(h.host());
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+
+      // 3. exec 结束、工作组转入等待交接思考时继续保持趴卧摇尾猫。
+      h.blocks = [_work('work-exec', summary: _summary(running: 0))];
       h.notices = [
         const ExecutionLiveNotice(
           ConversationActivityView(

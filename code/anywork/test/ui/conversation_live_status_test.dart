@@ -987,7 +987,7 @@ void main() {
             (
               name: 'workgroup',
               collapsedSingleRow: true,
-              expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
               blocks: [
                 workBlock('work-1', order: 1, running: 2, thought: longThought),
@@ -1123,9 +1123,46 @@ void main() {
               ),
             ),
             (
-              name: 'next-group',
+              name: 'next-group-exec-only',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
+              expectedTitle: '工作中',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+                workBlock('work-2', order: 3, running: 1),
+              ],
+              status: ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-7a',
+                revision: 7,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-2',
+                      name: 'exec',
+                      summary: 'cargo flutter test',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 150,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            (
+              name: 'next-group',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '运行测试并核对布局',
               blocks: [
                 workBlock(
@@ -1138,8 +1175,8 @@ void main() {
               ],
               status: ThreadActivityView(
                 threadId: 'thread',
-                identity: 'act-7',
-                revision: 7,
+                identity: 'act-7b',
+                revision: 8,
                 turnId: 'turn-1',
                 kind: ThreadActivityKind.runningTool,
                 summary: '',
