@@ -95,8 +95,5 @@ abstract class StatusBarView with _$StatusBarView {
     required bool isBusy,
     ThreadModelRouteView? modelRoute,
     WorkflowRunView? workflowRun,
-    @Default(<String>[]) List<String> activeSkills,
-    @Default(<String>[]) List<String> activeMcpServers,
-    @Default(<String>[]) List<String> activeLspServers,
   }) = _StatusBarView;
 }

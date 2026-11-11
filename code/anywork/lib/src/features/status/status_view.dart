@@ -1,15 +1,20 @@
+import 'dart:async';
+
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/lsp_store.dart';
+import '../../presentation/providers/mcp_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
+import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/settings_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
 import '../../domain/models/studio_models.dart';
+import 'started_items_state.dart';
 
 part 'status_view.g.dart';
 
@@ -24,10 +29,197 @@ const statusEmptyRuntime = ThreadRuntimeView(
   activeLspServers: [],
 );
 
-/// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
+/// A display observation only: Client remains the sole owner of topic streams.
 @riverpod
-List<LspServerStateView> statusLspServers(Ref ref) {
-  return ref.watch(lspStoreProvider).value?.servers ?? const [];
+class StartedItemsViewModel extends _$StartedItemsViewModel {
+  final _pending = <String>{};
+  final _errors = <String, String>{};
+  void Function()? _closeRetention;
+  bool _refreshScheduled = false;
+
+  @override
+  FutureOr<StartedItemsState> build(String threadId) {
+    // Listen without invalidating this command owner. A canonical provider may
+    // rebuild while an operation is pending and the menu has no listeners.
+    ref.listen(threadSessionStoreProvider(threadId), (previous, next) {
+      if (!_sameStrings(
+        previous?.runtime?.activeSkills ?? const [],
+        next.runtime?.activeSkills ?? const [],
+      )) {
+        _scheduleRefresh();
+      }
+    });
+    ref.listen(threadMcpProvider(threadId), (_, _) => _scheduleRefresh());
+    ref.listen(lspStoreProvider, (_, _) => _scheduleRefresh());
+    return _project();
+  }
+
+  void _scheduleRefresh() {
+    if (_refreshScheduled) return;
+    _refreshScheduled = true;
+    // A paused canonical provider may flush while the menu is mounting.
+    // Publish after that build, coalescing only notifications from this turn.
+    scheduleMicrotask(() {
+      _refreshScheduled = false;
+      _refresh();
+    });
+  }
+
+  void _refresh() {
+    if (!ref.mounted) return;
+    try {
+      state = AsyncData(_project());
+    } catch (error, stack) {
+      state = AsyncError(error, stack);
+    }
+  }
+
+  StartedItemsState _project() {
+    final skills = ref
+        .read(threadSessionStoreProvider(threadId))
+        .runtime
+        ?.activeSkills;
+    final mcp = ref.read(threadMcpProvider(threadId));
+    final lsp = ref.read(lspStoreProvider);
+    return StartedItemsState(
+      skills: skills ?? const [],
+      mcp: [
+        for (final server
+            in mcp.value?.servers ?? const <ThreadMcpServerState>[])
+          StartedService(
+            id: server.id,
+            name: server.id,
+            status: switch (server.lifecycle) {
+              ThreadMcpLifecycleKind.available => StartedServiceStatus.ready,
+              ThreadMcpLifecycleKind.connecting =>
+                StartedServiceStatus.connecting,
+              ThreadMcpLifecycleKind.shuttingDown =>
+                StartedServiceStatus.stopping,
+              ThreadMcpLifecycleKind.unavailable => StartedServiceStatus.failed,
+              ThreadMcpLifecycleKind.unsupported =>
+                StartedServiceStatus.unsupported,
+            },
+            diagnostic: server.message,
+          ),
+      ],
+      lsp: [
+        for (final server in lsp.value?.servers ?? const <LspServerStateView>[])
+          _lspService(server),
+      ],
+      mcpSync: mcp.sync,
+      lspSync: switch (lsp.value?.state) {
+        FailedObservedResource<LspStateData>(:final error) ||
+        DegradedObservedResource<LspStateData>(
+          :final error,
+        ) => DomainSyncStatus(
+          phase: DomainSyncPhase.failed,
+          errorMessage: error.message,
+        ),
+        _ => lsp.sync,
+      },
+      pending: Set.unmodifiable(_pending),
+      errors: Map.unmodifiable(_errors),
+    );
+  }
+
+  Future<void> reconnectMcp([String? serverId]) =>
+      _run(serverId == null ? 'mcp' : 'mcp:$serverId', () async {
+        await ref
+            .read(anyworkClientProvider)
+            .directoryCommands
+            .reconnectThreadMcp(threadId: threadId, serverId: serverId);
+      });
+
+  Future<void> reconnectLsp(String serverId) => _run('lsp:$serverId', () {
+    final client = ref.read(anyworkClientProvider);
+    if (client.selection.state.selectedProjectId == null) {
+      throw StateError('No workspace selected');
+    }
+    return client.directoryCommands.resetLspServer(serverId);
+  });
+
+  Future<void> compact() => _run(
+    'compact',
+    () =>
+        ref.read(anyworkClientProvider).threadCommands.compactThread(threadId),
+  );
+
+  Future<void> _run(String key, Future<void> Function() command) async {
+    if (!_pending.add(key)) return;
+    // Keep presentation of an admitted command alive until its real completion.
+    // Closing the popover never cancels Client's command or shared resources.
+    _closeRetention ??= ref.keepAlive().close;
+    _errors.remove(key);
+    _publishCommands();
+    try {
+      await command();
+    } catch (error) {
+      _errors[key] = error.toString();
+    } finally {
+      _pending.remove(key);
+      if (ref.mounted) _publishCommands();
+      if (_pending.isEmpty) {
+        _closeRetention?.call();
+        _closeRetention = null;
+      }
+    }
+  }
+
+  void _publishCommands() {
+    final current = state.asData?.value;
+    if (current == null) return;
+    state = AsyncData(
+      current.copyWith(
+        pending: Set.unmodifiable(_pending),
+        errors: Map.unmodifiable(_errors),
+      ),
+    );
+  }
+}
+
+StartedService _lspService(LspServerStateView server) {
+  final state = server.state;
+  final activity = state is LspAvailableState ? state.activity : null;
+  return StartedService(
+    id: server.id,
+    name: server.displayName,
+    status: switch (state) {
+      LspCheckingState() => switch (server.phase) {
+        'initializing' => StartedServiceStatus.initializing,
+        'starting' => StartedServiceStatus.starting,
+        'loading' => StartedServiceStatus.loading,
+        'probing' => StartedServiceStatus.probing,
+        _ => StartedServiceStatus.checking,
+      },
+      LspDisabledState() => StartedServiceStatus.disabled,
+      LspUnavailableState() => StartedServiceStatus.failed,
+      LspAvailableState(activity: LspIdleActivity()) =>
+        StartedServiceStatus.ready,
+      LspAvailableState(activity: LspIndexingActivity()) =>
+        StartedServiceStatus.indexing,
+      LspAvailableState(activity: LspBusyActivity()) =>
+        StartedServiceStatus.busy,
+    },
+    percentage: switch (activity) {
+      LspIndexingActivity(:final percentage) ||
+      LspBusyActivity(:final percentage) => percentage,
+      _ => null,
+    },
+    diagnostic: switch (state) {
+      LspCheckingState(:final message) ||
+      LspDisabledState(:final message) ||
+      LspUnavailableState(:final message) => message,
+      LspAvailableState() => switch (activity) {
+        LspIndexingActivity(:final title, :final message) ||
+        LspBusyActivity(
+          :final title,
+          :final message,
+        ) => [?title, ?message].join('\n'),
+        _ => null,
+      },
+    },
+    canReconnect: state is! LspDisabledState,
+  );
 }
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
@@ -45,14 +237,7 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
         _chromeFromSession,
         equals: _chromeEquals,
       ) ??
-      (
-        isBusy: false,
-        modelRoute: null,
-        workflowRun: null,
-        activeSkills: const <String>[],
-        activeMcpServers: const <String>[],
-        activeLspServers: const <String>[],
-      );
+      (isBusy: false, modelRoute: null, workflowRun: null);
   return StatusBarView(
     row: row,
     accounts: accounts,
@@ -60,23 +245,7 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
     isBusy: chrome.isBusy,
     modelRoute: chrome.modelRoute,
     workflowRun: chrome.workflowRun,
-    activeSkills: chrome.activeSkills,
-    activeMcpServers: chrome.activeMcpServers,
-    activeLspServers: chrome.activeLspServers,
   );
-}
-
-@riverpod
-CommandStatus? statusCompactionCommand(Ref ref, String threadId) {
-  final commands = ref.read(anyworkClientProvider).threadCommands;
-  final key = 'compact:$threadId';
-  var current = commands.state.commands[key];
-  observeClient(ref, commands.source, (next) {
-    if (current == next.commands[key]) return;
-    current = next.commands[key];
-    ref.invalidateSelf();
-  });
-  return current;
 }
 
 @riverpod
@@ -115,9 +284,6 @@ typedef _StatusChrome = ({
   bool isBusy,
   ThreadModelRouteView? modelRoute,
   WorkflowRunView? workflowRun,
-  List<String> activeSkills,
-  List<String> activeMcpServers,
-  List<String> activeLspServers,
 });
 
 _StatusChrome _chromeFromSession(ThreadSessionState session) {
@@ -126,19 +292,13 @@ _StatusChrome _chromeFromSession(ThreadSessionState session) {
     isBusy: session.activeTurn?.state.isBusy ?? false,
     modelRoute: session.modelRoute,
     workflowRun: runtime.workflow?.currentRun,
-    activeSkills: runtime.activeSkills,
-    activeMcpServers: runtime.activeMcpServers,
-    activeLspServers: runtime.activeLspServers,
   );
 }
 
 bool _chromeEquals(_StatusChrome left, _StatusChrome right) {
   return left.isBusy == right.isBusy &&
       left.modelRoute == right.modelRoute &&
-      left.workflowRun == right.workflowRun &&
-      _sameStrings(left.activeSkills, right.activeSkills) &&
-      _sameStrings(left.activeMcpServers, right.activeMcpServers) &&
-      _sameStrings(left.activeLspServers, right.activeLspServers);
+      left.workflowRun == right.workflowRun;
 }
 
 bool _sameStrings(List<String> left, List<String> right) {
