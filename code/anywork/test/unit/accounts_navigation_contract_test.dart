@@ -569,7 +569,7 @@ void main() {
     expect(h.accounts.creates, isEmpty);
     expect(h.accounts.patches, isEmpty);
   });
-  test('Add uses authoritative Native order, falls back to ACP without preparation, and retries a real empty directory', () async {
+  test('Add uses Native catalog order and keeps generic ACP available without catalogs or preparation', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);
     final original = h.accounts.state.value;
@@ -594,7 +594,7 @@ void main() {
     final acp = acpSession.currentEditor!;
     expect(
       acp.template,
-      const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+      const AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
     );
     final acpOwner = await h.editor(acp);
     expect(h.acp.starts, isEmpty);
@@ -603,17 +603,23 @@ void main() {
     expect(await acpOwner.requestLeave(AccountLeaveChoice.discard), isTrue);
     h.releaseSession(acpSession);
     h.acp.templates.publish(const AcpAccountCatalogView.empty());
-    const entry = AccountEditorEntryKey.creating(routeEntryId: 'empty');
-    final emptySession = await h.session(entry);
-    final empty = h.container
+    const entry = AccountEditorEntryKey.creating(routeEntryId: 'no-catalogs');
+    final genericSession = await h.session(entry);
+    final genericEditor = genericSession.currentEditor!;
+    final generic = h.container
         .read(accountEditorSessionViewModelProvider(entry))
         .requireValue;
-    expect(empty.editor, isNull);
-    expect(emptySession.isActive, isTrue);
-    expect(empty.templates, isEmpty);
+    expect(genericEditor.template, acp.template);
+    expect(genericSession.isActive, isTrue);
+    expect(generic.templates.single.key, acp.template);
     h.accounts.state.publish(original);
-    await emptySession.loadTemplates();
-    expect(emptySession.currentEditor!.template, native.template);
+    await genericSession.loadTemplates();
+    expect(genericSession.currentEditor, genericEditor);
+    h.releaseSession(genericSession);
+    final restoredSession = await h.session(
+      const AccountEditorEntryKey.creating(routeEntryId: 'restored-catalog'),
+    );
+    expect(restoredSession.currentEditor!.template, native.template);
     expect(h.accounts.creates, isEmpty);
     expect(h.accounts.patches, isEmpty);
   });
