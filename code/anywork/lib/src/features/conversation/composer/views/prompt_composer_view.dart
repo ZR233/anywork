@@ -256,8 +256,9 @@ class PromptComposerViewState extends State<PromptComposerView> {
                   onSubmitted: (_) => _submit(),
                   decoration: InputDecoration(
                     hintText: context.l10n.composerHint,
-                    isCollapsed: true,
+                    isDense: true,
                     filled: false,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
                     // 状态边框也显式关闭，避免再次继承主题形成内框。
                     border: InputBorder.none,
                     enabledBorder: InputBorder.none,

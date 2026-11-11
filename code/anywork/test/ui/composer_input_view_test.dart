@@ -46,7 +46,11 @@ void main() {
         );
         expect(tester.widget<InputDecorator>(frameFinder).isFocused, focused);
         final decoration = tester.widget<InputDecorator>(inner).decoration;
-        expect(decoration.isCollapsed, isTrue);
+        expect(
+          decoration.contentPadding,
+          const EdgeInsets.symmetric(vertical: 8),
+          reason: '保留重构前输入文字的上下留白',
+        );
         expect(decoration.enabledBorder, InputBorder.none);
         expect(decoration.focusedBorder, InputBorder.none);
         expect(decoration.disabledBorder, InputBorder.none);
