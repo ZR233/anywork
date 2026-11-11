@@ -2678,5 +2678,102 @@
         "type": "String"
       }
     }
-  }
+  },
+  "timelineLspStatusTitle": "LSP 状态",
+  "timelineLspCapabilitiesRunning": "正在读取语言服务能力",
+  "timelineLspCapabilitiesSucceeded": "已读取语言服务能力",
+  "timelineLspCapabilitiesFailed": "语言服务能力读取失败",
+  "timelineLspStatusRunning": "正在检查语言服务状态",
+  "timelineLspStatusSucceeded": "已检查语言服务状态",
+  "timelineLspStatusFailed": "语言服务状态检查失败",
+  "timelineLspOpDefinition": "跳转定义",
+  "timelineLspOpDefinitionRunning": "正在定位定义",
+  "timelineLspOpDefinitionSucceeded": "已定位定义",
+  "timelineLspOpDefinitionFailed": "定位定义失败",
+  "timelineLspOpImplementation": "查找实现",
+  "timelineLspOpImplementationRunning": "正在查找实现",
+  "timelineLspOpImplementationSucceeded": "已查找实现",
+  "timelineLspOpImplementationFailed": "查找实现失败",
+  "timelineLspOpReferences": "查找引用",
+  "timelineLspOpReferencesRunning": "正在查找引用",
+  "timelineLspOpReferencesSucceeded": "已查找引用",
+  "timelineLspOpReferencesFailed": "查找引用失败",
+  "timelineLspOpHover": "悬停说明",
+  "timelineLspOpHoverRunning": "正在读取悬停说明",
+  "timelineLspOpHoverSucceeded": "已读取悬停说明",
+  "timelineLspOpHoverFailed": "读取悬停说明失败",
+  "timelineLspOpDocumentSymbol": "文件符号",
+  "timelineLspOpDocumentSymbolRunning": "正在读取文件符号",
+  "timelineLspOpDocumentSymbolSucceeded": "已读取文件符号",
+  "timelineLspOpDocumentSymbolFailed": "读取文件符号失败",
+  "timelineLspOpWorkspaceSymbol": "工作区符号",
+  "timelineLspOpWorkspaceSymbolRunning": "正在搜索符号",
+  "timelineLspOpWorkspaceSymbolSucceeded": "已搜索符号",
+  "timelineLspOpWorkspaceSymbolFailed": "搜索符号失败",
+  "timelineLspOpPrepareCallHierarchy": "调用层级",
+  "timelineLspOpIncomingCalls": "传入调用",
+  "timelineLspOpOutgoingCalls": "传出调用",
+  "timelineLspOpCallHierarchyRunning": "正在分析调用层级",
+  "timelineLspOpCallHierarchySucceeded": "已分析调用层级",
+  "timelineLspOpCallHierarchyFailed": "分析调用层级失败",
+  "timelineLspOpDiagnostics": "代码诊断",
+  "timelineLspOpDiagnosticsRunning": "正在检查代码诊断",
+  "timelineLspOpDiagnosticsSucceeded": "已检查代码诊断",
+  "timelineLspOpDiagnosticsFailed": "检查代码诊断失败",
+  "timelineLspResultCountFiles": "{count} 处结果 · {files} 个文件",
+  "@timelineLspResultCountFiles": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "files": {"type": "int"}
+    }
+  },
+  "timelineLspResultCountOnly": "{count} 项结果",
+  "@timelineLspResultCountOnly": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspMaxResultsLimit": "上限 {limit}",
+  "@timelineLspMaxResultsLimit": {
+    "placeholders": {
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineLspQueryKeywordLabel": "关键词",
+  "timelineLspNoDefinitions": "未找到匹配的定义位置",
+  "timelineLspNoImplementations": "未找到匹配的实现位置",
+  "timelineLspNoReferences": "未找到匹配的引用位置",
+  "timelineLspNoHover": "当前位置暂无悬停类型或文档说明",
+  "timelineLspNoDocumentSymbols": "当前文件未解析出符号大纲",
+  "timelineLspNoWorkspaceSymbols": "未搜索到匹配的工作区符号",
+  "timelineLspNoCallHierarchy": "当前位置未找到调用层级关系",
+  "timelineLspNoDiagnosticsClean": "未发现代码诊断问题",
+  "timelineLspOmittedItems": "另有 {count} 项结果已省略",
+  "@timelineLspOmittedItems": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspPreviewTruncated": "结果预览已截断（省略 {size}）",
+  "@timelineLspPreviewTruncated": {
+    "placeholders": {
+      "size": {"type": "String"}
+    }
+  },
+  "timelineLspCapabilitiesSummary": "{count} 个就绪语言服务",
+  "@timelineLspCapabilitiesSummary": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "timelineLspCapabilitiesEmpty": "当前工作区暂无就绪的语言服务器",
+  "timelineLspStatusSummary": "{ready} 就绪 / 共 {total} 个服务",
+  "@timelineLspStatusSummary": {
+    "placeholders": {
+      "ready": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "timelineLspStatusEmpty": "当前工作区未配置语言服务器",
+  "timelineLspStateMissingCommand": "缺少命令"
 }

@@ -3,39 +3,87 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../composer/widgets/multiline_enter_shortcuts.dart';
 
-/// Plan-only presentation; the Connector owns availability and decisions.
-class PlanConfirmationView extends StatelessWidget {
+/// Plan-only presentation. The view owns draft text and focus; the connector supplies actions.
+class PlanConfirmationView extends StatefulWidget {
   const PlanConfirmationView({
-    required this.controller,
+    required this.interactionId,
     required this.available,
     required this.enabled,
     required this.error,
-    required this.onFeedbackChanged,
     required this.onSubmitRevision,
     required this.onApprove,
+    this.initialFeedback = '',
     this.submitting = false,
     this.trailing,
     super.key,
   });
 
-  final TextEditingController controller;
+  final String interactionId;
   final bool available;
   final bool enabled;
   final bool submitting;
   final String? error;
-  final ValueChanged<String> onFeedbackChanged;
-  final VoidCallback onSubmitRevision;
+  final ValueChanged<String> onSubmitRevision;
   final VoidCallback onApprove;
+  final String initialFeedback;
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) {
-    final canDecide = available && enabled && !submitting;
-    final hasFeedback = controller.text.trim().isNotEmpty;
-    void submitRevision() {
-      if (canDecide && hasFeedback) onSubmitRevision();
+  State<PlanConfirmationView> createState() => _PlanConfirmationViewState();
+}
+
+class _PlanConfirmationViewState extends State<PlanConfirmationView> {
+  late final TextEditingController _controller;
+  final FocusNode _inputFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialFeedback)
+      ..addListener(_handleFeedbackChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant PlanConfirmationView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.interactionId != widget.interactionId) {
+      _controller.clear();
     }
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleFeedbackChanged)
+      ..dispose();
+    _inputFocus.dispose();
+    super.dispose();
+  }
+
+  void _handleFeedbackChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Button and Enter share validation and the same feature action.
+  void _submitRevision({bool fromKeyboard = false}) {
+    if ((fromKeyboard &&
+            (!_inputFocus.hasFocus || _controller.value.composing.isValid)) ||
+        !widget.available ||
+        !widget.enabled ||
+        widget.submitting) {
+      return;
+    }
+    final feedback = _controller.text.trim();
+    if (feedback.isEmpty) return;
+    widget.onSubmitRevision(feedback);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canDecide = widget.available && widget.enabled && !widget.submitting;
+    final hasFeedback = _controller.text.trim().isNotEmpty;
 
     final actionStyle = ButtonStyle(
       textStyle: WidgetStatePropertyAll(context.text.labelLarge),
@@ -59,14 +107,14 @@ class PlanConfirmationView extends StatelessWidget {
           style: actionStyle,
           icon: const Icon(Icons.send_outlined, size: 18),
           label: Text(context.l10n.interactionPlanAdjustSubmit),
-          onPressed: canDecide && hasFeedback ? submitRevision : null,
+          onPressed: canDecide && hasFeedback ? _submitRevision : null,
         ),
         FilledButton.icon(
           key: StudioDriverKeys.planApprove,
           style: actionStyle,
           icon: const Icon(Icons.check, size: 18),
           label: Text(context.l10n.interactionPlanConfirmAction),
-          onPressed: canDecide ? onApprove : null,
+          onPressed: canDecide ? widget.onApprove : null,
         ),
       ],
     );
@@ -82,12 +130,12 @@ class PlanConfirmationView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (trailing != null)
+            if (widget.trailing != null)
               Align(
                 alignment: AlignmentDirectional.centerEnd,
-                child: trailing!,
+                child: widget.trailing!,
               ),
-            if (trailing != null) const SizedBox(height: 8),
+            if (widget.trailing != null) const SizedBox(height: 8),
             Text(
               context.l10n.interactionPlanAdjust,
               style: context.text.bodySmall?.copyWith(
@@ -95,20 +143,25 @@ class PlanConfirmationView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 4),
-            TextField(
-              key: StudioDriverKeys.planFeedbackInput,
-              controller: controller,
-              enabled: enabled && !submitting,
-              minLines: 2,
-              maxLines: 4,
-              textInputAction: TextInputAction.newline,
-              onChanged: onFeedbackChanged,
-              decoration: InputDecoration(
-                hintText: context.l10n.interactionPlanAdjustHint,
-                contentPadding: const EdgeInsets.all(12),
+            MultilineEnterShortcuts(
+              controller: _controller,
+              child: TextField(
+                key: StudioDriverKeys.planFeedbackInput,
+                controller: _controller,
+                focusNode: _inputFocus,
+                enabled: widget.enabled && !widget.submitting,
+                minLines: 2,
+                maxLines: 4,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _submitRevision(fromKeyboard: true),
+                onEditingComplete: () => _inputFocus.requestFocus(),
+                decoration: InputDecoration(
+                  hintText: context.l10n.interactionPlanAdjustHint,
+                  contentPadding: const EdgeInsets.all(12),
+                ),
               ),
             ),
-            if (error case final message?) ...[
+            if (widget.error case final message?) ...[
               const SizedBox(height: 8),
               Semantics(
                 liveRegion: true,
@@ -134,7 +187,7 @@ class PlanConfirmationView extends StatelessWidget {
                 ),
               ),
             ],
-            if (submitting) const SizedBox(height: 4),
+            if (widget.submitting) const SizedBox(height: 4),
             LayoutBuilder(
               builder: (context, constraints) {
                 Widget progress() => Row(
@@ -155,7 +208,7 @@ class PlanConfirmationView extends StatelessWidget {
                   ],
                 );
 
-                if (!submitting) {
+                if (!widget.submitting) {
                   return Align(
                     alignment: AlignmentDirectional.centerEnd,
                     child: actions,

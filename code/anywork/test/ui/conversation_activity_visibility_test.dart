@@ -9,6 +9,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_viewport.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -705,7 +706,7 @@ void main() {
     const CompletedOriginal(completionId: 'older-output-completion'),
   ]) {
     testWidgets(
-      'selected plan hides duplicate footer details, not Timeline Work or output; resolution and approval restore details: ${olderSource?.runtimeType ?? 'latest'}',
+      'selected plan masks the full output dock, preserves Timeline Work and restores output after resolution: ${olderSource?.runtimeType ?? 'latest'}',
       (tester) async {
         const threadId = 'thread-main';
         final transport = _PlanVisibilityTransport();
@@ -987,20 +988,11 @@ void main() {
         await publish([plan]);
         await tester.pump();
         expect(find.byType(InteractionDetailsConnector), findsNothing);
-        if (olderSource == null) {
-          expect(find.byType(ConversationActivityBar), findsNothing);
-          expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
-          expect(find.byType(ConversationActivityViewport), findsNothing);
-        } else {
-          expect(find.text(olderText, findRichText: true), findsOneWidget);
-          expect(outputView.evaluate().single, same(outputElement));
-          expect(
-            tester.widget<TimelineMemberAtom>(olderMember).record,
-            same(olderRecord),
-          );
-          expect(transport.olderReads, hasLength(1));
-          expect(tester.getSize(outputView).height, greaterThan(0));
-        }
+        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
+        expect(find.byType(ConversationActivityBar), findsNothing);
+        expect(find.byType(ConversationActivityViewport), findsNothing);
+        expect(find.text(olderText, findRichText: true), findsNothing);
+        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
         expect(originalDetails.mounted, isFalse);
         expect(find.byType(TimelineWaitPanel), findsOneWidget);
         expect(workView.evaluate().single, same(workElement));
@@ -1016,10 +1008,18 @@ void main() {
         await tester.pump();
         expect(find.byType(TimelineWaitPanel), findsOneWidget);
         expect(workView.evaluate().single, same(workElement));
+        expect(
+          tester.getSize(find.byType(LiveStatusBar)).height,
+          greaterThan(0),
+        );
         expect(lease.live.value, same(live));
         if (olderSource != null) {
           expect(find.text(olderText, findRichText: true), findsOneWidget);
-          expect(outputView.evaluate().single, same(outputElement));
+          expect(outputView.evaluate().single, isNot(same(outputElement)));
+          expect(
+            tester.widget<TimelineMemberAtom>(olderMember).record,
+            same(olderRecord),
+          );
           expect(transport.olderReads, hasLength(1));
         }
 
@@ -1043,7 +1043,11 @@ void main() {
         expect(lease.generation, generation);
         if (olderSource != null) {
           expect(find.text(olderText, findRichText: true), findsOneWidget);
-          expect(outputView.evaluate().single, same(outputElement));
+          expect(outputView.evaluate().single, isNot(same(outputElement)));
+          expect(
+            tester.widget<TimelineMemberAtom>(olderMember).record,
+            same(olderRecord),
+          );
           expect(transport.olderReads, hasLength(1));
         }
 
@@ -1086,12 +1090,8 @@ void main() {
           ),
         );
         if (olderSource != null) {
-          olderElement = olderMember.evaluate().single;
-          expect(olderElement.mounted, isTrue);
-          expect(
-            tester.widget<TimelineMemberAtom>(olderMember).isActive(),
-            isTrue,
-          );
+          expect(olderMember, findsNothing);
+          expect(transport.olderReads, hasLength(1));
         }
         await publishLive([work, output]);
         await tester.pump();
@@ -1102,24 +1102,25 @@ void main() {
           expect(olderElement!.mounted, isFalse);
           expect(transport.olderReads, hasLength(1));
         }
+        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
+        expect(find.byType(ConversationActivityBar), findsNothing);
+        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
+        final liveStatus = ProviderScope.containerOf(
+          tester.element(find.byType(LiveStatusBar)),
+          listen: false,
+        ).read(liveStatusViewModelProvider(threadId));
+        expect(liveStatus, isNotNull);
+        expect(liveStatus!.observation.latestLive, same(lease.live.value));
         expect(
-          find.text('计划待决期间仍然可见的实际正文', findRichText: true),
-          findsOneWidget,
+          liveStatus.observation.activity?.kind,
+          ThreadActivityKind.stopping,
         );
-        for (final kind in [
+        expect(
+          liveStatus.primaryActivity?.kind,
           ConversationActivityKind.stopping,
-          ConversationActivityKind.storageBlocked,
-        ]) {
-          expect(
-            find.byWidgetPredicate(
-              (widget) =>
-                  widget is ConversationActivityStatus &&
-                  widget.view.kind == kind,
-            ),
-            findsOneWidget,
-          );
-        }
-        expect(find.textContaining('磁盘写入失败'), findsOneWidget);
+        );
+        expect(liveStatus.timelineWork.workBlocks, contains(same(work)));
+        expect(liveStatus.observation.storage?.lastError, '磁盘写入失败');
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         expect(workView.evaluate().single, same(workElement));
         expect(lease.controller.messages, orderedEquals(history));
@@ -1127,20 +1128,29 @@ void main() {
         await publish([plan], kind: ThreadActivityKind.thinking);
         await publishLive([work, output], executionPresent: false);
         await tester.pump();
-        expect(
-          find.descendant(
-            of: find.byType(LiveStatusBar),
-            matching: find.text('上次执行未收束，尚未恢复'),
-          ),
-          findsOneWidget,
-        );
+        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
         expect(
           find.descendant(of: workView, matching: find.text('上次执行未收束，尚未恢复')),
           findsOneWidget,
         );
+        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
         expect(
-          find.text('计划待决期间仍然可见的实际正文', findRichText: true),
-          findsOneWidget,
+          ProviderScope.containerOf(
+            tester.element(find.byType(LiveStatusBar)),
+            listen: false,
+          ).read(liveStatusViewModelProvider(threadId))!.observation.latestLive,
+          same(lease.live.value),
+        );
+        expect(
+          ProviderScope.containerOf(
+                tester.element(find.byType(LiveStatusBar)),
+                listen: false,
+              )
+              .read(liveStatusViewModelProvider(threadId))!
+              .observation
+              .activity
+              ?.kind,
+          ThreadActivityKind.thinking,
         );
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         expect(workView.evaluate().single, same(workElement));
@@ -1161,30 +1171,59 @@ void main() {
     );
   }
 
-  test('Plan confirmation uses its State controls without hiding the actual activity snapshot', () {
-    final state = _project(
-      _userInput(
+  test('Plan confirmation masks live bar while preserving activity and work observation', () {
+    final work = LiveDisplayBlock(
+      id: 'background-work',
+      blockOrder: 1,
+      state: DisplayBlockState.open,
+      source: const ForegroundTurnChatSource(turnId: 'background-turn'),
+      body: WorkDisplayBlock(
+        summary: displaySummary(1, terminal: 0, running: 1),
+        members: const DisplayBlockRef(
+          databaseId: 'plan-mask',
+          blockId: 'background-work',
+        ),
+      ),
+    );
+    final live = LiveDisplayWindow(
+      revision: 1,
+      historyThrough: 0,
+      executionPresent: true,
+      blocks: [work],
+    );
+    final state = _observe(
+      live: live,
+      interaction: _userInput(
         id: 'plan',
         questionId: agentSessionPlanConfirmationQuestionId,
       ),
     );
 
-    expect(state.barState, isA<LiveStatusPresenting>());
-    final content = state.barState as LiveStatusPresenting;
-    expect(content.effectiveWindow, same(_live));
-    expect(
-      content.surface.standaloneNotices
-          .whereType<ExecutionLiveNotice>()
-          .single
-          .view
-          .kind,
-      ConversationActivityKind.thinking,
-    );
+    expect(state.barState, isA<LiveStatusDockMasked>());
+    expect((state.barState as LiveStatusDockMasked).interactionId, 'plan');
+    expect(state.observation.latestLive, same(live));
+    expect(state.observation.activity, same(_status));
+    expect(state.primaryActivity?.kind, ConversationActivityKind.thinking);
+    expect(state.timelineWork.workBlocks, [work]);
+
+    final restored = LiveStatusStateMachine.transition(
+      state,
+      LiveStatusObserved(
+        LiveStatusObservation(
+          cut: state.observation.cut,
+          interactions: const [],
+          activeTurnId: 'turn',
+          activity: _status,
+          latestLive: live,
+        ),
+      ),
+    ).state;
+    expect(restored.barState, isA<LiveStatusPresenting>());
   });
 
-  for (final (turnId, replaced) in [('turn', true), ('other-turn', false)]) {
+  for (final turnId in ['turn', 'other-turn']) {
     test(
-      'selected plan input-wait replacement retains source qualification: $turnId',
+      'pending plan masks input-wait from $turnId while retaining driver source',
       () {
         final aggregate = _observe(
           storage: null,
@@ -1202,19 +1241,15 @@ void main() {
             summary: '等待计划确认',
           ),
         );
-        if (replaced) {
-          expect(aggregate.barState, isA<LiveStatusDockMasked>());
-          expect(aggregate.barState.showInteractionDetails, isFalse);
-        } else {
-          final content = aggregate.barState as LiveStatusPresenting;
-          expect(
-            content.surface.standaloneNotices
-                .whereType<ExecutionLiveNotice>()
-                .single
-                .view
-                .turnId,
-            turnId,
-          );
+        expect(aggregate.barState, isA<LiveStatusDockMasked>());
+        expect(aggregate.barState.showInteractionDetails, isFalse);
+        expect(
+          aggregate.observation.activity?.turnId,
+          turnId,
+          reason: '隐藏呈现不能丢弃仍有效的后台 activity 来源事实',
+        );
+        if (turnId != 'turn') {
+          expect(aggregate.primaryActivity?.turnId, turnId);
         }
       },
     );

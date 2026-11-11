@@ -133,7 +133,7 @@ class _SummaryCardState extends State<_SummaryCard> {
 }
 
 /// Local editing only; preview callbacks never claim a business decision.
-class _Feedback extends StatefulWidget {
+class _Feedback extends StatelessWidget {
   const _Feedback({
     required this.initialText,
     required this.submitting,
@@ -144,29 +144,14 @@ class _Feedback extends StatefulWidget {
   final String? error;
 
   @override
-  State<_Feedback> createState() => _FeedbackState();
-}
-
-class _FeedbackState extends State<_Feedback> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.initialText,
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) => PlanConfirmationView(
-    controller: _controller,
+    interactionId: 'preview-feedback',
     available: true,
     enabled: true,
-    submitting: widget.submitting,
-    error: widget.error,
-    onFeedbackChanged: (_) => setState(() {}),
-    onSubmitRevision: () {},
+    initialFeedback: initialText,
+    submitting: submitting,
+    error: error,
+    onSubmitRevision: (_) {},
     onApprove: () {},
   );
 }

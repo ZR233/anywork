@@ -33,6 +33,7 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
+import 'reading_workspace_state.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';
@@ -60,6 +61,7 @@ part 'runtime_banners.dart';
 part 'studio_shell_chrome.dart';
 part 'studio_startup.dart';
 part 'agent_workspace_pane.dart';
+part 'workspace_reading.dart';
 
 class StudioShell extends ConsumerStatefulWidget {
   const StudioShell({super.key});

@@ -12077,6 +12077,366 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Failed to decode image: {error}'**
   String acpMediaImageLoadFailed(String error);
+
+  /// No description provided for @timelineLspStatusTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'LSP status'**
+  String get timelineLspStatusTitle;
+
+  /// No description provided for @timelineLspCapabilitiesRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking language server capabilities'**
+  String get timelineLspCapabilitiesRunning;
+
+  /// No description provided for @timelineLspCapabilitiesSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Checked language server capabilities'**
+  String get timelineLspCapabilitiesSucceeded;
+
+  /// No description provided for @timelineLspCapabilitiesFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Language server capability check failed'**
+  String get timelineLspCapabilitiesFailed;
+
+  /// No description provided for @timelineLspStatusRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking language server status'**
+  String get timelineLspStatusRunning;
+
+  /// No description provided for @timelineLspStatusSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Checked language server status'**
+  String get timelineLspStatusSucceeded;
+
+  /// No description provided for @timelineLspStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Language server status check failed'**
+  String get timelineLspStatusFailed;
+
+  /// No description provided for @timelineLspOpDefinition.
+  ///
+  /// In en, this message translates to:
+  /// **'Definition'**
+  String get timelineLspOpDefinition;
+
+  /// No description provided for @timelineLspOpDefinitionRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Locating definition'**
+  String get timelineLspOpDefinitionRunning;
+
+  /// No description provided for @timelineLspOpDefinitionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Located definition'**
+  String get timelineLspOpDefinitionSucceeded;
+
+  /// No description provided for @timelineLspOpDefinitionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to locate definition'**
+  String get timelineLspOpDefinitionFailed;
+
+  /// No description provided for @timelineLspOpImplementation.
+  ///
+  /// In en, this message translates to:
+  /// **'Implementation'**
+  String get timelineLspOpImplementation;
+
+  /// No description provided for @timelineLspOpImplementationRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Finding implementations'**
+  String get timelineLspOpImplementationRunning;
+
+  /// No description provided for @timelineLspOpImplementationSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Found implementations'**
+  String get timelineLspOpImplementationSucceeded;
+
+  /// No description provided for @timelineLspOpImplementationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to find implementations'**
+  String get timelineLspOpImplementationFailed;
+
+  /// No description provided for @timelineLspOpReferences.
+  ///
+  /// In en, this message translates to:
+  /// **'References'**
+  String get timelineLspOpReferences;
+
+  /// No description provided for @timelineLspOpReferencesRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Finding references'**
+  String get timelineLspOpReferencesRunning;
+
+  /// No description provided for @timelineLspOpReferencesSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Found references'**
+  String get timelineLspOpReferencesSucceeded;
+
+  /// No description provided for @timelineLspOpReferencesFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to find references'**
+  String get timelineLspOpReferencesFailed;
+
+  /// No description provided for @timelineLspOpHover.
+  ///
+  /// In en, this message translates to:
+  /// **'Hover'**
+  String get timelineLspOpHover;
+
+  /// No description provided for @timelineLspOpHoverRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading hover info'**
+  String get timelineLspOpHoverRunning;
+
+  /// No description provided for @timelineLspOpHoverSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Read hover info'**
+  String get timelineLspOpHoverSucceeded;
+
+  /// No description provided for @timelineLspOpHoverFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to read hover info'**
+  String get timelineLspOpHoverFailed;
+
+  /// No description provided for @timelineLspOpDocumentSymbol.
+  ///
+  /// In en, this message translates to:
+  /// **'Document symbols'**
+  String get timelineLspOpDocumentSymbol;
+
+  /// No description provided for @timelineLspOpDocumentSymbolRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading document symbols'**
+  String get timelineLspOpDocumentSymbolRunning;
+
+  /// No description provided for @timelineLspOpDocumentSymbolSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Read document symbols'**
+  String get timelineLspOpDocumentSymbolSucceeded;
+
+  /// No description provided for @timelineLspOpDocumentSymbolFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to read document symbols'**
+  String get timelineLspOpDocumentSymbolFailed;
+
+  /// No description provided for @timelineLspOpWorkspaceSymbol.
+  ///
+  /// In en, this message translates to:
+  /// **'Workspace symbols'**
+  String get timelineLspOpWorkspaceSymbol;
+
+  /// No description provided for @timelineLspOpWorkspaceSymbolRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Searching symbols'**
+  String get timelineLspOpWorkspaceSymbolRunning;
+
+  /// No description provided for @timelineLspOpWorkspaceSymbolSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Searched symbols'**
+  String get timelineLspOpWorkspaceSymbolSucceeded;
+
+  /// No description provided for @timelineLspOpWorkspaceSymbolFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to search symbols'**
+  String get timelineLspOpWorkspaceSymbolFailed;
+
+  /// No description provided for @timelineLspOpPrepareCallHierarchy.
+  ///
+  /// In en, this message translates to:
+  /// **'Call hierarchy'**
+  String get timelineLspOpPrepareCallHierarchy;
+
+  /// No description provided for @timelineLspOpIncomingCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Incoming calls'**
+  String get timelineLspOpIncomingCalls;
+
+  /// No description provided for @timelineLspOpOutgoingCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Outgoing calls'**
+  String get timelineLspOpOutgoingCalls;
+
+  /// No description provided for @timelineLspOpCallHierarchyRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Analyzing call hierarchy'**
+  String get timelineLspOpCallHierarchyRunning;
+
+  /// No description provided for @timelineLspOpCallHierarchySucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Analyzed call hierarchy'**
+  String get timelineLspOpCallHierarchySucceeded;
+
+  /// No description provided for @timelineLspOpCallHierarchyFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to analyze call hierarchy'**
+  String get timelineLspOpCallHierarchyFailed;
+
+  /// No description provided for @timelineLspOpDiagnostics.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostics'**
+  String get timelineLspOpDiagnostics;
+
+  /// No description provided for @timelineLspOpDiagnosticsRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking diagnostics'**
+  String get timelineLspOpDiagnosticsRunning;
+
+  /// No description provided for @timelineLspOpDiagnosticsSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Checked diagnostics'**
+  String get timelineLspOpDiagnosticsSucceeded;
+
+  /// No description provided for @timelineLspOpDiagnosticsFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to check diagnostics'**
+  String get timelineLspOpDiagnosticsFailed;
+
+  /// No description provided for @timelineLspResultCountFiles.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 match} other{{count} matches}} · {files, plural, =1{1 file} other{{files} files}}'**
+  String timelineLspResultCountFiles(int count, int files);
+
+  /// No description provided for @timelineLspResultCountOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 result} other{{count} results}}'**
+  String timelineLspResultCountOnly(int count);
+
+  /// No description provided for @timelineLspMaxResultsLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Limit {limit}'**
+  String timelineLspMaxResultsLimit(int limit);
+
+  /// No description provided for @timelineLspQueryKeywordLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Query'**
+  String get timelineLspQueryKeywordLabel;
+
+  /// No description provided for @timelineLspNoDefinitions.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching definitions found'**
+  String get timelineLspNoDefinitions;
+
+  /// No description provided for @timelineLspNoImplementations.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching implementations found'**
+  String get timelineLspNoImplementations;
+
+  /// No description provided for @timelineLspNoReferences.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching references found'**
+  String get timelineLspNoReferences;
+
+  /// No description provided for @timelineLspNoHover.
+  ///
+  /// In en, this message translates to:
+  /// **'No hover information at this position'**
+  String get timelineLspNoHover;
+
+  /// No description provided for @timelineLspNoDocumentSymbols.
+  ///
+  /// In en, this message translates to:
+  /// **'No document symbols found'**
+  String get timelineLspNoDocumentSymbols;
+
+  /// No description provided for @timelineLspNoWorkspaceSymbols.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching workspace symbols found'**
+  String get timelineLspNoWorkspaceSymbols;
+
+  /// No description provided for @timelineLspNoCallHierarchy.
+  ///
+  /// In en, this message translates to:
+  /// **'No call hierarchy items found'**
+  String get timelineLspNoCallHierarchy;
+
+  /// No description provided for @timelineLspNoDiagnosticsClean.
+  ///
+  /// In en, this message translates to:
+  /// **'No diagnostics reported'**
+  String get timelineLspNoDiagnosticsClean;
+
+  /// No description provided for @timelineLspOmittedItems.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 more item omitted} other{{count} more items omitted}}'**
+  String timelineLspOmittedItems(int count);
+
+  /// No description provided for @timelineLspPreviewTruncated.
+  ///
+  /// In en, this message translates to:
+  /// **'Result preview truncated ({size} omitted)'**
+  String timelineLspPreviewTruncated(String size);
+
+  /// No description provided for @timelineLspCapabilitiesSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 ready language server} other{{count} ready language servers}}'**
+  String timelineLspCapabilitiesSummary(int count);
+
+  /// No description provided for @timelineLspCapabilitiesEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No ready language servers in this workspace'**
+  String get timelineLspCapabilitiesEmpty;
+
+  /// No description provided for @timelineLspStatusSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{ready} ready of {total}'**
+  String timelineLspStatusSummary(int ready, int total);
+
+  /// No description provided for @timelineLspStatusEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No language servers configured in this workspace'**
+  String get timelineLspStatusEmpty;
+
+  /// No description provided for @timelineLspStateMissingCommand.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing command'**
+  String get timelineLspStateMissingCommand;
 }
 
 class _AppLocalizationsDelegate
