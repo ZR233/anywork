@@ -4,6 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
@@ -70,6 +71,35 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     );
 
 void main() {
+  testWidgets(
+    'official model request preview projects transferred Work into one current row',
+    (tester) async {
+      await tester.pumpWidget(timelineAtomicLiveGroupPreview());
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(find.byType(TimelineActivityIndicator), findsOneWidget);
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
+      expect(find.text('思考中'), findsOneWidget);
+      expect(find.text('执行了 7 分 8 秒'), findsOneWidget);
+      expect(find.text('等待下一步'), findsNothing);
+      expect(find.textContaining('思考了'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('conversation-activity-trailing-meta')),
+        findsNothing,
+      );
+      expect(
+        tester
+            .getSize(
+              find.byKey(
+                const ValueKey('completion-run-header:model-request-wait'),
+              ),
+            )
+            .height,
+        TimelineActivityRow.headerLogoSlotSize + 4,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('成员调用失败不改变实时或历史标题，错误详情仍按需展开', (tester) async {
     final semantics = tester.ensureSemantics();
     for (final location in WorkDisplayLocation.values) {
@@ -403,7 +433,7 @@ void main() {
     (WorkDisplayLocation.history, false, 500, '工作了不到 1 秒'),
     (WorkDisplayLocation.history, false, null, '工作记录'),
     (WorkDisplayLocation.history, false, -1, '工作记录'),
-    (WorkDisplayLocation.live, true, null, '等待下一步'),
+    (WorkDisplayLocation.live, true, null, '工作记录'),
   ]) {
     testWidgets('saved duration $location/$milliseconds does not run a clock', (
       tester,
@@ -998,12 +1028,14 @@ void main() {
     },
   );
 
-  for (final (outcome, icon, result) in [
-    (ChatTerminalOutcome.cancelled, Icons.stop_circle_outlined, '1 项已停止'),
-    (ChatTerminalOutcome.transferred, Icons.call_made, '已交接 1 项'),
+  for (final (outcome, result) in [
+    (ChatTerminalOutcome.completed, null),
+    (ChatTerminalOutcome.failed, '1 项执行失败'),
+    (ChatTerminalOutcome.cancelled, '1 项已停止'),
+    (ChatTerminalOutcome.transferred, '已交接 1 项'),
   ]) {
     testWidgets(
-      'abnormal terminal ${outcome.name} Work keeps its result and independent Turn notice',
+      'terminal member ${outcome.name} preserves result but never splits current model wait',
       (tester) async {
         final h = _LiveHarness();
         addTearDown(h.dispose);
@@ -1015,51 +1047,62 @@ void main() {
             cancelled: outcome == ChatTerminalOutcome.cancelled ? 1 : 0,
             transferred: outcome == ChatTerminalOutcome.transferred ? 1 : 0,
           );
-          h.blocks = [_work('work', summary: summary)];
-          h.notices = [
-            const ExecutionLiveNotice(
-              ConversationActivityView(
-                identity: 'thinking',
-                turnId: 'turn',
-                kind: ConversationActivityKind.thinking,
-                thinkingSummary: '有界思考概要',
-                summary: '状态概要',
+          h.now = () => DateTime.fromMillisecondsSinceEpoch(1428000);
+          Size? baseline;
+          for (final thought in [null, '有界思考概要']) {
+            h.blocks = [
+              _work(
+                'work',
+                summary: _summary(
+                  total: 1,
+                  failed: summary.failed,
+                  cancelled: summary.cancelled,
+                  transferred: summary.transferred,
+                  thought: thought,
+                ),
               ),
-            ),
-          ];
-          await tester.pumpWidget(h.host());
-          expect(find.byType(ConversationActivityStatus), findsOneWidget);
-          expect(
-            tester
-                .widget<ConversationActivityStatus>(
-                  find.byType(ConversationActivityStatus),
-                )
-                .view,
-            same((h.notices.single as ExecutionLiveNotice).view),
-          );
-          expect(find.text('有界思考概要'), findsNothing);
-          expect(find.text('状态概要'), findsOneWidget);
-          expect(
-            find.descendant(
-              of: find.byType(ConversationActivityStatus),
-              matching: find.text('思考中'),
-            ),
-            findsOneWidget,
-          );
-          final header = find.byKey(
-            const ValueKey('completion-run-header:work'),
-          );
-          void expectStaticResult() {
+            ];
+            final activity = LiveStatusStateMachine.mapThreadActivity(
+              const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'waiting-api',
+                revision: 1,
+                turnId: 'turn',
+                kind: ThreadActivityKind.waitingApi,
+                summary: '',
+                thinkingSeconds: 17,
+              ),
+            );
+            h.notices = [ExecutionLiveNotice(activity)];
+            await tester.pumpWidget(h.host());
+            expect(find.byType(ConversationActivityStatus), findsNothing);
+            expect(find.byType(TimelineActivityIndicator), findsOneWidget);
+            expect(find.byType(TimelineRestingCat), findsOneWidget);
+            expect(find.text(thought ?? '思考中'), findsOneWidget);
+            expect(find.text('执行了 7 分 8 秒'), findsOneWidget);
+            expect(find.text('等待下一步'), findsNothing);
+            expect(find.textContaining('思考了'), findsNothing);
+            expect(
+              find.byKey(const ValueKey('conversation-activity-trailing-meta')),
+              findsNothing,
+            );
+            final header = find.byKey(
+              const ValueKey('completion-run-header:work'),
+            );
+            baseline ??= tester.getSize(header);
+            expect(tester.getSize(header), baseline);
+            expect(
+              tester.getSize(header).height,
+              TimelineActivityRow.headerLogoSlotSize + 4,
+            );
             final work = tester.widget<CompletionRunView>(
               find.byType(CompletionRunView),
             );
-            expect(work.summary, same(summary));
+            expect(work.summary.cancelled, summary.cancelled);
+            expect(work.summary.transferred, summary.transferred);
+            expect(work.summary.failed, summary.failed);
             expect(work.state, DisplayBlockState.open);
-            expect(work.activity, isNull);
-            expect(
-              find.descendant(of: header, matching: find.text('等待下一步')),
-              findsOneWidget,
-            );
+            expect(work.activity, same(activity));
             expect(
               tester
                   .widget<TimelineActivityIndicator>(
@@ -1069,15 +1112,12 @@ void main() {
                     ),
                   )
                   .active,
-              isFalse,
-            );
-            expect(
-              find.descendant(of: header, matching: find.byIcon(icon)),
-              findsOneWidget,
+              isTrue,
             );
             final description = tester.getSemantics(header).label;
-            expect(description, contains(result));
-            expect(description, isNot(contains('思考中')));
+            if (result != null) expect(description, contains(result));
+            expect(description, contains('思考中'));
+            expect(description, contains('执行了 7 分 8 秒'));
             expect(
               tester
                   .widget<TimelineActivityClock>(
@@ -1090,23 +1130,69 @@ void main() {
               isTrue,
             );
           }
-
-          expectStaticResult();
-          h.notices = [
-            const ExecutionLiveNotice(
-              ConversationActivityView(
-                identity: 'thinking',
-                turnId: 'turn',
-                kind: ConversationActivityKind.thinking,
-                summary: '状态概要',
-              ),
-            ),
-          ];
-          await tester.pumpWidget(h.host());
-          expect(find.byType(ConversationActivityStatus), findsOneWidget);
-          expect(find.text('状态概要'), findsOneWidget);
-          expectStaticResult();
           expect(h.content.reads, 0);
+          await tester.pumpWidget(const SizedBox());
+        } finally {
+          semantics.dispose();
+        }
+      },
+    );
+  }
+
+  for (final (cancelled, transferred, icon, result) in [
+    (1, 0, Icons.stop_circle_outlined, '1 项已停止'),
+    (0, 1, Icons.call_made, '已交接 1 项'),
+  ]) {
+    testWidgets(
+      'no current phase keeps static result $cancelled/$transferred without inventing model wait',
+      (tester) async {
+        final semantics = tester.ensureSemantics();
+        try {
+          for (final location in WorkDisplayLocation.values) {
+            await tester.pumpWidget(
+              _host(
+                CompletionRunView(
+                  key: ValueKey(location),
+                  id: 'static-result',
+                  summary: _summary(
+                    total: 1,
+                    createdAt: null,
+                    elapsedMs: 428000,
+                    cancelled: cancelled,
+                    transferred: transferred,
+                  ),
+                  location: location,
+                  executionPresent: location == WorkDisplayLocation.live,
+                  initiallyExpanded: false,
+                  childBuilder: (_) => throw StateError('collapsed'),
+                ),
+              ),
+            );
+            final header = find.byKey(
+              const ValueKey('completion-run-header:static-result'),
+            );
+            expect(find.byIcon(icon), findsOneWidget);
+            expect(find.byType(TimelineRestingCat), findsNothing);
+            expect(find.text('思考中'), findsNothing);
+            expect(find.text('等待下一步'), findsNothing);
+            expect(
+              find.text(
+                location == WorkDisplayLocation.live
+                    ? '执行了 7 分 8 秒'
+                    : '工作了 7 分 8 秒',
+              ),
+              findsOneWidget,
+            );
+            expect(tester.getSemantics(header).label, contains(result));
+            expect(
+              tester
+                  .widget<TimelineActivityClock>(
+                    find.byType(TimelineActivityClock),
+                  )
+                  .running,
+              isFalse,
+            );
+          }
           await tester.pumpWidget(const SizedBox());
         } finally {
           semantics.dispose();
@@ -1293,6 +1379,7 @@ class _LiveHarness {
   List<LiveDisplayBlock> blocks = [];
   List<LiveStatusNotice> notices = [];
   bool executionPresent = true;
+  DateTime Function()? now;
   int revision = 0;
   Widget host() {
     live.value = LiveDisplayWindow(
@@ -1328,6 +1415,7 @@ class _LiveHarness {
           session: _Session(),
           content: content,
           live: live,
+          now: now,
           presenting: section == ConversationLiveSection.output
               ? presenting
               : null,

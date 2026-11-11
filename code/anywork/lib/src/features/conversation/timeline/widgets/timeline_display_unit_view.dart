@@ -13,12 +13,14 @@ class TimelineDisplayUnitView extends StatefulWidget {
     required this.childBuilder,
     this.onExpandedChanged,
     this.activity,
+    this.now,
     super.key,
   });
   final TimelineDisplayUnit unit;
   final WidgetBuilder childBuilder;
   final ValueChanged<bool>? onExpandedChanged;
   final ConversationActivityView? activity;
+  final DateTime Function()? now;
   @override
   State<TimelineDisplayUnitView> createState() =>
       _TimelineDisplayUnitViewState();
@@ -80,6 +82,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
           ? WorkDisplayLocation.live
           : WorkDisplayLocation.history,
       activity: widget.activity,
+      now: widget.now,
       onExpandedChanged: (expanded) {
         // 在关闭动画前同步撤销读取资格；纯视图不持有领域资源。
         unit.expansion.expanded = expanded;

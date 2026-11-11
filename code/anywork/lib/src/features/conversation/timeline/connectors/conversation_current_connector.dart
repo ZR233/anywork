@@ -40,6 +40,7 @@ class ConversationCurrentConnector extends StatefulWidget {
     this.loadLiveOlder,
     this.registerDisplay,
     this.onExpandedChanged,
+    this.now,
     super.key,
   });
 
@@ -69,6 +70,7 @@ class ConversationCurrentConnector extends StatefulWidget {
   final Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
   final VoidCallback Function(TimelineCurrentDisplay)? registerDisplay;
   final ValueChanged<bool>? onExpandedChanged;
+  final DateTime Function()? now;
 
   @override
   State<ConversationCurrentConnector> createState() => _CurrentState();
@@ -402,6 +404,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
       key: ValueKey(block.id),
       unit: unit,
       activity: activity,
+      now: widget.now,
       onExpandedChanged: widget.onExpandedChanged,
       childBuilder: (_) => CompletionRunConnector(
         unit: unit,

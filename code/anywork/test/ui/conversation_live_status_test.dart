@@ -917,8 +917,10 @@ void main() {
         String id, {
         required int order,
         DisplayBlockState state = DisplayBlockState.open,
+        int total = 2,
         int running = 1,
         int failed = 0,
+        int transferred = 0,
         String? thought,
       }) => LiveDisplayBlock(
         id: id,
@@ -928,13 +930,13 @@ void main() {
         body: WorkDisplayBlock(
           summary: WorkSummary(
             unavailable: 0,
-            total: 2,
-            terminal: 2 - running,
+            total: total,
+            terminal: total - running,
             running: running,
             waiting: 0,
             failed: failed,
             cancelled: 0,
-            transferred: 0,
+            transferred: transferred,
             createdAt: 100,
             elapsedMs: 125000,
             thinkingSummary: thought,
@@ -986,6 +988,71 @@ void main() {
               ),
             ),
             (
+              name: 'old-sealed-before-new-model-request',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '思考中',
+              blocks: [
+                workBlock(
+                  'old-work',
+                  order: 0,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                  thought: '旧组摘要不得带入新组',
+                ),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-new-request',
+                revision: 3,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.waitingApi,
+                summary: '',
+                thinkingSeconds: 17,
+              ),
+            ),
+            (
+              name: 'new-work-waiting-api-without-result-or-summary',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '思考中',
+              blocks: [
+                workBlock(
+                  'old-work',
+                  order: 0,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                  thought: '旧组摘要不得带入新组',
+                ),
+                workBlock('work-1', order: 1, total: 1),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-new-request',
+                revision: 4,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.waitingApi,
+                summary: '',
+                thinkingSeconds: 17,
+              ),
+            ),
+            (
+              name: 'new-work-thinking-before-exec',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '思考中',
+              blocks: [workBlock('work-1', order: 1, total: 1)],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-thinking-before-exec',
+                revision: 5,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+                thinkingSeconds: 18,
+              ),
+            ),
+            (
               name: 'workgroup',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
@@ -1017,20 +1084,27 @@ void main() {
               ),
             ),
             (
-              name: 'group-idle',
+              name: 'all-members-terminal-transferred-waiting-api-again',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
               blocks: [
-                workBlock('work-1', order: 1, running: 0, thought: longThought),
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  running: 0,
+                  transferred: 1,
+                  thought: longThought,
+                ),
               ],
               status: const ThreadActivityView(
                 threadId: 'thread',
                 identity: 'act-4',
                 revision: 4,
                 turnId: 'turn-1',
-                kind: ThreadActivityKind.thinking,
+                kind: ThreadActivityKind.waitingApi,
                 summary: '',
+                thinkingSeconds: 19,
               ),
             ),
             (
@@ -1307,6 +1381,30 @@ void main() {
           matching: find.byType(TimelineActivityIndicator),
         );
         expect(indicatorFinder, findsOneWidget, reason: stage.name);
+        final currentWork = find.descendant(
+          of: barFinder,
+          matching: find.byType(CompletionRunView),
+        );
+        if (currentWork.evaluate().isNotEmpty) {
+          expect(find.byType(ConversationActivityStatus), findsNothing);
+          expect(
+            find.byKey(const ValueKey('conversation-activity-trailing-meta')),
+            findsNothing,
+          );
+          expect(
+            find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
+            findsOneWidget,
+            reason: '${stage.name}: group elapsed is never the phase timer',
+          );
+          expect(
+            find.descendant(
+              of: barFinder,
+              matching: find.textContaining('思考了'),
+            ),
+            findsNothing,
+          );
+        }
+        expect(find.text('等待下一步'), findsNothing);
         final slotFinder = find
             .ancestor(
               of: indicatorFinder,
@@ -1501,6 +1599,7 @@ class _ZeroJitterHarness {
           activeTurnId: 'turn-1',
           activity: status,
           latestLive: window,
+          hasContentOwner: true,
         ),
       ),
     ).state;
@@ -1517,6 +1616,7 @@ class _ZeroJitterHarness {
           : null,
       images: images,
       readAttachment: (_) async => Uint8List(0),
+      now: () => DateTime.fromMillisecondsSinceEpoch(528000),
       isDisplayActive: () => true,
       liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
         block: block,

@@ -3512,12 +3512,6 @@ abstract class AppLocalizations {
   /// **'Finishing work'**
   String get timelineGroupClosing;
 
-  /// No description provided for @timelineGroupWaitingForNext.
-  ///
-  /// In en, this message translates to:
-  /// **'Waiting for the next step'**
-  String get timelineGroupWaitingForNext;
-
   /// No description provided for @timelineGroupUnrestored.
   ///
   /// In en, this message translates to:
