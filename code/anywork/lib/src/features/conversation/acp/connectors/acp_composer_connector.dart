@@ -89,16 +89,14 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
   ) async {
     final generation = _targetGeneration;
     bool isCurrent() =>
-        mounted &&
-        widget.threadId == originThreadId &&
-        _targetGeneration == generation;
+        widget.threadId == originThreadId && _targetGeneration == generation;
     final clipboard = ref.read(clipboardImageReaderProvider);
     final notifier = ref.read(
       acpComposerViewModelProvider(originThreadId).notifier,
     );
     try {
       final image = await clipboard.readImage();
-      if (!isCurrent()) return;
+      if (!mounted || !isCurrent()) return;
       if (image != null) {
         if (!supportsImages) {
           notifier.reportFailure(
@@ -112,7 +110,7 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
       await pasteText();
     } catch (_) {
       // Clipboard plugin failures fall back to a user-visible draft diagnostic.
-      if (!isCurrent()) return;
+      if (!mounted || !isCurrent()) return;
       notifier.reportFailure(
         StateError(context.l10n.composerClipboardReadFailed),
       );
