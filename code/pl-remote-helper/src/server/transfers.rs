@@ -1,6 +1,5 @@
 //! Physical, resumable file handles. Transfer policy and retries belong to the host.
 use super::*;
-use crate::budget::{ByteLease, ResourceBudget};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::MetadataExt;
@@ -22,7 +21,7 @@ enum FileState {
         mode: RemoteWriteMode,
         offset: u64,
         length: u64,
-        ranges: BTreeMap<u64, (u64, ByteLease)>,
+        ranges: BTreeMap<u64, u64>,
     },
     Committed {
         length: u64,
@@ -39,7 +38,6 @@ enum FileState {
 struct Transfer {
     workspace: String,
     file: Mutex<FileState>,
-    _lease: ByteLease,
     closing: std::sync::atomic::AtomicBool,
     commit_lock: Option<Arc<Mutex<()>>>,
 }
@@ -63,7 +61,6 @@ impl Transfers {
         &self,
         workspace: String,
         file: FileState,
-        lease: ByteLease,
     ) -> Result<RemoteTransferStatus, RemoteError> {
         let id = format!(
             "{}-{}",
@@ -86,7 +83,6 @@ impl Transfers {
         let entry = Transfer {
             workspace,
             file: Mutex::new(file),
-            _lease: lease,
             closing: std::sync::atomic::AtomicBool::new(false),
             commit_lock,
         };
@@ -105,11 +101,7 @@ impl Transfers {
         &self,
         workspace: String,
         path: PathBuf,
-        budget: &ResourceBudget,
     ) -> Result<RemoteTransferStatus, RemoteError> {
-        let lease = budget
-            .try_reserve(std::mem::size_of::<Transfer>())
-            .ok_or_else(exhausted)?;
         let mut file = regular_file::read(path)
             .await
             .map_err(|e| io_error("open transfer source", e))?;
@@ -118,8 +110,7 @@ impl Transfers {
             .await
             .map_err(|e| io_error("inspect transfer source", e))?;
         let expected = revision(&metadata);
-        let chunk = budget.fragment_bytes();
-        // The owning RPC reserved its progress/reply quantum before opening this handle.
+        let chunk = REMOTE_IO_CHUNK_BYTES;
         let mut bytes = vec![0; chunk];
         let mut digest = Sha256::new();
         loop {
@@ -144,7 +135,6 @@ impl Transfers {
                 length: metadata.len(),
                 digest: hex::encode(digest.finalize()),
             },
-            lease,
         )
         .await
     }
@@ -154,11 +144,7 @@ impl Transfers {
         target: PathBuf,
         mode: RemoteWriteMode,
         length: u64,
-        budget: &ResourceBudget,
     ) -> Result<RemoteTransferStatus, RemoteError> {
-        let lease = budget
-            .try_reserve(std::mem::size_of::<Transfer>() + target.as_os_str().len())
-            .ok_or_else(exhausted)?;
         let parent = target
             .parent()
             .ok_or_else(|| {
@@ -191,7 +177,6 @@ impl Transfers {
                 length,
                 ranges: BTreeMap::new(),
             },
-            lease,
         )
         .await
     }
@@ -246,7 +231,6 @@ impl Transfers {
         offset: u64,
         expected: &str,
         bytes: &[u8],
-        budget: &ResourceBudget,
     ) -> Result<RemoteResponse, RemoteError> {
         if hex::encode(Sha256::digest(bytes)) != expected {
             return Err(remote_error(
@@ -280,16 +264,13 @@ impl Transfers {
             || ranges
                 .range(..end)
                 .next_back()
-                .is_some_and(|(_, (stored_end, _))| *stored_end > offset)
+                .is_some_and(|(_, stored_end)| *stored_end > offset)
         {
             return Err(remote_error(
                 RemoteErrorCode::InvalidRequest,
                 "chunk overlaps confirmed data or exceeds transfer length",
             ));
         }
-        let range_memory = budget
-            .try_reserve(std::mem::size_of::<(u64, u64, ByteLease)>())
-            .ok_or_else(exhausted)?;
         let write = async {
             file.seek(std::io::SeekFrom::Start(offset)).await?;
             file.write_all(bytes).await?;
@@ -305,8 +286,8 @@ impl Transfers {
             };
             return Err(failure);
         }
-        ranges.insert(offset, (end, range_memory));
-        while let Some((end, _memory)) = ranges.remove(confirmed) {
+        ranges.insert(offset, end);
+        while let Some(end) = ranges.remove(confirmed) {
             *confirmed = end;
         }
         Ok(RemoteResponse::ChunkWritten {
@@ -582,13 +563,6 @@ async fn check_revision(file: &tokio::fs::File, expected: &str) -> Result<(), Re
     }
     Ok(())
 }
-fn exhausted() -> RemoteError {
-    remote_error(
-        RemoteErrorCode::ResourceExhausted,
-        "file transfer resource budget exhausted",
-    )
-}
-
 fn ensure_open(entry: &Transfer) -> Result<(), RemoteError> {
     if entry.closing.load(std::sync::atomic::Ordering::Acquire) {
         Err(remote_error(

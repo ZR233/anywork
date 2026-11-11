@@ -1,6 +1,5 @@
 //! Opaque one-level directory iterators. Recursive policy belongs to the host.
 use super::*;
-use crate::budget::{ByteLease, ResourceBudget};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -12,7 +11,6 @@ struct Cursor {
     parent: Option<String>,
     modified: Option<std::time::SystemTime>,
     pending: Option<RemoteDirectoryEntry>,
-    _lease: ByteLease,
 }
 #[derive(Debug)]
 struct DirectoryHandle {
@@ -38,17 +36,8 @@ impl Directories {
         path: PathBuf,
         display: String,
         workspace: Option<String>,
-        budget: &ResourceBudget,
         reply_limit: usize,
     ) -> Result<RemoteDirectoryListing, RemoteError> {
-        let lease = budget
-            .try_reserve(std::mem::size_of::<Cursor>() + display.len())
-            .ok_or_else(|| {
-                remote_error(
-                    RemoteErrorCode::ResourceExhausted,
-                    "directory handle budget exhausted",
-                )
-            })?;
         let reader = tokio::fs::read_dir(&path)
             .await
             .map_err(|e| io_error("open directory", e))?;
@@ -72,11 +61,10 @@ impl Directories {
                     parent,
                     modified: metadata.modified().ok(),
                     pending: None,
-                    _lease: lease,
                 }),
             }),
         );
-        match self.next(&id, budget, reply_limit).await {
+        match self.next(&id, reply_limit).await {
             Ok(page) => Ok(page),
             Err(error) => {
                 self.close(&id).await;
@@ -87,7 +75,6 @@ impl Directories {
     pub(super) async fn next(
         &self,
         id: &str,
-        budget: &ResourceBudget,
         reply_limit: usize,
     ) -> Result<RemoteDirectoryListing, RemoteError> {
         let cursor = self.cursors.lock().await.get(id).cloned().ok_or_else(|| {
@@ -113,7 +100,7 @@ impl Directories {
             entries: Vec::new(),
             next_cursor: Some(id.to_owned()),
         };
-        let budget = budget.allocation().fragment_bytes.min(reply_limit);
+        let page_bytes = reply_limit;
         let mut encoded = serde_json::to_vec(&RemoteResponse::Directories(page.clone()))
             .map_err(|e| remote_error(RemoteErrorCode::InvalidRequest, e.to_string()))?
             .len();
@@ -159,14 +146,8 @@ impl Directories {
                 .map_err(|e| remote_error(RemoteErrorCode::InvalidRequest, e.to_string()))?
                 .len()
                 + 1;
-            if encoded.saturating_add(cost) > budget {
+            if encoded.saturating_add(cost) > page_bytes && !page.entries.is_empty() {
                 cursor.pending = Some(entry);
-                if page.entries.is_empty() {
-                    return Err(remote_error(
-                        RemoteErrorCode::ResourceExhausted,
-                        "directory entry exceeds current page grant",
-                    ));
-                }
                 break;
             }
             encoded += cost;

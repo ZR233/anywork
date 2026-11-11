@@ -27,11 +27,6 @@ pub enum RemoteExecutionError {
     OutputMissing,
     #[error("stream-only remote execution returned an unexpected capture receipt")]
     UnexpectedCapture,
-    #[error("remote command output buffer allocation failed")]
-    Buffer {
-        #[source]
-        source: RemoteClientError,
-    },
     #[error("remote command output read failed")]
     Read {
         #[source]
@@ -113,7 +108,7 @@ impl ExecutionBackend for RemoteExecutionBackend {
         let cancellation = transport.cancellation();
         let stdout = transport.take_stdout();
         let stderr = transport.take_stderr();
-        let wait = collect_process_output(stdout, stderr, &mut transport, &self.client);
+        let wait = collect_process_output(stdout, stderr, &mut transport);
         tokio::pin!(wait);
         let result = match request.timeout {
             Some(timeout) => match tokio::time::timeout(timeout, &mut wait).await {
@@ -135,11 +130,10 @@ async fn collect_process_output(
     stdout: Option<impl AsyncRead + Unpin>,
     stderr: Option<impl AsyncRead + Unpin>,
     command: &mut crate::command::ManagedCommand,
-    client: &RemoteClient,
 ) -> Result<ExecutionOutput, RemoteExecutionError> {
     let (stdout, stderr, exit) = tokio::join!(
-        read_all(stdout, client, command.cancellation()),
-        read_all(stderr, client, command.cancellation()),
+        read_all(stdout, command.cancellation()),
+        read_all(stderr, command.cancellation()),
         command.wait()
     );
     // Output failures request cancellation. Report the typed initiating failure rather
@@ -159,25 +153,18 @@ async fn collect_process_output(
 
 async fn read_all(
     reader: Option<impl AsyncRead + Unpin>,
-    client: &RemoteClient,
     cancellation: crate::command::CommandCancellation,
 ) -> Result<Vec<u8>, RemoteExecutionError> {
     let Some(mut reader) = reader else {
         cancellation.cancel();
         return Err(RemoteExecutionError::OutputMissing);
     };
-    let mut bytes = match client.resident_buffer(client.content_budget()) {
-        Ok(bytes) => bytes,
-        Err(source) => {
-            cancellation.cancel();
-            return Err(RemoteExecutionError::Buffer { source });
-        }
-    };
+    let mut bytes = Vec::new();
     if let Err(error) = tokio::io::copy(&mut reader, &mut bytes).await {
         cancellation.cancel();
         return Err(RemoteExecutionError::Read { source: error });
     }
-    Ok(bytes.into_bytes())
+    Ok(bytes)
 }
 
 fn remote_cwd(cwd: &Path, canonical_root: &str) -> Result<String, RemoteExecutionError> {

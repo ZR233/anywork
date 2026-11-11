@@ -77,9 +77,7 @@ where
 #[derive(Debug)]
 struct CommandProcessManagerState {
     entries: HashMap<String, Arc<CommandProcessEntry>>,
-    starting: usize,
     task_reservations: HashSet<String>,
-    max_processes: Option<usize>,
 }
 
 struct StartReservation {
@@ -94,7 +92,6 @@ impl Drop for StartReservation {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.starting = state.starting.saturating_sub(1);
             state.task_reservations.remove(&self.id);
         }
     }
@@ -263,7 +260,14 @@ where
     B: CommandBackend,
 {
     pub fn new(backend: Arc<B>) -> Self {
-        Self::with_process_policy(backend, None)
+        Self {
+            state: Arc::new(std::sync::Mutex::new(CommandProcessManagerState {
+                entries: HashMap::new(),
+                task_reservations: HashSet::new(),
+            })),
+            backend,
+            lifetime: Arc::new(ManagerLifetime::default()),
+        }
     }
 
     /// The host backend this manager drives, shared so a repair can re-materialize accepted bytes.
@@ -273,22 +277,6 @@ where
     /// capture path instead of a parallel copy.
     pub fn backend(&self) -> Arc<B> {
         self.backend.clone()
-    }
-
-    pub fn with_max_processes(backend: Arc<B>, max_processes: usize) -> Self {
-        Self::with_process_policy(backend, Some(max_processes))
-    }
-    fn with_process_policy(backend: Arc<B>, max_processes: Option<usize>) -> Self {
-        Self {
-            state: Arc::new(std::sync::Mutex::new(CommandProcessManagerState {
-                entries: HashMap::new(),
-                starting: 0,
-                task_reservations: HashSet::new(),
-                max_processes,
-            })),
-            backend,
-            lifetime: Arc::new(ManagerLifetime::default()),
-        }
     }
 
     pub async fn start(
@@ -412,19 +400,7 @@ where
             )
             .await
             .map_err(|error| tool_error("exec", error))?;
-        let capacity = match self.backend.process_capacity() {
-            Some(capacity) => capacity,
-            None => {
-                tokio::task::spawn_blocking(|| {
-                    pl_remote_helper::budget::ResourcePolicy::default().allocation()
-                })
-                .await
-                .map_err(|e| tool_error("exec", e))?
-                .map_err(|e| tool_error("exec", e))?
-                .ordinary_operations
-            }
-        };
-        let mut reservation = self.reserve_start(task_id, capacity)?;
+        let mut reservation = self.reserve_start(task_id)?;
         let process_id = reservation.id.clone();
         let capture_limit_bytes = self
             .backend
@@ -512,7 +488,6 @@ where
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.starting = state.starting.saturating_sub(1);
             state.task_reservations.remove(&process_id);
             state.entries.insert(process_id.clone(), entry.clone());
             reservation.active = false;
@@ -543,24 +518,11 @@ where
         Ok(entry)
     }
 
-    fn reserve_start(
-        &self,
-        task_id: Option<&str>,
-        capacity: usize,
-    ) -> Result<StartReservation, PureError> {
+    fn reserve_start(&self, task_id: Option<&str>) -> Result<StartReservation, PureError> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let limit = state
-            .max_processes
-            .map_or(capacity, |limit| limit.min(capacity));
-        if state.entries.len().saturating_add(state.starting) >= limit {
-            return Err(tool_error(
-                "exec",
-                "current process resource grant is exhausted",
-            ));
-        }
         let id = match task_id {
             Some(id) => {
                 if !id.starts_with("task-") || id.len() > 256 {
@@ -579,7 +541,6 @@ where
                 format!("proc-{id}")
             }
         };
-        state.starting += 1;
         Ok(StartReservation {
             state: self.state.clone(),
             id,

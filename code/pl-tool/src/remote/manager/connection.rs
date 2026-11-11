@@ -1,7 +1,6 @@
 //! One SSH process per active helper attachment. Reconnect uses the original private socket.
 use super::*;
 use futures::{FutureExt, future::BoxFuture};
-use pl_remote_helper::budget::ResourceBudget;
 
 impl SshManager {
     pub(super) fn connect_once<'a>(
@@ -198,19 +197,7 @@ impl SshManager {
                 let hello = previous.client.reattach(stdout, stdin).await?;
                 Ok::<_, RemoteClientError>((previous.client.clone(), hello))
             } else {
-                let budget = self
-                    .budget
-                    .get_or_try_init(|| async {
-                        let policy = self.resource_policy;
-                        let allocation = tokio::task::spawn_blocking(move || policy.allocation())
-                            .await
-                            .map_err(|e| RemoteClientError::Protocol(e.to_string()))??;
-                        ResourceBudget::new(allocation).map_err(RemoteClientError::from)
-                    })
-                    .await?
-                    .clone();
-                let client =
-                    RemoteClient::with_budget(stdout, stdin, budget, self.resource_policy).await?;
+                let client = RemoteClient::from_streams(stdout, stdin).await?;
                 let result = client
                     .request(
                         RemoteRequest::Hello {

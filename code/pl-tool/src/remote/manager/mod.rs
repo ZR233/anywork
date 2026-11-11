@@ -137,8 +137,6 @@ pub struct SshManager {
     operations: TaskTracker,
     connecting: Arc<Mutex<HashMap<String, ConnectionAttempt>>>,
     opening_workspaces: Arc<WorkspaceAttempts>,
-    resource_policy: pl_remote_helper::budget::ResourcePolicy,
-    budget: Arc<tokio::sync::OnceCell<pl_remote_helper::budget::ResourceBudget>>,
     workspaces: Arc<super::client::workspace::WorkspaceCache>,
     states: Arc<RwLock<HashMap<String, watch::Sender<SshConnectionState>>>>,
     ready_revisions: watch::Sender<BTreeMap<String, u64>>,
@@ -181,15 +179,6 @@ impl SshManager {
         self
     }
 
-    /// Host-wide memory policy shared by every helper; set before opening connections.
-    pub fn with_resource_policy(
-        mut self,
-        policy: pl_remote_helper::budget::ResourcePolicy,
-    ) -> Self {
-        self.resource_policy = policy;
-        self
-    }
-
     fn with_optional_helper_assets(helper_assets: Option<Arc<dyn RemoteHelperAssets>>) -> Self {
         Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
@@ -203,10 +192,8 @@ impl SshManager {
             admission: Arc::new(Mutex::new(true)),
             closing: CancellationToken::new(),
             operations: TaskTracker::new(),
-            resource_policy: Default::default(),
             connecting: Default::default(),
             opening_workspaces: Default::default(),
-            budget: Default::default(),
             workspaces: Default::default(),
             states: Arc::new(RwLock::new(HashMap::new())),
             ready_revisions: watch::channel(BTreeMap::new()).0,
@@ -529,7 +516,10 @@ impl SshManager {
         let connection = self.connections.lock().await.get(server_id).cloned();
         if let Some(connection) = connection {
             connection.heartbeat.cancel();
-            connection.client.detach().await?;
+            connection
+                .client
+                .detach("explicit transport detach".into())
+                .await?;
         }
         self.connect_for_intent(server_id, intent).await
     }
@@ -862,9 +852,11 @@ impl SshManager {
                     // Require a helper response, not merely a successful local pipe write.
                     result = client.heartbeat() => result,
                 };
-                if result.is_err() {
-                    tracing::warn!(%server_id, "SSH heartbeat failed; closing transport");
-                    let _ = client.detach().await;
+                if let Err(error) = result {
+                    let generation = client.generation();
+                    let epoch = client.session().map(|session| session.epoch);
+                    tracing::warn!(%server_id, %error, generation, epoch, phase = "heartbeat", "SSH heartbeat failed; closing transport");
+                    let _ = client.detach(format!("helper heartbeat: {error}")).await;
                     break;
                 }
             }

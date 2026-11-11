@@ -362,25 +362,19 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
 
     async fn read_text(&self, request: WorkspaceFileReadRequest) -> Result<String> {
         let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;
-        let mut bytes = self
-            .client
-            .resident_buffer(self.client.content_budget())
-            .map_err(remote_file_error)?;
-        self.copy_capture_bounded(&path, &mut bytes, self.client.content_budget() as u64)
+        let mut bytes = Vec::new();
+        self.copy_file_to(&path, &mut bytes)
             .await
             .map_err(|e| tool_error("workspace_file", e))?;
-        String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("workspace_file", e))
+        String::from_utf8(bytes).map_err(|e| tool_error("workspace_file", e))
     }
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
         let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;
-        let mut bytes = self
-            .client
-            .resident_buffer(request.max_bytes)
-            .map_err(remote_file_error)?;
+        let mut bytes = Vec::new();
         self.copy_capture_bounded(&path, &mut bytes, request.max_bytes as u64)
             .await
             .map_err(|e| tool_error("view_image", e))?;
-        Ok(bytes.into_bytes())
+        Ok(bytes)
     }
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
         self.upload(request).await

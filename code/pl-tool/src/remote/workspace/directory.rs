@@ -15,7 +15,6 @@ pub struct RemoteDirectoryReader {
     workspace: Arc<super::super::client::workspace::WorkspaceLease>,
     entries: VecDeque<pl_protocol::remote::RemoteDirectoryEntry>,
     cursor: Option<String>,
-    memory: Option<pl_remote_helper::budget::ByteLease>,
 }
 impl std::fmt::Debug for RemoteDirectoryReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,7 +29,6 @@ impl RemoteDirectoryReader {
             if let Some(entry) = self.entries.pop_front() {
                 return Ok(Some(entry));
             }
-            self.memory = None;
             let Some(cursor) = self.cursor.clone() else {
                 return Ok(None);
             };
@@ -47,18 +45,6 @@ impl RemoteDirectoryReader {
                 return Err(tool_error("file", "unexpected directory page"));
             };
             self.cursor = page.next_cursor;
-            self.memory = Some(
-                self.client
-                    .reserve_page(
-                        page.entries
-                            .iter()
-                            .map(|entry| {
-                                entry.name.len() + entry.path.len() + std::mem::size_of_val(entry)
-                            })
-                            .sum(),
-                    )
-                    .map_err(remote_file_error)?,
-            );
             self.entries = page.entries.into();
         }
     }
@@ -139,25 +125,10 @@ async fn open(
     let RemoteResponse::Directory(page) = reply.response else {
         return Err(tool_error("file", "unexpected directory response"));
     };
-    let memory = match client.reserve_page(
-        page.entries
-            .iter()
-            .map(|entry| entry.name.len() + entry.path.len() + std::mem::size_of_val(entry))
-            .sum(),
-    ) {
-        Ok(memory) => memory,
-        Err(error) => {
-            if let Some(cursor) = page.next_cursor {
-                client.release_resource(RemoteRequest::CloseDirectory { cursor });
-            }
-            return Err(remote_file_error(error));
-        }
-    };
     Ok(RemoteDirectoryReader {
         client: client.clone(),
         workspace,
         entries: page.entries.into(),
         cursor: page.next_cursor,
-        memory: Some(memory),
     })
 }

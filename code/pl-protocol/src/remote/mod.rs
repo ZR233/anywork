@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 12;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 13;
 
 /// Monotonic lease TTL for long-lived remote child processes when the SSH
 /// control plane stops renewing.
@@ -42,17 +42,8 @@ impl From<&str> for RemoteProcessLeaseId {
     }
 }
 
-/// Allocation for one connection, derived by its host from current resources and demand.
-/// Values are bytes, not eagerly allocated buffers. Existing grants survive shrinkage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteAllocation {
-    pub resident_bytes: usize,
-    pub fragment_bytes: usize,
-    pub ordinary_operations: usize,
-    pub stream_window: u32,
-    pub connection_window: u32,
-}
+/// Streaming IO chunk size; this does not limit files, commands or concurrent requests.
+pub const REMOTE_IO_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Identity of a helper instance; the credential is never formatted into diagnostics.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,9 +77,6 @@ pub enum RemoteRequest {
     },
     Attach {
         session: RemoteSession,
-    },
-    Configure {
-        allocation: RemoteAllocation,
     },
     Heartbeat,
     OutputConsumed {
@@ -199,7 +187,6 @@ pub enum RemoteResponse {
     InputOffset {
         offset: u64,
     },
-    Capacity(RemoteAllocation),
     Heartbeat(RemoteHeartbeat),
     Ack,
     Error(RemoteError),
@@ -227,7 +214,6 @@ pub struct RemoteHello {
     pub capabilities: Vec<RemoteCapability>,
     pub shell: RemoteShellDescriptor,
     pub session: RemoteSession,
-    pub allocation: RemoteAllocation,
 }
 
 /// Shell selected by the helper for all remote command processes.
@@ -514,32 +500,11 @@ pub enum RemoteErrorCode {
 }
 
 impl RemoteRequest {
-    pub fn is_metadata(&self) -> bool {
-        matches!(self, Self::Stat(_))
-    }
-    pub fn is_lease_control(&self) -> bool {
-        matches!(
-            self,
-            Self::Heartbeat
-                | Self::Configure { .. }
-                | Self::Hello { .. }
-                | Self::Attach { .. }
-                | Self::RenewProcessLease { .. }
-                | Self::Shutdown
-        )
-    }
-    pub fn is_observation(&self) -> bool {
-        matches!(
-            self,
-            Self::OperationResult { .. } | Self::TransferStatus { .. } | Self::WaitProcess { .. }
-        )
-    }
     pub fn is_control(&self) -> bool {
         matches!(
             self,
             Self::Hello { .. }
                 | Self::Attach { .. }
-                | Self::Configure { .. }
                 | Self::Heartbeat
                 | Self::Stat(_)
                 | Self::Terminate { .. }
@@ -562,7 +527,6 @@ impl RemoteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteHeartbeat {
-    pub allocation: RemoteAllocation,
     pub epoch: u64,
     pub active_connections: usize,
     pub owner_pid: u32,
@@ -572,8 +536,6 @@ pub struct RemoteHeartbeat {
     pub transfers: usize,
     pub retained_operations: usize,
     pub pending_tasks: usize,
-    pub reserved_bytes: usize,
-    pub peak_reserved_bytes: usize,
     pub received_bytes: u64,
     pub sent_bytes: u64,
     pub operation_queries: u64,
@@ -589,8 +551,6 @@ pub struct RemoteOperationFailure {
     pub request_bytes: usize,
     pub reply_bytes: usize,
     pub phase: String,
-    pub reserved_bytes: usize,
-    pub wait_reason: Option<String>,
 }
 
 /// Monotonic elapsed time for one retained operation, in microseconds. Replaying its receipt
@@ -598,7 +558,6 @@ pub struct RemoteOperationFailure {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteOperationTiming {
-    pub admission_wait_micros: u64,
     pub receive_micros: u64,
     pub execution_micros: u64,
     pub filesystem_micros: u64,

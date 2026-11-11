@@ -100,7 +100,6 @@ getrandom = "0.4"
 sse-stream = "0.3.0"
 # rmcp 3.9 exposes 0.2 event/error types; decoding uses the current parser.
 sse-stream-rmcp = { package = "sse-stream", version = "0.2.6" }
-sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 eventsource-stream = "0.2.3"
 enum_dispatch = "=0.3.13"
 secrecy = "0.10"

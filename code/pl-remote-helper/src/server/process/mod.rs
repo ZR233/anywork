@@ -2,7 +2,6 @@
 mod capture;
 mod journal;
 use super::*;
-use crate::budget::{ByteLease, ResourceBudget};
 use crate::client::{ChildStdin, ManagedWorker, ProcessCommand, ProcessTermination};
 use journal::Journal;
 use std::collections::HashMap;
@@ -30,7 +29,6 @@ struct Entry {
     exited: CancellationToken,
     startup: watch::Sender<Option<Result<(), RemoteError>>>,
     journal: Journal,
-    _lease: ByteLease,
     process_lease: Option<ProcessLeaseState>,
     release_requested: std::sync::atomic::AtomicBool,
 }
@@ -39,15 +37,13 @@ pub(super) struct ProcessRegistry {
     entries: Arc<Mutex<HashMap<String, Arc<Entry>>>>,
     tasks: TaskTracker,
     closing: CancellationToken,
-    budget: ResourceBudget,
 }
 impl ProcessRegistry {
-    pub(super) fn new(budget: ResourceBudget) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             entries: Default::default(),
             tasks: TaskTracker::new(),
             closing: CancellationToken::new(),
-            budget,
         }
     }
     async fn get(&self, id: &str) -> Result<Arc<Entry>, RemoteError> {
@@ -64,16 +60,6 @@ impl ProcessRegistry {
         if self.closing.is_cancelled() {
             return Err(closed());
         }
-        let cost = std::mem::size_of::<Entry>()
-            + serde_json::to_vec(&request)
-                .map_err(|e| remote_error(RemoteErrorCode::InvalidRequest, e.to_string()))?
-                .len();
-        let lease = self.budget.try_reserve(cost).ok_or_else(|| {
-            remote_error(
-                RemoteErrorCode::ResourceExhausted,
-                "process handle budget exhausted",
-            )
-        })?;
         let process_lease = request
             .process_lease
             .as_ref()
@@ -90,8 +76,7 @@ impl ProcessRegistry {
             cancel: self.closing.child_token(),
             exited: CancellationToken::new(),
             startup: watch::channel(None).0,
-            journal: Journal::new(self.budget.clone())?,
-            _lease: lease,
+            journal: Journal::new(),
             process_lease,
             release_requested: std::sync::atomic::AtomicBool::new(false),
         });
@@ -250,7 +235,7 @@ impl ProcessRegistry {
         let output = async {
             let mut failure = None;
             while stdout.is_some() || stderr.is_some() {
-                let quantum = entry.journal.fragment_bytes();
+                let quantum = REMOTE_IO_CHUNK_BYTES;
                 let mut out = vec![0; quantum];
                 let mut err = vec![0; quantum];
                 let (stream, count) = tokio::select! {

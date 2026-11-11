@@ -306,6 +306,7 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
             .with_details(details)
         }
         RemoteClientError::Disconnected
+        | RemoteClientError::HeartbeatTimeout
         | RemoteClientError::Cancelled
         | RemoteClientError::ManagerClosing => {
             StudioError::new(StudioErrorCode::Unavailable, error.to_string(), true)

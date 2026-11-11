@@ -83,7 +83,7 @@ const groups = {
       ['extEnv', '配置菜单：环境变量与工具链'],
       ['extPorts', '配置菜单：端口转发规则'],
       ['extLspSkills', '配置菜单：语言服务与技能源'],
-      ['extPolicy', '配置菜单：远程项目与资源预算']
+      ['extPolicy', '配置菜单：远程项目']
     ]
   }
 };
@@ -113,7 +113,6 @@ const initialServers = [
     state: 'ready',
     osShort: 'Ubuntu 24.04 · x86_64',
     shell: '/bin/bash',
-    budgetMode: 'auto',
     budgetUsed: '42 MB / 512 MB',
     projects: [
       { name: 'pure-lang', path: '/home/ubuntu/pure-lang', worktrees: 1, branch: 'main' },
@@ -154,7 +153,6 @@ const initialServers = [
     state: 'ready',
     osShort: 'Ubuntu 22.04 · aarch64',
     shell: '/bin/zsh',
-    budgetMode: 'auto',
     budgetUsed: '18 MB / 256 MB',
     projects: [
       { name: 'pl-remote-helper-musl', path: '/home/zhourui/pure-lang', worktrees: 2, branch: 'fix/arm64-stat' }
@@ -184,7 +182,6 @@ const initialServers = [
     attempt: 3,
     osShort: 'Debian 12 · x86_64',
     shell: '/bin/bash',
-    budgetMode: '256',
     budgetUsed: '12 MB / 256 MB',
     projects: [
       { name: 'deploy-manifests', path: '/srv/k8s/manifests', worktrees: 0, branch: 'staging' }
@@ -208,7 +205,6 @@ const initialServers = [
     errorMessage: '服务器未开启密码认证（Permission denied (publickey)），请检查私钥或 ssh-agent。',
     osShort: 'Rocky Linux 9',
     shell: '未采集',
-    budgetMode: 'auto',
     budgetUsed: '0 MB',
     projects: [],
     envVars: [],
@@ -229,7 +225,6 @@ const initialServers = [
     state: 'disconnected',
     osShort: '手写 ~/.ssh/config 条目',
     shell: '按需采集',
-    budgetMode: 'auto',
     budgetUsed: '0 MB',
     projects: [],
     envVars: [],
@@ -501,7 +496,7 @@ function getServerConfigSections(s) {
     { key: 'env', group: '连接与运行环境', label: '环境变量与工具链', icon: 'terminal', count: `${s.envVars.length + s.toolchains.length}` },
     { key: 'ports', group: '开发与工作区扩展', label: '端口转发规则', icon: 'arrow-left-right', count: `${s.portForwards.length}` },
     { key: 'lsp', group: '开发与工作区扩展', label: '语言服务与技能源', icon: 'code', count: `${s.lspServers.length}` },
-    { key: 'policy', group: '开发与工作区扩展', label: '远程项目与资源预算', icon: 'folder-git-2', count: `${s.projects.length}` }
+    { key: 'policy', group: '开发与工作区扩展', label: '远程项目', icon: 'folder-git-2', count: `${s.projects.length}` }
   ];
 }
 
@@ -856,18 +851,6 @@ function sectionPolicyContent(s) {
         </mdui-list-item>
       `).join('<mdui-divider></mdui-divider>') : `<mdui-list-item nonclickable headline="尚未关联远程项目" description="可通过右上角「打开项目」接入远端目录"></mdui-list-item>`}
       <mdui-divider></mdui-divider>
-      <mdui-list-subheader>资源预算 (ResourcePolicy)</mdui-list-subheader>
-      <mdui-list-item nonclickable headline="单机内存与流控预算上限" description="当前占用：${escapeHTML(s.budgetUsed)}">
-        ${icon('gauge', 'icon')}
-        <div slot="end-icon">
-          <mdui-select variant="outlined" value="${s.budgetMode || 'auto'}" style="width:170px;--mdui-typescale-body-large-size:12px">
-            <mdui-menu-item value="auto">自动 (按 cgroup)</mdui-menu-item>
-            <mdui-menu-item value="256">上限 256 MB</mdui-menu-item>
-            <mdui-menu-item value="512">上限 512 MB</mdui-menu-item>
-            <mdui-menu-item value="1024">上限 1024 MB</mdui-menu-item>
-          </mdui-select>
-        </div>
-      </mdui-list-item>
     </mdui-list>
   </mdui-card>`;
 }
@@ -1443,7 +1426,6 @@ root.addEventListener('click', e => {
       state: 'ready',
       osShort: 'Linux · x86_64',
       shell: '/bin/bash',
-      budgetMode: 'auto',
       budgetUsed: '14 MB / 512 MB',
       projects: [],
       envVars: [],

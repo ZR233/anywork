@@ -42,19 +42,29 @@ impl RemoteClient {
         server: String,
         cache: Arc<WorkspaceCache>,
     ) -> Result<Arc<WorkspaceLease>, RemoteClientError> {
-        let (mut send, receive) = oneshot::channel();
+        let (send, receive) = oneshot::channel();
         let inner = self.inner.clone();
         self.inner.streams.spawn(async move {
             let result = async {
-                let pending = tokio::select! {
-                    _ = send.closed() => return Err(RemoteClientError::Cancelled),
-                    result = submit(&inner, RemoteRequest::OpenWorkspace { path }, &[], None) => result?,
+                if send.is_closed() {
+                    return Err(RemoteClientError::Cancelled);
+                }
+                let pending = submit(&inner, RemoteRequest::OpenWorkspace { path }, &[], None)?;
+                let reply = pending
+                    .await
+                    .unwrap_or(Err(RemoteClientError::Disconnected))?;
+                let RemoteResponse::WorkspaceOpened(opened) = reply.response else {
+                    return Err(response_error(reply.response));
                 };
-                let reply = pending.await.unwrap_or(Err(RemoteClientError::Disconnected))?;
-                let RemoteResponse::WorkspaceOpened(opened) = reply.response else { return Err(response_error(reply.response)); };
-                Ok(Arc::new(WorkspaceLease { inner: Arc::downgrade(&inner), id: opened.workspace_id,
-                    path: opened.canonical_path, cache: Arc::downgrade(&cache), server }))
-            }.await;
+                Ok(Arc::new(WorkspaceLease {
+                    inner: Arc::downgrade(&inner),
+                    id: opened.workspace_id,
+                    path: opened.canonical_path,
+                    cache: Arc::downgrade(&cache),
+                    server,
+                }))
+            }
+            .await;
             let _ = send.send(result);
         });
         receive
@@ -87,10 +97,9 @@ pub(super) fn close_workspace(inner: Arc<RemoteClientInner>, workspace_id: Strin
         if inner.stopped.is_cancelled() {
             return;
         }
-        if let Err(error) =
-            request_inner(&inner, RemoteRequest::CloseWorkspace { workspace_id }, &[])
-                .await
-                .and_then(expect_ack)
+        if let Err(error) = release_inner(&inner, RemoteRequest::CloseWorkspace { workspace_id })
+            .await
+            .and_then(expect_ack)
         {
             tracing::warn!(%error, "workspace release did not confirm closure");
         }

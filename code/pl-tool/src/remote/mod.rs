@@ -2,7 +2,7 @@
 
 use crate::environment::ExecutionEnvironment;
 pub use pl_protocol::remote::{
-    RemoteAllocation, RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, RemoteHello,
+    RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, RemoteHello,
     RemoteHttpExchangeStart, RemoteHttpHeader, RemoteHttpRequestHead, RemoteHttpResponseHead,
     RemoteProcessLeaseId, RemoteRequest, RemoteResponse, RemoteSession, RemoteSpawnRequest,
 };
@@ -55,6 +55,3 @@ pub struct RemoteWorkspaceHost {
 }
 
 pub(crate) use lsp::resolve_lsp_query_path;
-
-/// Resource policy configured once by the host for all remote helpers.
-pub use pl_remote_helper::budget::ResourcePolicy;

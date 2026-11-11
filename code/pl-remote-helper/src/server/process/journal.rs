@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 struct Record {
     sequence: u64,
     bytes: Bytes,
-    _memory: Option<ByteLease>,
 }
 #[derive(Debug, Default)]
 struct State {
@@ -21,44 +20,12 @@ struct State {
 pub(super) struct Journal {
     state: Mutex<State>,
     changed: Notify,
-    budget: ResourceBudget,
-    parent: ResourceBudget,
-    credit: Mutex<ByteLease>,
 }
 impl Journal {
-    pub(super) fn new(parent: ResourceBudget) -> Result<Self, RemoteError> {
-        let mut allocation = parent.allocation();
-        allocation.resident_bytes = allocation.fragment_bytes.saturating_mul(4);
-        let credit = parent
-            .try_reserve(allocation.resident_bytes)
-            .ok_or_else(|| {
-                remote_error(
-                    RemoteErrorCode::ResourceExhausted,
-                    "process output progress reservation unavailable",
-                )
-            })?;
-        let budget = ResourceBudget::new(allocation)
-            .map_err(|e| io_error("process output allocation", e))?;
-        Ok(Self {
+    pub(super) fn new() -> Self {
+        Self {
             state: Mutex::new(State::default()),
             changed: Notify::new(),
-            budget,
-            parent,
-            credit: Mutex::new(credit),
-        })
-    }
-    pub(super) fn fragment_bytes(&self) -> usize {
-        self.budget.allocation().fragment_bytes
-    }
-    async fn resize(&self) {
-        let mut allocation = self.parent.allocation();
-        allocation.fragment_bytes = allocation
-            .fragment_bytes
-            .min(self.budget.allocation().fragment_bytes);
-        allocation.resident_bytes = allocation.fragment_bytes.saturating_mul(4);
-        let required = allocation.resident_bytes.max(self.budget.usage().0);
-        if self.credit.lock().await.resize(required) {
-            let _ = self.budget.resize(allocation);
         }
     }
     pub(super) async fn push(
@@ -68,15 +35,6 @@ impl Journal {
         bytes: &[u8],
         stop: &CancellationToken,
     ) -> Result<(), RemoteError> {
-        let cost = bytes
-            .len()
-            .saturating_mul(2)
-            .saturating_add(std::mem::size_of::<RemoteOutputRecord>() + id.len());
-        let memory = self
-            .budget
-            .reserve(cost, stop)
-            .await
-            .map_err(|e| io_error("reserve output replay", e))?;
         let mut state = self.state.lock().await;
         state.sequence = state
             .sequence
@@ -95,11 +53,23 @@ impl Journal {
         state.records.push_back(Arc::new(Record {
             sequence,
             bytes: encode(record)?,
-            _memory: Some(memory),
         }));
         drop(state);
         self.changed.notify_waiters();
-        Ok(())
+        // The producer retains its current handoff across attachment replacement. Reading the
+        // next pipe chunk follows confirmed consumption, rather than a separate byte quota.
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.state.lock().await.acknowledged >= sequence {
+                return Ok(());
+            }
+            tokio::select! {
+                _ = changed => {},
+                _ = stop.cancelled() => return Err(remote_error(RemoteErrorCode::RemoteDisconnected, "process output cancelled")),
+            }
+        }
     }
     pub(super) async fn finish(&self, exit: RemoteProcessExit) {
         let mut state = self.state.lock().await;
@@ -111,13 +81,10 @@ impl Journal {
             event: RemoteEvent::ProcessExit(exit),
             bytes: String::new(),
         };
-        // Terminal metadata belongs to the process reservation, not the blocked output budget.
         if let Ok(bytes) = encode(record) {
-            state.records.push_back(Arc::new(Record {
-                sequence,
-                bytes,
-                _memory: None,
-            }));
+            state
+                .records
+                .push_back(Arc::new(Record { sequence, bytes }));
         }
         drop(state);
         self.changed.notify_waiters();
@@ -143,7 +110,6 @@ impl Journal {
         }
         drop(state);
         self.changed.notify_waiters();
-        self.resize().await;
         Ok(())
     }
     pub(super) async fn is_finished(&self) -> bool {

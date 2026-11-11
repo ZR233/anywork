@@ -175,7 +175,7 @@ pub async fn write_file(
     let mut offset = 0;
     while offset < bytes.len() {
         let end = offset
-            .saturating_add(client.fragment_bytes())
+            .saturating_add(REMOTE_IO_CHUNK_BYTES)
             .min(bytes.len());
         client
             .request(

@@ -7,22 +7,19 @@ use pl_protocol::remote::{RemoteError, RemoteErrorCode};
 #[derive(Debug)]
 struct WorkspaceRoot {
     path: PathBuf,
-    _memory: crate::budget::ByteLease,
 }
 #[derive(Debug)]
 struct Registry {
     roots: std::sync::RwLock<HashMap<String, WorkspaceRoot>>,
     next_id: std::sync::atomic::AtomicU64,
-    budget: crate::budget::ResourceBudget,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceRegistry(std::sync::Arc<Registry>);
 impl WorkspaceRegistry {
-    pub(crate) fn new(budget: crate::budget::ResourceBudget) -> Self {
+    pub(crate) fn new() -> Self {
         Self(std::sync::Arc::new(Registry {
             roots: Default::default(),
             next_id: std::sync::atomic::AtomicU64::new(0),
-            budget,
         }))
     }
     pub(crate) async fn resolve_workspace_root(path: &str) -> Result<PathBuf, RemoteError> {
@@ -45,16 +42,6 @@ impl WorkspaceRegistry {
         &self,
         canonical: PathBuf,
     ) -> Result<(String, PathBuf), RemoteError> {
-        let memory = self
-            .0
-            .budget
-            .try_reserve(std::mem::size_of::<WorkspaceRoot>() + canonical.as_os_str().len())
-            .ok_or_else(|| {
-                remote_error(
-                    RemoteErrorCode::ResourceExhausted,
-                    "workspace handle budget exhausted",
-                )
-            })?;
         let sequence = self
             .0
             .next_id
@@ -78,7 +65,6 @@ impl WorkspaceRegistry {
                 id.clone(),
                 WorkspaceRoot {
                     path: canonical.clone(),
-                    _memory: memory,
                 },
             );
         Ok((id, canonical))
