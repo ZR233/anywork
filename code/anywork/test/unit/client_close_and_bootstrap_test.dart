@@ -21,17 +21,57 @@ class _CatalogFailureTransport extends RecordingDemoTransport {
 }
 
 class _LateBootstrapTransport extends RecordingDemoTransport {
+  _LateBootstrapTransport({this.failure});
+
+  final Object? failure;
   final entered = Completer<void>();
   final release = Completer<void>();
   @override
   Future<StudioBootstrap> readBootstrap() async {
     entered.complete();
     await release.future;
+    if (failure case final error?) throw error;
     return super.readBootstrap();
   }
 }
 
 void main() {
+  test('close joins failed bootstrap across error zones without losing the caller error', () async {
+    final failure = StateError('startup failed before baseline');
+    final transport = _LateBootstrapTransport(failure: failure);
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'cross-zone-bootstrap',
+    );
+    final callerError = Completer<Object>();
+    final uncaught = <Object>[];
+    runZonedGuarded(() {
+      unawaited(
+        client.bootstrap().then<void>(
+          (_) => fail('The controlled bootstrap must fail'),
+          onError: (Object error, StackTrace _) => callerError.complete(error),
+        ),
+      );
+    }, (error, _) => uncaught.add(error));
+    await transport.entered.future;
+    final closing = client.close(
+      deadline: DateTime.now().add(const Duration(seconds: 1)),
+    );
+    transport.release.complete();
+    expect(await callerError.future, same(failure));
+    final report = await closing;
+    expect(
+      report.complete,
+      isTrue,
+      reason: report.unresolved.map((resource) => resource.owner).join(', '),
+    );
+    expect(uncaught, isEmpty);
+    expect(client.applicationTopics, isEmpty);
+    expect(client.settings.state.configLoaded, isFalse);
+    expect(transport.bootstrapCalls, 0);
+    expect((await client.retryCleanup()).complete, isTrue);
+  });
+
   test('closing a project discards only its logical drafts and releases their permits', () async {
     final transport = RecordingDemoTransport();
     final graph = AppGraph(

@@ -724,7 +724,23 @@ final class _NativeLifecycleAssembly {
       while (DateTime.now().isBefore(deadline)) {
         final error = graph.timeline.source.value?.connectionError;
         if (error != null) throw error;
-        lease ??= graph.timeline.lease(settled.threadId);
+        // Terminal State may arrive before content has reattached. Select the
+        // original inventory reader only after Main admits this accepted input;
+        // a previous generation can still contain the preceding turn meanwhile.
+        // Once selected, the lease must remain unchanged for the entire read.
+        final candidate = graph.timeline.lease(settled.threadId);
+        if (lease == null &&
+            candidate != null &&
+            candidate.isMounted &&
+            !candidate.isRetired &&
+            !candidate.isReleased &&
+            _mainUnits(candidate).any(
+              (unit) =>
+                  unit.atom?.source ==
+                  InputChatSource(inputId: settled.inputId),
+            )) {
+          lease = candidate;
+        }
         if (lease != null) {
           _requireInventoryOwner(settled, lease);
           items = await _mainItems(lease);

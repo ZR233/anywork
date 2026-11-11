@@ -498,6 +498,10 @@ jobs:
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-exec-receipts-*.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-live.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-restart.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-history-continuity.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/fixture-status.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/fixture.log
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/requests.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-reopen.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/timeline-concept-media-missing.json

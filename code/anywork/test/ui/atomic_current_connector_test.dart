@@ -288,6 +288,71 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  for (final bounded in [true, false]) {
+    testWidgets(
+      'active response preserves body scrolling with ${bounded ? "bounded" : "unbounded"} member height',
+      (tester) async {
+        final content = _Content();
+        final images = TimelineImageResources(threadId: 'thread');
+        addTearDown(images.release);
+        final member = SizedBox(
+          width: 390,
+          child: TimelineMemberAtom(
+            content: content,
+            isActive: () => true,
+            images: images,
+            readAttachment: null,
+            record: DisplayRecord(
+              atom: _textItem(),
+              contentSource: const CurrentAtom(),
+            ),
+            displayId: 'bounded-response',
+          ),
+        );
+        await tester.pumpWidget(
+          _host(
+            bounded
+                ? SizedBox(height: 162, child: member)
+                : SingleChildScrollView(child: member),
+          ),
+        );
+        final scope = content.scopes.single;
+        scope.watches.single.add(
+          _window(List.generate(80, (index) => '正文第 $index 行').join('\n')),
+        );
+        await _flush(tester);
+        expect(tester.takeException(), isNull);
+        final atom = find.byType(TimelineMemberAtom);
+        final viewport = find.descendant(
+          of: atom,
+          matching: find.byType(SingleChildScrollView),
+        );
+        expect(viewport, findsOneWidget);
+        final viewportRect = tester.getRect(viewport);
+        final atomRect = tester.getRect(atom);
+        final headerRect = tester.getRect(find.byType(TimelineActivityRow));
+        expect(viewportRect.height, greaterThan(0));
+        expect(viewportRect.top, greaterThanOrEqualTo(headerRect.bottom));
+        expect(viewportRect.bottom, lessThanOrEqualTo(atomRect.bottom));
+        if (bounded) expect(atomRect.height, lessThanOrEqualTo(162));
+        final scroll = tester.state<ScrollableState>(
+          find.descendant(of: viewport, matching: find.byType(Scrollable)),
+        );
+        expect(scroll.position.maxScrollExtent, greaterThan(0));
+        final before = scroll.position.pixels;
+        await tester.drag(viewport, const Offset(0, 60));
+        await _flush(tester);
+        expect(scroll.position.pixels, lessThan(before));
+        expect(content.scopes, hasLength(1));
+        expect(scope.active, isTrue);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await _flush(tester);
+        expect(scope.closed, isTrue);
+      },
+    );
+  }
+
   for (final pageFirst in [true, false]) {
     for (final available in [true, false]) {
       testWidgets(
