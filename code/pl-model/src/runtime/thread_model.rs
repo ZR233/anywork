@@ -18,8 +18,8 @@ use crate::completion::{ReasoningConfig, ToolSpec};
 mod cache;
 mod compaction;
 pub use compaction::{
-    ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
-    migrate_legacy_compaction,
+    TextCompactionBinding, ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions,
+    ThreadCompactionStrategy, migrate_legacy_compaction,
 };
 mod codec;
 mod media;

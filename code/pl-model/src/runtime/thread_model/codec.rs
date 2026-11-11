@@ -94,7 +94,20 @@ fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
 pub(super) fn receipt(
     output: &ModelStepOutput,
 ) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
-    let mut frames = output.content.iter().filter_map(|content| match content {
+    receipt_parts(&output.content, &output.tool_calls)
+}
+
+pub(super) fn record_receipt(
+    record: &pl_core::context::ContextRecord,
+) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
+    receipt_parts(&record.content, &record.tool_calls)
+}
+
+fn receipt_parts(
+    content: &[ContextContent],
+    tool_calls: &[ModelToolCall],
+) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
+    let mut frames = content.iter().filter_map(|content| match content {
         ContextContent::Opaque { payload } if payload.format() == FRAME_FORMAT => Some(payload),
         ContextContent::Text { .. }
         | ContextContent::Resource { .. }
@@ -107,8 +120,7 @@ pub(super) fn receipt(
         return Err(invalid("unsupported or repeated model response receipt"));
     }
     let frame = decode_frame(payload)?;
-    let text = output
-        .content
+    let text = content
         .iter()
         .filter_map(|content| match content {
             ContextContent::Text { text } => Some(text.as_ref()),
@@ -126,7 +138,7 @@ pub(super) fn receipt(
     {
         return Err(invalid("response receipt differs from its visible text"));
     }
-    if frame.bindings != output.tool_calls {
+    if frame.bindings != tool_calls {
         return Err(invalid("response receipt differs from its tool bindings"));
     }
     Ok(Some(frame.receipt))

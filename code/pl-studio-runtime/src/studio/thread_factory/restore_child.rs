@@ -349,6 +349,7 @@ impl StudioThreadFactory {
                 model.clone(),
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
+                &config.models,
             )?,
             agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {

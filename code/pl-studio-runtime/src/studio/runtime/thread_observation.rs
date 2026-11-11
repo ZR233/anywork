@@ -5969,6 +5969,9 @@ mod storage_fault_tests {
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store.chat_session(&thread.id).await?;
         let receipt = crate::compaction::CompactionReceipt {
+            retained_through_record_id: None,
+            reasoning_effort_source: None,
+            context_summary: None,
             inference_id: "compaction-1".into(),
             binding: ModelCallBinding {
                 account_id: "account".into(),
