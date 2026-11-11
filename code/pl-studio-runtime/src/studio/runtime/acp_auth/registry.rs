@@ -546,7 +546,8 @@ mod tests {
                 "account".into(),
                 Slot {
                     identity: ConnectionIdentity {
-                        provider: AcpProvider::Antigravity,
+                        revision: 7,
+                        enabled: true,
                         release: None,
                     },
                     revision: 7,
@@ -580,7 +581,8 @@ mod tests {
             "account".into(),
             Slot {
                 identity: ConnectionIdentity {
-                    provider: AcpProvider::Antigravity,
+                    revision: 8,
+                    enabled: true,
                     release: None,
                 },
                 // observe_committed 的身份变化分支：新修订 + 旧操作仍在收束（Closing）。

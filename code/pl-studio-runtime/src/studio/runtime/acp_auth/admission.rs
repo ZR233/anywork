@@ -460,7 +460,9 @@ impl AcpAuthInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AcpAccountConfig, AcpProvider, ConfigPaths, ConfigStore, StudioConfig};
+    use crate::config::{
+        AcpProvider, AcpServiceDefinition, ConfigPaths, ConfigStore, StudioConfig,
+    };
     use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
     use pl_protocol::studio::{
         AcpAuthAction, AcpAuthActiveOperation, AcpAuthBusyDetails, AcpAuthBusyRejection,
@@ -471,15 +473,19 @@ mod tests {
 
     async fn test_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
         let home = tempfile::tempdir()?;
-        let mut config = StudioConfig::default_config()?;
-        config.acp.accounts.insert(
-            "account".into(),
-            AcpAccountConfig {
-                name: "Antigravity".into(),
-                provider: AcpProvider::Antigravity,
-            },
-        );
-        ConfigStore::new(ConfigPaths::from_config_dir(home.path())).save(&config)?;
+        let config = StudioConfig::default_config()?;
+        let paths = ConfigPaths::from_config_dir(home.path());
+        ConfigStore::new(paths.clone()).save(&config)?;
+        std::fs::create_dir_all(paths.acp_dir())?;
+        std::fs::write(
+            paths.acp_dir().join("account.toml"),
+            AcpServiceDefinition::template(
+                "account".into(),
+                "Antigravity".into(),
+                AcpProvider::Antigravity,
+            )
+            .encode()?,
+        )?;
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
             studio_home: Some(home.path().to_owned()),
             host: StudioHostKind::Test,
@@ -592,11 +598,11 @@ mod tests {
         // 模拟 observe_committed 的身份变化分支：账号已换新修订，旧操作仍在收束。
         let current_revision = {
             let mut registry = runtime.acp_auth.inner.lock();
-            let revision = registry.mint_connection_revision();
             let slot = registry
                 .slots
                 .get_mut("account")
                 .expect("configured account");
+            let revision = slot.revision.checked_add(1).expect("test revision");
             slot.revision = revision;
             slot.state = AcpAuthState::Closing {
                 operation_id: "flow".into(),

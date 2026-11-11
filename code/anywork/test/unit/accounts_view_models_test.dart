@@ -3422,9 +3422,9 @@ void main() {
         stamp: vmStamp,
         templates: h.accounts.state.value.templates,
         accounts: [
-          vmSummary(const AcpAccountIdentity('antigravity')),
-          vmSummary(const AcpAccountIdentity('antigravity-2')),
-          vmSummary(const NativeAccountIdentity('antigravity-3')),
+          vmSummary(const AcpAccountIdentity('command')),
+          vmSummary(const AcpAccountIdentity('command-2')),
+          vmSummary(const NativeAccountIdentity('command-3')),
         ],
       ),
     );
@@ -3466,22 +3466,19 @@ void main() {
     );
     expect(
       templateContent(
-        const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+        const AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
       ),
       const AccountTemplateContent.acp(),
     );
     final initial = session.currentEditor!;
     final acp = session.replaceTemplate(
       source: initial,
-      template: const AccountTemplateKey(
-        kind: AccountKind.acp,
-        id: 'antigravity',
-      ),
+      template: const AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
       token: session.beginTemplateReplacement(initial)!,
     )!;
     expect(acp.target.kind, AccountKind.acp);
-    expect(acp.template!.id, 'antigravity');
-    expect(acp.target.id, isNot(isIn(['antigravity', 'antigravity-2'])));
+    expect(acp.template!.id, 'command');
+    expect(acp.target.id, isNot(isIn(['command', 'command-2'])));
     final native = session.replaceTemplate(
       source: acp,
       template: const AccountTemplateKey(
@@ -3608,7 +3605,7 @@ void main() {
     );
     expect(
       templateContent(
-        const AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
+        const AccountTemplateKey(kind: AccountKind.acp, id: 'command'),
       ),
       const AccountTemplateContent.acp(),
     );
