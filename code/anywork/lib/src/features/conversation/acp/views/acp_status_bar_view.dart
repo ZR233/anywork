@@ -65,10 +65,17 @@ class AcpStatusBarView extends StatelessWidget {
                 child: const SizedBox.square(dimension: 7),
               ),
               const SizedBox(width: 6),
-              StatusBarItem(
-                label: statusText,
-                tooltip: statusText,
-                maxWidth: 220,
+              Tooltip(
+                message: statusText,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(
+                    statusText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.text.labelSmall,
+                  ),
+                ),
               ),
               if (provenanceLabel != null) ...[
                 const SizedBox(width: 6),
@@ -82,17 +89,12 @@ class AcpStatusBarView extends StatelessWidget {
               if (state.usage case final usage?) ...[
                 StatusBarItem(
                   icon: Icons.data_usage_rounded,
-                  label: l10n.acpUsageReadout(
-                    usage.usedFormatted,
-                    usage.sizeFormatted,
-                  ),
-                  tooltip: usage.costLabel == null
+                  label: usage.costLabel == null
                       ? l10n.acpUsageReadout(
                           usage.usedFormatted,
                           usage.sizeFormatted,
                         )
                       : '${l10n.acpUsageReadout(usage.usedFormatted, usage.sizeFormatted)} · ${usage.costLabel}',
-                  maxWidth: 200,
                 ),
                 const SizedBox(width: 6),
               ],

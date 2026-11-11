@@ -596,9 +596,17 @@ void main() {
         'drag cannot cross the 440px upper boundary',
       );
 
-      await tester.tap(divider);
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(divider);
+      // Native integration uses real gesture timers. Resolve the position once
+      // and avoid a rendered frame between taps consuming the double-tap window.
+      final resetPosition = tester.getCenter(divider);
+      final doubleTapClock = Stopwatch()..start();
+      await tester.tapAt(resetPosition);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 80)),
+      );
+      final secondTapAt = doubleTapClock.elapsedMilliseconds;
+      await tester.tapAt(resetPosition);
+      debugPrint('SIDEBAR_DOUBLE_TAP secondDownAfterMs=$secondTapAt');
       await scene.until(
         () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
         'double tap restores and saves the canonical default',

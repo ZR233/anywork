@@ -1515,7 +1515,29 @@ final class _RealtimeScene {
         expect(value.atom?.delivery, head.delivery);
         expect(value.atom?.turnId, head.turnId);
         expect(value.atom?.tool?.callId, head.tool?.callId);
-        expect(value.atom?.lifecycle, head.lifecycle);
+        Object? lifecycleFields(ChatAtomLifecycle? lifecycle) =>
+            switch (lifecycle) {
+              ActiveChatAtom(:final started, :final status) => (
+                'active',
+                started?.effectSeq,
+                started?.suborder,
+                status,
+              ),
+              TerminalChatAtom(:final started, :final ended, :final outcome) =>
+                (
+                  'terminal',
+                  started?.effectSeq,
+                  started?.suborder,
+                  ended?.effectSeq,
+                  ended?.suborder,
+                  outcome,
+                ),
+              null => null,
+            };
+        expect(
+          lifecycleFields(value.atom?.lifecycle),
+          lifecycleFields(head.lifecycle),
+        );
         expect(value.atom?.completionItemId, head.completionItemId);
         expect(value.atom?.completionSeq, head.completionSeq);
         rendered = value;

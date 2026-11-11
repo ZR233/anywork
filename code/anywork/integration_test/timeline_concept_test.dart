@@ -824,7 +824,7 @@ final class _ConceptScene {
       expect(activity.icon, isNotNull);
       final summary = unit.summary!;
       final live = unit.state == DisplayBlockState.open;
-      if (!live || !unit.executionPresent || summary.failed > 0) {
+      if (!live || !unit.executionPresent) {
         expect(activity.active, isFalse);
       } else if (summary.running > 0 || summary.waiting > 0) {
         expect(activity.active, isTrue);

@@ -124,6 +124,41 @@ void main() {
         ),
         'saved isolated ACP definition is observed',
       );
+      if (managed) {
+        final authDemand = graph.acp.observeAuth();
+        addTearDown(authDemand.release);
+        const identity = AcpAccountIdentity(serviceId);
+        final revision = graph.accounts.state.value
+            .account(identity)!
+            .acpConnectionRevision!;
+        await graph.acp.check(identity);
+        String? previousPhase;
+        await scene.until(
+          () {
+            final auth = graph.acp.auth.value.value?.stateOf(
+              serviceId,
+              connectionRevision: revision,
+            );
+            final phase = auth.runtimeType.toString();
+            if (phase != previousPhase) {
+              previousPhase = phase;
+              debugPrint('AGY_MANAGED_CHECK $phase');
+            }
+            if (auth is AcpFailedState) {
+              throw StateError(
+                'Managed check failed: ${auth.failure.stage.name}/${auth.failure.code.name}: ${auth.failure.message}',
+              );
+            }
+            if (auth is AcpRequiredState) {
+              throw StateError('Managed server requires an explicit login');
+            }
+            return auth is AcpVerifiedState;
+          },
+          'managed server connection and existing login are verified',
+          timeout: const Duration(seconds: 90),
+        );
+        await record('managed-connection-verified');
+      }
       final project = await harness.openProject(scene, projectPath);
       await scene.until(
         () => find.byType(StartBackendSelector).evaluate().length == 1,
