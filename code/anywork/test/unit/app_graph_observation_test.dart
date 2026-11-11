@@ -100,7 +100,7 @@ void main() {
       expect(costs.read().loaded, isFalse);
       // 未加载会话只观察 visibleThreadId；其他三个缺失 owner 各观察 selection 与 failure。
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.feeds, isEmpty);
+      expect(transport.timelineFeeds, isEmpty);
     } finally {
       session.close();
       composer.close();
@@ -131,7 +131,7 @@ void main() {
         'thread-main',
       )!;
       await session.content.state.waitFor((state) => state.snapshot == true);
-      final connection = transport.feeds.single;
+      final connection = transport.timelineFeeds.single;
       await connection.nextEntered.future;
       final attemptId = session.content.currentAttemptId?.value;
       final workspaceId = graph.client.selection.state.selectedProjectId!;
@@ -223,7 +223,7 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(transport.feeds, hasLength(1));
+      expect(transport.timelineFeeds, hasLength(1));
       expect(connection.initialCalls, 1);
 
       final report = await graph.close(deadline: _deadline());
@@ -258,9 +258,9 @@ void main() {
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
     final afterVisibleSelection = first.timeline.monotonicMicros;
-    expect(firstTransport.feeds, isEmpty);
+    expect(firstTransport.timelineFeeds, isEmpty);
     expect(
-      secondTransport.feeds,
+      secondTransport.timelineFeeds,
       isEmpty,
       reason: 'canonical visible selection does not fabricate viewport demand',
     );
@@ -317,8 +317,8 @@ void main() {
       isNot(same(second.client.conversations.session('thread-main'))),
     );
     expect(
-      firstTransport.feeds.single,
-      isNot(same(secondTransport.feeds.single)),
+      firstTransport.timelineFeeds.single,
+      isNot(same(secondTransport.timelineFeeds.single)),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
@@ -337,8 +337,8 @@ void main() {
     );
 
     expect((await first.close(deadline: _deadline())).complete, isTrue);
-    expect(firstTransport.feeds.single.joined.isCompleted, isTrue);
-    expect(secondTransport.feeds.single.requestCloseCalls, 0);
+    expect(firstTransport.timelineFeeds.single.joined.isCompleted, isTrue);
+    expect(secondTransport.timelineFeeds.single.requestCloseCalls, 0);
     expect(second.client.isClosed, isFalse);
     expect(
       second.client.conversations
@@ -361,12 +361,12 @@ void main() {
     'late open after selecting B is reclaimed without clearing current B',
     () async {
       final transport = DemoStudioTransport(lspActivityLoop: false);
-      final firstOpen = Completer<RecordingConversationFeed>();
+      final firstOpen = Completer<RecordingTimelineFeed>();
       final releaseFirst = Completer<void>();
       var mainOpens = 0;
-      final connections = <RecordingConversationFeed>[];
-      transport.conversationFeedFactory = (threadId, inner) async {
-        final window = RecordingConversationFeed(inner: inner);
+      final connections = <RecordingTimelineFeed>[];
+      transport.timelineFeedFactory = (threadId, inner) async {
+        final window = RecordingTimelineFeed(inner: inner);
         connections.add(window);
         if (threadId == 'thread-main' && ++mainOpens == 1) {
           firstOpen.complete(window);

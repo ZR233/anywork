@@ -7,7 +7,9 @@ use std::{
 };
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
-use pl_studio_runtime::{ConversationFeed, ConversationReader, ConversationStateFeed};
+use pl_studio_runtime::{
+    ConversationFeed, ConversationReader, ConversationStateFeed, TimelineFeed,
+};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -41,8 +43,9 @@ pub(super) struct ContentCapabilities {
 }
 
 pub(super) enum NativeFeed {
-    Content(ConversationFeed),
+    Content(Box<ConversationFeed>),
     State(Box<ConversationStateFeed>),
+    Timeline(Box<TimelineFeed>),
 }
 
 impl NativeFeed {
@@ -50,7 +53,7 @@ impl NativeFeed {
         &mut self,
     ) -> Result<Option<crate::api::studio::types::BridgeConversationEvent>, BridgeError> {
         use crate::api::studio::{
-            convert::{chat, thread_stream::bridge_thread_update},
+            convert::{chat, presentation, thread_stream::bridge_thread_update},
             types::BridgeConversationEvent,
         };
         match self {
@@ -66,6 +69,13 @@ impl NativeFeed {
                     }
                 }
             })),
+            Self::Timeline(feed) => match feed.receive().await? {
+                pl_studio_runtime::TimelineEvent::Timeline { batch } => {
+                    Ok(Some(BridgeConversationEvent::Timeline {
+                        batch: Box::new(presentation::batch(*batch)?),
+                    }))
+                }
+            },
             Self::State(feed) => feed
                 .recv()
                 .await?
@@ -82,6 +92,7 @@ impl NativeFeed {
         match self {
             Self::Content(feed) => feed.request_close(),
             Self::State(feed) => feed.request_close(),
+            Self::Timeline(feed) => feed.request_close(),
         }
     }
 
@@ -89,6 +100,7 @@ impl NativeFeed {
         match self {
             Self::Content(feed) => Ok(feed.close().await?),
             Self::State(feed) => Ok(feed.close().await?),
+            Self::Timeline(feed) => Ok(feed.close().await?),
         }
     }
 }
@@ -122,7 +134,21 @@ impl ConversationOwner {
         Self::with_native(
             feed.thread_id().to_owned(),
             feed.subscription_id().to_owned(),
-            NativeFeed::Content(feed),
+            NativeFeed::Content(Box::new(feed)),
+            Some(content),
+            cancel,
+        )
+    }
+
+    pub(super) fn timeline(feed: TimelineFeed, cancel: CancellationToken) -> Self {
+        let content = ContentCapabilities {
+            reader: feed.reader().clone(),
+            watches: ContentWatches::new(feed.subscription_id()),
+        };
+        Self::with_native(
+            feed.thread_id().to_owned(),
+            feed.subscription_id().to_owned(),
+            NativeFeed::Timeline(Box::new(feed)),
             Some(content),
             cancel,
         )
@@ -358,7 +384,8 @@ impl ConversationOwner {
         self.native.lock().await
     }
 
-    /// Cancellation-safe native close: keep the original feed in its slot across every await.
+    /// Retires only production; the original read lease belongs to finish_close independently.
+    /// Keep the original feed in its slot across every await so cancellation loses no join.
     pub(super) async fn close_native(&self) -> Result<(), BridgeError> {
         let mut slot = self.native.lock().await;
         if let Some(feed) = slot.as_mut() {

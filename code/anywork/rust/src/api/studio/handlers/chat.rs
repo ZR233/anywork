@@ -5,6 +5,7 @@ mod owner;
 mod producer;
 #[cfg(test)]
 mod tests;
+pub mod timeline;
 
 use std::sync::Arc;
 

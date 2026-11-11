@@ -1,12 +1,13 @@
-//! The original typed State summary is independent of body/member Activity barriers.
+//! Typed State summaries do not require completed members or content credit.
 use super::*;
 use completed_runs::{Harness, activity};
 use pl_core::{
     model::{
-        ActiveModelProgress, AggregateChannel, ModelProgress, ObservedPart, ObservedPartIdentity,
+        ActiveModelProgress, AggregateChannel, ModelProgress, ModelStartedMember, ObservedPart,
+        ObservedPartIdentity,
     },
     thread::{
-        ActiveExecution, ExecutionPhase, ModelExecutionPhase, RequestAttempt,
+        ActiveExecution, ExecutionPhase, ModelExecutionPhase, RequestAttempt, ThreadEffectBatch,
         ThreadSnapshot as CoreSnapshot, TurnRecord, TurnState as CoreTurnState,
     },
 };
@@ -49,6 +50,38 @@ fn thinking(revision: u64) -> Result<CoreSnapshot> {
     })
 }
 
+async fn admit_thinking(h: &mut Harness, state: &CoreSnapshot) -> Result<()> {
+    // State delivery is independent of body credit, not of reliable start admission.
+    let progress = state
+        .model_progress
+        .as_ref()
+        .context("reasoning progress")?;
+    let effect = ThreadEffectBatch {
+        thread_id: h.thread.id.clone(),
+        sequence: h.sequence + 1,
+        committed_at: 10,
+        model_member_starts: vec![ModelStartedMember {
+            turn_id: "summary-turn".into(),
+            attempt_id: progress.attempt_id.clone(),
+            generation: progress.progress.observation().generation,
+            identity: ObservedPartIdentity::Aggregate {
+                channel: AggregateChannel::Reasoning,
+            },
+        }]
+        .into(),
+        ..Default::default()
+    };
+    let (_, mut prepared) = h
+        .projection
+        .prepare(&h.thread, &effect, state, false)
+        .await?;
+    h.projection
+        .publish_prepared(&h.session, &mut prepared)
+        .await?;
+    h.sequence = effect.sequence;
+    Ok(())
+}
+
 async fn publish(h: &mut Harness, state: &CoreSnapshot) -> Result<Option<ThreadActivity>> {
     h.projection
         .stream(&h.session, &h.thread, state, state.commit_sequence)
@@ -85,10 +118,7 @@ async fn expect_update(
         match feed.recv().await?.context("summary feed ended")? {
             ConversationEvent::Activity { snapshot } => {
                 assert_eq!(snapshot.completed_through, feed.delivered);
-                assert!(
-                    snapshot.entries.is_empty(),
-                    "summary invented a body member"
-                );
+                assert_only_admitted_reasoning(&snapshot);
                 if notifications == 0 {
                     // No producer remains in flight in this synthetic cut.
                     // Allow the State owner's bounded coalescing interval.
@@ -109,12 +139,27 @@ async fn expect_update(
     .await?
 }
 
+fn assert_only_admitted_reasoning(snapshot: &pl_protocol::ActivitySnapshot) {
+    // The reliable start may be visible, but phase changes must not invent a
+    // completion or another body member merely to deliver the State summary.
+    assert!(snapshot.entries.len() <= 1);
+    for entry in &snapshot.entries {
+        assert_eq!(entry.atom.kind, pl_protocol::ChatAtomKind::Reasoning);
+        assert_eq!(entry.atom.turn_id.as_deref(), Some("summary-turn"));
+        assert_eq!(entry.atom.attempt_id.as_deref(), Some("summary-attempt"));
+        assert!(entry.atom.completion_item_id.is_none());
+        assert!(entry.atom.finished_at.is_none());
+    }
+}
+
 #[tokio::test]
-async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entries() -> Result<()> {
+async fn preexisting_thinking_summary_and_phase_clear_do_not_require_completed_entries()
+-> Result<()> {
     let env = support::Environment::new(vec![], vec![]).await?;
     let result = async {
         let mut h = Harness::new(&env).await?;
         let mut state = thinking(10)?;
+        admit_thinking(&mut h, &state).await?;
         let first = publish(&mut h, &state).await?.context("thinking summary")?;
         assert_eq!(first.kind, ThreadActivityKind::Thinking);
         let mut feed = env
@@ -132,7 +177,8 @@ async fn preexisting_thinking_summary_and_phase_clear_do_not_require_body_entrie
         assert!(baseline.active_turn.is_some());
         let snapshot = activity(&mut feed).await?;
         assert!(snapshot.execution_present);
-        assert!(snapshot.entries.is_empty());
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_only_admitted_reasoning(&snapshot);
         assert_eq!(snapshot.completed_through, set.through_seq);
 
         state.observation_revision = 11;
@@ -219,7 +265,9 @@ async fn idle_to_thinking_summary_and_old_epoch_events_keep_the_original_qualifi
             .await?;
         assert!(state_snapshot(&mut old_state).await?.activity.is_none());
         activity(&mut old).await?;
-        let summary = publish(&mut h, &thinking(10)?)
+        let thinking = thinking(10)?;
+        admit_thinking(&mut h, &thinking).await?;
+        let summary = publish(&mut h, &thinking)
             .await?
             .context("thinking summary")?;
         expect_update(&mut old, &mut old_state, Some(&summary), 1).await?;

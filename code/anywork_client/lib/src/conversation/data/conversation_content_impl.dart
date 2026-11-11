@@ -13,7 +13,7 @@ import '../domain/conversation_errors.dart';
 import 'conversation_read_scope.dart';
 
 /// Owns feed admission, delivery, ACK and actual retirement, but no history window.
-final class ConversationContentImpl implements ConversationContent {
+final class ConversationContentImpl implements TimelineContent {
   ConversationContentImpl({
     required this.threadId,
     required ConversationTransport transport,
@@ -27,6 +27,9 @@ final class ConversationContentImpl implements ConversationContent {
   final ChatScope scope;
   final ReadDemand? initialDemand;
   final LatestValue<ActivitySnapshot?> _activity = LatestValue(null);
+  final LatestValue<LiveDisplayWindow?> _liveWindow = LatestValue(null);
+  @override
+  ValueObservation<LiveDisplayWindow?> get live => _liveWindow;
   final LatestValue<ChatUiState<bool>> _state;
   @override
   ValueObservation<ChatUiState<bool>> get state => _state;
@@ -72,7 +75,15 @@ final class ConversationContentImpl implements ConversationContent {
   Observation attachConsumer(
     ConversationBatchConsumer consumer, {
     required ReadDemand demand,
-  }) {
+  }) => _attach(consumer, demand);
+
+  @override
+  Observation attachTimelineConsumer(
+    TimelineBatchConsumer consumer, {
+    required ReadDemand demand,
+  }) => _attach(consumer, demand);
+
+  Observation _attach(Object consumer, ReadDemand demand) {
     if (_closed) throw StateError('Conversation is closed');
     if (_consumer != null)
       throw StateError('Completion consumer already attached');
@@ -127,7 +138,7 @@ final class ConversationContentImpl implements ConversationContent {
   }
 
   @override
-  ConversationQueryScope openScope({required int generation}) {
+  TimelineQueryScope openScope({required int generation}) {
     if (_closed) throw StateError('Conversation is closed');
     final attempt = _current;
     final lease = _consumer;
@@ -143,12 +154,24 @@ final class ConversationContentImpl implements ConversationContent {
       threadId: threadId,
       generation: generation,
       reader: attempt.feed!.reader,
+      timeline: attempt.feed is TimelineFeed
+          ? attempt.feed as TimelineFeed
+          : null,
       isEligible: () => _eligible(attempt, lease),
       applyOlder: (batch) => _enqueue(attempt, () async {
         if (!scope.isActive || !_eligible(attempt, lease)) {
           throw const StaleConversationScope();
         }
         await _deliver(attempt, lease, batch, queryScope: scope);
+        if (!scope.isActive || !_eligible(attempt, lease)) {
+          throw const StaleConversationScope();
+        }
+      }),
+      applyTimelineOlder: (batch) => _enqueue(attempt, () async {
+        if (!scope.isActive || !_eligible(attempt, lease)) {
+          throw const StaleConversationScope();
+        }
+        await _deliverTimeline(attempt, lease, batch, queryScope: scope);
         if (!scope.isActive || !_eligible(attempt, lease)) {
           throw const StaleConversationScope();
         }
@@ -179,11 +202,25 @@ final class ConversationContentImpl implements ConversationContent {
     try {
       _state.publish(ChatOpening<bool>(threadId));
       if (!_live(a)) return;
-      final feed = await _transport.openConversationFeed(
-        threadId,
-        scope: scope,
-        demand: initialDemand ?? a.consumer.demand,
-      );
+      final ConversationFeed feed;
+      if (a.consumer.consumer is TimelineBatchConsumer) {
+        final transport = _transport;
+        if (transport is! TimelineTransport) {
+          throw const ConversationContinuityError(
+            'Timeline transport required',
+          );
+        }
+        feed = await (transport as TimelineTransport).openTimelineFeed(
+          threadId,
+          demand: initialDemand ?? a.consumer.demand,
+        );
+      } else {
+        feed = await _transport.openConversationFeed(
+          threadId,
+          scope: scope,
+          demand: initialDemand ?? a.consumer.demand,
+        );
+      }
       a.feed = feed;
       if (!_live(a)) return;
       if (feed.threadId != threadId || feed.subscriptionId.isEmpty)
@@ -267,9 +304,21 @@ final class ConversationContentImpl implements ConversationContent {
             'state event on content feed',
           );
         case ConversationChatEvent(:final batch):
+          if (a.consumer.consumer is TimelineBatchConsumer) {
+            throw const ConversationContinuityError(
+              'atomic Chat on Timeline feed',
+            );
+          }
           await _deliver(a, a.consumer, batch);
         case ConversationActivityEvent(:final snapshot):
+          if (a.consumer.consumer is TimelineBatchConsumer) {
+            throw const ConversationContinuityError(
+              'Activity on Timeline feed',
+            );
+          }
           await _deliverActivity(a, a.consumer, snapshot);
+        case ConversationTimelineEvent(:final batch):
+          await _deliverTimeline(a, a.consumer, batch);
         case ConversationFailureEvent() || ConversationClosedEvent():
           throw const ConversationContinuityError('unexpected terminal');
       }
@@ -287,7 +336,7 @@ final class ConversationContentImpl implements ConversationContent {
     );
   }
 
-  /// The sole admission queue for State, streamed Chat and query Chat. Query IO
+  /// The sole admission queue for streamed and queried content. Query IO
   /// starts before entering this queue, so a consumer await never blocks reads.
   // State frames are rejected here; canonical state owns its own feed.
   Future<void> _enqueue(_Attempt a, Future<void> Function() operation) {
@@ -321,7 +370,7 @@ final class ConversationContentImpl implements ConversationContent {
     _validateBatch(a, batch, query: queryScope != null);
     // Empty Append advances only the checked prefix; it inserts no messages.
     if (batch.placement != ChatPlacement.append || batch.entries.isNotEmpty) {
-      await lease.consumer.applyBatch(batch);
+      await (lease.consumer as ConversationBatchConsumer).applyBatch(batch);
     }
     // Never consult a new selection/consumer after component acceptance.
     if (!eligible()) return;
@@ -344,12 +393,114 @@ final class ConversationContentImpl implements ConversationContent {
             executionPresent: previous.executionPresent,
             entries: remaining,
           );
-          await lease.consumer.applyActivity(next);
+          await (lease.consumer as ConversationBatchConsumer).applyActivity(
+            next,
+          );
           if (!eligible()) return;
           a.activity = next;
           _activity.publish(next);
         }
       }
+    }
+    if (!eligible()) return;
+    if (batch.placement == ChatPlacement.set) {
+      _retries = 0;
+      _state.publish(ChatReady<bool>(threadId, true));
+    }
+  }
+
+  Future<void> _deliverTimeline(
+    _Attempt a,
+    _ConsumerLease lease,
+    TimelineBatch batch, {
+    ConversationReadScope? queryScope,
+  }) async {
+    bool eligible() => _eligible(a, lease) && (queryScope?.isActive ?? true);
+    if (!eligible()) return;
+    final consumer = lease.consumer;
+    if (consumer is! TimelineBatchConsumer) {
+      throw const ConversationContinuityError('Timeline consumer required');
+    }
+    if (batch.presentationVersion != presentationVersion) {
+      throw ProtocolVersionMismatch(
+        received: batch.presentationVersion,
+        supported: presentationVersion,
+        field: 'presentationVersion',
+      );
+    }
+    final query = queryScope != null;
+    final validPlacement = switch (batch.placement) {
+      ChatPlacement.set =>
+        !query && !a.hasSet && batch.fromPos == null && batch.live != null,
+      ChatPlacement.prepend =>
+        query && a.hasSet && batch.fromPos == null && batch.live == null,
+      ChatPlacement.append =>
+        !query &&
+            a.hasSet &&
+            batch.before == null &&
+            batch.fromPos == a.through &&
+            (batch.throughPos > a.through ||
+                (batch.throughPos == a.through &&
+                    batch.blocks.isEmpty &&
+                    batch.live != null)),
+    };
+    var previous = batch.fromPos ?? 0;
+    final ids = <String>{};
+    var valid = validPlacement && batch.throughPos >= 0;
+    for (final block in batch.blocks) {
+      valid =
+          valid &&
+          block.id.isNotEmpty &&
+          ids.add(block.id) &&
+          block.historyPos > previous &&
+          block.historyPos <= batch.throughPos;
+      previous = block.historyPos;
+    }
+    final incoming = batch.live;
+    if (incoming != null) {
+      valid =
+          valid &&
+          incoming.historyThrough == batch.throughPos &&
+          incoming.revision >= 0 &&
+          (batch.placement == ChatPlacement.set ||
+              incoming.revision >= (a.live?.revision ?? -1));
+      var order = 0;
+      for (final block in incoming.blocks) {
+        valid =
+            valid &&
+            block.id.isNotEmpty &&
+            ids.add(block.id) &&
+            block.blockOrder > order;
+        order = block.blockOrder;
+      }
+    }
+    if (!valid) {
+      throw const ConversationContinuityError('invalid Timeline batch');
+    }
+    final previousLive = a.live;
+    final next = batch.placement == ChatPlacement.prepend
+        ? previousLive!
+        : incoming ??
+              LiveDisplayWindow(
+                revision: previousLive!.revision,
+                historyThrough: batch.placement == ChatPlacement.prepend
+                    ? previousLive.historyThrough
+                    : batch.throughPos,
+                executionPresent: previousLive.executionPresent,
+                blocks: previousLive.blocks
+                    .where((block) => !ids.contains(block.id))
+                    .toList(),
+                older: previousLive.older,
+              );
+    // The consumer commits the controller and this exact live value behind its
+    // original display gate. Publication and ACK follow acceptance, never paint.
+    await consumer.applyTimeline(batch, next);
+    if (!eligible()) return;
+    if (batch.placement != ChatPlacement.prepend) {
+      a.through = batch.throughPos;
+      a.hasSet = true;
+      a.live = next;
+      _liveWindow.publish(next);
     }
     if (!eligible()) return;
     if (batch.placement == ChatPlacement.set) {
@@ -414,7 +565,7 @@ final class ConversationContentImpl implements ConversationContent {
     if (snapshot.completedThrough != a.through) {
       throw const ConversationContinuityError('activity completion barrier');
     }
-    await lease.consumer.applyActivity(snapshot);
+    await (lease.consumer as ConversationBatchConsumer).applyActivity(snapshot);
     if (!_eligible(a, lease)) return;
     a.activityRevision = snapshot.revision;
     a.activity = snapshot;
@@ -668,6 +819,7 @@ final class _Attempt {
   int through = 0;
   int activityRevision = -1;
   ActivitySnapshot? activity;
+  LiveDisplayWindow? live;
   int received = 0;
   int acked = 0;
   bool acking = false;
@@ -680,7 +832,7 @@ final class _Attempt {
 final class _ConsumerLease implements Observation {
   _ConsumerLease(this.owner, this.consumer, this.demand);
   final ConversationContentImpl owner;
-  final ConversationBatchConsumer consumer;
+  final Object consumer;
   final ReadDemand demand;
   @override
   bool isCancelled = false;

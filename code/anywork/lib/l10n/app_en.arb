@@ -855,6 +855,45 @@
       }
     }
   },
+  "timelineGroupExecutingUnderSecond": "Running for less than 1s",
+  "timelineGroupExecutingSeconds": "Running for {seconds}s",
+  "@timelineGroupExecutingSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupExecutingMinutes": "Running for {minutes}m",
+  "@timelineGroupExecutingMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupExecutingMinutesSeconds": "Running for {minutes}m {seconds}s",
+  "@timelineGroupExecutingMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupClosing": "Finishing work",
+  "timelineGroupWaitingForNext": "Waiting for the next step",
+  "timelineGroupUnrestored": "Previous work is unfinished and has not resumed",
+  "timelineGroupTransferredCount": "{count} transferred",
+  "@timelineGroupTransferredCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",

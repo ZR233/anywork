@@ -6,7 +6,6 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
-import '../state/completion_run_presentation.dart';
 
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
@@ -29,34 +28,40 @@ abstract final class TimelinePreviewFixtures {
 
   static final deferredUserInput = ChatItemPresentation.forUnit(
     TimelineDisplayUnit(
-      entry: CompletedEntry(
-        recordId: 'preview-user-deferred',
-        completionSeq: 1,
-        run: null,
-        mainPresentation: MainPresentation.single,
-        atom: ChatAtom(
-          id: 'preview-user-deferred',
-          source: const InputChatSource(inputId: 'preview-input'),
-          sourceOrder: 1,
-          kind: ChatAtomKind.input,
-          delivery: ChatDeliveryKind.foreground,
-          lifecycle: const TerminalChatAtom(
-            started: null,
-            ended: null,
-            outcome: ChatTerminalOutcome.completed,
-          ),
-          contents: const [
-            ChatAtomContent(
-              role: ChatContentRole.body,
-              reference: userBodyReference,
+      block: DisplayBlock(
+        id: 'preview-user-deferred',
+        historyPos: 1,
+        body: SingleDisplayBlock(
+          record: DisplayRecord(
+            atom: ChatAtom(
+              id: 'preview-user-deferred',
+              completionItemId: 'preview-user-deferred',
+              source: const InputChatSource(inputId: 'preview-input'),
+              sourceOrder: 1,
+              kind: ChatAtomKind.input,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const TerminalChatAtom(
+                started: null,
+                ended: null,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              contents: const [
+                ChatAtomContent(
+                  role: ChatContentRole.body,
+                  reference: userBodyReference,
+                ),
+              ],
+              payload: const DeferredPayload(
+                reference: ContentRef(
+                  databaseId: 'preview',
+                  target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
+                ),
+                byteLength: 90000,
+              ),
             ),
-          ],
-          payload: const DeferredPayload(
-            reference: ContentRef(
-              databaseId: 'preview',
-              target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
+            contentSource: CompletedOriginal(
+              completionId: 'preview-user-deferred',
             ),
-            byteLength: 90000,
           ),
         ),
       ),
@@ -545,9 +550,31 @@ abstract final class TimelinePreviewFixtures {
       );
   static TimelineDisplayUnit runUnit(CompletedEntry entry) =>
       TimelineDisplayUnit(
-        entry: entry,
-        run: CompletionRunPresentation.fromEntry(entry),
+        block: DisplayBlock(
+          id: entry.recordId,
+          historyPos: entry.completionSeq,
+          body: WorkDisplayBlock(
+            summary: workSummary(entry.run!.ordinal),
+            members: DisplayBlockRef(
+              databaseId: 'preview',
+              blockId: entry.recordId,
+            ),
+          ),
+        ),
       );
+
+  static WorkSummary workSummary(int count) => WorkSummary(
+    unavailable: 0,
+    total: count,
+    terminal: count,
+    running: 0,
+    waiting: 0,
+    failed: 0,
+    cancelled: 0,
+    transferred: 0,
+    createdAt: 100,
+    elapsedMs: 125000,
+  );
 
   static Map<String, Object?> _imageMetadata(String id) => {
     'id': id,

@@ -185,12 +185,15 @@ void main() {
           payload: payload,
         );
         final unit = TimelineDisplayUnit(
-          entry: CompletedEntry(
-            recordId: 'accepted',
-            completionSeq: 1,
-            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-            mainPresentation: MainPresentation.single,
-            atom: atom,
+          block: DisplayBlock(
+            id: 'accepted',
+            historyPos: 1,
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: atom,
+                contentSource: CompletedOriginal(completionId: 'accepted'),
+              ),
+            ),
           ),
         );
         addTearDown(unit.expansion.dispose);
@@ -380,12 +383,15 @@ void main() {
         ),
       );
       final unit = TimelineDisplayUnit(
-        entry: CompletedEntry(
-          recordId: 'inbox-record',
-          completionSeq: 1,
-          run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-          mainPresentation: MainPresentation.single,
-          atom: atom,
+        block: DisplayBlock(
+          id: 'inbox-record',
+          historyPos: 1,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: atom,
+              contentSource: CompletedOriginal(completionId: 'inbox-record'),
+            ),
+          ),
         ),
       );
       addTearDown(unit.expansion.dispose);
@@ -443,12 +449,15 @@ void main() {
           ],
         );
         final unit = TimelineDisplayUnit(
-          entry: CompletedEntry(
-            recordId: contentItemId,
-            completionSeq: 1,
-            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-            mainPresentation: MainPresentation.single,
-            atom: atom,
+          block: DisplayBlock(
+            id: contentItemId,
+            historyPos: 1,
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: atom,
+                contentSource: CompletedOriginal(completionId: contentItemId),
+              ),
+            ),
           ),
         );
         final item = ChatItemPresentation.forUnit(unit);
@@ -1288,6 +1297,8 @@ void main() {
         final owner = ItemContentOwner(itemId: 'patch-declared-$truncated');
         final atom = ChatAtom(
           id: 'patch-declared-$truncated',
+          completionItemId: 'patch-declared-$truncated',
+          completionSeq: 1,
           source: BackgroundResultChatSource(messageId: 'patch-$truncated'),
           sourceOrder: null,
           kind: ChatAtomKind.toolCall,
@@ -1317,12 +1328,17 @@ void main() {
           ],
         );
         final unit = TimelineDisplayUnit(
-          entry: CompletedEntry(
-            recordId: 'patch-declared-$truncated',
-            completionSeq: 1,
-            run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-            mainPresentation: MainPresentation.single,
-            atom: atom,
+          block: DisplayBlock(
+            id: 'patch-declared-$truncated',
+            historyPos: 1,
+            body: SingleDisplayBlock(
+              record: DisplayRecord(
+                atom: atom,
+                contentSource: CompletedOriginal(
+                  completionId: 'patch-declared-$truncated',
+                ),
+              ),
+            ),
           ),
         );
         addTearDown(unit.expansion.dispose);

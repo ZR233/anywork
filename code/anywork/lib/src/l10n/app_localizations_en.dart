@@ -1905,6 +1905,39 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupExecutingUnderSecond => 'Running for less than 1s';
+
+  @override
+  String timelineGroupExecutingSeconds(int seconds) {
+    return 'Running for ${seconds}s';
+  }
+
+  @override
+  String timelineGroupExecutingMinutes(int minutes) {
+    return 'Running for ${minutes}m';
+  }
+
+  @override
+  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
+    return 'Running for ${minutes}m ${seconds}s';
+  }
+
+  @override
+  String get timelineGroupClosing => 'Finishing work';
+
+  @override
+  String get timelineGroupWaitingForNext => 'Waiting for the next step';
+
+  @override
+  String get timelineGroupUnrestored =>
+      'Previous work is unfinished and has not resumed';
+
+  @override
+  String timelineGroupTransferredCount(int count) {
+    return '$count transferred';
+  }
+
+  @override
   String get timelineReasoningSummary => 'Summary';
 
   @override

@@ -18,6 +18,7 @@ export 'src/models/model_catalog.dart';
 export 'src/modes/domain/mode_catalog_models.dart';
 export 'src/modes/domain/mode_editor_models.dart';
 export 'src/models/persistence_models.dart';
+export 'src/models/presentation_models.dart';
 export 'src/models/product_topic_models.dart';
 export 'src/models/account_models.dart';
 export 'src/models/acp_models.dart';

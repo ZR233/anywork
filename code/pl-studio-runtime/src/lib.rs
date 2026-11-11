@@ -96,7 +96,7 @@ pub use protocol::{
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ContentWatch,
-    ConversationEvent, ConversationFeed, ConversationReader, ConversationStateFeed,
+    ConversationEvent, ConversationFeed, ConversationReader, ConversationStateFeed, DisplayMembers,
     PersistenceState, PersistenceStateSnapshot, ProductEventBus, SkillSearchResult,
     SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
     StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
@@ -107,7 +107,7 @@ pub use studio::{
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioUpdateStateSnapshot,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    ThreadsObservation, WorkspaceRecord,
+    ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

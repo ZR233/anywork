@@ -9,7 +9,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
 use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
 use pl_studio_runtime::{
-    ConversationEvent, ConversationFeed, ConversationStateFeed, StudioProductFrame,
+    ConversationEvent, ConversationStateFeed, StudioProductFrame, TimelineEvent,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -17,7 +17,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
-use crate::conversation::{CONVERSATION_HEADER, ContentRequest, ReadOwner};
+use crate::conversation::{
+    CONVERSATION_HEADER, ContentRequest, EventSender, NativeEvent, NativeFeed, ReadOwner,
+};
 use crate::error::ApiError;
 use crate::routes::{ApiJson, ApiQuery, ProductTopicQuery, StudioApiErrors, parse_product_topic};
 
@@ -331,10 +333,37 @@ pub(crate) async fn thread_events(
         .open_conversation_feed(&thread_id, scope, demand)
         .await
         .map_err(ApiError::from)?;
-    let id = events.subscription_id().to_owned();
-    let owner = Arc::new(ReadOwner::new(thread_id.clone(), events.reader().clone()));
     let (sender, receiver) = mpsc::channel(1);
-    let mut pending = Some((events, permit));
+    let id = register_conversation(
+        &state,
+        thread_id,
+        NativeFeed::Conversation(Box::new(events)),
+        permit,
+        Some(sender),
+    )
+    .await?;
+    Ok((
+        [(CONVERSATION_HEADER, id)],
+        Sse::new(ReceiverStream::new(receiver))
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")),
+    ))
+}
+
+/// A missing sender is the timeline open-before-events phase, not a second session.
+pub(crate) async fn register_conversation(
+    state: &AppState,
+    thread_id: String,
+    feed: NativeFeed,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    sender: Option<EventSender>,
+) -> Result<String, ApiError> {
+    let id = feed.subscription_id().to_owned();
+    let owner = Arc::new(ReadOwner::with_feed(thread_id, feed));
+    let (start, started) = tokio::sync::oneshot::channel();
+    if sender.is_none() {
+        *owner.events.lock().expect("conversation start poisoned") = Some(start);
+    }
+    let mut pending = Some((permit, started, sender));
     {
         // Register and start under the same lock used by shutdown and query
         // admission. No capability can outlive an untracked owner task.
@@ -350,25 +379,65 @@ pub(crate) async fn thread_events(
                 }
             }
             owners.readers.insert(id.clone(), owner.clone());
-            let (events, permit) = pending.take().expect("unstarted conversation");
+            let (permit, started, sender) = pending.take().expect("unstarted conversation");
             let state = state.clone();
             let id = id.clone();
             let owner = owner.clone();
             owners.tasks.spawn(async move {
                 let _permit = permit;
-                run_conversation(&state, &id, events, owner, sender).await;
+                let _completion = ConversationCompletion {
+                    owner: Arc::clone(&owner),
+                };
+                let sender = match sender {
+                    Some(sender) => Some(sender),
+                    None => tokio::select! {
+                        biased;
+                        () = state.shutdown.cancelled() => None,
+                        () = owner.cancel.cancelled() => None,
+                        sender = started => sender.ok(),
+                    },
+                };
+                run_conversation(&state, &id, owner, sender).await;
             });
         }
     }
-    if let Some((mut events, _permit)) = pending {
-        close_conversation(&mut events, &owner).await;
+    if let Some((_permit, _started, _sender)) = pending {
+        // Even a shutdown race retains the original slot if its close fails.
+        state
+            .conversations
+            .0
+            .lock()
+            .expect("conversation owners poisoned")
+            .readers
+            .insert(id.clone(), Arc::clone(&owner));
+        let result = close_conversation(&owner).await;
+        owner.completed.send_replace(Some(result.clone()));
+        if result.is_ok() {
+            state.conversations.forget(&id);
+        }
+        result.map_err(ApiError)?;
         return Err(crate::conversation::stale_scope());
     }
-    Ok((
-        [(CONVERSATION_HEADER, id)],
-        Sse::new(ReceiverStream::new(receiver))
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")),
-    ))
+    Ok(id)
+}
+
+struct ConversationCompletion {
+    owner: Arc<ReadOwner>,
+}
+
+impl Drop for ConversationCompletion {
+    fn drop(&mut self) {
+        if self.owner.completed.borrow().is_none() {
+            self.owner.request_close();
+            self.owner
+                .completed
+                .send_replace(Some(Err(pl_protocol::studio::StudioError::new(
+                    pl_protocol::studio::StudioErrorCode::Internal,
+                    "conversation HTTP owner task did not finish cleanup",
+                    false,
+                ))));
+        }
+    }
 }
 
 /// State delivery never waits for the content SSE consumer or its read lease.
@@ -473,59 +542,96 @@ async fn run_conversation_state(
 async fn run_conversation(
     state: &AppState,
     id: &str,
-    mut events: ConversationFeed,
     owner: Arc<ReadOwner>,
-    sender: mpsc::Sender<Result<Event, Infallible>>,
+    sender: Option<EventSender>,
 ) {
-    let mut failure = None;
-    loop {
-        // Reserve before polling the feed: at most one queued frame, with no
-        // second encoded body held while waiting for the slow HTTP consumer.
-        let capacity = tokio::select! {
-            biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel.cancelled() => break,
-            capacity = sender.reserve() => match capacity {
-                Ok(capacity) => capacity,
-                Err(_) => break,
-            },
-        };
-        let received = tokio::select! {
-            biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel.cancelled() => break,
-            () = sender.closed() => break,
-            received = events.recv() => received,
-        };
-        match received {
-            Ok(Some(event)) => match encode_conversation_event(&event) {
-                Ok(event) => {
-                    capacity.send(Ok(event));
+    if let Some(sender) = &sender {
+        let mut native = owner.native.lock().await;
+        if let Some(events) = native.as_mut() {
+            loop {
+                // Reserve before polling the feed: at most one queued frame, with no
+                // second encoded body held while waiting for the slow HTTP consumer.
+                let capacity = tokio::select! {
+                    biased;
+                    () = state.shutdown.cancelled() => break,
+                    () = owner.cancel.cancelled() => break,
+                    capacity = sender.reserve() => match capacity {
+                        Ok(capacity) => capacity,
+                        Err(_) => break,
+                    },
+                };
+                let received = tokio::select! {
+                    biased;
+                    () = state.shutdown.cancelled() => break,
+                    () = owner.cancel.cancelled() => break,
+                    () = sender.closed() => break,
+                    received = events.recv() => received,
+                };
+                match received {
+                    Ok(Some(event)) => {
+                        if let NativeEvent::Timeline(TimelineEvent::Timeline { batch }) = &event
+                            && let Err(error) = batch.validate()
+                        {
+                            if let Ok(event) = encode_event("error", None, &error) {
+                                capacity.send(Ok(event));
+                            }
+                            break;
+                        }
+                        match encode_native_event(&event) {
+                            Ok(event) => {
+                                capacity.send(Ok(event));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let error = pl_studio_runtime::studio_error_from_anyhow(error);
+                        // This capacity was reserved before receive, so a domain failure is
+                        // delivered without either dropping it or blocking cancellation.
+                        if let Ok(event) = encode_event("error", None, &error) {
+                            capacity.send(Ok(event));
+                        }
+                        break;
+                    }
                 }
-                Err(_) => break,
-            },
-            Ok(None) => break,
-            Err(error) => {
-                failure = Some(pl_studio_runtime::studio_error_from_anyhow(error));
-                break;
             }
         }
     }
     // Seal admission before any potentially backpressured terminal delivery.
     state.conversations.remove(id);
-    close_conversation(&mut events, &owner).await;
-    if let Some(error) = failure {
-        let _ = send_json(&sender, &state.shutdown, "error", None, &error).await;
+    let result = close_conversation(&owner).await;
+    if result.is_ok() {
+        state.conversations.forget(id);
     }
-    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+    if let Some(sender) = sender {
+        if let Err(error) = &result
+            && let Ok(event) = encode_event("error", None, &error)
+        {
+            let _ = sender.try_send(Ok(event));
+        }
+        let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+    }
+    owner.completed.send_replace(Some(result));
 }
 
-async fn close_conversation(events: &mut ConversationFeed, owner: &ReadOwner) {
-    owner.cancel.cancel();
-    events.request_close();
-    owner.reader.request_close();
+pub(crate) async fn close_conversation(
+    owner: &ReadOwner,
+) -> Result<(), pl_protocol::studio::StudioError> {
+    owner.request_close();
+    let _close = owner.close_gate.lock().await;
     // These are independent owners: one failure must never skip the other join.
-    let (feed_result, reader_result) = tokio::join!(events.close(), owner.reader.close());
+    let feed_close = async {
+        let mut native = owner.native.lock().await;
+        if let Some(feed) = native.as_mut() {
+            feed.request_close();
+            feed.close().await?;
+            native.take();
+        }
+        Ok(())
+    };
+    let (feed_result, reader_result) = tokio::join!(feed_close, owner.reader.close());
+    let mut failure = None;
     for (side, result) in [("feed", feed_result), ("reader", reader_result)] {
         if let Err(error) = result {
             let mapped = pl_studio_runtime::studio_error_from_anyhow(error);
@@ -534,9 +640,47 @@ async fn close_conversation(events: &mut ConversationFeed, owner: &ReadOwner) {
                 code = mapped.code.label(),
                 "conversation SSE close failed"
             );
+            failure.get_or_insert(mapped);
         }
     }
     owner.drain().await;
+    let members = owner
+        .members
+        .lock()
+        .expect("conversation members poisoned")
+        .clone();
+    for member in members {
+        let mut native = member.lock().await;
+        if let Some(source) = native.as_mut() {
+            source.request_close();
+            match source.close().await {
+                Ok(()) => {
+                    native.take();
+                }
+                Err(error) => {
+                    failure
+                        .get_or_insert_with(|| pl_studio_runtime::studio_error_from_anyhow(error));
+                }
+            }
+        }
+        if native.is_none() {
+            owner
+                .members
+                .lock()
+                .expect("conversation members poisoned")
+                .retain(|entry| !Arc::ptr_eq(entry, &member));
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+fn encode_native_event(event: &NativeEvent) -> Result<Event, axum::Error> {
+    match event {
+        NativeEvent::Conversation(event) => encode_conversation_event(event),
+        NativeEvent::Timeline(TimelineEvent::Timeline { batch }) => {
+            encode_event("timeline", None, batch)
+        }
+    }
 }
 
 fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::Error> {

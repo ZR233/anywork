@@ -10,24 +10,58 @@ Future<void> fixtureGate(
   String stage, {
   bool release = false,
 }) async {
-  await tester.runAsync(() async {
-    final client = HttpClient();
-    try {
-      final request = await client.openUrl(
-        release ? 'POST' : 'GET',
-        provider.resolve('/__timeline_concept/$stage'),
+  await tester.runAsync(
+    () => _fixtureGateRequest(provider, stage, release: release),
+  );
+}
+
+/// Starts real HTTP I/O without holding a tester guard while frames are sampled.
+///
+/// Returns a completion future that the caller must join to propagate any
+/// request failure.
+Future<({Future<void> completed})> beginFixtureGateRelease(
+  WidgetTester tester,
+  Uri provider,
+  String stage, {
+  void Function(String phase)? onProgress,
+}) async {
+  final started = await tester.runAsync(
+    () async => (
+      completed: _fixtureGateRequest(
+        provider,
+        stage,
+        release: true,
+        onProgress: onProgress,
+      ),
+    ),
+  );
+  return started!;
+}
+
+Future<void> _fixtureGateRequest(
+  Uri provider,
+  String stage, {
+  required bool release,
+  void Function(String phase)? onProgress,
+}) async {
+  final client = HttpClient();
+  try {
+    onProgress?.call('requestStarted');
+    final request = await client.openUrl(
+      release ? 'POST' : 'GET',
+      provider.resolve('/__timeline_concept/$stage'),
+    );
+    final response = await request.close().timeout(const Duration(seconds: 35));
+    onProgress?.call('responseHeaders');
+    await response.drain<void>();
+    onProgress?.call('responseDrained');
+    if (response.statusCode != HttpStatus.noContent) {
+      throw StateError(
+        'Strict fixture ${release ? 'release' : 'reach'} $stage: '
+        'expected ${HttpStatus.noContent}, actual ${response.statusCode}',
       );
-      final response = await request.close().timeout(
-        const Duration(seconds: 35),
-      );
-      await response.drain<void>();
-      expect(
-        response.statusCode,
-        HttpStatus.noContent,
-        reason: 'Strict fixture ${release ? 'release' : 'reach'} $stage',
-      );
-    } finally {
-      client.close(force: true);
     }
-  });
+  } finally {
+    client.close(force: true);
+  }
 }

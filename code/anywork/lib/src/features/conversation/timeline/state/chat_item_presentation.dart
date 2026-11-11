@@ -9,6 +9,18 @@ import 'timeline_display_unit.dart';
 
 const chatItemPresentationKey = 'chatItemPresentation';
 
+/// Frozen observation time ends at its captured cut, not a fabricated terminal.
+extension DisplayRecordTime on DisplayRecord {
+  int? get displayStartedAt => switch (contentSource) {
+    FrozenObservation(capturedAt: null) => null,
+    _ => atom.startedAt,
+  };
+  int? get displayObservedThrough => switch (contentSource) {
+    FrozenObservation(:final capturedAt) => capturedAt,
+    _ => atom.finishedAt,
+  };
+}
+
 ChatItemPresentation? chatItemPresentationOf(Message message) =>
     message.metadata?[chatItemPresentationKey] as ChatItemPresentation?;
 
@@ -32,6 +44,7 @@ final class ChatItemPresentation {
     this.diagnostic,
     this.displayUnit,
     this.atom,
+    this.displayRecord,
   });
 
   final String id;
@@ -48,7 +61,54 @@ final class ChatItemPresentation {
   final String? diagnostic;
   final TimelineDisplayUnit? displayUnit;
   final ChatAtom? atom;
+  final DisplayRecord? displayRecord;
+  bool get observationUnavailable =>
+      displayRecord?.contentSource is FrozenObservation &&
+      !(displayRecord!.contentSource as FrozenObservation).available;
   late final ToolCardReading toolCard = readToolCard(this);
+
+  // The original producer's declaration, not envelope metadata, grants Body
+  // intent. Keeping it on the original atom also keeps it stable after decode.
+  late final List<int> publicInputBodyIndices = _publicInputBodyIndices();
+  bool get hasPublicInputBody => publicInputBodyIndices.isNotEmpty;
+
+  List<int> _publicInputBodyIndices() {
+    final input = atom;
+    if (input == null ||
+        input.source is! InputChatSource ||
+        input.kind != ChatAtomKind.input ||
+        input.payload is! DeferredPayload) {
+      return const [];
+    }
+    return List.unmodifiable([
+      for (var index = 0; index < input.contents.length; index++)
+        if (input.contents[index].role == ChatContentRole.body)
+          if (input.contents[index].reference.target case BodyContentTarget(
+            key: 'body',
+            owner: ItemContentOwner(itemId: final ownerItemId),
+          ))
+            if (ownerItemId == (input.completionItemId ?? input.id)) index,
+    ]);
+  }
+
+  ChatItemPresentation resolvePayload(InlinePayload payload) {
+    final value = decodePayload(id, payload);
+    return ChatItemPresentation(
+      id: id,
+      compatibility: value.compatibility,
+      type: value.type,
+      data: value.data,
+      bodies: value.bodies,
+      raw: value.raw,
+      createdAt: createdAt ?? value.createdAt,
+      authorId: authorId == 'unknown' ? value.authorId : authorId,
+      presentationContract: value.presentationContract,
+      diagnostic: value.diagnostic,
+      displayUnit: displayUnit,
+      atom: atom,
+      displayRecord: displayRecord,
+    );
+  }
 
   bool get presentsFiles {
     if (type != 'tool' || presentationContract != 'builtin.show_files@1') {
@@ -87,12 +147,19 @@ final class ChatItemPresentation {
         : null,
   );
 
-  static ChatItemPresentation decode(ChatAtom message) {
+  static ChatItemPresentation decode(
+    ChatAtom message, {
+    DisplayRecord? record,
+    String? displayId,
+  }) {
+    if (record?.contentSource case FrozenObservation(available: false)) {
+      return _unavailableObservation(displayId ?? message.id, record!);
+    }
     final payload = message.payload;
     if (payload == null) {
       throw const FormatException('Atom has no completion payload');
     }
-    final value = decodePayload(message.id, payload);
+    final value = decodePayload(displayId ?? message.id, payload);
     return ChatItemPresentation(
       id: value.id,
       compatibility: value.compatibility,
@@ -109,11 +176,27 @@ final class ChatItemPresentation {
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
       atom: message,
+      displayRecord: record,
     );
   }
 
   static ChatItemPresentation forUnit(TimelineDisplayUnit unit) {
-    final item = unit.entry.atom;
+    final item = unit.atom;
+    if (item == null) {
+      return ChatItemPresentation(
+        id: unit.id,
+        compatibility: ChatItemCompatibility.current,
+        type: 'displayUnit',
+        data: const {},
+        bodies: const [],
+        displayUnit: unit,
+        authorId: 'assistant',
+      );
+    }
+    final record = (unit.body as SingleDisplayBlock).record;
+    if (record.contentSource case FrozenObservation(available: false)) {
+      return _unavailableObservation(unit.id, record);
+    }
     final author = item.source is InboxMessageChatSource
         ? 'inbox:${(item.source as InboxMessageChatSource).sourceId}'
         : switch (item.textChannel) {
@@ -130,7 +213,7 @@ final class ChatItemPresentation {
             finishedAt <= 8640000000000
         ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
         : null;
-    if (unit.run != null || item.payload == null) {
+    if (item.payload == null) {
       return ChatItemPresentation(
         id: unit.id,
         compatibility: ChatItemCompatibility.current,
@@ -138,6 +221,7 @@ final class ChatItemPresentation {
         data: const {},
         bodies: const [],
         displayUnit: unit,
+        displayRecord: record,
         authorId: author ?? 'unknown',
         createdAt: time,
       );
@@ -158,8 +242,21 @@ final class ChatItemPresentation {
       diagnostic: value.diagnostic,
       displayUnit: unit,
       atom: item,
+      displayRecord: (unit.body as SingleDisplayBlock).record,
     );
   }
+
+  static ChatItemPresentation _unavailableObservation(
+    String id,
+    DisplayRecord record,
+  ) => ChatItemPresentation(
+    id: id,
+    compatibility: ChatItemCompatibility.current,
+    type: 'observation',
+    data: const {},
+    bodies: const [],
+    displayRecord: record,
+  );
 
   static ChatItemPresentation decodePayload(String id, PayloadData payload) {
     if (payload is DeferredPayload) {
@@ -302,6 +399,10 @@ final class ChatItemPresentation {
         decoded = BodyContentTarget(
           owner: switch (owner['kind']) {
             'item' => ItemContentOwner(itemId: owner['itemId'] as String),
+            'displayObservation' => DisplayObservationContentOwner(
+              blockId: owner['blockId'] as String,
+              memberKey: owner['memberKey'] as String,
+            ),
             'current' => CurrentContentOwner(
               domain: owner['domain'] as String,
               id: owner['id'] as String,

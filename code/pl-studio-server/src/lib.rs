@@ -7,6 +7,7 @@ mod routes;
 mod security;
 mod skills_schema;
 mod sse;
+mod timeline;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

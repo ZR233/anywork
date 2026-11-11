@@ -7,7 +7,7 @@ abstract interface class TimelineGroupDisplay {
   String get unitId;
   bool get isCurrent;
   bool get expanded;
-  CompletionRunRef? get runReference;
+  DisplayBlockRef? get blockReference;
   String? get before;
   bool get loading;
   Object? get error;

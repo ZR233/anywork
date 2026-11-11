@@ -14,6 +14,7 @@ import 'package:anywork/src/features/conversation/composer/views/prompt_composer
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -60,6 +61,10 @@ void main() {
     'scenario': 'question-history',
     'runner': 'flutter.integration_test',
     'pass': false,
+    'captureCoverageGaps': {
+      'planPendingDock': 'This strict story only calls request_user_input.',
+      'permissionApproval': 'This story does not request permission approval.',
+    },
   };
 
   setUpAll(() async {
@@ -168,6 +173,45 @@ void main() {
     graph.setConversationPageVisible(true);
 
     report['nativeWindow'] = await configurePresentationWindow(tester);
+    final captures = <Map<String, Object?>>[];
+    report['presentationCaptures'] = captures;
+    Future<void> capture(
+      String fileName,
+      String stage,
+      String coverage, {
+      String? receiptId,
+      String? receiptBlockId,
+    }) async {
+      final threadId = graph.client.selection.state.selectedThreadId!;
+      final state = graph.client.conversations.session(threadId).state;
+      final evidence = <String, Object?>{
+        'fileName': fileName,
+        'fixtureStage': stage,
+        'coverage': coverage,
+        'threadId': threadId,
+        'turnId': state.lastTurn?.turnId,
+        'interactionIds': state.interactions.map((value) => value.id).toList(),
+        'receiptAtomId': ?receiptId,
+        'receiptBlockId': ?receiptBlockId,
+        'mainBlockIds': graph.timeline
+            .lease(threadId)!
+            .controller
+            .messages
+            .map((message) => message.id)
+            .toList(),
+        'captureRequested':
+            Platform
+                .environment['ANYWORK_PRESENTATION_SCREENSHOTS']
+                ?.isNotEmpty ??
+            false,
+        'captureCompleted': false,
+      };
+      captures.add(evidence);
+      await capturePresentation(tester, fileName);
+      expect(tester.takeException(), isNull);
+      evidence['captureCompleted'] = evidence['captureRequested'];
+    }
+
     final priorThreadId = graph.client.selection.state.selectedThreadId;
     final priorTurnId = priorThreadId == null
         ? null
@@ -271,7 +315,11 @@ void main() {
       reason:
           'Questions dock temporarily replaces, rather than clears, the draft',
     );
-    await capturePresentation(tester, 'question-pending-dock.png');
+    await capture(
+      'question-pending-dock.png',
+      'questions-pending released; request_user_input awaiting answers',
+      'Real ordinary question dock replaces, but preserves, the unsent draft.',
+    );
     report['stateInteractionReference'] = await _verifyStateInteractionDetails(
       tester,
       graph,
@@ -318,7 +366,11 @@ void main() {
       graph.client.drafts.composer(draftThread).state.draft,
       _preservedDraft,
     );
-    await capturePresentation(tester, 'question-draft-restored.png');
+    await capture(
+      'question-draft-restored.png',
+      'InteractionAnswers continuation completed',
+      'Real continuation answer and restored original unsent draft.',
+    );
     final receipt = await _questionReceipt(tester, graph, questionTurn!);
     final receiptRoot = find.byKey(
       StudioDriverKeys.timelineUserInput(receipt.id),
@@ -336,7 +388,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
     _expectReceiptTextVisible(tester, receiptRoot, receiptRoot);
-    await capturePresentation(tester, 'question-receipt-collapsed.png');
+    await capture(
+      'question-receipt-collapsed.png',
+      'completed question receipt; collapsed',
+      'Real receipt is laid out without public answer bodies or private content.',
+      receiptId: receipt.atom!.id,
+      receiptBlockId: receipt.id,
+    );
     await _tap(tester, receiptRoot);
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
@@ -375,7 +433,13 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.takeException(), isNull);
       _expectReceiptTextVisible(tester, receiptRoot, witness.$1);
-      await capturePresentation(tester, witness.$2);
+      await capture(
+        witness.$2,
+        'completed question receipt; expanded',
+        'Real receipt public answer/redaction witness; private answer is absent.',
+        receiptId: receipt.atom!.id,
+        receiptBlockId: receipt.id,
+      );
     }
     expect(find.byType(ChatItemView), findsWidgets);
 
@@ -869,55 +933,47 @@ Future<ChatItemPresentation> _questionReceipt(
         turn.state is CompletedStudioTurnState;
   }, 'completed real question continuation Turn');
   final source = ForegroundTurnChatSource(turnId: questionTurn.turnId);
-  CompletedEntry? target;
+  TimelineDisplayUnit? target;
   await _until(tester, () {
     final matches = observed.main
         .where(
           (unit) =>
-              unit.entry.atom.source == source &&
-              unit.entry.mainPresentation == MainPresentation.single &&
-              unit.entry.atom.kind == ChatAtomKind.interaction &&
-              (unit.entry.atom.lifecycle as TerminalChatAtom).outcome ==
+              unit.body is SingleDisplayBlock &&
+              unit.atom!.source == source &&
+              unit.atom!.kind == ChatAtomKind.interaction &&
+              (unit.atom!.lifecycle as TerminalChatAtom).outcome ==
                   ChatTerminalOutcome.completed,
         )
-        .map((unit) => unit.entry)
         .toList();
     expect(matches.length, lessThanOrEqualTo(1));
     target = matches.singleOrNull;
     return target != null;
   }, 'completed question interaction in independent Main status');
   final status = target!;
+  final atom = status.atom!;
   expect(
-    (status.atom.lifecycle as TerminalChatAtom).outcome,
+    (atom.lifecycle as TerminalChatAtom).outcome,
     ChatTerminalOutcome.completed,
   );
-  expect(status.mainPresentation, MainPresentation.single);
-  final payload = status.atom.payload;
-  final byteLength = payload is InlinePayload
-      ? payload.bytes.length
-      : payload is DeferredPayload
-      ? payload.byteLength
-      : null;
+  expect(status.body, isA<SingleDisplayBlock>());
   final reason =
-      'Known small question fixture requires Inline/current business '
-      'presentation within the original frame =${status.recordId}, '
-      'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
-      'Over-budget payloads may remain Deferred in the product.';
-  expect(payload is InlinePayload, isTrue, reason: reason);
-  expect(
-    ChatItemPresentation.forUnit(observed.unit(status.recordId)).compatibility,
-    ChatItemCompatibility.current,
-    reason: reason,
-  );
+      'Canonical question receipt must restore through its original renderer: '
+      '${status.id}/${atom.id}';
   // Reveal the independent status through the production Main owner, then
   // inspect the receipt actually supplied to its real UI, not a fabricated atom.
-  await observed.revealItem(status);
-  final receipt = tester
-      .widget<ChatItemView>(observed.itemRow(status.recordId))
-      .item;
-  expect(receipt.id, status.recordId);
-  expect(receipt.atom, same(status.atom));
-  expect(observed.unit(receipt.id).entry.atom.source, source);
+  await observed.reveal(observed.itemRow(status.id), status.id);
+  late ChatItemPresentation receipt;
+  await _until(tester, () {
+    final row = observed.itemRow(status.id);
+    if (row.evaluate().length != 1) return false;
+    final value = tester.widget<ChatItemView>(row).item;
+    if (value.compatibility != ChatItemCompatibility.current) return false;
+    receipt = value;
+    return true;
+  }, 'canonical question receipt renderer');
+  expect(receipt.id, status.id);
+  expect(receipt.atom, same(atom));
+  expect(observed.unit(receipt.id).atom!.source, source);
   expect(receipt.compatibility, ChatItemCompatibility.current, reason: reason);
   expect(receipt.type, 'tool');
   final invocation = receipt.data['invocation'] as Map<String, Object?>;

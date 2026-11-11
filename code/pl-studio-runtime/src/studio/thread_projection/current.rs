@@ -22,12 +22,19 @@ use std::{
 
 const PREVIEW_BYTES: usize = 512;
 const PREVIEW_COUNT: usize = 4;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::studio) struct ModelPartLocation {
+    pub generation: u32,
+    pub index: usize,
+}
+
 pub(super) type ActiveText = (
     String,
     BodyKey,
     Arc<ContentBlock>,
     u64,
     Option<ThreadTextChannel>,
+    Option<ModelPartLocation>,
 );
 
 #[derive(Debug)]
@@ -65,6 +72,7 @@ pub(in crate::studio) struct CurrentState {
     active_turn: Option<Turn>,
     /// State baseline from this exact owner cut, independent of current collection reads.
     interactions: Arc<[InteractionRequest]>,
+    business_bytes: u64,
     metadata_bytes: OnceLock<u64>,
 }
 
@@ -74,6 +82,7 @@ pub(super) struct CurrentOwner {
     activity: super::activity::ActivityProjection,
     state: Option<Arc<CurrentState>>,
     plan_extension_revision: Option<u64>,
+    interaction_revision: Option<u64>,
     frozen_plan_revision: Option<u64>,
     next_position: i64,
     sources: Arc<[ChatSourceState]>,
@@ -191,7 +200,10 @@ impl CurrentOwner {
             .database_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current owner has no database identity"))?;
-        let activity = self.activity.observe(&thread.id, state);
+        let active = active.into_iter().collect::<Vec<_>>();
+        let activity = self
+            .activity
+            .observe_admitted(&thread.id, state, &self.atoms, &active);
         let mut projection = CurrentProjection::empty(sequence, super::status(state));
         projection.sources = self
             .sources
@@ -266,7 +278,7 @@ impl CurrentOwner {
                 .ok_or_else(|| anyhow::anyhow!("current position exhausted"))?;
             Ok(next_position)
         };
-        for (id, position, block, _ordinal, text_channel) in active {
+        for (id, position, block, _ordinal, text_channel, _model_part) in active {
             let key = position.as_key();
             let owner = ContentOwner::Item {
                 item_id: id.clone(),
@@ -333,19 +345,25 @@ impl CurrentOwner {
             }
             contents.insert(content.descriptor.key.clone(), content);
         }
+        let cached_business = self
+            .state
+            .as_ref()
+            .filter(|_| self.interaction_revision == Some(state.interaction_collection_revision));
         let mut interactions = Vec::new();
-        for id in state.permissions.keys().chain(state.interactions.keys()) {
-            if let Some(interaction) =
-                crate::thread_assembler::project_thread_interaction(&thread.id, id, state)?
-            {
-                let entry = CurrentEntryWrite {
-                    collection: "interactions".into(),
-                    position: collection_position("interactions", &interaction.interaction_id)?,
-                    entry_id: interaction.interaction_id.clone(),
-                    payload: Arc::from(serde_json::to_vec(&interaction)?),
-                };
-                entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
-                interactions.push(interaction);
+        if cached_business.is_none() {
+            for id in state.permissions.keys().chain(state.interactions.keys()) {
+                if let Some(interaction) =
+                    crate::thread_assembler::project_thread_interaction(&thread.id, id, state)?
+                {
+                    let entry = CurrentEntryWrite {
+                        collection: "interactions".into(),
+                        position: collection_position("interactions", &interaction.interaction_id)?,
+                        entry_id: interaction.interaction_id.clone(),
+                        payload: Arc::from(serde_json::to_vec(&interaction)?),
+                    };
+                    entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
+                    interactions.push(interaction);
+                }
             }
         }
         let plan_record = state.extensions.get(crate::plan_tool::PLAN_EXTENSION);
@@ -409,32 +427,68 @@ impl CurrentOwner {
             // Reopening or observing progress must never allocate a resource version.
             revision: state.interaction_collection_revision,
         });
-        let entries = entries
-            .into_iter()
-            .map(|(key, entry)| {
-                let owned = self
-                    .state
-                    .as_ref()
-                    .and_then(|state| state.entries.get(&key))
-                    .filter(|old| old.position == entry.position && old.payload == entry.payload)
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(entry));
-                (key, owned)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let by_position = entries
-            .values()
-            .map(|entry| {
+        let (entries, by_position, interactions, business_bytes) =
+            if let Some(previous) = cached_business {
                 (
-                    (
-                        entry.collection.clone(),
-                        entry.position,
-                        entry.entry_id.clone(),
-                    ),
-                    entry.clone(),
+                    previous.entries.clone(),
+                    previous.by_position.clone(),
+                    previous.interactions.clone(),
+                    previous.business_bytes,
                 )
-            })
-            .collect();
+            } else {
+                let entries = entries
+                    .into_iter()
+                    .map(|(key, entry)| {
+                        let owned = self
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.entries.get(&key))
+                            .filter(|old| {
+                                old.position == entry.position && old.payload == entry.payload
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| Arc::new(entry));
+                        (key, owned)
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let by_position = entries
+                    .values()
+                    .map(|entry| {
+                        (
+                            (
+                                entry.collection.clone(),
+                                entry.position,
+                                entry.entry_id.clone(),
+                            ),
+                            entry.clone(),
+                        )
+                    })
+                    .collect();
+                let business_bytes = entries
+                    .values()
+                    .fold(0u64, |bytes, entry| {
+                        bytes
+                            .saturating_add(entry.payload.len() as u64)
+                            .saturating_add(entry.entry_id.len() as u64)
+                            .saturating_add(128)
+                    })
+                    .saturating_add(interactions.iter().fold(0u64, |bytes, interaction| {
+                        bytes
+                            .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
+                            .saturating_add(super::live::interaction_request_bytes(interaction))
+                    }))
+                    .saturating_add(if interactions.is_empty() {
+                        0
+                    } else {
+                        2 * std::mem::size_of::<usize>() as u64
+                    });
+                (
+                    Arc::new(entries),
+                    Arc::new(by_position),
+                    Arc::from(interactions),
+                    business_bytes,
+                )
+            };
         let mut activity_entries = projection
             .atoms
             .iter()
@@ -498,14 +552,16 @@ impl CurrentOwner {
             source_states: self.sources.clone(),
             contents: Arc::new(contents),
             materialized: OnceLock::new(),
-            entries: Arc::new(entries),
-            by_position: Arc::new(by_position),
+            entries,
+            by_position,
             active_turn,
-            interactions: interactions.into(),
+            interactions,
+            business_bytes,
             metadata_bytes: OnceLock::new(),
         });
         self.state = Some(snapshot.clone());
         self.plan_extension_revision = plan_record.map(|record| record.revision);
+        self.interaction_revision = Some(state.interaction_collection_revision);
         self.next_position = next_position;
         Ok(snapshot)
     }
@@ -691,6 +747,7 @@ impl CurrentState {
             by_position: state.by_position.clone(),
             active_turn: state.active_turn.clone(),
             interactions: state.interactions.clone(),
+            business_bytes: state.business_bytes,
             metadata_bytes: OnceLock::new(),
         })
     }
@@ -709,16 +766,10 @@ impl CurrentState {
     }
     pub(super) fn metadata_bytes(&self) -> u64 {
         *self.metadata_bytes.get_or_init(|| {
-            let entries = self.entries.values().fold(
-                (self.contents.len() as u64).saturating_mul(256),
-                |bytes, entry| {
-                    bytes
-                        .saturating_add(entry.payload.len() as u64)
-                        .saturating_add(entry.entry_id.len() as u64)
-                        .saturating_add(128)
-                },
-            );
-            let entries = entries
+            let entries = self
+                .business_bytes
+                .saturating_add((self.contents.len() as u64).saturating_mul(256));
+            entries
                 .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
                 .saturating_add(self.projection.retained_bytes())
                 .saturating_add(
@@ -728,20 +779,7 @@ impl CurrentState {
                 .saturating_add(
                     serde_json::to_vec(self.activity_entries.as_ref())
                         .map_or(u64::MAX, |bytes| bytes.len() as u64),
-                );
-            // An empty interaction slice owns no dynamic budget, exactly like every other empty
-            // resident list: only a non-empty slice pays its fat-pointer shell here.
-            if self.interactions.is_empty() {
-                return entries;
-            }
-            self.interactions.iter().fold(
-                entries.saturating_add(2 * std::mem::size_of::<usize>() as u64),
-                |bytes, interaction| {
-                    bytes
-                        .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
-                        .saturating_add(super::live::interaction_request_bytes(interaction))
-                },
-            )
+                )
         })
     }
 }
@@ -767,7 +805,14 @@ mod tests {
                 &thread,
                 &state,
                 1,
-                [("part".into(), BodyKey::Body, block.clone(), 1, channel)],
+                [(
+                    "part".into(),
+                    BodyKey::Body,
+                    block.clone(),
+                    1,
+                    channel,
+                    None,
+                )],
             )?;
             let preview = &current.projection().previews[0];
             let generation = current
@@ -815,7 +860,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, block.clone(), 1, None)],
+            [("active".into(), BodyKey::Body, block.clone(), 1, None, None)],
         )?;
         assert!(
             first
@@ -832,7 +877,14 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, appended.clone(), 1, None)],
+            [(
+                "active".into(),
+                BodyKey::Body,
+                appended.clone(),
+                1,
+                None,
+                None,
+            )],
         )?;
         let content = next.contents.values().next().unwrap();
         assert!(
@@ -852,7 +904,14 @@ mod tests {
             &thread,
             &state,
             2,
-            [("active".into(), BodyKey::Body, appended.clone(), 1, None)],
+            [(
+                "active".into(),
+                BodyKey::Body,
+                appended.clone(),
+                1,
+                None,
+                None,
+            )],
         )?;
         assert!(
             prepared.contents.is_empty(),
@@ -872,6 +931,7 @@ mod tests {
                 BodyKey::Body,
                 ContentBlock::from_text(&appended.text()),
                 1,
+                None,
                 None,
             )],
         )?;
@@ -958,13 +1018,19 @@ mod business_tests {
                 ContentBlock::from_text("token"),
                 1,
                 None,
+                None,
             )],
         )?;
         assert_eq!(progress.business_refs(), references);
+        assert!(Arc::ptr_eq(&first.entries, &progress.entries));
+        assert!(Arc::ptr_eq(&first.by_position, &progress.by_position));
+        assert!(Arc::ptr_eq(&first.interactions, &progress.interactions));
         assert!(progress.projection().collections.is_empty());
         let new = state(4, "# New plan\n\nRevised steps")?;
         let next = owner.observe(&thread, &new, 11, [])?;
         assert_eq!(next.business_refs().interactions, references.interactions);
+        assert!(Arc::ptr_eq(&first.entries, &next.entries));
+        assert!(Arc::ptr_eq(&first.interactions, &next.interactions));
         assert_ne!(next.business_refs().plan, references.plan);
         assert!(
             next.business_refs_at(&thread.id, &old).is_err(),

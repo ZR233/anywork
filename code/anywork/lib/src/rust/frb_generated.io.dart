@@ -16,6 +16,7 @@ import 'api/studio/handlers/agent_profiles.dart';
 import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/bots.dart';
 import 'api/studio/handlers/chat.dart';
+import 'api/studio/handlers/chat/timeline.dart';
 import 'api/studio/handlers/delegation.dart';
 import 'api/studio/handlers/external_state.dart';
 import 'api/studio/handlers/lifecycle.dart';
@@ -46,6 +47,7 @@ import 'api/studio/types/error.dart';
 import 'api/studio/types/event.dart';
 import 'api/studio/types/mcp.dart';
 import 'api/studio/types/mode_editor.dart';
+import 'api/studio/types/presentation.dart';
 import 'api/studio/types/product_topic.dart';
 import 'api/studio/types/response.dart';
 import 'api/studio/types/runtime.dart';
@@ -88,6 +90,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeedPtr;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeDisplayMembersPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_BridgeEventSubscriptionPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscriptionPtr;
 
@@ -111,6 +117,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_BridgeThreadsObservationPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservationPtr;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeTimelineFeedPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeedPtr;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
@@ -129,6 +139,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationStateFeed
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMembers
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     dynamic raw,
   );
 
@@ -169,6 +185,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineFeed
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAccountObservation
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     dynamic raw,
@@ -183,6 +205,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationStateFeed
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMembers
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     dynamic raw,
   );
 
@@ -223,6 +251,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineFeed
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    dynamic raw,
+  );
+
+  @protected
   Map<String, bool> dco_decode_Map_String_bool_None(dynamic raw);
 
   @protected
@@ -240,6 +274,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationStateFeed
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMembers
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     dynamic raw,
   );
 
@@ -276,6 +316,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadsObservation
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeTimelineFeed
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
     dynamic raw,
   );
 
@@ -544,6 +590,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeChatScope dco_decode_box_autoadd_bridge_chat_scope(dynamic raw);
 
   @protected
+  BridgeChatSourceId dco_decode_box_autoadd_bridge_chat_source_id(dynamic raw);
+
+  @protected
   BridgeChatSourceState dco_decode_box_autoadd_bridge_chat_source_state(
     dynamic raw,
   );
@@ -644,6 +693,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_disabled_updater_state(dynamic raw);
 
   @protected
+  BridgeDisplayBlockRef dco_decode_box_autoadd_bridge_display_block_ref(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMemberPage dco_decode_box_autoadd_bridge_display_member_page(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMemberWindow dco_decode_box_autoadd_bridge_display_member_window(
+    dynamic raw,
+  );
+
+  @protected
   BridgeDownloadingUpdaterState
   dco_decode_box_autoadd_bridge_downloading_updater_state(dynamic raw);
 
@@ -697,6 +761,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListDelegationModelsRequest
   dco_decode_box_autoadd_bridge_list_delegation_models_request(dynamic raw);
+
+  @protected
+  BridgeLiveDisplayWindow dco_decode_box_autoadd_bridge_live_display_window(
+    dynamic raw,
+  );
 
   @protected
   BridgeLoadingResource dco_decode_box_autoadd_bridge_loading_resource(
@@ -1222,6 +1291,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayRecord dco_decode_box_bridge_display_record(dynamic raw);
+
+  @protected
   BridgeInteractionRequest dco_decode_box_bridge_interaction_request(
     dynamic raw,
   );
@@ -1276,7 +1348,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_bridge_thread_subscription_update(dynamic raw);
 
   @protected
+  BridgeTimelineBatch dco_decode_box_bridge_timeline_batch(dynamic raw);
+
+  @protected
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
+
+  @protected
+  BridgeWorkSummary dco_decode_box_bridge_work_summary(dynamic raw);
 
   @protected
   StartNewThreadResponse dco_decode_box_start_new_thread_response(dynamic raw);
@@ -1995,6 +2073,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayBlock dco_decode_bridge_display_block(dynamic raw);
+
+  @protected
+  BridgeDisplayBlockBody dco_decode_bridge_display_block_body(dynamic raw);
+
+  @protected
+  BridgeDisplayBlockRef dco_decode_bridge_display_block_ref(dynamic raw);
+
+  @protected
+  BridgeDisplayBlockState dco_decode_bridge_display_block_state(dynamic raw);
+
+  @protected
+  BridgeDisplayContentSource dco_decode_bridge_display_content_source(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayMemberHead dco_decode_bridge_display_member_head(dynamic raw);
+
+  @protected
+  BridgeDisplayMemberPage dco_decode_bridge_display_member_page(dynamic raw);
+
+  @protected
+  BridgeDisplayMemberWindow dco_decode_bridge_display_member_window(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDisplayRecord dco_decode_bridge_display_record(dynamic raw);
+
+  @protected
   BridgeDownloadingUpdaterState dco_decode_bridge_downloading_updater_state(
     dynamic raw,
   );
@@ -2078,6 +2187,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListDelegationModelsRequest
   dco_decode_bridge_list_delegation_models_request(dynamic raw);
+
+  @protected
+  BridgeLiveDisplayBlock dco_decode_bridge_live_display_block(dynamic raw);
+
+  @protected
+  BridgeLiveDisplayWindow dco_decode_bridge_live_display_window(dynamic raw);
 
   @protected
   BridgeLoadingResource dco_decode_bridge_loading_resource(dynamic raw);
@@ -2887,6 +3002,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineBatch dco_decode_bridge_timeline_batch(dynamic raw);
+
+  @protected
   BridgeTodoItem dco_decode_bridge_todo_item(dynamic raw);
 
   @protected
@@ -3041,6 +3159,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeWebSearchSettingsDto dco_decode_bridge_web_search_settings_dto(
     dynamic raw,
   );
+
+  @protected
+  BridgeWorkSummary dco_decode_bridge_work_summary(dynamic raw);
 
   @protected
   BridgeWorkflowDefinition dco_decode_bridge_workflow_definition(dynamic raw);
@@ -3295,7 +3416,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_delegation_model_list_item(dynamic raw);
 
   @protected
+  List<BridgeDisplayBlock> dco_decode_list_bridge_display_block(dynamic raw);
+
+  @protected
+  List<BridgeDisplayMemberHead> dco_decode_list_bridge_display_member_head(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeInteractionRequest> dco_decode_list_bridge_interaction_request(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeLiveDisplayBlock> dco_decode_list_bridge_live_display_block(
     dynamic raw,
   );
 
@@ -3629,6 +3763,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_chat_gpt_login_failure(dynamic raw);
 
   @protected
+  BridgeChatSourceId? dco_decode_opt_box_autoadd_bridge_chat_source_id(
+    dynamic raw,
+  );
+
+  @protected
   BridgeChatSourceState? dco_decode_opt_box_autoadd_bridge_chat_source_state(
     dynamic raw,
   );
@@ -3678,9 +3817,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
   @protected
+  BridgeDisplayMemberPage?
+  dco_decode_opt_box_autoadd_bridge_display_member_page(dynamic raw);
+
+  @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
     dynamic raw,
   );
+
+  @protected
+  BridgeLiveDisplayWindow?
+  dco_decode_opt_box_autoadd_bridge_live_display_window(dynamic raw);
 
   @protected
   BridgeMcpDocumentDiagnostic?
@@ -4013,6 +4160,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayMembers
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeEventSubscription
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
     SseDeserializer deserializer,
@@ -4049,6 +4202,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineFeed
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAccountObservation
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     SseDeserializer deserializer,
@@ -4063,6 +4222,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationStateFeed
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMembers
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     SseDeserializer deserializer,
   );
 
@@ -4103,6 +4268,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineFeed
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Map<String, bool> sse_decode_Map_String_bool_None(
     SseDeserializer deserializer,
   );
@@ -4122,6 +4293,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeConversationStateFeed
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMembers
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
     SseDeserializer deserializer,
   );
 
@@ -4158,6 +4335,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadsObservation
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTimelineFeed
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
     SseDeserializer deserializer,
   );
 
@@ -4478,6 +4661,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatSourceId sse_decode_box_autoadd_bridge_chat_source_id(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatSourceState sse_decode_box_autoadd_bridge_chat_source_state(
     SseDeserializer deserializer,
   );
@@ -4608,6 +4796,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayBlockRef sse_decode_box_autoadd_bridge_display_block_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMemberPage sse_decode_box_autoadd_bridge_display_member_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMemberWindow sse_decode_box_autoadd_bridge_display_member_window(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDownloadingUpdaterState
   sse_decode_box_autoadd_bridge_downloading_updater_state(
     SseDeserializer deserializer,
@@ -4679,6 +4882,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListDelegationModelsRequest
   sse_decode_box_autoadd_bridge_list_delegation_models_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeLiveDisplayWindow sse_decode_box_autoadd_bridge_live_display_window(
     SseDeserializer deserializer,
   );
 
@@ -5366,6 +5574,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayRecord sse_decode_box_bridge_display_record(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeInteractionRequest sse_decode_box_bridge_interaction_request(
     SseDeserializer deserializer,
   );
@@ -5436,7 +5649,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineBatch sse_decode_box_bridge_timeline_batch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer);
+
+  @protected
+  BridgeWorkSummary sse_decode_box_bridge_work_summary(
+    SseDeserializer deserializer,
+  );
 
   @protected
   StartNewThreadResponse sse_decode_box_start_new_thread_response(
@@ -6381,6 +6604,51 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayBlock sse_decode_bridge_display_block(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayBlockBody sse_decode_bridge_display_block_body(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayBlockRef sse_decode_bridge_display_block_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayBlockState sse_decode_bridge_display_block_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayContentSource sse_decode_bridge_display_content_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMemberHead sse_decode_bridge_display_member_head(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMemberPage sse_decode_bridge_display_member_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayMemberWindow sse_decode_bridge_display_member_window(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDisplayRecord sse_decode_bridge_display_record(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDownloadingUpdaterState sse_decode_bridge_downloading_updater_state(
     SseDeserializer deserializer,
   );
@@ -6488,6 +6756,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListDelegationModelsRequest
   sse_decode_bridge_list_delegation_models_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeLiveDisplayBlock sse_decode_bridge_live_display_block(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeLiveDisplayWindow sse_decode_bridge_live_display_window(
     SseDeserializer deserializer,
   );
 
@@ -7473,6 +7751,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeTimelineBatch sse_decode_bridge_timeline_batch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeTodoItem sse_decode_bridge_todo_item(SseDeserializer deserializer);
 
   @protected
@@ -7661,6 +7944,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeWebSearchSettingsDto sse_decode_bridge_web_search_settings_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeWorkSummary sse_decode_bridge_work_summary(
     SseDeserializer deserializer,
   );
 
@@ -7979,7 +8267,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeDisplayBlock> sse_decode_list_bridge_display_block(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeDisplayMemberHead> sse_decode_list_bridge_display_member_head(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeInteractionRequest> sse_decode_list_bridge_interaction_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeLiveDisplayBlock> sse_decode_list_bridge_live_display_block(
     SseDeserializer deserializer,
   );
 
@@ -8377,6 +8680,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChatSourceId? sse_decode_opt_box_autoadd_bridge_chat_source_id(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatSourceState? sse_decode_opt_box_autoadd_bridge_chat_source_state(
     SseDeserializer deserializer,
   );
@@ -8436,7 +8744,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayMemberPage?
+  sse_decode_opt_box_autoadd_bridge_display_member_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryFault? sse_decode_opt_box_autoadd_bridge_history_fault(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeLiveDisplayWindow?
+  sse_decode_opt_box_autoadd_bridge_live_display_window(
     SseDeserializer deserializer,
   );
 
@@ -8870,6 +9190,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    BridgeDisplayMembers self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
     BridgeEventSubscription self,
     SseSerializer serializer,
@@ -8912,6 +9239,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    BridgeTimelineFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     BridgeAccountObservation self,
     SseSerializer serializer,
@@ -8928,6 +9262,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     BridgeConversationStateFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    BridgeDisplayMembers self,
     SseSerializer serializer,
   );
 
@@ -8974,6 +9315,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    BridgeTimelineFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_Map_String_bool_None(
     Map<String, bool> self,
     SseSerializer serializer,
@@ -8997,6 +9345,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeConversationStateFeed(
     BridgeConversationStateFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    BridgeDisplayMembers self,
     SseSerializer serializer,
   );
 
@@ -9039,6 +9394,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation(
     BridgeThreadsObservation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    BridgeTimelineFeed self,
     SseSerializer serializer,
   );
 
@@ -9403,6 +9765,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_chat_source_id(
+    BridgeChatSourceId self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_chat_source_state(
     BridgeChatSourceState self,
     SseSerializer serializer,
@@ -9547,6 +9915,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_display_block_ref(
+    BridgeDisplayBlockRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_display_member_page(
+    BridgeDisplayMemberPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_display_member_window(
+    BridgeDisplayMemberWindow self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_downloading_updater_state(
     BridgeDownloadingUpdaterState self,
     SseSerializer serializer,
@@ -9627,6 +10013,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_list_delegation_models_request(
     BridgeListDelegationModelsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_live_display_window(
+    BridgeLiveDisplayWindow self,
     SseSerializer serializer,
   );
 
@@ -10387,6 +10779,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_display_record(
+    BridgeDisplayRecord self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_interaction_request(
     BridgeInteractionRequest self,
     SseSerializer serializer,
@@ -10465,7 +10863,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_timeline_batch(
+    BridgeTimelineBatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_bridge_work_summary(
+    BridgeWorkSummary self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_start_new_thread_response(
@@ -11620,6 +12030,60 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_display_block(
+    BridgeDisplayBlock self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_block_body(
+    BridgeDisplayBlockBody self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_block_ref(
+    BridgeDisplayBlockRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_block_state(
+    BridgeDisplayBlockState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_content_source(
+    BridgeDisplayContentSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_member_head(
+    BridgeDisplayMemberHead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_member_page(
+    BridgeDisplayMemberPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_member_window(
+    BridgeDisplayMemberWindow self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_display_record(
+    BridgeDisplayRecord self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_downloading_updater_state(
     BridgeDownloadingUpdaterState self,
     SseSerializer serializer,
@@ -11757,6 +12221,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_list_delegation_models_request(
     BridgeListDelegationModelsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_live_display_block(
+    BridgeLiveDisplayBlock self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_live_display_window(
+    BridgeLiveDisplayWindow self,
     SseSerializer serializer,
   );
 
@@ -12952,6 +13428,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_timeline_batch(
+    BridgeTimelineBatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_todo_item(
     BridgeTodoItem self,
     SseSerializer serializer,
@@ -13191,6 +13673,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_web_search_settings_dto(
     BridgeWebSearchSettingsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_work_summary(
+    BridgeWorkSummary self,
     SseSerializer serializer,
   );
 
@@ -13564,8 +14052,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_display_block(
+    List<BridgeDisplayBlock> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_display_member_head(
+    List<BridgeDisplayMemberHead> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_interaction_request(
     List<BridgeInteractionRequest> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_live_display_block(
+    List<BridgeLiveDisplayBlock> self,
     SseSerializer serializer,
   );
 
@@ -14029,6 +14535,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_chat_source_id(
+    BridgeChatSourceId? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_chat_source_state(
     BridgeChatSourceState? self,
     SseSerializer serializer,
@@ -14095,8 +14607,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_display_member_page(
+    BridgeDisplayMemberPage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_history_fault(
     BridgeHistoryFault? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_live_display_window(
+    BridgeLiveDisplayWindow? self,
     SseSerializer serializer,
   );
 
@@ -14665,6 +15189,40 @@ class RustLibWire implements BaseWire {
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembers =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeDisplayMembersPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
     ffi.Pointer<ffi.Void> ptr,
   ) {
@@ -14866,5 +15424,39 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservationPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeedPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeedPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeedPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_anywork_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeed =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeTimelineFeedPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }

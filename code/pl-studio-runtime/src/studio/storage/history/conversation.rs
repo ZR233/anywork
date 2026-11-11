@@ -15,6 +15,7 @@ pub(in crate::studio) mod completed;
 pub(in crate::studio::storage::history) mod content;
 #[path = "conversation/current.rs"]
 pub(in crate::studio) mod current;
+pub(in crate::studio) mod display;
 mod facts;
 #[path = "conversation/migration.rs"]
 pub(super) mod migration;

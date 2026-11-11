@@ -3446,6 +3446,54 @@ abstract class AppLocalizations {
   /// **'Worked for {minutes}m {seconds}s'**
   String timelineGroupWorkedMinutesSeconds(int minutes, int seconds);
 
+  /// No description provided for @timelineGroupExecutingUnderSecond.
+  ///
+  /// In en, this message translates to:
+  /// **'Running for less than 1s'**
+  String get timelineGroupExecutingUnderSecond;
+
+  /// No description provided for @timelineGroupExecutingSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Running for {seconds}s'**
+  String timelineGroupExecutingSeconds(int seconds);
+
+  /// No description provided for @timelineGroupExecutingMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Running for {minutes}m'**
+  String timelineGroupExecutingMinutes(int minutes);
+
+  /// No description provided for @timelineGroupExecutingMinutesSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Running for {minutes}m {seconds}s'**
+  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds);
+
+  /// No description provided for @timelineGroupClosing.
+  ///
+  /// In en, this message translates to:
+  /// **'Finishing work'**
+  String get timelineGroupClosing;
+
+  /// No description provided for @timelineGroupWaitingForNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for the next step'**
+  String get timelineGroupWaitingForNext;
+
+  /// No description provided for @timelineGroupUnrestored.
+  ///
+  /// In en, this message translates to:
+  /// **'Previous work is unfinished and has not resumed'**
+  String get timelineGroupUnrestored;
+
+  /// No description provided for @timelineGroupTransferredCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} transferred'**
+  String timelineGroupTransferredCount(int count);
+
   /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:

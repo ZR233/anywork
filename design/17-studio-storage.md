@@ -165,7 +165,7 @@ SQLite 分类使用官方主错误码而非诊断文案：具名数据迁移中�
 
 已经写入用户库的具名迁移身份属于持久化契约，不能因首次迁移的实现改进而删除注册。`m20261104_000001_history_background_results` 保留原身份、顺序和转换；已 Applied 时由 SeaORM 跳过，未知 Applied 名称仍明确拒绝，不删除或伪造账本。格式 15 曾存在六列和八列两种成员表，新增 `m20261107_000001_history_member_read_metadata` 在原子元数据步骤之后、旧后台修正之前处理这两种明确输入：已有六列表在同一迁移事务内补充 `updated_effect` 与 `payload_bytes`，从已保存投影切点取得活动头的保守更新上界、从原完成载荷取得确知长度；已有八列表保留原数据。格式 14 尚无派生成员表，由后继 TimelineItems 创建当前结构。升级不重建展示项，不改来源事实、顺序、正文、恢复内容或投影代际；DDL、回填及 Applied 同事务提交。Applied 后再次缺列属于损坏，普通打开不修补。
 
-`m20261108_000001_history_source_classification` 在上述内容步骤、TimelineItems 及思考摘要内容升级之后、执行生命周期迁移之前追加，消费已保存的来源类型证据修正分类元数据，并按 [26.11](./26-timeline-content.md#2611-内容迁移与保全) 重建派生模型和代际；不改变物理历史格式号、原正文与旧 Applied。新库、受支持旧库和仅内容打开均经过同一具名步骤；主线思考摘要迁移已 Applied、来源分类仍 pending 的库只补执行来源分类，重建保留摘要与后台分组语义。结构与恢复头的损坏不能冒充待建输出。该步骤与成员读取元数据迁移的“不重建、不换代”职责不同，不合并或改写旧步骤。
+`m20261108_000001_history_source_classification` 在上述内容步骤、TimelineItems 及思考摘要内容升级之后、执行生命周期迁移之前追加，消费已保存的来源类型证据修正分类元数据，并按 [26.11](./26-timeline-content.md#2610-迁移与保全) 重建派生模型和代际；不改变物理历史格式号、原正文与旧 Applied。新库、受支持旧库和仅内容打开均经过同一具名步骤；主线思考摘要迁移已 Applied、来源分类仍 pending 的库只补执行来源分类，重建保留摘要与后台分组语义。结构与恢复头的损坏不能冒充待建输出。该步骤与成员读取元数据迁移的“不重建、不换代”职责不同，不合并或改写旧步骤。
 
 显式打开单个会话（`Thread`）按以下步骤有序执行：
 
@@ -287,6 +287,8 @@ Thread 的可靠队列、投影驻留、终态交付材料与执行身份索引�
 公开的持久化诊断状态完整保留脏数据版本（`dirty`）、正在保存版本（`saving`）与已落盘版本（`durable`）、历史库的已接纳与已落盘 effect 水位、待保存批次数量与字节数、最老未落盘批次等待时长、当前故障代次（`fault_generation`）及准入暂停状态。调用诊断保留实际材料队列的全局压力、错误与缺口展示；全局已接纳与已处理 ticket 是写入器及协调器的内部观察，不另增前端 wire 字段。已处理包含明确拒绝，不是成功耐久证明，不再向每会话发布 calls effect 水位。当可靠历史保存发生故障时，系统完整保留未落盘批次并在安全间隙暂停新模型与新工具准入，待用户通过显式重试与显式继续协议确认修复后方才恢复执行；调用诊断日志的写入故障则单独上报，不纳入可靠会话保存屏障。聊天界面顶部横幅仅提示可靠存储故障、执行准入暂停或存储容量背压；调用诊断日志缺口仅在设置页的统计视图中提示，不会因全局调试日志曾发生写入失败而在聊天窗口常驻显示保存故障横幅。会话关闭与应用退出必须等待相关会话到达固定的可靠落盘水位，严禁在仍有未保存事实时谎报关闭成功；全局对外报告的已确认水位取所有相关会话所有者的最小值（即要求每个所有者均已推进至各自目标水位），禁止用单个会话的最大水位冒充全局确认。
 
 应用关闭时的持久化收束严格以历史写入器的真实确认（writer ACK）为准：在写入器确认落盘完成之前，系统继续保留会话所有者与数据库句柄；只要仍有任一历史写入器处于运行状态，即禁止关闭底层 SQLite 连接，也禁止释放跨进程实例文件锁。关闭编排按真实的有向依赖顺序推进写入收束链——后台工具任务、活动轮次、子智能体与自动标题生成等上游生产者的停止确认（stop ACK），严格先于可靠保存通道排空（drain）与历史写入器停止；而历史写入器的真实落盘确认，又严格先于关闭数据库连接与释放实例文件锁。与此同时，与会话持久化无依赖关系的独立所有者（如后台文件监视器、本地 MCP 服务、本地 LSP 服务、界面订阅流及应用更新检查器）则与上述写入收束链**并发**推进收束，共享首次退出请求固定的同一绝对期限剩余时间预算，避免逐个串行等待而相互挤占超时预算。
+
+成员拥有的 MCP 同样遵循上述独立收束规则：应用退出早期封闭准入并广播取消时，由原 `NativeResources` 中的 MCP owner 发起其唯一、受持有的停止任务，不等待 Dart 读取资源的取消确认、Turn 终态保存或 SQLite 写入锁释放。重复通知复用同一次在途停止；原会话关闭路径随后加入该任务并观察真实结果，成功后才能移除资源引用，失败仍保留原 owner 和错误供关闭报告或重试。早期发起不等于停止确认，也不移除工具绑定、关闭数据库、释放工作区或实例锁；最终成功仍受所有生产者、订阅与可靠保存的真实确认约束，不新增关闭协调器或第二套资源登记。
 
 需要注意，SSH 远端传输通道（SSH transport）与远端工具及远端服务之间存在直接依赖，不属于可无序并发关闭的独立所有者：由于 SSH 传输通道承载着远端 MCP、远端 LSP 与远端命令工具的通信，其物理连接关闭（即终止本地 SSH 客户端子进程）必须发生在上述远端依赖项的停止请求下发与结果处理完成、以及驱动远端工具的上游生产者（活动轮次、智能体等）确认停止**之后**；否则提前切断 SSH 管道会导致正在正常退出的健康远端资源被误判为通信异常失败。在满足这一前置依赖后，SSH 传输通道的回收仍与本地数据库写入收束链并发执行，无需等待与远端无关的本地 SQLite 事务提交；若前置远端依赖在预算期限内停止超时或报错，编排器按有界降级策略照常发起 SSH 通道回收，仅放弃继续等待该依赖的停止确认，而将其未收束的所有者句柄留在常驻槽位中保留。
 
@@ -595,11 +597,11 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 按需完成历史沿既有 SeaORM 序列追加不可变连续段索引迁移；原已发布来源分类、后台结果身份、完成边界步骤的名称和语义不改。当前格式只消费新索引，不双读双写旧组模型。本文描述目标，不是迁移或验收已完成声明。
 
-完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新。工作段不是持久对象；不保存展示 item、成员关联、item_order、开放/封口或组恢复头。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
+完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新；该原完成读取能力保留给完成级消费者。GUI 使用 §17.19 的增量展示快照，不能把原完成 run 当成当前展示组。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
 
 后台结果的历史身份纠正在同一序列中拥有独立具名步骤，位于原子元数据迁移之后、展示项迁移之前。它以已保存的工具收件箱投递和消息身份账本证明最终结果的消息身份及受理序号，区分原工具移交回执与独立后台结果，保留完成项原身份、序号、载荷、正文引用、检查点和工具投递。缺失或冲突的消息证明使该步骤回滚并保源，不推导新消息身份。对已有完整展示项的库，仅在实际发生纠正时，在同一事务中保留无关真实开始／终态事实并重建派生展示及恢复头；无需纠正时保留原代际。内容准备以具名迁移账本判断待执行步骤，不能仅因物理格式号已是当前值就跳过新增纠正；已应用迁移的缺表、缺恢复头或账本冲突仍明确拒绝。
 
-当前完成索引只有原记录的两个可空 run 列及可见 seq/段 seq 索引。提示从原 typed metadata 经唯一 Native v1 分类还原，不再存 key 或呈现类别列。Main 索引跳过整段、Run 直接按段读记录；算法与切点见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
+原完成索引保留原记录两个可空 run 列及可见 seq/段 seq 索引，提示由原 typed metadata 经唯一 Native v1 分类还原。完成级 Main/Run 查询继续按这些索引读取；GUI 历史改读冻结展示头，见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
 
 普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
 
@@ -674,11 +676,11 @@ schema17→18 新增具名 `m20261110_000001_history_immutable_completion_runs`�
 
 历史13→14→15等准备仍按原发布语义保留原始事实：legacyAdmission/legacySourceEnd 只表达有证据的结构位置，不补造开始/终态/时间，不覆盖已知 effect/suborder。这些旧转换仅在冻结迁移中使用；最终按保留的完成 seq 和新索引显示，不恢复来源顺序工作组。
 
-contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 在记录完成时显式提交完整共享内容及 manifest，不从未知业务 payload 猜引用，不要求数据库预先保存过 active 块。块有大小上限，按 byte_offset 索引定位和顺序读预算范围，不先恢复全文；首次写入只分块保存完整材料，重放或同身份冲突才核对既有内容。目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留；活动内容只由原内存 owner 保有并允许已接纳短读结束，不另建全局 GC。
+contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 在记录完成时提交完整共享内容及 manifest，不从未知 payload 猜引用，不要求预存 active 块。块有大小上限，按 byte_offset 索引顺序读取预算范围，不先恢复全文；首次写入分块保存完整材料，重放或冲突才核既有内容。目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留；原执行活动内容由原内存 owner 保有并允许短读结束。§17.19 的边界派生观察另以独立命名空间保存 sealed 切面并共享 immutable chunks，不覆盖原活动内容，不另建全局 GC。
 
 执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-原轻量业务状态保留真实 active turn、Plan、交互、来源和必要集合引用，不保存有序未交接展示 item、组头或成员树。ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动且 execution_present=false；真实待决业务状态仍可读取和操作。PreparedEffect 保留原可靠检查点及冻结完成材料，不携展示组/交接字段。
+原轻量业务状态保留 active turn、Plan、交互、来源和必要集合引用，不承担展示组装。完成级 ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动；GUI 从 §17.19 读轻量块头和成员引用，execution_present=false。真正开放且无执行 owner 的块显示未恢复；已封存待发布段保持静态观察，不因 history_pos=NULL 显示恢复异常，两者都不伪装运行计时。待决业务状态仍可读和操作。PreparedEffect 同切面捕获可靠检查点、完成材料、边界派生观察及展示增量，唯一 writer 同事务保存，不新增保存队列或逐 token 保存活动正文。
 
 ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立可读材料再发 State，冷源在同一短事务取得字段和引用。Plan 完整 sealed 文档与交互恢复事实仍由原 writer 保存，缺块/坏引用失败，不借全量 checkpoint 或历史卡片补正文。业务引用只含 Plan 与 interactions，旧 tools/members 活动集合退出业务交付；原输入/收件历史不因新封存入口补写猜测的旧完成项。本补充沿同一次未发布 schema18 迁移保全，不另建引用表或并行迁移。
 
@@ -691,3 +693,49 @@ ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立�
 旧模型路由与冻结 Profile 的生产者版本准备归本次正式小头迁移：在派生前复用原保全转换器，将载荷准备为当前结构并保留原扩展 revision，不再等待执行准备阶段的 ModelAccess。原 TOML 导入在自身显式格式准备边界复用同一转换。普通 checkpoint writer 只写已准备的当前布局与载荷，不增加旧格式解码或缺列 fallback；后续正式表示迁移若改写小头来源，须在其原事务中同步维护已建立的小头，不留下陈旧派生值。
 
 所有正式内容迁移保留已有 ID/seq/公开原始字节、附件及恢复事实，未知工具不经当前业务 decoder 重构。原 SQLite 事务连接原子公开数据、版本和 SeaORM Applied，故障必须实证回滚，不以声明替代。不得清库、删原件、迁移备份或 v2 前隔离数据；#308 受管归档继续原样保留，正常读写不激活。
+
+## 17.19 增量展示快照与边界冻结
+
+每 Thread 的原 history.sqlite 保存两张派生表，原完成表及其 run 列完整保留。展示时序与查询合同归 [26](./26-timeline-content.md)，这里只规定持久边界。
+
+```sql
+CREATE TABLE conversation_display_blocks (
+    block_id TEXT PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    block_order INTEGER NOT NULL UNIQUE CHECK(block_order > 0),
+    history_pos INTEGER UNIQUE CHECK(history_pos IS NULL OR history_pos > 0),
+    sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
+    updated_effect INTEGER NOT NULL,
+    header BLOB NOT NULL
+);
+CREATE INDEX conversation_display_open
+    ON conversation_display_blocks(block_order) WHERE history_pos IS NULL;
+CREATE TABLE conversation_display_members (
+    block_id TEXT NOT NULL,
+    member_order INTEGER NOT NULL CHECK(member_order > 0),
+    member_key TEXT NOT NULL UNIQUE,
+    association_key TEXT NOT NULL,
+    terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
+    completion_id TEXT,
+    updated_effect INTEGER NOT NULL,
+    metadata BLOB NOT NULL,
+    PRIMARY KEY(block_id, member_order),
+    FOREIGN KEY(block_id) REFERENCES conversation_display_blocks(block_id)
+) WITHOUT ROWID;
+CREATE INDEX conversation_display_unfinished
+    ON conversation_display_members(block_id,member_order) WHERE terminal=0;
+```
+
+以上为当前目标结构；`member_key` 是组内展示记录身份，`association_key` 仅用于当前组关联，不全表唯一。开始/结束事实分别沿原 `conversation_atom_facts` 保存，成员 metadata 持可空双事实引用、轻量状态及类型化内容来源，不保存全组数组、正文、完整 payload 或 ThreadSnapshot。`sealed` 独立于 history_pos 和 terminal；已封存组拒绝一切成员、内容及头更新，允许初次发布 history_pos 与精确重放，不能仅以 terminal 行作写保护。原 history_meta 的 display_published_through/display_applied_effect 复用原库身份和账本，不建 Ready/generation/repair 表。
+
+PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，后续发布只分配 history_pos。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
+
+RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置的派生段，先删除本段成员再删除块；原完成项、来源事实、内容、检查点保留。该处置同 effect 保存和重放，不是 reader 清理，不推进展示历史位置。
+
+具名迁移 `m20261109_000001_display_snapshots` 在显式迁移序列中追加到既有 immutable_completion_runs 之后，schema18→19，不改旧迁移或 Applied 语义。迁移以 seq 键集每批 128 个轻量头读取，复用旧 run 和 typed 类别建立历史冻结块及成员引用；历史位置按旧可见段顺序分配，Hidden 不产块，稳定块身份使用 legacy-run 域。缺失时间/来源保持未知，不读取正文或图片、不更改旧 ID/seq/payload/metadata/content，不猜旧库曾经开放的组。
+
+表、索引、引用与水位验证后写 schema/Applied，同一迁移事务提交；失败整体回滚。旧执行恢复仍由 Core 决定，后来的真实结果进入新展示段。正常重开只读小头和请求页，Applied 后缺表/头、坏引用或账本矛盾明确报错并保原件，不回填、不删建、不重放全历史或回落旧分组。受管归档、旧源与迁移备份全部保留。
+
+history19→20 在上述已发布迁移之后追加具名步骤，保全旧块/成员 ID、顺序、原件和内容，补充封存资格、关联身份及双事实/内容引用。旧已冻结完成历史仍读原件，旧开放组保持开放，升级不是边界、不执行任务或补终态。只用已有保存材料证明旧切面，缺前缀明确不可用，不使用未来最终全文替代。旧 schema 只在迁移边界解码，正常路径仅消费新结构。产品库27、calls9无本次升版。
+
+旧 closing Work 有可靠 boundary，映射为 Sealed 待发布而非普通开放组，不能恢复旧成员更新资格。仅在迁移中按现有成员和事实索引比较完整可靠位置，恢复边界前终态；缺少状态/正文/摘要/计时的切面明确 unavailable，不以最后保存值替代原cut。boundary 后已保存的真实结束另派生新行，保全原件与已有行身份及相对顺序，不删终态或重复展示。具体映射和未发布排序保全见 [26.10](./26-timeline-content.md#2610-迁移与保全)；不新建正常运行的历史回放器。

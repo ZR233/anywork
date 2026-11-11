@@ -190,7 +190,7 @@ pub(crate) async fn spawn_failed_archive_fixture(
         metadata: serde_json::Value::Null,
     };
     let permit = owner.agent_operation(&root).await;
-    host(&owner, "root")
+    host(&owner, &root)
         .spawn_owned(owner, context, request, permit)
         .await
 }

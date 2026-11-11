@@ -924,7 +924,8 @@ impl StudioRuntime {
     /// 2. 向所有彼此独立的在途 owner（后台 watcher、title 任务、持久化 observer）广播一次
     ///    取消 / abort。
     ///
-    /// 它绝不启动 MCP/LSP/SSH 的真正 stop、绝不 join、绝不关闭数据库 / 释放实例锁，也不发布
+    /// 成员 MCP 在原 owner 内尽早启动唯一 stop，与终态保存独立推进；本步绝不 join，
+    /// 不关闭数据库 / 释放实例锁，不启动 LSP/SSH 的真正 stop，也不发布
     /// `Stopped`——这些仍由随后的同一编排完成，早期 arm 不会被误认为最终终态。早期观测到的诊断
     /// 被写入常驻槽位，由 `execute_shutdown` 就地播种为成功前置条件，既不吞错也不伪成功。
     ///
@@ -1208,6 +1209,10 @@ impl StudioRuntime {
         self.thread_observations.close_deliveries();
         self.account_usage.request_close();
         self.model_performance.request_close();
+        // A member's terminal save can be blocked by SQLite while Dart is joining its readers.
+        // Start the original MCP owner's retained stop now; the Session close still joins the
+        // same completion and only then removes its scope. No writer/transport is released here.
+        self.thread_factory.request_member_mcp_shutdown();
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
@@ -1752,4 +1757,54 @@ fn shutdown_report_error(report: &StudioShutdownReport) -> anyhow::Error {
             )
         });
     anyhow::anyhow!(message)
+}
+
+#[cfg(test)]
+mod member_mcp_exit_fence_tests {
+    use super::*;
+
+    async fn exercise(fail_watcher: bool) -> anyhow::Result<()> {
+        let home = tempfile::tempdir()?;
+        let runtime = Box::pin(StudioRuntime::initialize(crate::StudioRuntimeOptions {
+            studio_home: Some(home.path().to_owned()),
+            host: crate::StudioHostKind::Test,
+            ..crate::StudioRuntimeOptions::desktop()
+        }))
+        .await?;
+        // Use the existing storage fixture without the product-observation installer: its
+        // member has a real ColdStore but deliberately has no saved product association.
+        let session = crate::session::SessionRuntime::default();
+        session.set_agent_services(
+            runtime.config_runtime.clone(),
+            runtime.store.clone(),
+            runtime.agent_facility.product_events.clone(),
+            runtime.thread_factory.clone(),
+            runtime.model_performance.clone(),
+            runtime.recovery.clone(),
+        )?;
+        let result = crate::studio::thread_factory::mcp::tests::exercise_member_mcp_exit_fence(
+            &runtime,
+            &runtime.thread_factory,
+            &session,
+            home.path(),
+            fail_watcher,
+        )
+        .await;
+        let shutdown = runtime.shutdown_runtime().await;
+        result?;
+        shutdown?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn member_mcp_exit_fence_stops_while_terminal_flush_is_blocked_and_joins_once()
+    -> anyhow::Result<()> {
+        exercise(false).await
+    }
+
+    #[tokio::test]
+    async fn member_mcp_exit_fence_retains_real_failure_for_final_join_and_retry()
+    -> anyhow::Result<()> {
+        exercise(true).await
+    }
 }

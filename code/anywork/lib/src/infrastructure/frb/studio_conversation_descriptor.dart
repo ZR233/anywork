@@ -192,6 +192,14 @@ ContentRef _contentRefFromFrb(frb_chat_types.BridgeContentRef value) =>
           BodyContentTarget(
             key: key,
             owner: switch (owner) {
+              frb_chat_types.BridgeContentOwner_DisplayObservation(
+                :final blockId,
+                :final memberKey,
+              ) =>
+                DisplayObservationContentOwner(
+                  blockId: blockId,
+                  memberKey: memberKey,
+                ),
               frb_chat_types.BridgeContentOwner_Item(:final itemId) =>
                 ItemContentOwner(itemId: itemId),
               frb_chat_types.BridgeContentOwner_Current(
@@ -219,6 +227,14 @@ frb_chat_types.BridgeContentRef _contentRefToFrb(ContentRef value) =>
           frb_chat_types.BridgeContentTarget.body(
             key: key,
             owner: switch (owner) {
+              DisplayObservationContentOwner(
+                :final blockId,
+                :final memberKey,
+              ) =>
+                frb_chat_types.BridgeContentOwner.displayObservation(
+                  blockId: blockId,
+                  memberKey: memberKey,
+                ),
               ItemContentOwner(:final itemId) =>
                 frb_chat_types.BridgeContentOwner.item(itemId: itemId),
               CurrentContentOwner(:final domain, :final id, :final revision) =>

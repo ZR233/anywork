@@ -226,7 +226,87 @@ async fn chat_event_is_exactly_the_canonical_batch_without_transport_cursor() ->
 fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> Result<()> {
     let document = serde_json::to_value(crate::openapi_document())?;
     let paths = document["paths"].as_object().context("missing paths")?;
-    assert!(!paths.keys().any(|path| path.contains("/timeline")));
+    let timeline_routes = [
+        ("open", "post", Some("OpenRequest")),
+        ("events", "get", None),
+        ("older", "post", Some("OlderRequest")),
+        ("live-older", "post", Some("OlderRequest")),
+        ("close", "post", None),
+        ("members", "post", Some("MembersRequest")),
+    ];
+    let expected_paths = timeline_routes
+        .iter()
+        .map(|(suffix, _, _)| format!("/api/v1/threads/{{thread_id}}/timeline/{suffix}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_paths = paths
+        .keys()
+        .filter(|path| path.contains("/timeline"))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_paths, expected_paths);
+    for (suffix, method, request_schema) in timeline_routes {
+        let path = format!("/api/v1/threads/{{thread_id}}/timeline/{suffix}");
+        let item = paths
+            .get(&path)
+            .with_context(|| format!("missing {path}"))?;
+        let operation = &item[method];
+        assert!(operation.is_object(), "{method} {path}");
+        for other_method in [
+            "get", "post", "put", "patch", "delete", "head", "options", "trace",
+        ] {
+            if other_method != method {
+                assert!(item.get(other_method).is_none(), "{other_method} {path}");
+            }
+        }
+        let parameters = operation["parameters"]
+            .as_array()
+            .with_context(|| format!("missing parameters for {path}"))?;
+        let qualification = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "X-Anywork-Conversation");
+        if suffix == "open" {
+            assert!(
+                qualification.is_none(),
+                "open creates, rather than borrows, the read scope"
+            );
+        } else {
+            let header = qualification.with_context(|| format!("missing read scope for {path}"))?;
+            assert_eq!(header["in"], "header", "{path}");
+            assert_eq!(header["required"], true, "{path}");
+        }
+        if let Some(schema) = request_schema {
+            assert_eq!(operation["requestBody"]["required"], true, "{path}");
+            assert_eq!(
+                operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{schema}"),
+                "{path}"
+            );
+        } else {
+            assert!(operation.get("requestBody").is_none(), "{path}");
+        }
+        match suffix {
+            "events" | "members" => {
+                assert!(
+                    operation["responses"]["200"]["content"]["text/event-stream"].is_object(),
+                    "{path}"
+                );
+            }
+            "close" => assert!(operation["responses"]["204"].is_object(), "{path}"),
+            _ => {
+                let schema = match suffix {
+                    "open" => "OpenResponse",
+                    "older" => "TimelineBatch",
+                    "live-older" => "LiveDisplayWindow",
+                    _ => unreachable!("all timeline routes are covered"),
+                };
+                assert_eq!(
+                    operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+                    format!("#/components/schemas/{schema}"),
+                    "{path}"
+                );
+            }
+        }
+    }
     let events = &paths["/api/v1/threads/{thread_id}/events"]["get"];
     let params = events["parameters"].as_array().context("missing params")?;
     for name in ["maxItems", "maxBytes"] {
@@ -260,6 +340,127 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
     assert!(schemas.get("TimelineItem").is_none());
     assert!(schemas.get("TimelineMembersRef").is_none());
     assert!(schemas.get("ChatEntry").is_none());
+    for (schema, fields) in [
+        ("OpenRequest", &["demand"][..]),
+        (
+            "OpenResponse",
+            &["subscriptionId", "presentationVersion"][..],
+        ),
+        ("OlderRequest", &["before", "demand"][..]),
+        ("MembersRequest", &["reference", "window", "demand"][..]),
+        (
+            "TimelineBatch",
+            &["presentationVersion", "placement", "blocks", "throughPos"][..],
+        ),
+        ("DisplayBlock", &["id", "historyPos", "body"][..]),
+        (
+            "LiveDisplayWindow",
+            &["revision", "historyThrough", "executionPresent", "blocks"][..],
+        ),
+        (
+            "LiveDisplayBlock",
+            &["id", "blockOrder", "body", "state"][..],
+        ),
+        ("DisplayBlockRef", &["databaseId", "blockId"][..]),
+        ("DisplayRecord", &["atom", "contentSource"][..]),
+        ("WorkSummary", &["unavailable"][..]),
+    ] {
+        let required = schemas[schema]["required"]
+            .as_array()
+            .with_context(|| format!("missing required fields for {schema}"))?;
+        for field in fields {
+            assert!(
+                required.iter().any(|name| name == field),
+                "{schema}.{field}"
+            );
+        }
+    }
+    for (schema, property, target) in [
+        ("OpenRequest", "demand", "ReadDemand"),
+        ("OlderRequest", "demand", "ReadDemand"),
+        ("MembersRequest", "demand", "ReadDemand"),
+        ("MembersRequest", "reference", "DisplayBlockRef"),
+        ("MembersRequest", "window", "DisplayMemberWindow"),
+        ("DisplayBlock", "body", "DisplayBlockBody"),
+        ("LiveDisplayBlock", "body", "DisplayBlockBody"),
+        ("LiveDisplayBlock", "state", "DisplayBlockState"),
+        ("DisplayRecord", "atom", "ChatAtom"),
+        ("DisplayRecord", "contentSource", "DisplayContentSource"),
+    ] {
+        assert_eq!(
+            schemas[schema]["properties"][property]["$ref"],
+            format!("#/components/schemas/{target}"),
+            "{schema}.{property}"
+        );
+    }
+    assert!(
+        schemas["LiveDisplayBlock"]["properties"]
+            .get("closing")
+            .is_none()
+    );
+    assert_eq!(
+        schemas["DisplayBlockState"]["enum"],
+        serde_json::json!(["open", "sealed"])
+    );
+    let single = schemas["DisplayBlockBody"]["oneOf"]
+        .as_array()
+        .context("missing display block variants")?
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["enum"] == serde_json::json!(["single"]))
+        .context("missing single display block")?;
+    assert_eq!(
+        single["properties"]["record"]["$ref"],
+        "#/components/schemas/DisplayRecord"
+    );
+    assert!(single["properties"].get("atom").is_none());
+    for field in ["startFact", "endFact"] {
+        assert!(schemas["DisplayRecord"]["properties"][field].is_object());
+        assert!(
+            !schemas["DisplayRecord"]["required"]
+                .as_array()
+                .context("missing display record required fields")?
+                .iter()
+                .any(|name| name == field),
+            "DisplayRecord.{field} must remain optional"
+        );
+    }
+    assert_eq!(
+        schemas["TimelineBatch"]["properties"]["blocks"]["items"]["$ref"],
+        "#/components/schemas/DisplayBlock"
+    );
+    assert_eq!(
+        schemas["LiveDisplayWindow"]["properties"]["blocks"]["items"]["$ref"],
+        "#/components/schemas/LiveDisplayBlock"
+    );
+    // A split handoff may omit live; it must not become the atomic completion schema.
+    let live = &schemas["TimelineBatch"]["properties"]["live"];
+    assert!(
+        live["oneOf"]
+            .as_array()
+            .context("missing nullable live window schema")?
+            .iter()
+            .any(|schema| schema["$ref"] == "#/components/schemas/LiveDisplayWindow")
+    );
+    assert!(
+        live["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|schema| schema["type"] == "null")
+    );
+    assert!(schemas["TimelineBatch"]["properties"]["fromPos"].is_object());
+    assert!(
+        schemas["TimelineBatch"]["properties"]
+            .get("fromSeq")
+            .is_none()
+    );
+    assert!(
+        !schemas["TimelineBatch"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "live")
+    );
     for suffix in [
         "chat/older",
         "chat/completed",

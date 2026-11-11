@@ -15,12 +15,19 @@ pub(super) struct RealtimePresentationScenario<'a> {
     pub interrupt: &'a mpsc::Receiver<()>,
     pub capture_presentation: bool,
     pub provider_url: &'a str,
+    pub realtime_focus: Option<&'a str>,
 }
 
 pub(super) fn run(
     context: &RealtimePresentationScenario<'_>,
     mut fixture: OwnedProcess,
 ) -> Result<()> {
+    let required_steps = match context.realtime_focus {
+        None => REALTIME_REQUIRED_STEPS,
+        Some("stop-background") => pl_provider_fixture::REALTIME_STOP_BACKGROUND_REQUIRED_STEPS,
+        Some(value) => bail!("unknown realtime focus: {value}"),
+    };
+    let focus = context.realtime_focus.unwrap_or("full");
     let project = context.working.join("realtime-presentation-project");
     let log_path = context
         .working
@@ -48,6 +55,11 @@ pub(super) fn run(
             .env("ANYWORK_REALTIME_PROVIDER", context.provider_url)
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
+        if let Some(focus) = context.realtime_focus {
+            command.env("ANYWORK_REALTIME_FOCUS", focus);
+        } else {
+            command.env_remove("ANYWORK_REALTIME_FOCUS");
+        }
         configure_presentation_capture(&mut command, context.output, context.capture_presentation);
         let mut runner = OwnedProcess::start(&mut command, false)?;
         let deadline = Instant::now() + Duration::from_secs(1_200);
@@ -81,7 +93,12 @@ pub(super) fn run(
         )?;
         ensure!(
             report.get("pass") == Some(&serde_json::Value::Bool(true))
-                && report.get("shutdown") == Some(&serde_json::Value::String("completed".into())),
+                && report.get("shutdown") == Some(&serde_json::Value::String("completed".into()))
+                && report.get("focus").and_then(serde_json::Value::as_str) == Some(focus)
+                && report
+                    .get("expectedRequiredProviderSteps")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(required_steps as u64),
             "realtime-presentation integration report did not pass: {}",
             serde_json::to_string_pretty(&report)?
         );
@@ -150,11 +167,13 @@ pub(super) fn run(
             "scenario": "realtime-presentation",
             "fixtureScenario": "realtime-presentation",
             "runner": "flutter.integration_test",
+            "focus": focus,
+            "expectedRequiredProviderSteps": required_steps,
             "runnerExitCode": runner_exit.and_then(|status| status.code()),
             "acceptedRequests": accepted,
             "rejectedRequests": rejected,
             "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
-            "requiredStepsConsumed": accepted >= REALTIME_REQUIRED_STEPS,
+            "requiredStepsConsumed": accepted >= required_steps,
         }))?,
     )?;
     suite?;
@@ -163,7 +182,7 @@ pub(super) fn run(
         "realtime fixture did not exit successfully"
     );
     ensure!(
-        accepted >= REALTIME_REQUIRED_STEPS && rejected == 0,
+        accepted >= required_steps && rejected == 0,
         "realtime-presentation fixture requests were incomplete: \
          accepted={accepted} rejected={rejected}"
     );

@@ -11,9 +11,11 @@ use pl_protocol::{
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
-use pl_studio_runtime::ConversationReader;
+use pl_studio_runtime::{
+    ConversationEvent, ConversationFeed, ConversationReader, TimelineEvent, TimelineFeed,
+};
 use serde::Deserialize;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
@@ -45,6 +47,67 @@ pub(crate) struct ReadOwner {
     pub(crate) reader: ConversationReader,
     pub(crate) cancel: CancellationToken,
     reads: Arc<Semaphore>,
+    pub(crate) native: tokio::sync::Mutex<Option<NativeFeed>>,
+    pub(crate) events: Mutex<Option<oneshot::Sender<EventSender>>>,
+    pub(crate) completed: watch::Sender<Option<Result<(), StudioError>>>,
+    pub(crate) close_gate: tokio::sync::Mutex<()>,
+    /// Failed member closes remain on the original read owner for explicit retry.
+    pub(crate) members: Mutex<Vec<MemberRead>>,
+}
+
+pub(crate) type MemberRead = Arc<tokio::sync::Mutex<Option<pl_studio_runtime::DisplayMembers>>>;
+
+pub(crate) type EventSender =
+    mpsc::Sender<Result<axum::response::sse::Event, std::convert::Infallible>>;
+
+pub(crate) enum NativeFeed {
+    Conversation(Box<ConversationFeed>),
+    Timeline(Box<TimelineFeed>),
+}
+
+pub(crate) enum NativeEvent {
+    Conversation(ConversationEvent),
+    Timeline(TimelineEvent),
+}
+
+impl NativeFeed {
+    pub(crate) fn subscription_id(&self) -> &str {
+        match self {
+            Self::Conversation(feed) => feed.subscription_id(),
+            Self::Timeline(feed) => feed.subscription_id(),
+        }
+    }
+
+    pub(crate) fn reader(&self) -> &ConversationReader {
+        match self {
+            Self::Conversation(feed) => feed.reader(),
+            Self::Timeline(feed) => feed.reader(),
+        }
+    }
+
+    pub(crate) async fn recv(&mut self) -> anyhow::Result<Option<NativeEvent>> {
+        match self {
+            Self::Conversation(feed) => feed
+                .recv()
+                .await
+                .map(|event| event.map(NativeEvent::Conversation)),
+            Self::Timeline(feed) => feed.receive().await.map(NativeEvent::Timeline).map(Some),
+        }
+    }
+
+    pub(crate) fn request_close(&self) {
+        match self {
+            Self::Conversation(feed) => feed.request_close(),
+            Self::Timeline(feed) => feed.request_close(),
+        }
+    }
+
+    pub(crate) async fn close(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Conversation(feed) => feed.close().await,
+            Self::Timeline(feed) => feed.close().await,
+        }
+    }
 }
 
 impl ReadOwner {
@@ -54,7 +117,27 @@ impl ReadOwner {
             reader,
             cancel: CancellationToken::new(),
             reads: Arc::new(Semaphore::new(MAX_READS as usize)),
+            native: tokio::sync::Mutex::new(None),
+            events: Mutex::new(None),
+            completed: watch::channel(None).0,
+            close_gate: tokio::sync::Mutex::new(()),
+            members: Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn with_feed(thread_id: String, feed: NativeFeed) -> Self {
+        let owner = Self::new(thread_id, feed.reader().clone());
+        *owner.native.try_lock().expect("unpublished owner") = Some(feed);
+        owner
+    }
+
+    pub(crate) fn request_close(&self) {
+        self.cancel.cancel();
+        self.reader.request_close();
+        self.events
+            .lock()
+            .expect("conversation start poisoned")
+            .take();
     }
 
     pub(crate) async fn drain(&self) {
@@ -87,7 +170,11 @@ impl Conversations {
         }
         let owners = self.0.lock().expect("conversation owners poisoned");
         let owner = owners.readers.get(id).ok_or_else(stale_scope)?;
-        if owners.closed || shutdown.is_cancelled() || owner.thread_id != thread_id {
+        if owners.closed
+            || shutdown.is_cancelled()
+            || owner.thread_id != thread_id
+            || owner.cancel.is_cancelled()
+        {
             return Err(stale_scope());
         }
         let permit = owner
@@ -102,18 +189,50 @@ impl Conversations {
     }
 
     pub(crate) fn remove(&self, id: &str) {
-        let mut owners = self.0.lock().expect("conversation owners poisoned");
-        if let Some(owner) = owners.readers.remove(id) {
-            owner.cancel.cancel();
+        let owners = self.0.lock().expect("conversation owners poisoned");
+        if let Some(owner) = owners.readers.get(id) {
+            owner.request_close();
         }
+    }
+
+    pub(crate) fn forget(&self, id: &str) {
+        self.0
+            .lock()
+            .expect("conversation owners poisoned")
+            .readers
+            .remove(id);
+    }
+
+    /// Close can recover a cancelled owner, but never a foreign Thread or capability.
+    pub(crate) fn closing_owner(
+        &self,
+        thread_id: &str,
+        headers: &HeaderMap,
+    ) -> Result<(String, Arc<ReadOwner>), ApiError> {
+        let mut ids = headers.get_all(CONVERSATION_HEADER).iter();
+        let id = ids
+            .next()
+            .and_then(|id| id.to_str().ok())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(stale_scope)?;
+        if ids.next().is_some() {
+            return Err(stale_scope());
+        }
+        let owners = self.0.lock().expect("conversation owners poisoned");
+        let owner = owners
+            .readers
+            .get(id)
+            .filter(|owner| owner.thread_id == thread_id)
+            .ok_or_else(stale_scope)?;
+        Ok((id.to_owned(), Arc::clone(owner)))
     }
 
     pub(crate) async fn shutdown(&self) {
         let mut tasks = {
             let mut owners = self.0.lock().expect("conversation owners poisoned");
             owners.closed = true;
-            for (_, owner) in owners.readers.drain() {
-                owner.cancel.cancel();
+            for owner in owners.readers.values() {
+                owner.request_close();
             }
             std::mem::take(&mut owners.tasks)
         };

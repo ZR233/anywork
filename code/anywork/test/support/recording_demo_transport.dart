@@ -79,6 +79,24 @@ class RecordingDemoTransport extends DemoStudioTransport {
     _stateFeedWaiters.remove(threadId)?.complete(feed);
     return feed;
   }
+
+  final List<RecordingTimelineFeed> timelineFeeds = [];
+
+  @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  }) async {
+    final failure = failNextInitial;
+    failNextInitial = null;
+    final feed = RecordingTimelineFeed(
+      inner: await super.openTimelineFeed(threadId, demand: demand),
+      initialFailure: failure,
+    );
+    timelineFeeds.add(feed);
+    feeds.add(feed);
+    return feed;
+  }
 }
 
 /// Gating/error injection is confined to the external transport seam. Real Demo facts,
@@ -162,9 +180,15 @@ class RecordingConversationFeed implements ConversationFeed {
 
   Future<void> _forward(ConversationFrame frame) async {
     final event = frame.event;
-    if (event case ConversationChatEvent(
-      batch: ChatBatch(placement: ChatPlacement.set),
-    )) {
+    if (switch (event) {
+      ConversationChatEvent(batch: ChatBatch(placement: ChatPlacement.set)) =>
+        true,
+      ConversationTimelineEvent(
+        batch: TimelineBatch(placement: ChatPlacement.set),
+      ) =>
+        true,
+      _ => false,
+    }) {
       initialCalls++;
       if (!initialEntered.isCompleted) initialEntered.complete();
       await initialGate?.future;
@@ -177,8 +201,17 @@ class RecordingConversationFeed implements ConversationFeed {
       if (!nextEntered.isCompleted) nextEntered.complete();
     }
     if (scriptFrames &&
-        event is ConversationChatEvent &&
-        event.batch.placement == ChatPlacement.append) {
+        switch (event) {
+          ConversationChatEvent(
+            batch: ChatBatch(placement: ChatPlacement.append),
+          ) =>
+            true,
+          ConversationTimelineEvent(
+            batch: TimelineBatch(placement: ChatPlacement.append),
+          ) =>
+            true,
+          _ => false,
+        }) {
       return;
     }
     final terminal =
@@ -237,6 +270,18 @@ class RecordingConversationFeed implements ConversationFeed {
     if (!_closed) _events.addError(error);
   }
 
+  void emitTimeline(TimelineBatch batch) {
+    if (_closed) return;
+    _events.add(
+      ConversationFrame(
+        threadId: threadId,
+        subscriptionId: subscriptionId,
+        deliverySequence: ++_sequence,
+        event: ConversationTimelineEvent(batch: batch),
+      ),
+    );
+  }
+
   @override
   Future<void> acknowledge(int deliverySequence) async {
     acknowledgements.add(deliverySequence);
@@ -273,6 +318,42 @@ class RecordingConversationFeed implements ConversationFeed {
       _closing = null;
       rethrow;
     }
+  }
+}
+
+class RecordingTimelineFeed extends RecordingConversationFeed
+    implements TimelineFeed {
+  RecordingTimelineFeed({required TimelineFeed inner, super.initialFailure})
+    : super(inner: inner);
+  TimelineFeed get timeline => inner as TimelineFeed;
+
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    pageCalls++;
+    return timeline.loadTimelineOlder(before: before, demand: demand);
+  }
+
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => timeline.loadLiveOlder(before: before, demand: demand);
+
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) {
+    detailCalls++;
+    return timeline.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
   }
 }
 

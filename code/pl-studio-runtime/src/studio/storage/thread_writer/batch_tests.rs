@@ -413,6 +413,12 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
     let third = billed_context_write(id, 3, &second.checkpoint.state.context.records)?;
     let prepared_second = fixture.handoff(&second).await?;
     let prepared_third = fixture.handoff(&third).await?;
+    let display_second = prepared_second.display.as_ref().unwrap().clone();
+    let display_third = prepared_third.display.as_ref().unwrap().clone();
+    assert!(Arc::ptr_eq(
+        &display_second,
+        prepared_second.current.display.as_ref().unwrap()
+    ));
     channel.request_flush(3);
     let frozen = ready(fixture.select(Instant::now()));
     assert_eq!(frozen.len(), 2);
@@ -432,6 +438,15 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
         history.watermark().await?,
         1,
         "the first batch member must roll back too"
+    );
+    assert_eq!(
+        crate::studio::storage::history::conversation::display::watermarks(&db).await?,
+        (0, 1)
+    );
+    assert!(
+        crate::studio::storage::history::conversation::display::history_heads(&db, 2, None, 8)
+            .await?
+            .is_empty()
     );
     assert_eq!(
         history
@@ -480,6 +495,12 @@ async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_recor
         .load(Ordering::Relaxed);
     batch::persist(&fixture.sink.0, &retried).await?;
     batch::persist(&fixture.sink.0, &retried).await?;
+    crate::studio::storage::history::conversation::display::verify(&db, &display_second).await?;
+    crate::studio::storage::history::conversation::display::verify(&db, &display_third).await?;
+    assert_eq!(
+        crate::studio::storage::history::conversation::display::watermarks(&db).await?,
+        (display_third.published_through, 3)
+    );
     assert_eq!(
         channel
             .order_index

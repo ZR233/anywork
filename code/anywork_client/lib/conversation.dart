@@ -2,6 +2,7 @@
 library;
 
 export 'src/models/chat_models.dart';
+export 'src/models/presentation_models.dart';
 export 'src/conversation/domain/conversation_state.dart';
 export 'src/conversation/domain/content_state.dart';
 export 'src/conversation/domain/conversation_repository.dart';

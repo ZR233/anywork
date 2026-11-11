@@ -75,6 +75,11 @@ cargo xtask check-gui-generated
 输出，拒绝生成不稳定或输入未同步；它们不以 Git 暂存或提交状态作为判断依据。生成文件不得手工
 修改，也不得绕过 xtask 直接调用单个生成器。
 
+FRB 会在生成前以 `frb_expand` 配置展开手写 Rust API。生成输出不是展开输入，bridge 的手写
+模块声明用 `#[cfg(not(frb_expand))]` 排除该生成模块，避免旧绑定或合并冲突阻止重新生成；
+不得手工造 stub、选一侧绑定或跳过一致性检查。正常构建不设置此 cfg，仍须完整编译生成模块，
+并验证桥接消费者；展开或生成成功不能代替正常构建通过。
+
 共享 checkout 中先等待生成命令完整结束，再启动消费生成物的分析、Client 适配测试或原生构建。
 生成器可能先替换输入再重建 Freezed 等产物；此时并发测试看到的缺失 `part` 文件属于不完整
 生成窗口，不能据此修改生成物或判断业务失败。`verify-client` 只检查 SDK-only Client；应用适配与 UI 闭包由 `verify-gui` 和 `flutter test --no-pub test/ui` 覆盖。接口返修后重新生成受影响产物，再补失败或受影响的消费者证据。

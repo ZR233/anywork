@@ -221,7 +221,7 @@ void main() {
     throughputNotifications = 0;
     contextNotifications = 0;
     chromeNotifications = 0;
-    final timelineConnections = transport.feeds.length;
+    final timelineConnections = transport.timelineFeeds.length;
 
     await transport.stateFeeds.last.emitStateAndWait(
       _runtimeFrame(
@@ -336,7 +336,7 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.feeds, hasLength(timelineConnections));
+    expect(transport.timelineFeeds, hasLength(timelineConnections));
     expect(
       graph.client.conversations.existingSession('thread-main'),
       same(session),
@@ -366,7 +366,7 @@ void main() {
 
 final class _StatusTransport extends RecordingDemoTransport {
   _StatusTransport() {
-    conversationFeedFactory = (_, inner) async =>
+    timelineFeedFactory = (_, inner) async =>
         _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
   }
 
@@ -375,7 +375,7 @@ final class _StatusTransport extends RecordingDemoTransport {
 
 /// Wait for the actual Set ACK before injecting State frames into the same feed.
 /// This observes transport ownership; it never publishes or reduces a projection.
-final class _SetAcknowledgedFeed extends RecordingConversationFeed {
+final class _SetAcknowledgedFeed extends RecordingTimelineFeed {
   _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
 
   final Completer<void> acknowledged;
@@ -383,8 +383,8 @@ final class _SetAcknowledgedFeed extends RecordingConversationFeed {
 
   @override
   Stream<ConversationFrame> get events => super.events.map((frame) {
-    if (frame.event case ConversationChatEvent(
-      batch: ChatBatch(placement: ChatPlacement.set),
+    if (frame.event case ConversationTimelineEvent(
+      batch: TimelineBatch(placement: ChatPlacement.set),
     )) {
       _firstSetSequence ??= frame.deliverySequence;
     }

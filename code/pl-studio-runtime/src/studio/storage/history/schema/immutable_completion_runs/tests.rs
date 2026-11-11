@@ -81,7 +81,22 @@ async fn original_bytes(
 }
 
 async fn migrate(db: &DatabaseConnection) -> Result<()> {
-    prepare(db, THREAD, Preparation::Schema, None).await
+    // Keep this published migration's own contract/fixtures at its v18 boundary.
+    // The v18 -> v19 runner is exercised independently by display_snapshots tests.
+    preflight(db, THREAD).await?;
+    let migrator = Migrator {
+        thread_id: THREAD.into(),
+        execution_identity: None,
+        bot_root: None,
+    };
+    let steps = migrator
+        .get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .take_while(|step| step.name() != DISPLAY_SNAPSHOTS)
+        .count();
+    migrator.up(db, Some(u32::try_from(steps)?)).await?;
+    Ok(())
 }
 
 #[tokio::test]

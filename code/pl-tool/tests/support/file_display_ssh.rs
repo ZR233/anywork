@@ -29,7 +29,10 @@ fn required(name: &str) -> Result<String> {
 
 /// Counts only this test process's SSH children, never another user's sessions.
 fn ssh_children() -> Result<BTreeSet<String>> {
+    #[cfg(target_os = "linux")]
     let mut children = BTreeSet::new();
+    #[cfg(not(target_os = "linux"))]
+    let children = BTreeSet::new();
     #[cfg(target_os = "linux")]
     for task in std::fs::read_dir("/proc/self/task")? {
         let path = task?.path().join("children");

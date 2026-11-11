@@ -6,7 +6,7 @@
 mod agent;
 mod agent_runtime;
 #[cfg(test)]
-mod session_close_tests;
+pub(crate) mod session_close_tests;
 mod table;
 
 pub(crate) use agent::AgentInstance;

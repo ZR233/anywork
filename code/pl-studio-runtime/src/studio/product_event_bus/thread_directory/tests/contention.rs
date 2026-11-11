@@ -1,5 +1,7 @@
 use super::*;
+use crate::studio::store::agent_close::AgentCloseRecord;
 use futures::poll;
+use pl_tool::collaboration::control::AgentWorktreeCleanup;
 
 #[tokio::test]
 async fn hot_patch_and_query_do_not_wait_for_the_catalog_write_lock() -> Result<()> {
@@ -103,6 +105,23 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         vec![project("p1", "Project", "/workspace/project")],
     )
     .await?;
+    let missing = events.commit_explicit_close("child").await.unwrap_err();
+    assert!(format!("{missing:#}").contains("close progress requires its durable intent"));
+    let mut close = AgentCloseRecord {
+        agent_id: "child".into(),
+        parent_id: "root".into(),
+        root_id: "root".into(),
+        workspace_id: "p1".into(),
+        revision: 1,
+        force: false,
+        worktree: None,
+        git: None,
+        execution_closed: false,
+        worktree_cleanup: AgentWorktreeCleanup::Pending,
+        error: None,
+    };
+    // save_agent_close validates the real persisted domain fact and its owner.
+    events.store.save_agent_close(&close).await?;
     events.commit_explicit_close("child").await?;
     events.patch_thread_runtime(
         "child",
@@ -115,7 +134,17 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
     let mut closed_agent = baseline_agent.clone();
     closed_agent.status = pl_protocol::ThreadStatus::Closed;
     let (saving, release_save) = install_pause(&events.directory_test_pauses.commit_before_persist);
-    let commit = events.commit_agent_update(baseline_agent, closed_agent);
+    let mut bases = DirectoryBaselines::default();
+    bases
+        .agents
+        .insert(baseline_agent.agent_id.clone(), baseline_agent);
+    let commit = events.commit_directory_with_bases(
+        DirectoryDelta {
+            agent_upserts: vec![closed_agent],
+            ..Default::default()
+        },
+        bases,
+    );
     tokio::pin!(commit);
     assert!(poll!(commit.as_mut()).is_pending());
     saving.await?;
@@ -129,7 +158,11 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         .read_thread_metadata("child", "close-projection")?
         .row
         .unwrap();
-    assert_eq!(projected.status, pl_protocol::ThreadStatus::Closed);
+    assert_eq!(
+        projected.status,
+        pl_protocol::ThreadStatus::Closing,
+        "a generic raw Closed candidate cannot acknowledge permanent execution closure"
+    );
     assert_eq!(projected.updated_at, 5);
     assert_eq!(projected.mode, pl_protocol::ThreadModeId::task());
     // 已受理用户消息的水位是会话级事实：成员行不携带，主成员行保留并发提交期间的值。
@@ -138,6 +171,49 @@ async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() 
         .row
         .unwrap();
     assert_eq!(root_row.last_user_message_at, Some(4));
+    // Keep the ACK outside the original paused generic save above, preserving
+    // its concurrent mode/message interleaving. A restore read before this lock
+    // would still carry false, as the old bool-across-lock implementation did.
+    let stale = events.store.agent_close("child").await?.unwrap();
+    assert!(!stale.execution_closed);
+    let directory_command = events.directory_commands.lock().await;
+    let queued = events.commit_explicit_close("child");
+    tokio::pin!(queued);
+    assert!(
+        poll!(queued.as_mut()).is_pending(),
+        "the progress publication must wait for the original directory command lock"
+    );
+    close.execution_closed = true;
+    close.changed()?;
+    events.store.save_agent_close(&close).await?;
+    assert_eq!(
+        events.store.agent_close("child").await?,
+        Some(close.clone())
+    );
+    drop(directory_command);
+    queued.await?;
+    let acknowledged = events
+        .read_thread_metadata("child", "close-ack")?
+        .row
+        .unwrap();
+    assert_eq!(acknowledged.status, pl_protocol::ThreadStatus::Closed);
+    assert_eq!(acknowledged.updated_at, 5);
+    assert_eq!(acknowledged.mode, pl_protocol::ThreadModeId::task());
+    assert_eq!(
+        events.store.catalog().get_agent("child").unwrap().status,
+        pl_protocol::ThreadStatus::Closed,
+        "the queued publication must read the new true ACK, not its old false observation"
+    );
+    events.commit_explicit_close("child").await?;
+    assert_eq!(
+        events
+            .read_thread_metadata("child", "repeat-close-restore")?
+            .row
+            .unwrap()
+            .status,
+        pl_protocol::ThreadStatus::Closed,
+        "repeated close restoration must not regress the acknowledged stage"
+    );
     events.patch_thread_runtime(
         "child",
         pl_protocol::ThreadStatus::Idle,

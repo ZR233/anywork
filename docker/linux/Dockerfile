@@ -63,7 +63,7 @@ COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
 # consumer dependencies after SDK preparation so SDK cache layers remain reusable.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libx11-dev libxi-dev \
+        libx11-dev libxi-dev x11-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY --chmod=644 docker/linux/versions.env /opt/anywork-image/versions.env
 COPY --chmod=755 docker/linux/scripts/entrypoint.sh docker/linux/scripts/smoke.sh /opt/anywork-image/scripts/

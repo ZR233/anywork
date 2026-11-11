@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 18;
+const HISTORY_SCHEMA_VERSION: i64 = 20;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
@@ -1592,6 +1592,29 @@ impl HistoryStore {
         }))
     }
 
+    /// Presentation read qualification without completion bodies, State replay or execution.
+    pub(in crate::studio) async fn cold_presentation_baseline(
+        &self,
+    ) -> Result<Option<ColdConversation>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let current = conversation::completed::cold(&tx).await?;
+        let head = conversation::latest_append_seq(&tx).await?;
+        tx.commit().await?;
+        Ok(Some(ColdConversation {
+            database_id: connection.database_id.clone(),
+            head,
+            current: current.projection().clone(),
+            sources: Vec::new(),
+            page: ChatHistoryPage {
+                items: Vec::new(),
+                exhausted: true,
+            },
+        }))
+    }
+
     /// Same domain-head projection as State, from one fresh SQLite read transaction.
     /// Missing history means this Thread has no established business read resources yet.
     pub(in crate::studio) async fn read_business_refs(
@@ -3107,6 +3130,36 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    if matches!(schema::version(db).await?, 19 | 20) {
+        // A current fixture may also contain an open Work with no immutable completion.
+        // Prove every original/display collection empty before dropping any v19/v20 structure.
+        for table in [
+            "conversation_items",
+            "conversation_display_blocks",
+            "conversation_display_members",
+        ] {
+            let count: i64 = db
+                .query_one_raw(statement(
+                    &format!("SELECT COUNT(*) AS count FROM {table}"),
+                    vec![],
+                ))
+                .await?
+                .context("fixture original/display output")?
+                .try_get("", "count")?;
+            ensure!(count == 0, "legacy fixture must not discard {table} facts");
+        }
+        db.execute_unprepared(
+            "DROP TABLE conversation_display_members;
+             DROP TABLE conversation_display_blocks;
+             ALTER TABLE history_meta DROP COLUMN display_published_through;
+             ALTER TABLE history_meta DROP COLUMN display_applied_effect;
+             DELETE FROM seaql_migrations
+             WHERE version IN ('m20261109_000001_display_snapshots',
+                               'm20261111_000001_display_observations');
+             UPDATE history_meta SET schema_version=18 WHERE id=1;",
+        )
+        .await?;
+    }
     if schema::version(db).await? == 18 {
         let row = db
             .query_one_raw(statement(
@@ -3265,6 +3318,112 @@ mod storage_fault_tests {
         fn manifest_bytes(&self, descriptor: &pl_core::chat::ContentDescriptor) -> usize {
             256 + 6 * (descriptor.key.owner.as_str().len() + descriptor.key.key.len())
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_fixture_downgrade_rejects_original_and_open_work_before_any_ddl() -> Result<()>
+    {
+        use pl_core::chat::{ChatDraft, ChatItem};
+        use pl_protocol::{
+            ChatActiveStatus, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition,
+            ChatSourceId,
+        };
+
+        for open_work in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let store =
+                HistoryStore::open(&dir.path().join("history.sqlite"), "fixture-guard").await?;
+            store.prepare_write().await?;
+            let connection = store.writer().await?;
+            let db = &connection.db;
+            let mut atom: pl_protocol::ChatAtom =
+                serde_json::from_slice(&conversation::tests::metadata("preserved-original"))?;
+            if open_work {
+                atom.kind = ChatAtomKind::ToolCall;
+                atom.source = ChatSourceId::ForegroundTurn {
+                    turn_id: "fixture-turn".into(),
+                };
+                atom.delivery = ChatDeliveryKind::Foreground;
+                atom.completion_item_id = None;
+                atom.started_at = Some(10);
+                atom.lifecycle = ChatAtomLifecycle::Active {
+                    started: Some(ChatFactPosition {
+                        effect_seq: 1,
+                        suborder: 0,
+                    }),
+                    status: ChatActiveStatus::Running,
+                };
+                let mut owner =
+                    crate::studio::thread_projection::presentation::PresentationState::default();
+                owner.bind(&connection.database_id)?;
+                let delta = owner.prepare(1, 10, &[atom], &[], &[])?;
+                conversation::display::apply(db, &delta).await?;
+            } else {
+                let mut draft = ChatDraft::new(
+                    "preserved-original",
+                    "conversation",
+                    Arc::<[u8]>::from(b"preserved completion".as_slice()),
+                );
+                draft.metadata = serde_json::to_vec(&atom)?.into();
+                draft.read_hint =
+                    crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
+                let record = ChatItem::complete(
+                    draft,
+                    1,
+                    Some(pl_core::chat::ChatRunPosition {
+                        start_seq: 1,
+                        ordinal: 1,
+                    }),
+                );
+                conversation::append_records(db, [&record], true).await?;
+            }
+            let shape = || {
+                statement(
+                    "SELECT group_concat(sql, char(10)) AS definition
+                 FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+                    vec![],
+                )
+            };
+            let before: String = db
+                .query_one_raw(shape())
+                .await?
+                .context("fixture DDL")?
+                .try_get("", "definition")?;
+            let error = restore_empty_pre_completion_fixture(db)
+                .await
+                .expect_err("neither original completions nor an open Work may be discarded");
+            assert!(
+                error.to_string().contains(if open_work {
+                    "conversation_display_blocks"
+                } else {
+                    "conversation_items"
+                }),
+                "{error:#}"
+            );
+            assert_eq!(schema::version(db).await?, HISTORY_SCHEMA_VERSION);
+            let after: String = db
+                .query_one_raw(shape())
+                .await?
+                .context("retained fixture DDL")?
+                .try_get("", "definition")?;
+            assert_eq!(after, before, "refusal must precede every schema mutation");
+            for (table, expected) in [
+                ("conversation_items", i64::from(!open_work)),
+                ("conversation_display_blocks", i64::from(open_work)),
+                ("conversation_display_members", i64::from(open_work)),
+            ] {
+                let count: i64 = db
+                    .query_one_raw(statement(
+                        &format!("SELECT COUNT(*) AS count FROM {table}"),
+                        vec![],
+                    ))
+                    .await?
+                    .context("retained fixture facts")?
+                    .try_get("", "count")?;
+                assert_eq!(count, expected, "{table}");
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -4345,6 +4504,10 @@ mod storage_fault_tests {
             let path = directory.path().join("history.sqlite");
             let thread_id = "damaged-timeline";
             let store = HistoryStore::open(&path, thread_id).await?;
+            // Exercise damage to the actual published pre-completion layout. A current
+            // writer has archived these tables and cannot stand in for this old schema.
+            let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
+            schema::prepare_published17_fixture(&db, thread_id).await?;
             let mut item = ThreadItem::completed_user_message(
                 "preserved-input".into(),
                 thread_id.into(),
@@ -4355,9 +4518,8 @@ mod storage_fault_tests {
             );
             item.ordinal = 1;
             item.revision = 1;
-            persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
-            let db = &store.writer().await?.db;
-            let source_facts = history_facts(db).await?;
+            store.upsert_item(&db, 1, item).await?;
+            let source_facts = history_facts(&db).await?;
             assert!(
                 db.query_one_raw(statement(
                     "SELECT 1 FROM seaql_migrations WHERE version='m20261103_000001_history_timeline_items'",
@@ -4368,7 +4530,7 @@ mod storage_fault_tests {
                 "fixture requires the named Timeline migration to be Applied"
             );
             db.execute_unprepared(damage).await?;
-            store.writer().await?.db.clone().close().await?;
+            db.close().await?;
             drop(store);
 
             let source = tokio::fs::read(&path).await?;

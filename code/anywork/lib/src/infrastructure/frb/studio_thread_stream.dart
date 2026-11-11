@@ -753,6 +753,7 @@ bool _interactionIsPending(frb.BridgeInteractionRequest value) {
 
 Object _studioFailure(Object error) {
   return switch (error) {
+    final ProtocolVersionMismatch mismatch => mismatch,
     // 已是领域错误：保持身份与堆栈，不二次包装。
     final StudioFailure failure => failure,
     final frb.BridgeError bridge => StudioFailure(

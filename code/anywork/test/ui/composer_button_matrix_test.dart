@@ -1802,12 +1802,13 @@ void main() {
       lessThanOrEqualTo(84),
       reason: '原因区受高度约束，长文案改在区内滚动',
     );
-    // 320 宽下选择器行本身已有既有的横向溢出（`session_selectors.dart` /
-    // `studio_menu_label.dart`，与本原因区无关），这里把它们取走，
-    // 在不溢出的宽度上单独验证原因区不新增溢出。
-    while (tester.takeException() != null) {}
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: '320 宽下选择器及原因区都服从真实可用宽度，不忽略布局错误',
+    );
 
-    // 不触发选择器横向溢出的窄宽 + 矮高：三种原因同时存在也不产生溢出。
+    // 视口调整后仍保留三类原因，且不产生新的布局错误。
     await _pumpSized(
       tester,
       composer,

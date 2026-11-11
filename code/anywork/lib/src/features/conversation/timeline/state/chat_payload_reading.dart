@@ -152,6 +152,9 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
         name: chatString(invocation['name'], 'invocation.name'),
         presentationContract: marker!,
         statusString: status,
+        frozenObservation:
+            item.displayRecord?.contentSource is FrozenObservation,
+        executionPresent: item.displayRecord?.contentSource is CurrentAtom,
         arguments: arguments,
         output: item.inlineText('tool.result') ?? '',
         // No start timestamp is present in the canonical invocation. Keep unknown.

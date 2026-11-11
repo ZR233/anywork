@@ -106,10 +106,10 @@ impl ThreadMcpOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
     }
 
-    async fn close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseResult {
+    fn start_close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseCompletion {
         use futures::FutureExt;
         self.lifetime.cancellation.cancel();
-        let completion = {
+        {
             let mut slot = self
                 .shutdown
                 .lock()
@@ -159,8 +159,11 @@ impl ThreadMcpOwner {
                 *slot = Some(completion.clone());
                 completion
             }
-        };
-        completion.await
+        }
+    }
+
+    async fn close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseResult {
+        self.start_close(events).await
     }
 
     fn remote_commands(&self) -> Option<Arc<RemoteCommandBackend>> {
@@ -606,6 +609,21 @@ impl StudioThreadFactory {
             .clone()
     }
 
+    pub(crate) fn request_member_mcp_shutdown(&self) {
+        for scope in self.resource_scopes() {
+            let owner = scope
+                .mcp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(owner) = owner {
+                // The original owner retains the shared completion. Starting its owned task
+                // does not remove the scope or acknowledge success; close_scope_tools joins it.
+                drop(owner.start_close(&self.services.product_events));
+            }
+        }
+    }
+
     pub(crate) async fn shutdown_scope_mcp(
         &self,
         scope: &Arc<crate::session::NativeResources>,
@@ -656,7 +674,7 @@ impl StudioThreadFactory {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
     use pl_protocol::{McpEffectiveSource, McpExecutionLocation};
@@ -701,6 +719,213 @@ mod tests {
                 execution_context: McpExecutionContext::Host,
             },
         }
+    }
+
+    // Called from lifecycle's tests so the trigger is the actual early native fence, not
+    // request_member_mcp_shutdown or execute_shutdown invoked directly by the fixture.
+    pub(crate) async fn exercise_member_mcp_exit_fence(
+        runtime: &crate::studio::StudioRuntime,
+        factory: &StudioThreadFactory,
+        session: &crate::session::SessionRuntime,
+        root: &std::path::Path,
+        fail_watcher: bool,
+    ) -> Result<()> {
+        use super::super::tool_bindings::ToolBinding;
+        use crate::StudioProductEventKind;
+        use crate::session::session_close_tests::{ProbeStore, member_with_probe};
+        use crate::studio::agent_host::worktree_lease::WorkspaceEndpoint;
+        use pl_provider_fixture::{FixtureServer, MCP_KEY, MCP_PATH};
+
+        let peer = FixtureServer::start(Vec::new()).await?;
+        let mcp = McpRuntime::new(McpConnector::default());
+        let mut server = sample_resolved_server(
+            "early-close",
+            &format!("http://{}{MCP_PATH}", peer.address()),
+        );
+        server.server.bearer_token = Some(MCP_KEY.to_owned());
+        let servers = BTreeMap::from([(server.id.clone(), server)]);
+        let lifetime = Arc::new(ThreadToolLifetime::default());
+        let owner = ThreadMcpOwner::new(
+            "early-close-member".into(),
+            lifetime.clone(),
+            McpScope::Host,
+            root.to_owned(),
+            None,
+            mcp.handle(),
+            servers.clone(),
+        );
+        owner
+            .runtime
+            .reconcile(
+                servers
+                    .into_iter()
+                    .map(|(id, entry)| (id, entry.server))
+                    .collect(),
+            )
+            .await?;
+        owner
+            .refresh_snapshot(&factory.services.product_events)
+            .await;
+        assert_eq!(
+            owner.read_snapshot().servers[0].lifecycle,
+            ThreadMcpLifecycleKind::Available
+        );
+        assert_eq!(
+            owner.runtime.acquire_turn_lease().await?.server_ids(),
+            &["early-close"]
+        );
+
+        let (store, mut flush_entered) = ProbeStore::open(true);
+        member_with_probe(session, &owner.thread_id, None, Some(&store), root).await?;
+        let member = session
+            .observed_thread(&owner.thread_id)
+            .expect("assembled member");
+        let scope = session.native_resources(&member)?;
+        let incarnation = Arc::new(());
+        let usage = factory
+            .services
+            .worktrees
+            .reserve_workspace(&owner.thread_id, WorkspaceEndpoint::Local)?;
+        *scope.binding.lock().unwrap() = Some(ToolBinding {
+            assignment: None,
+            workspace_usage: usage.clone(),
+            lifetime: lifetime.clone(),
+            incarnation: incarnation.clone(),
+            target_invalidated: false,
+            catalog: None,
+            initial_skill_prompt: String::new(),
+            policy_key: String::new(),
+            permission_mode: crate::approval::PermissionMode::default(),
+            policies: BTreeMap::new(),
+            project: WorkspaceRecord {
+                id: "early-close-project".into(),
+                kind: pl_protocol::studio::WorkspaceKind::Project,
+                name: "early-close-project".into(),
+                path: root.to_string_lossy().into_owned(),
+                ssh_alias: None,
+                updated_at: 0,
+            },
+            workspace: ToolWorkspace::new(pl_tool::workspace::AgentWorkspace::local(root)),
+            commands: None,
+            remote: None,
+            ssh_profile: None,
+        });
+        *scope.mcp.lock().unwrap() = Some(owner.clone());
+        factory.bind_resource_scope(&owner.thread_id, &scope)?;
+        if fail_watcher {
+            let (entered, failed) = tokio::sync::oneshot::channel();
+            *owner.watcher.lock().unwrap() = Some(tokio::spawn(async move {
+                entered.send(()).unwrap();
+                panic!("member MCP watcher regression failure");
+            }));
+            failed.await?;
+        } else {
+            owner.start_watcher(factory.services.product_events.clone());
+        }
+
+        // Hold the original terminal ColdStore flush, not a parallel close model.
+        // The command gate lets us release the early MCP task only after save is blocked.
+        let command_gate = owner.command_lock.lock().await;
+        let mut events = factory.services.product_events.subscribe_internal();
+        assert!(runtime.fence_exit_admission().await.is_empty());
+        assert!(lifetime.cancellation.is_cancelled());
+        let first = owner
+            .shutdown
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fence starts owned stop");
+        assert!(runtime.fence_exit_admission().await.is_empty());
+        assert!(first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
+        let mut final_close = Box::pin(session.close_session());
+        assert!(futures::poll!(&mut final_close).is_pending());
+        tokio::select! {
+            report = &mut final_close => panic!("Session escaped before terminal flush: {report:?}"),
+            entered = flush_entered.wait_for(|entered| *entered) => { entered?; }
+        }
+        drop(command_gate);
+
+        if fail_watcher {
+            // The real JoinError is retained by the original owner; an early broadcast is
+            // not allowed to fabricate a successful close or silently remove the binding.
+            store.gate.add_permits(1);
+            let report = final_close.await;
+            assert_eq!(report.len(), 1, "{report:?}");
+            assert_eq!(report[0].0, owner.thread_id);
+            assert!(format!("{:?}", report[0].1).contains("member MCP watcher regression failure"));
+            let retained = first.peek().expect("final join records the real result");
+            assert!(
+                retained
+                    .as_ref()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("join MCP watcher")
+            );
+            assert!(owner.runtime.health_snapshot().await.is_ok());
+            assert!(Arc::ptr_eq(
+                scope.mcp.lock().unwrap().as_ref().unwrap(),
+                &owner
+            ));
+            assert!(scope.binding.lock().unwrap().is_some());
+            assert!(session.observed_thread(&owner.thread_id).is_some());
+            assert_eq!(session.phase(), crate::session::SessionPhase::Closing);
+            // Explicit retry after the error has been observed uses the retained owner.
+            store.gate.add_permits(1);
+            let report = session.close_session().await;
+            assert!(report.is_empty(), "{report:?}");
+            assert!(!first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
+        } else {
+            // No completion future is polled here. Only the dropped early request can
+            // advance the actual connector/service shutdown and publish its successful ACK.
+            loop {
+                if let StudioProductEventKind::ThreadMcpStateChanged(snapshot) =
+                    events.recv().await?.kind
+                    && snapshot.thread_id == owner.thread_id
+                    && snapshot.servers.is_empty()
+                {
+                    break;
+                }
+            }
+            assert!(owner.runtime.health_snapshot().await.is_err());
+            assert!(
+                first.peek().is_none(),
+                "early task runs without a join waiter"
+            );
+            assert!(futures::poll!(&mut final_close).is_pending());
+            assert!(Arc::ptr_eq(
+                scope.mcp.lock().unwrap().as_ref().unwrap(),
+                &owner
+            ));
+            assert!(Arc::ptr_eq(
+                &scope.binding.lock().unwrap().as_ref().unwrap().incarnation,
+                &incarnation,
+            ));
+            assert!(scope.has_obligations());
+            assert_eq!(session.phase(), crate::session::SessionPhase::Closing);
+            assert!(Arc::ptr_eq(&session.native_resources(&member)?, &scope));
+            assert_eq!(store.flushes.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                factory.services.worktrees.usage_owner(&usage)?,
+                owner.thread_id
+            );
+            let closed_generation = owner.read_snapshot().generation;
+            assert!(runtime.fence_exit_admission().await.is_empty());
+            assert!(first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
+            store.gate.add_permits(1);
+            let report = final_close.await;
+            assert!(report.is_empty(), "{report:?}");
+            assert!(session.close_session().await.is_empty());
+            assert_eq!(owner.read_snapshot().generation, closed_generation);
+            assert!(matches!(first.peek(), Some(Ok(()))));
+        }
+        assert!(scope.mcp.lock().unwrap().is_none());
+        assert!(scope.binding.lock().unwrap().is_none());
+        assert!(!scope.has_obligations());
+        assert_eq!(session.phase(), crate::session::SessionPhase::Closed);
+        assert!(session.observed_thread(&owner.thread_id).is_none());
+        assert!(owner.runtime.health_snapshot().await.is_err());
+        peer.finish().await?;
+        Ok(())
     }
 
     #[tokio::test]

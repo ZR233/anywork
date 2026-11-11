@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::future::BoxFuture;
 use pl_protocol::{CONTENT_WINDOW_MAX_BYTES, ContentRange, ContentRef, studio::StudioErrorCode};
-use pl_studio_runtime::{ContentWatch, ConversationReader};
+use pl_studio_runtime::{ContentWatch, ConversationReader, DisplayMembers};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::owner::{closed, error};
 use crate::api::studio::{
-    convert::chat,
-    types::{BridgeContentWindow, BridgeError},
+    convert::{chat, presentation},
+    types::{BridgeContentWindow, BridgeDisplayMemberPage, BridgeError},
 };
 use crate::frb_generated::SseEncode;
 use registry::{AdmissionError, WatchRegistry};
@@ -35,6 +35,8 @@ enum NativeWatch {
     // Kept inside the original slot across cancellation of an open waiter, not recreated on retry.
     Opening(BoxFuture<'static, Result<ContentWatch, BridgeError>>),
     Ready(ContentWatch),
+    OpeningMembers(BoxFuture<'static, Result<DisplayMembers, BridgeError>>),
+    Members(DisplayMembers),
     Failed(BridgeError),
     Closed,
 }
@@ -54,22 +56,55 @@ impl ContentWatches {
         range: ContentRange,
     ) -> Result<String, BridgeError> {
         validate_range(&range)?;
+        let reader = reader.clone();
+        self.install_open(
+            facade_cancel,
+            NativeWatch::Opening(Box::pin(async move {
+                reader
+                    .watch_content(&reference, range)
+                    .await
+                    .map_err(BridgeError::from)
+            })),
+        )
+        .await
+    }
+
+    pub(super) async fn open_members(
+        &self,
+        reader: &ConversationReader,
+        facade_cancel: &CancellationToken,
+        reference: pl_protocol::DisplayBlockRef,
+        window: pl_protocol::DisplayMemberWindow,
+        demand: pl_protocol::ReadDemand,
+    ) -> Result<String, BridgeError> {
+        let reader = reader.clone();
+        self.install_open(
+            facade_cancel,
+            NativeWatch::OpeningMembers(Box::pin(async move {
+                reader
+                    .open_display_members(reference, window, demand)
+                    .await
+                    .map_err(BridgeError::from)
+            })),
+        )
+        .await
+    }
+
+    async fn install_open(
+        &self,
+        facade_cancel: &CancellationToken,
+        native: NativeWatch,
+    ) -> Result<String, BridgeError> {
         let (id, owner) = {
             let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
             if facade_cancel.is_cancelled() {
                 return Err(closed());
             }
-            let reader = reader.clone();
             let id = registry
                 .insert_with(|| {
                     Arc::new(WatchOwner {
                         cancel: facade_cancel.child_token(),
-                        native: Mutex::new(NativeWatch::Opening(Box::pin(async move {
-                            reader
-                                .watch_content(&reference, range)
-                                .await
-                                .map_err(BridgeError::from)
-                        }))),
+                        native: Mutex::new(native),
                         next_gate: Mutex::new(()),
                         #[cfg(test)]
                         hooks: tests::Hooks::default(),
@@ -117,6 +152,16 @@ impl ContentWatches {
     pub(super) async fn next(&self, id: &str) -> Result<Option<BridgeContentWindow>, BridgeError> {
         match self.lookup(id)? {
             Some(owner) => owner.next().await,
+            None => Ok(None),
+        }
+    }
+
+    pub(super) async fn next_members(
+        &self,
+        id: &str,
+    ) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
+        match self.lookup(id)? {
+            Some(owner) => owner.next_members().await,
             None => Ok(None),
         }
     }
@@ -183,11 +228,19 @@ impl WatchOwner {
                 Err(error) => NativeWatch::Failed(error),
             };
         }
+        if let NativeWatch::OpeningMembers(open) = &mut *native {
+            *native = match open.await {
+                Ok(watch) => NativeWatch::Members(watch),
+                Err(error) => NativeWatch::Failed(error),
+            };
+        }
         match &*native {
-            NativeWatch::Ready(_) => Ok(()),
+            NativeWatch::Ready(_) | NativeWatch::Members(_) => Ok(()),
             NativeWatch::Failed(error) => Err(error.clone()),
             NativeWatch::Closed => Err(closed()),
-            NativeWatch::Opening(_) => unreachable!("original open was awaited"),
+            NativeWatch::Opening(_) | NativeWatch::OpeningMembers(_) => {
+                unreachable!("original open was awaited")
+            }
         }
     }
 
@@ -208,6 +261,11 @@ impl WatchOwner {
         };
         let watch = match &mut *native {
             NativeWatch::Ready(watch) => watch,
+            NativeWatch::Members(_) | NativeWatch::OpeningMembers(_) => {
+                return Err(BridgeError::invalid_argument(
+                    "member observation is not a content watch",
+                ));
+            }
             NativeWatch::Closed => return Ok(None),
             NativeWatch::Failed(error) => return Err(error.clone()),
             NativeWatch::Opening(_) => {
@@ -236,6 +294,63 @@ impl WatchOwner {
         result?.map(bounded_window).transpose()
     }
 
+    async fn next_members(&self) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
+        if self.cancel.is_cancelled() {
+            return Ok(None);
+        }
+        let _next = self.next_gate.try_lock().map_err(|_| {
+            error(
+                StudioErrorCode::Conflict,
+                "a member window read is already in flight",
+            )
+        })?;
+        let mut native = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Ok(None),
+            native = self.native.lock() => native,
+        };
+        let watch = match &mut *native {
+            NativeWatch::Members(watch) => watch,
+            NativeWatch::Closed => return Ok(None),
+            NativeWatch::Failed(error) => return Err(error.clone()),
+            _ => {
+                return Err(BridgeError::invalid_argument(
+                    "observation is not an open member window",
+                ));
+            }
+        };
+        let result = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Ok(None),
+            result = watch.next() => result?,
+        };
+        if self.cancel.is_cancelled() {
+            return Ok(None);
+        }
+        let sealed = result.as_ref().is_none_or(|page| page.sealed);
+        let page = result.map(presentation::member_page);
+        if let Some(page) = &page {
+            let mut serializer = flutter_rust_bridge::for_generated::SseSerializer::new();
+            Some(page.clone()).sse_encode(&mut serializer);
+            if serializer.cursor.get_ref().len() + 1 > pl_protocol::CHAT_BATCH_MAX_BYTES as usize {
+                return Err(error(
+                    StudioErrorCode::Overloaded,
+                    "member page exceeds the encoded transport budget",
+                ));
+            }
+        }
+        if sealed {
+            // A fixed sealed page needs no watch. Keep the slot until native close succeeds.
+            watch.request_close();
+            watch.close().await?;
+            *native = NativeWatch::Closed;
+        }
+        if self.cancel.is_cancelled() {
+            return Ok(None);
+        }
+        Ok(page)
+    }
+
     async fn close(&self) -> Result<(), BridgeError> {
         // This cancellation wakes next before waiting for the native recv mutex.
         self.cancel.cancel();
@@ -246,10 +361,20 @@ impl WatchOwner {
                 Err(_) => NativeWatch::Closed,
             };
         }
+        if let NativeWatch::OpeningMembers(open) = &mut *native {
+            *native = match open.await {
+                Ok(watch) => NativeWatch::Members(watch),
+                Err(_) => NativeWatch::Closed,
+            };
+        }
         if let NativeWatch::Ready(watch) = &mut *native {
             watch.request_close();
             #[cfg(test)]
             self.hooks.before_close()?;
+            watch.close().await?;
+        }
+        if let NativeWatch::Members(watch) = &mut *native {
+            watch.request_close();
             watch.close().await?;
         }
         *native = NativeWatch::Closed;

@@ -263,11 +263,21 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     );
     assert_eq!(cold.page.items.len(), 1);
     assert!(cold.sources.contains(&ended));
-    assert!(cold.sources.contains(&current_source));
+    // Cold completion reads do not restore a live product current from its checkpoint.
+    // The independently stored lifecycle still exists, but this selection must not
+    // invent a current-only source without an execution owner.
+    assert!(cold.current.atoms.is_empty() && cold.current.sources.is_empty());
+    assert!(!cold.sources.contains(&current_source));
+    assert_eq!(
+        store
+            .conversation_sources(std::slice::from_ref(&origin()), 3)
+            .await?,
+        vec![current_source]
+    );
     assert_eq!(
         cold.sources.len(),
-        2,
-        "unselected sources must not expand the read"
+        1,
+        "neither unselected nor unowned current-only sources expand the cold read"
     );
     // A malformed unrelated global lifecycle is observable if (and only if) it is queried.
     // Children must use the same captured current cut without reading this current-only row.
@@ -287,15 +297,10 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     assert_eq!(children.page.items.len(), 1);
     assert_eq!(children.sources.as_slice(), std::slice::from_ref(&ended));
     assert!(
-        store
-            .cold_conversation(
-                ChatQuery::new("conversation", None),
-                ReadDemand::new(10, 4096),
-                &super::super::tests::Budget,
-            )
+        read_selected(&writer.db, &children.page, &captured, true)
             .await
             .is_err(),
-        "Main still queries its real current-only lifecycle evidence"
+        "a live Main's captured current still queries its real lifecycle evidence"
     );
     assert_eq!(
         store
@@ -305,11 +310,11 @@ async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected
     );
     writer
         .db
-        .execute_unprepared("DELETE FROM timeline_projection_state")
+        .execute_unprepared("DELETE FROM history_meta WHERE id=1")
         .await?;
     assert!(
         store.conversation_current().await.is_err(),
-        "missing recovery cut is not None or checkpoint fallback"
+        "a missing authoritative effect cut is not None or checkpoint fallback"
     );
     Ok(())
 }

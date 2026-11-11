@@ -167,6 +167,10 @@ impl StudioThreadFactory {
             record.changed()?;
             self.services.store.save_agent_close(&record).await?;
         }
+        self.services
+            .product_events
+            .commit_explicit_close(&thread.id)
+            .await?;
         if record.worktree.is_none()
             && let Some(identity) = self.services.store.workspace_identity(&thread.id).await?
         {
@@ -191,8 +195,8 @@ impl StudioThreadFactory {
         Ok(())
     }
 
-    /// Only callers that just flushed (or cold-read) the canonical checkpoint may publish this
-    /// projection. Normal shutdown observations do not call it.
+    /// Qualify the checkpoint's permanent intent, then publish the durable close job's progress.
+    /// The Core owner's resource lifecycle cannot stand in for the execution-close ACK.
     pub(crate) async fn project_child_close(
         &self,
         thread: &pl_protocol::Thread,
@@ -203,31 +207,16 @@ impl StudioThreadFactory {
                 crate::studio::agent_close::is_explicitly_closed(snapshot)?,
                 "explicit close projection requires canonical intent"
             );
+            let record = self
+                .services
+                .store
+                .agent_close(&thread.id)
+                .await?
+                .context("close intent is missing")?;
+            self.validate_close_identity(thread, &record)?;
             self.services
                 .product_events
                 .commit_explicit_close(&thread.id)
-                .await?;
-            let baseline = self
-                .services
-                .product_events
-                .thread_snapshot(&thread.id)
-                .context("closing child is missing from the directory owner")?;
-            let mut projected = baseline.clone();
-            projected.status = if snapshot.lifecycle == pl_core::thread::ThreadLifecycle::Closed {
-                pl_protocol::ThreadStatus::Closed
-            } else {
-                pl_protocol::ThreadStatus::Closing
-            };
-            let (_, agent) = self
-                .services
-                .product_events
-                .directory_facts(&thread.id)
-                .context("closing child is missing from the directory owner")?;
-            let mut projected_agent = agent.clone();
-            projected_agent.status = projected.status;
-            self.services
-                .product_events
-                .commit_agent_update(agent, projected_agent)
                 .await?;
             Ok::<_, anyhow::Error>(())
         }

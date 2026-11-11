@@ -154,20 +154,37 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    if (item.observationUnavailable) {
+      final record = item.displayRecord!;
+      return Text(
+        record.startFact != null && record.endFact == null
+            ? '旧边界观察不可用 · 封存时尚未结束'
+            : '旧边界观察不可用',
+      );
+    }
+    if (item.hasPublicInputBody) {
+      // This branch and its Body positions remain the same while metadata is
+      // pending, restricted, or resolved. Metadata never replaces the read owner.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final index in item.publicInputBodyIndices)
+            _declaredContent(item.atom!, index),
+          _publicInputMedia(),
+        ],
+      );
+    }
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
-      if (unit.run == null) {
+      if (unit.body is SingleDisplayBlock) {
+        final atom = unit.atom!;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (unit.entry.atom.contents.isEmpty) const Text('内容状态未知'),
-            for (
-              var index = 0;
-              index < unit.entry.atom.contents.length;
-              index++
-            )
-              _declaredContent(unit.entry.atom, index),
+            if (atom.contents.isEmpty) const Text('内容状态未知'),
+            for (var index = 0; index < atom.contents.length; index++)
+              _declaredContent(atom, index),
           ],
         );
       }
@@ -186,34 +203,6 @@ class _ChatItemViewState extends State<ChatItemView> {
       arguments: {'itemId': item.id},
     );
     if (item.reference case final reference?) {
-      final atom = item.atom;
-      // The public Input body is a producer declaration independent of the
-      // raw envelope's transport budget. Never read/decode that envelope to
-      // recover text or grant its retained diagnostic domains body intent.
-      if (item.compatibility == ChatItemCompatibility.deferred &&
-          atom != null &&
-          atom.source is InputChatSource &&
-          atom.kind == ChatAtomKind.input) {
-        final indices = [
-          for (var index = 0; index < atom.contents.length; index++)
-            if (atom.contents[index].role == ChatContentRole.body)
-              if (atom.contents[index].reference.target case BodyContentTarget(
-                key: 'body',
-                owner: ItemContentOwner(itemId: final ownerItemId),
-              ))
-                // Completion content retains its original item identity even
-                // when the atom or display card has a different identity.
-                if (ownerItemId == (atom.completionItemId ?? atom.id)) index,
-        ];
-        if (indices.isNotEmpty) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final index in indices) _declaredContent(atom, index),
-            ],
-          );
-        }
-      }
       return widget.contentRangeBuilder?.call(
             item.id,
             'payload',
@@ -242,6 +231,22 @@ class _ChatItemViewState extends State<ChatItemView> {
       type: MaterialType.transparency,
       child: content,
     );
+  }
+
+  Widget _publicInputMedia() {
+    if (item.compatibility != ChatItemCompatibility.current) {
+      return const SizedBox.shrink();
+    }
+    try {
+      if (item.type != 'text') {
+        throw const FormatException('Input metadata must be text');
+      }
+      return _media();
+    } on FormatException {
+      // A malformed metadata domain cannot take the independently declared
+      // public Body down with it, or expose the original envelope as a fallback.
+      return const Text('完成内容格式无法解析');
+    }
   }
 
   Widget _content(BuildContext context) => switch (item.type) {
@@ -329,8 +334,12 @@ class _ChatItemViewState extends State<ChatItemView> {
                   ),
               ],
             ),
-      startedAt: atom?.startedAt,
-      finishedAt: atom?.finishedAt,
+      startedAt: item.displayRecord == null
+          ? atom?.startedAt
+          : item.displayRecord!.displayStartedAt,
+      finishedAt: item.displayRecord == null
+          ? atom?.finishedAt
+          : item.displayRecord!.displayObservedThrough,
       outcome:
           (state is String ? state : null) ??
           switch (atom?.lifecycle) {
@@ -423,6 +432,8 @@ class _ChatItemViewState extends State<ChatItemView> {
       card = TimelineActivityTileTheme(
         child: wait != null
             ? TimelineWaitPanel(
+                staticObservation:
+                    item.displayRecord?.contentSource is FrozenObservation,
                 identity: item.id,
                 presentation: wait,
                 initiallyExpanded: widget.initiallyExpanded,

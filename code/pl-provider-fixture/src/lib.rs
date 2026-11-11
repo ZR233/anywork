@@ -154,7 +154,7 @@ pub fn gui_markdown_answer() -> String {
 /// control/observation routes, and it verifies the real requests against them.
 /// The GUI side is driven by the operator runbook. `--delegation-driver`
 /// only records an optional script path in evidence; the harness does not launch it.
-pub const GUI_SCENARIOS: [&str; 35] = [
+pub const GUI_SCENARIOS: [&str; 37] = [
     "gui",
     "markdown-layout",
     "storage-compaction",
@@ -167,6 +167,8 @@ pub const GUI_SCENARIOS: [&str; 35] = [
     "realtime-presentation",
     "message-submission",
     "timeline-concept",
+    "timeline-boundary",
+    "media-handoff",
     "history-lock",
     "history-fault",
     "plan-recovery",
@@ -940,10 +942,12 @@ pub const GUI_HISTORY_FAULT_TOOL_CALL_ID: &str = "history-fault-call";
 
 /// The only thing the safe `exec` command prints.
 ///
-/// It never touches a user resource; its whole purpose is to give the delivered
-/// tool result a stable identity the strict script can match by call id *and*
-/// output, so a request issued before the tool ever ran cannot satisfy it.
+/// It only appends a receipt in the isolated project and prints this marker.
+/// The strict script matches the delivered result by call id and output.
 pub const GUI_HISTORY_FAULT_TOOL_MARKER: &str = "history-fault-tool-marker";
+
+/// Project-relative receipt proving the deferred tool's physical execution count.
+pub const GUI_HISTORY_FAULT_EXECUTIONS_FILE: &str = "history-fault-executions.log";
 
 /// Non-optional steps in the history-fault fixture script.
 ///
@@ -1213,9 +1217,9 @@ pub enum RequestMatch {
         text: String,
         step: usize,
     },
-    /// One real user message contains the prompt followed by ordered caption/PNG pairs.
+    /// The latest user message contains an optional prompt and ordered caption/PNG pairs.
     PromptImages {
-        text: String,
+        text: Option<String>,
         images: Vec<PromptImage>,
         step: usize,
     },
@@ -2957,7 +2961,16 @@ pub struct RealtimeObservers<'a> {
     pub first_token: &'a ReplyStage,
     pub readable_text: &'a ReplyStage,
     pub parallel: &'a ReplyStage,
+    pub background_result: &'a ReplyStage,
     pub host_cwd: &'a ReplyStage,
+}
+
+pub const REALTIME_STOP_BACKGROUND_REQUIRED_STEPS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeScope {
+    Full,
+    StopBackground,
 }
 
 /// Strict state script for the realtime native GUI acceptance journey.
@@ -2983,118 +2996,129 @@ pub struct RealtimeObservers<'a> {
 /// observer has rendered them. Without it, manual observation keeps its pacing.
 /// The parallel stage holds the two parallel calls behind a completed reasoning
 /// prefix so the desktop observer can mount the original member window before
-/// the calls begin their foreground lifetime. The host-cwd stage prepares the same
-/// observation boundary for the host-cwd call.
-pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'_>>) -> Vec<Step> {
-    let title = session_title_prompt(GUI_REALTIME_DELAYED_PROMPT);
+/// the calls begin their foreground lifetime. The background-result stage holds
+/// real foreground reasoning after the first independent result is delivered;
+/// it does not hold either command's exit or its terminal publication. The
+/// host-cwd stage prepares the same observation boundary for the host-cwd call.
+pub fn gui_realtime_script(
+    host_cwd: &str,
+    observers: Option<RealtimeObservers<'_>>,
+    scope: RealtimeScope,
+) -> Vec<Step> {
+    let title = session_title_prompt(match scope {
+        RealtimeScope::Full => GUI_REALTIME_DELAYED_PROMPT,
+        RealtimeScope::StopBackground => GUI_REALTIME_PARALLEL_PROMPT,
+    });
     let mut script = RealtimeScript::new();
     script.optional_title(&title);
-    script.add(|step| {
-        let events = responses_text_chunks(
-            &["realtime ", "delayed ", "first ", "token"],
-            "realtime-delayed",
-            "fixture-model",
-        );
-        let reply = if let Some(stages) = &observers {
-            let readable_end = events
-                .iter()
-                .position(|event| event["type"] == "response.output_text.delta")
-                .expect("delayed text fixture must contain its first token")
-                + 1;
-            ReplyStage::staged(
-                vec![
-                    events[..1].to_vec(),
-                    events[1..readable_end].to_vec(),
-                    events[readable_end..].to_vec(),
-                ],
-                &[stages.first_token, stages.readable_text],
+    if scope == RealtimeScope::Full {
+        script.add(|step| {
+            let events = responses_text_chunks(
+                &["realtime ", "delayed ", "first ", "token"],
+                "realtime-delayed",
+                "fixture-model",
+            );
+            let reply = if let Some(stages) = &observers {
+                let readable_end = events
+                    .iter()
+                    .position(|event| event["type"] == "response.output_text.delta")
+                    .expect("delayed text fixture must contain its first token")
+                    + 1;
+                ReplyStage::staged(
+                    vec![
+                        events[..1].to_vec(),
+                        events[1..readable_end].to_vec(),
+                        events[readable_end..].to_vec(),
+                    ],
+                    &[stages.first_token, stages.readable_text],
+                )
+            } else {
+                Reply::PacedEvents {
+                    initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
+                    step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
+                    events,
+                }
+            };
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_DELAYED_PROMPT,
+                step,
+                reply,
             )
-        } else {
-            Reply::PacedEvents {
-                initial_delay_ms: GUI_REALTIME_FIRST_DELAY_MILLIS,
-                step_millis: GUI_REALTIME_STREAM_STEP_MILLIS,
-                events,
-            }
-        };
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_DELAYED_PROMPT,
-            step,
-            reply,
-        )
-    });
-    script.optional_title(&title);
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_REASONING_PROMPT,
-            step,
-            Reply::PacedEvents {
-                initial_delay_ms: 0,
-                step_millis: GUI_REALTIME_REASONING_STEP_MILLIS,
-                events: responses_reasoning_text(
-                    &GUI_REALTIME_REASONING_LINES,
-                    &["realtime ", "reasoning ", "answer"],
-                    "realtime-reasoning",
+        });
+        script.optional_title(&title);
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_REASONING_PROMPT,
+                step,
+                Reply::PacedEvents {
+                    initial_delay_ms: 0,
+                    step_millis: GUI_REALTIME_REASONING_STEP_MILLIS,
+                    events: responses_reasoning_text(
+                        &GUI_REALTIME_REASONING_LINES,
+                        &["realtime ", "reasoning ", "answer"],
+                        "realtime-reasoning",
+                        "fixture-model",
+                    ),
+                },
+            )
+        });
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_LONG_COMMAND_PROMPT,
+                step,
+                Reply::Sse(responses_tool_calls(
+                    "realtime-long",
                     "fixture-model",
-                ),
-            },
-        )
-    });
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_LONG_COMMAND_PROMPT,
-            step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-long",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-long-item",
-                    call_id: "realtime-long-call",
-                    name: TOOL_EXEC_NAME,
-                    arguments: realtime_exec_arguments(&realtime_long_command(), None),
-                }],
-            )),
-        )
-    });
-    // The runtime answered the Turn with a task receipt while the command runs.
-    // The model must not claim completion: it waits on that receipt with the
-    // supported task-control tool, and the runtime blocks this Turn on that
-    // foreground wait until the real command has exited.
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_LONG_COMMAND_PROMPT,
-            step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-long-wait",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-long-wait-item",
-                    call_id: "realtime-long-wait-call",
-                    name: TOOL_WAIT_NAME,
-                    arguments: realtime_wait_arguments(&["realtime-long-call"]),
-                }],
-            )),
-        )
-    });
-    // The wait released the Turn once the real command committed its result, so
-    // the request now carries the runtime's delivery notice instead of the
-    // original prompt: the step matches that exact notice identity and nothing
-    // else, and only here does the model report the command complete.
-    script.add(|step| {
-        Step::delivery(
-            Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-long-call"),
-            step,
-            Reply::Sse(responses_text(
-                GUI_REALTIME_LONG_DONE_TEXT,
-                "realtime-long-done",
-                "fixture-model",
-            )),
-        )
-    });
+                    &[RealtimeToolCall {
+                        item_id: "realtime-long-item",
+                        call_id: "realtime-long-call",
+                        name: TOOL_EXEC_NAME,
+                        arguments: realtime_exec_arguments(&realtime_long_command(), None),
+                    }],
+                )),
+            )
+        });
+        // The runtime answered the Turn with a task receipt while the command runs.
+        // The model must not claim completion: it waits on that receipt with the
+        // supported task-control tool, and the runtime blocks this Turn on that
+        // foreground wait until the real command has exited.
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_LONG_COMMAND_PROMPT,
+                step,
+                Reply::Sse(responses_tool_calls(
+                    "realtime-long-wait",
+                    "fixture-model",
+                    &[RealtimeToolCall {
+                        item_id: "realtime-long-wait-item",
+                        call_id: "realtime-long-wait-call",
+                        name: TOOL_WAIT_NAME,
+                        arguments: realtime_wait_arguments(&["realtime-long-call"]),
+                    }],
+                )),
+            )
+        });
+        // The wait released the Turn once the real command committed its result, so
+        // the request now carries the runtime's delivery notice instead of the
+        // original prompt: the step matches that exact notice identity and nothing
+        // else, and only here does the model report the command complete.
+        script.add(|step| {
+            Step::delivery(
+                Protocol::ResponsesHttp,
+                realtime_delivery_marker("realtime-long-call"),
+                step,
+                Reply::Sse(responses_text(
+                    GUI_REALTIME_LONG_DONE_TEXT,
+                    "realtime-long-done",
+                    "fixture-model",
+                )),
+            )
+        });
+    }
     script.add(|step| {
         let calls = [
             RealtimeToolCall {
@@ -3150,6 +3174,9 @@ pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'
             reply,
         )
     });
+    if scope == RealtimeScope::StopBackground {
+        script.optional_title(&title);
+    }
     // Both commands outlive the foreground window, so the Turn is answered with
     // two task receipts. The model waits on both receipt identities at once; the
     // runtime releases the Turn as soon as the first real command commits, so the
@@ -3174,24 +3201,45 @@ pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'
             )),
         )
     });
-    // The first delivered result is in context. The model waits again for the
-    // still-running command by its own receipt identity before it reports the
-    // parallel work complete.
+    // The first delivered result is in context. The observer may hold this real
+    // foreground reasoning open; neither command's terminal is held. The model
+    // then waits on B's original receipt even if B completed during observation.
     script.add(|step| {
+        let calls = [RealtimeToolCall {
+            item_id: "realtime-parallel-wait-b-item",
+            call_id: "realtime-parallel-wait-b-call",
+            name: TOOL_WAIT_NAME,
+            arguments: realtime_wait_arguments(&["realtime-parallel-call-b"]),
+        }];
+        let reply = if let Some(stages) = &observers {
+            let events = responses_reasoning_tool_calls(
+                &["realtime background A delivered; foreground reasoning remains active"],
+                "realtime-parallel-wait-b",
+                "fixture-model",
+                &calls,
+            );
+            let terminal = events
+                .iter()
+                .position(|event| {
+                    event["type"] == "response.output_item.done"
+                        && event["item"]["type"] == "reasoning"
+                })
+                .expect("background observer requires a real reasoning terminal");
+            stages
+                .background_result
+                .gated(events[..terminal].to_vec(), events[terminal..].to_vec())
+        } else {
+            Reply::Sse(responses_tool_calls(
+                "realtime-parallel-wait-b",
+                "fixture-model",
+                &calls,
+            ))
+        };
         Step::delivery(
             Protocol::ResponsesHttp,
             realtime_delivery_marker("realtime-parallel-call-a"),
             step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-parallel-wait-b",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-parallel-wait-b-item",
-                    call_id: "realtime-parallel-wait-b-call",
-                    name: TOOL_WAIT_NAME,
-                    arguments: realtime_wait_arguments(&["realtime-parallel-call-b"]),
-                }],
-            )),
+            reply,
         )
     });
     // The second delivered result is in context; only now is the parallel work
@@ -3209,89 +3257,91 @@ pub fn gui_realtime_script(host_cwd: &str, observers: Option<RealtimeObservers<'
             )),
         )
     });
-    script.add(|step| {
-        let calls = [RealtimeToolCall {
-            item_id: "realtime-host-cwd-item",
-            call_id: "realtime-host-cwd-call",
-            name: TOOL_EXEC_NAME,
-            arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
-        }];
-        let reply = if let Some(stages) = &observers {
-            let events = responses_reasoning_tool_calls(
-                &["realtime host cwd observers ready"],
-                "realtime-host-cwd",
-                "fixture-model",
-                &calls,
-            );
-            let tool_start = events
-                .iter()
-                .position(|event| {
-                    event["type"] == "response.output_item.added"
-                        && event["item"]["type"] == "function_call"
-                })
-                .expect("host-cwd fixture must contain its original exec call");
-            stages
-                .host_cwd
-                .gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
-        } else {
-            Reply::Sse(responses_tool_calls(
-                "realtime-host-cwd",
-                "fixture-model",
-                &calls,
-            ))
-        };
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_HOST_CWD_PROMPT,
-            step,
-            reply,
-        )
-    });
-    // The command outlives the runtime's one-second foreground window on its own,
-    // so the model waits for its receipt; the runtime keeps this Turn blocked on
-    // that foreground wait until the real process exits.
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_HOST_CWD_PROMPT,
-            step,
-            Reply::Sse(responses_tool_calls(
-                "realtime-host-cwd-wait",
-                "fixture-model",
-                &[RealtimeToolCall {
-                    item_id: "realtime-host-cwd-wait-item",
-                    call_id: "realtime-host-cwd-wait-call",
-                    name: TOOL_WAIT_NAME,
-                    arguments: realtime_wait_arguments(&["realtime-host-cwd-call"]),
-                }],
-            )),
-        )
-    });
-    // Only the committed result of the host-cwd command reaches this step.
-    script.add(|step| {
-        Step::delivery(
-            Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-host-cwd-call"),
-            step,
-            Reply::Sse(responses_text(
-                GUI_REALTIME_HOST_CWD_DONE_TEXT,
-                "realtime-host-cwd-done",
-                "fixture-model",
-            )),
-        )
-    });
-    script.add(|step| {
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            GUI_REALTIME_ERROR_PROMPT,
-            step,
-            Reply::HttpError {
-                status: 400,
-                code: "invalid_request_error".into(),
-                message: "realtime fixture provider error".into(),
-            },
-        )
-    });
+    if scope == RealtimeScope::Full {
+        script.add(|step| {
+            let calls = [RealtimeToolCall {
+                item_id: "realtime-host-cwd-item",
+                call_id: "realtime-host-cwd-call",
+                name: TOOL_EXEC_NAME,
+                arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
+            }];
+            let reply = if let Some(stages) = &observers {
+                let events = responses_reasoning_tool_calls(
+                    &["realtime host cwd observers ready"],
+                    "realtime-host-cwd",
+                    "fixture-model",
+                    &calls,
+                );
+                let tool_start = events
+                    .iter()
+                    .position(|event| {
+                        event["type"] == "response.output_item.added"
+                            && event["item"]["type"] == "function_call"
+                    })
+                    .expect("host-cwd fixture must contain its original exec call");
+                stages
+                    .host_cwd
+                    .gated(events[..tool_start].to_vec(), events[tool_start..].to_vec())
+            } else {
+                Reply::Sse(responses_tool_calls(
+                    "realtime-host-cwd",
+                    "fixture-model",
+                    &calls,
+                ))
+            };
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_HOST_CWD_PROMPT,
+                step,
+                reply,
+            )
+        });
+        // The command outlives the runtime's one-second foreground window on its own,
+        // so the model waits for its receipt; the runtime keeps this Turn blocked on
+        // that foreground wait until the real process exits.
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_HOST_CWD_PROMPT,
+                step,
+                Reply::Sse(responses_tool_calls(
+                    "realtime-host-cwd-wait",
+                    "fixture-model",
+                    &[RealtimeToolCall {
+                        item_id: "realtime-host-cwd-wait-item",
+                        call_id: "realtime-host-cwd-wait-call",
+                        name: TOOL_WAIT_NAME,
+                        arguments: realtime_wait_arguments(&["realtime-host-cwd-call"]),
+                    }],
+                )),
+            )
+        });
+        // Only the committed result of the host-cwd command reaches this step.
+        script.add(|step| {
+            Step::delivery(
+                Protocol::ResponsesHttp,
+                realtime_delivery_marker("realtime-host-cwd-call"),
+                step,
+                Reply::Sse(responses_text(
+                    GUI_REALTIME_HOST_CWD_DONE_TEXT,
+                    "realtime-host-cwd-done",
+                    "fixture-model",
+                )),
+            )
+        });
+        script.add(|step| {
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                GUI_REALTIME_ERROR_PROMPT,
+                step,
+                Reply::HttpError {
+                    status: 400,
+                    code: "invalid_request_error".into(),
+                    message: "realtime fixture provider error".into(),
+                },
+            )
+        });
+    }
     script.add(|step| {
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -4078,16 +4128,26 @@ fn realtime_echo_step(label: &str, delay_millis: u64) -> String {
     }
 }
 
-/// Safe fault-acceptance tool: prints one marker and touches nothing else.
+/// Safe fault-acceptance tool: appends one isolated receipt and prints one marker.
 ///
 /// It is a real command the runtime runs in the session's isolated project
 /// workspace (no `cwd` override, so no host-workspace approval); its committed
 /// output is the identity the post-resume step matches.
 fn history_fault_command() -> String {
     if cfg!(windows) {
-        format!("Write-Output '{}'", GUI_HISTORY_FAULT_TOOL_MARKER)
+        format!(
+            "Add-Content -LiteralPath '{}' -Value '{}' -Encoding ascii -ErrorAction Stop; Write-Output '{}'",
+            GUI_HISTORY_FAULT_EXECUTIONS_FILE,
+            GUI_HISTORY_FAULT_TOOL_MARKER,
+            GUI_HISTORY_FAULT_TOOL_MARKER
+        )
     } else {
-        format!("echo {}", GUI_HISTORY_FAULT_TOOL_MARKER)
+        format!(
+            "printf '%s\\n' '{}' >> '{}' && printf '%s\\n' '{}'",
+            GUI_HISTORY_FAULT_TOOL_MARKER,
+            GUI_HISTORY_FAULT_EXECUTIONS_FILE,
+            GUI_HISTORY_FAULT_TOOL_MARKER
+        )
     }
 }
 
@@ -4888,7 +4948,7 @@ fn match_step(
                         *step == index && question_history::matches_answers(prompt(body), text)
                     }
                     RequestMatch::PromptImages { text, images, step } => {
-                        *step == index && prompt_images_match(body, text, images)
+                        *step == index && prompt_images_match(body, text.as_deref(), images)
                     }
                     RequestMatch::Compaction { marker, step } => {
                         *step == index
@@ -4996,7 +5056,7 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
-        Some(RequestMatch::PromptImages { text, .. }) => ("prompt_images", Some(text.clone())),
+        Some(RequestMatch::PromptImages { text, .. }) => ("prompt_images", text.clone()),
         Some(RequestMatch::EmptyContinuation {
             previous_response_id,
             ..
@@ -5042,7 +5102,7 @@ fn reject_diagnostic(
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
         Some(RequestMatch::PromptImages { text, images, .. }) => {
-            prompt_images_match(body, text, images)
+            prompt_images_match(body, text.as_deref(), images)
         }
         Some(RequestMatch::InteractionAnswers { text, .. }) => {
             question_history::matches_answers(actual, text)
@@ -5132,17 +5192,20 @@ fn reject_diagnostic(
     }
 }
 
-fn prompt_images_match(body: &Value, text: &str, images: &[PromptImage]) -> bool {
-    if images.is_empty() || prompt(body) != Some(text) {
+fn prompt_images_match(body: &Value, text: Option<&str>, images: &[PromptImage]) -> bool {
+    if body.get("stream") != Some(&Value::Bool(true))
+        || images.is_empty()
+        || text.is_some_and(str::is_empty)
+    {
         return false;
     }
     let Some(content) = body["input"]
         .as_array()
         .and_then(|items| {
-            items
-                .iter()
-                .rev()
-                .find(|item| item["role"] == "user" && user_text(item) == Some(text))
+            items.iter().rev().find(|item| {
+                item["role"] == "user"
+                    && !user_text(item).is_some_and(|text| text.starts_with("[当前宿主事实："))
+            })
         })
         .and_then(|item| item["content"].as_array())
     else {
@@ -5151,9 +5214,10 @@ fn prompt_images_match(body: &Value, text: &str, images: &[PromptImage]) -> bool
     // Count only this input, never images from earlier inputs or tool results.
     // Production retains each filename as its own text part immediately before
     // the image. Match that actual structure, not an invented captionless wire.
-    content.len() == images.len() * 2 + 1
-        && content[0]["type"] == "input_text"
-        && content[1..]
+    let prefix = usize::from(text.is_some());
+    content.len() == images.len() * 2 + prefix
+        && text.is_none_or(|text| content[0]["type"] == "input_text" && content[0]["text"] == text)
+        && content[prefix..]
             .as_chunks::<2>()
             .0
             .iter()

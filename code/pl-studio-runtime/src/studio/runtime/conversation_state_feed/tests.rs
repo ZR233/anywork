@@ -231,11 +231,49 @@ async fn unconsumed_content_does_not_delay_final_state_and_cold_statistics() -> 
                 .is_none()
         );
         let requests = env.root_provider.recorded().len();
+        let directory = env
+            .runtime
+            .store
+            .read_thread(id)
+            .await?
+            .context("retained product directory")?;
+        assert_eq!(directory.status, ThreadStatus::Idle);
+        let saved = env
+            .runtime
+            .store
+            .history(id)
+            .await?
+            .checkpoint()
+            .await?
+            .context("owner shutdown checkpoint")?;
+        assert_eq!(saved.state.lifecycle, pl_core::thread::ThreadLifecycle::Closed);
+        assert_eq!(
+            crate::studio::thread_projection::status(&saved.state),
+            ThreadStatus::Closed,
+            "the old direct Core-lifecycle projection would fail the product-status assertions below"
+        );
+        assert!(!crate::studio::agent_close::is_explicitly_closed(&saved.state)?);
+        assert!(env.runtime.store.agent_close(id).await?.is_none());
         phase.set("cold State");
         let mut cold = env.runtime.open_conversation_state_feed(id).await?;
         let snapshot = state_snapshot(&mut cold).await?;
+        assert_eq!(
+            snapshot.thread.status, directory.status,
+            "a saved Closed Core owner must not permanently close the product Thread"
+        );
         assert!(snapshot.active_turn.is_none() && snapshot.activity.is_none());
         assert!(snapshot.business_refs.interactions.is_some());
+        let one_shot = env.runtime.thread_snapshot(id).await?;
+        assert_eq!(
+            one_shot.thread.status, directory.status,
+            "one-shot and State must expose the same resumable product status"
+        );
+        assert_eq!(one_shot.business_refs, snapshot.business_refs);
+        assert_eq!(one_shot.active_turn, snapshot.active_turn);
+        assert_eq!(
+            one_shot.runtime.as_ref().context("cold one-shot runtime")?,
+            snapshot.runtime.as_ref().context("cold State runtime")?
+        );
         let runtime = snapshot.runtime.context("cold saved runtime missing")?;
         assert!(runtime.live_usage.is_none());
         let mut expected_usage = final_runtime.usage;
@@ -275,6 +313,186 @@ async fn unconsumed_content_does_not_delay_final_state_and_cold_statistics() -> 
     if let Err(error) = &result {
         eprintln!("State scenario failed during {}: {error:#}", phase.get());
     }
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn permanent_child_close_intent_stays_read_only_in_cold_state_and_one_shot() -> Result<()> {
+    use pl_provider_fixture::{Protocol, ReplyStage, Step};
+
+    let spawned = ReplyStage::new();
+    let child_running = ReplyStage::new();
+    let mut env = support::Environment::new(
+        vec![
+            support::prompt_step(
+                "cold-close-parent",
+                0,
+                support::spawn_reply("cold-close-spawn", "cold-close-child"),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "cold-close-spawn",
+                "agentId",
+                1,
+                support::held_reply(&spawned, "spawned"),
+            ),
+        ],
+        vec![support::prompt_step(
+            "cold-close-child",
+            0,
+            support::held_reply(&child_running, "child response"),
+        )],
+    )
+    .await?;
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let root = env
+            .start(ThreadWorkspaceMode::Local, "cold-close-parent")
+            .await?;
+        support::reached(&spawned).await?;
+        support::reached(&child_running).await?;
+        let receipt = support::receipt(&env.root_provider, "cold-close-spawn")?;
+        let id = support::child_id(&receipt)?.to_owned();
+        let child = env.runtime.read_protocol_thread(&id).await?;
+        let session = env.runtime.require_session(&id)?;
+        let handle = session.observed_thread(&id).context("real spawned child")?;
+        let operation = session.agent_operation(&root.thread.id).await;
+        let close = env
+            .runtime
+            .thread_factory
+            .begin_child_close(&child, Some(&handle.snapshot()), false)
+            .await?;
+        assert!(!close.execution_closed);
+        drop(operation);
+        drop(handle);
+        drop(session);
+        spawned.release();
+        support::completed_prompt(&env.runtime, &root.thread.id, "cold-close-parent").await?;
+        // Stop between the durable business seal and its later execution-close ACK.
+        // The ordinary host shutdown must not complete or erase that permanent intent.
+        env.restart().await?;
+        let requests = (
+            env.root_provider.recorded().len(),
+            env.child_provider.recorded().len(),
+        );
+        assert!(
+            env.runtime
+                .session_of(&id)
+                .and_then(|s| s.observed_thread(&id))
+                .is_none()
+        );
+        assert_eq!(
+            env.runtime.store.agent_close(&id).await?,
+            Some(close.clone())
+        );
+        let directory = env
+            .runtime
+            .store
+            .read_thread(&id)
+            .await?
+            .context("closed child directory")?;
+        assert_eq!(directory.status, ThreadStatus::Closing);
+        let mut feed = env.runtime.open_conversation_state_feed(&id).await?;
+        let state = state_snapshot(&mut feed).await?;
+        let one_shot = env.runtime.thread_snapshot(&id).await?;
+        eprintln!(
+            "COLD_CLOSE_STATUS directory={:?} state={:?} one_shot={:?} execution_closed={}",
+            directory.status, state.thread.status, one_shot.thread.status, close.execution_closed
+        );
+        assert!(state.active_turn.is_none() && state.activity.is_none());
+        assert_eq!(one_shot.business_refs, state.business_refs);
+        feed.close().await?;
+        assert!(
+            env.runtime.ensure_thread_owner(&id).await.is_err(),
+            "a cold read must not turn a permanent child close into execution permission"
+        );
+        assert!(
+            env.runtime
+                .session_of(&id)
+                .and_then(|s| s.observed_thread(&id))
+                .is_none()
+        );
+        assert_eq!(
+            env.runtime.store.agent_close(&id).await?,
+            Some(close.clone())
+        );
+        assert_eq!(
+            (
+                env.root_provider.recorded().len(),
+                env.child_provider.recorded().len()
+            ),
+            requests,
+            "cold observations and rejected execution cannot issue a model request"
+        );
+        anyhow::ensure!(
+            state.thread.status == directory.status && one_shot.thread.status == directory.status,
+            "cold close status disagrees: directory={:?}, State={:?}, one-shot={:?}",
+            directory.status,
+            state.thread.status,
+            one_shot.thread.status
+        );
+        // Resume the original close coordinator, not an execution/model owner. It
+        // must join the saved child and original parent-report acknowledgement
+        // before finish_child_execution can persist the true completion bit.
+        let coordinator = env
+            .runtime
+            .sessions
+            .materialize(&SessionId::new(root.thread.id.clone())?)?;
+        coordinator.resume_agent_closes().await?;
+        drop(coordinator);
+        let finished = env
+            .runtime
+            .store
+            .agent_close(&id)
+            .await?
+            .context("finished close ACK")?;
+        assert!(finished.execution_closed);
+        assert!(finished.revision > close.revision);
+        for reopen in [false, true] {
+            if reopen {
+                env.restart().await?;
+            }
+            assert_eq!(
+                env.runtime.store.agent_close(&id).await?,
+                Some(finished.clone())
+            );
+            let directory = env
+                .runtime
+                .store
+                .read_thread(&id)
+                .await?
+                .context("finished directory")?;
+            let mut feed = env.runtime.open_conversation_state_feed(&id).await?;
+            let state = state_snapshot(&mut feed).await?;
+            let one_shot = env.runtime.thread_snapshot(&id).await?;
+            assert_eq!(directory.status, ThreadStatus::Closed);
+            assert_eq!(state.thread.status, directory.status);
+            assert_eq!(one_shot.thread.status, directory.status);
+            assert_eq!(one_shot.business_refs, state.business_refs);
+            assert!(state.active_turn.is_none() && state.activity.is_none());
+            feed.close().await?;
+            assert!(env.runtime.ensure_thread_owner(&id).await.is_err());
+            assert!(
+                env.runtime
+                    .session_of(&id)
+                    .and_then(|s| s.observed_thread(&id))
+                    .is_none()
+            );
+            assert_eq!(
+                (
+                    env.root_provider.recorded().len(),
+                    env.child_provider.recorded().len()
+                ),
+                requests,
+                "close recovery and cold reads cannot execute the model"
+            );
+        }
+        Ok(())
+    })
+    .await
+    .context("permanent-close cold observation timed out")
+    .and_then(std::convert::identity);
+    spawned.release();
+    child_running.release();
     env.finish(result).await
 }
 

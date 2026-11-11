@@ -5922,6 +5922,21 @@ pub(crate) mod storage_fault_tests {
                     pending: None,
                 })?;
             sink.flush(id, sequence).await?;
+            // Durable display heads/members are owned by SQLite now. As LiveOwner does
+            // on storage acknowledgement, retire that exact prefix before measuring
+            // the next resident scope; a writer flush alone does not notify this fixture.
+            let before_confirm = projection.retained_bytes();
+            projection.confirm_sources(store.history(id).await?.watermark().await?);
+            assert!(
+                projection.retained_bytes() < before_confirm,
+                "the durable display prefix must release its retained members"
+            );
+            sink.0
+                .channel
+                .set_projection_retention(ProjectionRetention {
+                    resident_bytes: projection.retained_bytes(),
+                    pending: None,
+                })?;
             assert!(index.inner.lock().unwrap().assigned.len() <= 81);
             assert!(index.retained_bytes() < 32 * 1024);
             assert!(
@@ -7057,16 +7072,8 @@ pub(crate) mod storage_fault_tests {
         let mut accepted = ticket(id, 1);
         accepted.checkpoint.state.inbox = Arc::from([record.clone()]);
         Arc::make_mut(&mut accepted.effect).inbox = Arc::from([record.clone()]);
-        let accepted_batch =
-            drive_live_projection(&mut projection, &chat, &sink, id, accepted.clone()).await?;
-        let original = accepted_batch
-            .items
-            .iter()
-            .find(|item| item.id == item_id)
-            .context("accepted parent message")?
-            .clone();
-        // Re-observation before consumption must not invent a new content version.
-        let (_, mut repeat) = projection
+        sink.admit(id, accepted.clone())?;
+        let (_, mut accepted_batch) = projection
             .prepare(
                 &sink.0.thread,
                 &accepted.effect,
@@ -7074,7 +7081,21 @@ pub(crate) mod storage_fault_tests {
                 true,
             )
             .await?;
+        projection
+            .publish_prepared(&chat, &mut accepted_batch)
+            .await?;
+        assert!(sink.0.channel.prepare(accepted_batch.clone()));
+        let original = accepted_batch
+            .items
+            .iter()
+            .find(|item| item.id == item_id)
+            .context("accepted parent message")?
+            .clone();
+        // Lost publication acknowledgement reuses the frozen handoff; it cannot fold the
+        // same journal effect again or allocate a new identity/content version.
+        let mut repeat = accepted_batch.clone();
         projection.publish_prepared(&chat, &mut repeat).await?;
+        assert!(Arc::ptr_eq(&accepted_batch, &repeat));
         assert_eq!(
             repeat
                 .items
@@ -7321,7 +7342,11 @@ pub(crate) mod storage_fault_tests {
                 + 3 * std::mem::size_of::<usize>() as u64
                 + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
                 + accounting_only.current.operation_bytes()
-                + serde_json::to_vec(accounting_only.current.atom_facts.as_ref())?.len() as u64,
+                + serde_json::to_vec(accounting_only.current.atom_facts.as_ref())?.len() as u64
+                + accounting_only.display.as_ref().context("frozen display handoff")?.retained_bytes
+                // Publication consumed the effect-local member updates, but their empty
+                // Arc collection remains part of PreparedEffect's retained shell.
+                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -10141,10 +10166,14 @@ pub(crate) mod storage_fault_tests {
             .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
             .await?;
         projection.publish_prepared(&chat, &mut first).await?;
-        let mut second = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
+        let mut second = first.clone();
         projection.publish_prepared(&chat, &mut second).await?;
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first.completions, &second.completions));
+        assert!(Arc::ptr_eq(
+            first.display.as_ref().context("original display")?,
+            second.display.as_ref().context("replayed display")?,
+        ));
         assert_eq!(
             first.items[0].revision, 1,
             "a first delivery takes the projection's own content version, not the commit sequence"
@@ -10152,7 +10181,7 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(
             serde_json::to_vec(&first.items)?,
             serde_json::to_vec(&second.items)?,
-            "a repeat projection of an unchanged fact is byte-identical, so one version never names two payloads"
+            "redelivery of the frozen effect is byte-identical, so one version never names two payloads"
         );
         Ok(())
     }

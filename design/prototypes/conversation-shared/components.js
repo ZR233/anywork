@@ -323,6 +323,16 @@
     </summary>`);
   }
 
+  function groupElapsedLabel(seconds, prefix) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '';
+    const whole = Math.floor(seconds);
+    if (whole === 0) return `${prefix}不到 1 秒`;
+    const minutes = Math.floor(whole / 60);
+    const remainder = whole % 60;
+    if (!minutes) return `${prefix} ${remainder} 秒`;
+    return `${prefix} ${minutes} 分${remainder ? ` ${remainder} 秒` : ''}`;
+  }
+
   function groupDigest(group) {
     const digest = node('<span class="cv-group-digest"></span>');
     Object.entries(kinds).forEach(([kind, info]) => {
@@ -337,7 +347,7 @@
   }
 
   class WorkGroupView {
-    constructor(group, mode, actions, expanded = mode === 'live') {
+    constructor(group, mode, actions, expanded = false) {
       this.mode = mode;
       this.actions = actions;
       this.node = node(`<details class="cv-work-group cv-group-${escape(mode)}" data-history-kind="workGroup"><div class="cv-group-rail"></div></details>`);
@@ -349,7 +359,7 @@
       this.rail = this.node.querySelector('.cv-group-rail');
       this.members = [];
       if (mode === 'history') {
-        this.title.textContent = `工作了 ${group.elapsed} 秒`;
+        this.title.textContent = groupElapsedLabel(group.elapsed, '工作了') || '工作记录';
         this.meta.append(groupDigest(group));
         const footer = node('<div class="cv-group-actions"></div>');
         footer.append(button('复制工作记录', 'copy', () => actions.copy(groupText(this.current)), 'cv-quiet'));
@@ -368,11 +378,14 @@
       this.node.dataset.status = group.status;
       if (this.mode !== 'live') return;
       const running = group.members.filter(member => member.status === 'running');
-      const done = group.members.filter(member => member.status === 'completed').length;
+      const thinking = group.members.filter(member => member.kind === 'thinking').at(-1);
       this.node.dataset.phase = running.length ? 'working' : 'thinking';
-      this.title.textContent = running.length ? '工作中' : '思考中';
-      this.currentStep.textContent = running.length ? describe(running[0]) + (running.length > 1 ? ` 等 ${running.length} 项` : '') : '';
-      this.meta.textContent = `${done} 完成${running.length ? ` · ${running.length} 进行中` : ''} · ${group.elapsed}s`;
+      this.title.textContent = running.length
+        ? (thinking ? describe(thinking) : describe(running[0]))
+        : '思考中';
+      this.title.title = this.title.textContent;
+      this.currentStep.textContent = '';
+      this.meta.textContent = groupElapsedLabel(group.elapsed, '执行了');
     }
     flush() { this.members.forEach(member => member.flush()); }
   }

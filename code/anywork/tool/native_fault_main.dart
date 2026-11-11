@@ -586,8 +586,8 @@ final class _NativeLifecycleAssembly {
   }
 
   Future<List<Map<String, Object?>>> _inventory(_SettledTurn settled) async {
-    // Completed entries are read from the original Main controller; Run
-    // members have an independent reader and never become Main messages.
+    // Display blocks come from the original Main controller; explicit inventory
+    // reads resolve their completion references through the original reader.
     final deadline = DateTime.now().add(const Duration(seconds: 120));
     _inventoryDeadline = deadline;
     TimelineDisplayLease? lease;
@@ -599,7 +599,7 @@ final class _NativeLifecycleAssembly {
         lease ??= graph.timeline.lease(settled.threadId);
         if (lease != null) {
           _requireInventoryOwner(settled, lease);
-          items = _mainItems(lease);
+          items = await _mainItems(lease);
           if (items.any((entry) => _isInventoryFinal(entry, settled))) break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -614,8 +614,8 @@ final class _NativeLifecycleAssembly {
       _requireInventoryOwner(settled, lease);
       _recordInventory('Main inventory ready', settled, lease);
       final scope = lease.openDetailQueries();
-      if (scope == null) {
-        throw StateError('Saved-turn original Main reader is unavailable');
+      if (scope is! TimelineQueryScope) {
+        throw StateError('Saved-turn original Timeline reader is unavailable');
       }
       try {
         if (scope.threadId != settled.threadId ||
@@ -629,7 +629,7 @@ final class _NativeLifecycleAssembly {
           _requireInventoryOwner(settled, lease);
           final before = lease.olderCursor;
           if (before == null) break;
-          final batch = await scope.loadOlder(
+          final batch = await scope.loadTimelineOlder(
             before: before,
             demand: lease.demand,
           );
@@ -642,15 +642,13 @@ final class _NativeLifecycleAssembly {
               'Main history page did not advance',
             );
           }
-          items = _mainItems(lease);
+          items = await _mainItems(lease);
         }
         final unique = <String, CompletedEntry>{
           for (final entry in items) entry.recordId: entry,
         };
-        final runHeads = <CompletionRunRef, CompletedEntry>{
-          for (final unit in _mainUnits(lease))
-            if (unit.run != null && unit.entry.atom.turnId == settled.turnId)
-              unit.run!.reference: unit.entry,
+        final workBlocks = <DisplayBlockRef>{
+          for (final unit in _mainUnits(lease)) ?unit.memberReference,
         };
         final inputEntries = unique.values
             .where(
@@ -678,111 +676,61 @@ final class _NativeLifecycleAssembly {
             );
           }
         }
-        for (final reference in runHeads.keys) {
-          _requireInventoryOwner(settled, lease);
-          ConversationContent? memberContent;
-          Observation? observation;
-          ConversationQueryScope? memberScope;
-          Object? operationError;
-          try {
-            memberContent = await lease.openRun(reference, lease.demand);
+        for (final reference in workBlocks) {
+          DisplayMemberWindow window = const LatestDisplayMembers();
+          while (true) {
             _requireInventoryOwner(settled, lease);
-            final consumer = _InventoryBatchConsumer();
-            observation = memberContent.attachConsumer(
-              consumer,
+            final handle = await scope.openDisplayMembers(
+              reference: reference,
+              window: window,
               demand: lease.demand,
             );
-            memberScope = memberContent.openScope(generation: lease.generation);
-            await memberContent.ready;
-            _requireInventoryOwner(settled, lease);
-            var before = consumer.before;
-            while (before != null) {
-              final batch = await memberScope.loadOlder(
-                before: before,
-                demand: lease.demand,
-              );
+            Object? operationError;
+            DisplayMemberPage? page;
+            try {
+              page = await handle.next();
               _requireInventoryOwner(settled, lease);
-              final nextBefore = consumer.before;
-              if (nextBefore != batch.before ||
-                  nextBefore == before ||
-                  batch.before == before) {
-                throw const ConversationContinuityError(
-                  'Run history page did not advance',
+              if (page == null || !page.sealed) {
+                throw StateError('Saved display member window is not sealed');
+              }
+              for (final head in page.entries) {
+                if (head.record.atom.turnId != settled.turnId) continue;
+                final source = head.record.contentSource;
+                if (source is! CompletedOriginal) continue;
+                final entry = await scope.readCompleted(
+                  recordId: source.completionId,
+                  demand: lease.demand,
+                );
+                inventory.addAll(
+                  await _inventoryEntry(entry, settled, lease, scope),
                 );
               }
-              before = nextBefore;
-            }
-            final members = <String, CompletedEntry>{
-              for (final member in consumer.entries)
-                if (member.atom.turnId == settled.turnId)
-                  member.recordId: member,
-            };
-            for (final member in members.values) {
-              inventory.addAll(
-                await _inventoryEntry(member, settled, lease, scope),
-              );
-            }
-          } catch (error, stack) {
-            operationError = error;
-            Error.throwWithStackTrace(error, stack);
-          } finally {
-            Object? cleanupError;
-            StackTrace? cleanupStack;
-            Future<void> captureCleanup(Future<void> Function() cleanup) async {
+            } catch (error) {
+              operationError = error;
+              rethrow;
+            } finally {
+              handle.requestClose();
               try {
-                await cleanup();
+                await handle.close();
               } catch (error, stack) {
-                cleanupError ??= error;
-                cleanupStack ??= stack;
-              }
-            }
-
-            final attachedObservation = observation;
-            if (attachedObservation != null) {
-              await captureCleanup(() async {
-                attachedObservation.cancel();
-              });
-            }
-            final openedScope = memberScope;
-            if (openedScope != null) {
-              openedScope.retire();
-              await captureCleanup(() async {
-                final report = await openedScope.close();
-                if (!report.complete) {
-                  throw StateError('Run query scope did not close: $report');
-                }
-              });
-            }
-            final openedContent = memberContent;
-            if (openedContent != null) {
-              await captureCleanup(() async {
-                final report = await openedContent.close();
-                if (!report.complete) {
-                  throw StateError('Run content did not close: $report');
-                }
-              });
-              await captureCleanup(() async {
-                final report = await openedContent.joinRetired();
-                if (!report.complete) {
-                  throw StateError('Retired Run content did not join: $report');
-                }
-              });
-            }
-            await captureCleanup(() {
-              _requireInventoryOwner(settled, lease!);
-              return Future<void>.value();
-            });
-            if (cleanupError != null) {
-              if (operationError != null) {
+                if (operationError == null) rethrow;
                 recordDartError(
-                  cleanupError!,
-                  cleanupStack!,
-                  stage: 'native-shutdown-run-cleanup',
+                  error,
+                  stack,
+                  stage: 'native-shutdown-display-cleanup',
                 );
-              } else {
-                Error.throwWithStackTrace(cleanupError!, cleanupStack!);
               }
             }
+            final before = page.before;
+            if (before == null) break;
+            if (window case BeforeDisplayMembers(:final memberOrder)) {
+              if (before >= memberOrder) {
+                throw const ConversationContinuityError(
+                  'Display member page did not advance',
+                );
+              }
+            }
+            window = BeforeDisplayMembers(memberOrder: before);
           }
         }
         if (inventory.isEmpty) {
@@ -818,8 +766,8 @@ final class _NativeLifecycleAssembly {
       final unit = message.metadata?[timelineDisplayUnitKey];
       if (unit is! TimelineDisplayUnit ||
           message.id != unit.id ||
-          unit.entry.completionSeq <= 0 ||
-          unit.entry.recordId.isEmpty) {
+          (unit.historyPos ?? 0) <= 0 ||
+          unit.id.isEmpty) {
         throw StateError(
           'Original Main message ${message.id} has no reliable completion',
         );
@@ -829,9 +777,22 @@ final class _NativeLifecycleAssembly {
     return units;
   }
 
-  List<CompletedEntry> _mainItems(TimelineDisplayLease lease) => [
-    for (final unit in _mainUnits(lease)) unit.entry,
-  ];
+  Future<List<CompletedEntry>> _mainItems(TimelineDisplayLease lease) async {
+    final scope = lease.queries;
+    if (scope == null) throw const StaleConversationScope();
+    return [
+      for (final unit in _mainUnits(lease))
+        if (unit.body case SingleDisplayBlock(
+          record: DisplayRecord(
+            contentSource: CompletedOriginal(:final completionId),
+          ),
+        ))
+          await scope.readCompleted(
+            recordId: completionId,
+            demand: lease.demand,
+          ),
+    ];
+  }
 
   void _requireInventoryOwner(
     _SettledTurn settled,
@@ -977,26 +938,18 @@ final class _NativeLifecycleAssembly {
     TimelineDisplayLease? lease,
   ) {
     Map<String, Object?> describe(TimelineDisplayUnit unit) {
-      final entry = unit.entry;
-      final atom = entry.atom;
+      final atom = unit.atom;
       return {
-        'recordId': entry.recordId,
-        'completionSeq': entry.completionSeq,
-        'atomId': atom.id,
-        'kind': atom.kind.name,
-        'source': _inventorySource(atom.source),
-        'turnId': atom.turnId,
-        'channel': atom.textChannel?.name,
-        'outcome': switch (atom.lifecycle) {
-          TerminalChatAtom(:final outcome) => outcome.name,
-          _ => null,
-        },
-        'databaseId': switch (atom.payload) {
-          DeferredPayload(:final reference) => reference.databaseId,
-          _ => null,
-        },
-        'mainPresentation': entry.mainPresentation.name,
-        'predicates': _inventoryPredicates(entry, settled),
+        'blockId': unit.id,
+        'historyPos': unit.historyPos,
+        'memberBlockId': unit.memberReference?.blockId,
+        'recordId': atom?.completionItemId,
+        'completionSeq': atom?.completionSeq,
+        'atomId': atom?.id,
+        'kind': atom?.kind.name ?? 'work',
+        'source': atom == null ? null : _inventorySource(atom.source),
+        'turnId': atom?.turnId,
+        'channel': atom?.textChannel?.name,
       };
     }
 
@@ -1098,6 +1051,15 @@ final class _NativeLifecycleAssembly {
       'contentError': contentError?.toString(),
       'hasSnapshot': state?.hasSnapshot,
       'snapshotThreadId': state?.workspace?.thread.id,
+      'directoryThreadStatus': threadId == null
+          ? null
+          : client.threadDirectory.observedThread(threadId)?.status.name,
+      'workspaceThreadStatus': state?.workspace?.thread.status.name,
+      'agentStatus': client.project.state.agents?.values
+          .where((agent) => agent.threadId == threadId)
+          .firstOrNull
+          ?.state
+          .label,
       'modelRouteAvailable': state?.modelRoute?.available,
       'stateSourcePhase': state?.sync.phase.name,
       'stateSourceError': state?.sync.errorMessage,
@@ -1145,30 +1107,6 @@ Future<void> _awaitPath(String path, Duration timeout, String label) async {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
   throw TimeoutException('timed out waiting for $label', timeout);
-}
-
-final class _InventoryBatchConsumer implements ConversationBatchConsumer {
-  List<CompletedEntry> entries = const [];
-  String? before;
-
-  @override
-  Future<void> applyBatch(ChatBatch batch) async {
-    switch (batch.placement) {
-      case ChatPlacement.set:
-        entries = List.of(batch.entries);
-        before = batch.before;
-      case ChatPlacement.prepend:
-        entries = [...batch.entries, ...entries];
-        before = batch.before;
-      case ChatPlacement.append:
-        entries = [...entries, ...batch.entries];
-    }
-  }
-
-  @override
-  Future<void> applyActivity(ActivitySnapshot snapshot) async {
-    // Feed scope acceptance already enforces the completedThrough barrier.
-  }
 }
 
 class _SettledTurn {

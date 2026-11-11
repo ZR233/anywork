@@ -3,6 +3,8 @@ mod bots_fixture;
 mod context_replay_recovery;
 mod conversation_read_work;
 mod delegation;
+#[cfg(test)]
+mod history_fault_tests;
 mod message_submission;
 mod mode_editor;
 mod model_catalog;
@@ -63,9 +65,12 @@ pub(crate) struct ManualGuiOptions {
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
     pub(crate) preset: String,
     /// Enable official Flutter MCP/Driver interaction for the manual gui or
-    /// plan-recovery preset.
+    /// plan-recovery or history-fault preset.
     #[arg(long)]
     pub(crate) inspect: bool,
+    /// Run only stop/background evidence; omission keeps the complete realtime journey.
+    #[arg(long, value_parser = ["stop-background"])]
+    pub(crate) realtime_focus: Option<String>,
     /// Measure native Profile first-content layout with the conversation-read-work preset.
     #[arg(long)]
     pub(crate) profile_read_samples: bool,
@@ -139,9 +144,19 @@ pub(crate) struct ManualGuiOptions {
 fn validate_inspect_options(options: &ManualGuiOptions) -> Result<()> {
     ensure!(
         !options.inspect
-            || (matches!(options.preset.as_str(), "gui" | "plan-recovery")
-                && !options.bots_fixture),
-        "--inspect requires --preset gui or plan-recovery without --bots-fixture"
+            || (matches!(
+                options.preset.as_str(),
+                "gui" | "plan-recovery" | "history-fault"
+            ) && !options.bots_fixture),
+        "--inspect requires --preset gui, plan-recovery or history-fault without --bots-fixture"
+    );
+    Ok(())
+}
+
+fn validate_realtime_focus(options: &ManualGuiOptions) -> Result<()> {
+    ensure!(
+        options.realtime_focus.is_none() || options.preset == "realtime-presentation",
+        "--realtime-focus requires --preset realtime-presentation"
     );
     Ok(())
 }
@@ -337,7 +352,9 @@ struct HistoryFaultScenario<'a> {
     output: &'a Path,
     fixture_log: &'a Path,
     requests_file: &'a Path,
+    status_file: &'a Path,
     interrupt: &'a mpsc::Receiver<()>,
+    inspect: bool,
 }
 
 struct RecoveryScenario<'a> {
@@ -756,6 +773,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "--profile-read-samples requires --preset conversation-read-work"
     );
     validate_inspect_options(&options)?;
+    validate_realtime_focus(&options)?;
     let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
@@ -774,6 +792,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "realtime-presentation"
                     | "message-submission"
                     | "timeline-concept"
+                    | "timeline-boundary"
+                    | "media-handoff"
                     | "stress-body-large"
                     | "wait-events"
                     | "conversation-read-work"
@@ -782,7 +802,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
-         timeline-concept, message-submission, stress-body-large, wait-events, conversation-read-work, \
+         timeline-concept, timeline-boundary, media-handoff, message-submission, stress-body-large, wait-events, conversation-read-work, \
          sidebar-query and the delegation scenes"
     );
     ensure!(
@@ -861,6 +881,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "realtime-presentation"
             | "message-submission"
             | "timeline-concept"
+            | "timeline-boundary"
+            | "media-handoff"
             | "stress-body"
             | "stress-body-large"
             | "history-lock"
@@ -1059,6 +1081,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .arg(&stress_report_file)
         .stdout(Stdio::from(fixture_log.try_clone()?))
         .stderr(Stdio::from(fixture_log));
+    if let Some(focus) = options.realtime_focus.as_deref() {
+        fixture_command.args(["--realtime-focus", focus]);
+    }
     if options.ssh_target.is_some() {
         fixture_command.arg("--posix-exec");
     }
@@ -1076,6 +1101,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     if matches!(
         options.preset.as_str(),
         "plan-recovery"
+            | "history-fault"
             | "mode-editor"
             | "context-replay-recovery"
             | "websocket-recovery"
@@ -1322,7 +1348,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if options.preset == "timeline-concept" {
+    if matches!(
+        options.preset.as_str(),
+        "timeline-concept" | "timeline-boundary" | "media-handoff"
+    ) {
         let project = working.path().join("timeline-concept-project");
         let result = timeline_concept::run(
             &timeline_concept::TimelineConceptScenario {
@@ -1334,8 +1363,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
                 interrupt: &interrupt_rx,
-                capture_presentation,
+                capture_presentation: capture_presentation || options.preset != "timeline-concept",
                 provider_url: &ready.base_url,
+                mode: match options.preset.as_str() {
+                    "timeline-boundary" => timeline_concept::TimelineConceptMode::Boundary,
+                    "media-handoff" => timeline_concept::TimelineConceptMode::MediaHandoff,
+                    _ => timeline_concept::TimelineConceptMode::Journey,
+                },
             },
             fixture,
         );
@@ -1394,6 +1428,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 interrupt: &interrupt_rx,
                 capture_presentation,
                 provider_url: &ready.base_url,
+                realtime_focus: options.realtime_focus.as_deref(),
             },
             fixture,
         );
@@ -1571,7 +1606,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
+                status_file: &status_file,
                 interrupt: &interrupt_rx,
+                inspect: options.inspect,
             },
             fixture,
         );
@@ -1613,8 +1650,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
-        // 保留整个临时根与配置绝对路径（不只 home），供发布视觉复查复用。
-        if result.is_ok() && options.retain_environment {
+        // Explicit retention also preserves failed runs for state/checkpoint diagnosis.
+        if options.retain_environment {
             keep_isolated_environment(working, &home, &output, Some(&project))?;
         }
         return result;
@@ -3070,7 +3107,10 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     model.binding.set_transport(profile);
     model.binding.request.api_model = None;
-    if matches!(ready.scenario.as_str(), "tool-scroll" | "timeline-concept") {
+    if matches!(
+        ready.scenario.as_str(),
+        "tool-scroll" | "timeline-concept" | "media-handoff"
+    ) {
         model.capabilities.input.push(ModelInputCapability::media(
             ModelModality::Image,
             vec![ModelInputSource::Local],
@@ -3473,9 +3513,20 @@ pub(super) fn request_app_exit(
 fn wait_operator_done(
     prompt: &str,
     gui: &mut OwnedProcess,
+    fixture: Option<&mut OwnedProcess>,
+    interrupt: &mpsc::Receiver<()>,
+    timeout: Duration,
+) -> Result<()> {
+    wait_operator_done_observing(prompt, gui, fixture, interrupt, timeout, || Ok(()))
+}
+
+fn wait_operator_done_observing(
+    prompt: &str,
+    gui: &mut OwnedProcess,
     mut fixture: Option<&mut OwnedProcess>,
     interrupt: &mpsc::Receiver<()>,
     timeout: Duration,
+    mut observe: impl FnMut() -> Result<()>,
 ) -> Result<()> {
     println!("{prompt}");
     println!("Type done when the observation is complete. Ctrl-C cancels.");
@@ -3502,6 +3553,7 @@ fn wait_operator_done(
     });
     let deadline = Instant::now() + timeout;
     loop {
+        observe()?;
         match input_rx.try_recv() {
             Ok(InputEvent::Done) => return Ok(()),
             Ok(InputEvent::Eof) | Err(mpsc::TryRecvError::Disconnected) => {
@@ -4761,21 +4813,17 @@ fn run_history_lock_scenario(
 /// The coordinator holds the real per-session `history.sqlite` write lock past the
 /// runtime's retryable-conflict window, so the durable writer must surface a typed
 /// `writeFailed` fault instead of absorbing ordinary SQLite blocking. While the
-/// lock is held the journey proves the live content still grows, the typed fault
-/// and its stable generation are observable, and the fault reaches its safe
-/// boundary: the safe `exec` the fault turn scheduled is *not* started and no new
-/// model request is issued. The lock is then released with no automatic recovery,
+/// operator observes the real failure and retry controls while the lock is held.
+/// Persisted watermarks, original records and isolated tool execution evidence
+/// are checked independently. The lock is then released with no automatic recovery,
 /// and the journey drives the explicit controls in order — retry-save until the
 /// backend verifies `canResume` while the hard latch `resumeRequired` stays set,
 /// then continue — proving the deferred tool and the follow-up answer each
 /// complete exactly once.
 ///
-/// The integrated GUI projects a running tool's typed in-flight progress
-/// (`output`/`progressBytes`/`itemRevision`), which the realtime journey asserts
-/// directly; this fault journey does not depend on it, because the deferred-tool
-/// proof is the typed pre-execution status before resume and the committed
-/// `result` is the post-resume identity. A baseline build without the typed
-/// `storageRecovery` array is reported, never faked as a pass.
+/// The official inspection Driver exposes widgets, not a `storageRecovery` JSON
+/// snapshot. Generation/fence invariants retain their runtime test evidence;
+/// manual observations must not be reported as direct typed-state assertions.
 fn run_history_fault_scenario(
     context: &HistoryFaultScenario<'_>,
     mut fixture: OwnedProcess,
@@ -4788,9 +4836,12 @@ fn run_history_fault_scenario(
         output,
         fixture_log,
         requests_file,
+        status_file,
         interrupt,
+        inspect,
     } = context;
     let gui_log_path = working.join("history-fault-gui.log");
+    let native_exit_path = output.join("history-fault-native-exit.json");
     let project = working.join("history-fault-project");
     let acquired_marker = working.join("history-fault-acquired");
     let released_marker = working.join("history-fault-released");
@@ -4809,7 +4860,13 @@ fn run_history_fault_scenario(
         // The GUI handle is scoped so the resident process is reaped before the
         // durable library is read back for the "caught up" assertion.
         {
-            let mut gui = start_history_fault_gui(workspace, home, &gui_log_path)?;
+            let mut gui = start_history_fault_gui(
+                workspace,
+                home,
+                &gui_log_path,
+                &native_exit_path,
+                *inspect,
+            )?;
             let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, interrupt)?;
             wait_operator_done(
                 &format!(
@@ -4828,7 +4885,6 @@ fn run_history_fault_scenario(
             let mut lock =
                 SqliteWriteLock::acquire(&database, "history.sqlite", Duration::from_secs(300))?;
             let locked_at = Instant::now();
-            fs::write(&acquired_marker, "acquired")?;
             lock_report = Some(serde_json::json!({
                 "database": database.file_name().and_then(|name| name.to_str()),
                 "databaseDirectory": database
@@ -4840,32 +4896,86 @@ fn run_history_fault_scenario(
                 "whileLocked": serde_json::Value::Null,
                 "whileLockedItems": serde_json::Value::Null,
             }));
-            wait_operator_done(
-                "history-fault locked: send the fault turn, wait until live growth, the typed writeFailed fault and the safe boundary are visible, then type done.",
-                &mut gui,
-                Some(&mut fixture),
-                interrupt,
-                Duration::from_secs(3_600),
-            )?;
-            let while_locked = history_lock_watermark(&database).ok();
-            let while_items =
-                history_payload_count(&database, pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER)
-                    .ok();
-            let held_millis = locked_at.elapsed().as_millis();
-            lock_report = Some(serde_json::json!({
-                "database": database.file_name().and_then(|name| name.to_str()),
-                "databaseDirectory": database
-                    .parent()
-                    .and_then(|parent| parent.file_name())
-                    .and_then(|name| name.to_str()),
-                "heldMillis": held_millis,
-                "before": before,
-                "whileLocked": while_locked,
-                "whileLockedItems": while_items,
-            }));
+            let mut fault_observed_at = None;
+            let locked_phase = (|| -> Result<()> {
+                let primed_status = plan_recovery_read_status(status_file)?;
+                lock_report.as_mut().expect("lock report initialized")["primedFixture"] =
+                    serde_json::to_value(primed_status)?;
+                ensure!(
+                    history_fault_required_consumed(primed_status)? == 1,
+                    "unexpected fixture stage at the initial locked observation"
+                );
+                fs::write(&acquired_marker, "acquired")?;
+                wait_operator_done_observing(
+                    "history-fault locked: send the fault turn, verify a retry still fails at the safe boundary, then type done before the 300-second lock expires.",
+                    &mut gui,
+                    Some(&mut fixture),
+                    interrupt,
+                    Duration::from_secs(300),
+                    || {
+                        let status = plan_recovery_read_status(status_file)?;
+                        let consumed = history_fault_required_consumed(status)?;
+                        let report = lock_report.as_mut().expect("lock report initialized");
+                        report["whileLockedFixture"] = serde_json::to_value(status)?;
+                        ensure!(
+                            consumed <= 2,
+                            "fault tool continued while SQLite was locked"
+                        );
+                        if consumed == 2 && fault_observed_at.is_none() {
+                            fault_observed_at = Some(Instant::now());
+                            report["faultObservedHeldMillis"] =
+                                serde_json::json!(locked_at.elapsed().as_millis());
+                        }
+                        Ok(())
+                    },
+                )?;
+                let observation_elapsed = fault_observed_at
+                    .context("no fault request was accepted while SQLite was locked")?
+                    .elapsed();
+                lock_report.as_mut().expect("lock report initialized")["faultObservationMillis"] =
+                    serde_json::json!(observation_elapsed.as_millis());
+                ensure!(
+                    observation_elapsed >= Duration::from_secs(30),
+                    "fault request was not held through the retryable-conflict window"
+                );
+                let while_locked = history_lock_watermark(&database)?;
+                lock_report.as_mut().expect("lock report initialized")["whileLocked"] =
+                    serde_json::to_value(while_locked)?;
+                let while_originals = history_fault_originals(&database)?;
+                let report = lock_report.as_mut().expect("lock report initialized");
+                report["whileLockedItems"] = serde_json::json!(while_originals.answers.len());
+                report["whileLockedOriginals"] = serde_json::to_value(&while_originals)?;
+                let while_executions = history_fault_execution_count(&project)?;
+                lock_report.as_mut().expect("lock report initialized")["whileLockedPhysicalExecutions"] =
+                    serde_json::json!(while_executions);
+                ensure!(
+                    while_executions == 0,
+                    "fault tool executed before retry/resume"
+                );
+                Ok(())
+            })();
             let release = lock.finish();
-            fs::write(&released_marker, "released")?;
+            if let Some(report) = lock_report.as_mut() {
+                report["heldMillis"] = serde_json::json!(locked_at.elapsed().as_millis());
+                report["lockedPhaseSucceeded"] = serde_json::json!(locked_phase.is_ok());
+                if let Err(error) = &locked_phase {
+                    report["lockedPhaseError"] = serde_json::json!(format!("{error:#}"));
+                }
+                report["releaseSucceeded"] = serde_json::Value::Bool(release.is_ok());
+                if let Err(error) = &release {
+                    report["releaseError"] = serde_json::Value::String(format!("{error:#}"));
+                }
+            }
+            if let Err(error) = locked_phase {
+                return match release {
+                    Ok(()) => Err(error),
+                    Err(release_error) => {
+                        Err(error.context(format!("lock release also failed: {release_error:#}")))
+                    }
+                };
+            }
             release?;
+            fs::write(&released_marker, "released")?;
             wait_operator_done(
                 "history-fault resume: retry-save until canResume is true, continue, confirm the deferred tool and follow-up answer each complete once, then type done.",
                 &mut gui,
@@ -4874,19 +4984,18 @@ fn run_history_fault_scenario(
                 Duration::from_secs(3_600),
             )?;
             capture(app_dir, Path::new(""), &vm_url, output, interrupt, true)?;
-            let _ = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "history-fault")?;
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(180), "history-fault")?;
+            ensure!(
+                status.success(),
+                "history-fault GUI did not exit successfully: {status}"
+            );
+            require_native_exit(&native_exit_path, None)?;
         }
         let database = history_lock_database(home)?;
         after = Some(HistoryFaultAfter {
             watermark: history_lock_watermark(&database)?,
-            answer_items: history_payload_count(
-                &database,
-                pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
-            )?,
-            tool_marker_items: history_payload_count(
-                &database,
-                pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
-            )?,
+            originals: history_fault_originals(&database)?,
+            physical_executions: history_fault_execution_count(&project)?,
         });
         Ok(())
     })();
@@ -4956,45 +5065,51 @@ fn run_history_fault_scenario(
     // The real library must commit exactly the faulted turn once the fault latch
     // was released through the explicit retry/resume path, and its content must be
     // present: the same file the acceptance locked.
+    fs::write(
+        output.join("history-fault-durable.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "originals": after_state.originals,
+            "physicalExecutions": after_state.physical_executions,
+            "before": before_watermark,
+            "after": after_state.watermark,
+        }))?,
+    )?;
     ensure!(
         after_state.watermark.turns == before_watermark.turns + 1,
         "history writer did not commit exactly the faulted turn: {before_watermark:?} -> {:?}",
         after_state.watermark
     );
+    after_state.originals.validate()?;
     ensure!(
-        after_state.answer_items >= 1,
-        "durable history does not contain the delivered answer: {} matching items",
-        after_state.answer_items
-    );
-    ensure!(
-        after_state.tool_marker_items >= 1,
-        "durable history does not contain the committed safe-tool result for the faulted turn: \
-         {} marker items",
-        after_state.tool_marker_items
+        after_state.physical_executions == 1,
+        "expected exactly one physical fault-tool execution, found {}",
+        after_state.physical_executions
     );
     // Direct evidence the exclusive lock really paused the writer and the fault
     // held the answer out of durable history: the committed turn count and write
     // watermark must be unchanged while the lock was held, and the answer must be
-    // absent. A busy read is not asserted; it simply stays recorded as a gap.
-    let while_locked: Option<HistoryLockWatermark> = lock_report
+    // absent. A failed read is missing required evidence, never a pass.
+    let while_locked: HistoryLockWatermark = lock_report
         .as_ref()
-        .and_then(|report| serde_json::from_value(report["whileLocked"].clone()).ok());
-    if let Some(while_locked) = while_locked {
-        ensure!(
-            while_locked == before_watermark,
-            "history writer committed while the exclusive lock was held: \
-             {before_watermark:?} -> {while_locked:?}"
-        );
-    }
-    let while_items: Option<i64> = lock_report
+        .context("history-fault lock report is missing")
+        .and_then(|report| Ok(serde_json::from_value(report["whileLocked"].clone())?))?;
+    ensure!(
+        while_locked == before_watermark,
+        "history writer committed while the exclusive lock was held: \
+         {before_watermark:?} -> {while_locked:?}"
+    );
+    let while_originals: HistoryFaultOriginals = lock_report
         .as_ref()
-        .and_then(|report| serde_json::from_value(report["whileLockedItems"].clone()).ok());
-    if let Some(while_items) = while_items {
-        ensure!(
-            while_items == 0,
-            "the answer was already durable while the exclusive lock was held: {while_items} matching items"
-        );
-    }
+        .context("history-fault lock report is missing")
+        .and_then(|report| {
+            Ok(serde_json::from_value(
+                report["whileLockedOriginals"].clone(),
+            )?)
+        })?;
+    ensure!(
+        while_originals.answers.is_empty() && while_originals.tools.is_empty(),
+        "fault-turn originals were durable while the exclusive lock was held"
+    );
     ensure!(
         fixture_result.is_ok_and(|status| status.success())
             && accepted >= pl_provider_fixture::HISTORY_FAULT_REQUIRED_STEPS
@@ -5410,9 +5525,82 @@ fn start_recovery_gui(
 /// Durable history state read back after the faulted turn committed.
 struct HistoryFaultAfter {
     watermark: HistoryLockWatermark,
-    answer_items: i64,
-    /// Committed items whose payload carries the safe-tool marker.
-    tool_marker_items: i64,
+    originals: HistoryFaultOriginals,
+    physical_executions: usize,
+}
+
+fn history_fault_required_consumed(
+    status: pl_provider_fixture::FixtureLiveStatus,
+) -> Result<usize> {
+    let script = pl_provider_fixture::gui_history_fault_script();
+    ensure!(
+        status.rejected == 0
+            && status.expected_steps == script.len()
+            && status.consumed_steps <= script.len(),
+        "invalid history-fault fixture stage evidence: {status:?}"
+    );
+    Ok(script[..status.consumed_steps]
+        .iter()
+        .filter(|step| !step.optional)
+        .count())
+}
+
+fn history_fault_execution_count(project: &Path) -> Result<usize> {
+    let path = project.join(pl_provider_fixture::GUI_HISTORY_FAULT_EXECUTIONS_FILE);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error).context("read isolated fault-tool execution receipts"),
+    };
+    ensure!(
+        contents
+            .lines()
+            .all(|line| line == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER),
+        "unexpected isolated fault-tool execution receipt contents"
+    );
+    Ok(contents.lines().count())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryFaultItemIdentity {
+    item_id: String,
+    thread_id: String,
+    turn_id: String,
+    tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct HistoryFaultOriginals {
+    answers: Vec<HistoryFaultItemIdentity>,
+    tools: Vec<HistoryFaultItemIdentity>,
+}
+
+impl HistoryFaultOriginals {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.answers.len() == 1,
+            "expected exactly one durable fault answer: {self:?}"
+        );
+        ensure!(
+            self.tools.len() == 1,
+            "expected exactly one durable fault tool result: {self:?}"
+        );
+        ensure!(
+            !self.answers[0].turn_id.is_empty()
+                && !self.answers[0].item_id.is_empty()
+                && !self.tools[0].item_id.is_empty()
+                && self.answers[0].turn_id == self.tools[0].turn_id
+                && !self.answers[0].thread_id.is_empty()
+                && self.answers[0].thread_id == self.tools[0].thread_id
+                && self.tools[0]
+                    .tool_call_id
+                    .as_ref()
+                    .is_some_and(|id| id == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID),
+            "fault answer and tool result must belong to the same real Turn: {self:?}"
+        );
+        Ok(())
+    }
 }
 
 /// Interface requirements and gaps for the history-fault acceptance.
@@ -5424,23 +5612,27 @@ fn history_fault_interface_needs() -> serde_json::Value {
         "scenario": "history-fault",
         "coveredNow": [
             "exclusive external BEGIN IMMEDIATE on the real per-session history.sqlite, held past the writer's retryable-conflict window (thread_writer.rs RETRYABLE_BUSY_WINDOW, 30s)",
-            "live content still grows while the durable writer cannot commit",
-            "a typed HistoryFault (writeFailed) with a stable faultGeneration is observable from the Driver snapshot's storageRecovery entry for the faulted Thread, together with the pause reason the UI renders from the same typed facts",
-            "the fault reaches its canonical safe boundary (continuation deferred: resumeRequired with canResume false): the safe exec the fault turn scheduled stays in an explicit pre-execution state (queued/awaitingApproval, no committed marker), this turn has no final answer, and no follow-up model request is issued",
-            "release without automatic recovery, then retry-save until the backend-verified canResume is true while resumeRequired stays set, then continue; the deferred tool and the follow-up answer each complete exactly once",
+            "complete durable watermarks and canonical typed originals are read from the actual locked database; missing reads fail instead of passing",
+            "after explicit retry/resume the canonical Final Completed answer and Succeeded tool result belong to the same Thread/Turn, with the exact fixture call id and one physical execution receipt",
+            "successful native process exit and its native-exit report are both required",
         ],
-        "typedToolProgress": {
-            "observed": true,
-            "detail": "the integrated GUI projects a running tool's typed in-flight progress: the timeline tool item carries `output` (same source as the committed `result`), `progressBytes` (UTF-8 count) and `itemRevision`, so realtime_journey.dart asserts the realtime long-command output step by step (longCommandInFlightOutputGrows) without reading raw JSON or substituting the final result",
-            "historyFaultUse": "this fault journey does not depend on in-flight progress: the deferred-tool proof is the typed pre-execution status (`queued`/`awaitingApproval`) at the latched safe boundary and before/after retry, and the committed `result` carries the post-resume identity",
+        "operatorObservationsRequired": [
+            "live content grows before the safe boundary while durable writes are blocked",
+            "the real failure banner remains after retry while locked; continue is unavailable",
+            "release alone does not resume execution; retry-save enables explicit continue, then the tool and answer complete",
+        ],
+        "inspectionBoundary": {
+            "driver": "official Flutter Driver widget tree, controls and screenshots only",
+            "storageRecoverySnapshotAvailable": false,
+            "notDirectlyAsserted": "faultGeneration, acceptedSequence, durableSequence and typed pre-execution status are not exported by the inspection Driver; do not restore requestData or claim these were observed",
         },
         "retryResumeContract": {
             "buttons": [
                 "history-retry-<threadId>: retry the durable save for the fault generation",
                 "history-resume-<threadId>: explicit continue, only enabled when typed canResume is true",
             ],
-            "typedState": "storageRecovery[threadId] = {fault, faultGeneration, acceptedSequence, durableSequence, execution, pressurePaused, resumeRequired, canResume, blocksContinuation, lastError}; canResume is derived by the backend from the retry generation/fence, never from lastError text",
-            "generation": "a stale generation can never drive a resume; that fence is proved by the runtime's own generation tests, and this journey confirms the button uses the canonical faultGeneration",
+            "productionState": "controls consume existing Client/AppGraph recovery state; canResume is backend-derived, never inferred from lastError text",
+            "generation": "stale-generation fencing is covered by runtime tests, not by a claimed Driver JSON snapshot",
         },
         "notChanged": [
             "no production test hook, no data deletion, no faked state, no shortened safe tool",
@@ -5561,6 +5753,73 @@ pub(super) fn history_lock_quick_check(database: &Path) -> Result<String> {
     })
 }
 
+/// Read the canonical persisted item type; invocation text is not tool execution.
+fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let options = SqliteConnectOptions::new()
+            .filename(database)
+            .read_only(true)
+            .create_if_missing(false);
+        let mut connection = SqliteConnection::connect_with(&options).await?;
+        let rows: Vec<(String,)> = sea_orm::sqlx::query_as(
+            "SELECT payload FROM history_items WHERE payload LIKE ?1 OR payload LIKE ?2",
+        )
+        .bind(format!(
+            "%{}%",
+            pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER
+        ))
+        .bind(format!(
+            "%{}%",
+            pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER
+        ))
+        .fetch_all(&mut connection)
+        .await?;
+        let mut originals = HistoryFaultOriginals::default();
+        for (payload,) in rows {
+            let item: pl_protocol::ThreadItem =
+                serde_json::from_str(&payload).context("decode committed history-fault item")?;
+            let identity = |tool_call_id| HistoryFaultItemIdentity {
+                item_id: item.id.clone(),
+                thread_id: item.thread_id.clone(),
+                turn_id: item.turn_id.clone(),
+                tool_call_id,
+            };
+            match item.state() {
+                pl_protocol::ThreadItemState::Text(text)
+                    if text.text() == pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER
+                        && text.channel() == pl_protocol::ThreadTextChannel::Final
+                        && matches!(
+                            text.lifecycle(),
+                            pl_protocol::ThreadContentLifecycle::Completed(_)
+                        ) =>
+                {
+                    originals.answers.push(identity(None));
+                }
+                pl_protocol::ThreadItemState::Tool(tool) => {
+                    if let pl_protocol::ThreadToolState::Succeeded(result) = tool.state()
+                        && tool.invocation().tool_call_id()
+                            == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID
+                        && result
+                            .output()
+                            .result()
+                            .contains(pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER)
+                    {
+                        originals
+                            .tools
+                            .push(identity(Some(tool.invocation().tool_call_id().to_owned())));
+                    }
+                }
+                _ => {}
+            }
+        }
+        connection.close().await?;
+        Ok(originals)
+    })
+}
+
 /// Counts committed history items whose payload carries [needle].
 fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -5663,22 +5922,30 @@ fn start_history_lock_gui(workspace: &Path, home: &Path, log_path: &Path) -> Res
     OwnedProcess::start(&mut command, false)
 }
 
-fn start_history_fault_gui(workspace: &Path, home: &Path, log_path: &Path) -> Result<OwnedProcess> {
+fn start_history_fault_gui(
+    workspace: &Path,
+    home: &Path,
+    log_path: &Path,
+    native_exit_path: &Path,
+    inspect: bool,
+) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
-        // Profile/AOT keeps the observed timings representative, like history-lock.
         .args([
             "xtask",
             "run-gui",
             "--capture",
-            "--profile",
             "--native-launch",
+            "--native-exit-report",
         ])
+        .arg(native_exit_path)
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    // Inspection explicitly selects debug; default observations remain Profile.
+    command.arg(if inspect { "--inspect" } else { "--profile" });
     OwnedProcess::start(&mut command, false)
 }
 
@@ -6038,7 +6305,7 @@ mod desktop_test_command_tests {
 
 #[cfg(test)]
 mod scenario_cli_tests {
-    use super::{ManualGuiOptions, validate_inspect_options};
+    use super::{ManualGuiOptions, validate_inspect_options, validate_realtime_focus};
     use clap::Parser;
 
     #[test]
@@ -6049,6 +6316,7 @@ mod scenario_cli_tests {
             "question-history",
             "realtime-presentation",
             "timeline-concept",
+            "timeline-boundary",
             "sidebar-query",
         ] {
             let options = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])
@@ -6063,10 +6331,11 @@ mod scenario_cli_tests {
     }
 
     #[test]
-    fn inspect_is_limited_to_gui_and_plan_recovery_without_bots_fixture() {
+    fn inspect_uses_explicit_supported_presets_without_bots_fixture() {
         for args in [
             vec!["acceptance", "--preset", "gui", "--inspect"],
             vec!["acceptance", "--preset", "plan-recovery", "--inspect"],
+            vec!["acceptance", "--preset", "history-fault", "--inspect"],
         ] {
             let options = ManualGuiOptions::try_parse_from(args).expect("valid inspect args");
             validate_inspect_options(&options).expect("inspect is allowed for this preset");
@@ -6091,6 +6360,45 @@ mod scenario_cli_tests {
             let options = ManualGuiOptions::try_parse_from(args).expect("syntactically valid args");
             assert!(validate_inspect_options(&options).is_err());
         }
+    }
+
+    #[test]
+    fn realtime_focus_rejects_unknown_or_unrelated_presets() {
+        let focused = ManualGuiOptions::try_parse_from([
+            "acceptance",
+            "--preset",
+            "realtime-presentation",
+            "--realtime-focus",
+            "stop-background",
+        ])
+        .expect("supported focus");
+        validate_realtime_focus(&focused).expect("focus belongs to realtime-presentation");
+        let full =
+            ManualGuiOptions::try_parse_from(["acceptance", "--preset", "realtime-presentation"])
+                .expect("complete default journey");
+        assert!(full.realtime_focus.is_none());
+        validate_realtime_focus(&full).expect("default journey");
+        for preset in ["gui", "realtime", "history-fault", "timeline-boundary"] {
+            let options = ManualGuiOptions::try_parse_from([
+                "acceptance",
+                "--preset",
+                preset,
+                "--realtime-focus",
+                "stop-background",
+            ])
+            .expect("syntactically valid");
+            assert!(validate_realtime_focus(&options).is_err());
+        }
+        assert!(
+            ManualGuiOptions::try_parse_from([
+                "acceptance",
+                "--preset",
+                "realtime-presentation",
+                "--realtime-focus",
+                "unknown",
+            ])
+            .is_err()
+        );
     }
 }
 

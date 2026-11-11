@@ -8,7 +8,6 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
@@ -29,7 +28,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
-import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 const _bodyRef = ContentRef(
   databaseId: 'body-database',
@@ -167,12 +166,17 @@ final class _Controls implements TimelineUiControllers {
               metadata: {
                 chatItemPresentationKey: ChatItemPresentation.forUnit(
                   TimelineDisplayUnit(
-                    entry: CompletedEntry(
-                      recordId: displayId ?? atom.id,
-                      completionSeq: 1,
-                      run: null,
-                      mainPresentation: MainPresentation.single,
-                      atom: atom,
+                    block: DisplayBlock(
+                      id: displayId ?? atom.id,
+                      historyPos: 1,
+                      body: SingleDisplayBlock(
+                        record: DisplayRecord(
+                          atom: atom,
+                          contentSource: CompletedOriginal(
+                            completionId: atom.completionItemId ?? atom.id,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -830,12 +834,10 @@ void main() {
           SingleChildScrollView(
             child: CompletionRunView(
               id: 'work',
-              presentation: CompletionRunPresentation.fromEntry(
-                completionEntry('W', 1),
-              ),
+              summary: displaySummary(1),
+              location: WorkDisplayLocation.history,
               initiallyExpanded: false,
               childBuilder: (_) => TimelineMemberAtom(
-                atom: _atom(text, deferred: deferred),
                 content: _Content((reference, range) async {
                   reads++;
                   expect(reference.target, isA<BodyContentTarget>());
@@ -845,6 +847,11 @@ void main() {
                 isActive: () => true,
                 images: images,
                 readAttachment: null,
+                record: DisplayRecord(
+                  atom: _atom(text, deferred: deferred),
+                  contentSource: const CurrentAtom(),
+                ),
+                displayId: "fixture-current",
               ),
             ),
           ),
