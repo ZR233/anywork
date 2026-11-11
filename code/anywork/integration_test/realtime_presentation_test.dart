@@ -214,15 +214,9 @@ void main() {
         tester,
         requireNativeResize: full,
       );
-      final scene = _RealtimeScene(tester, graph, project, report);
-      // The Shell prepares its standalone workspace after the first usable frame.
-      // Let that navigation finish before the journey selects its project.
-      await scene.until(() {
-        final selection = graph.client.selection.state;
-        return selection.selectedProjectId != null && !selection.needsOpen;
-      }, 'initial Shell workspace ready');
       await graph.client.directoryCommands.openProject(project);
       graph.setConversationPageVisible(true);
+      final scene = _RealtimeScene(tester, graph, project, report);
 
       await capturePresentation(tester, 'realtime-start.png');
       if (full) {
