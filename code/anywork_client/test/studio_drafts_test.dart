@@ -1724,6 +1724,10 @@ void main() {
             threadId: 'remote-root',
             workspaceId: remote.id,
             title: 'Remote root',
+            backend: NativeAgentBackendView(
+              config: const NativeAgentConfigView(),
+              status: ThreadStatusView.idle,
+            ),
             mode: ThreadModeId.simple,
             delegationMode: DelegationMode.profile,
             delegationPreference: DelegationPreference.balanced,
@@ -1796,6 +1800,10 @@ void main() {
           threadId: 'b-root',
           workspaceId: other.id,
           title: 'Other',
+          backend: NativeAgentBackendView(
+            config: const NativeAgentConfigView(),
+            status: ThreadStatusView.idle,
+          ),
           mode: ThreadModeId.simple,
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,
