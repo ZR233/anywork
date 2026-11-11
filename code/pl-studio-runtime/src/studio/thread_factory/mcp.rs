@@ -859,17 +859,13 @@ impl StudioThreadFactory {
             ))
             .into());
         }
+        let configuration_changed = !owner.matches_servers(&resolved.servers);
         owner.pause_projection();
         tokio::select! {
             biased;
             () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
             result = owner.finish_preparation() => result.map_err(|error| resource_error("finish MCP preparation before reconnect", error))?,
         }
-        let configuration_changed = *owner
-            .servers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != resolved.servers;
         owner.set_servers(resolved.servers.clone());
         owner.publish_connecting(server_id, &self.services.product_events);
         let effective_servers = resolved
