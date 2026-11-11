@@ -70,6 +70,75 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     );
 
 void main() {
+  testWidgets('成员调用失败不改变实时或历史标题，错误详情仍按需展开', (tester) async {
+    final semantics = tester.ensureSemantics();
+    for (final location in WorkDisplayLocation.values) {
+      for (final running in [0, 1]) {
+        TimelineActivityIndicator? baselineIndicator;
+        TextStyle? baselineStyle;
+        String? baselineTitle;
+        Size? baselineSize;
+        for (final failed in [0, 1]) {
+          var reads = 0;
+          await tester.pumpWidget(
+            _host(
+              CompletionRunView(
+                key: ValueKey((location, running, failed)),
+                id: 'failed-call',
+                location: location,
+                executionPresent: location == WorkDisplayLocation.live,
+                activity: const ConversationActivityView(
+                  identity: 'thinking',
+                  kind: ConversationActivityKind.thinking,
+                ),
+                summary: _summary(running: running, failed: failed),
+                initiallyExpanded: false,
+                now: () => DateTime.fromMillisecondsSinceEpoch(1125000),
+                childBuilder: (_) {
+                  reads++;
+                  return const Text('调用失败：命令退出码 1');
+                },
+              ),
+            ),
+          );
+          final header = find.byKey(
+            const ValueKey('completion-run-header:failed-call'),
+          );
+          final title = tester.widget<Text>(
+            find.byKey(const ValueKey('work-header-title')),
+          );
+          final indicator = tester.widget<TimelineActivityIndicator>(
+            find.byType(TimelineActivityIndicator),
+          );
+          expect(reads, 0);
+          expect(find.byIcon(Icons.error_outline), findsNothing);
+          if (failed == 0) {
+            baselineIndicator = indicator;
+            baselineStyle = title.style;
+            baselineTitle = title.data;
+            baselineSize = tester.getSize(header);
+          } else {
+            expect(indicator.icon, baselineIndicator!.icon);
+            expect(indicator.color, baselineIndicator.color);
+            expect(indicator.active, baselineIndicator.active);
+            expect(indicator.style, baselineIndicator.style);
+            expect(title.style, baselineStyle);
+            expect(title.data, baselineTitle);
+            expect(tester.getSize(header), baselineSize);
+            expect(tester.getSemantics(header).label, contains('1 项执行失败'));
+            await tester.tap(header);
+            await tester.pump(const Duration(milliseconds: 300));
+            expect(find.text('调用失败：命令退出码 1'), findsOneWidget);
+            expect(reads, greaterThan(0));
+          }
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        }
+      }
+    }
+    semantics.dispose();
+  });
+
   testWidgets(
     'sealed pending Work freezes elapsed and is neither running nor unrestored',
     (tester) async {
@@ -384,7 +453,8 @@ void main() {
           ),
         ),
       );
-      expect(find.byIcon(Icons.error_outline), findsOneWidget);
+      expect(find.byIcon(Icons.error_outline), findsNothing);
+      expect(find.byIcon(Icons.stop_circle_outlined), findsOneWidget);
       final header = find.byKey(
         const ValueKey('completion-run-header:history'),
       );
@@ -929,7 +999,6 @@ void main() {
   );
 
   for (final (outcome, icon, result) in [
-    (ChatTerminalOutcome.failed, Icons.error_outline, '1 项执行失败'),
     (ChatTerminalOutcome.cancelled, Icons.stop_circle_outlined, '1 项已停止'),
     (ChatTerminalOutcome.transferred, Icons.call_made, '已交接 1 项'),
   ]) {

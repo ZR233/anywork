@@ -75,6 +75,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | DISPLAY_SNAPSHOTS
                         | DISPLAY_OBSERVATIONS
+                        | TOOL_WORK
                 ) && !is_lifecycle_migration(step.name())
             })
             .collect()
