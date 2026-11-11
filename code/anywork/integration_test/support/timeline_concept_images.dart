@@ -240,27 +240,56 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
   expect(graph.client.selection.state.selectedThreadId, threadId);
   if (beforeSubmit != null) await beforeSubmit();
 
-  // Register before the tap: a fast submit can return to Idle before a pump.
-  // Observe the existing source synchronously, without a test product API.
-  final frozen = <SubmittingComposerThreadState>[];
-  final watch = composer.source.watchLatest((state) {
-    if (state is SubmittingComposerThreadState) frozen.add(state);
+  // The editor immediately becomes the next draft. Observe the handed-off
+  // submission instead of waiting for the retired editor Submitting state.
+  final existingInputIds = {
+    for (final submission in composer.submissions.value) submission.inputId,
+  };
+  final frozen = <String, ComposerSubmission>{};
+  final watch = composer.submissions.watchLatest((submissions) {
+    for (final submission in submissions) {
+      if (!existingInputIds.contains(submission.inputId)) {
+        frozen[submission.inputId] = submission;
+      }
+    }
   });
+  final session = graph.client.conversations.session(threadId);
+  bool accepted() =>
+      frozen.values.any(
+        (submission) => submission.phase == ComposerSubmissionPhase.accepted,
+      ) ||
+      // Canonical presentation can retire the local item before the RPC
+      // receipt. The exact input identity is independent acceptance evidence.
+      frozen.containsKey(session.state.lastTurn?.inputId);
   try {
-    await tester.tap(find.byKey(const ValueKey('composer-submit')));
+    final send = find.byKey(StudioDriverKeys.composerSubmit);
+    expect(send.hitTestable(), findsOneWidget);
+    await tester.tap(send);
     final clock = Stopwatch()..start();
-    while (frozen.isEmpty || composer.state is! IdleComposerThreadState) {
+    while (frozen.isEmpty || !accepted()) {
       expect(composer.state.failure, isNull);
+      for (final submission in frozen.values) {
+        expect(
+          submission.phase,
+          isNot(ComposerSubmissionPhase.failed),
+          reason: '${submission.error}',
+        );
+        expect(
+          submission.phase,
+          isNot(ComposerSubmissionPhase.unknownOutcome),
+          reason: 'The image submission must have confirmed acceptance',
+        );
+      }
       if (clock.elapsed > const Duration(seconds: 60)) {
         fail('Timed out awaiting one accepted multi-image composer submission');
       }
       await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
     }
-    expect(frozen.map((state) => state.inputId).toSet(), hasLength(1));
-    final submitted = frozen.first;
+    expect(frozen, hasLength(1));
+    final submitted = frozen.values.single;
     expect(submitted.inputId, isNotEmpty);
-    expect(submitted.draft, prompt);
+    expect(submitted.text, prompt);
     expect(
       submitted.attachments.map((draft) => draft.id),
       orderedEquals(drafts.map((draft) => draft.id)),

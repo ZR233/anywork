@@ -19,6 +19,7 @@ import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.da
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/platform/error_log.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -464,13 +465,27 @@ final class _NativeLifecycleAssembly {
       }
       final draft = graph.client.drafts.startDraft;
       draft.updateDraft(workspaceId, text);
-      if (!await draft.submit(workspaceId)) {
-        throw graph.client.drafts.attachments.state
-                .newThread(workspaceId)
-                .failure ??
-            StateError(
-              'native assembly new-session submission was not accepted',
-            );
+      final target = _startModelTarget(workspaceId);
+      // This direct SDK consumer owns its route resources independently of UI
+      // providers, from readiness through the real submission's completion.
+      final accountsDemand = graph.accounts.observeSummaries();
+      try {
+        final modelsDemand = graph.models.observeAccount(target.account);
+        try {
+          await _awaitStartModelRoute(target);
+          if (!await draft.submit(workspaceId)) {
+            throw graph.client.drafts.attachments.state
+                    .newThread(workspaceId)
+                    .failure ??
+                StateError(
+                  'native assembly new-session submission was not accepted',
+                );
+          }
+        } finally {
+          await modelsDemand.release();
+        }
+      } finally {
+        await accountsDemand.release();
       }
       await _awaitSelectedThread();
       _recordState('new-session prompt accepted');
@@ -484,6 +499,116 @@ final class _NativeLifecycleAssembly {
     if (composer.state.failure case final error?) throw error;
     _recordState('existing-thread prompt accepted');
     return threadId;
+  }
+
+  AccountModelIdentity _startModelTarget(String workspaceId) {
+    final draft = graph.client.drafts.startDraft.state;
+    final mode = draft.forProject(workspaceId).mode;
+    final settings = graph.client.settings.state;
+    if (!settings.configLoaded) {
+      throw StateError('Settings are not available yet');
+    }
+    final route = overlayStartSessionRoute(
+      mode: mode,
+      laneRoute: ModelRouteQueries.modeRoute(
+        settings.canonical?.modeModelRoutes ?? const [],
+        mode,
+      ),
+      modelIntent: draft.modelIntentFor(mode),
+      effortIntent: draft.effortIntentFor(mode),
+    );
+    if (route == null || route.accountId.isEmpty || route.modelId.isEmpty) {
+      throw StateError('A complete model route is required');
+    }
+    return AccountModelIdentity(
+      account: NativeAccountIdentity(route.accountId),
+      modelId: route.modelId,
+    );
+  }
+
+  Future<void> _awaitStartModelRoute(AccountModelIdentity target) async {
+    final account = target.account;
+    final accountsSource = graph.accounts.state;
+    final detailsSource = graph.accounts.details(account);
+    final modelsSource = graph.models.state;
+    const timeout = Duration(seconds: 120);
+    _recordState('awaiting new-session model route');
+    await Stream<void>.multi((controller) {
+          final observations = <Observation>[];
+          var finished = false;
+          controller.onCancel = () {
+            finished = true;
+            for (final observation in observations) {
+              observation.cancel();
+            }
+          };
+
+          void check() {
+            if (finished) return;
+            try {
+              final accounts = accountsSource.value;
+              final details = detailsSource.value;
+              final models = modelsSource.value;
+              final catalog = models.accounts[account];
+              final configuration = models.configurations[account];
+              if (accounts.failure case final error?) throw error;
+              // AccountDetailTarget failures are published by Accounts, while its
+              // effective model configuration is published by Models.
+              if (details.failure case final error?) throw error;
+              if (catalog?.failure case final error?) throw error;
+              if (configuration?.failure case final error?) throw error;
+              if ((accounts.loaded && accounts.account(account) == null) ||
+                  (details.loaded && details.value == null) ||
+                  (configuration?.loaded == true &&
+                      configuration?.value == null)) {
+                throw StateError('The selected account is unavailable');
+              }
+              if (catalog?.loaded == true && catalog?.value == null) {
+                throw StateError('The selected model is unavailable');
+              }
+              if (catalog?.loaded != true || configuration?.loaded != true) {
+                return;
+              }
+              final model = catalog?.value?.model(target.modelId);
+              if (model == null || !model.enabled) {
+                throw StateError('The selected model is unavailable');
+              }
+              if (!accounts.loaded || !details.loaded) return;
+              finished = true;
+              controller.add(null);
+            } catch (error, stack) {
+              finished = true;
+              controller.addError(error, stack);
+            }
+          }
+
+          try {
+            observations.add(
+              accountsSource.watchLatest((_) => check()).observation,
+            );
+            observations.add(
+              detailsSource.watchLatest((_) => check()).observation,
+            );
+            observations.add(
+              modelsSource.watchLatest((_) => check()).observation,
+            );
+            check();
+          } catch (error, stack) {
+            finished = true;
+            controller.addError(error, stack);
+          }
+        })
+        .timeout(
+          timeout,
+          onTimeout: (sink) => sink.addError(
+            TimeoutException(
+              'timed out waiting for new-session model '
+              '${target.accountId}/${target.modelId}',
+              timeout,
+            ),
+          ),
+        )
+        .first;
   }
 
   Future<void> _waitBusy(String label) async {

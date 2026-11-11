@@ -534,16 +534,12 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   testWidgets(
-    'sidebar resize drag and keyboard persist through the production Client',
+    'sidebar drag, double tap and accessibility resize persist through the production Client',
     (tester) async {
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
-      LogicalKeyboardKey? heldKey;
-      addTearDown(() async {
-        if (heldKey case final key?) {
-          await tester.sendKeyUpEvent(key);
-        }
-      });
+      final semantics = tester.ensureSemantics();
+      addTearDown(semantics.dispose);
       final shell = find.byKey(StudioDriverKeys.shell);
       final divider = find.byKey(StudioDriverKeys.sidebarResize);
       expect(shell, findsOneWidget);
@@ -601,54 +597,26 @@ void main() {
       );
 
       await tester.tap(divider);
-      await tester.sendKeyEvent(LogicalKeyboardKey.home);
-      await scene.until(
-        () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
-        'Home restores and saves the canonical default',
-      );
-
-      heldKey = LogicalKeyboardKey.arrowRight;
-      await tester.sendKeyDownEvent(heldKey);
-      await scene.until(
-        () => (width() - 352).abs() <= 1,
-        'held Right changes only the draft width',
-      );
-      expect(
-        canonicalWidth(),
-        336,
-        reason: 'A held key must not save before KeyUp or focus loss',
-      );
-      await tester.tap(find.byKey(const ValueKey<String>('sidebar-search')));
-      await scene.until(
-        () => canonicalWidth() == 352,
-        'focus loss saves the held keyboard width',
-      );
-      await tester.sendKeyUpEvent(heldKey);
-      heldKey = null;
-
+      await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(divider);
-      await tester.sendKeyEvent(LogicalKeyboardKey.home);
       await scene.until(
         () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
-        'Home restores the default after focus-loss persistence',
+        'double tap restores and saves the canonical default',
       );
 
-      heldKey = LogicalKeyboardKey.arrowLeft;
-      await tester.sendKeyDownEvent(heldKey);
-      await scene.until(
-        () => (width() - 320).abs() <= 1,
-        'held Left changes only the draft width',
+      // 应用自定义按键已移除；无障碍用户仍可通过官方语义动作调整宽度。
+      final resizeSemantics = find.semantics.byLabel(
+        tester.element(divider).l10n.sidebarResize,
       );
-      expect(
-        canonicalWidth(),
-        336,
-        reason: 'The draft width must remain unsaved before KeyUp',
-      );
-      await tester.sendKeyUpEvent(heldKey);
-      heldKey = null;
+      tester.semantics.increase(resizeSemantics);
       await scene.until(
-        () => canonicalWidth() == 320,
-        'KeyUp saves the held keyboard width',
+        () => (width() - 352).abs() <= 1 && canonicalWidth() == 352,
+        'accessibility increase updates and saves the width',
+      );
+      tester.semantics.decrease(resizeSemantics);
+      await scene.until(
+        () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
+        'accessibility decrease updates and saves the width',
       );
       expect(tester.takeException(), isNull);
     },
