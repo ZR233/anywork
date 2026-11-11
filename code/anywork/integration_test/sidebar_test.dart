@@ -7,6 +7,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/features/shell/sidebar/studio_sidebar.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -42,7 +43,7 @@ void main() {
 
   setUpAll(() async {
     final project = Directory(
-      '$projectsRoot/sidebar-project-with-a-very-long-visible-name',
+      p.join(projectsRoot, 'sidebar-project-with-a-very-long-visible-name'),
     );
     await _prepareSyntheticGitProject(project);
     projectPath = project.absolute.path;
