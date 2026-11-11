@@ -3,20 +3,25 @@ import 'package:flutter/foundation.dart' show immutable, listEquals;
 
 import '../widgets/timeline_activity_row.dart';
 
-/// 根据类型化活动阶段与前台活跃工具事实解析顶栏指示器样式：
+/// 根据类型化活动阶段、前台活跃工具事实以及当前顶栏是否正在展示思考摘要解析指示器样式：
 /// - `responding` -> 分层书写动态图标；
 /// - `compacting` -> 经典拉链齿动态 ZIP 压缩图标；
-/// - `runningTool` 且前台正在运行 `exec` -> 圆形进度指示器；
+/// - 当前顶栏正在展示思考摘要（`displayingThinkingSummary == true`）-> 趴卧摇尾猫图标；
+/// - `runningTool` 且前台正在运行 `exec`（无思考摘要时）-> 圆形进度指示器；
 /// - 其余等待/思考阶段 -> 趴卧摇尾猫图标。
 TimelineActivityIndicatorStyle resolveLiveHeaderIndicatorStyle(
-  ConversationActivityView? view,
-) {
+  ConversationActivityView? view, {
+  bool displayingThinkingSummary = false,
+}) {
   if (view == null) return TimelineActivityIndicatorStyle.restingCat;
   if (view.kind == ConversationActivityKind.responding) {
     return TimelineActivityIndicatorStyle.writing;
   }
   if (view.kind == ConversationActivityKind.compacting) {
     return TimelineActivityIndicatorStyle.compactingZip;
+  }
+  if (displayingThinkingSummary) {
+    return TimelineActivityIndicatorStyle.restingCat;
   }
   if (view.isRunningExecTool) {
     return TimelineActivityIndicatorStyle.circularProgress;

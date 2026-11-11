@@ -84,14 +84,14 @@ Widget liveStatusGroupPreview({
         transferred: 0,
         createdAt: 100,
         elapsedMs: 125000,
-        thinkingSummary: '梳理会话共享组件与锁定边界',
+        thinkingSummary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
       ),
       childBuilder: (_) => const Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TimelineReasoningView(
-            summary: '梳理会话共享组件与锁定边界',
+            summary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
             startedAt: 100,
             finishedAt: 140,
             body: ConversationCurrentWindowView(
@@ -145,14 +145,14 @@ Widget liveStatusGroupPreview({
       transferred: 0,
       createdAt: 100,
       elapsedMs: 125000,
-      thinkingSummary: '梳理会话共享组件与锁定边界',
+      thinkingSummary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
     ),
     childBuilder: (_) => Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const TimelineReasoningView(
-          summary: '梳理会话共享组件与锁定边界',
+          summary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
           running: true,
           body: ConversationCurrentWindowView(
             id: 'preview-reasoning',

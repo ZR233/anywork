@@ -1756,6 +1756,23 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
   font-weight: 500;
   flex: 1 1 auto;
 }
+.cv-group-live .cv-group-title strong,
+.cv-group-live .cv-group-title b,
+.cv-thinking .cv-member-verb strong,
+.cv-thinking .cv-member-verb b {
+  font-weight: 600;
+  color: var(--cv-ink);
+}
+.cv-group-live .cv-group-title code,
+.cv-thinking .cv-member-verb code {
+  font-family: var(--cv-mono);
+  font-size: 0.9em;
+  line-height: 1;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(81, 64, 57, 0.09);
+  color: var(--cv-ink);
+}
 .cv-group-current {
   flex: 1 1 auto;
   min-width: 0;
@@ -1773,7 +1790,7 @@ html.mdui-theme-light::-webkit-scrollbar-thumb:active,
   font-size: 12.5px;
   line-height: 1.25;
 }
-.cv-group-live[data-phase="thinking"] .cv-group-title { color: var(--cv-secondary); }
+.cv-group-live[data-phase="thinking"] .cv-group-title { color: rgba(64, 54, 47, 0.92); }
 
 .cv-group-digest {
   display: inline-flex;

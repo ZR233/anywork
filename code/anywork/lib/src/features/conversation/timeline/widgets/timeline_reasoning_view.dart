@@ -1,3 +1,4 @@
+import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -86,21 +87,69 @@ class TimelineReasoningView extends StatelessWidget {
 
 /// 概要只在一行内排版；复用正文解析器，关闭链接和媒体动作。
 class TimelineReasoningSummary extends StatelessWidget {
-  const TimelineReasoningSummary({required this.text, super.key});
+  const TimelineReasoningSummary({
+    required this.text,
+    this.id = 'reasoning-summary',
+    this.style,
+    this.strutStyle,
+    this.inlineCodeBackgroundColor,
+    super.key,
+  });
+
   final String text;
+  final String id;
+  final TextStyle? style;
+  final StrutStyle? strutStyle;
+  final Color? inlineCodeBackgroundColor;
 
   @override
-  Widget build(BuildContext context) => TimelineMarkdown(
-    id: 'reasoning-summary',
-    text: text,
-    maxLines: 1,
-    overflow: TextOverflow.ellipsis,
-    style: context.text.bodySmall?.copyWith(
-      color: context.colors.onSurfaceVariant,
-      height: 1.5,
-    ),
-    onLink: (_) {},
-    isSafeLink: (_) => false,
-    imageBuilder: (_, url) => Text(url, maxLines: 1),
-  );
+  Widget build(BuildContext context) {
+    final effectiveStyle =
+        style ??
+        context.text.bodySmall?.copyWith(
+          color: context.colors.onSurfaceVariant,
+          height: 1.5,
+        );
+    final singleLine = text.replaceAll(RegExp(r'[\r\n]+'), ' ');
+    if (!timelineNeedsSafeMarkdown(singleLine)) {
+      return Text(
+        singleLine,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.ellipsis,
+        strutStyle: strutStyle,
+        style: effectiveStyle,
+      );
+    }
+    final base = GptMarkdownTheme.of(context);
+    final headingStyle = effectiveStyle?.copyWith(fontWeight: FontWeight.w600);
+    return GptMarkdownTheme(
+      gptThemeData: base.copyWith(
+        h1: headingStyle,
+        h2: headingStyle,
+        h3: headingStyle,
+        h4: headingStyle,
+        h5: headingStyle,
+        h6: headingStyle,
+        autoAddDividerLineAfterH1: false,
+      ),
+      child: TimelineMarkdown(
+        id: id,
+        text: singleLine,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: effectiveStyle,
+        inlineCodeBackgroundColor: inlineCodeBackgroundColor,
+        onLink: (_) {},
+        isSafeLink: (_) => false,
+        imageBuilder: (_, url) => Text(
+          url,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          style: effectiveStyle,
+        ),
+      ),
+    );
+  }
 }

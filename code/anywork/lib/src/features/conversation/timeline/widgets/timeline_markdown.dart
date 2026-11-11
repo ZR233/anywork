@@ -32,6 +32,7 @@ class TimelineMarkdown extends StatelessWidget {
     this.style,
     this.maxLines,
     this.overflow,
+    this.inlineCodeBackgroundColor,
   });
   final String id;
   final String text;
@@ -41,6 +42,7 @@ class TimelineMarkdown extends StatelessWidget {
   final TextStyle? style;
   final int? maxLines;
   final TextOverflow? overflow;
+  final Color? inlineCodeBackgroundColor;
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +51,7 @@ class TimelineMarkdown extends StatelessWidget {
       return TimelinePlainText(id: id, text: text, style: textStyle);
     }
     return DefaultTextStyle.merge(
-      softWrap: true,
+      softWrap: maxLines != 1,
       child: GptMarkdown(
         text,
         key: ValueKey('gpt-markdown-$id'),
@@ -99,7 +101,8 @@ class TimelineMarkdown extends StatelessWidget {
         inlineCodeStyle: InlineCodeStyle(
           fontFamily: studioCodeFontFamily,
           borderWidth: 0,
-          backgroundColor: context.colors.surfaceContainerLow,
+          backgroundColor:
+              inlineCodeBackgroundColor ?? context.colors.surfaceContainerLow,
         ),
         codeBuilder: (context, name, code, closed) => StudioCodeBlock(
           text: code,
